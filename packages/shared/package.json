@@ -1,0 +1,104 @@
+{
+  "name": "@t3tools/shared",
+  "version": "0.0.0-alpha.1",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./codexStderr": {
+      "types": "./src/codexStderr.ts",
+      "import": "./src/codexStderr.ts"
+    },
+    "./model": {
+      "types": "./src/model.ts",
+      "import": "./src/model.ts"
+    },
+    "./git": {
+      "types": "./src/git.ts",
+      "import": "./src/git.ts"
+    },
+    "./logging": {
+      "types": "./src/logging.ts",
+      "import": "./src/logging.ts"
+    },
+    "./shell": {
+      "types": "./src/shell.ts",
+      "import": "./src/shell.ts"
+    },
+    "./commandSummary": {
+      "types": "./src/commandSummary.ts",
+      "import": "./src/commandSummary.ts"
+    },
+    "./Net": {
+      "types": "./src/Net.ts",
+      "import": "./src/Net.ts"
+    },
+    "./DrainableWorker": {
+      "types": "./src/DrainableWorker.ts",
+      "import": "./src/DrainableWorker.ts"
+    },
+    "./schemaJson": {
+      "types": "./src/schemaJson.ts",
+      "import": "./src/schemaJson.ts"
+    },
+    "./providerOptions": {
+      "types": "./src/providerOptions.ts",
+      "import": "./src/providerOptions.ts"
+    },
+    "./cliArgs": {
+      "types": "./src/cliArgs.ts",
+      "import": "./src/cliArgs.ts"
+    },
+    "./mcpTranslation": {
+      "types": "./src/mcpTranslation.ts",
+      "import": "./src/mcpTranslation.ts"
+    },
+    "./mcpConfig": {
+      "types": "./src/mcpConfig.ts",
+      "import": "./src/mcpConfig.ts"
+    },
+    "./projectScripts": {
+      "types": "./src/projectScripts.ts",
+      "import": "./src/projectScripts.ts"
+    },
+    "./worktree": {
+      "types": "./src/worktree.ts",
+      "import": "./src/worktree.ts"
+    },
+    "./orchestrationActivityPayload": {
+      "types": "./src/orchestrationActivityPayload.ts",
+      "import": "./src/orchestrationActivityPayload.ts"
+    },
+    "./slashCommands": {
+      "types": "./src/slashCommands.ts",
+      "import": "./src/slashCommands.ts"
+    },
+    "./workflowArchive": {
+      "types": "./src/workflowArchive.ts",
+      "import": "./src/workflowArchive.ts"
+    },
+    "./workflowThreads": {
+      "types": "./src/workflowThreads.ts",
+      "import": "./src/workflowThreads.ts"
+    },
+    "./path": {
+      "types": "./src/path.ts",
+      "import": "./src/path.ts"
+    }
+  },
+  "scripts": {
+    "prepare": "effect-language-service patch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@t3tools/contracts": "workspace:*",
+    "effect": "catalog:"
+  },
+  "devDependencies": {
+    "@effect/language-service": "catalog:",
+    "@effect/vitest": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

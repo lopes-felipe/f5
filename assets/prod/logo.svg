@@ -1,0 +1,22 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="wordmark" x1="64" y1="22" x2="64" y2="98" gradientUnits="userSpaceOnUse">
+<stop stop-color="white"/>
+<stop offset="1" stop-color="#D4D4D8"/>
+</linearGradient>
+</defs>
+<rect width="128" height="128" rx="28" fill="black"/>
+<rect x="1.5" y="1.5" width="125" height="125" rx="26.5" stroke="#52525B" stroke-opacity="0.55" stroke-width="3"/>
+<text
+  x="64"
+  y="78"
+  fill="url(#wordmark)"
+  font-family="'Arial Black', 'Helvetica Neue', Arial, sans-serif"
+  font-size="62"
+  font-weight="900"
+  letter-spacing="-5"
+  text-anchor="middle"
+>
+F5
+</text>
+</svg>
