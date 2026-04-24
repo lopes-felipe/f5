@@ -5,15 +5,54 @@
 <h1 align="center">F5</h1>
 
 <p align="center">
-  A desktop and web GUI for coding agents with multi-model parallel workflows.
+  Run coding agents against your codebase — and have them plan, review, and critique each other across models.
 </p>
 
-F5 gives you one place to run AI coding agents against your codebase. Drive Codex or Claude Code from a chat UI, watch commands and diffs stream in real time, branch off multi-agent planning and code-review workflows, and keep everything — threads, reasoning, token usage, skills, MCP servers — persisted on a local SQLite-backed server.
+F5 is a desktop and web GUI for coding agents with a twist: every step of a workflow picks its own model. Mix **Codex** and **Claude Code** in a single feature-development run — two authors draft competing plans, each cross-reviews the other, a merge agent picks the winner, and an implementer executes it — each role on the provider and model you choose. The same per-slot model selection powers a dual-reviewer code-review workflow with a consolidation pass.
 
-It is for developers who already use `codex` or `claude` on the command line and want a richer, multi-agent surface on top.
+It is for developers who already use `codex` or `claude` on the command line and want a multi-agent, multi-model surface on top.
 
 > [!WARNING]
 > This project is very early. Expect bugs, breaking changes, and rough edges.
+
+## Cross-model workflows
+
+The headline capability. Each **slot** in a workflow — Author A, Author B, Merge, Implementer, Reviewer A, Reviewer B, Consolidation — independently picks its provider (Codex or Claude Code), its model, and its reasoning effort. Invoke from the command palette (`/workflow.new`) or the sidebar's **New workflow** action.
+
+### Feature development (planning → merge → implement)
+
+Two authors independently draft plans for the same requirement. Each **cross-reviews** the other's plan, both authors revise based on the feedback, and a **merge agent** synthesizes a single approved plan. An **implementer** then executes it — optionally in an isolated git worktree, optionally followed by a code-review pass on the resulting diff.
+
+```mermaid
+flowchart LR
+    Req[Requirement] --> A[Author A<br/>model 1]
+    Req --> B[Author B<br/>model 2]
+    A -->|plan A| RB[Review<br/>by B]
+    B -->|plan B| RA[Review<br/>by A]
+    RA --> A2[Revise A]
+    RB --> B2[Revise B]
+    A2 --> M[Merge agent<br/>model 3]
+    B2 --> M
+    M --> I[Implementer<br/>model 4]
+    I -. optional .-> CR[Code review]
+```
+
+Why it matters: two models catch blind spots a single model would miss, you can pair a fast planner with a strong implementer, and the merge agent arbitrates between competing approaches instead of leaving that to you.
+
+### Code review (dual reviewer → consolidation)
+
+Two reviewers independently review the current branch, then a **consolidation** agent merges their findings into a single ranked report — each agent on its own model.
+
+```mermaid
+flowchart LR
+    Branch[Current branch<br/>diff] --> RA[Reviewer A<br/>model 1]
+    Branch --> RB[Reviewer B<br/>model 2]
+    RA --> C[Consolidation<br/>model 3]
+    RB --> C
+    C --> Report[Unified review]
+```
+
+Why it matters: reviewers disagree in useful ways; the consolidation pass dedupes findings, resolves contradictions, and ranks what's worth your attention.
 
 ## Install & run
 
@@ -51,11 +90,9 @@ Work in-progress
 
 See [`docs/provider-prerequisites.md`](./docs/provider-prerequisites.md) for provider-specific setup.
 
-## Features
+## Also included
 
 - **Multi-provider chat** — Codex and Claude Code as first-class providers, switchable per thread.
-- **Planning workflows** — two agents independently draft plans, cross-review each other, and a merge agent produces a single approved plan that a third agent implements (optionally in an isolated git worktree).
-- **Code-review workflows** — dual AI reviewers + a consolidation pass against your current branch.
 - **MCP support** — stdio, SSE, and streamable HTTP transports with per-project and shared scopes, OAuth, and tool filtering.
 - **Project Skills** — user- and project-scoped skills surfaced to agents and triggerable from the composer.
 - **Git integration** — branches, worktrees, diffs (`@pierre/diffs`), PR helpers, stacked-action runners.
