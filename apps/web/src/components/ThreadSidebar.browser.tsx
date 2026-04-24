@@ -1,6 +1,7 @@
 import "../index.css";
 
 import {
+  type DesktopBridge,
   ORCHESTRATION_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
@@ -60,6 +61,8 @@ interface TestFixture {
 }
 
 let fixture: TestFixture;
+const wsRequests: Array<{ _tag: string; [key: string]: unknown }> = [];
+const noopUnsubscribe = () => {};
 
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 
@@ -406,6 +409,7 @@ const worker = setupWorker(
 
       const method = request.body?._tag;
       if (typeof method !== "string") return;
+      wsRequests.push(request.body as { _tag: string; [key: string]: unknown });
       client.send(
         JSON.stringify({
           id: request.id,
@@ -779,6 +783,55 @@ function seedAppSettings(settings: Record<string, unknown>): void {
   );
 }
 
+function installDesktopBridgeMock(
+  overrides: Partial<
+    Pick<DesktopBridge, "pickFolder" | "showContextMenu" | "confirm" | "openExternal">
+  > = {},
+): void {
+  const idleUpdateState = {
+    enabled: false,
+    status: "idle" as const,
+    currentVersion: "0.0.0",
+    hostArch: "arm64" as const,
+    appArch: "arm64" as const,
+    runningUnderArm64Translation: false,
+    availableVersion: null,
+    downloadedVersion: null,
+    downloadPercent: null,
+    checkedAt: null,
+    message: null,
+    errorContext: null,
+    canRetry: false,
+  };
+  const desktopBridge = {
+    getWsUrl: () => null,
+    pickFolder: async () => null,
+    confirm: async () => true,
+    setTheme: async () => {},
+    showContextMenu: async () => null,
+    openExternal: async () => true,
+    onMenuAction: () => noopUnsubscribe,
+    getUpdateState: async () => idleUpdateState,
+    downloadUpdate: async () => ({
+      accepted: false,
+      completed: false,
+      state: idleUpdateState,
+    }),
+    installUpdate: async () => ({
+      accepted: false,
+      completed: false,
+      state: idleUpdateState,
+    }),
+    onUpdateState: () => noopUnsubscribe,
+    ...overrides,
+  } satisfies Partial<DesktopBridge>;
+
+  Object.defineProperty(window, "desktopBridge", {
+    configurable: true,
+    value: desktopBridge as DesktopBridge,
+  });
+}
+
 describe("Thread sidebar", () => {
   beforeAll(async () => {
     fixture = buildFixture();
@@ -797,6 +850,8 @@ describe("Thread sidebar", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    wsRequests.length = 0;
+    Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
     useComposerDraftStore.setState({
       draftsByThreadId: {},
@@ -813,6 +868,7 @@ describe("Thread sidebar", () => {
   });
 
   afterEach(() => {
+    Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
   });
 
@@ -1114,6 +1170,61 @@ describe("Thread sidebar", () => {
       await waitForElement(
         () => document.querySelector<HTMLElement>('[data-slot="dialog-title"]'),
         "Workflow dialog should open from workflow.new.",
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("dispatches project.meta.update when changing a project's path", async () => {
+    installDesktopBridgeMock({
+      showContextMenu: (async () => "change-path") as DesktopBridge["showContextMenu"],
+      pickFolder: async () => "/repo/project-renamed",
+    });
+
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+    });
+
+    try {
+      const projectButton = await waitForElement(
+        () => queryProjectButton("Project"),
+        "Project button should render before changing the path.",
+      );
+      const requestCountBeforeContextMenu = wsRequests.length;
+
+      projectButton.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: 24,
+          clientY: 24,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          const dispatchRequest = wsRequests
+            .slice(requestCountBeforeContextMenu)
+            .find(
+              (request) =>
+                request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+                (request.command as { type?: string } | undefined)?.type === "project.meta.update",
+            );
+          expect(dispatchRequest).toBeTruthy();
+          if (!dispatchRequest) {
+            throw new Error("Expected a project.meta.update dispatch request.");
+          }
+          const command = dispatchRequest.command as {
+            projectId?: string;
+            workspaceRoot?: string;
+          };
+          expect(command.projectId).toBe(PROJECT_ID);
+          expect(command.workspaceRoot).toBe("/repo/project-renamed");
+        },
+        { timeout: 8_000, interval: 16 },
       );
     } finally {
       await mounted.cleanup();

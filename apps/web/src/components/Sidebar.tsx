@@ -1165,6 +1165,55 @@ export default function Sidebar() {
     [],
   );
 
+  const changeProjectWorkspaceRoot = useCallback(
+    async (project: Pick<Project, "id" | "cwd" | "name">) => {
+      const api = readNativeApi();
+      if (!api) {
+        return;
+      }
+
+      let nextWorkspaceRoot: string | null = null;
+      try {
+        if (window.desktopBridge) {
+          nextWorkspaceRoot = await api.dialogs.pickFolder();
+        } else {
+          nextWorkspaceRoot = window.prompt(
+            `Enter the new project path for "${project.name}"`,
+            project.cwd,
+          );
+        }
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to choose project path",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        });
+        return;
+      }
+
+      const trimmedWorkspaceRoot = nextWorkspaceRoot?.trim();
+      if (!trimmedWorkspaceRoot || trimmedWorkspaceRoot === project.cwd) {
+        return;
+      }
+
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "project.meta.update",
+          commandId: newCommandId(),
+          projectId: project.id,
+          workspaceRoot: trimmedWorkspaceRoot,
+        });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Failed to change project path",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        });
+      }
+    },
+    [],
+  );
+
   const setThreadArchived = useCallback(async (threadId: ThreadId, archived: boolean) => {
     const api = readNativeApi();
     if (!api) return;
@@ -1529,19 +1578,23 @@ export default function Sidebar() {
       if (!api) return;
       const clicked = await api.contextMenu.show(
         [
+          { id: "change-path", label: "Change project path..." },
           { id: "rename", label: "Rename project" },
           { id: "delete", label: "Remove project", destructive: true },
         ],
         position,
       );
+      const project = projects.find((entry) => entry.id === projectId);
+      if (!project) return;
+      if (clicked === "change-path") {
+        await changeProjectWorkspaceRoot(project);
+        return;
+      }
       if (clicked === "rename") {
         setRenamingProjectId(projectId);
         return;
       }
       if (clicked !== "delete") return;
-
-      const project = projects.find((entry) => entry.id === projectId);
-      if (!project) return;
 
       const projectThreads = threads.filter((thread) => thread.projectId === projectId);
       if (projectThreads.length > 0) {
@@ -1578,6 +1631,7 @@ export default function Sidebar() {
       }
     },
     [
+      changeProjectWorkspaceRoot,
       clearComposerDraftForThread,
       clearProjectDraftThreadId,
       getDraftThreadByProjectId,

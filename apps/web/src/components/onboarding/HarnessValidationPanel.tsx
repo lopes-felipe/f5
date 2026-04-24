@@ -202,10 +202,7 @@ const HarnessRow = memo(function HarnessRow({
     >
       <div className="flex gap-3">
         <div
-          className={cn(
-            "grid size-10 shrink-0 place-items-center rounded-xl",
-            brand.tile,
-          )}
+          className={cn("grid size-10 shrink-0 place-items-center rounded-xl", brand.tile)}
           aria-hidden="true"
         >
           <BrandIcon className={brand.iconClass} />
@@ -331,9 +328,7 @@ function buildSummary({
 
   const tones = results.map(segmentToneFor);
   const readyCount = tones.filter((tone) => tone === "ready").length;
-  const attentionCount = tones.filter(
-    (tone) => tone === "warning" || tone === "error",
-  ).length;
+  const attentionCount = tones.filter((tone) => tone === "warning" || tone === "error").length;
 
   const label =
     readyCount === totalCount
@@ -442,11 +437,7 @@ export function HarnessValidationPanel() {
           </div>
         </div>
 
-        <Button
-          className="shrink-0"
-          disabled={mutation.isPending}
-          onClick={runValidation}
-        >
+        <Button className="shrink-0" disabled={mutation.isPending} onClick={runValidation}>
           {mutation.isPending ? (
             <LoaderCircleIcon className="size-4 animate-spin" />
           ) : hasTriggered ? (
@@ -482,10 +473,7 @@ export function HarnessValidationPanel() {
         >
           {summary.kind === "pending" ? (
             <span className="inline-flex items-center gap-1.5">
-              <LoaderCircleIcon
-                className="size-3 animate-spin text-primary"
-                aria-hidden="true"
-              />
+              <LoaderCircleIcon className="size-3 animate-spin text-primary" aria-hidden="true" />
               {summary.label}
             </span>
           ) : (

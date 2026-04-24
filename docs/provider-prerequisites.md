@@ -12,6 +12,7 @@ F5 needs at least one coding-agent provider CLI installed and authenticated on t
   ```
 
   Either ChatGPT auth or an API key works — use whichever your Codex install supports.
+
 - F5 starts the provider process via `codex app-server` per session. If `codex` is missing or unauthenticated, session startup will fail with a clear error.
 
 ## Claude Code
@@ -22,6 +23,7 @@ F5 needs at least one coding-agent provider CLI installed and authenticated on t
   ```bash
   claude login
   ```
+
 - F5 launches Claude sessions through the Claude Agent SDK, which discovers credentials from the standard Claude Code install locations.
 
 ## Picking a provider at runtime
