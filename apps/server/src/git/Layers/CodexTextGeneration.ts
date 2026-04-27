@@ -223,6 +223,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
           prependCodexCliTelemetryDisabledConfig([
             "exec",
             "--ephemeral",
+            "--skip-git-repo-check",
             "-s",
             "read-only",
             "--model",

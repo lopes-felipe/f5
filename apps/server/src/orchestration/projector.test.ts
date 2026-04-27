@@ -225,6 +225,199 @@ describe("orchestration projector", () => {
     expect(thread?.session?.status).toBe("running");
   });
 
+  it("settles the latest turn when a running session becomes ready", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const startedAt = "2026-02-23T08:00:05.000Z";
+    const readyAt = "2026-02-23T08:00:10.000Z";
+    const model = createEmptyReadModel(createdAt);
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-create-ready",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5.4",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterRunning = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: startedAt,
+          commandId: "cmd-running-ready",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: "turn-1",
+              lastError: null,
+              updatedAt: startedAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    const afterReady = await Effect.runPromise(
+      projectEvent(
+        afterRunning,
+        makeEvent({
+          sequence: 3,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: readyAt,
+          commandId: "cmd-ready",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: readyAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(afterReady.threads[0]?.latestTurn).toEqual({
+      turnId: "turn-1",
+      state: "completed",
+      requestedAt: startedAt,
+      startedAt,
+      completedAt: readyAt,
+      assistantMessageId: null,
+    });
+    expect(afterReady.threads[0]?.session?.status).toBe("ready");
+  });
+
+  it("settles a running latest turn to terminal error states from session lifecycle events", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const startedAt = "2026-02-23T08:00:05.000Z";
+    const terminalAt = "2026-02-23T08:00:10.000Z";
+
+    for (const [status, expectedState] of [
+      ["error", "error"],
+      ["stopped", "interrupted"],
+    ] as const) {
+      const model = createEmptyReadModel(createdAt);
+
+      const afterCreate = await Effect.runPromise(
+        projectEvent(
+          model,
+          makeEvent({
+            sequence: 1,
+            type: "thread.created",
+            aggregateKind: "thread",
+            aggregateId: `thread-${status}`,
+            occurredAt: createdAt,
+            commandId: `cmd-create-${status}`,
+            payload: {
+              threadId: `thread-${status}`,
+              projectId: "project-1",
+              title: "demo",
+              model: "gpt-5.4",
+              runtimeMode: "full-access",
+              branch: null,
+              worktreePath: null,
+              createdAt,
+              updatedAt: createdAt,
+            },
+          }),
+        ),
+      );
+
+      const afterRunning = await Effect.runPromise(
+        projectEvent(
+          afterCreate,
+          makeEvent({
+            sequence: 2,
+            type: "thread.session-set",
+            aggregateKind: "thread",
+            aggregateId: `thread-${status}`,
+            occurredAt: startedAt,
+            commandId: `cmd-running-${status}`,
+            payload: {
+              threadId: `thread-${status}`,
+              session: {
+                threadId: `thread-${status}`,
+                status: "running",
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: `turn-${status}`,
+                lastError: null,
+                updatedAt: startedAt,
+              },
+            },
+          }),
+        ),
+      );
+
+      const afterTerminal = await Effect.runPromise(
+        projectEvent(
+          afterRunning,
+          makeEvent({
+            sequence: 3,
+            type: "thread.session-set",
+            aggregateKind: "thread",
+            aggregateId: `thread-${status}`,
+            occurredAt: terminalAt,
+            commandId: `cmd-${status}`,
+            payload: {
+              threadId: `thread-${status}`,
+              session: {
+                threadId: `thread-${status}`,
+                status,
+                providerName: "codex",
+                runtimeMode: "full-access",
+                activeTurnId: null,
+                lastError: status === "error" ? "boom" : null,
+                updatedAt: terminalAt,
+              },
+            },
+          }),
+        ),
+      );
+
+      expect(afterTerminal.threads[0]?.latestTurn).toEqual({
+        turnId: `turn-${status}`,
+        state: expectedState,
+        requestedAt: startedAt,
+        startedAt,
+        completedAt: terminalAt,
+        assistantMessageId: null,
+      });
+    }
+  });
+
   it("keeps the latest turn running when a turn diff is refreshed before the turn completes", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const startedAt = "2026-02-23T08:00:05.000Z";
@@ -315,6 +508,124 @@ describe("orchestration projector", () => {
       assistantMessageId: "assistant-running-diff",
     });
     expect(afterCheckpoint.threads[0]?.checkpoints).toHaveLength(1);
+  });
+
+  it("updates the settled latest turn assistant message when a final assistant message arrives after ready", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const startedAt = "2026-02-23T08:00:05.000Z";
+    const readyAt = "2026-02-23T08:00:10.000Z";
+    const messageAt = "2026-02-23T08:00:11.000Z";
+    const model = createEmptyReadModel(createdAt);
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-create-late-message",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5.4",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterRunning = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: startedAt,
+          commandId: "cmd-running-late-message",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: "turn-1",
+              lastError: null,
+              updatedAt: startedAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    const afterReady = await Effect.runPromise(
+      projectEvent(
+        afterRunning,
+        makeEvent({
+          sequence: 3,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: readyAt,
+          commandId: "cmd-ready-late-message",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: readyAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    const afterAssistantMessage = await Effect.runPromise(
+      projectEvent(
+        afterReady,
+        makeEvent({
+          sequence: 4,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: messageAt,
+          commandId: "cmd-final-message",
+          payload: {
+            threadId: "thread-1",
+            messageId: "assistant-final",
+            role: "assistant",
+            text: "Final answer",
+            turnId: "turn-1",
+            streaming: false,
+            createdAt: messageAt,
+            updatedAt: messageAt,
+          },
+        }),
+      ),
+    );
+
+    expect(afterAssistantMessage.threads[0]?.latestTurn).toEqual({
+      turnId: "turn-1",
+      state: "completed",
+      requestedAt: startedAt,
+      startedAt,
+      completedAt: readyAt,
+      assistantMessageId: "assistant-final",
+    });
   });
 
   it("projects session token usage snapshots onto the thread and preserves them across later session updates", async () => {

@@ -23,6 +23,7 @@ import {
 
 describe("normalizeModelSlug", () => {
   it("maps known aliases to canonical slugs", () => {
+    expect(normalizeModelSlug("5.5")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-6");
@@ -147,6 +148,7 @@ describe("getEffectiveClaudeCodeEffort", () => {
 
 describe("estimateModelContextWindowTokens", () => {
   it("returns the configured context windows for known models", () => {
+    expect(estimateModelContextWindowTokens("gpt-5.5")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4-mini")).toBe(400_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-7")).toBe(1_000_000);

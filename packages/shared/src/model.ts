@@ -58,6 +58,7 @@ const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
 };
 
 const CODEX_MODEL_CONTEXT_WINDOW_TOKENS: Record<string, number> = {
+  "gpt-5.5": 1_050_000,
   "gpt-5.4": 1_050_000,
   "gpt-5.4-mini": 400_000,
   "gpt-5.3-codex": 400_000,

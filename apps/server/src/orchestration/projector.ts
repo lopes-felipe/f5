@@ -62,6 +62,21 @@ function checkpointStatusToLatestTurnState(status: "ready" | "missing" | "error"
   return "completed" as const;
 }
 
+function terminalLatestTurnStateForSessionStatus(
+  status: OrchestrationSession["status"],
+): "completed" | "error" | "interrupted" | null {
+  if (status === "ready") {
+    return "completed";
+  }
+  if (status === "error") {
+    return "error";
+  }
+  if (status === "stopped") {
+    return "interrupted";
+  }
+  return null;
+}
+
 function messageCharacters(
   message: Pick<OrchestrationMessage, "text" | "reasoningText" | "attachments">,
 ): number {
@@ -736,12 +751,23 @@ export function projectEvent(
                   estimatedContextTokens,
                 }
               : thread.session;
+        const latestTurn =
+          payload.role === "assistant" &&
+          payload.turnId !== null &&
+          thread.latestTurn?.turnId === payload.turnId &&
+          thread.latestTurn.assistantMessageId !== payload.messageId
+            ? {
+                ...thread.latestTurn,
+                assistantMessageId: payload.messageId,
+              }
+            : thread.latestTurn;
 
         return {
           ...nextBase,
           threads: updateThread(nextBase.threads, payload.threadId, {
             messages: cappedMessages,
             ...(session !== thread.session ? { session } : {}),
+            ...(latestTurn !== thread.latestTurn ? { latestTurn } : {}),
             estimatedContextTokens,
             lastInteractionAt: event.occurredAt,
             updatedAt: event.occurredAt,
@@ -852,6 +878,34 @@ export function projectEvent(
             ? { tokenUsageSource: thread.session.tokenUsageSource }
             : {}),
         };
+        const terminalState = terminalLatestTurnStateForSessionStatus(nextSession.status);
+        const latestTurn =
+          nextSession.status === "running" && nextSession.activeTurnId !== null
+            ? {
+                turnId: nextSession.activeTurnId,
+                state: "running" as const,
+                requestedAt:
+                  thread.latestTurn?.turnId === nextSession.activeTurnId
+                    ? thread.latestTurn.requestedAt
+                    : nextSession.updatedAt,
+                startedAt:
+                  thread.latestTurn?.turnId === nextSession.activeTurnId
+                    ? (thread.latestTurn.startedAt ?? nextSession.updatedAt)
+                    : nextSession.updatedAt,
+                completedAt: null,
+                assistantMessageId:
+                  thread.latestTurn?.turnId === nextSession.activeTurnId
+                    ? thread.latestTurn.assistantMessageId
+                    : null,
+              }
+            : thread.latestTurn?.state === "running" && terminalState !== null
+              ? {
+                  ...thread.latestTurn,
+                  state: terminalState,
+                  startedAt: thread.latestTurn.startedAt ?? nextSession.updatedAt,
+                  completedAt: nextSession.updatedAt,
+                }
+              : thread.latestTurn;
 
         return {
           ...nextBase,
@@ -861,26 +915,7 @@ export function projectEvent(
               nextSession.estimatedContextTokens ?? thread.estimatedContextTokens ?? null,
             modelContextWindowTokens:
               nextSession.modelContextWindowTokens ?? thread.modelContextWindowTokens ?? null,
-            latestTurn:
-              nextSession.status === "running" && nextSession.activeTurnId !== null
-                ? {
-                    turnId: nextSession.activeTurnId,
-                    state: "running",
-                    requestedAt:
-                      thread.latestTurn?.turnId === nextSession.activeTurnId
-                        ? thread.latestTurn.requestedAt
-                        : nextSession.updatedAt,
-                    startedAt:
-                      thread.latestTurn?.turnId === nextSession.activeTurnId
-                        ? (thread.latestTurn.startedAt ?? nextSession.updatedAt)
-                        : nextSession.updatedAt,
-                    completedAt: null,
-                    assistantMessageId:
-                      thread.latestTurn?.turnId === nextSession.activeTurnId
-                        ? thread.latestTurn.assistantMessageId
-                        : null,
-                  }
-                : thread.latestTurn,
+            latestTurn,
             updatedAt: event.occurredAt,
           }),
         };

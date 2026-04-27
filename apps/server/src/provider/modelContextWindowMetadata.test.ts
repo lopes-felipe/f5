@@ -27,7 +27,7 @@ describe("modelContextWindowMetadata", () => {
     const catalog = readCodexModelContextWindowCatalog({
       data: [
         {
-          id: "gpt-5.4",
+          id: "gpt-5.5",
           limits: {
             contextWindowTokens: 987_000,
           },
@@ -35,7 +35,7 @@ describe("modelContextWindowMetadata", () => {
       ],
     });
 
-    expect(lookupModelContextWindowTokens({ provider: "codex", model: "gpt-5.4", catalog })).toBe(
+    expect(lookupModelContextWindowTokens({ provider: "codex", model: "gpt-5.5", catalog })).toBe(
       987_000,
     );
   });

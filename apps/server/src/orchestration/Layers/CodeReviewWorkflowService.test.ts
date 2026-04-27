@@ -1293,6 +1293,127 @@ describe("CodeReviewWorkflowService", () => {
     expect(harness.getProjectionSnapshotCallCount()).toBe(projectionSnapshotCallsBefore);
   });
 
+  it("completes consolidation from a ready session without querying the projection snapshot", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-a"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-a"),
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-b"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-b"),
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: ThreadId.makeUnsafe("review-merge"),
+        status: "running",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: workflow.consolidation.threadId!,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("turn-merge"),
+              state: "running",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: workflow.consolidation.threadId!,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.makeUnsafe("turn-merge"),
+              lastError: null,
+              updatedAt: NOW,
+            },
+            messages: [],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    harness.setSnapshot(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: workflow.consolidation.threadId!,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("turn-merge"),
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("assistant-merge"),
+            },
+            session: {
+              threadId: workflow.consolidation.threadId!,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-merge"),
+                role: "assistant",
+                text: "Merged review findings",
+                turnId: TurnId.makeUnsafe("turn-merge"),
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    const projectionSnapshotCallsBefore = harness.getProjectionSnapshotCallCount();
+    harness.failProjectionSnapshots();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: workflow.consolidation.threadId!,
+        session: {
+          threadId: workflow.consolidation.threadId!,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+      }),
+    );
+
+    await waitFor(
+      () => lastWorkflowUpsert(harness!.dispatched)?.workflow.consolidation.status === "completed",
+    );
+
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.consolidation.status).toBe("completed");
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.consolidation.pinnedTurnId).toEqual(
+      TurnId.makeUnsafe("turn-merge"),
+    );
+    expect(
+      lastWorkflowUpsert(harness.dispatched)?.workflow.consolidation.pinnedAssistantMessageId,
+    ).toEqual(MessageId.makeUnsafe("assistant-merge"));
+    expect(harness.getProjectionSnapshotCallCount()).toBe(projectionSnapshotCallsBefore);
+  });
+
   it("reconciles finished reviewer threads on service start", async () => {
     const workflow = makeWorkflow({
       reviewerA: {

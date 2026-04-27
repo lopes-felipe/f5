@@ -28,6 +28,9 @@ function makeFakeCodexBinary(dir: string) {
         "#!/bin/sh",
         'output_path=""',
         "while [ $# -gt 0 ]; do",
+        '  if [ "$1" = "--skip-git-repo-check" ]; then',
+        '    seen_skip_git_repo_check="1"',
+        "  fi",
         '  if [ "$1" = "--image" ]; then',
         "    shift",
         '    if [ -n "$1" ]; then',
@@ -45,6 +48,10 @@ function makeFakeCodexBinary(dir: string) {
         'if [ "$T3_FAKE_CODEX_REQUIRE_IMAGE" = "1" ] && [ "$seen_image" != "1" ]; then',
         '  printf "%s\\n" "missing --image input" >&2',
         "  exit 2",
+        "fi",
+        'if [ "$T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK" = "1" ] && [ "$seen_skip_git_repo_check" != "1" ]; then',
+        '  printf "%s\\n" "missing --skip-git-repo-check" >&2',
+        "  exit 5",
         "fi",
         'if [ -n "$T3_FAKE_CODEX_STDIN_MUST_CONTAIN" ]; then',
         '  printf "%s" "$stdin_content" | grep -F -- "$T3_FAKE_CODEX_STDIN_MUST_CONTAIN" >/dev/null || {',
@@ -79,6 +86,7 @@ function withFakeCodexEnv<A, E, R>(
     exitCode?: number;
     stderr?: string;
     requireImage?: boolean;
+    requireSkipGitRepoCheck?: boolean;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
   },
@@ -94,6 +102,7 @@ function withFakeCodexEnv<A, E, R>(
       const previousExitCode = process.env.T3_FAKE_CODEX_EXIT_CODE;
       const previousStderr = process.env.T3_FAKE_CODEX_STDERR;
       const previousRequireImage = process.env.T3_FAKE_CODEX_REQUIRE_IMAGE;
+      const previousRequireSkipGitRepoCheck = process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK;
       const previousStdinMustContain = process.env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN;
       const previousStdinMustNotContain = process.env.T3_FAKE_CODEX_STDIN_MUST_NOT_CONTAIN;
 
@@ -119,6 +128,12 @@ function withFakeCodexEnv<A, E, R>(
           delete process.env.T3_FAKE_CODEX_REQUIRE_IMAGE;
         }
 
+        if (input.requireSkipGitRepoCheck) {
+          process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK = "1";
+        } else {
+          delete process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK;
+        }
+
         if (input.stdinMustContain !== undefined) {
           process.env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN = input.stdinMustContain;
         } else {
@@ -138,6 +153,7 @@ function withFakeCodexEnv<A, E, R>(
         previousExitCode,
         previousStderr,
         previousRequireImage,
+        previousRequireSkipGitRepoCheck,
         previousStdinMustContain,
         previousStdinMustNotContain,
       };
@@ -169,6 +185,13 @@ function withFakeCodexEnv<A, E, R>(
           delete process.env.T3_FAKE_CODEX_REQUIRE_IMAGE;
         } else {
           process.env.T3_FAKE_CODEX_REQUIRE_IMAGE = previous.previousRequireImage;
+        }
+
+        if (previous.previousRequireSkipGitRepoCheck === undefined) {
+          delete process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK;
+        } else {
+          process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK =
+            previous.previousRequireSkipGitRepoCheck;
         }
 
         if (previous.previousStdinMustContain === undefined) {
@@ -451,6 +474,7 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
         output: JSON.stringify({
           title: '  "Fix sidebar sizing."\nIgnored second line',
         }),
+        requireSkipGitRepoCheck: true,
       },
       Effect.gen(function* () {
         const textGeneration = yield* TextGeneration;

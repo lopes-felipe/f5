@@ -3,7 +3,12 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ApprovalRequestId, EventId, ThreadId } from "@t3tools/contracts";
+import {
+  ApprovalRequestId,
+  DEFAULT_MODEL_BY_PROVIDER,
+  EventId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import {
   buildCodexInitializeParams,
@@ -244,6 +249,10 @@ describe("classifyCodexStderrLine", () => {
 });
 
 describe("normalizeCodexModelSlug", () => {
+  it("maps 5.5 aliases to gpt-5.5", () => {
+    expect(normalizeCodexModelSlug("5.5")).toBe("gpt-5.5");
+  });
+
   it("maps 5.3 aliases to gpt-5.3-codex", () => {
     expect(normalizeCodexModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeCodexModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
@@ -619,6 +628,47 @@ describe("sendTurn", () => {
           }),
         },
       },
+    });
+  });
+
+  it("falls back to the shared Codex default when the session has no explicit model", async () => {
+    const { manager, context, sendRequest, updateSession } = createSendTurnHarness();
+    const today = currentDate();
+    delete (context.session as { model?: string }).model;
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Continue the work",
+    });
+
+    expect(sendRequest).toHaveBeenCalledWith(context, "turn/start", {
+      threadId: "thread_1",
+      input: [
+        {
+          type: "text",
+          text: "Continue the work",
+          text_elements: [],
+        },
+      ],
+      model: DEFAULT_MODEL_BY_PROVIDER.codex,
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          reasoning_effort: "medium",
+          developer_instructions: buildCodexAssistantInstructions({
+            interactionMode: "default",
+            currentDate: today,
+            model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          }),
+        },
+      },
+    });
+    expect(updateSession).toHaveBeenCalledWith(context, {
+      status: "running",
+      model: DEFAULT_MODEL_BY_PROVIDER.codex,
+      activeTurnId: "turn_1",
+      resumeCursor: { threadId: "thread_1" },
     });
   });
 

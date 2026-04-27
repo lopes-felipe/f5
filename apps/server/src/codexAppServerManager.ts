@@ -6,6 +6,7 @@ import readline from "node:readline";
 import {
   ApprovalRequestId,
   type CodexMcpServerEntry,
+  DEFAULT_MODEL_BY_PROVIDER,
   EventId,
   type ProjectMemory,
   ProviderItemId,
@@ -202,7 +203,7 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "unknown thread",
   "does not exist",
 ];
-const CODEX_DEFAULT_MODEL = "gpt-5.3-codex";
+const CODEX_SPARK_FALLBACK_MODEL = "gpt-5.3-codex";
 const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 const CODEX_SPARK_DISABLED_PLAN_TYPES = new Set<CodexPlanType>(["free", "go", "plus"]);
 const CODEX_ONE_OFF_THREAD_PREFIX = "one-off:";
@@ -356,7 +357,7 @@ export function resolveCodexModelForAccount(
     return model;
   }
 
-  return CODEX_DEFAULT_MODEL;
+  return CODEX_SPARK_FALLBACK_MODEL;
 }
 
 /**
@@ -420,7 +421,7 @@ function buildCodexCollaborationMode(input: {
   };
 } {
   const effectiveMode = input.interactionMode ?? "default";
-  const model = normalizeCodexModelSlug(input.model) ?? "gpt-5.3-codex";
+  const model = normalizeCodexModelSlug(input.model) ?? DEFAULT_MODEL_BY_PROVIDER.codex;
   const context = input.instructionContext;
   const instructionInput: SharedInstructionInput = {
     interactionMode: effectiveMode,
@@ -576,6 +577,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const threadId = input.threadId;
     const now = new Date().toISOString();
     let context: CodexSessionContext | undefined;
+    const resumeThreadId = readResumeThreadId(input);
+    const requestedModel = normalizeCodexModelSlug(input.model);
+    const fallbackModel =
+      requestedModel ?? (resumeThreadId ? undefined : DEFAULT_MODEL_BY_PROVIDER.codex);
 
     try {
       const resolvedCwd = input.cwd ?? process.cwd();
@@ -584,7 +589,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         provider: "codex",
         status: "connecting",
         runtimeMode: input.runtimeMode,
-        model: normalizeCodexModelSlug(input.model),
+        ...(fallbackModel ? { model: fallbackModel } : {}),
         cwd: resolvedCwd,
         threadId,
         createdAt: now,
@@ -679,10 +684,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         console.log("codex account/read failed", error);
       }
 
-      const normalizedModel = resolveCodexModelForAccount(
-        normalizeCodexModelSlug(input.model),
-        context.account,
-      );
+      const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
       const sessionOverrides = {
         model: normalizedModel ?? null,
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
@@ -694,7 +696,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...sessionOverrides,
         experimentalRawEvents: false,
       };
-      const resumeThreadId = readResumeThreadId(input);
       this.emitLifecycleEvent(
         context,
         "session/threadOpenRequested",
