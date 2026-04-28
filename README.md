@@ -15,6 +15,26 @@ It is for developers who already use `codex` or `claude` on the command line and
 > [!WARNING]
 > This project is very early. Expect bugs, breaking changes, and rough edges.
 
+## Screenshots
+
+<p align="center">
+  <img src="./assets/screenshots/home.png" alt="F5 Home — projects sidebar, threads needing attention, currently working, and recent activity" width="800" />
+</p>
+
+<p align="center"><em>Home dashboard — every project, every workflow, and every thread that wants your attention in one place.</em></p>
+
+<p align="center">
+  <img src="./assets/screenshots/workflow.png" alt="Cross-model feature-development workflow timeline with Authoring, Reviews, Revision, Merge, Implementation, Code Review, and Apply Reviews stages" width="800" />
+</p>
+
+<p align="center"><em>A completed feature-development workflow — two authors, cross-reviews, a merge, an implementer, and a dual code review, each on its own model.</em></p>
+
+<p align="center">
+  <img src="./assets/screenshots/thread.png" alt="Chat thread showing an agent producing inline diffs across multiple files in response to a feature request" width="800" />
+</p>
+
+<p align="center"><em>Chat thread — agents edit files inline with diffs you can scrub through, review, and apply.</em></p>
+
 ## Cross-model workflows
 
 The headline capability. Each **slot** in a workflow — Author A, Author B, Merge, Implementer, Reviewer A, Reviewer B, Consolidation — independently picks its provider (Codex or Claude Code), its model, and its reasoning effort. Invoke from the command palette (`/workflow.new`) or the sidebar's **New workflow** action.
