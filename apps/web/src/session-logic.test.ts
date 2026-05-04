@@ -179,6 +179,38 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("maps Codex permission requestType payloads into pending approvals", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-permissions",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Permission approval requested",
+        tone: "approval",
+        payload: {
+          requestId: "req-permissions",
+          requestType: "permissions_approval",
+          detail: "Network access requested",
+          requestedPermissions: {
+            network: true,
+          },
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-permissions",
+        requestKind: "permission",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        detail: "Network access requested",
+        requestedPermissions: {
+          network: true,
+        },
+      },
+    ]);
+  });
+
   it("clears stale pending approvals when provider reports unknown pending request", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

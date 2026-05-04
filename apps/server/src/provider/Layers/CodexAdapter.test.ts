@@ -873,6 +873,46 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps Codex permission approval requests to canonical request events", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      const event: ProviderEvent = {
+        id: asEventId("evt-permission-request"),
+        kind: "request",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "item/permissions/requestApproval",
+        requestId: ApprovalRequestId.makeUnsafe("req-permissions-1"),
+        payload: {
+          reason: "Network access requested",
+          permissions: {
+            network: true,
+          },
+        },
+      };
+
+      lifecycleManager.emit("event", event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "request.opened");
+      if (firstEvent.value.type !== "request.opened") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.requestType, "permissions_approval");
+      assert.equal(firstEvent.value.payload.detail, "Network access requested");
+      assert.deepEqual(firstEvent.value.payload.requestedPermissions, {
+        network: true,
+      });
+    }),
+  );
+
   it.effect("preserves explicit empty multi-select user-input answers", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

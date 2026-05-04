@@ -17,6 +17,7 @@ import {
   drainBufferedThreadDetailEvents,
   invalidateThreadDetails,
   markThreadUnread,
+  markThreadVisited,
   persistState,
   pruneChangedFilesExpandedForThreads,
   reorderProjects,
@@ -240,6 +241,85 @@ function makeEvent<TType extends OrchestrationEvent["type"]>(
 }
 
 describe("store pure functions", () => {
+  it("markThreadVisited clamps to a near-future completed turn timestamp", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-25T12:00:00.000Z"));
+    try {
+      const latestTurnCompletedAt = "2026-02-25T12:00:30.000Z";
+      const initialState = makeState(
+        makeThread({
+          latestTurn: {
+            turnId: TurnId.makeUnsafe("turn-1"),
+            state: "completed",
+            requestedAt: "2026-02-25T11:59:00.000Z",
+            startedAt: "2026-02-25T11:59:30.000Z",
+            completedAt: latestTurnCompletedAt,
+            assistantMessageId: null,
+          },
+          lastVisitedAt: "2026-02-25T11:59:00.000Z",
+        }),
+      );
+
+      const next = markThreadVisited(initialState, ThreadId.makeUnsafe("thread-1"));
+
+      expect(next.threads[0]?.lastVisitedAt).toBe(latestTurnCompletedAt);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("markThreadVisited does not clamp far-future completed turn timestamps", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-25T12:00:00.000Z"));
+    try {
+      const initialState = makeState(
+        makeThread({
+          latestTurn: {
+            turnId: TurnId.makeUnsafe("turn-1"),
+            state: "completed",
+            requestedAt: "2026-02-25T12:28:00.000Z",
+            startedAt: "2026-02-25T12:28:30.000Z",
+            completedAt: "2026-02-25T12:30:00.000Z",
+            assistantMessageId: null,
+          },
+          lastVisitedAt: "2026-02-25T11:59:00.000Z",
+        }),
+      );
+
+      const next = markThreadVisited(initialState, ThreadId.makeUnsafe("thread-1"));
+
+      expect(next.threads[0]?.lastVisitedAt).toBe("2026-02-25T12:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("markThreadVisited keeps the requested timestamp when completion is in the past", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-02-25T12:00:00.000Z"));
+    try {
+      const initialState = makeState(
+        makeThread({
+          latestTurn: {
+            turnId: TurnId.makeUnsafe("turn-1"),
+            state: "completed",
+            requestedAt: "2026-02-25T11:58:00.000Z",
+            startedAt: "2026-02-25T11:58:30.000Z",
+            completedAt: "2026-02-25T11:59:00.000Z",
+            assistantMessageId: null,
+          },
+          lastVisitedAt: "2026-02-25T11:57:00.000Z",
+        }),
+      );
+
+      const next = markThreadVisited(initialState, ThreadId.makeUnsafe("thread-1"));
+
+      expect(next.threads[0]?.lastVisitedAt).toBe("2026-02-25T12:00:00.000Z");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("markThreadUnread moves lastVisitedAt before completion for a completed thread", () => {
     const latestTurnCompletedAt = "2026-02-25T12:30:00.000Z";
     const initialState = makeState(

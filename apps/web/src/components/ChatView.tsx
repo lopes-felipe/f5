@@ -5230,6 +5230,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
                     <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
                       <ComposerPendingApprovalActions
                         requestId={activePendingApproval.requestId}
+                        requestKind={activePendingApproval.requestKind}
+                        canApprove={
+                          activePendingApproval.requestKind !== "permission" ||
+                          activePendingApproval.requestedPermissions !== undefined
+                        }
                         isResponding={respondingRequestIds.includes(
                           activePendingApproval.requestId,
                         )}

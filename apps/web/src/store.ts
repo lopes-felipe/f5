@@ -52,6 +52,7 @@ export interface AppState {
 }
 
 const PERSISTED_STATE_KEY = "t3code:renderer-state:v8";
+const MAX_VISITED_COMPLETION_CLOCK_SKEW_MS = 60_000;
 const LEGACY_PERSISTED_STATE_KEYS = [
   "t3code:renderer-state:v7",
   "t3code:renderer-state:v6",
@@ -1510,9 +1511,20 @@ export function markThreadVisited(
   threadId: ThreadId,
   visitedAt?: string,
 ): AppState {
-  const at = visitedAt ?? new Date().toISOString();
-  const visitedAtMs = Date.parse(at);
   const threads = updateThread(state.threads, threadId, (thread) => {
+    const requestedAt = visitedAt ?? new Date().toISOString();
+    const requestedVisitedAtMs = Date.parse(requestedAt);
+    const completedAt = thread.latestTurn?.completedAt;
+    const completedAtMs = completedAt ? Date.parse(completedAt) : NaN;
+    const at =
+      completedAt &&
+      Number.isFinite(completedAtMs) &&
+      Number.isFinite(requestedVisitedAtMs) &&
+      completedAtMs > requestedVisitedAtMs &&
+      completedAtMs - requestedVisitedAtMs <= MAX_VISITED_COMPLETION_CLOCK_SKEW_MS
+        ? completedAt
+        : requestedAt;
+    const visitedAtMs = Date.parse(at);
     const previousVisitedAtMs = thread.lastVisitedAt ? Date.parse(thread.lastVisitedAt) : NaN;
     if (
       Number.isFinite(previousVisitedAtMs) &&

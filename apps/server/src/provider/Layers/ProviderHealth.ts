@@ -19,7 +19,6 @@ import type {
 import { Effect, FileSystem, Layer, Option, Path, Ref, Result } from "effect";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { buildProviderChildProcessEnv } from "../../providerProcessEnv";
 import {
   formatCodexCliUpgradeMessage,
   isCodexCliVersionSupported,
@@ -27,6 +26,7 @@ import {
 } from "../codexCliVersion";
 import { ProviderHealth, type ProviderHealthShape } from "../Services/ProviderHealth";
 import {
+  buildCodexCliEnvOverrides,
   type ProviderCliCommandResult as CommandResult,
   runClaudeCliCommand as runClaudeCommand,
   runCodexCliCommand as runCodexCommand,
@@ -276,11 +276,8 @@ export const readCodexConfigModelProviderWithOverrides = (input?: { readonly hom
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const codexEnv = buildProviderChildProcessEnv(
-      process.env,
-      input?.homePath ? { CODEX_HOME: input.homePath } : undefined,
-    );
-    const codexHome = codexEnv.CODEX_HOME || path.join(OS.homedir(), ".codex");
+    const configuredCodexHome = resolveConfiguredCodexHome(input);
+    const codexHome = configuredCodexHome ?? path.join(OS.homedir(), ".codex");
     const configPath = path.join(codexHome, "config.toml");
 
     const content = yield* fileSystem
@@ -327,6 +324,13 @@ export const hasCustomModelProvider = hasCustomModelProviderWithOverrides();
 
 // ── Health check ────────────────────────────────────────────────────
 
+function resolveConfiguredCodexHome(input?: { readonly homePath?: string }): string | undefined {
+  return (
+    buildCodexCliEnvOverrides(input)?.CODEX_HOME ??
+    buildCodexCliEnvOverrides({ homePath: process.env.CODEX_HOME })?.CODEX_HOME
+  );
+}
+
 function stripFailureReason(status: ProviderPreflightStatus): ServerProviderStatus {
   const { failureReason: _failureReason, ...rest } = status;
   return rest;
@@ -339,10 +343,11 @@ function readCodexProviderOptions(providerOptions?: ProviderStartOptions): {
 } {
   const binaryPath = providerOptions?.codex?.binaryPath;
   const homePath = providerOptions?.codex?.homePath;
+  const envOverrides = buildCodexCliEnvOverrides({ homePath });
   return {
     ...(binaryPath ? { binaryPath } : {}),
-    ...(homePath ? { homePath } : {}),
-    ...(homePath ? { envOverrides: { CODEX_HOME: homePath } } : {}),
+    ...(envOverrides?.CODEX_HOME ? { homePath: envOverrides.CODEX_HOME } : {}),
+    ...(envOverrides ? { envOverrides } : {}),
   };
 }
 

@@ -281,6 +281,8 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
       return "apply_patch_approval";
     case "execCommandApproval":
       return "exec_command_approval";
+    case "item/permissions/requestApproval":
+      return "permissions_approval";
     case "item/tool/requestUserInput":
       return "tool_user_input";
     case "item/tool/call":
@@ -300,6 +302,8 @@ function toRequestTypeFromKind(kind: unknown): CanonicalRequestType {
       return "file_read_approval";
     case "file-change":
       return "file_change_approval";
+    case "permission":
+      return "permissions_approval";
     default:
       return "unknown";
   }
@@ -639,6 +643,14 @@ function mapToRuntimeEvents(
 
     const detail =
       asString(payload?.command) ?? asString(payload?.reason) ?? asString(payload?.prompt);
+    const requestedPermissionsValue = payload?.permissions;
+    const requestedPermissions =
+      event.method === "item/permissions/requestApproval" &&
+      requestedPermissionsValue &&
+      typeof requestedPermissionsValue === "object" &&
+      !Array.isArray(requestedPermissionsValue)
+        ? (requestedPermissionsValue as Record<string, unknown>)
+        : undefined;
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -646,6 +658,7 @@ function mapToRuntimeEvents(
         payload: {
           requestType: toRequestTypeFromMethod(event.method),
           ...(detail ? { detail } : {}),
+          ...(requestedPermissions ? { requestedPermissions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),
         },
       },

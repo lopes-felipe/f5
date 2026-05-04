@@ -50,6 +50,7 @@ import {
   type SupportedSlashCommand,
 } from "./provider/supportedSlashCommands";
 import { createJsonRpcStdinWriter, type JsonRpcStdinWriter } from "./codex/JsonRpcStdinWriter.ts";
+import { resolveCodexHome } from "./os-jank.ts";
 
 type PendingRequestKey = string;
 
@@ -66,8 +67,11 @@ interface PendingApprovalRequest {
   method:
     | "item/commandExecution/requestApproval"
     | "item/fileChange/requestApproval"
-    | "item/fileRead/requestApproval";
+    | "item/fileRead/requestApproval"
+    | "item/permissions/requestApproval";
   requestKind: ProviderRequestKind;
+  responseKind: "decision" | "permissions";
+  requestedPermissions?: Record<string, unknown>;
   threadId: ThreadId;
   turnId?: TurnId;
   itemId?: ProviderItemId;
@@ -225,6 +229,42 @@ function asString(value: unknown): string | undefined {
 
 function asArray(value: unknown): unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
+}
+
+function readCodexPermissionProfile(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function codexPermissionApprovalResponse(
+  decision: ProviderApprovalDecision,
+  requestedPermissions: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const permissions = requestedPermissions ?? {};
+  if (decision === "accept") {
+    return { permissions };
+  }
+  if (decision === "acceptForSession") {
+    return { scope: "session", permissions };
+  }
+  return { permissions: {} };
+}
+
+function codexApprovalResponse(
+  pendingRequest: PendingApprovalRequest,
+  decision: ProviderApprovalDecision,
+): Record<string, unknown> {
+  switch (pendingRequest.responseKind) {
+    case "decision":
+      return { decision };
+    case "permissions":
+      return codexPermissionApprovalResponse(decision, pendingRequest.requestedPermissions);
+    default: {
+      const exhaustive: never = pendingRequest.responseKind;
+      return exhaustive;
+    }
+  }
 }
 
 export function readEnabledSkillsFromSkillsListResponse(
@@ -598,7 +638,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
       const codexOptions = readCodexProviderOptions(input);
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
-      const codexHomePath = codexOptions.homePath;
+      const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
       this.assertSupportedCodexCliVersion({
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
@@ -1143,9 +1183,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.pendingApprovals.delete(requestId);
     await this.writeMessage(context, {
       id: pendingRequest.jsonRpcId,
-      result: {
-        decision,
-      },
+      result: codexApprovalResponse(pendingRequest, decision),
     });
 
     this.emitEvent({
@@ -1438,20 +1476,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   private handleServerRequest(context: CodexSessionContext, request: JsonRpcRequest): void {
     const route = this.readRouteFields(request.params);
-    const requestKind = this.requestKindForMethod(request.method);
+    const approvalRequest = this.approvalRequestForMethod(request.method);
+    const requestKind = approvalRequest?.requestKind;
     let requestId: ApprovalRequestId | undefined;
-    if (requestKind) {
+    if (approvalRequest) {
       requestId = ApprovalRequestId.makeUnsafe(randomUUID());
+      const params = asObject(request.params);
+      const requestedPermissions =
+        approvalRequest.responseKind === "permissions"
+          ? readCodexPermissionProfile(params?.permissions)
+          : undefined;
       const pendingRequest: PendingApprovalRequest = {
         requestId,
         jsonRpcId: request.id,
-        method:
-          requestKind === "command"
-            ? "item/commandExecution/requestApproval"
-            : requestKind === "file-read"
-              ? "item/fileRead/requestApproval"
-              : "item/fileChange/requestApproval",
-        requestKind,
+        method: approvalRequest.method,
+        requestKind: approvalRequest.requestKind,
+        responseKind: approvalRequest.responseKind,
+        ...(requestedPermissions !== undefined ? { requestedPermissions } : {}),
         threadId: context.session.threadId,
         ...(route.turnId ? { turnId: route.turnId } : {}),
         ...(route.itemId ? { itemId: route.itemId } : {}),
@@ -1484,7 +1525,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       payload: request.params,
     });
 
-    if (requestKind) {
+    if (approvalRequest) {
       return;
     }
 
@@ -1759,17 +1800,27 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     };
   }
 
-  private requestKindForMethod(method: string): ProviderRequestKind | undefined {
+  private approvalRequestForMethod(method: string):
+    | {
+        readonly method: PendingApprovalRequest["method"];
+        readonly requestKind: ProviderRequestKind;
+        readonly responseKind: PendingApprovalRequest["responseKind"];
+      }
+    | undefined {
     if (method === "item/commandExecution/requestApproval") {
-      return "command";
+      return { method, requestKind: "command", responseKind: "decision" };
     }
 
     if (method === "item/fileRead/requestApproval") {
-      return "file-read";
+      return { method, requestKind: "file-read", responseKind: "decision" };
     }
 
     if (method === "item/fileChange/requestApproval") {
-      return "file-change";
+      return { method, requestKind: "file-change", responseKind: "decision" };
+    }
+
+    if (method === "item/permissions/requestApproval") {
+      return { method, requestKind: "permission", responseKind: "permissions" };
     }
 
     return undefined;
@@ -1936,6 +1987,7 @@ export function assertSupportedCodexCliVersion(input: {
   readonly cwd: string;
   readonly homePath?: string;
 }): void {
+  const codexHomePath = resolveCodexHome(input);
   const result = spawnSync(
     input.binaryPath,
     prependCodexCliTelemetryDisabledConfig(["--version"]),
@@ -1943,7 +1995,7 @@ export function assertSupportedCodexCliVersion(input: {
       cwd: input.cwd,
       env: buildProviderChildProcessEnv(
         process.env,
-        input.homePath ? { CODEX_HOME: input.homePath } : undefined,
+        codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
       ),
       encoding: "utf8",
       shell: process.platform === "win32",

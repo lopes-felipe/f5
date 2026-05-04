@@ -4,6 +4,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import type { CodexMcpServerEntry } from "@t3tools/contracts";
 
 import { prependCodexCliTelemetryDisabledConfig } from "./codexCliConfig.ts";
+import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 
 export interface ProviderCliCommandResult {
@@ -33,7 +34,8 @@ const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.
 export function buildCodexCliEnvOverrides(input?: {
   readonly homePath?: string | undefined;
 }): NodeJS.ProcessEnv | undefined {
-  return input?.homePath ? { CODEX_HOME: input.homePath } : undefined;
+  const codexHome = resolveCodexHome(input);
+  return codexHome ? { CODEX_HOME: codexHome } : undefined;
 }
 
 export function runProviderCliCommand(

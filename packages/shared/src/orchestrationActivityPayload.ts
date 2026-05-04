@@ -36,7 +36,12 @@ function asTrimmedString(value: unknown): string | undefined {
 }
 
 function normalizeRequestKind(value: unknown): ProviderRequestKind | undefined {
-  if (value === "command" || value === "file-read" || value === "file-change") {
+  if (
+    value === "command" ||
+    value === "file-read" ||
+    value === "file-change" ||
+    value === "permission"
+  ) {
     return value;
   }
   return undefined;

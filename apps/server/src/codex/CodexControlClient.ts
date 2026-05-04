@@ -11,6 +11,7 @@ import {
 import { createJsonRpcStdinWriter, type JsonRpcStdinWriter } from "./JsonRpcStdinWriter.ts";
 import { prependCodexCliTelemetryDisabledConfig } from "../provider/codexCliConfig.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
+import { resolveCodexHome } from "../os-jank.ts";
 
 interface PendingRequest {
   readonly method: string;
@@ -187,10 +188,11 @@ export class CodexControlClient extends EventEmitter<{
 
   static async create(environment: CodexControlEnvironmentConfig): Promise<CodexControlClient> {
     const binaryPath = environment.binaryPath ?? "codex";
+    const codexHomePath = resolveCodexHome({ homePath: environment.homePath });
     assertSupportedCodexCliVersion({
       binaryPath,
       cwd: environment.cwd,
-      ...(environment.homePath ? { homePath: environment.homePath } : {}),
+      ...(codexHomePath ? { homePath: codexHomePath } : {}),
     });
 
     const child = spawn(
@@ -202,7 +204,7 @@ export class CodexControlClient extends EventEmitter<{
         cwd: environment.cwd,
         env: buildProviderChildProcessEnv(
           process.env,
-          environment.homePath ? { CODEX_HOME: environment.homePath } : undefined,
+          codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
         ),
         stdio: ["pipe", "pipe", "pipe"],
         shell: process.platform === "win32",

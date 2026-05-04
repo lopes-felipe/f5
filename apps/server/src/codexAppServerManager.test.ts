@@ -152,6 +152,56 @@ function createPendingUserInputHarness() {
   return { manager, context, requireSession, writeMessage, emitEvent };
 }
 
+function createPendingApprovalHarness(
+  requestedPermissions: Record<string, unknown> | null = {
+    filesystem: { read: true, write: true },
+  },
+) {
+  const requestId = ApprovalRequestId.makeUnsafe("req-permissions-1");
+  const manager = new CodexAppServerManager();
+  const context = {
+    session: {
+      provider: "codex",
+      status: "ready",
+      threadId: asThreadId("thread_1"),
+      runtimeMode: "full-access",
+      model: "gpt-5.3-codex",
+      resumeCursor: { threadId: "thread_1" },
+      createdAt: "2026-02-10T00:00:00.000Z",
+      updatedAt: "2026-02-10T00:00:00.000Z",
+    },
+    pendingApprovals: new Map([
+      [
+        requestId,
+        {
+          requestId,
+          jsonRpcId: 43,
+          method: "item/permissions/requestApproval",
+          requestKind: "permission",
+          responseKind: "permissions",
+          ...(requestedPermissions !== null ? { requestedPermissions } : {}),
+          threadId: asThreadId("thread_1"),
+        },
+      ],
+    ]),
+  };
+
+  const requireSession = vi
+    .spyOn(
+      manager as unknown as { requireSession: (sessionId: string) => unknown },
+      "requireSession",
+    )
+    .mockReturnValue(context);
+  const writeMessage = vi
+    .spyOn(manager as unknown as { writeMessage: (...args: unknown[]) => void }, "writeMessage")
+    .mockImplementation(() => {});
+  const emitEvent = vi
+    .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
+    .mockImplementation(() => {});
+
+  return { manager, context, requestId, requireSession, writeMessage, emitEvent };
+}
+
 function createSkillsRefreshHarness() {
   const manager = new CodexAppServerManager();
   const context = {
@@ -1591,6 +1641,83 @@ describe("thread checkpoint control", () => {
   });
 });
 
+describe("respondToRequest", () => {
+  it.each([
+    [
+      "accept",
+      "accept",
+      {
+        permissions: {
+          filesystem: { read: true, write: true },
+        },
+      },
+    ],
+    [
+      "acceptForSession",
+      "acceptForSession",
+      {
+        scope: "session",
+        permissions: {
+          filesystem: { read: true, write: true },
+        },
+      },
+    ],
+    ["decline", "decline", { permissions: {} }],
+    ["cancel", "cancel", { permissions: {} }],
+  ] as const)(
+    "serializes Codex permission approval decision %s",
+    async (_label, decision, result) => {
+      const { manager, context, requestId, requireSession, writeMessage, emitEvent } =
+        createPendingApprovalHarness();
+
+      await manager.respondToRequest(asThreadId("thread_1"), requestId, decision);
+
+      expect(requireSession).toHaveBeenCalledWith("thread_1");
+      expect(writeMessage).toHaveBeenCalledWith(context, {
+        id: 43,
+        result,
+      });
+      expect(emitEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: "item/requestApproval/decision",
+          requestKind: "permission",
+          payload: {
+            requestId: "req-permissions-1",
+            requestKind: "permission",
+            decision,
+          },
+        }),
+      );
+    },
+  );
+
+  it("serializes malformed Codex permission approvals as empty grants", async () => {
+    const { manager, context, requestId, requireSession, writeMessage, emitEvent } =
+      createPendingApprovalHarness(null);
+
+    await manager.respondToRequest(asThreadId("thread_1"), requestId, "accept");
+
+    expect(requireSession).toHaveBeenCalledWith("thread_1");
+    expect(writeMessage).toHaveBeenCalledWith(context, {
+      id: 43,
+      result: {
+        permissions: {},
+      },
+    });
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "item/requestApproval/decision",
+        requestKind: "permission",
+        payload: {
+          requestId: "req-permissions-1",
+          requestKind: "permission",
+          decision: "accept",
+        },
+      }),
+    );
+  });
+});
+
 describe("respondToUserInput", () => {
   it("serializes canonical answers to Codex native answer objects", async () => {
     const { manager, context, requireSession, writeMessage, emitEvent } =
@@ -1701,6 +1828,95 @@ describe("respondToUserInput", () => {
     const request = Array.from(context.pendingApprovals.values())[0];
     expect(request?.requestKind).toBe("file-read");
     expect(request?.method).toBe("item/fileRead/requestApproval");
+    expect(request?.responseKind).toBe("decision");
+  });
+
+  it("tracks permission approval requests with requested permissions", () => {
+    const manager = new CodexAppServerManager();
+    const context = {
+      session: {
+        sessionId: "sess_1",
+        provider: "codex",
+        status: "ready",
+        threadId: asThreadId("thread_1"),
+        resumeCursor: { threadId: "thread_1" },
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+    };
+    type ApprovalRequestContext = {
+      session: typeof context.session;
+      pendingApprovals: typeof context.pendingApprovals;
+      pendingUserInputs: typeof context.pendingUserInputs;
+    };
+
+    (
+      manager as unknown as {
+        handleServerRequest: (
+          context: ApprovalRequestContext,
+          request: Record<string, unknown>,
+        ) => void;
+      }
+    ).handleServerRequest(context, {
+      jsonrpc: "2.0",
+      id: 44,
+      method: "item/permissions/requestApproval",
+      params: {
+        permissions: {
+          network: true,
+        },
+      },
+    });
+
+    const request = Array.from(context.pendingApprovals.values())[0];
+    expect(request?.requestKind).toBe("permission");
+    expect(request?.method).toBe("item/permissions/requestApproval");
+    expect(request?.responseKind).toBe("permissions");
+    expect(request?.requestedPermissions).toEqual({ network: true });
+  });
+
+  it("drops malformed permission profiles at ingress", () => {
+    const manager = new CodexAppServerManager();
+    const context = {
+      session: {
+        sessionId: "sess_1",
+        provider: "codex",
+        status: "ready",
+        threadId: asThreadId("thread_1"),
+        resumeCursor: { threadId: "thread_1" },
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+    };
+    type ApprovalRequestContext = {
+      session: typeof context.session;
+      pendingApprovals: typeof context.pendingApprovals;
+      pendingUserInputs: typeof context.pendingUserInputs;
+    };
+
+    (
+      manager as unknown as {
+        handleServerRequest: (
+          context: ApprovalRequestContext,
+          request: Record<string, unknown>,
+        ) => void;
+      }
+    ).handleServerRequest(context, {
+      jsonrpc: "2.0",
+      id: 45,
+      method: "item/permissions/requestApproval",
+      params: {
+        permissions: ["network"],
+      },
+    });
+
+    const request = Array.from(context.pendingApprovals.values())[0];
+    expect(request?.requestKind).toBe("permission");
+    expect(request?.requestedPermissions).toBeUndefined();
   });
 });
 

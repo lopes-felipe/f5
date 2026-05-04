@@ -1,4 +1,5 @@
 import * as OS from "node:os";
+import * as PathNode from "node:path";
 import { Effect, Path } from "effect";
 import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
 import { readPathFromLoginShell } from "@t3tools/shared/shell";
@@ -15,6 +16,23 @@ export function fixPath(): void {
   } catch {
     // Silently ignore — keep default PATH
   }
+}
+
+export function expandHomePathSync(input: string): string {
+  if (input === "~") {
+    return OS.homedir();
+  }
+  if (input.startsWith("~/") || input.startsWith("~\\")) {
+    return PathNode.join(OS.homedir(), input.slice(2));
+  }
+  return input;
+}
+
+export function resolveCodexHome(input?: {
+  readonly homePath?: string | undefined;
+}): string | undefined {
+  const homePath = input?.homePath?.trim();
+  return homePath ? expandHomePathSync(homePath) : undefined;
 }
 
 export const expandHomePath = Effect.fn(function* (input: string) {

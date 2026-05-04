@@ -126,6 +126,7 @@ export const CanonicalRequestType = Schema.Literals([
   "file_change_approval",
   "apply_patch_approval",
   "exec_command_approval",
+  "permissions_approval",
   "tool_user_input",
   "dynamic_tool_call",
   "auth_tokens_refresh",
@@ -397,6 +398,7 @@ const RequestOpenedPayload = Schema.Struct({
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
+  requestedPermissions: Schema.optional(UnknownRecordSchema),
 });
 export type RequestOpenedPayload = typeof RequestOpenedPayload.Type;
 
