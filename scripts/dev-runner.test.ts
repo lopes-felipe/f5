@@ -23,6 +23,22 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
       }),
     );
 
+    it.effect("uses F5 labels when resolving F5 dev-runner aliases", () =>
+      Effect.sync(() => {
+        const result = resolveOffset({
+          portOffset: 7,
+          portOffsetName: "F5_PORT_OFFSET",
+          devInstance: undefined,
+          devInstanceName: "F5_DEV_INSTANCE",
+        });
+
+        assert.deepStrictEqual(result, {
+          offset: 7,
+          source: "F5_PORT_OFFSET=7",
+        });
+      }),
+    );
+
     it.effect("hashes non-numeric instance values", () =>
       Effect.sync(() => {
         const result = resolveOffset({ portOffset: undefined, devInstance: "feature-branch" });
@@ -46,7 +62,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
   });
 
   describe("createDevRunnerEnv", () => {
-    it.effect("defaults state dir to ~/.t3/dev when not provided", () =>
+    it.effect("defaults state dir to ~/.f5/dev when not provided", () =>
       Effect.gen(function* () {
         const [env, defaultStateDir] = yield* Effect.all([
           createDevRunnerEnv({
@@ -66,6 +82,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           DEFAULT_DEV_STATE_DIR,
         ]);
 
+        assert.equal(env.F5_STATE_DIR, defaultStateDir);
         assert.equal(env.T3CODE_STATE_DIR, defaultStateDir);
       }),
     );
@@ -87,6 +104,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
           devUrl: new URL("http://localhost:7331"),
         });
 
+        assert.equal(env.F5_STATE_DIR, resolve("/tmp/override-state"));
         assert.equal(env.T3CODE_STATE_DIR, resolve("/tmp/override-state"));
         assert.equal(env.T3CODE_PORT, "4222");
         assert.equal(env.VITE_WS_URL, "ws://localhost:4222");
@@ -140,6 +158,28 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
         });
 
         assert.equal(env.T3CODE_LOG_WS_EVENTS, "0");
+      }),
+    );
+
+    it.effect("sets both F5 and legacy state env variables", () =>
+      Effect.gen(function* () {
+        const env = yield* createDevRunnerEnv({
+          mode: "dev",
+          baseEnv: {},
+          serverOffset: 0,
+          webOffset: 0,
+          stateDir: "/tmp/f5-state",
+          authToken: undefined,
+          noBrowser: undefined,
+          autoBootstrapProjectFromCwd: undefined,
+          logWebSocketEvents: undefined,
+          host: undefined,
+          port: undefined,
+          devUrl: undefined,
+        });
+
+        assert.equal(env.F5_STATE_DIR, resolve("/tmp/f5-state"));
+        assert.equal(env.T3CODE_STATE_DIR, resolve("/tmp/f5-state"));
       }),
     );
   });

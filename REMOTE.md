@@ -11,12 +11,15 @@ The F5 CLI accepts the following configuration options, available either as CLI 
 | `--mode <web\|desktop>` | `T3CODE_MODE`         | Runtime mode.                      |
 | `--port <number>`       | `T3CODE_PORT`         | HTTP/WebSocket port.               |
 | `--host <address>`      | `T3CODE_HOST`         | Bind interface/address.            |
-| `--state-dir <path>`    | `T3CODE_STATE_DIR`    | State directory.                   |
+| `--home-dir <path>`     | `F5_HOME`             | Base directory for F5 state.       |
+| `--state-dir <path>`    | `F5_STATE_DIR`        | State directory.                   |
 | `--dev-url <url>`       | `VITE_DEV_SERVER_URL` | Dev web URL redirect/proxy target. |
 | `--no-browser`          | `T3CODE_NO_BROWSER`   | Disable auto-open browser.         |
 | `--auth-token <token>`  | `T3CODE_AUTH_TOKEN`   | WebSocket auth token.              |
 
 > TIP: Use the `--help` flag to see all available options and their descriptions.
+
+Legacy `T3CODE_HOME` and `T3CODE_STATE_DIR` are still honored, but `F5_HOME` and `F5_STATE_DIR` take precedence when both are set.
 
 ## Security First
 

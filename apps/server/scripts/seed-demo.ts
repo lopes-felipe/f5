@@ -5,14 +5,13 @@
  * exposing any real chats or projects.
  *
  * Usage:
- *   T3CODE_STATE_DIR=/tmp/f5-demo/state bun run apps/server/scripts/seed-demo.ts
+ *   F5_STATE_DIR=/tmp/f5-demo/state bun run apps/server/scripts/seed-demo.ts
  *
- * Refuses to run if T3CODE_STATE_DIR is unset OR equals the user's default
- * location (~/.t3/userdata or ~/.t3/dev) — guard against accidentally writing
- * to the real database.
+ * Refuses to run if F5_STATE_DIR/T3CODE_STATE_DIR is unset OR points inside
+ * the user's real F5 or legacy T3 state roots — guard against accidentally
+ * writing to the real database.
  */
 import * as FS from "node:fs";
-import * as OS from "node:os";
 import * as Path from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -36,6 +35,7 @@ import {
   type TaskItem,
   type WorkflowModelSlot,
 } from "@t3tools/contracts";
+import { isProtectedAppStateDir } from "@t3tools/shared/appStatePaths";
 import { Effect, Layer, Logger, ManagedRuntime } from "effect";
 
 import { ServerConfig } from "../src/config.ts";
@@ -53,21 +53,19 @@ import { OrchestrationEngineService } from "../src/orchestration/Services/Orches
 // careless invocation could overwrite the user's real database.
 // ---------------------------------------------------------------------------
 
-const stateDir = process.env.T3CODE_STATE_DIR?.trim();
+const stateDir = process.env.F5_STATE_DIR?.trim() || process.env.T3CODE_STATE_DIR?.trim();
 if (!stateDir) {
   console.error(
-    "[seed-demo] Refusing to seed: T3CODE_STATE_DIR is not set.\n" +
+    "[seed-demo] Refusing to seed: F5_STATE_DIR/T3CODE_STATE_DIR is not set.\n" +
       "             Set it to an isolated path like /tmp/f5-demo/state.",
   );
   process.exit(1);
 }
 
-const REAL_USERDATA_DIR = Path.join(OS.homedir(), ".t3", "userdata");
-const REAL_DEV_DIR = Path.join(OS.homedir(), ".t3", "dev");
 const normalized = Path.resolve(stateDir);
-if (normalized === REAL_USERDATA_DIR || normalized === REAL_DEV_DIR) {
+if (isProtectedAppStateDir(normalized)) {
   console.error(
-    `[seed-demo] Refusing to seed: T3CODE_STATE_DIR (${stateDir}) is the real F5 state directory.\n` +
+    `[seed-demo] Refusing to seed: F5_STATE_DIR/T3CODE_STATE_DIR (${stateDir}) points inside the real F5/T3 state directory.\n` +
       "             Pick a throwaway path like /tmp/f5-demo/state instead.",
   );
   process.exit(1);
@@ -269,7 +267,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
           "src/adapters/sqlite.ts:14:export class SqliteAdapter implements StorageAdapter {\n",
           "src/adapters/index.ts:3:export interface StorageAdapter {\n",
           "src/adapters/index.ts:11:export type StorageAdapterFactory = (url: string) => Promise<StorageAdapter>;\n",
-          "src/store.ts:8:import type { StorageAdapter } from \"./adapters\";\n",
+          'src/store.ts:8:import type { StorageAdapter } from "./adapters";\n',
           "src/store.ts:21:  constructor(private readonly adapter: StorageAdapter) {}\n",
         ],
         exitCode: 0,
@@ -385,7 +383,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
           '+  if (url.startsWith("sqlite://")) {',
           "+    return new SqliteAdapter(url);",
           "+  }",
-          '+  throw new Error(`unsupported storage URL: ${url}`);',
+          "+  throw new Error(`unsupported storage URL: ${url}`);",
           " };",
           "",
         ].join("\n"),
@@ -601,7 +599,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
           "+    pub source: String,",
           "+",
           "+    /// Print actions without writing to the store.",
-          '+    #[arg(long)]',
+          "+    #[arg(long)]",
           "+    pub dry_run: bool,",
           "+}",
           "+",
@@ -612,7 +610,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
           "+        buf",
           "+    } else {",
           "+        std::fs::read_to_string(PathBuf::from(&args.source))",
-          "+            .with_context(|| format!(\"reading {}\", args.source))?",
+          '+            .with_context(|| format!("reading {}", args.source))?',
           "+    };",
           "+    let outline = OPML::from_str(&xml)?;",
           "+    walk(&outline.body.outlines, &mut Vec::new(), store, args.dry_run)?;",
@@ -627,7 +625,7 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
           "+                continue;",
           "+            }",
           "+            if !dry {",
-          "+                store.add(url, &outline.text, &path.join(\"/\"))?;",
+          '+                store.add(url, &outline.text, &path.join("/"))?;',
           "+            }",
           "+        } else if !outline.outlines.is_empty() {",
           "+            path.push(outline.text.clone());",
@@ -825,16 +823,16 @@ const DEMO_CHATS: ReadonlyArray<DemoChat> = [
           "+++ b/src/render.rs",
           "@@ -22,8 +22,20 @@ pub fn render_line(todo: &Todo, now: DateTime<Local>) -> String {",
           '     let checkbox = if todo.done { "[x]" } else { "[ ]" };',
-          "-    format!(\"{} {}. {}\", checkbox, todo.id, todo.title)",
-          "+    let base = format!(\"{} {}. {}\", checkbox, todo.id, todo.title);",
+          '-    format!("{} {}. {}", checkbox, todo.id, todo.title)',
+          '+    let base = format!("{} {}. {}", checkbox, todo.id, todo.title);',
           "+    match todo.due {",
           "+        Some(due) if !todo.done && due < now => {",
           "+            let suffix = relative_overdue(now - due);",
-          "+            format!(\"{} {}\", Color::Red.paint(base), Color::Red.paint(suffix))",
+          '+            format!("{} {}", Color::Red.paint(base), Color::Red.paint(suffix))',
           "+        }",
           "+        Some(due) => {",
-          "+            let suffix = format!(\"(due {})\", due.format(\"%Y-%m-%d\"));",
-          "+            format!(\"{} {}\", base, Color::DarkGray.paint(suffix))",
+          '+            let suffix = format!("(due {})", due.format("%Y-%m-%d"));',
+          '+            format!("{} {}", base, Color::DarkGray.paint(suffix))',
           "+        }",
           "+        None => base,",
           "+    }",
@@ -1551,9 +1549,7 @@ const seedProgram = Effect.gen(function* () {
         runtimeMode: "approval-required",
         activeTurnId: chat.inProgress ? turnId : null,
         lastError:
-          finalStatus === "interrupted"
-            ? "Interrupted by user before the turn completed."
-            : null,
+          finalStatus === "interrupted" ? "Interrupted by user before the turn completed." : null,
         updatedAt: chat.turnCompletedAt,
       },
       createdAt: chat.turnCompletedAt,

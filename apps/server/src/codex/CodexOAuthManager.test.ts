@@ -28,13 +28,31 @@ const request: McpOauthLoginStatusRequest = {
 };
 
 class FakeOauthClient extends EventEmitter {
+  statuses: ReadonlyArray<{ readonly name: string; readonly authStatus?: string }> = [
+    {
+      name: request.serverName,
+      authStatus: "notLoggedIn",
+    },
+  ];
   readonly close = vi.fn();
   readonly startOAuthLogin = vi.fn(async () => ({
     authorizationUrl: "https://auth.example.test/login",
   }));
+  readonly listMcpServerStatus = vi.fn(async () => ({
+    data: this.statuses.map((status) => ({
+      name: status.name,
+      authStatus: status.authStatus,
+      tools: {},
+      resources: [],
+      resourceTemplates: [],
+    })),
+    nextCursor: null,
+  }));
 }
 
-function makeProviderServiceStub(): ProviderServiceShape {
+function makeProviderServiceStub(input?: {
+  readonly reloadMcpConfigForProject?: ProviderServiceShape["reloadMcpConfigForProject"];
+}): ProviderServiceShape {
   const unused = () => Effect.die(new Error("unused in CodexOAuthManager tests"));
 
   return {
@@ -50,7 +68,7 @@ function makeProviderServiceStub(): ProviderServiceShape {
     rollbackConversation: (_input) => unused(),
     runOneOffPrompt: (_input) => unused(),
     compactConversation: (_input) => unused(),
-    reloadMcpConfigForProject: (_input) => Effect.void,
+    reloadMcpConfigForProject: input?.reloadMcpConfigForProject ?? ((_input) => Effect.void),
     streamEvents: Stream.empty,
   };
 }
@@ -207,6 +225,183 @@ describe("CodexOAuthManager", () => {
       );
       expect(retried.status).toBe("pending");
       expect(client.startOAuthLogin).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  it("marks OAuth login completed before live MCP reload finishes", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(
+        ProviderService,
+        makeProviderServiceStub({
+          reloadMcpConfigForProject: (_input) =>
+            Effect.promise(
+              () =>
+                new Promise<void>((resolve) => {
+                  setTimeout(resolve, 100);
+                }),
+            ),
+        }),
+      ),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(leaseActive),
+        acquireOauthClient: (_input) =>
+          Effect.sync(() => {
+            leaseActive = true;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.sync(() => {
+                leaseActive = false;
+              }),
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      client.emit("notification", {
+        method: "mcpServer/oauthLogin/completed",
+        params: {
+          name: request.serverName.toUpperCase(),
+          success: true,
+        },
+      });
+
+      await vi.waitFor(async () => {
+        const status = await runtime.runPromise(
+          Effect.gen(function* () {
+            const manager = yield* CodexOAuthManager;
+            return yield* manager.getStatus(request);
+          }),
+        );
+
+        expect(status.status).toBe("completed");
+      });
+    });
+  });
+
+  it("reconciles a pending OAuth login from live MCP auth status", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(leaseActive),
+        acquireOauthClient: (_input) =>
+          Effect.sync(() => {
+            leaseActive = true;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.sync(() => {
+                leaseActive = false;
+              }),
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      client.statuses = [
+        {
+          name: request.serverName,
+          authStatus: "oAuth",
+        },
+      ];
+
+      const status = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+
+      expect(status.status).toBe("completed");
+      expect(leaseActive).toBe(false);
+      expect(client.listenerCount("notification")).toBe(0);
+    });
+  });
+
+  it("throttles pending OAuth reconciliation polls", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(leaseActive),
+        acquireOauthClient: (_input) =>
+          Effect.sync(() => {
+            leaseActive = true;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.sync(() => {
+                leaseActive = false;
+              }),
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      const readStatus = () =>
+        runtime.runPromise(
+          Effect.gen(function* () {
+            const manager = yield* CodexOAuthManager;
+            return yield* manager.getStatus(request);
+          }),
+        );
+
+      const first = await readStatus();
+      const second = await readStatus();
+
+      expect(first.status).toBe("pending");
+      expect(second.status).toBe("pending");
+      expect(client.listMcpServerStatus).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -43,7 +43,6 @@ const MODEL_PROVIDER_SETTINGS: Array<{
 ] as const;
 
 const CODEX_OVERRIDE_KEYS = ["codexBinaryPath", "codexHomePath"] as const;
-const CLAUDE_LAUNCH_ARGS_KEYS = ["claudeLaunchArgs"] as const;
 const GIT_KEYS = ["textGenerationModel"] as const;
 
 export function ProvidersSettings() {
@@ -122,13 +121,27 @@ export function ProvidersSettings() {
 
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Claude Launch Arguments</h2>
+          <h2 className="text-sm font-medium text-foreground">Claude Code</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Extra flags forwarded to the Claude Code CLI on session start. Changing these restarts
+            These overrides apply to new Claude sessions. Changing the binary or CLI flags restarts
             active Claude sessions.
           </p>
         </div>
         <div className="space-y-3">
+          <label htmlFor="claude-binary-path" className="block space-y-1">
+            <span className="text-xs font-medium text-foreground">Claude binary path</span>
+            <Input
+              id="claude-binary-path"
+              value={settings.claudeBinaryPath}
+              onChange={(event) => updateSettings({ claudeBinaryPath: event.target.value })}
+              placeholder="claude"
+              spellCheck={false}
+            />
+            <span className="text-xs text-muted-foreground">
+              Leave blank to use <code>claude</code> from your PATH.
+            </span>
+          </label>
+
           <label htmlFor="claude-launch-args" className="block space-y-1">
             <span className="text-xs font-medium text-foreground">Additional CLI args</span>
             <Input
@@ -159,17 +172,26 @@ export function ProvidersSettings() {
               Invalid arguments: {claudeLaunchArgsParseResult.error}
             </p>
           )}
-          {settings.claudeLaunchArgs !== defaults.claudeLaunchArgs ? (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() =>
-                updateSettings(buildAppSettingsPatch(CLAUDE_LAUNCH_ARGS_KEYS, defaults))
-              }
-            >
-              Restore default
-            </Button>
-          ) : null}
+          <div className="flex flex-wrap gap-2">
+            {settings.claudeBinaryPath !== defaults.claudeBinaryPath ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => updateSettings({ claudeBinaryPath: defaults.claudeBinaryPath })}
+              >
+                Reset binary path
+              </Button>
+            ) : null}
+            {settings.claudeLaunchArgs !== defaults.claudeLaunchArgs ? (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => updateSettings({ claudeLaunchArgs: defaults.claudeLaunchArgs })}
+              >
+                Reset CLI args
+              </Button>
+            ) : null}
+          </div>
         </div>
       </section>
 

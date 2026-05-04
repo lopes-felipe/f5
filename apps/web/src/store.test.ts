@@ -9,7 +9,7 @@ import {
   type OrchestrationReadModel,
   type OrchestrationThreadTailDetails,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   beginThreadDetailLoad,
@@ -17,6 +17,7 @@ import {
   drainBufferedThreadDetailEvents,
   invalidateThreadDetails,
   markThreadUnread,
+  persistState,
   pruneChangedFilesExpandedForThreads,
   reorderProjects,
   setChangedFilesExpandedForThread,
@@ -29,6 +30,30 @@ import {
 } from "./store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
 import { createEmptyThreadHistoryState } from "./lib/threadHistory";
+
+function createLocalStorageStub(): Storage {
+  const store = new Map<string, string>();
+  return {
+    clear: () => {
+      store.clear();
+    },
+    getItem: (key) => store.get(key) ?? null,
+    key: (index) => Array.from(store.keys())[index] ?? null,
+    get length() {
+      return store.size;
+    },
+    removeItem: (key) => {
+      store.delete(key);
+    },
+    setItem: (key, value) => {
+      store.set(key, value);
+    },
+  };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 type OrchestrationGetThreadDetailsResult = OrchestrationThreadTailDetails;
 
@@ -303,6 +328,54 @@ describe("store pure functions", () => {
     const next = reorderProjects(state, project1, project3);
 
     expect(next.projects.map((project) => project.id)).toEqual([project2, project3, project1]);
+  });
+
+  it("persistState records collapsed project CWDs explicitly", () => {
+    const localStorage = createLocalStorageStub();
+    vi.stubGlobal("window", { localStorage });
+
+    const collapsedProjectId = ProjectId.makeUnsafe("project-collapsed");
+    const expandedProjectId = ProjectId.makeUnsafe("project-expanded");
+    const state: AppState = {
+      projects: [
+        {
+          id: collapsedProjectId,
+          name: "Collapsed project",
+          cwd: "/tmp/project-collapsed",
+          model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          createdAt: "2026-02-27T00:00:00.000Z",
+          expanded: false,
+          scripts: [],
+          memories: [],
+        },
+        {
+          id: expandedProjectId,
+          name: "Expanded project",
+          cwd: "/tmp/project-expanded",
+          model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          createdAt: "2026-02-27T00:00:00.000Z",
+          expanded: true,
+          scripts: [],
+          memories: [],
+        },
+      ],
+      planningWorkflows: [],
+      codeReviewWorkflows: [],
+      threads: [],
+      threadsHydrated: true,
+      lastAppliedSequence: 0,
+      detailEventBufferByThreadId: new Map(),
+      changedFilesExpandedByThreadId: {},
+    };
+
+    persistState(state);
+
+    const persisted = JSON.parse(localStorage.getItem("t3code:renderer-state:v8") ?? "{}") as {
+      collapsedProjectCwds?: string[];
+      expandedProjectCwds?: string[];
+    };
+    expect(persisted.collapsedProjectCwds).toEqual(["/tmp/project-collapsed"]);
+    expect(persisted.expandedProjectCwds).toEqual(["/tmp/project-expanded"]);
   });
 });
 

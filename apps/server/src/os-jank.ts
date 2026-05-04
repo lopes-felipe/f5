@@ -1,5 +1,6 @@
 import * as OS from "node:os";
 import { Effect, Path } from "effect";
+import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
 import { readPathFromLoginShell } from "@t3tools/shared/shell";
 
 export function fixPath(): void {
@@ -30,7 +31,7 @@ export const expandHomePath = Effect.fn(function* (input: string) {
 export const resolveStateDir = Effect.fn(function* (raw: string | undefined) {
   const { join, resolve } = yield* Path.Path;
   if (!raw || raw.trim().length === 0) {
-    return join(OS.homedir(), ".t3", "userdata");
+    return join(OS.homedir(), F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME);
   }
   return resolve(yield* expandHomePath(raw.trim()));
 });
@@ -38,7 +39,7 @@ export const resolveStateDir = Effect.fn(function* (raw: string | undefined) {
 export const resolveBaseDir = Effect.fn(function* (raw: string | undefined) {
   const { join, resolve } = yield* Path.Path;
   if (!raw || raw.trim().length === 0) {
-    return join(OS.homedir(), ".t3");
+    return join(OS.homedir(), F5_HOME_DIR_NAME);
   }
   return resolve(yield* expandHomePath(raw.trim()));
 });

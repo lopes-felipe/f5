@@ -9,7 +9,7 @@
  *   4. Launches the prebuilt desktop app pointed at the isolated state dir,
  *      with auto-update disabled.
  *
- * The user's real database at ~/.t3/userdata/ is never read or written.
+ * The user's real F5 and legacy T3 state directories are never read or written.
  *
  * Usage:
  *   bun run scripts/run-demo.ts
@@ -19,8 +19,8 @@
  */
 import { spawn, spawnSync } from "node:child_process";
 import * as FS from "node:fs";
-import * as OS from "node:os";
 import * as Path from "node:path";
+import { isProtectedAppStateDir } from "@t3tools/shared/appStatePaths";
 
 const REPO_ROOT = Path.resolve(import.meta.dirname, "..");
 const DEFAULT_STATE_DIR = "/tmp/f5-demo/state";
@@ -31,18 +31,10 @@ const DEMO_ROOT = Path.dirname(STATE_DIR);
 // Safety guard. Make absolutely sure we never point this at the real F5 dir.
 // ---------------------------------------------------------------------------
 
-const REAL_USERDATA = Path.join(OS.homedir(), ".t3", "userdata");
-const REAL_DEV = Path.join(OS.homedir(), ".t3", "dev");
-const REAL_BASE = Path.join(OS.homedir(), ".t3");
 const normalized = Path.resolve(STATE_DIR);
-if (
-  normalized === REAL_USERDATA ||
-  normalized === REAL_DEV ||
-  normalized.startsWith(REAL_BASE + Path.sep) ||
-  normalized === REAL_BASE
-) {
+if (isProtectedAppStateDir(normalized)) {
   console.error(
-    `[run-demo] Refusing to run: demo state dir (${STATE_DIR}) overlaps with the real F5 directory (${REAL_BASE}).`,
+    `[run-demo] Refusing to run: demo state dir (${STATE_DIR}) overlaps with the real F5/T3 state directories.`,
   );
   process.exit(1);
 }
@@ -93,6 +85,7 @@ const seeded = spawnSync("bun", ["run", Path.join(REPO_ROOT, "apps/server/script
   stdio: "inherit",
   env: {
     ...process.env,
+    F5_STATE_DIR: STATE_DIR,
     T3CODE_STATE_DIR: STATE_DIR,
   },
 });
@@ -114,6 +107,7 @@ const desktop = spawn("bun", ["run", "start:desktop"], {
   stdio: "inherit",
   env: {
     ...process.env,
+    F5_STATE_DIR: STATE_DIR,
     T3CODE_STATE_DIR: STATE_DIR,
     T3CODE_DISABLE_AUTO_UPDATE: "1",
     T3CODE_NO_BROWSER: "1",

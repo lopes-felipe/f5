@@ -20,8 +20,10 @@ import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPa
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 
+import { ServerConfig } from "../../config.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
+import { resolveDefaultWorktreePath } from "../../git/worktreePaths.ts";
 import { buildFallbackTitle, resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
 import {
   OrchestrationEngineService,
@@ -1095,6 +1097,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   const snapshotQuery = yield* ProjectionSnapshotQuery;
   const textGeneration = yield* TextGeneration;
   const gitCore = yield* GitCore;
+  const serverConfig = yield* ServerConfig;
 
   const upsertWorkflow = (workflow: PlanningWorkflow) =>
     orchestrationEngine.dispatch({
@@ -2973,12 +2976,17 @@ export const makeWorkflowService = Effect.gen(function* () {
             new Error("Project workspace root is unavailable; cannot create worktree."),
           );
         }
+        const newBranch = buildTemporaryWorktreeBranchName();
         const createdWorktree = yield* gitCore
           .createWorktree({
             cwd: workspaceRoot,
             branch: input.baseBranch,
-            newBranch: buildTemporaryWorktreeBranchName(),
-            path: null,
+            newBranch,
+            path: resolveDefaultWorktreePath({
+              worktreesDir: serverConfig.worktreesDir,
+              cwd: workspaceRoot,
+              branch: newBranch,
+            }),
           })
           .pipe(
             Effect.mapError(

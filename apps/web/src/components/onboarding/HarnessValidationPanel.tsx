@@ -68,17 +68,28 @@ function supportedModelNames(meta: HarnessMeta): ReadonlyArray<string> {
 }
 
 function buildOnboardingProviderOptions(
-  settings: Pick<AppSettings, "codexBinaryPath" | "codexHomePath">,
+  settings: Pick<AppSettings, "codexBinaryPath" | "codexHomePath" | "claudeBinaryPath">,
 ): ProviderStartOptions | undefined {
-  if (!settings.codexBinaryPath && !settings.codexHomePath) {
+  if (!settings.codexBinaryPath && !settings.codexHomePath && !settings.claudeBinaryPath) {
     return undefined;
   }
 
   return {
-    codex: {
-      ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
-      ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
-    },
+    ...(settings.codexBinaryPath || settings.codexHomePath
+      ? {
+          codex: {
+            ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
+            ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
+          },
+        }
+      : {}),
+    ...(settings.claudeBinaryPath
+      ? {
+          claudeAgent: {
+            binaryPath: settings.claudeBinaryPath,
+          },
+        }
+      : {}),
   };
 }
 

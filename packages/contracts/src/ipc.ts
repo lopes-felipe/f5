@@ -42,15 +42,22 @@ import type {
   McpCommonConfigResult,
   McpEffectiveConfigResult,
   McpGetCommonConfigRequest,
+  McpGetLoginStatusRequest,
+  McpGetProviderStatusRequest,
   McpGetCodexStatusRequest,
   McpGetEffectiveConfigRequest,
   McpGetProjectConfigRequest,
+  McpGetServerStatusesRequest,
+  McpLoginStatusResult,
   McpOauthLoginStatusRequest,
   McpOauthLoginStatusResult,
+  McpProviderStatusResult,
   McpProjectConfigResult,
   McpReloadProjectRequest,
   McpReplaceCommonConfigRequest,
   McpReplaceProjectConfigRequest,
+  McpServerStatusesResult,
+  McpStartLoginRequest,
   McpStartOauthLoginRequest,
   McpStatusUpdatedPayload,
 } from "./mcp";
@@ -235,6 +242,10 @@ export interface NativeApi {
       input: McpReplaceProjectConfigRequest,
     ) => Promise<McpProjectConfigResult>;
     getEffectiveConfig: (input: McpGetEffectiveConfigRequest) => Promise<McpEffectiveConfigResult>;
+    getProviderStatus: (input: McpGetProviderStatusRequest) => Promise<McpProviderStatusResult>;
+    getServerStatuses: (input: McpGetServerStatusesRequest) => Promise<McpServerStatusesResult>;
+    startLogin: (input: McpStartLoginRequest) => Promise<McpLoginStatusResult>;
+    getLoginStatus: (input: McpGetLoginStatusRequest) => Promise<McpLoginStatusResult>;
     getCodexStatus: (input: McpGetCodexStatusRequest) => Promise<McpCodexStatusResult>;
     reloadProject: (input: McpReloadProjectRequest) => Promise<McpCodexStatusResult>;
     applyToLiveSessions: (

@@ -14,6 +14,8 @@ import { GitManager, type GitManagerShape } from "../Services/GitManager.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
+import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
+import { ServerConfig } from "../../config.ts";
 
 interface OpenPrInfo {
   number: number;
@@ -318,6 +320,7 @@ export const makeGitManager = Effect.gen(function* () {
   const gitCore = yield* GitCore;
   const gitHubCli = yield* GitHubCli;
   const textGeneration = yield* TextGeneration;
+  const serverConfig = yield* ServerConfig;
 
   const configurePullRequestHeadUpstream = (
     cwd: string,
@@ -784,7 +787,19 @@ export const makeGitManager = Effect.gen(function* () {
             branch: details.branch,
             upstreamRef: details.upstreamRef,
           }).pipe(
-            Effect.map((latest) => (latest ? toStatusPr(latest) : null)),
+            Effect.flatMap((latest) => {
+              if (!latest) return Effect.succeed(null);
+              if (latest.state === "open") return Effect.succeed(toStatusPr(latest));
+
+              return gitHubCli.getDefaultBranch({ cwd: input.cwd }).pipe(
+                Effect.map((defaultBranch) =>
+                  defaultBranch !== null && details.branch === defaultBranch
+                    ? null
+                    : toStatusPr(latest),
+                ),
+                Effect.catch(() => Effect.succeed(toStatusPr(latest))),
+              );
+            }),
             Effect.catch(() => Effect.succeed(null)),
           )
         : null;
@@ -942,7 +957,11 @@ export const makeGitManager = Effect.gen(function* () {
       const worktree = yield* gitCore.createWorktree({
         cwd: input.cwd,
         branch: localPullRequestBranch,
-        path: null,
+        path: resolveDefaultWorktreePath({
+          worktreesDir: serverConfig.worktreesDir,
+          cwd: input.cwd,
+          branch: localPullRequestBranch,
+        }),
       });
       yield* ensureExistingWorktreeUpstream(worktree.worktree.path);
 

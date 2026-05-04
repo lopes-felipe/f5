@@ -27,7 +27,7 @@ import { autoUpdater } from "electron-updater";
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
-import { buildDesktopBackendEnv } from "./backendEnv";
+import { buildDesktopBackendEnv, resolveDesktopStateDirConfig } from "./backendEnv";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
@@ -57,8 +57,8 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const STATE_DIR =
-  process.env.T3CODE_STATE_DIR?.trim() || Path.join(OS.homedir(), ".t3", "userdata");
+const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
+const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -923,6 +923,7 @@ function backendEnv(): NodeJS.ProcessEnv {
   return buildDesktopBackendEnv(process.env, {
     backendPort,
     stateDir: STATE_DIR,
+    stateDirSource: STATE_DIR_CONFIG.source,
     authToken: backendAuthToken,
   });
 }

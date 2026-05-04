@@ -1,7 +1,6 @@
 import "../../index.css";
 
 import type {
-  McpCodexStatusResult,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
   McpProjectConfigResult,
@@ -74,17 +73,81 @@ const effectiveConfig: McpEffectiveConfigResult = {
   },
 };
 
-const codexStatus: McpCodexStatusResult = {
-  projectId: PROJECT_ID,
-  support: "supported",
-  configVersion: "effective-v1",
-};
-
 function createNativeApiMock() {
   const getCommonConfig = vi.fn(async () => commonConfig);
   const getProjectConfig = vi.fn(async () => projectConfig);
   const getEffectiveConfig = vi.fn(async () => effectiveConfig);
-  const getCodexStatus = vi.fn(async () => codexStatus);
+  const getProviderStatus = vi.fn(
+    async ({ provider, projectId }: { provider: "codex" | "claudeAgent"; projectId: ProjectId }) =>
+      provider === "codex"
+        ? {
+            provider,
+            projectId,
+            support: "supported" as const,
+            available: true,
+            authStatus: "authenticated" as const,
+            configVersion: "effective-v1",
+          }
+        : {
+            provider,
+            projectId,
+            support: "supported" as const,
+            available: true,
+            authStatus: "authenticated" as const,
+            configVersion: "effective-v1",
+          },
+  );
+  const getServerStatuses = vi.fn(
+    async ({
+      provider,
+      projectId,
+    }: {
+      provider: "codex" | "claudeAgent";
+      projectId: ProjectId;
+    }) => ({
+      provider,
+      projectId,
+      support: "supported" as const,
+      configVersion: "effective-v1",
+      statuses: [
+        {
+          name: "common-server",
+          state: "ready" as const,
+          authStatus: "authenticated" as const,
+          toolCount: 1,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+        },
+        {
+          name: "project-server",
+          state: "ready" as const,
+          authStatus: "authenticated" as const,
+          toolCount: 1,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+        },
+      ],
+    }),
+  );
+  const getLoginStatus = vi.fn(
+    async ({
+      provider,
+      projectId,
+      serverName,
+    }: {
+      provider: "codex" | "claudeAgent";
+      projectId: ProjectId;
+      serverName?: string;
+    }) => ({
+      target: serverName ? ("server" as const) : ("provider" as const),
+      mode: "cli" as const,
+      provider,
+      projectId,
+      ...(serverName ? { serverName } : {}),
+      status: "idle" as const,
+    }),
+  );
+  const startLogin = vi.fn();
   const applyToLiveSessions = vi.fn(
     async (input: { scope: "common" | "project"; projectId?: ProjectId }) => ({
       scope: input.scope,
@@ -101,8 +164,12 @@ function createNativeApiMock() {
       getCommonConfig,
       getProjectConfig,
       getEffectiveConfig,
-      getCodexStatus,
+      getProviderStatus,
+      getServerStatuses,
+      getLoginStatus,
+      startLogin,
       applyToLiveSessions,
+      onStatusUpdated: vi.fn(() => () => {}),
     },
   } as unknown as NativeApi;
 
@@ -110,7 +177,10 @@ function createNativeApiMock() {
     getCommonConfig,
     getProjectConfig,
     getEffectiveConfig,
-    getCodexStatus,
+    getProviderStatus,
+    getServerStatuses,
+    getLoginStatus,
+    startLogin,
     applyToLiveSessions,
   };
 }
@@ -131,6 +201,7 @@ async function renderSettings() {
         hasProjects
         codexBinaryPath=""
         codexHomePath=""
+        claudeBinaryPath=""
       />
     </QueryClientProvider>,
   );
@@ -140,10 +211,6 @@ async function renderSettings() {
   });
 
   return { screen, queryClient };
-}
-
-function scopeToggleButtons() {
-  return Array.from(document.querySelectorAll<HTMLButtonElement>('[data-slot="toggle"]'));
 }
 
 describe("McpServersSettings", () => {
@@ -185,7 +252,7 @@ describe("McpServersSettings", () => {
     try {
       expect(document.body.textContent).toContain("Project servers (1/16)");
 
-      scopeToggleButtons()[1]?.click();
+      await page.getByRole("button", { name: "Common" }).click();
 
       await vi.waitFor(() => {
         expect(document.body.textContent).toContain("Common servers (1/16)");
@@ -199,7 +266,7 @@ describe("McpServersSettings", () => {
         });
       });
 
-      scopeToggleButtons()[0]?.click();
+      await page.getByRole("button", { name: "Project" }).click();
 
       await vi.waitFor(() => {
         expect(document.body.textContent).toContain("Project servers (1/16)");

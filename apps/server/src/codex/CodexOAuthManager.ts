@@ -4,16 +4,24 @@ import {
   type McpStartOauthLoginRequest,
   type ProviderStartOptions,
 } from "@t3tools/contracts";
-import { Effect, Layer, Schema, ServiceMap } from "effect";
+import { Effect, FiberSet, Layer, Schema, ServiceMap } from "effect";
 
+import { combineStatusMessage } from "../mcp/combineStatusMessage.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
 import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
+import type { CodexControlClient } from "./CodexControlClient.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
-import { CodexMcpSyncService } from "./CodexMcpSyncService.ts";
+import {
+  codexServerNamesMatch,
+  codexServerStatusHasAuthenticatedOauth,
+  findCodexServerStatusByName,
+  listAllCodexServerStatuses,
+} from "./codexMcpServerStatus.ts";
 
 const OAUTH_LOGIN_TIMEOUT_SEC = 300;
+const OAUTH_RECONCILE_INTERVAL_MS = 5_000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -53,6 +61,11 @@ function makeFailedStatus(
 interface PendingOAuthMetadata {
   readonly providerOptions: ProviderStartOptions | undefined;
   readonly mcpEffectiveConfigVersion: string | null | undefined;
+  readonly client: CodexControlClient;
+  readonly release: Effect.Effect<void>;
+  readonly cleanupNotificationListener: () => void;
+  nextReconcileAtMs: number;
+  reconcileInFlight: boolean;
 }
 
 export class CodexOAuthManagerError extends Schema.TaggedErrorClass<CodexOAuthManagerError>()(
@@ -78,15 +91,169 @@ export class CodexOAuthManager extends ServiceMap.Service<
 
 const makeCodexOAuthManager = Effect.gen(function* () {
   const registry = yield* CodexControlClientRegistry;
-  const syncService = yield* CodexMcpSyncService;
   const providerService = yield* ProviderService;
   const eventBus = yield* CodexMcpEventBus;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
+  const runBackgroundTask = yield* FiberSet.makeRuntime<never>();
   const statusByKey = new Map<string, McpOauthLoginStatusResult>();
   const pendingMetadataByKey = new Map<string, PendingOAuthMetadata>();
 
   const setStatus = (input: McpOauthLoginStatusRequest, status: McpOauthLoginStatusResult) => {
     statusByKey.set(statusKeyFor(input), status);
+  };
+
+  const publishStatusUpdated = (
+    input: McpOauthLoginStatusRequest,
+    metadata: PendingOAuthMetadata,
+  ) =>
+    eventBus.publishStatusUpdated({
+      provider: "codex",
+      scope: "project",
+      projectId: input.projectId,
+      reason: "oauth-completed",
+      ...(metadata.mcpEffectiveConfigVersion
+        ? { configVersion: metadata.mcpEffectiveConfigVersion }
+        : {}),
+    });
+
+  const runBackgroundReloadAfterLogin = (
+    input: McpOauthLoginStatusRequest,
+    metadata: PendingOAuthMetadata,
+  ) =>
+    runBackgroundTask(
+      providerService
+        .reloadMcpConfigForProject({
+          provider: "codex",
+          projectId: input.projectId,
+          ...(metadata.providerOptions ? { providerOptions: metadata.providerOptions } : {}),
+        })
+        .pipe(
+          Effect.as<string | undefined>(undefined),
+          Effect.catch((cause) =>
+            Effect.logWarning(
+              "Codex MCP OAuth login succeeded but reloading live sessions failed.",
+              {
+                cause,
+                projectId: input.projectId,
+                serverName: input.serverName,
+              },
+            ).pipe(
+              Effect.as(
+                "Login completed, but reloading live Codex sessions failed. Apply the shared MCP config to live sessions to retry.",
+              ),
+            ),
+          ),
+          Effect.flatMap((reloadMessage) =>
+            Effect.gen(function* () {
+              if (reloadMessage) {
+                const current = statusByKey.get(statusKeyFor(input));
+                if (current?.status === "completed") {
+                  setStatus(input, {
+                    ...current,
+                    message: combineStatusMessage(current.message, reloadMessage),
+                  });
+                }
+              }
+
+              yield* publishStatusUpdated(input, metadata);
+            }),
+          ),
+          Effect.asVoid,
+        ),
+    );
+
+  const finalizePendingStatus = (
+    input: McpOauthLoginStatusRequest,
+    metadata: PendingOAuthMetadata,
+    payload: {
+      readonly success: boolean;
+      readonly error?: string;
+      readonly message?: string;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const key = statusKeyFor(input);
+      if (pendingMetadataByKey.get(key) !== metadata) {
+        return statusByKey.get(key) ?? makeIdleStatus(input);
+      }
+
+      metadata.cleanupNotificationListener();
+      const existingStatus = statusByKey.get(key);
+      const nextStatus: McpOauthLoginStatusResult = {
+        projectId: input.projectId,
+        serverName: input.serverName,
+        status: payload.success ? "completed" : "failed",
+        startedAt: existingStatus?.startedAt ?? nowIso(),
+        completedAt: nowIso(),
+        ...(payload.message ? { message: payload.message } : {}),
+        ...(payload.error ? { error: payload.error } : {}),
+        ...(existingStatus?.authorizationUrl
+          ? { authorizationUrl: existingStatus.authorizationUrl }
+          : {}),
+      };
+
+      statusByKey.set(key, nextStatus);
+      pendingMetadataByKey.delete(key);
+      yield* publishStatusUpdated(input, metadata);
+      if (payload.success) {
+        runBackgroundReloadAfterLogin(input, metadata);
+      }
+      return nextStatus;
+    }).pipe(Effect.ensuring(metadata.release));
+
+  const reconcilePendingStatus = (
+    input: McpOauthLoginStatusRequest,
+    existing: McpOauthLoginStatusResult,
+    metadata: PendingOAuthMetadata,
+  ) => {
+    const key = statusKeyFor(input);
+    const nowMs = Date.now();
+    if (metadata.reconcileInFlight || nowMs < metadata.nextReconcileAtMs) {
+      return Effect.succeed(existing);
+    }
+
+    metadata.reconcileInFlight = true;
+    metadata.nextReconcileAtMs = nowMs + OAUTH_RECONCILE_INTERVAL_MS;
+
+    return Effect.tryPromise({
+      try: () => listAllCodexServerStatuses(metadata.client),
+      catch: (cause) =>
+        cause instanceof Error
+          ? new CodexOAuthManagerError({ message: cause.message })
+          : new CodexOAuthManagerError({
+              message: "Failed to read Codex MCP server status during OAuth login reconciliation.",
+            }),
+    }).pipe(
+      Effect.flatMap((statuses) => {
+        const status = findCodexServerStatusByName(statuses, input.serverName);
+        if (!codexServerStatusHasAuthenticatedOauth(status)) {
+          return Effect.succeed(existing);
+        }
+
+        return finalizePendingStatus(input, metadata, {
+          success: true,
+        });
+      }),
+      Effect.catch((cause) =>
+        Effect.gen(function* () {
+          if (pendingMetadataByKey.get(key) !== metadata) {
+            return statusByKey.get(key) ?? existing;
+          }
+
+          yield* Effect.logWarning("Failed to reconcile pending Codex MCP OAuth login status.", {
+            cause,
+            projectId: input.projectId,
+            serverName: input.serverName,
+          });
+          return existing;
+        }),
+      ),
+      Effect.ensuring(
+        Effect.sync(() => {
+          metadata.reconcileInFlight = false;
+        }),
+      ),
+    );
   };
 
   const readStatus = (input: McpOauthLoginStatusRequest) =>
@@ -98,6 +265,13 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       }
 
       const metadata = pendingMetadataByKey.get(key);
+      if (metadata) {
+        const reconciled = yield* reconcilePendingStatus(input, existing, metadata);
+        if (reconciled.status !== "pending") {
+          return reconciled;
+        }
+      }
+
       const hasLease = yield* registry.hasOauthLease({
         projectId: input.projectId,
         serverName: input.serverName,
@@ -115,6 +289,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         error: "OAuth login timed out before completion.",
         ...(existing.authorizationUrl ? { authorizationUrl: existing.authorizationUrl } : {}),
       });
+      metadata?.cleanupNotificationListener();
       statusByKey.set(key, expiredStatus);
       pendingMetadataByKey.delete(key);
       return expiredStatus;
@@ -149,10 +324,6 @@ const makeCodexOAuthManager = Effect.gen(function* () {
           startedAt,
         };
         setStatus(input, pendingStatus);
-        pendingMetadataByKey.set(statusKeyFor(input), {
-          providerOptions,
-          mcpEffectiveConfigVersion: stored.effectiveVersion,
-        });
 
         const lease = yield* registry
           .acquireOauthClient({
@@ -183,48 +354,25 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             ),
           );
 
-        const finalize = (payload: { readonly success: boolean; readonly error?: string }) =>
-          Effect.gen(function* () {
-            const completedAt = nowIso();
-            const existingStatus = statusByKey.get(statusKeyFor(input));
-            const nextStatus: McpOauthLoginStatusResult = {
-              projectId: input.projectId,
-              serverName: input.serverName,
-              status: payload.success ? "completed" : "failed",
-              startedAt,
-              completedAt,
-              ...(payload.error ? { error: payload.error } : {}),
-              ...(existingStatus?.authorizationUrl
-                ? { authorizationUrl: existingStatus.authorizationUrl }
-                : {}),
-            };
-            statusByKey.set(statusKeyFor(input), nextStatus);
-            pendingMetadataByKey.delete(statusKeyFor(input));
-
-            if (payload.success) {
-              yield* providerService
-                .reloadMcpConfigForProject({
-                  provider: "codex",
-                  projectId: input.projectId,
-                  ...(providerOptions ? { providerOptions } : {}),
-                })
-                .pipe(Effect.catch(() => Effect.void));
+        let notificationListener:
+          | ((input: { readonly method: string; readonly params?: unknown }) => void)
+          | undefined;
+        const pendingMetadata: PendingOAuthMetadata = {
+          providerOptions,
+          mcpEffectiveConfigVersion: stored.effectiveVersion,
+          client: lease.client,
+          release: lease.release,
+          cleanupNotificationListener: () => {
+            if (notificationListener) {
+              lease.client.off("notification", notificationListener);
             }
+          },
+          nextReconcileAtMs: 0,
+          reconcileInFlight: false,
+        };
+        pendingMetadataByKey.set(statusKeyFor(input), pendingMetadata);
 
-            const status = yield* syncService.getStatus({
-              projectId: input.projectId,
-              ...(providerOptions ? { providerOptions } : {}),
-            });
-            yield* eventBus.publishStatusUpdated({
-              provider: "codex",
-              scope: "project",
-              projectId: input.projectId,
-              reason: "oauth-completed",
-              ...(status.configVersion ? { configVersion: status.configVersion } : {}),
-            });
-          }).pipe(Effect.ensuring(lease.release));
-
-        const notificationListener = ({
+        notificationListener = ({
           method,
           params,
         }: {
@@ -242,19 +390,25 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             typeof payload?.name === "string" && payload.name.trim().length > 0
               ? payload.name.trim()
               : undefined;
-          if (payloadName && payloadName !== input.serverName) {
+          if (payloadName && !codexServerNamesMatch(payloadName, input.serverName)) {
+            runBackgroundTask(
+              Effect.logWarning("Ignoring OAuth completion for unexpected MCP server name.", {
+                projectId: input.projectId,
+                expectedServerName: input.serverName,
+                receivedServerName: payloadName,
+              }),
+            );
             return;
           }
 
-          lease.client.off("notification", notificationListener);
-          void Effect.runPromise(
-            finalize({
+          runBackgroundTask(
+            finalizePendingStatus(input, pendingMetadata, {
               success: payload?.success === true,
               ...(typeof payload?.error === "string" && payload.error.trim().length > 0
                 ? { error: payload.error.trim() }
                 : {}),
-            }),
-          ).catch(() => undefined);
+            }).pipe(Effect.asVoid),
+          );
         };
 
         lease.client.on("notification", notificationListener);

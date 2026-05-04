@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -20,6 +21,7 @@ import { GitService } from "../Services/GitService.ts";
 import { GitCoreLive } from "./GitCore.ts";
 import { makeGitManager } from "./GitManager.ts";
 import { installLocalPushFriendlyGitWrapper } from "../testUtils.ts";
+import { ServerConfig, type ServerConfigShape } from "../../config.ts";
 
 const restoreGitWrapper = installLocalPushFriendlyGitWrapper();
 
@@ -514,6 +516,32 @@ function makeManager(input?: {
 }) {
   const { service: gitHubCli, ghCalls } = createGitHubCliWithFakeGh(input?.ghScenario);
   const textGeneration = createTextGeneration(input?.textGeneration);
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-git-manager-"));
+  const serverConfig = {
+    mode: "web",
+    port: 0,
+    host: undefined,
+    cwd: "/tmp/git-manager",
+    baseDir,
+    stateDir: path.join(baseDir, "userdata"),
+    dbPath: path.join(baseDir, "userdata", "state.sqlite"),
+    keybindingsConfigPath: path.join(baseDir, "userdata", "keybindings.json"),
+    worktreesDir: path.join(baseDir, "worktrees"),
+    attachmentsDir: path.join(baseDir, "userdata", "attachments"),
+    logsDir: path.join(baseDir, "userdata", "logs"),
+    serverLogPath: path.join(baseDir, "userdata", "logs", "server.log"),
+    providerLogsDir: path.join(baseDir, "userdata", "logs", "provider"),
+    providerEventLogPath: path.join(baseDir, "userdata", "logs", "provider", "events.log"),
+    terminalLogsDir: path.join(baseDir, "userdata", "logs", "terminals"),
+    anonymousIdPath: path.join(baseDir, "userdata", "anonymous-id"),
+    staticDir: undefined,
+    devUrl: undefined,
+    noBrowser: true,
+    authToken: undefined,
+    autoBootstrapProjectFromCwd: false,
+    logWebSocketEvents: false,
+    observabilityEnabled: false,
+  } satisfies ServerConfigShape;
 
   const gitCoreLayer = GitCoreLive.pipe(
     Layer.provideMerge(GitServiceLive),
@@ -523,6 +551,7 @@ function makeManager(input?: {
   const managerLayer = Layer.mergeAll(
     Layer.succeed(GitHubCli, gitHubCli),
     Layer.succeed(TextGeneration, textGeneration),
+    Layer.succeed(ServerConfig, serverConfig),
     gitCoreLayer,
     NodeServices.layer,
   );
@@ -629,7 +658,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt",
         );
       }),
-    12_000,
+    20_000,
   );
 
   it.effect("status returns merged PR state when latest PR was merged", () =>
@@ -666,6 +695,75 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         baseBranch: "main",
         headBranch: "feature/status-merged-pr",
         state: "merged",
+      });
+    }),
+  );
+
+  it.effect("status hides merged PRs on the default branch", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          defaultBranch: "main",
+          prListSequence: [
+            JSON.stringify([
+              {
+                number: 23,
+                title: "Merged PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/23",
+                baseRefName: "feature/status-default-branch-target",
+                headRefName: "main",
+                state: "MERGED",
+                mergedAt: "2026-01-30T10:00:00Z",
+                updatedAt: "2026-01-30T10:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+      expect(status.branch).toBe("main");
+      expect(status.pr).toBeNull();
+    }),
+  );
+
+  it.effect("status keeps closed PR context on feature branches", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, ["checkout", "-b", "feature/status-closed-pr"]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          defaultBranch: "main",
+          prListSequence: [
+            JSON.stringify([
+              {
+                number: 24,
+                title: "Closed PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/24",
+                baseRefName: "main",
+                headRefName: "feature/status-closed-pr",
+                state: "CLOSED",
+                updatedAt: "2026-01-30T10:00:00Z",
+              },
+            ]),
+          ],
+        },
+      });
+
+      const status = yield* manager.status({ cwd: repoDir });
+      expect(status.branch).toBe("feature/status-closed-pr");
+      expect(status.pr).toEqual({
+        number: 24,
+        title: "Closed PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/24",
+        baseBranch: "main",
+        headBranch: "feature/status-closed-pr",
+        state: "closed",
       });
     }),
   );

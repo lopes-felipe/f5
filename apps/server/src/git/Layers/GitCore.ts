@@ -1,5 +1,6 @@
 import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
 
+import { defaultF5BaseDir } from "@t3tools/shared/appStatePaths";
 import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Path } from "effect";
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
@@ -11,6 +12,7 @@ import {
   parseRemoteNamesInGitOrder,
   parseRemoteRefWithRemoteNames,
 } from "../remoteRefs.ts";
+import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
 
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
@@ -1222,11 +1224,15 @@ const makeGitCore = Effect.gen(function* () {
   const createWorktree: GitCoreShape["createWorktree"] = (input) =>
     Effect.gen(function* () {
       const targetBranch = input.newBranch ?? input.branch;
-      const sanitizedBranch = targetBranch.replace(/\//g, "-");
-      const repoName = path.basename(input.cwd);
       const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? "/tmp";
+      const defaultBaseDir = defaultF5BaseDir(homeDir);
       const worktreePath =
-        input.path ?? path.join(homeDir, ".t3", "worktrees", repoName, sanitizedBranch);
+        input.path ??
+        resolveDefaultWorktreePath({
+          worktreesDir: path.join(defaultBaseDir, "worktrees"),
+          cwd: input.cwd,
+          branch: targetBranch,
+        });
       const args = input.newBranch
         ? ["worktree", "add", "-b", input.newBranch, worktreePath, input.branch]
         : ["worktree", "add", worktreePath, input.branch];

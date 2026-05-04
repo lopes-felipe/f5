@@ -67,6 +67,7 @@ import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
+import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const asProviderItemId = (value: string): ProviderItemId => ProviderItemId.makeUnsafe(value);
@@ -218,6 +219,43 @@ function makeProviderRuntimeTestLayer(providerLayer: Layer.Layer<ProviderService
         Effect.succeed({
           projectId: input.projectId,
           serverName: input.serverName,
+          status: "idle" as const,
+        }),
+    }),
+    Layer.succeed(McpRuntimeService, {
+      getProviderStatus: ({ provider, projectId }) =>
+        Effect.succeed({
+          provider,
+          projectId,
+          support: "supported" as const,
+          available: true,
+          authStatus: "authenticated" as const,
+          configVersion: "mcp-version-test",
+        }),
+      getServerStatuses: ({ provider, projectId }) =>
+        Effect.succeed({
+          provider,
+          projectId,
+          support: "supported" as const,
+          configVersion: "mcp-version-test",
+          statuses: [],
+        }),
+      startLogin: ({ provider, projectId, serverName }) =>
+        Effect.succeed({
+          target: serverName ? ("server" as const) : ("provider" as const),
+          mode: "cli" as const,
+          provider,
+          projectId,
+          ...(serverName ? { serverName } : {}),
+          status: "idle" as const,
+        }),
+      getLoginStatus: ({ provider, projectId, serverName }) =>
+        Effect.succeed({
+          target: serverName ? ("server" as const) : ("provider" as const),
+          mode: "cli" as const,
+          provider,
+          projectId,
+          ...(serverName ? { serverName } : {}),
           status: "idle" as const,
         }),
     }),

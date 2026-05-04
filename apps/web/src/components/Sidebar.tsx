@@ -2,10 +2,10 @@ import {
   ArchiveIcon,
   ArrowLeftIcon,
   ChevronRightIcon,
+  FolderPlusIcon,
   FolderIcon,
   GitPullRequestIcon,
   HomeIcon,
-  PlusIcon,
   RocketIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -76,6 +76,7 @@ import { readNativeApi } from "../nativeApi";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBackedDraftThread";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { toastManager } from "./ui/toast";
 import { type Project, type Thread } from "../types";
 import {
@@ -606,7 +607,7 @@ function InlineTitleEditor({
       aria-label={ariaLabel}
       className={
         className ??
-        "min-w-0 flex-1 truncate text-xs bg-transparent outline-none border border-ring rounded px-0.5"
+        "min-w-0 flex-1 truncate border border-ring rounded bg-transparent px-0.5 text-base outline-none sm:text-xs"
       }
       value={value}
       onChange={(e) => setValue(e.target.value)}
@@ -638,6 +639,28 @@ function InlineTitleEditor({
       }}
       onClick={(e) => e.stopPropagation()}
     />
+  );
+}
+
+function SidebarThreadTitle({ thread }: { thread: Thread }) {
+  const suppressTooltip = useMediaQuery("(hover: none), (pointer: coarse)");
+  const title = (
+    <span className="min-w-0 flex-1 truncate text-xs" data-testid={`thread-title-${thread.id}`}>
+      {thread.title}
+    </span>
+  );
+
+  if (suppressTooltip) {
+    return title;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger delay={250} render={title} />
+      <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
+        {thread.title}
+      </TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -2127,11 +2150,7 @@ export default function Sidebar() {
                   />
                 }
               >
-                <PlusIcon
-                  className={`size-3.5 transition-transform duration-150 ${
-                    shouldShowProjectPathEntry ? "rotate-45" : "rotate-0"
-                  }`}
-                />
+                <FolderPlusIcon className="size-3.5" />
               </TooltipTrigger>
               <TooltipPopup side="right">Add project</TooltipPopup>
             </Tooltip>
@@ -2153,7 +2172,7 @@ export default function Sidebar() {
               <div className="flex gap-1.5">
                 <input
                   ref={addProjectInputRef}
-                  className={`min-w-0 flex-1 rounded-md border bg-secondary px-2 py-1 font-mono text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none ${
+                  className={`min-w-0 flex-1 rounded-md border bg-secondary px-2 py-1 font-mono text-base text-foreground placeholder:text-muted-foreground/40 focus:outline-none sm:text-xs ${
                     addProjectError
                       ? "border-red-500/70 focus:border-red-500"
                       : "border-border focus:border-ring"
@@ -2757,21 +2776,7 @@ export default function Sidebar() {
                                             onCancel={cancelRename}
                                           />
                                         ) : (
-                                          <Tooltip>
-                                            <TooltipTrigger
-                                              render={
-                                                <span className="min-w-0 flex-1 truncate text-xs">
-                                                  {thread.title}
-                                                </span>
-                                              }
-                                            />
-                                            <TooltipPopup
-                                              side="top"
-                                              className="max-w-80 whitespace-normal leading-tight"
-                                            >
-                                              {thread.title}
-                                            </TooltipPopup>
-                                          </Tooltip>
+                                          <SidebarThreadTitle thread={thread} />
                                         )}
                                       </div>
                                       <ThreadRowTrailingMeta

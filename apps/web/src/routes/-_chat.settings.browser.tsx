@@ -241,15 +241,72 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
           },
         },
       })),
-      getCodexStatus: vi.fn(async ({ projectId }: { projectId: ProjectId }) => ({
-        projectId,
-        support: "supported",
-        configVersion: `effective-${projectId}`,
-      })),
-      getOAuthStatus: vi.fn(async () => ({
-        status: "idle",
-        error: null,
-      })),
+      getProviderStatus: vi.fn(
+        async ({
+          provider,
+          projectId,
+        }: {
+          provider: "codex" | "claudeAgent";
+          projectId: ProjectId;
+        }) => ({
+          provider,
+          projectId,
+          support: "supported" as const,
+          available: true,
+          authStatus: "authenticated" as const,
+          configVersion: `effective-${projectId}`,
+        }),
+      ),
+      getServerStatuses: vi.fn(
+        async ({
+          provider,
+          projectId,
+        }: {
+          provider: "codex" | "claudeAgent";
+          projectId: ProjectId;
+        }) => ({
+          provider,
+          projectId,
+          support: "supported" as const,
+          configVersion: `effective-${projectId}`,
+          statuses: [
+            {
+              name: "filesystem",
+              state: "ready" as const,
+              authStatus: "authenticated" as const,
+              toolCount: 1,
+              resourceCount: 0,
+              resourceTemplateCount: 0,
+            },
+            {
+              name: `project-${projectId}`,
+              state: "ready" as const,
+              authStatus: "authenticated" as const,
+              toolCount: 1,
+              resourceCount: 0,
+              resourceTemplateCount: 0,
+            },
+          ],
+        }),
+      ),
+      getLoginStatus: vi.fn(
+        async ({
+          provider,
+          projectId,
+          serverName,
+        }: {
+          provider: "codex" | "claudeAgent";
+          projectId: ProjectId;
+          serverName?: string;
+        }) => ({
+          target: serverName ? ("server" as const) : ("provider" as const),
+          mode: "cli" as const,
+          provider,
+          projectId,
+          ...(serverName ? { serverName } : {}),
+          status: "idle" as const,
+        }),
+      ),
       applyToLiveSessions: vi.fn(async () => ({
         scope: "project",
         projectId: PROJECT_ONE,
@@ -260,7 +317,8 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
       })),
       replaceCommonConfig: vi.fn(),
       replaceProjectConfig: vi.fn(),
-      startOAuthLogin: vi.fn(),
+      startLogin: vi.fn(),
+      onStatusUpdated: vi.fn(() => () => {}),
     },
     orchestration: {
       getSnapshot: vi.fn(async () => ({

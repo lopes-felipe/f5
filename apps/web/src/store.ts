@@ -78,8 +78,10 @@ function createInitialState(): AppState {
 }
 
 const persistedExpandedProjectCwds = new Set<string>();
+const persistedCollapsedProjectCwds = new Set<string>();
 const persistedProjectOrderCwds: string[] = [];
 const persistedChangedFilesExpandedByThreadId: Record<string, boolean> = {};
+let persistedProjectStateUsesLegacyShape = false;
 
 interface ThreadDetailEventBuffer {
   readonly events: ReadonlyArray<OrchestrationEvent>;
@@ -94,14 +96,22 @@ function readPersistedState(): AppState {
     const raw = window.localStorage.getItem(PERSISTED_STATE_KEY);
     if (!raw) return createInitialState();
     const parsed = JSON.parse(raw) as {
+      collapsedProjectCwds?: string[];
       expandedProjectCwds?: string[];
       projectOrderCwds?: string[];
       changedFilesExpandedByThreadId?: Record<string, boolean>;
     };
+    persistedCollapsedProjectCwds.clear();
     persistedExpandedProjectCwds.clear();
     persistedProjectOrderCwds.length = 0;
+    persistedProjectStateUsesLegacyShape = !Array.isArray(parsed.collapsedProjectCwds);
     for (const key of Object.keys(persistedChangedFilesExpandedByThreadId)) {
       delete persistedChangedFilesExpandedByThreadId[key];
+    }
+    for (const cwd of parsed.collapsedProjectCwds ?? []) {
+      if (typeof cwd === "string" && cwd.length > 0) {
+        persistedCollapsedProjectCwds.add(cwd);
+      }
     }
     for (const cwd of parsed.expandedProjectCwds ?? []) {
       if (typeof cwd === "string" && cwd.length > 0) {
@@ -129,7 +139,7 @@ function readPersistedState(): AppState {
 
 let legacyKeysCleanedUp = false;
 
-function persistState(state: AppState): void {
+export function persistState(state: AppState): void {
   if (typeof window === "undefined") return;
   try {
     const changedFilesExpandedByThreadId: Record<string, boolean> = {};
@@ -144,6 +154,9 @@ function persistState(state: AppState): void {
       JSON.stringify({
         expandedProjectCwds: state.projects
           .filter((project) => project.expanded)
+          .map((project) => project.cwd),
+        collapsedProjectCwds: state.projects
+          .filter((project) => !project.expanded)
           .map((project) => project.cwd),
         projectOrderCwds: state.projects.map((project) => project.cwd),
         changedFilesExpandedByThreadId,
@@ -196,6 +209,8 @@ function mapProjectsFromReadModel(
   const mappedProjects = incoming.map((project) => {
     const existing = previousById.get(project.id) ?? previousByCwd.get(project.workspaceRoot);
     const skills = mapProjectSkillsFromReadModel(project.skills ?? [], existing?.skills);
+    const persistedExpanded = persistedExpandedProjectCwds.has(project.workspaceRoot);
+    const persistedCollapsed = persistedCollapsedProjectCwds.has(project.workspaceRoot);
     return {
       id: project.id,
       name: project.title,
@@ -206,9 +221,13 @@ function mapProjectsFromReadModel(
       createdAt: project.createdAt,
       expanded:
         existing?.expanded ??
-        (persistedExpandedProjectCwds.size > 0
-          ? persistedExpandedProjectCwds.has(project.workspaceRoot)
-          : true),
+        (persistedExpanded
+          ? true
+          : persistedCollapsed
+            ? false
+            : persistedProjectStateUsesLegacyShape && persistedExpandedProjectCwds.size > 0
+              ? false
+              : true),
       scripts: project.scripts.map((script) => ({ ...script })),
       memories: (project.memories ?? []).filter((memory) => memory.deletedAt === null),
       skills,
@@ -1126,7 +1145,10 @@ export function syncThreadTailDetails(
   }
 
   const detailFields = mapThreadTailFieldsFromReadModel(details, existingThread);
-  const activities = mapActivitiesFromReadModel(details.activities, existingThread.activities);
+  const activities = mapActivitiesFromReadModel(
+    details.activities ?? [],
+    existingThread.activities,
+  );
   // Thread-tail RPCs can hydrate one thread without proving that the router
   // has actually observed every intervening global event. Background live
   // warms therefore opt out of advancing the app-wide sequence cursor.

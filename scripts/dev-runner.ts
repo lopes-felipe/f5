@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import { homedir } from "node:os";
-
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { NetService } from "@t3tools/shared/Net";
+import { defaultF5DevStateDir } from "@t3tools/shared/appStatePaths";
 import { Config, Data, Effect, Hash, Layer, Logger, Option, Path, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/unstable/cli";
 import { ChildProcess } from "effect/unstable/process";
@@ -15,7 +14,7 @@ const MAX_HASH_OFFSET = 3000;
 const MAX_PORT = 65535;
 
 export const DEFAULT_DEV_STATE_DIR = Effect.map(Effect.service(Path.Path), (path) =>
-  path.join(homedir(), ".t3", "dev"),
+  path.resolve(defaultF5DevStateDir()),
 );
 
 const MODE_ARGS = {
@@ -70,21 +69,27 @@ const optionalUrlConfig = (name: string): Config.Config<URL | undefined> =>
   );
 
 const OffsetConfig = Config.all({
-  portOffset: optionalIntegerConfig("T3CODE_PORT_OFFSET"),
-  devInstance: optionalStringConfig("T3CODE_DEV_INSTANCE"),
+  f5PortOffset: optionalIntegerConfig("F5_PORT_OFFSET"),
+  t3PortOffset: optionalIntegerConfig("T3CODE_PORT_OFFSET"),
+  f5DevInstance: optionalStringConfig("F5_DEV_INSTANCE"),
+  t3DevInstance: optionalStringConfig("T3CODE_DEV_INSTANCE"),
 });
 
 export function resolveOffset(config: {
   readonly portOffset: number | undefined;
+  readonly portOffsetName?: string | undefined;
   readonly devInstance: string | undefined;
+  readonly devInstanceName?: string | undefined;
 }): { readonly offset: number; readonly source: string } {
+  const portOffsetName = config.portOffsetName ?? "T3CODE_PORT_OFFSET";
+  const devInstanceName = config.devInstanceName ?? "T3CODE_DEV_INSTANCE";
   if (config.portOffset !== undefined) {
     if (config.portOffset < 0) {
-      throw new Error(`Invalid T3CODE_PORT_OFFSET: ${config.portOffset}`);
+      throw new Error(`Invalid ${portOffsetName}: ${config.portOffset}`);
     }
     return {
       offset: config.portOffset,
-      source: `T3CODE_PORT_OFFSET=${config.portOffset}`,
+      source: `${portOffsetName}=${config.portOffset}`,
     };
   }
 
@@ -94,11 +99,11 @@ export function resolveOffset(config: {
   }
 
   if (/^\d+$/.test(seed)) {
-    return { offset: Number(seed), source: `numeric T3CODE_DEV_INSTANCE=${seed}` };
+    return { offset: Number(seed), source: `numeric ${devInstanceName}=${seed}` };
   }
 
   const offset = ((Hash.string(seed) >>> 0) % MAX_HASH_OFFSET) + 1;
-  return { offset, source: `hashed T3CODE_DEV_INSTANCE=${seed}` };
+  return { offset, source: `hashed ${devInstanceName}=${seed}` };
 }
 
 function resolveStateDir(stateDir: string | undefined): Effect.Effect<string, never, Path.Path> {
@@ -156,6 +161,7 @@ export function createDevRunnerEnv({
       ELECTRON_RENDERER_PORT: String(webPort),
       VITE_WS_URL: `ws://localhost:${serverPort}`,
       VITE_DEV_SERVER_URL: devUrl?.toString() ?? `http://localhost:${webPort}`,
+      F5_STATE_DIR: resolvedStateDir,
       T3CODE_STATE_DIR: resolvedStateDir,
     };
 
@@ -378,18 +384,23 @@ const resolveOptionalBooleanOverride = (
 
 export function runDevRunnerWithInput(input: DevRunnerCliInput) {
   return Effect.gen(function* () {
-    const { portOffset, devInstance } = yield* OffsetConfig.asEffect().pipe(
-      Effect.mapError(
-        (cause) =>
-          new DevRunnerError({
-            message: "Failed to read T3CODE_PORT_OFFSET/T3CODE_DEV_INSTANCE configuration.",
-            cause,
-          }),
-      ),
-    );
+    const { f5PortOffset, t3PortOffset, f5DevInstance, t3DevInstance } =
+      yield* OffsetConfig.asEffect().pipe(
+        Effect.mapError(
+          (cause) =>
+            new DevRunnerError({
+              message: "Failed to read F5/T3CODE dev runner offset configuration.",
+              cause,
+            }),
+        ),
+      );
+    const portOffset = f5PortOffset ?? t3PortOffset;
+    const devInstance = f5DevInstance ?? t3DevInstance;
+    const portOffsetName = f5PortOffset !== undefined ? "F5_PORT_OFFSET" : "T3CODE_PORT_OFFSET";
+    const devInstanceName = f5DevInstance !== undefined ? "F5_DEV_INSTANCE" : "T3CODE_DEV_INSTANCE";
 
     const { offset, source } = yield* Effect.try({
-      try: () => resolveOffset({ portOffset, devInstance }),
+      try: () => resolveOffset({ portOffset, portOffsetName, devInstance, devInstanceName }),
       catch: (cause) =>
         new DevRunnerError({
           message: cause instanceof Error ? cause.message : String(cause),
@@ -437,7 +448,7 @@ export function runDevRunnerWithInput(input: DevRunnerCliInput) {
         : "";
 
     yield* Effect.logInfo(
-      `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.T3CODE_PORT)} webPort=${String(env.PORT)} stateDir=${String(env.T3CODE_STATE_DIR)}`,
+      `[dev-runner] mode=${input.mode} source=${source}${selectionSuffix} serverPort=${String(env.T3CODE_PORT)} webPort=${String(env.PORT)} stateDir=${String(env.F5_STATE_DIR)}`,
     );
 
     if (input.dryRun) {
@@ -486,8 +497,13 @@ const devRunnerCli = Command.make("dev-runner", {
     Argument.withDescription("Development mode to run."),
   ),
   stateDir: Flag.string("state-dir").pipe(
-    Flag.withDescription("State directory path (forwards to T3CODE_STATE_DIR)."),
-    Flag.withFallbackConfig(optionalStringConfig("T3CODE_STATE_DIR")),
+    Flag.withDescription("State directory path (forwards to F5_STATE_DIR/T3CODE_STATE_DIR)."),
+    Flag.withFallbackConfig(
+      Config.all({
+        f5StateDir: optionalStringConfig("F5_STATE_DIR"),
+        t3StateDir: optionalStringConfig("T3CODE_STATE_DIR"),
+      }).pipe(Config.map(({ f5StateDir, t3StateDir }) => f5StateDir ?? t3StateDir)),
+    ),
   ),
   authToken: Flag.string("auth-token").pipe(
     Flag.withDescription("Auth token (forwards to T3CODE_AUTH_TOKEN)."),

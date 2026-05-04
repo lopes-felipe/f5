@@ -92,6 +92,7 @@ export function IntegrationsSettings() {
         hasProjects={hasProjects}
         codexBinaryPath={settings.codexBinaryPath}
         codexHomePath={settings.codexHomePath}
+        claudeBinaryPath={settings.claudeBinaryPath}
       />
     </>
   );

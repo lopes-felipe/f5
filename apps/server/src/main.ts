@@ -9,6 +9,7 @@
 import { Config, Data, Effect, FileSystem, Layer, Option, Path, Schema, ServiceMap } from "effect";
 import { Command, Flag } from "effect/unstable/cli";
 import { NetService } from "@t3tools/shared/Net";
+import { legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 import {
   DEFAULT_PORT,
   deriveServerPaths,
@@ -21,6 +22,11 @@ import { fixPath, resolveBaseDir, resolveStateDir } from "./os-jank";
 import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
 import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
+import {
+  migrateLegacyT3StateIfNeeded,
+  shouldMigrateLegacyT3State,
+  writeLegacyStateMigrationFailureSentinel,
+} from "./legacyStateMigration";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { ProviderHealthLive } from "./provider/Layers/ProviderHealth";
 import { Server } from "./wsServer";
@@ -101,7 +107,9 @@ const CliEnvConfig = Config.all({
   ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  f5Home: Config.string("F5_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  f5StateDir: Config.string("F5_STATE_DIR").pipe(Config.option, Config.map(Option.getOrUndefined)),
   stateDir: Config.string("T3CODE_STATE_DIR").pipe(
     Config.option,
     Config.map(Option.getOrUndefined),
@@ -132,6 +140,14 @@ const CliEnvConfig = Config.all({
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
   Option.getOrElse(Option.filter(flag, Boolean), () => envValue);
 
+const trimToUndefined = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed : undefined;
+};
+
+const optionStringToTrimmedUndefined = (value: Option.Option<string>): string | undefined =>
+  trimToUndefined(Option.getOrUndefined(value));
+
 const ServerConfigLive = (input: CliInput) =>
   Layer.effect(
     ServerConfig,
@@ -160,14 +176,21 @@ const ServerConfigLive = (input: CliInput) =>
         },
       });
       const devUrl = Option.getOrElse(input.devUrl, () => env.devUrl);
-      const explicitStateDir = Option.getOrUndefined(input.stateDir) ?? env.stateDir;
+      const explicitStateDir =
+        optionStringToTrimmedUndefined(input.stateDir) ??
+        trimToUndefined(env.f5StateDir) ??
+        trimToUndefined(env.stateDir);
       const path = yield* Path.Path;
       const resolvedExplicitStateDir =
         explicitStateDir !== undefined ? yield* resolveStateDir(explicitStateDir) : undefined;
+      const explicitHomeDir =
+        optionStringToTrimmedUndefined(input.t3Home) ??
+        trimToUndefined(env.f5Home) ??
+        trimToUndefined(env.t3Home);
       const baseDir =
         resolvedExplicitStateDir !== undefined
           ? path.dirname(resolvedExplicitStateDir)
-          : yield* resolveBaseDir(Option.getOrUndefined(input.t3Home) ?? env.t3Home);
+          : yield* resolveBaseDir(explicitHomeDir);
       const derivedPaths =
         resolvedExplicitStateDir !== undefined
           ? {
@@ -220,6 +243,59 @@ const ServerConfigLive = (input: CliInput) =>
         logWebSocketEvents,
         observabilityEnabled: env.observabilityEnabled ?? false,
       } satisfies ServerConfigShape;
+
+      const legacyT3StateDir = legacyT3UserdataStateDir();
+      if (path.resolve(config.stateDir) === path.resolve(legacyT3StateDir)) {
+        return yield* new StartupError({
+          message:
+            "Refusing to use the legacy T3 Code userdata directory as F5 state. " +
+            "Unset F5_HOME/F5_STATE_DIR/T3CODE_HOME/T3CODE_STATE_DIR or point them outside ~/.t3 " +
+            "so F5 can copy legacy state without mutating the original database.",
+        });
+      }
+
+      if (
+        shouldMigrateLegacyT3State({
+          stateDir: config.stateDir,
+          baseDir: config.baseDir,
+          hasExplicitStateDir: resolvedExplicitStateDir !== undefined,
+          devUrl: config.devUrl,
+        })
+      ) {
+        const result = yield* migrateLegacyT3StateIfNeeded({
+          targetStateDir: config.stateDir,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.gen(function* () {
+              yield* Effect.logError(
+                "failed to copy legacy T3 state into F5 state directory; continuing with empty F5 state",
+                { cause },
+              );
+              yield* writeLegacyStateMigrationFailureSentinel({
+                targetStateDir: config.stateDir,
+                cause,
+              }).pipe(
+                Effect.catch((sentinelCause) =>
+                  Effect.logWarning("failed to write legacy migration failure sentinel", {
+                    cause: sentinelCause,
+                  }),
+                ),
+              );
+              return { status: "skipped", reason: "previous-failure" } as const;
+            }),
+          ),
+        );
+        if (result.status === "migrated") {
+          yield* Effect.logInfo("copied legacy T3 state into F5 state directory", {
+            legacyStateDir: result.legacyStateDir,
+            targetStateDir: result.targetStateDir,
+          });
+        } else if (result.reason === "previous-failure") {
+          yield* Effect.logWarning("legacy T3 state migration was skipped after a prior failure", {
+            targetStateDir: config.stateDir,
+          });
+        }
+      }
 
       return config;
     }).pipe(
@@ -369,11 +445,11 @@ const hostFlag = Flag.string("host").pipe(
   Flag.optional,
 );
 const t3HomeFlag = Flag.string("home-dir").pipe(
-  Flag.withDescription("Base directory for all F5 data (equivalent to T3CODE_HOME)."),
+  Flag.withDescription("Base directory for all F5 data (equivalent to F5_HOME/T3CODE_HOME)."),
   Flag.optional,
 );
 const stateDirFlag = Flag.string("state-dir").pipe(
-  Flag.withDescription("State directory path (equivalent to T3CODE_STATE_DIR)."),
+  Flag.withDescription("State directory path (equivalent to F5_STATE_DIR/T3CODE_STATE_DIR)."),
   Flag.optional,
 );
 const devUrlFlag = Flag.string("dev-url").pipe(

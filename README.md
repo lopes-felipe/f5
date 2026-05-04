@@ -141,7 +141,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`docs/architecture.md`](./docs/a
 
 ## Configuration
 
-The `T3CODE_*` prefix is inherited from the upstream T3 Code project and is retained for backwards compatibility — see [`NOTICE.md`](./NOTICE.md). Full reference: [`docs/environment.md`](./docs/environment.md).
+F5 stores persistent state under `~/.f5` by default. Prefer `F5_HOME` and `F5_STATE_DIR` for overrides; the inherited `T3CODE_*` variables remain supported for backwards compatibility — see [`NOTICE.md`](./NOTICE.md). Full reference: [`docs/environment.md`](./docs/environment.md).
 
 ## Documentation
 

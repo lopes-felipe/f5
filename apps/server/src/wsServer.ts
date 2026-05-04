@@ -114,11 +114,13 @@ import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
+import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
+import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 
@@ -387,6 +389,7 @@ export type ServerCoreRuntimeServices =
   | CodexMcpEventBus
   | CodexMcpSyncService
   | CodexOAuthManager
+  | McpRuntimeService
   | ProjectMcpConfigService;
 
 export type ServerRuntimeServices =
@@ -468,6 +471,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const codexMcpEventBus = yield* CodexMcpEventBus;
   const codexMcpSyncService = yield* CodexMcpSyncService;
   const codexOAuthManager = yield* CodexOAuthManager;
+  const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -1202,6 +1206,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             orchestrationEngine,
             git,
             projectSetupScriptRunner,
+            worktreesDir: serverConfig.worktreesDir,
           });
         }
         return yield* orchestrationEngine.dispatch(normalizedCommand);
@@ -1613,7 +1618,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.gitCreateWorktree: {
         const body = stripRequestTag(request.body);
-        return yield* git.createWorktree(body);
+        const targetBranch = body.newBranch ?? body.branch;
+        return yield* git.createWorktree({
+          ...body,
+          path:
+            body.path ??
+            resolveDefaultWorktreePath({
+              worktreesDir: serverConfig.worktreesDir,
+              cwd: body.cwd,
+              branch: targetBranch,
+            }),
+        });
       }
 
       case WS_METHODS.gitRemoveWorktree: {
@@ -1775,6 +1790,47 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
+      }
+
+      case WS_METHODS.mcpGetProviderStatus: {
+        const body = stripRequestTag(request.body);
+        return yield* mcpRuntimeService.getProviderStatus(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.mcpGetServerStatuses: {
+        const body = stripRequestTag(request.body);
+        return yield* mcpRuntimeService.getServerStatuses(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.mcpStartLogin: {
+        const body = stripRequestTag(request.body);
+        return yield* mcpRuntimeService.startLogin(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.mcpGetLoginStatus: {
+        const body = stripRequestTag(request.body);
+        return yield* mcpRuntimeService.getLoginStatus(body);
       }
 
       case WS_METHODS.mcpGetCodexStatus: {

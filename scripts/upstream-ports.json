@@ -1,0 +1,80 @@
+{
+  "9acf46a76d60e31098034267b36fd4f6e3a15ea6": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Applied iOS-safe 16px small-viewport font sizing to composer and sidebar raw text inputs."
+  },
+  "7da6522fb84ba9616ebe24649a7d6fa1a0d51364": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Replaced the add-project plus icon with FolderPlusIcon."
+  },
+  "3a1daa87ac103da0c176426e82eb576d87046bdf": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added accessible dismiss controls to stacked and anchored toasts."
+  },
+  "047a0a697c9ae5563a19b54f78b9909dc9b33cf4": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added pointer cursor styling to select triggers."
+  },
+  "f2205bdc4297ddc4b854bc10bdcc0234113e102e": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added padding/margin around the composer provider model picker row to avoid focus-ring clipping."
+  },
+  "cadd7086462c2db3c92185d4a5488f9ad132cc34": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Kept the sidebar full-title tooltip and added delay plus touch suppression."
+  },
+  "86c94b48522b279ca411067529dc89a9aca8ee7b": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Allowed closing an already-open diff panel when the project is not a git repository."
+  },
+  "69d9a659a36ee246c543e46a522556918ed4ed9e": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Filtered closed/merged PR status only on the repository default branch and added regression tests."
+  },
+  "de05b0c94e257e69afc346ae6daaea85fcfb4e65": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Preserved manual project order and explicit collapsed project state in f5's renderer store."
+  },
+  "60387f67e99d68eba414d2c2e00c8ccdb145b0c3": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "No global Restore defaults control exists in f5; defaults remain category-local."
+  },
+  "33dadb5aeca1ac5201682daed6e1412d57e14287": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Timeline autoscroll anchoring behavior and browser regression coverage were already present in f5."
+  },
+  "6d1505c9fb6ef9a7e147133bb9827f2f36e6945c": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Introduced a shared right-panel sheet with titlebar-height offset."
+  },
+  "19d47408a53181446a02fac967846cc15d77d5b8": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Moved the plan sidebar into the shared right-panel sheet on narrow layouts and kept composer overflow rules."
+  }
+}

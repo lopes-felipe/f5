@@ -124,6 +124,7 @@ import {
 } from "../types";
 import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
   fetchThreadFileChangesDelta,
@@ -141,6 +142,7 @@ import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionSta
 import BranchToolbar from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import PlanSidebar from "./PlanSidebar";
+import { RightPanelSheet } from "./RightPanelSheet";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
@@ -174,6 +176,7 @@ import {
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
+import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   getClaudeProjectSettings,
   resolveAppModelSelection,
@@ -622,6 +625,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const previousThreadTaskCountRef = useRef(0);
   const tasksPanelManuallyCollapsedRef = useRef(false);
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
+  const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
@@ -1082,6 +1086,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           : undefined;
       return {
         claudeAgent: {
+          ...(settings.claudeBinaryPath ? { binaryPath: settings.claudeBinaryPath } : {}),
           subagentsEnabled: activeProjectClaudeSettings.subagentsEnabled,
           subagentModel: activeProjectClaudeSettings.subagentModel,
           ...(launchArgs ? { launchArgs } : {}),
@@ -1095,6 +1100,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     activeProjectClaudeSettings.subagentModel,
     activeProjectClaudeSettings.subagentsEnabled,
     selectedProvider,
+    settings.claudeBinaryPath,
     settings.claudeLaunchArgs,
     settings.codexBinaryPath,
     settings.codexHomePath,
@@ -2496,6 +2502,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       return !open;
     });
+  }, [activePlan?.turnId, activeProposedPlan?.turnId]);
+  const closePlanSidebar = useCallback(() => {
+    setPlanSidebarOpen(false);
+    const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
+    if (turnKey) {
+      planSidebarDismissedForTurnRef.current = turnKey;
+    }
   }, [activePlan?.turnId, activeProposedPlan?.turnId]);
 
   const persistThreadSettingsForNextTurn = useCallback(
@@ -5223,8 +5236,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
                         className={cn(
                           "flex min-w-0 flex-1 items-center",
                           isComposerFooterCompact
-                            ? "gap-1 overflow-hidden"
-                            : "gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                            ? "-m-1 gap-1 overflow-hidden p-1"
+                            : "-m-1 gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
                         )}
                       >
                         {/* Provider/model picker */}
@@ -5575,21 +5588,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
           {/* end chat column */}
 
           {/* Plan sidebar */}
-          {planSidebarOpen ? (
+          {planSidebarOpen && !shouldUsePlanSidebarSheet ? (
             <PlanSidebar
               activePlan={activePlan}
               activeProposedPlan={activeProposedPlan}
               markdownCwd={gitCwd ?? undefined}
               workspaceRoot={activeProject?.cwd ?? undefined}
               timestampFormat={timestampFormat}
-              onClose={() => {
-                setPlanSidebarOpen(false);
-                // Track that the user explicitly dismissed for this turn so auto-open won't fight them.
-                const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
-                if (turnKey) {
-                  planSidebarDismissedForTurnRef.current = turnKey;
-                }
-              }}
+              mode="sidebar"
+              onClose={closePlanSidebar}
             />
           ) : null}
         </div>
@@ -5623,6 +5630,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
             />
           );
         })()}
+
+        {shouldUsePlanSidebarSheet ? (
+          <RightPanelSheet open={planSidebarOpen} onClose={closePlanSidebar}>
+            <PlanSidebar
+              activePlan={activePlan}
+              activeProposedPlan={activeProposedPlan}
+              markdownCwd={gitCwd ?? undefined}
+              workspaceRoot={activeProject?.cwd ?? undefined}
+              timestampFormat={timestampFormat}
+              mode="sheet"
+              onClose={closePlanSidebar}
+            />
+          </RightPanelSheet>
+        ) : null}
 
         {expandedImage && expandedImageItem && (
           <div

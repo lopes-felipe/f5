@@ -16,6 +16,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Effect, Exit, Layer, ManagedRuntime, Queue, Scope, Stream } from "effect";
 
+import { ServerConfig, type ServerConfigShape } from "../../config.ts";
 import { TextGenerationError } from "../../git/Errors.ts";
 import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
 import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
@@ -393,11 +394,36 @@ async function createHarness(initialSnapshot: OrchestrationReadModel) {
   const createWorktree = vi.fn<GitCoreShape["createWorktree"]>((input) =>
     Effect.succeed({
       worktree: {
-        path: `${input.cwd}/.t3/worktrees/${input.newBranch ?? "worktree"}`,
+        path: input.path ?? `${input.cwd}/.f5/worktrees/${input.newBranch ?? "worktree"}`,
         branch: input.newBranch ?? "mocked-worktree-branch",
       },
     }),
   );
+  const serverConfig = {
+    mode: "web",
+    port: 0,
+    host: undefined,
+    cwd: "/tmp/workflow-service",
+    baseDir: "/tmp/f5-workflow",
+    stateDir: "/tmp/f5-workflow/userdata",
+    dbPath: "/tmp/f5-workflow/userdata/state.sqlite",
+    keybindingsConfigPath: "/tmp/f5-workflow/userdata/keybindings.json",
+    worktreesDir: "/tmp/f5-workflow/worktrees",
+    attachmentsDir: "/tmp/f5-workflow/userdata/attachments",
+    logsDir: "/tmp/f5-workflow/userdata/logs",
+    serverLogPath: "/tmp/f5-workflow/userdata/logs/server.log",
+    providerLogsDir: "/tmp/f5-workflow/userdata/logs/provider",
+    providerEventLogPath: "/tmp/f5-workflow/userdata/logs/provider/events.log",
+    terminalLogsDir: "/tmp/f5-workflow/userdata/logs/terminals",
+    anonymousIdPath: "/tmp/f5-workflow/userdata/anonymous-id",
+    staticDir: undefined,
+    devUrl: undefined,
+    noBrowser: true,
+    authToken: undefined,
+    autoBootstrapProjectFromCwd: false,
+    logWebSocketEvents: false,
+    observabilityEnabled: false,
+  } satisfies ServerConfigShape;
 
   const engine: OrchestrationEngineShape = {
     getReadModel: () => Effect.succeed(snapshot),
@@ -490,6 +516,7 @@ async function createHarness(initialSnapshot: OrchestrationReadModel) {
           createWorktree,
         } as unknown as GitCoreShape),
       ),
+      Layer.provideMerge(Layer.succeed(ServerConfig, serverConfig)),
     ),
   );
 
@@ -1076,17 +1103,17 @@ describe("WorkflowService", () => {
     const createWorktreeArgs = harness.createWorktree.mock.calls[0]?.[0];
     expect(createWorktreeArgs?.cwd).toBe("/tmp/project");
     expect(createWorktreeArgs?.branch).toBe("main");
-    expect(createWorktreeArgs?.path).toBeNull();
     expect(typeof createWorktreeArgs?.newBranch).toBe("string");
+    expect(createWorktreeArgs?.path).toBe(
+      `/tmp/f5-workflow/worktrees/project/${createWorktreeArgs?.newBranch?.replace(/\//g, "-")}`,
+    );
 
     const threadCreate = harness.dispatched.find(
       (command): command is Extract<OrchestrationCommand, { type: "thread.create" }> =>
         command.type === "thread.create",
     );
     expect(threadCreate?.branch).toBe(createWorktreeArgs?.newBranch);
-    expect(threadCreate?.worktreePath).toBe(
-      `/tmp/project/.t3/worktrees/${createWorktreeArgs?.newBranch}`,
-    );
+    expect(threadCreate?.worktreePath).toBe(createWorktreeArgs?.path);
   });
 
   it("rejects startImplementation when envMode=worktree without a base branch", async () => {

@@ -2,9 +2,13 @@ import type {
   McpCodexStatusResult,
   McpCommonConfigResult,
   McpEffectiveConfigResult,
+  McpLoginStatusResult,
+  McpProviderStatusResult,
   McpOauthLoginStatusResult,
   McpProjectConfigResult,
+  McpServerStatusesResult,
   ProjectId,
+  ProviderKind,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
@@ -16,6 +20,25 @@ export const mcpQueryKeys = {
   commonConfig: () => ["mcp", "commonConfig"] as const,
   projectConfig: (projectId: ProjectId | null) => ["mcp", "projectConfig", projectId] as const,
   effectiveConfig: (projectId: ProjectId | null) => ["mcp", "effectiveConfig", projectId] as const,
+  providerStatus: (
+    provider: ProviderKind,
+    projectId: ProjectId | null,
+    binaryPath: CodexEnvironmentKeyPart,
+    homePath: CodexEnvironmentKeyPart,
+  ) => ["mcp", "providerStatus", provider, projectId, binaryPath, homePath] as const,
+  serverStatuses: (
+    provider: ProviderKind,
+    projectId: ProjectId | null,
+    binaryPath: CodexEnvironmentKeyPart,
+    homePath: CodexEnvironmentKeyPart,
+  ) => ["mcp", "serverStatuses", provider, projectId, binaryPath, homePath] as const,
+  loginStatus: (
+    provider: ProviderKind,
+    projectId: ProjectId | null,
+    serverName: string | null,
+    binaryPath: CodexEnvironmentKeyPart,
+    homePath: CodexEnvironmentKeyPart,
+  ) => ["mcp", "loginStatus", provider, projectId, serverName, binaryPath, homePath] as const,
   codexStatus: (
     projectId: ProjectId | null,
     binaryPath: CodexEnvironmentKeyPart,
@@ -92,6 +115,101 @@ export function mcpCodexStatusQueryOptions(input: {
       }
       return ensureNativeApi().mcp.getCodexStatus({
         projectId: input.projectId,
+        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
+        ...(input.homePath ? { homePath: input.homePath } : {}),
+      });
+    },
+  });
+}
+
+export function mcpProviderStatusQueryOptions(input: {
+  readonly provider: ProviderKind;
+  readonly projectId: ProjectId | null;
+  readonly binaryPath?: string;
+  readonly homePath?: string;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpProviderStatusResult>({
+    queryKey: mcpQueryKeys.providerStatus(
+      input.provider,
+      input.projectId,
+      input.binaryPath ?? null,
+      input.homePath ?? null,
+    ),
+    enabled: (input.enabled ?? true) && Boolean(input.projectId),
+    queryFn: async () => {
+      if (!input.projectId) {
+        throw new Error("MCP provider status is unavailable.");
+      }
+      return ensureNativeApi().mcp.getProviderStatus({
+        provider: input.provider,
+        projectId: input.projectId,
+        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
+        ...(input.homePath ? { homePath: input.homePath } : {}),
+      });
+    },
+  });
+}
+
+export function mcpServerStatusesQueryOptions(input: {
+  readonly provider: ProviderKind;
+  readonly projectId: ProjectId | null;
+  readonly binaryPath?: string;
+  readonly homePath?: string;
+  readonly enabled?: boolean;
+}) {
+  return queryOptions<McpServerStatusesResult>({
+    queryKey: mcpQueryKeys.serverStatuses(
+      input.provider,
+      input.projectId,
+      input.binaryPath ?? null,
+      input.homePath ?? null,
+    ),
+    enabled: (input.enabled ?? true) && Boolean(input.projectId),
+    queryFn: async () => {
+      if (!input.projectId) {
+        throw new Error("MCP server statuses are unavailable.");
+      }
+      return ensureNativeApi().mcp.getServerStatuses({
+        provider: input.provider,
+        projectId: input.projectId,
+        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
+        ...(input.homePath ? { homePath: input.homePath } : {}),
+      });
+    },
+  });
+}
+
+export function mcpLoginStatusQueryOptions(input: {
+  readonly provider: ProviderKind;
+  readonly projectId: ProjectId | null;
+  readonly serverName?: string | null;
+  readonly binaryPath?: string;
+  readonly homePath?: string;
+  readonly enabled?: boolean;
+  readonly refetchInterval?: number | false;
+}) {
+  return queryOptions<McpLoginStatusResult>({
+    queryKey: mcpQueryKeys.loginStatus(
+      input.provider,
+      input.projectId,
+      input.serverName ?? null,
+      input.binaryPath ?? null,
+      input.homePath ?? null,
+    ),
+    enabled:
+      (input.enabled ?? true) &&
+      Boolean(input.projectId) &&
+      (input.provider === "claudeAgent" || Boolean(input.serverName)),
+    refetchInterval: input.refetchInterval ?? false,
+    queryFn: async () => {
+      if (!input.projectId) {
+        throw new Error("MCP login status is unavailable.");
+      }
+      return ensureNativeApi().mcp.getLoginStatus({
+        provider: input.provider,
+        projectId: input.projectId,
+        ...(input.serverName ? { serverName: input.serverName } : {}),
         ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
         ...(input.homePath ? { homePath: input.homePath } : {}),
       });

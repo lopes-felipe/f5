@@ -83,6 +83,10 @@
     "./path": {
       "types": "./src/path.ts",
       "import": "./src/path.ts"
+    },
+    "./appStatePaths": {
+      "types": "./src/appStatePaths.ts",
+      "import": "./src/appStatePaths.ts"
     }
   },
   "scripts": {

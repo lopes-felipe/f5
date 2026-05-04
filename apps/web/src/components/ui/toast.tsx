@@ -10,6 +10,7 @@ import {
   InfoIcon,
   LoaderCircleIcon,
   TriangleAlertIcon,
+  XIcon,
 } from "lucide-react";
 
 import { cn } from "~/lib/utils";
@@ -34,6 +35,9 @@ const TOAST_ICONS = {
   success: CircleCheckIcon,
   warning: TriangleAlertIcon,
 } as const;
+
+const toastCloseClassName =
+  "inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 type ToastPosition =
   | "top-left"
@@ -302,6 +306,13 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                     {toast.actionProps.children}
                   </Toast.Action>
                 )}
+                <Toast.Close
+                  aria-label="Dismiss"
+                  className={toastCloseClassName}
+                  data-slot="toast-close"
+                >
+                  <XIcon className="size-3.5" />
+                </Toast.Close>
               </Toast.Content>
             </Toast.Root>
           );
@@ -391,6 +402,13 @@ function AnchoredToasts() {
                           {toast.actionProps.children}
                         </Toast.Action>
                       )}
+                      <Toast.Close
+                        aria-label="Dismiss"
+                        className={toastCloseClassName}
+                        data-slot="toast-close"
+                      >
+                        <XIcon className="size-3.5" />
+                      </Toast.Close>
                     </Toast.Content>
                   )}
                 </Toast.Root>

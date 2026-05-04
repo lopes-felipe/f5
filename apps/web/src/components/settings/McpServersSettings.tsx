@@ -1,11 +1,14 @@
 import {
-  type McpCodexStatusResult,
   type McpConfigScope,
   type McpCommonConfigResult,
+  type McpLoginStatusResult,
+  type McpProviderStatusResult,
   type McpProjectConfigResult,
   McpServerDefinition,
   McpProjectServersConfig,
   type ProjectId,
+  type ProviderKind,
+  type McpServerStatusEntry,
 } from "@t3tools/contracts";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -15,11 +18,12 @@ import { useEffect, useMemo, useState } from "react";
 import { ensureNativeApi } from "../../nativeApi";
 import {
   mcpCommonConfigQueryOptions,
-  mcpCodexStatusQueryOptions,
   mcpEffectiveConfigQueryOptions,
-  mcpOAuthStatusQueryOptions,
+  mcpLoginStatusQueryOptions,
+  mcpProviderStatusQueryOptions,
   mcpProjectConfigQueryOptions,
   mcpQueryKeys,
+  mcpServerStatusesQueryOptions,
 } from "../../lib/mcpReactQuery";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { Badge } from "../ui/badge";
@@ -629,8 +633,9 @@ function parseImportedServers(text: string): McpProjectServersConfig {
   return parseCodexTomlServers(trimmed);
 }
 
-function statusBadge(
-  status: McpCodexStatusResult | undefined,
+function providerStatusBadge(
+  provider: ProviderKind,
+  status: McpProviderStatusResult | undefined,
   options: {
     readonly isLoading: boolean;
     readonly isApplying: boolean;
@@ -645,63 +650,142 @@ function statusBadge(
   if (!status) {
     return <Badge variant="outline">Unknown</Badge>;
   }
-  if (status.support === "supported") {
-    return <Badge variant="success">Ready</Badge>;
+
+  switch (provider) {
+    case "claudeAgent":
+      if (!status.available) {
+        return <Badge variant="error">Unavailable</Badge>;
+      }
+      if (status.authStatus === "authenticated") {
+        return <Badge variant="success">Authenticated</Badge>;
+      }
+      if (status.authStatus === "unauthenticated") {
+        return <Badge variant="warning">Login required</Badge>;
+      }
+      return <Badge variant="outline">Unknown</Badge>;
+    case "codex":
+      if (status.support === "supported") {
+        return <Badge variant="success">Control ready</Badge>;
+      }
+      if (status.support === "unsupported") {
+        return <Badge variant="warning">Unsupported</Badge>;
+      }
+      return <Badge variant="error">Unavailable</Badge>;
   }
-  if (status.support === "unsupported") {
-    return <Badge variant="warning">Unsupported</Badge>;
+}
+
+function serverStatusBadge(
+  provider: ProviderKind,
+  status: McpServerStatusEntry | undefined,
+  loginStatus: McpLoginStatusResult | undefined,
+  options?: {
+    readonly isOverridden?: boolean;
+  },
+) {
+  if (options?.isOverridden) {
+    return <Badge variant="outline">Overridden</Badge>;
   }
-  return <Badge variant="error">Unavailable</Badge>;
+  if (loginStatus?.status === "pending") {
+    return (
+      <Badge variant="info">{loginStatus.mode === "oauth" ? "Connecting" : "Logging in"}</Badge>
+    );
+  }
+  if (!status) {
+    return <Badge variant="outline">Unknown</Badge>;
+  }
+  if (
+    provider === "claudeAgent" &&
+    status.state === "unknown" &&
+    status.authStatus === "authenticated"
+  ) {
+    return <Badge variant="outline">Configured</Badge>;
+  }
+  switch (status.state) {
+    case "disabled":
+      return <Badge variant="warning">Disabled</Badge>;
+    case "ready":
+      return <Badge variant="success">Ready</Badge>;
+    case "starting":
+      return <Badge variant="info">Starting</Badge>;
+    case "login-required":
+      return <Badge variant="warning">Login required</Badge>;
+    case "failed":
+      return <Badge variant="error">Failed</Badge>;
+    default:
+      return <Badge variant="outline">Unknown</Badge>;
+  }
 }
 
 function McpServerRow(props: {
+  readonly selectedProvider: ProviderKind;
   readonly projectId: ProjectId | null;
   readonly binaryPath: string | undefined;
   readonly homePath: string | undefined;
   readonly name: string;
   readonly server: McpProjectServersConfig[string];
-  readonly statusSupport: McpCodexStatusResult["support"] | undefined;
+  readonly providerStatus: McpProviderStatusResult | undefined;
+  readonly serverStatus: McpServerStatusEntry | undefined;
+  readonly isOverridden: boolean;
+  readonly overrideTargetEnabled: boolean | undefined;
   readonly onToggleEnabled: (checked: boolean) => void;
   readonly onEdit: () => void;
   readonly onRemove: () => void;
 }) {
   const queryClient = useQueryClient();
-  const [oauthError, setOauthError] = useState<string | null>(null);
-  const [isStartingOauth, setIsStartingOauth] = useState(false);
-  const hasOauth = Boolean(props.server.oauthResource);
-  const oauthStatusQuery = useQuery(
-    mcpOAuthStatusQueryOptions({
+  const [loginError, setLoginError] = useState<string | null>(null);
+  const loginStatusQuery = useQuery(
+    mcpLoginStatusQueryOptions({
+      provider: props.selectedProvider,
       projectId: props.projectId,
-      serverName: props.name,
+      serverName: props.selectedProvider === "codex" ? props.name : null,
       ...(props.binaryPath ? { binaryPath: props.binaryPath } : {}),
       ...(props.homePath ? { homePath: props.homePath } : {}),
-      enabled: hasOauth && props.statusSupport === "supported" && props.projectId !== null,
+      enabled:
+        props.selectedProvider === "codex" && props.projectId !== null && !props.isOverridden,
       refetchInterval:
-        hasOauth && props.statusSupport === "supported" && props.projectId !== null ? 2_000 : false,
+        props.selectedProvider === "codex" && props.projectId !== null && !props.isOverridden
+          ? 2_000
+          : false,
     }),
   );
 
-  const oauthDisabledReason = !hasOauth
-    ? "This server does not declare an OAuth resource."
+  const isCodexProvider = props.selectedProvider === "codex";
+  const loginModeHint =
+    loginStatusQuery.data?.mode ??
+    (props.server.type === "http" || props.server.oauthResource ? "oauth" : "cli");
+  const shouldShowLoginAction =
+    isCodexProvider &&
+    !props.isOverridden &&
+    (props.serverStatus?.state === "login-required" ||
+      loginStatusQuery.data?.status === "pending" ||
+      loginStatusQuery.data?.status === "failed");
+  const loginDisabledReason = !isCodexProvider
+    ? null
     : props.projectId === null
-      ? "Select a project to manage project-scoped OAuth."
-      : props.statusSupport !== "supported"
-        ? "OAuth is handled by Codex only when MCP control/status RPCs are available."
-        : null;
+      ? "Select a project to manage shared MCP login."
+      : props.isOverridden
+        ? props.overrideTargetEnabled === false
+          ? "This common-scope entry is overridden by a disabled project-scoped server with the same name."
+          : "This common-scope entry is overridden by a project-scoped server with the same name."
+        : props.server.enabled === false
+          ? "Enable this server before starting MCP login."
+          : props.providerStatus?.support !== "supported"
+            ? "Codex MCP login requires MCP control/status support."
+            : null;
 
-  const oauthButton = (
+  const loginButton = (
     <Button
       size="xs"
       variant="outline"
-      disabled={oauthDisabledReason !== null || isStartingOauth}
+      disabled={loginDisabledReason !== null || loginStatusQuery.data?.status === "pending"}
       onClick={() => {
-        if (!props.projectId || oauthDisabledReason !== null) {
+        if (!props.projectId || loginDisabledReason !== null) {
           return;
         }
-        setOauthError(null);
-        setIsStartingOauth(true);
+        setLoginError(null);
         void ensureNativeApi()
-          .mcp.startOAuthLogin({
+          .mcp.startLogin({
+            provider: props.selectedProvider,
             projectId: props.projectId,
             serverName: props.name,
             ...(props.binaryPath ? { binaryPath: props.binaryPath } : {}),
@@ -714,14 +798,17 @@ function McpServerRow(props: {
             await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
           })
           .catch((error) => {
-            setOauthError(readErrorMessage(error, "Failed to start MCP OAuth login."));
-          })
-          .finally(() => {
-            setIsStartingOauth(false);
+            setLoginError(readErrorMessage(error, "Failed to start MCP login."));
           });
       }}
     >
-      {isStartingOauth ? "Connecting..." : "Connect"}
+      {loginStatusQuery.data?.status === "pending"
+        ? loginModeHint === "oauth"
+          ? "Connecting..."
+          : "Logging in..."
+        : loginModeHint === "oauth"
+          ? "Connect"
+          : "Login"}
     </Button>
   );
 
@@ -732,16 +819,9 @@ function McpServerRow(props: {
           <div className="flex flex-wrap items-center gap-2">
             <p className="truncate text-sm font-medium text-foreground">{props.name}</p>
             <Badge variant="outline">{props.server.type}</Badge>
-            {props.server.enabled === false ? <Badge variant="warning">Disabled</Badge> : null}
-            {oauthStatusQuery.data?.status === "pending" ? (
-              <Badge variant="info">OAuth pending</Badge>
-            ) : null}
-            {oauthStatusQuery.data?.status === "completed" ? (
-              <Badge variant="success">OAuth connected</Badge>
-            ) : null}
-            {oauthStatusQuery.data?.status === "failed" ? (
-              <Badge variant="error">OAuth failed</Badge>
-            ) : null}
+            {serverStatusBadge(props.selectedProvider, props.serverStatus, loginStatusQuery.data, {
+              isOverridden: props.isOverridden,
+            })}
           </div>
           <p className="truncate text-xs text-muted-foreground">
             {props.server.type === "stdio" ? props.server.command : props.server.url}
@@ -757,14 +837,16 @@ function McpServerRow(props: {
               aria-label={`Enable MCP server ${props.name}`}
             />
           </div>
-          {oauthDisabledReason ? (
-            <Tooltip>
-              <TooltipTrigger render={oauthButton} />
-              <TooltipPopup side="top">{oauthDisabledReason}</TooltipPopup>
-            </Tooltip>
-          ) : (
-            oauthButton
-          )}
+          {isCodexProvider && shouldShowLoginAction ? (
+            loginDisabledReason ? (
+              <Tooltip>
+                <TooltipTrigger render={loginButton} />
+                <TooltipPopup side="top">{loginDisabledReason}</TooltipPopup>
+              </Tooltip>
+            ) : (
+              loginButton
+            )
+          ) : null}
           <Button size="xs" variant="outline" onClick={props.onEdit}>
             Edit
           </Button>
@@ -773,13 +855,26 @@ function McpServerRow(props: {
           </Button>
         </div>
       </div>
-      {oauthError ? <p className="text-xs text-destructive">{oauthError}</p> : null}
-      {oauthStatusQuery.data?.error ? (
-        <p className="text-xs text-destructive">{oauthStatusQuery.data.error}</p>
+      {loginError ? <p className="text-xs text-destructive">{loginError}</p> : null}
+      {loginStatusQuery.data?.error ? (
+        <p className="text-xs text-destructive">{loginStatusQuery.data.error}</p>
       ) : null}
-      {oauthStatusQuery.error ? (
+      {loginStatusQuery.data?.message ? (
+        <p className="text-xs text-muted-foreground">{loginStatusQuery.data.message}</p>
+      ) : null}
+      {loginStatusQuery.error ? (
         <p className="text-xs text-destructive">
-          {readErrorMessage(oauthStatusQuery.error, "Failed to read MCP OAuth status.")}
+          {readErrorMessage(loginStatusQuery.error, "Failed to read MCP login status.")}
+        </p>
+      ) : null}
+      {props.serverStatus?.message ? (
+        <p className="text-xs text-muted-foreground">{props.serverStatus.message}</p>
+      ) : null}
+      {props.isOverridden ? (
+        <p className="text-xs text-muted-foreground">
+          {props.overrideTargetEnabled === false
+            ? "This common-scope entry is overridden by the selected project, and the project-scoped server is currently disabled."
+            : "This common-scope entry is overridden by the selected project. Live status and login actions apply to the project-scoped server instead."}
         </p>
       ) : null}
     </div>
@@ -791,6 +886,7 @@ export function McpServersSettings(props: {
   readonly hasProjects: boolean;
   readonly codexBinaryPath: string;
   readonly codexHomePath: string;
+  readonly claudeBinaryPath: string;
 }) {
   const queryClient = useQueryClient();
   const { copyToClipboard, isCopied } = useCopyToClipboard({
@@ -801,6 +897,7 @@ export function McpServersSettings(props: {
   const [selectedScope, setSelectedScope] = useState<McpConfigScope>(
     props.selectedProject ? "project" : "common",
   );
+  const [selectedProvider, setSelectedProvider] = useState<ProviderKind>("codex");
   const [editingServerName, setEditingServerName] = useState<string | null>(null);
   const [draft, setDraft] = useState<ServerDraft>(createEmptyDraft());
   const [formError, setFormError] = useState<string | null>(null);
@@ -815,6 +912,9 @@ export function McpServersSettings(props: {
   const selectedProjectId = selectedProject?.id ?? null;
   const codexBinaryPath = trimToUndefined(props.codexBinaryPath);
   const codexHomePath = trimToUndefined(props.codexHomePath);
+  const claudeBinaryPath = trimToUndefined(props.claudeBinaryPath);
+  const selectedBinaryPath = selectedProvider === "codex" ? codexBinaryPath : claudeBinaryPath;
+  const selectedHomePath = selectedProvider === "codex" ? codexHomePath : undefined;
 
   const commonConfigQuery = useQuery(mcpCommonConfigQueryOptions());
   const projectConfigQuery = useQuery(
@@ -829,11 +929,21 @@ export function McpServersSettings(props: {
       enabled: selectedProject !== null,
     }),
   );
-  const codexStatusQuery = useQuery(
-    mcpCodexStatusQueryOptions({
+  const providerStatusQuery = useQuery(
+    mcpProviderStatusQueryOptions({
+      provider: selectedProvider,
       projectId: selectedProjectId,
-      ...(codexBinaryPath ? { binaryPath: codexBinaryPath } : {}),
-      ...(codexHomePath ? { homePath: codexHomePath } : {}),
+      ...(selectedBinaryPath ? { binaryPath: selectedBinaryPath } : {}),
+      ...(selectedHomePath ? { homePath: selectedHomePath } : {}),
+      enabled: selectedProject !== null,
+    }),
+  );
+  const serverStatusesQuery = useQuery(
+    mcpServerStatusesQueryOptions({
+      provider: selectedProvider,
+      projectId: selectedProjectId,
+      ...(selectedBinaryPath ? { binaryPath: selectedBinaryPath } : {}),
+      ...(selectedHomePath ? { homePath: selectedHomePath } : {}),
       enabled: selectedProject !== null,
     }),
   );
@@ -867,6 +977,23 @@ export function McpServersSettings(props: {
     selectedProject && effectiveConfigQuery.data
       ? formatMcpServersAsJson(effectiveConfigQuery.data.servers)
       : "";
+  const serverStatusByName = useMemo(
+    () =>
+      new Map((serverStatusesQuery.data?.statuses ?? []).map((status) => [status.name, status])),
+    [serverStatusesQuery.data],
+  );
+  const overriddenServerNames = useMemo(() => {
+    if (selectedScope !== "common" || !selectedProjectId) {
+      return new Set<string>();
+    }
+    return new Set(Object.keys(projectConfigQuery.data?.servers ?? EMPTY_PROJECT_SERVERS));
+  }, [projectConfigQuery.data, selectedProjectId, selectedScope]);
+  const overriddenServersByName = useMemo(() => {
+    if (selectedScope !== "common" || !selectedProjectId) {
+      return new Map<string, McpProjectServersConfig[string]>();
+    }
+    return new Map(Object.entries(projectConfigQuery.data?.servers ?? EMPTY_PROJECT_SERVERS));
+  }, [projectConfigQuery.data, selectedProjectId, selectedScope]);
 
   useEffect(() => {
     if (selectedScope === "project" && !selectedProjectId) {
@@ -881,6 +1008,14 @@ export function McpServersSettings(props: {
       setIsAdvancedOpen(false);
     }
   }, [activeServers, editingServerName, selectedProjectId, selectedScope]);
+
+  useEffect(
+    () =>
+      ensureNativeApi().mcp.onStatusUpdated(() => {
+        void queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
+      }),
+    [queryClient],
+  );
 
   const persistScopeServers = async (
     nextServers: McpProjectServersConfig,
@@ -1047,8 +1182,8 @@ export function McpServersSettings(props: {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {statusBadge(codexStatusQuery.data, {
-            isLoading: codexStatusQuery.isPending && !codexStatusQuery.data,
+          {providerStatusBadge(selectedProvider, providerStatusQuery.data, {
+            isLoading: providerStatusQuery.isPending && !providerStatusQuery.data,
             isApplying,
           })}
           <Button
@@ -1089,7 +1224,7 @@ export function McpServersSettings(props: {
       </div>
 
       <div className="space-y-4">
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-3">
           <label className="space-y-2">
             <span className="text-xs font-medium text-foreground">Scope</span>
             <ToggleGroup
@@ -1120,6 +1255,26 @@ export function McpServersSettings(props: {
             </ToggleGroup>
           </label>
 
+          <label className="space-y-2">
+            <span className="text-xs font-medium text-foreground">Provider</span>
+            <ToggleGroup
+              variant="outline"
+              size="xs"
+              value={[selectedProvider]}
+              onValueChange={(value) => {
+                const nextProvider = value[0];
+                if (nextProvider !== "codex" && nextProvider !== "claudeAgent") {
+                  return;
+                }
+                setSelectedProvider(nextProvider);
+                setProjectActionError(null);
+              }}
+            >
+              <Toggle value="codex">Codex</Toggle>
+              <Toggle value="claudeAgent">Claude</Toggle>
+            </ToggleGroup>
+          </label>
+
           {props.hasProjects ? (
             <div className="space-y-2">
               <span className="text-xs font-medium text-foreground">Selected project</span>
@@ -1135,19 +1290,26 @@ export function McpServersSettings(props: {
         </div>
 
         <p className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-          Project scope overrides common scope on same-name collisions. Codex status, OAuth, and
-          effective export resolve against the selected project.
+          Edit the shared MCP config once here. Provider switching only changes the live
+          status/login pane, not the stored config.
         </p>
 
         {selectedProject === null ? (
           <p className="rounded-lg border border-dashed border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-            Select a project to inspect Codex-only live control and the effective merged JSON.
+            Select a project to inspect provider-specific live status and the effective merged JSON.
           </p>
         ) : null}
 
-        {codexStatusQuery.data?.supportMessage ? (
+        {providerStatusQuery.data?.supportMessage ? (
           <p className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-            {codexStatusQuery.data.supportMessage}
+            {providerStatusQuery.data.supportMessage}
+          </p>
+        ) : null}
+        {selectedProvider === "claudeAgent" ? (
+          <p className="rounded-lg border border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+            Claude uses the same shared MCP config. Per-server Claude readiness is not surfaced here
+            yet. If Claude shows <strong>Login required</strong>, run <code>claude auth login</code>{" "}
+            in a terminal and then refresh this page.
           </p>
         ) : null}
         {(selectedScope === "common" ? commonConfigQuery.error : projectConfigQuery.error) ? (
@@ -1158,9 +1320,14 @@ export function McpServersSettings(props: {
             )}
           </p>
         ) : null}
-        {codexStatusQuery.error ? (
+        {providerStatusQuery.error ? (
           <p className="text-xs text-destructive">
-            {readErrorMessage(codexStatusQuery.error, "Failed to load Codex MCP status.")}
+            {readErrorMessage(providerStatusQuery.error, "Failed to load MCP provider status.")}
+          </p>
+        ) : null}
+        {serverStatusesQuery.error ? (
+          <p className="text-xs text-destructive">
+            {readErrorMessage(serverStatusesQuery.error, "Failed to load MCP server statuses.")}
           </p>
         ) : null}
         {effectiveConfigQuery.error ? (
@@ -1201,12 +1368,16 @@ export function McpServersSettings(props: {
                   {orderedServers.map(([name, server]) => (
                     <McpServerRow
                       key={name}
+                      selectedProvider={selectedProvider}
                       projectId={selectedProject?.id ?? null}
-                      binaryPath={codexBinaryPath}
-                      homePath={codexHomePath}
+                      binaryPath={selectedBinaryPath}
+                      homePath={selectedHomePath}
                       name={name}
                       server={server}
-                      statusSupport={codexStatusQuery.data?.support}
+                      providerStatus={providerStatusQuery.data}
+                      serverStatus={serverStatusByName.get(name)}
+                      isOverridden={selectedScope === "common" && overriddenServerNames.has(name)}
+                      overrideTargetEnabled={overriddenServersByName.get(name)?.enabled !== false}
                       onToggleEnabled={(checked) => {
                         const nextServers = toWritableProjectServers(activeServers);
                         const currentServer = nextServers[name];

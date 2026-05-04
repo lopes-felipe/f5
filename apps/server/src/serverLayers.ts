@@ -37,6 +37,7 @@ import { ProviderService } from "./provider/Services/ProviderService";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
+import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
 import { KeybindingsLive } from "./keybindings";
@@ -84,6 +85,7 @@ export function makeServerProviderLayer(): Layer.Layer<
   | CodexControlClientRegistry
   | CodexMcpSyncService
   | CodexOAuthManager
+  | McpRuntimeService
   | ProjectMcpConfigService,
   ProviderUnsupportedError,
   | SqlClient.SqlClient
@@ -140,6 +142,14 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexMcpEventBusLayer),
       Layer.provide(projectMcpConfigServiceLayer),
     );
+    const mcpRuntimeServiceLayer = McpRuntimeServiceLive.pipe(
+      Layer.provide(providerServiceLayer),
+      Layer.provide(codexControlClientRegistryLayer),
+      Layer.provide(codexMcpSyncServiceLayer),
+      Layer.provide(codexOAuthManagerLayer),
+      Layer.provide(codexMcpEventBusLayer),
+      Layer.provide(projectMcpConfigServiceLayer),
+    );
     return Layer.mergeAll(
       providerServiceLayer,
       harnessValidationLayer,
@@ -147,6 +157,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       codexControlClientRegistryLayer,
       codexMcpSyncServiceLayer,
       codexOAuthManagerLayer,
+      mcpRuntimeServiceLayer,
       projectMcpConfigServiceLayer,
     );
   }).pipe(Layer.unwrap);

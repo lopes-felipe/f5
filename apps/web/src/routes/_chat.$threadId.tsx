@@ -1,6 +1,6 @@
 import { ThreadId } from "@t3tools/contracts";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { Suspense, lazy, type ReactNode, useCallback, useEffect, useState } from "react";
+import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 
 import { useAppSettings } from "../appSettings";
 import ChatView from "../components/ChatView";
@@ -22,7 +22,8 @@ import {
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
 import { useStore } from "../store";
-import { Sheet, SheetPopup } from "../components/ui/sheet";
+import { RightPanelSheet } from "../components/RightPanelSheet";
+import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
   Sidebar,
   SidebarInset,
@@ -33,33 +34,10 @@ import {
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const FileViewPanel = lazy(() => import("../components/FileViewPanel"));
-const DIFF_INLINE_LAYOUT_MEDIA_QUERY = "(max-width: 1180px)";
 const DIFF_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_diff_sidebar_width";
 const DIFF_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const DIFF_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
-
-const DiffPanelSheet = (props: { children: ReactNode; open: boolean; onClose: () => void }) => {
-  return (
-    <Sheet
-      open={props.open}
-      onOpenChange={(open) => {
-        if (!open) {
-          props.onClose();
-        }
-      }}
-    >
-      <SheetPopup
-        side="right"
-        showCloseButton={false}
-        keepMounted
-        className="w-[min(88vw,820px)] max-w-[820px] overflow-hidden p-0"
-      >
-        {props.children}
-      </SheetPopup>
-    </Sheet>
-  );
-};
 
 const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
   return (
@@ -253,7 +231,7 @@ function ChatThreadRouteView() {
   const diffOpen = search.diff === "1";
   const fileViewOpen = !!search.fileViewPath;
   const panelOpen = diffOpen || fileViewOpen;
-  const shouldUseDiffSheet = useMediaQuery(DIFF_INLINE_LAYOUT_MEDIA_QUERY);
+  const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   // TanStack Router keeps active route components mounted across param-only navigations
   // unless remountDeps are configured, so this stays warm across thread switches.
   const [hasOpenedDiff, setHasOpenedDiff] = useState(diffOpen);
@@ -334,7 +312,7 @@ function ChatThreadRouteView() {
           <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
             {detailView}
           </SidebarInset>
-          <DiffPanelSheet open={panelOpen} onClose={closeActivePanel}>
+          <RightPanelSheet open={panelOpen} onClose={closeActivePanel}>
             <div
               className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
               style={{ display: fileViewOpen ? "none" : "flex" }}
@@ -347,7 +325,7 @@ function ChatThreadRouteView() {
             >
               {hasOpenedFileView ? <DiffLoadingFallback mode="sheet" /> : null}
             </div>
-          </DiffPanelSheet>
+          </RightPanelSheet>
         </>
       );
     }
@@ -392,7 +370,7 @@ function ChatThreadRouteView() {
       <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
         <ChatView key={threadId} threadId={threadId} />
       </SidebarInset>
-      <DiffPanelSheet open={panelOpen} onClose={closeActivePanel}>
+      <RightPanelSheet open={panelOpen} onClose={closeActivePanel}>
         <div
           className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
           style={{ display: fileViewOpen ? "none" : "flex" }}
@@ -405,7 +383,7 @@ function ChatThreadRouteView() {
         >
           {hasOpenedFileView ? <LazyFileViewPanel mode="sheet" /> : null}
         </div>
-      </DiffPanelSheet>
+      </RightPanelSheet>
     </>
   );
 }

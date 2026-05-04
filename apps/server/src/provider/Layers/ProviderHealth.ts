@@ -16,10 +16,9 @@ import type {
   ServerProviderStatus,
   ServerProviderStatusState,
 } from "@t3tools/contracts";
-import { Effect, FileSystem, Layer, Option, Path, Ref, Result, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { Effect, FileSystem, Layer, Option, Path, Ref, Result } from "effect";
+import { ChildProcessSpawner } from "effect/unstable/process";
 
-import { prependCodexCliTelemetryDisabledConfig } from "../codexCliConfig";
 import { buildProviderChildProcessEnv } from "../../providerProcessEnv";
 import {
   formatCodexCliUpgradeMessage,
@@ -27,6 +26,11 @@ import {
   parseCodexCliVersion,
 } from "../codexCliVersion";
 import { ProviderHealth, type ProviderHealthShape } from "../Services/ProviderHealth";
+import {
+  type ProviderCliCommandResult as CommandResult,
+  runClaudeCliCommand as runClaudeCommand,
+  runCodexCliCommand as runCodexCommand,
+} from "../providerCli.ts";
 
 const DEFAULT_TIMEOUT_MS = 4_000;
 const PROVIDER_HEALTH_CACHE_TTL_MS = 15_000;
@@ -38,12 +42,6 @@ export type ProviderPreflightStatus = ServerProviderStatus & {
 };
 
 // ── Pure helpers ────────────────────────────────────────────────────
-
-export interface CommandResult {
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly code: number;
-}
 
 function nonEmptyTrimmed(value: string | undefined): string | undefined {
   if (!value) return undefined;
@@ -325,59 +323,6 @@ export const hasCustomModelProviderWithOverrides = (input?: { readonly homePath?
     (provider) => provider !== undefined && !OPENAI_AUTH_PROVIDERS.has(provider),
   );
 export const hasCustomModelProvider = hasCustomModelProviderWithOverrides();
-
-// ── Effect-native command execution ─────────────────────────────────
-
-const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
-  Stream.runFold(
-    stream,
-    () => "",
-    (acc, chunk) => acc + new TextDecoder().decode(chunk),
-  );
-
-const runCliCommand = (
-  binary: "codex" | "claude",
-  args: ReadonlyArray<string>,
-  options?: {
-    readonly binaryPath?: string;
-    readonly envOverrides?: NodeJS.ProcessEnv;
-  },
-) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const resolvedBinary = options?.binaryPath ?? binary;
-    const commandArgs =
-      binary === "codex" ? prependCodexCliTelemetryDisabledConfig(args) : [...args];
-    const command = ChildProcess.make(resolvedBinary, [...commandArgs], {
-      env: buildProviderChildProcessEnv(process.env, options?.envOverrides),
-      shell: process.platform === "win32",
-      // Health probes are read-only status checks; leaving stdin open can
-      // cause some CLIs (notably `claude auth status`) to wait indefinitely.
-      stdin: "ignore",
-    });
-
-    const child = yield* spawner.spawn(command);
-
-    const [stdout, stderr, exitCode] = yield* Effect.all(
-      [
-        collectStreamAsString(child.stdout),
-        collectStreamAsString(child.stderr),
-        child.exitCode.pipe(Effect.map(Number)),
-      ],
-      { concurrency: "unbounded" },
-    );
-
-    return { stdout, stderr, code: exitCode } satisfies CommandResult;
-  }).pipe(Effect.scoped);
-
-const runCodexCommand = (
-  args: ReadonlyArray<string>,
-  options?: Parameters<typeof runCliCommand>[2],
-) => runCliCommand("codex", args, options);
-const runClaudeCommand = (
-  args: ReadonlyArray<string>,
-  options?: Parameters<typeof runCliCommand>[2],
-) => runCliCommand("claude", args, options);
 
 // ── Health check ────────────────────────────────────────────────────
 

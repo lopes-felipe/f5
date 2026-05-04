@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect";
 
 import { GitCommandError } from "../git/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
+import { resolveDefaultWorktreePath } from "../git/worktreePaths.ts";
 import { PersistenceDecodeError, PersistenceSqlError } from "../persistence/Errors.ts";
 import {
   OrchestrationCommandInvariantError,
@@ -55,6 +56,7 @@ export interface BootstrapTurnStartDependencies {
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
   readonly git: Pick<GitCoreShape, "createWorktree" | "removeWorktree">;
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
+  readonly worktreesDir?: string | undefined;
 }
 
 function isDefinitelyUncommittedDispatchError(error: OrchestrationDispatchError): boolean {
@@ -422,13 +424,21 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
 
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
+        const newBranch = bootstrap.prepareWorktree.branch ?? buildTemporaryWorktreeBranchName();
         const worktree = yield* observeBootstrapStage(
           "worktree-create",
           input.git.createWorktree({
             cwd: bootstrap.prepareWorktree.projectCwd,
             branch: bootstrap.prepareWorktree.baseBranch,
-            newBranch: bootstrap.prepareWorktree.branch ?? buildTemporaryWorktreeBranchName(),
-            path: null,
+            newBranch,
+            path:
+              input.worktreesDir === undefined
+                ? null
+                : resolveDefaultWorktreePath({
+                    worktreesDir: input.worktreesDir,
+                    cwd: bootstrap.prepareWorktree.projectCwd,
+                    branch: newBranch,
+                  }),
           }),
         );
         targetProjectCwd = bootstrap.prepareWorktree.projectCwd;

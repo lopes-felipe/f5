@@ -11,7 +11,7 @@ To keep existing installations, downloads, and integrations working, F5 delibera
 | Kind                           | Identifier                                                                              | Where it appears                                       |
 | ------------------------------ | --------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | npm package                    | `t3`                                                                                    | Published CLI (`apps/server`)                          |
-| Environment variables          | `T3CODE_*` (e.g. `T3CODE_PORT`, `T3CODE_MODE`, `T3CODE_AUTH_TOKEN`, `T3CODE_STATE_DIR`) | Server/runtime configuration                           |
+| Environment variables          | `T3CODE_*` (e.g. `T3CODE_PORT`, `T3CODE_MODE`, `T3CODE_AUTH_TOKEN`, `T3CODE_STATE_DIR`) | Legacy aliases for server/runtime configuration        |
 | Workspace package names        | `@t3tools/*` (e.g. `@t3tools/monorepo`, `@t3tools/contracts`, `@t3tools/shared`)        | `package.json` files across the monorepo               |
 | Desktop user-data dir (legacy) | `T3 Code (Alpha)` / `T3 Code (Dev)`                                                     | First-run migration only; new installs use the F5 name |
 
