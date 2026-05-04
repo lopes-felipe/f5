@@ -1925,6 +1925,97 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("emits TodoWrite task input updates while Claude streams tool JSON", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 8).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "track progress",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-todowrite-stream",
+        uuid: "stream-todowrite-json-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-todo-stream-1",
+            name: "TodoWrite",
+            input: {},
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-todowrite-stream",
+        uuid: "stream-todowrite-json-delta",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: {
+            type: "input_json_delta",
+            partial_json:
+              '{"todos":[{"content":"Run tests","activeForm":"Running tests","status":"in_progress"}]}',
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-todowrite-stream",
+        uuid: "result-todowrite-stream",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const todoUpdated = runtimeEvents.find(
+        (event) =>
+          event.type === "item.updated" &&
+          (event.payload.data as { toolName?: string } | undefined)?.toolName === "TodoWrite",
+      );
+      assert.equal(todoUpdated?.type, "item.updated");
+      if (todoUpdated?.type === "item.updated") {
+        assert.deepEqual(todoUpdated.payload.data, {
+          toolName: "TodoWrite",
+          input: {
+            todos: [
+              {
+                content: "Run tests",
+                activeForm: "Running tests",
+                status: "in_progress",
+              },
+            ],
+          },
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits file-read requestKind and bare file path detail for Claude Read", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

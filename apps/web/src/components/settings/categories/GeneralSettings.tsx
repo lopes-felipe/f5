@@ -28,7 +28,7 @@ const TIMESTAMP_FORMAT_LABELS = {
   "24-hour": "24-hour",
 } as const;
 
-const THREAD_KEYS = ["defaultThreadEnvMode"] as const;
+const THREAD_KEYS = ["defaultThreadEnvMode", "tasksPanelAutoOpen"] as const;
 const SAFETY_KEYS = ["confirmThreadDelete"] as const;
 
 export function GeneralSettings() {
@@ -136,25 +136,46 @@ export function GeneralSettings() {
           </p>
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
-          <div>
-            <p className="text-sm font-medium text-foreground">Default to New worktree</p>
-            <p className="text-xs text-muted-foreground">
-              New threads start in New worktree mode instead of Local.
-            </p>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Default to New worktree</p>
+              <p className="text-xs text-muted-foreground">
+                New threads start in New worktree mode instead of Local.
+              </p>
+            </div>
+            <Switch
+              checked={settings.defaultThreadEnvMode === "worktree"}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  defaultThreadEnvMode: checked ? "worktree" : "local",
+                })
+              }
+              aria-label="Default new threads to New worktree mode"
+            />
           </div>
-          <Switch
-            checked={settings.defaultThreadEnvMode === "worktree"}
-            onCheckedChange={(checked) =>
-              updateSettings({
-                defaultThreadEnvMode: checked ? "worktree" : "local",
-              })
-            }
-            aria-label="Default new threads to New worktree mode"
-          />
+
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Open task sidebar automatically</p>
+              <p className="text-xs text-muted-foreground">
+                Show task and plan sidebars automatically when a thread starts tracking steps.
+              </p>
+            </div>
+            <Switch
+              checked={settings.tasksPanelAutoOpen}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  tasksPanelAutoOpen: Boolean(checked),
+                })
+              }
+              aria-label="Open task sidebar automatically"
+            />
+          </div>
         </div>
 
-        {settings.defaultThreadEnvMode !== defaults.defaultThreadEnvMode ? (
+        {settings.defaultThreadEnvMode !== defaults.defaultThreadEnvMode ||
+        settings.tasksPanelAutoOpen !== defaults.tasksPanelAutoOpen ? (
           <div className="mt-3 flex justify-end">
             <Button
               size="xs"

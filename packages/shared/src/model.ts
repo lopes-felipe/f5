@@ -22,6 +22,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
 
 const CLAUDE_OPUS_4_7_MODEL = "claude-opus-4-7";
 const CLAUDE_OPUS_4_6_MODEL = "claude-opus-4-6";
+const CLAUDE_OPUS_4_5_MODEL = "claude-opus-4-5";
 const CLAUDE_SONNET_4_6_MODEL = "claude-sonnet-4-6";
 const CLAUDE_HAIKU_4_5_MODEL = "claude-haiku-4-5";
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
@@ -41,6 +42,12 @@ const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
     defaultEffort: "xhigh",
   },
   [CLAUDE_OPUS_4_6_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: ["low", "medium", "high", "max", "ultrathink"],
+    defaultEffort: "high",
+    supportsFastMode: true,
+  },
+  [CLAUDE_OPUS_4_5_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "max", "ultrathink"],
     defaultEffort: "high",

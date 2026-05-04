@@ -28,6 +28,8 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-6");
     expect(normalizeModelSlug("opus-4.6", "claudeAgent")).toBe("claude-opus-4-6");
+    expect(normalizeModelSlug("opus-4.5", "claudeAgent")).toBe("claude-opus-4-5");
+    expect(normalizeModelSlug("claude-opus-4.5", "claudeAgent")).toBe("claude-opus-4-5");
   });
 
   it("returns null for empty or missing values", () => {
@@ -75,6 +77,7 @@ describe("resolveModelSlug", () => {
     expect(getModelOptions("claudeAgent").map((option) => option.slug)).toEqual([
       "claude-opus-4-7",
       "claude-opus-4-6",
+      "claude-opus-4-5",
       "claude-sonnet-4-6",
       "claude-haiku-4-5",
     ]);
@@ -88,6 +91,16 @@ describe("getReasoningEffortOptions", () => {
 
   it("keeps Opus 4.6 effort support without exposing xhigh", () => {
     expect(getReasoningEffortOptions("claudeAgent", "claude-opus-4-6")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "max",
+      "ultrathink",
+    ]);
+  });
+
+  it("keeps Opus 4.5 effort support aligned with Opus 4.6", () => {
+    expect(getReasoningEffortOptions("claudeAgent", "claude-opus-4-5")).toEqual([
       "low",
       "medium",
       "high",
@@ -124,6 +137,14 @@ describe("Claude capability predicates", () => {
     expect(supportsClaudeThinkingToggle("claude-opus-4-6")).toBe(false);
     expect(supportsClaudeUltrathinkKeyword("claude-opus-4-6")).toBe(true);
   });
+
+  it("retains documented Claude Opus 4.5 capabilities", () => {
+    expect(supportsClaudeFastMode("claude-opus-4-5")).toBe(true);
+    expect(supportsClaudeMaxEffort("claude-opus-4-5")).toBe(true);
+    expect(supportsClaudeAdaptiveReasoning("claude-opus-4-5")).toBe(true);
+    expect(supportsClaudeThinkingToggle("claude-opus-4-5")).toBe(false);
+    expect(supportsClaudeUltrathinkKeyword("claude-opus-4-5")).toBe(true);
+  });
 });
 
 describe("getDefaultReasoningEffort", () => {
@@ -134,6 +155,7 @@ describe("getDefaultReasoningEffort", () => {
   it("uses model-aware Claude defaults", () => {
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-7")).toBe("xhigh");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-6")).toBe("high");
+    expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-5")).toBe("high");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-sonnet-4-6")).toBe("high");
   });
 });
@@ -152,6 +174,7 @@ describe("estimateModelContextWindowTokens", () => {
     expect(estimateModelContextWindowTokens("gpt-5.4")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4-mini")).toBe(400_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-7")).toBe(1_000_000);
+    expect(estimateModelContextWindowTokens("claude-opus-4-5")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-sonnet-4-6")).toBe(1_000_000);
   });
 

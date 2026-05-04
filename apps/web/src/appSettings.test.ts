@@ -92,6 +92,10 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).openFileLinksInPanel).toBe(true);
   });
 
+  it("defaults task sidebar auto-open to true", () => {
+    expect(parsePersistedAppSettings(null).tasksPanelAutoOpen).toBe(true);
+  });
+
   it("defaults Claude project subagent settings to enabled + inherit", () => {
     const parsed = parsePersistedAppSettings(null);
     expect(getClaudeProjectSettings(parsed, "project-1")).toEqual({
@@ -124,6 +128,7 @@ describe("parsePersistedAppSettings", () => {
     expect(parsed.showProviderRuntimeMetadata).toBe(false);
     expect(parsed.onboardingLiteStatus).toBe("eligible");
     expect(parsed.openFileLinksInPanel).toBe(true);
+    expect(parsed.tasksPanelAutoOpen).toBe(true);
     expect(parsed.codexThreadTitleModel).toBe(DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex);
   });
 
@@ -421,12 +426,13 @@ describe("getAppModelOptions", () => {
     });
   });
 
-  it("lists Claude Opus 4.7 before Claude Opus 4.6 in built-in Claude options", () => {
+  it("lists Claude Opus models before Sonnet and Haiku in built-in Claude options", () => {
     const options = getAppModelOptions("claudeAgent", []);
 
-    expect(options.slice(0, 4).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 5).map((option) => option.slug)).toEqual([
       "claude-opus-4-7",
       "claude-opus-4-6",
+      "claude-opus-4-5",
       "claude-sonnet-4-6",
       "claude-haiku-4-5",
     ]);

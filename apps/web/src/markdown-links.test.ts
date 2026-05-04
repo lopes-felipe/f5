@@ -57,7 +57,7 @@ describe("resolveMarkdownFileLinkMeta", () => {
     expect(resolveMarkdownFileLinkMeta("src/main.ts", "/Users/julius/project")).toEqual({
       filePath: "/Users/julius/project/src/main.ts",
       targetPath: "/Users/julius/project/src/main.ts",
-      displayPath: "src/main.ts",
+      displayPath: "project/src/main.ts",
       basename: "main.ts",
     });
   });
@@ -66,7 +66,7 @@ describe("resolveMarkdownFileLinkMeta", () => {
     expect(resolveMarkdownFileLinkMeta("src/main.ts:42:7", "/Users/julius/project")).toEqual({
       filePath: "/Users/julius/project/src/main.ts",
       targetPath: "/Users/julius/project/src/main.ts:42:7",
-      displayPath: "src/main.ts",
+      displayPath: "project/src/main.ts",
       basename: "main.ts",
       line: "42",
       column: "7",
@@ -93,6 +93,30 @@ describe("resolveMarkdownFileLinkMeta", () => {
 
   it("returns null for external URLs", () => {
     expect(resolveMarkdownFileLinkMeta("https://example.com/docs")).toBeNull();
+  });
+
+  it("formats tooltip display paths relative to the cwd when possible", () => {
+    expect(
+      resolveMarkdownFileLinkMeta(
+        "file:///C:/Users/mike/dev-stuff/t3code/apps/web/src/session-logic.ts#L501",
+        "C:/Users/mike/dev-stuff/t3code",
+      ),
+    ).toMatchObject({
+      displayPath: "t3code/apps/web/src/session-logic.ts",
+      line: "501",
+    });
+  });
+
+  it("formats tooltip display paths relative to the cwd for slash-prefixed windows paths", () => {
+    expect(
+      resolveMarkdownFileLinkMeta(
+        "/C:/Users/mike/dev-stuff/t3code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
+        "C:/Users/mike/dev-stuff/t3code",
+      ),
+    ).toMatchObject({
+      displayPath:
+        "t3code/apps/web/src/components/chat/MessagesTimeline.virtualization.browser.tsx",
+    });
   });
 });
 

@@ -76,5 +76,59 @@
     "f5-sha": null,
     "skipped": false,
     "reason": "Moved the plan sidebar into the shared right-panel sheet on narrow layouts and kept composer overflow rules."
+  },
+  "00b5c3e1b3b06888282e5d5e0678a2e3a88eb607": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added the task sidebar auto-open app setting, General settings toggle, and gates around automatic task/plan sidebar opens."
+  },
+  "d8d329691a3db759d6054af35e373005e9efcabd": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Reused f5's shared thread status pill resolution and badge in command-palette thread results."
+  },
+  "a3b1df5224700a1d76e590e4d7b29fd5a7a8e4d6": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Registered Claude Opus 4.5 in contracts/shared model metadata and alias handling with capability tests."
+  },
+  "68061af0420ba6acd9c1a4c2f77eeddfff0e8bd2": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Kept f5's existing markdown file-link chip metadata system and added upstream-style workspace-relative path display coverage."
+  },
+  "4e0c003e78b451c25b69f43f9c7b93e760f6c371": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added a server invariant for deleting non-empty projects and a warning-toast Delete anyway action that reuses per-thread cleanup."
+  },
+  "5f7ec73a22b28e2775987b03a744f75e5e151152": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Keyed project draft reuse by project plus workspace context so local and worktree defaults keep independent drafts."
+  },
+  "188df6da074bf60af765881bdfd6e886ef83e6ee": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Restarted provider sessions on thread metadata cwd drift and added a Claude regression test."
+  },
+  "0d280262f6c9dcaf529376b2007dc7447f86fa3c": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Verified f5 already emits TodoWrite item.updated events from streamed tool JSON and added regression coverage."
+  },
+  "28cb9db20bc78fdb5a767ff9661e500076938fbe": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Converted composer file mention pills to DecoratorNode rendering with the shared tooltip primitive while preserving text export."
   }
 }

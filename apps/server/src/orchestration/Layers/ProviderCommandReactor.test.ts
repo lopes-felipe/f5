@@ -222,6 +222,12 @@ describe("ProviderCommandReactor", () => {
           (input.runtimeMode === "approval-required" || input.runtimeMode === "full-access")
             ? input.runtimeMode
             : "full-access",
+        ...(typeof input === "object" &&
+        input !== null &&
+        "cwd" in input &&
+        typeof input.cwd === "string"
+          ? { cwd: input.cwd }
+          : {}),
         ...(model !== undefined ? { model } : {}),
         threadId,
         resumeCursor: resumeCursor ?? { opaque: `cursor-${sessionIndex}` },
@@ -519,6 +525,7 @@ describe("ProviderCommandReactor", () => {
       renameBranch,
       generateBranchName,
       generateThreadTitle,
+      runtimeSessions,
       stateDir,
       workspaceRoot,
       upsertBinding: (binding: ProviderRuntimeBinding) => {
@@ -1515,6 +1522,98 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("approval-required");
+  });
+
+  it("restarts claude sessions when thread cwd metadata changes", async () => {
+    const harness = await createHarness({ threadModel: "claude-opus-4-6" });
+    const now = new Date().toISOString();
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-worktree-"));
+    createdStateDirs.add(worktreePath);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-claude-cwd"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-claude-cwd"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      provider: "claudeAgent",
+      cwd: harness.workspaceRoot,
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-thread-cwd-update"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        worktreePath,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      provider: "claudeAgent",
+      cwd: worktreePath,
+    });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+  });
+
+  it("does not restart sessions with unknown cwd when thread cwd metadata changes", async () => {
+    const harness = await createHarness({ threadModel: "claude-opus-4-6" });
+    const now = new Date().toISOString();
+    const worktreePath = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-worktree-"));
+    createdStateDirs.add(worktreePath);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-claude-unknown-cwd"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-claude-unknown-cwd"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    const legacySession = harness.runtimeSessions[0] as { cwd?: string } | undefined;
+    expect(legacySession).toBeDefined();
+    delete legacySession!.cwd;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-thread-unknown-cwd-update"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        worktreePath,
+      }),
+    );
+
+    await harness.drain();
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
   });
 
   it("generates a first-thread title asynchronously without blocking the provider turn", async () => {

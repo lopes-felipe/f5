@@ -59,6 +59,7 @@ type ProviderIntentEvent = Extract<
   {
     type:
       | "thread.runtime-mode-set"
+      | "thread.meta-updated"
       | "thread.deleted"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
@@ -504,6 +505,13 @@ const make = Effect.gen(function* () {
         const shouldRestartForProjectMcpChange =
           currentProvider !== undefined &&
           (persistedBinding?.mcpEffectiveConfigVersion ?? null) !== currentProjectMcpVersion;
+        const currentSessionCwd = activeSession?.cwd ?? null;
+        const desiredSessionCwd = instructionContext.cwd ?? null;
+        const shouldRestartForCwdChange =
+          activeSession !== undefined &&
+          currentSessionCwd !== null &&
+          desiredSessionCwd !== null &&
+          currentSessionCwd !== desiredSessionCwd;
 
         if (
           !runtimeModeChanged &&
@@ -511,7 +519,8 @@ const make = Effect.gen(function* () {
           !shouldRestartForModelChange &&
           !shouldRestartForModelOptionsChange &&
           !shouldRestartForProviderOptionsChange &&
-          !shouldRestartForProjectMcpChange
+          !shouldRestartForProjectMcpChange &&
+          !shouldRestartForCwdChange
         ) {
           if (activeSession) {
             yield* bindSessionToThread(activeSession);
@@ -527,7 +536,8 @@ const make = Effect.gen(function* () {
           shouldRestartForModelChange ||
           shouldRestartForModelOptionsChange ||
           shouldRestartForProviderOptionsChange ||
-          shouldRestartForProjectMcpChange
+          shouldRestartForProjectMcpChange ||
+          shouldRestartForCwdChange
             ? undefined
             : (activeSession?.resumeCursor ?? undefined);
         yield* Effect.annotateCurrentSpan({
@@ -548,6 +558,9 @@ const make = Effect.gen(function* () {
           shouldRestartForModelOptionsChange,
           shouldRestartForProviderOptionsChange,
           shouldRestartForProjectMcpChange,
+          shouldRestartForCwdChange,
+          currentSessionCwd,
+          desiredSessionCwd,
           persistedMcpEffectiveConfigVersion: persistedBinding?.mcpEffectiveConfigVersion ?? null,
           currentProjectMcpVersion,
           hasResumeCursor: resumeCursor !== undefined,
@@ -1226,6 +1239,21 @@ const make = Effect.gen(function* () {
           });
           break;
         }
+        case "thread.meta-updated": {
+          const thread = yield* resolveThread(event.payload.threadId);
+          if (!thread?.session || thread.session.status === "stopped") {
+            return;
+          }
+          const cachedProviderOptions = threadProviderOptions.get(event.payload.threadId);
+          const cachedModelOptions = threadModelOptions.get(event.payload.threadId);
+          yield* ensureSessionForThread(event.payload.threadId, event.occurredAt, {
+            ...(cachedProviderOptions !== undefined
+              ? { providerOptions: cachedProviderOptions }
+              : {}),
+            ...(cachedModelOptions !== undefined ? { modelOptions: cachedModelOptions } : {}),
+          });
+          break;
+        }
         case "thread.deleted":
           threadProviderOptions.delete(event.payload.threadId);
           threadModelOptions.delete(event.payload.threadId);
@@ -1270,6 +1298,7 @@ const make = Effect.gen(function* () {
     Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
       if (
         event.type !== "thread.runtime-mode-set" &&
+        event.type !== "thread.meta-updated" &&
         event.type !== "thread.deleted" &&
         event.type !== "thread.turn-start-requested" &&
         event.type !== "thread.turn-interrupt-requested" &&

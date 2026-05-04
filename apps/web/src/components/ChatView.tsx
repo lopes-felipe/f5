@@ -514,6 +514,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const changedFilesExpandedByThreadId = useStore((store) => store.changedFilesExpandedByThreadId);
   const { settings } = useAppSettings();
   const timestampFormat = settings.timestampFormat;
+  const tasksPanelAutoOpen = settings.tasksPanelAutoOpen;
+  const tasksPanelAutoOpenRef = useRef(tasksPanelAutoOpen);
+  useEffect(() => {
+    tasksPanelAutoOpenRef.current = tasksPanelAutoOpen;
+  }, [tasksPanelAutoOpen]);
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
   const navigate = useNavigate();
@@ -575,9 +580,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const getDraftThread = useComposerDraftStore((store) => store.getDraftThread);
   const setProjectDraftThreadId = useComposerDraftStore((store) => store.setProjectDraftThreadId);
-  const clearProjectDraftThreadId = useComposerDraftStore(
-    (store) => store.clearProjectDraftThreadId,
-  );
   const draftThread = useComposerDraftStore(
     (store) => store.draftThreadsByThreadId[threadId] ?? null,
   );
@@ -909,7 +911,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       if (!activeProject) {
         throw new Error("No active project is available for this pull request.");
       }
-      const storedDraftThread = getDraftThreadByProjectId(activeProject.id);
+      const storedDraftThread = getDraftThreadByProjectId(activeProject.id, input);
       if (storedDraftThread) {
         setDraftThreadContext(storedDraftThread.threadId, input);
         setProjectDraftThreadId(activeProject.id, storedDraftThread.threadId, input);
@@ -923,13 +925,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
 
       const activeDraftThread = getDraftThread(threadId);
-      if (!isServerThread && activeDraftThread?.projectId === activeProject.id) {
+      if (
+        !isServerThread &&
+        activeDraftThread?.projectId === activeProject.id &&
+        activeDraftThread.envMode === input.envMode &&
+        activeDraftThread.worktreePath === input.worktreePath
+      ) {
         setDraftThreadContext(threadId, input);
         setProjectDraftThreadId(activeProject.id, threadId, input);
         return;
       }
 
-      clearProjectDraftThreadId(activeProject.id);
       const nextThreadId = newThreadId();
       setProjectDraftThreadId(activeProject.id, nextThreadId, {
         createdAt: new Date().toISOString(),
@@ -944,7 +950,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     },
     [
       activeProject,
-      clearProjectDraftThreadId,
       getDraftThread,
       getDraftThreadByProjectId,
       isServerThread,
@@ -1468,11 +1473,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
 
     if (threadChanged) {
       tasksPanelManuallyCollapsedRef.current = false;
-      setTasksPanelOpen(trackedTaskCount > 0 && hasIncompleteThreadTasks);
+      setTasksPanelOpen(
+        tasksPanelAutoOpenRef.current && trackedTaskCount > 0 && hasIncompleteThreadTasks,
+      );
     } else if (trackedTaskCount === 0) {
       tasksPanelManuallyCollapsedRef.current = false;
       setTasksPanelOpen(false);
     } else if (
+      tasksPanelAutoOpenRef.current &&
       trackedTasksAppeared &&
       hasIncompleteThreadTasks &&
       !tasksPanelManuallyCollapsedRef.current
@@ -2593,8 +2601,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setExpandedWorkGroups({});
     setExpandedFileChangeDiffs({});
     setPullRequestDialogState(null);
+    const shouldOpenPlanSidebar =
+      planSidebarOpenOnNextThreadRef.current && tasksPanelAutoOpenRef.current;
     if (planSidebarOpenOnNextThreadRef.current) {
       planSidebarOpenOnNextThreadRef.current = false;
+    }
+    if (shouldOpenPlanSidebar) {
       setPlanSidebarOpen(true);
     } else {
       setPlanSidebarOpen(false);
@@ -4117,7 +4129,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         // Optimistically open the plan sidebar when implementing (not refining).
         // "default" mode here means the agent is executing the plan, which produces
         // step-tracking activities that the sidebar will display.
-        if (nextInteractionMode === "default") {
+        if (nextInteractionMode === "default" && tasksPanelAutoOpen) {
           planSidebarDismissedForTurnRef.current = null;
           setPlanSidebarOpen(true);
         }
@@ -4163,6 +4175,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       setDraftThreadContext,
       setThreadError,
       settings.enableAssistantStreaming,
+      tasksPanelAutoOpen,
       interactionMode,
     ],
   );
@@ -4244,7 +4257,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       .then((snapshot) => {
         syncServerReadModel(snapshot);
         // Signal that the plan sidebar should open on the new thread.
-        planSidebarOpenOnNextThreadRef.current = true;
+        planSidebarOpenOnNextThreadRef.current = tasksPanelAutoOpen;
         return navigate({
           to: "/$threadId",
           params: { threadId: nextThreadId },
@@ -4288,6 +4301,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     selectedProvider,
     settings.enableAssistantStreaming,
     syncServerReadModel,
+    tasksPanelAutoOpen,
   ]);
 
   const onRetryPendingTurnDispatch = useCallback(async () => {

@@ -1381,6 +1381,49 @@ export default function Sidebar() {
     ],
   );
 
+  const removeProjectWithThreads = useCallback(
+    async (project: Project, projectThreads: ReadonlyArray<Thread>): Promise<void> => {
+      const api = readNativeApi();
+      if (!api) return;
+
+      const message =
+        projectThreads.length === 0
+          ? `Remove project "${project.name}"?`
+          : [
+              `Remove project "${project.name}" and delete ${projectThreads.length} thread${
+                projectThreads.length === 1 ? "" : "s"
+              }?`,
+              "",
+              "Thread sessions, terminal history, and draft state will be cleaned up first.",
+            ].join("\n");
+      const confirmed = await api.dialogs.confirm(message);
+      if (!confirmed) return;
+
+      try {
+        const deletedThreadIds = new Set(projectThreads.map((thread) => thread.id));
+        for (const thread of projectThreads) {
+          await deleteThread(thread.id, { deletedThreadIds });
+        }
+
+        clearProjectDraftThreadId(project.id);
+        await api.orchestration.dispatchCommand({
+          type: "project.delete",
+          commandId: newCommandId(),
+          projectId: project.id,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Unknown error removing project.";
+        console.error("Failed to remove project", { projectId: project.id, error });
+        toastManager.add({
+          type: "error",
+          title: `Failed to remove "${project.name}"`,
+          description: message,
+        });
+      }
+    },
+    [clearProjectDraftThreadId, deleteThread],
+  );
+
   const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{ threadId: ThreadId }>({
     onCopy: (ctx) => {
       toastManager.add({
@@ -1624,43 +1667,21 @@ export default function Sidebar() {
         toastManager.add({
           type: "warning",
           title: "Project is not empty",
-          description: "Delete all threads in this project before removing it.",
+          description: "Delete the child threads first, or delete them and remove the project now.",
+          timeout: 0,
+          actionProps: {
+            children: "Delete anyway",
+            onClick: () => {
+              void removeProjectWithThreads(project, projectThreads);
+            },
+          },
         });
         return;
       }
 
-      const confirmed = await api.dialogs.confirm(`Remove project "${project.name}"?`);
-      if (!confirmed) return;
-
-      try {
-        const projectDraftThread = getDraftThreadByProjectId(projectId);
-        if (projectDraftThread) {
-          clearComposerDraftForThread(projectDraftThread.threadId);
-        }
-        clearProjectDraftThreadId(projectId);
-        await api.orchestration.dispatchCommand({
-          type: "project.delete",
-          commandId: newCommandId(),
-          projectId,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error removing project.";
-        console.error("Failed to remove project", { projectId, error });
-        toastManager.add({
-          type: "error",
-          title: `Failed to remove "${project.name}"`,
-          description: message,
-        });
-      }
+      await removeProjectWithThreads(project, []);
     },
-    [
-      changeProjectWorkspaceRoot,
-      clearComposerDraftForThread,
-      clearProjectDraftThreadId,
-      getDraftThreadByProjectId,
-      projects,
-      threads,
-    ],
+    [changeProjectWorkspaceRoot, projects, removeProjectWithThreads, threads],
   );
 
   const projectDnDSensors = useSensors(
@@ -1794,6 +1815,10 @@ export default function Sidebar() {
       if (!projectId) return;
       event.preventDefault();
       event.stopPropagation();
+      if (appSettings.defaultThreadEnvMode === "worktree") {
+        void handleNewThread(projectId, { envMode: "worktree" });
+        return;
+      }
       void handleNewThread(projectId, {
         branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
         worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
@@ -1814,6 +1839,7 @@ export default function Sidebar() {
       window.removeEventListener("mousedown", onMouseDown);
     };
   }, [
+    appSettings.defaultThreadEnvMode,
     clearSelection,
     firstProjectId,
     getDraftThread,

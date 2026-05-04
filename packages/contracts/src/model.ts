@@ -51,6 +51,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   claudeAgent: [
     { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { slug: "claude-opus-4-6", name: "Claude Opus 4.6" },
+    { slug: "claude-opus-4-5", name: "Claude Opus 4.5" },
     { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
     { slug: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
   ],
@@ -87,6 +88,9 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "opus-4.6": "claude-opus-4-6",
     "claude-opus-4.6": "claude-opus-4-6",
     "claude-opus-4-6-20251117": "claude-opus-4-6",
+    "opus-4.5": "claude-opus-4-5",
+    "claude-opus-4.5": "claude-opus-4-5",
+    "claude-opus-4-5": "claude-opus-4-5",
     sonnet: "claude-sonnet-4-6",
     "sonnet-4.6": "claude-sonnet-4-6",
     "claude-sonnet-4.6": "claude-sonnet-4-6",

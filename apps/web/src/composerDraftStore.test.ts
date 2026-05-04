@@ -587,6 +587,81 @@ describe("composerDraftStore project draft thread mapping", () => {
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
   });
 
+  it("keeps local and worktree draft threads for the same project separate", () => {
+    const store = useComposerDraftStore.getState();
+    const localThreadId = ThreadId.makeUnsafe("thread-local");
+    const worktreeThreadId = ThreadId.makeUnsafe("thread-worktree");
+
+    store.setProjectDraftThreadId(projectId, localThreadId, {
+      envMode: "local",
+      worktreePath: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+    store.setPrompt(localThreadId, "local draft");
+    store.setProjectDraftThreadId(projectId, worktreeThreadId, {
+      envMode: "worktree",
+      worktreePath: null,
+      createdAt: "2026-01-02T00:00:00.000Z",
+    });
+    store.setPrompt(worktreeThreadId, "worktree draft");
+
+    expect(
+      useComposerDraftStore
+        .getState()
+        .getDraftThreadByProjectId(projectId, { envMode: "local", worktreePath: null })?.threadId,
+    ).toBe(localThreadId);
+    expect(
+      useComposerDraftStore
+        .getState()
+        .getDraftThreadByProjectId(projectId, { envMode: "worktree", worktreePath: null })
+        ?.threadId,
+    ).toBe(worktreeThreadId);
+    expect(useComposerDraftStore.getState().draftsByThreadId[localThreadId]?.prompt).toBe(
+      "local draft",
+    );
+    expect(useComposerDraftStore.getState().draftsByThreadId[worktreeThreadId]?.prompt).toBe(
+      "worktree draft",
+    );
+  });
+
+  it("uses printable project draft keys while still reading legacy keys", () => {
+    const store = useComposerDraftStore.getState();
+    store.setProjectDraftThreadId(projectId, threadId);
+
+    expect(Object.keys(useComposerDraftStore.getState().projectDraftThreadIdByProjectId)).toEqual([
+      `${projectId}::local`,
+    ]);
+
+    useComposerDraftStore.setState({
+      projectDraftThreadIdByProjectId: {
+        [`${projectId}\u0000local`]: threadId,
+      },
+    });
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      threadId,
+    );
+  });
+
+  it("chooses a deterministic latest project draft when createdAt values tie", () => {
+    const store = useComposerDraftStore.getState();
+    const lowerThreadId = ThreadId.makeUnsafe("thread-a");
+    const higherThreadId = ThreadId.makeUnsafe("thread-z");
+    const createdAt = "2026-01-01T00:00:00.000Z";
+
+    store.setProjectDraftThreadId(projectId, higherThreadId, {
+      envMode: "worktree",
+      createdAt,
+    });
+    store.setProjectDraftThreadId(projectId, lowerThreadId, {
+      envMode: "local",
+      createdAt,
+    });
+
+    expect(useComposerDraftStore.getState().getDraftThreadByProjectId(projectId)?.threadId).toBe(
+      higherThreadId,
+    );
+  });
+
   it("keeps composer drafts when the thread is still mapped by another project", () => {
     const store = useComposerDraftStore.getState();
     store.setProjectDraftThreadId(projectId, threadId);

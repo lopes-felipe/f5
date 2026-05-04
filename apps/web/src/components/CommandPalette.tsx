@@ -510,12 +510,15 @@ function OpenCommandPaletteDialog() {
         shortcutCommand: "chat.new",
         run: async () => {
           if (!currentProjectId) return;
+          if (settings.defaultThreadEnvMode === "worktree") {
+            await handleNewThread(currentProjectId, { envMode: "worktree" });
+            return;
+          }
           await handleNewThread(currentProjectId, {
             branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
             worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
             envMode:
-              activeDraftThread?.envMode ??
-              (activeThread?.worktreePath ? "worktree" : settings.defaultThreadEnvMode),
+              activeDraftThread?.envMode ?? (activeThread?.worktreePath ? "worktree" : "local"),
           });
         },
       });

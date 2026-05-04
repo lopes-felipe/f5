@@ -1,7 +1,7 @@
 "use client";
 
 import { Toast } from "@base-ui/react/toast";
-import { useEffect, type CSSProperties } from "react";
+import { useEffect, type CSSProperties, type MouseEventHandler, type ReactNode } from "react";
 import { useParams } from "@tanstack/react-router";
 import { ThreadId } from "@t3tools/contracts";
 import {
@@ -38,6 +38,37 @@ const TOAST_ICONS = {
 
 const toastCloseClassName =
   "inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+type ToastActionConfig = {
+  children?: ReactNode | undefined;
+  className?: string | undefined;
+  onClick?: MouseEventHandler<HTMLButtonElement> | undefined;
+};
+
+function ToastActionButton({
+  actionProps,
+  closeToast,
+}: {
+  actionProps: ToastActionConfig;
+  closeToast: () => void;
+}) {
+  const handleClick: MouseEventHandler<HTMLButtonElement> = (event) => {
+    actionProps.onClick?.(event);
+    if (!event.defaultPrevented) {
+      closeToast();
+    }
+  };
+
+  return (
+    <Toast.Action
+      className={cn(buttonVariants({ size: "xs" }), "shrink-0", actionProps.className)}
+      data-slot="toast-action"
+      onClick={handleClick}
+    >
+      {actionProps.children}
+    </Toast.Action>
+  );
+}
 
 type ToastPosition =
   | "top-left"
@@ -299,12 +330,10 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
                   </div>
                 </div>
                 {toast.actionProps && (
-                  <Toast.Action
-                    className={cn(buttonVariants({ size: "xs" }), "shrink-0")}
-                    data-slot="toast-action"
-                  >
-                    {toast.actionProps.children}
-                  </Toast.Action>
+                  <ToastActionButton
+                    actionProps={toast.actionProps}
+                    closeToast={() => toastManager.close(toast.id)}
+                  />
                 )}
                 <Toast.Close
                   aria-label="Dismiss"
@@ -395,12 +424,10 @@ function AnchoredToasts() {
                         </div>
                       </div>
                       {toast.actionProps && (
-                        <Toast.Action
-                          className={cn(buttonVariants({ size: "xs" }), "shrink-0")}
-                          data-slot="toast-action"
-                        >
-                          {toast.actionProps.children}
-                        </Toast.Action>
+                        <ToastActionButton
+                          actionProps={toast.actionProps}
+                          closeToast={() => anchoredToastManager.close(toast.id)}
+                        />
                       )}
                       <Toast.Close
                         aria-label="Dismiss"

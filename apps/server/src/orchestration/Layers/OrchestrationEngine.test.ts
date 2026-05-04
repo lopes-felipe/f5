@@ -495,6 +495,62 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("deletes a project after child threads are deleted through dispatch", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const createdAt = now();
+    const projectId = asProjectId("project-delete-dispatch");
+    const threadId = ThreadId.makeUnsafe("thread-delete-dispatch");
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.makeUnsafe("cmd-project-delete-dispatch-create"),
+        projectId,
+        title: "Delete Dispatch Project",
+        workspaceRoot: "/tmp/project-delete-dispatch",
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-delete-dispatch-create"),
+        threadId,
+        projectId,
+        title: "delete me",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-thread-delete-dispatch-delete"),
+        threadId,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "project.delete",
+        commandId: CommandId.makeUnsafe("cmd-project-delete-dispatch-delete"),
+        projectId,
+      }),
+    );
+
+    const readModel = await system.run(engine.getReadModel());
+    expect(readModel.threads.find((thread) => thread.id === threadId)?.deletedAt).not.toBeNull();
+    expect(
+      readModel.projects.find((project) => project.id === projectId)?.deletedAt,
+    ).not.toBeNull();
+    await system.dispose();
+  });
+
   it("streams persisted domain events in order", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

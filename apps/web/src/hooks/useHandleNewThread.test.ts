@@ -109,6 +109,20 @@ describe("seedDraftThreadFromModelPreferences", () => {
 });
 
 describe("createProjectBackedDraftThread", () => {
+  beforeEach(() => {
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+    });
+    useModelPreferencesStore.setState({
+      lastProvider: null,
+      lastModelByProvider: {},
+      lastModelOptions: null,
+      lastWorkflowProviderBySlot: {},
+    });
+  });
+
   it("marks onboarding complete when the shared new-thread flow creates the first draft thread", async () => {
     const updateSettings = vi.fn();
 
@@ -123,6 +137,27 @@ describe("createProjectBackedDraftThread", () => {
     const draftThread = useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID);
     expect(draftThread).not.toBeNull();
     expect(updateSettings).toHaveBeenCalledWith({ onboardingLiteStatus: "completed" });
+  });
+
+  it("creates worktree drafts when only worktreePath is provided", async () => {
+    await createProjectBackedDraftThread({
+      navigate,
+      onboardingLiteStatus: "completed",
+      options: { worktreePath: "/tmp/project-new-thread-worktree" },
+      projectId: PROJECT_ID,
+      routeThreadId: null,
+      updateSettings: vi.fn(),
+    });
+
+    const draftThread = useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID, {
+      envMode: "worktree",
+      worktreePath: "/tmp/project-new-thread-worktree",
+    });
+    expect(draftThread).toMatchObject({
+      projectId: PROJECT_ID,
+      worktreePath: "/tmp/project-new-thread-worktree",
+      envMode: "worktree",
+    });
   });
 
   it("marks onboarding complete for the sidebar entry path too", async () => {

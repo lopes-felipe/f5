@@ -79,7 +79,6 @@ export async function createProjectBackedDraftThread({
   updateSettings,
 }: CreateProjectBackedDraftThreadInput): Promise<CreateProjectBackedDraftThreadResult> {
   const {
-    clearProjectDraftThreadId,
     getDraftThread,
     getDraftThreadByProjectId,
     setDraftThreadContext,
@@ -88,10 +87,20 @@ export async function createProjectBackedDraftThread({
   const hasBranchOption = options?.branch !== undefined;
   const hasWorktreePathOption = options?.worktreePath !== undefined;
   const hasEnvModeOption = options?.envMode !== undefined;
-  const storedDraftThread = getDraftThreadByProjectId(projectId);
+  const requestedWorktreePath = options?.worktreePath ?? null;
+  const requestedEnvMode = options?.envMode ?? (requestedWorktreePath ? "worktree" : "local");
+  const storedDraftThread = getDraftThreadByProjectId(projectId, {
+    envMode: requestedEnvMode,
+    worktreePath: requestedWorktreePath,
+  });
   const latestActiveDraftThread: DraftThreadState | null = routeThreadId
     ? getDraftThread(routeThreadId)
     : null;
+  const latestActiveDraftThreadMatchesRequest =
+    latestActiveDraftThread !== null &&
+    latestActiveDraftThread.projectId === projectId &&
+    latestActiveDraftThread.envMode === requestedEnvMode &&
+    latestActiveDraftThread.worktreePath === requestedWorktreePath;
 
   if (storedDraftThread) {
     if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
@@ -101,7 +110,10 @@ export async function createProjectBackedDraftThread({
         ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
       });
     }
-    setProjectDraftThreadId(projectId, storedDraftThread.threadId);
+    setProjectDraftThreadId(projectId, storedDraftThread.threadId, {
+      envMode: requestedEnvMode,
+      worktreePath: requestedWorktreePath,
+    });
     maybeMarkOnboardingLiteCompleted(
       projectId,
       storedDraftThread.threadId,
@@ -120,9 +132,7 @@ export async function createProjectBackedDraftThread({
     };
   }
 
-  clearProjectDraftThreadId(projectId);
-
-  if (latestActiveDraftThread && routeThreadId && latestActiveDraftThread.projectId === projectId) {
+  if (latestActiveDraftThreadMatchesRequest && routeThreadId) {
     if (hasBranchOption || hasWorktreePathOption || hasEnvModeOption) {
       setDraftThreadContext(routeThreadId, {
         ...(hasBranchOption ? { branch: options?.branch ?? null } : {}),
@@ -130,7 +140,10 @@ export async function createProjectBackedDraftThread({
         ...(hasEnvModeOption ? { envMode: options?.envMode } : {}),
       });
     }
-    setProjectDraftThreadId(projectId, routeThreadId);
+    setProjectDraftThreadId(projectId, routeThreadId, {
+      envMode: requestedEnvMode,
+      worktreePath: requestedWorktreePath,
+    });
     maybeMarkOnboardingLiteCompleted(
       projectId,
       routeThreadId,
@@ -149,7 +162,7 @@ export async function createProjectBackedDraftThread({
     createdAt,
     branch: options?.branch ?? null,
     worktreePath: options?.worktreePath ?? null,
-    envMode: options?.envMode ?? "local",
+    envMode: requestedEnvMode,
     runtimeMode: DEFAULT_RUNTIME_MODE,
   });
   seedDraftThreadFromModelPreferences(threadId);

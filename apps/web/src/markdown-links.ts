@@ -1,4 +1,4 @@
-import { relativePathForDisplay } from "./lib/attachedFiles";
+import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
 import { basenameOfPath } from "./vscode-icons";
 
@@ -155,8 +155,8 @@ export interface MarkdownFileLinkMeta {
  *     relative paths against `cwd`, returning `path[:line[:column]]`.
  *  2. `splitPathAndPosition()` peels the line/column suffix back off so we
  *     can expose the bare `filePath` separately from `targetPath`.
- *  3. `relativePathForDisplay()` projects the file path into a
- *     workspace-relative form for the chip tooltip.
+ *  3. `formatWorkspaceRelativePath()` projects the file path into a
+ *     workspace-labeled form for the chip tooltip.
  *
  * Returns `null` for hrefs that are not file links (external URLs, app
  * routes, anchors, etc.).
@@ -169,7 +169,7 @@ export function resolveMarkdownFileLinkMeta(
   if (!targetPath) return null;
 
   const { path, line, column } = splitPathAndPosition(targetPath);
-  const displayPath = relativePathForDisplay(path, cwd);
+  const displayPath = formatWorkspaceRelativePath(path, cwd);
   const basename = basenameOfPath(path);
   return {
     filePath: path,

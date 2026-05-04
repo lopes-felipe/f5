@@ -2,6 +2,7 @@ import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/con
 import { type ReactNode } from "react";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { compareThreadsByActivity } from "../lib/threadOrdering";
+import { resolveThreadStatusPillForThread, type ThreadStatusPill } from "../threadStatus";
 import type { Project, Thread } from "../types";
 
 export const RECENT_THREAD_LIMIT = 12;
@@ -15,6 +16,7 @@ export interface CommandPaletteItem {
   readonly title: ReactNode;
   readonly description?: string;
   readonly timestamp?: string;
+  readonly statusPill?: ThreadStatusPill | null;
   readonly icon: ReactNode;
   readonly shortcutCommand?: KeybindingCommand;
 }
@@ -136,6 +138,7 @@ export function buildThreadActionItems(input: {
       title: thread.title,
       description: descriptionParts.join(" · "),
       timestamp: formatRelativeTimeLabel(thread.lastInteractionAt ?? thread.createdAt),
+      statusPill: resolveThreadStatusPillForThread(thread),
       icon: input.icon,
       run: async () => {
         await input.runThread(thread);

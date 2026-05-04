@@ -108,6 +108,7 @@ const AppSettingsSchema = Schema.Struct({
   defaultThreadEnvMode: Schema.Literals(["local", "worktree"]).pipe(
     Schema.withConstructorDefault(() => Option.some("local")),
   ),
+  tasksPanelAutoOpen: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
   expandWorkflowThreadsByDefault: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),
   ),
