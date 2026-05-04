@@ -1206,6 +1206,9 @@ describe("WebSocket Server", () => {
       const providerSessionDirectoryModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionDirectory.ts")
       >("./provider/Services/ProviderSessionDirectory.ts");
+      const providerSessionReaperModule = await vi.importActual<
+        typeof import("./provider/Services/ProviderSessionReaper.ts")
+      >("./provider/Services/ProviderSessionReaper.ts");
       const pendingRuntimeLayer = Layer.mergeAll(
         Layer.succeed(orchestrationEngineModule.OrchestrationEngineService, {
           getReadModel: () => Effect.die(new Error("unused in pending-runtime ws test")),
@@ -1217,6 +1220,10 @@ describe("WebSocket Server", () => {
           start: Effect.never,
         }),
         Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
+        Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
+          sweep: () => Effect.void,
+          start: () => Effect.void,
+        }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
         Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
@@ -1351,6 +1358,9 @@ describe("WebSocket Server", () => {
       const providerSessionDirectoryModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionDirectory.ts")
       >("./provider/Services/ProviderSessionDirectory.ts");
+      const providerSessionReaperModule = await vi.importActual<
+        typeof import("./provider/Services/ProviderSessionReaper.ts")
+      >("./provider/Services/ProviderSessionReaper.ts");
 
       const readModelThread: OrchestrationThread = {
         id: threadId,
@@ -1409,6 +1419,10 @@ describe("WebSocket Server", () => {
           start: Effect.void,
         }),
         Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
+        Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
+          sweep: () => Effect.void,
+          start: () => Effect.void,
+        }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>
             Effect.succeed(
@@ -1418,6 +1432,7 @@ describe("WebSocket Server", () => {
                     projectId,
                     provider: "codex" as const,
                     status: "running" as const,
+                    lastSeenAt: "2026-01-01T00:00:00.000Z",
                   })
                 : Option.none(),
             ),

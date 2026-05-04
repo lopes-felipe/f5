@@ -16,6 +16,7 @@ import type {
   GitResolvePullRequestResult,
   GitRunStackedActionInput,
   GitRunStackedActionResult,
+  GitStatusInvalidatedPayload,
   GitStatusInput,
   GitStatusResult,
 } from "./git";
@@ -220,6 +221,7 @@ export interface NativeApi {
     status: (input: GitStatusInput) => Promise<GitStatusResult>;
     runStackedAction: (input: GitRunStackedActionInput) => Promise<GitRunStackedActionResult>;
     onActionProgress: (callback: (event: GitActionProgressEvent) => void) => () => void;
+    onStatusInvalidated: (callback: (event: GitStatusInvalidatedPayload) => void) => () => void;
   };
   contextMenu: {
     show: <T extends string>(

@@ -32,6 +32,7 @@ import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRe
 import { HarnessValidationLive } from "./provider/Layers/HarnessValidation";
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
+import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper";
 import { HarnessValidation } from "./provider/Services/HarnessValidation";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
@@ -259,6 +260,9 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(workflowServiceLayer),
     Layer.provideMerge(codeReviewWorkflowServiceLayer),
   );
+  const providerSessionReaperLayer = ProviderSessionReaperLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+  );
   const projectSetupScriptRunnerLayer = ProjectSetupScriptRunnerLive.pipe(
     Layer.provideMerge(orchestrationLayer),
   );
@@ -268,6 +272,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     workflowServiceLayer,
     codeReviewWorkflowServiceLayer,
     orchestrationReactorLayer,
+    providerSessionReaperLayer,
     projectSetupScriptRunnerLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

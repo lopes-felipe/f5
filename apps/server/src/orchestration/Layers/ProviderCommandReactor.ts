@@ -65,7 +65,8 @@ type ProviderIntentEvent = Extract<
       | "thread.turn-interrupt-requested"
       | "thread.approval-response-requested"
       | "thread.user-input-response-requested"
-      | "thread.session-stop-requested";
+      | "thread.session-stop-requested"
+      | "thread.archived";
   }
 >;
 
@@ -459,13 +460,13 @@ const make = Effect.gen(function* () {
           instructionContext,
         });
 
+      const activeSession = yield* resolveActiveSession(threadId);
       const existingSessionThreadId =
-        thread.session && thread.session.status !== "stopped" ? thread.id : null;
+        thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
       if (existingSessionThreadId) {
         const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
         const providerChanged =
           options?.provider !== undefined && options.provider !== currentProvider;
-        const activeSession = yield* resolveActiveSession(existingSessionThreadId);
         const sessionModelSwitch =
           currentProvider === undefined
             ? "in-session"
@@ -1009,15 +1010,16 @@ const make = Effect.gen(function* () {
       );
   });
 
-  const processSessionStopRequested = Effect.fnUntraced(function* (
-    event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
-  ) {
-    const thread = yield* resolveThread(event.payload.threadId);
+  const stopThreadSession = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly createdAt: string;
+  }) {
+    const thread = yield* resolveThread(input.threadId);
     if (!thread) {
       return;
     }
 
-    const now = event.payload.createdAt;
+    const now = input.createdAt;
     if (thread.session && thread.session.status !== "stopped") {
       yield* providerService.stopSession({ threadId: thread.id });
     }
@@ -1035,6 +1037,24 @@ const make = Effect.gen(function* () {
         updatedAt: now,
       },
       createdAt: now,
+    });
+  });
+
+  const processSessionStopRequested = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.session-stop-requested" }>,
+  ) {
+    yield* stopThreadSession({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.createdAt,
+    });
+  });
+
+  const processThreadArchived = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.archived" }>,
+  ) {
+    yield* stopThreadSession({
+      threadId: event.payload.threadId,
+      createdAt: event.payload.archivedAt,
     });
   });
 
@@ -1273,6 +1293,9 @@ const make = Effect.gen(function* () {
         case "thread.session-stop-requested":
           yield* processSessionStopRequested(event);
           break;
+        case "thread.archived":
+          yield* processThreadArchived(event);
+          break;
       }
       yield* increment(orchestrationEventsProcessedTotal, {
         eventType: event.type,
@@ -1304,7 +1327,8 @@ const make = Effect.gen(function* () {
         event.type !== "thread.turn-interrupt-requested" &&
         event.type !== "thread.approval-response-requested" &&
         event.type !== "thread.user-input-response-requested" &&
-        event.type !== "thread.session-stop-requested"
+        event.type !== "thread.session-stop-requested" &&
+        event.type !== "thread.archived"
       ) {
         return Effect.void;
       }

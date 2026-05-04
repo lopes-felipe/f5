@@ -48,6 +48,7 @@ import Migration0033 from "./Migrations/033_ProjectMcpConfigScopes.ts";
 import Migration0034 from "./Migrations/034_ProjectionThreadCommandExecutionsCwd.ts";
 import Migration0035 from "./Migrations/035_ProjectionThreadFileChanges.ts";
 import Migration0036 from "./Migrations/036_ProjectionThreadMessagesCreatedMessageId.ts";
+import Migration0037 from "./Migrations/037_CleanupInvalidProjectionPendingApprovals.ts";
 import { Effect } from "effect";
 
 /**
@@ -97,6 +98,7 @@ const loader = Migrator.fromRecord({
   "34_ProjectionThreadCommandExecutionsCwd": Migration0034,
   "35_ProjectionThreadFileChanges": Migration0035,
   "36_ProjectionThreadMessagesCreatedMessageId": Migration0036,
+  "37_CleanupInvalidProjectionPendingApprovals": Migration0037,
 });
 
 /**

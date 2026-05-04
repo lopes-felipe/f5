@@ -1,5 +1,6 @@
 import {
   type GitActionProgressEvent,
+  type GitStatusInvalidatedPayload,
   type McpStatusUpdatedPayload,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -18,6 +19,7 @@ let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
 const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
+const gitStatusInvalidatedListeners = new Set<(payload: GitStatusInvalidatedPayload) => void>();
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 
 /**
@@ -94,6 +96,16 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(WS_CHANNELS.gitActionProgress, (message) => {
     const payload = message.data;
     for (const listener of gitActionProgressListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.gitStatusInvalidated, (message) => {
+    const payload = message.data;
+    for (const listener of gitStatusInvalidatedListeners) {
       try {
         listener(payload);
       } catch {
@@ -178,6 +190,12 @@ export function createWsNativeApi(): NativeApi {
         gitActionProgressListeners.add(callback);
         return () => {
           gitActionProgressListeners.delete(callback);
+        };
+      },
+      onStatusInvalidated: (callback) => {
+        gitStatusInvalidatedListeners.add(callback);
+        return () => {
+          gitStatusInvalidatedListeners.delete(callback);
         };
       },
     },

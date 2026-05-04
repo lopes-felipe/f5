@@ -532,6 +532,40 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return { adapter: recovered.adapter, threadId: input.threadId, isActive: true } as const;
       });
 
+    const stopStaleSessionsForThread = Effect.fnUntraced(function* (input: {
+      readonly threadId: ThreadId;
+      readonly currentProvider: ProviderSession["provider"];
+    }) {
+      yield* Effect.forEach(
+        adapters,
+        (adapter) =>
+          adapter.provider === input.currentProvider
+            ? Effect.void
+            : Effect.gen(function* () {
+                const hasSession = yield* adapter.hasSession(input.threadId);
+                if (!hasSession) {
+                  return;
+                }
+
+                yield* adapter.stopSession(input.threadId).pipe(
+                  Effect.tap(() =>
+                    analytics.record("provider.session.stopped", {
+                      provider: adapter.provider,
+                    }),
+                  ),
+                  Effect.tapError((cause) =>
+                    Effect.logWarning("provider.session.stop-stale-failed", {
+                      threadId: input.threadId,
+                      provider: adapter.provider,
+                      cause,
+                    }),
+                  ),
+                );
+              }),
+        { discard: true },
+      );
+    });
+
     const startSession: ProviderServiceShape["startSession"] = (threadId, rawInput) =>
       Effect.gen(function* () {
         const parsed = yield* decodeInputOrValidationError({
@@ -570,6 +604,10 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               projectMcpServers: resolvedProjectMcp?.servers,
             }),
           };
+          yield* stopStaleSessionsForThread({
+            threadId,
+            currentProvider: adapter.provider,
+          });
           const session = yield* adapter.startSession(adapterInput);
 
           if (session.provider !== adapter.provider) {

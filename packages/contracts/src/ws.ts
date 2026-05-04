@@ -59,6 +59,7 @@ import {
   GitPullRequestRefInput,
   GitRemoveWorktreeInput,
   GitRunStackedActionInput,
+  GitStatusInvalidatedPayload,
   GitStatusInput,
 } from "./git";
 import {
@@ -138,6 +139,7 @@ export const WS_METHODS = {
 
 export const WS_CHANNELS = {
   gitActionProgress: "git.actionProgress",
+  gitStatusInvalidated: "git.status.invalidate",
   terminalEvent: "terminal.event",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
@@ -306,6 +308,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
+  readonly [WS_CHANNELS.gitStatusInvalidated]: typeof GitStatusInvalidatedPayload.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
@@ -334,6 +337,10 @@ export const WsPushGitActionProgress = makeWsPushSchema(
   WS_CHANNELS.gitActionProgress,
   GitActionProgressEvent,
 );
+export const WsPushGitStatusInvalidated = makeWsPushSchema(
+  WS_CHANNELS.gitStatusInvalidated,
+  GitStatusInvalidatedPayload,
+);
 export const WsPushTerminalEvent = makeWsPushSchema(WS_CHANNELS.terminalEvent, TerminalEvent);
 export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
@@ -346,6 +353,7 @@ export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
 
 export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.gitActionProgress,
+  WS_CHANNELS.gitStatusInvalidated,
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.terminalEvent,
@@ -358,6 +366,7 @@ export const WsPush = Schema.Union([
   WsPushServerWelcome,
   WsPushServerConfigUpdated,
   WsPushGitActionProgress,
+  WsPushGitStatusInvalidated,
   WsPushTerminalEvent,
   WsPushMcpStatusUpdated,
   WsPushOrchestrationDomainEvent,

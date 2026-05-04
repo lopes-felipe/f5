@@ -158,3 +158,43 @@ it.effect("rejects push envelopes when channel payload does not match the channe
     assert.strictEqual(result._tag, "Failure");
   }),
 );
+
+it.effect("accepts git status invalidation push envelopes", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWsResponse({
+      type: "push",
+      sequence: 3,
+      channel: WS_CHANNELS.gitStatusInvalidated,
+      data: {
+        cwd: "/tmp/worktree",
+      },
+    });
+
+    if (!("type" in parsed) || parsed.type !== "push") {
+      assert.fail("expected websocket response to decode as a push envelope");
+    }
+
+    assert.strictEqual(parsed.channel, WS_CHANNELS.gitStatusInvalidated);
+    assert.deepStrictEqual(parsed.data, { cwd: "/tmp/worktree" });
+  }),
+);
+
+it.effect("accepts global git status invalidation push envelopes", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWsResponse({
+      type: "push",
+      sequence: 4,
+      channel: WS_CHANNELS.gitStatusInvalidated,
+      data: {
+        cwd: null,
+      },
+    });
+
+    if (!("type" in parsed) || parsed.type !== "push") {
+      assert.fail("expected websocket response to decode as a push envelope");
+    }
+
+    assert.strictEqual(parsed.channel, WS_CHANNELS.gitStatusInvalidated);
+    assert.deepStrictEqual(parsed.data, { cwd: null });
+  }),
+);

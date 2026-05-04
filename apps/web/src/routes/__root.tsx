@@ -44,6 +44,7 @@ import {
   orchestrationQueryKeys,
 } from "../lib/orchestrationReactQuery";
 import { mcpQueryKeys } from "../lib/mcpReactQuery";
+import { invalidateGitQueries } from "../lib/gitReactQuery";
 import { useAppSettings } from "../appSettings";
 import { deriveOnboardingLiteState } from "../lib/onboardingLite";
 import {
@@ -1040,6 +1041,9 @@ function EventRouter() {
     const unsubMcpStatusUpdated = onMcpStatusUpdated(() => {
       void queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
     });
+    const unsubGitStatusInvalidated = api.git.onStatusInvalidated((payload) => {
+      void invalidateGitQueries(queryClient, { cwd: payload.cwd });
+    });
     return () => {
       disposed = true;
       rejectSequenceCommitWaiters(makeAbortError());
@@ -1055,6 +1059,7 @@ function EventRouter() {
       unsubWelcome();
       unsubServerConfigUpdated();
       unsubMcpStatusUpdated();
+      unsubGitStatusInvalidated();
     };
   }, [
     applyDomainEvent,

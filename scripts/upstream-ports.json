@@ -130,5 +130,101 @@
     "f5-sha": null,
     "skipped": false,
     "reason": "Converted composer file mention pills to DecoratorNode rendering with the shared tooltip primitive while preserving text export."
+  },
+  "d18e43b6747887a5c4bdf55a04f0b3f2f71ead83": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Gated projected provider-session reuse on an active runtime session and added a projected-session-only regression test."
+  },
+  "8dbcf92a0d125050988474f258df3e55c538efec": {
+    "ported": false,
+    "f5-sha": null,
+    "skipped": true,
+    "reason": "N/A: f5 does not have upstream's probeClaudeCapabilities fallback path; Claude health uses CLI auth status only."
+  },
+  "b8305afa29309e52045987caab91db9b7e481ac0": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Introduced a Claude-auth-only 10s timeout while keeping non-auth probes at 4s and bounded provider health probe concurrency."
+  },
+  "721b6b4c6f596bd1d1b3af585ed9c62c4b6f72ab": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Removed provider-session directory deletion from the service contract and kept stopSession as a stopped persisted binding."
+  },
+  "d90e15d1d7ecba302d6977315977d5c2a748bf36": {
+    "ported": false,
+    "f5-sha": null,
+    "skipped": true,
+    "reason": "N/A: RepositoryIdentityResolver is not present because the coupled configurable project grouping work remains deferred."
+  },
+  "d5b7690f95504a04c12d10acfefd59f32515dbf2": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Already correct: f5 tracks only an explicit slow-RPC allowlist and has no subscribe RPCs in latency tracking."
+  },
+  "e0117b271a79f66d0ac793da334991e7a2ccb800": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added ProviderSessionReaper, stale cross-provider session cleanup on start, and archive-triggered session stop."
+  },
+  "9dcea68bce25e1c30be7a6439bfe607b236740a0": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added a git status invalidation WebSocket push and client-side git query invalidation for worktree creation and branch metadata updates."
+  },
+  "40009735eea88b2266cf7d112217e85a688b3e63": {
+    "ported": false,
+    "f5-sha": null,
+    "skipped": true,
+    "reason": "Deferred per plan: backend startup readiness extraction is architectural and not needed for current f5 startup behavior."
+  },
+  "569fea87a90f1d9a5d4d9b6c7c1c59801324a561": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Already present through f5's threadPreload startup/live warming path with a top-10 recent preload and bounded concurrency."
+  },
+  "0d55a42840231122f8d7414b35f155343031f82d": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Already present in f5's sequence-gated startup snapshot merge and stale snapshot regression coverage."
+  },
+  "e25db3a572a6718a1f3c5a64529395cc88cd5249": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Provider status cache is absent in f5; added shared random temp-directory atomic writes and applied it to keybindings persistence."
+  },
+  "d22c6f52800673d954840bd447109aeb707c6e8e": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Guarded pending-approval projection writes so only approval.requested activities create pending approval rows."
+  },
+  "f297e30e4c0fe044ba5cbed7679bfcba134526fe": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Added a migration that deletes invalid pending approvals not backed by approval.requested activities."
+  },
+  "7a08fcf2e832da5969aeb373c46d5249b4e820b7": {
+    "ported": false,
+    "f5-sha": null,
+    "skipped": true,
+    "reason": "N/A: f5 has no server-side text-generation settings store; text generation model selection is still client-side."
+  },
+  "ed6b7fbf27973c8a5180e7074ba448d912c3cce4": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Already present and covered by workspace search gitignore smoke tests."
   }
 }

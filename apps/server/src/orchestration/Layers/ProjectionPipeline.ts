@@ -1772,6 +1772,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             });
             return;
           }
+          if (event.payload.activity.kind !== "approval.requested") {
+            return;
+          }
           if (Option.isSome(existingRow) && existingRow.value.status === "resolved") {
             return;
           }

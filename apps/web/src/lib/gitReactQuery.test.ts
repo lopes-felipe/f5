@@ -82,6 +82,20 @@ describe("invalidateGitQueries", () => {
 
     expect(calls).toEqual([{ queryKey: gitQueryKeys.all }]);
   });
+
+  it("falls back to invalidating all git queries when cwd is null", async () => {
+    const queryClient = new QueryClient();
+    const invalidateQueries = queryClient.invalidateQueries.bind(queryClient);
+    const calls: unknown[] = [];
+    queryClient.invalidateQueries = ((filters, options) => {
+      calls.push(filters);
+      return invalidateQueries(filters, options);
+    }) as typeof queryClient.invalidateQueries;
+
+    await invalidateGitQueries(queryClient, { cwd: null });
+
+    expect(calls).toEqual([{ queryKey: gitQueryKeys.all }]);
+  });
 });
 
 describe("gitStatusQueryOptions", () => {

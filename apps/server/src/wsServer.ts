@@ -17,6 +17,7 @@ import {
   PROJECT_READ_FILE_MAX_SIZE,
   type ClientOrchestrationCommand,
   type OrchestrationCommand,
+  type OrchestrationEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
@@ -81,6 +82,7 @@ import {
   ProviderSessionDirectory,
   type ProviderSessionDirectoryShape,
 } from "./provider/Services/ProviderSessionDirectory.ts";
+import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
 import { ProviderHealth } from "./provider/Services/ProviderHealth";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
@@ -373,6 +375,25 @@ function rpcTraceAttributesForRequest(
   }
 
   return attributes;
+}
+
+function resolveGitStatusInvalidation(event: OrchestrationEvent):
+  | {
+      readonly publish: true;
+      readonly cwd: string | null;
+    }
+  | {
+      readonly publish: false;
+    } {
+  if (event.type === "thread.created" && event.payload.worktreePath !== null) {
+    return { publish: true, cwd: event.payload.worktreePath };
+  }
+
+  if (event.type === "thread.meta-updated" && event.payload.worktreePath !== undefined) {
+    return { publish: true, cwd: event.payload.worktreePath };
+  }
+
+  return { publish: false };
 }
 
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
@@ -908,6 +929,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       OrchestrationEngineService,
     );
     const orchestrationReactor = ServiceMap.get(orchestrationRuntimeServices, OrchestrationReactor);
+    const providerSessionReaper = ServiceMap.get(
+      orchestrationRuntimeServices,
+      ProviderSessionReaper,
+    );
     const providerCommandReactor = ServiceMap.get(
       orchestrationRuntimeServices,
       ProviderCommandReactor,
@@ -927,10 +952,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
 
     yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
-      pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event),
+      Effect.gen(function* () {
+        yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+        const gitStatusInvalidation = resolveGitStatusInvalidation(event);
+        if (gitStatusInvalidation.publish) {
+          yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
+            cwd: gitStatusInvalidation.cwd,
+          });
+        }
+      }),
     ).pipe(Effect.forkIn(subscriptionsScope));
 
     yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
+    yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
     yield* readiness.markOrchestrationSubscriptionsReady;
     yield* Deferred.succeed(orchestrationRuntime, {
       orchestrationEngine,
@@ -1209,7 +1243,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             worktreesDir: serverConfig.worktreesDir,
           });
         }
-        return yield* orchestrationEngine.dispatch(normalizedCommand);
+        const result = yield* orchestrationEngine.dispatch(normalizedCommand);
+        return result;
       }
 
       case ORCHESTRATION_WS_METHODS.getTurnDiff: {

@@ -100,6 +100,33 @@ function hangingSpawnerLayer() {
   );
 }
 
+function claudeAuthHangingSpawnerLayer() {
+  return Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) => {
+      const cmd = command as unknown as { args: ReadonlyArray<string> };
+      if (cmd.args.join(" ") === "--version") {
+        return Effect.succeed(mockHandle({ stdout: "1.0.0\n", stderr: "", code: 0 }));
+      }
+
+      return Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.never,
+          isRunning: Effect.succeed(true),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          stdout: Stream.empty,
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+        }),
+      );
+    }),
+  );
+}
+
 /**
  * Create a temporary CODEX_HOME scoped to the current Effect test.
  * Cleanup is registered in the test scope rather than via Vitest hooks.
@@ -859,6 +886,24 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         const status = yield* Fiber.join(fiber);
         assert.strictEqual(status.failureReason, "versionProbeTimeout");
       }).pipe(Effect.provide(hangingSpawnerLayer())),
+    );
+
+    it.effect("lets the claude auth probe run for 10s without extending version probes", () =>
+      Effect.gen(function* () {
+        const fiber = yield* checkClaudeProviderPreflight().pipe(Effect.forkChild);
+
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual(fiber.pollUnsafe(), undefined);
+
+        yield* TestClock.adjust("5 seconds");
+        const status = yield* Fiber.join(fiber);
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.authStatus, "unknown");
+        assert.strictEqual(
+          status.message,
+          "Could not verify Claude authentication status. Timed out while running command.",
+        );
+      }).pipe(Effect.provide(claudeAuthHangingSpawnerLayer())),
     );
 
     it.effect("sets failureReason=unauthenticated when claude auth explicitly fails", () =>

@@ -32,7 +32,8 @@ import {
   runCodexCliCommand as runCodexCommand,
 } from "../providerCli.ts";
 
-const DEFAULT_TIMEOUT_MS = 4_000;
+export const DEFAULT_TIMEOUT_MS = 4_000;
+export const AUTH_TIMEOUT_MS = 10_000;
 const PROVIDER_HEALTH_CACHE_TTL_MS = 15_000;
 const CODEX_PROVIDER = "codex" as const;
 const CLAUDE_AGENT_PROVIDER = "claudeAgent" as const;
@@ -563,7 +564,7 @@ export const checkClaudeProviderPreflight = (input?: {
 
     // Probe 2: `claude auth status` — is the user authenticated?
     const authProbe = yield* runClaudeCommand(["auth", "status"], claudeOptions).pipe(
-      Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
+      Effect.timeoutOption(AUTH_TIMEOUT_MS),
       Effect.result,
     );
 
@@ -728,7 +729,7 @@ export const ProviderHealthLive = Layer.effect(
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
         ),
       ],
-      { concurrency: "unbounded" },
+      { concurrency: 2 },
     );
 
     return {

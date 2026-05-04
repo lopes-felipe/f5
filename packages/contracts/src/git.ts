@@ -227,6 +227,11 @@ export const GitPullResult = Schema.Struct({
 });
 export type GitPullResult = typeof GitPullResult.Type;
 
+export const GitStatusInvalidatedPayload = Schema.Struct({
+  cwd: Schema.NullOr(TrimmedNonEmptyStringSchema),
+});
+export type GitStatusInvalidatedPayload = typeof GitStatusInvalidatedPayload.Type;
+
 const GitActionProgressBase = Schema.Struct({
   actionId: TrimmedNonEmptyStringSchema,
   cwd: TrimmedNonEmptyStringSchema,

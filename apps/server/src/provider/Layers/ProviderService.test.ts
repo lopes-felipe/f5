@@ -24,6 +24,7 @@ import { Effect, Fiber, Layer, Metric, Option, PubSub, Ref, Stream } from "effec
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
+  ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
   ProviderUnsupportedError,
   type ProviderAdapterError,
@@ -356,6 +357,37 @@ function makeProviderServiceLayer() {
   };
 }
 
+function makeProviderServiceLayerForAdapters(
+  adaptersByProvider: ReadonlyMap<ProviderKind, ProviderAdapterShape<ProviderAdapterError>>,
+) {
+  const registry: typeof ProviderAdapterRegistry.Service = {
+    getByProvider: (provider) => {
+      const adapter = adaptersByProvider.get(provider);
+      return adapter
+        ? Effect.succeed(adapter)
+        : Effect.fail(new ProviderUnsupportedError({ provider }));
+    },
+    listProviders: () => Effect.succeed([...adaptersByProvider.keys()]),
+  };
+
+  const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
+    Layer.provide(SqlitePersistenceMemory),
+  );
+  const directoryLayer = ProviderSessionDirectoryLive.pipe(Layer.provide(runtimeRepositoryLayer));
+
+  return Layer.mergeAll(
+    makeProviderServiceLive().pipe(
+      Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
+      Layer.provide(directoryLayer),
+      Layer.provide(makeProjectMcpConfigServiceTestLayer()),
+      Layer.provideMerge(AnalyticsService.layerTest),
+    ),
+    directoryLayer,
+    runtimeRepositoryLayer,
+    NodeServices.layer,
+  );
+}
+
 const routing = makeProviderServiceLayer();
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>
   Effect.gen(function* () {
@@ -527,6 +559,97 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("stops stale cross-provider sessions before starting a new provider session", () => {
+    const codex = makeFakeCodexAdapter("codex");
+    const claude = makeFakeCodexAdapter("claudeAgent");
+    const layer = makeProviderServiceLayerForAdapters(
+      new Map([
+        ["codex", codex.adapter],
+        ["claudeAgent", claude.adapter],
+      ]),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-cross-provider");
+
+      yield* claude.adapter.startSession({
+        threadId,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(claude.stopSession.mock.calls.length, 1);
+      assert.deepEqual(claude.stopSession.mock.calls[0], [threadId]);
+      assert.equal(codex.startSession.mock.calls.length, 1);
+
+      const reverseThreadId = asThreadId("thread-cross-provider-reverse");
+      yield* codex.adapter.startSession({
+        threadId: reverseThreadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+      });
+
+      yield* provider.startSession(reverseThreadId, {
+        threadId: reverseThreadId,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      assert.deepEqual(codex.stopSession.mock.calls[0], [reverseThreadId]);
+      assert.equal(claude.startSession.mock.calls.length, 2);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("does not start a new provider session when stale cross-provider cleanup fails", () => {
+    const codex = makeFakeCodexAdapter("codex");
+    const claude = makeFakeCodexAdapter("claudeAgent");
+    claude.stopSession.mockImplementation((threadId) =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "claudeAgent",
+          method: "stopSession",
+          detail: `failed to stop ${threadId}`,
+        }),
+      ),
+    );
+    const layer = makeProviderServiceLayerForAdapters(
+      new Map([
+        ["codex", codex.adapter],
+        ["claudeAgent", claude.adapter],
+      ]),
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-cross-provider-failure");
+
+      yield* claude.adapter.startSession({
+        threadId,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      const result = yield* Effect.result(
+        provider.startSession(threadId, {
+          threadId,
+          provider: "codex",
+          runtimeMode: "full-access",
+        }),
+      );
+
+      assert.equal(result._tag, "Failure");
+      assert.equal(codex.startSession.mock.calls.length, 0);
+      assert.equal(claude.stopSession.mock.calls.length, 1);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("records observability metrics for provider session, turn, and runtime events", () =>
     Effect.gen(function* () {
       const before = yield* Metric.snapshot;

@@ -369,18 +369,28 @@ describe("ProviderCommandReactor", () => {
       getBinding: (threadId: ThreadId) =>
         Effect.sync(() =>
           persistedBindings.has(threadId)
-            ? Option.some(persistedBindings.get(threadId)!)
-            : Option.none<ProviderRuntimeBinding>(),
+            ? Option.some({
+                ...persistedBindings.get(threadId)!,
+                lastSeenAt: "2026-01-01T00:00:00.000Z",
+              })
+            : Option.none(),
         ),
-      remove: (threadId: ThreadId) =>
-        Effect.sync(() => {
-          persistedBindings.delete(threadId);
-        }),
       listThreadIds: () => Effect.sync(() => [...persistedBindings.keys()]),
-      listBindings: () => Effect.sync(() => [...persistedBindings.values()]),
+      listBindings: () =>
+        Effect.sync(() =>
+          [...persistedBindings.values()].map((binding) => ({
+            ...binding,
+            lastSeenAt: "2026-01-01T00:00:00.000Z",
+          })),
+        ),
       listBindingsByProject: (projectId) =>
         Effect.sync(() =>
-          [...persistedBindings.values()].filter((binding) => binding.projectId === projectId),
+          [...persistedBindings.values()]
+            .filter((binding) => binding.projectId === projectId)
+            .map((binding) => ({
+              ...binding,
+              lastSeenAt: "2026-01-01T00:00:00.000Z",
+            })),
         ),
     } satisfies ProviderSessionDirectoryShape;
 
@@ -851,6 +861,58 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls.length).toBe(1);
     expect(harness.stopSession.mock.calls.length).toBe(0);
+  });
+
+  it("starts a fresh session when only projected session state exists", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-stale"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-stale"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-stale"),
+          role: "user",
+          text: "resume codex",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      model: "gpt-5-codex",
+      runtimeMode: "approval-required",
+    });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      threadId: ThreadId.makeUnsafe("thread-1"),
+    });
   });
 
   it("resumes a stopped session when persisted resume state still exists", async () => {
@@ -2310,6 +2372,45 @@ describe("ProviderCommandReactor", () => {
     expect(thread?.session).not.toBeNull();
     expect(thread?.session?.status).toBe("stopped");
     expect(thread?.session?.threadId).toBe("thread-1");
+    expect(thread?.session?.activeTurnId).toBeNull();
+  });
+
+  it("reacts to thread.archive by stopping provider session and clearing thread session state", async () => {
+    const harness = await createHarness();
+    const now = "2026-01-01T00:00:00.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-for-archive"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.archive",
+        commandId: CommandId.makeUnsafe("cmd-thread-archive-stop-session"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.stopSession.mock.calls.length === 1);
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    expect(thread?.archivedAt).toBe(now);
+    expect(thread?.session?.status).toBe("stopped");
     expect(thread?.session?.activeTurnId).toBeNull();
   });
 });
