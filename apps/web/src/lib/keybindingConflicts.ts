@@ -29,6 +29,16 @@ const STATIC_COMMAND_LABELS: Partial<Record<KeybindingCommand, string>> = {
   "thread.switchRecentNext": "Next recent thread",
   "thread.switchRecentPrevious": "Previous recent thread",
   "model.switchRecent": "Switch recent model",
+  "modelPicker.toggle": "Toggle model picker",
+  "modelPicker.jump.1": "Pick model 1",
+  "modelPicker.jump.2": "Pick model 2",
+  "modelPicker.jump.3": "Pick model 3",
+  "modelPicker.jump.4": "Pick model 4",
+  "modelPicker.jump.5": "Pick model 5",
+  "modelPicker.jump.6": "Pick model 6",
+  "modelPicker.jump.7": "Pick model 7",
+  "modelPicker.jump.8": "Pick model 8",
+  "modelPicker.jump.9": "Pick model 9",
   "commandPalette.toggle": "Toggle command palette",
 };
 

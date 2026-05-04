@@ -70,6 +70,18 @@ it.effect("parses keybinding rules", () =>
       command: "thread.switchRecentPrevious",
     });
     assert.strictEqual(parsedThreadSwitchPrevious.command, "thread.switchRecentPrevious");
+
+    const parsedModelPickerToggle = yield* decode(KeybindingRule, {
+      key: "mod+shift+m",
+      command: "modelPicker.toggle",
+    });
+    assert.strictEqual(parsedModelPickerToggle.command, "modelPicker.toggle");
+
+    const parsedModelPickerJump = yield* decode(KeybindingRule, {
+      key: "mod+1",
+      command: "modelPicker.jump.1",
+    });
+    assert.strictEqual(parsedModelPickerJump.command, "modelPicker.jump.1");
   }),
 );
 

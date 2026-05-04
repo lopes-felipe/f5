@@ -38,6 +38,15 @@ const modN = {
   modKey: true,
 } as const;
 
+const mod3 = {
+  key: "3",
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  modKey: true,
+} as const;
+
 describe("parseKeybindingShortcutValue", () => {
   it("parses normalized shortcut tokens", () => {
     expect(parseKeybindingShortcutValue("mod+shift+n")).toEqual({
@@ -145,11 +154,31 @@ describe("findConflictsForCandidateKeybinding", () => {
 
     expect(conflicts).toEqual([]);
   });
+
+  it("flags global candidates that overlap model picker jump shortcuts", () => {
+    const conflicts = findConflictsForCandidateKeybinding(
+      [
+        {
+          command: "modelPicker.jump.3",
+          shortcut: mod3,
+          whenAst: whenIdentifier("modelPickerOpen"),
+        },
+      ] satisfies ResolvedKeybindingsConfig,
+      {
+        command: "chat.new",
+        shortcut: mod3,
+      },
+    );
+
+    expect(conflicts.map((binding) => binding.command)).toEqual(["modelPicker.jump.3"]);
+  });
 });
 
 describe("formatKeybindingCommandLabel", () => {
   it("formats static and project action commands", () => {
     expect(formatKeybindingCommandLabel("chat.new")).toBe("New thread");
+    expect(formatKeybindingCommandLabel("modelPicker.toggle")).toBe("Toggle model picker");
+    expect(formatKeybindingCommandLabel("modelPicker.jump.4")).toBe("Pick model 4");
     expect(
       formatKeybindingCommandLabel("script.build.run", [
         {

@@ -13,6 +13,7 @@ import {
   getReasoningEffortOptions,
   normalizeModelSlug,
   roughTokenEstimateFromCharacters,
+  resolveSelectableModel,
   resolveModelSlug,
   supportsClaudeAdaptiveReasoning,
   supportsClaudeFastMode,
@@ -81,6 +82,35 @@ describe("resolveModelSlug", () => {
       "claude-sonnet-4-6",
       "claude-haiku-4-5",
     ]);
+  });
+});
+
+describe("resolveSelectableModel", () => {
+  const options = [
+    { slug: "gpt-5.3-codex", name: "GPT-5.3 Codex" },
+    { slug: "custom/internal-model", name: "Internal Model" },
+  ];
+
+  it("resolves exact slugs before names or aliases", () => {
+    expect(resolveSelectableModel("codex", "custom/internal-model", options)).toBe(
+      "custom/internal-model",
+    );
+  });
+
+  it("resolves option names case-insensitively", () => {
+    expect(resolveSelectableModel("codex", "internal model", options)).toBe(
+      "custom/internal-model",
+    );
+  });
+
+  it("normalizes aliases before checking available options", () => {
+    expect(resolveSelectableModel("codex", "5.3", options)).toBe("gpt-5.3-codex");
+  });
+
+  it("rejects missing, empty, or unavailable values", () => {
+    expect(resolveSelectableModel("codex", null, options)).toBeNull();
+    expect(resolveSelectableModel("codex", "   ", options)).toBeNull();
+    expect(resolveSelectableModel("codex", "gpt-5.5", options)).toBeNull();
   });
 });
 

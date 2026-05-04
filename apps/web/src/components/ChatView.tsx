@@ -64,6 +64,7 @@ import {
   collapseExpandedComposerCursor,
   detectComposerTrigger,
   expandCollapsedComposerCursor,
+  isStandaloneModelPickerSlashCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "../composer-logic";
@@ -213,7 +214,7 @@ import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./chat/ExpandedImagePreview";
-import { AVAILABLE_PROVIDER_OPTIONS, ProviderModelPicker } from "./chat/ProviderModelPicker";
+import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./chat/ComposerPendingApprovalActions";
 import {
@@ -629,6 +630,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
+  const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
   // When set, the thread-change reset effect will open the sidebar instead of closing it.
@@ -1121,23 +1123,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
   }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
-  const searchableModelOptions = useMemo(
-    () =>
-      AVAILABLE_PROVIDER_OPTIONS.filter(
-        (option) => lockedProvider === null || option.value === lockedProvider,
-      ).flatMap((option) =>
-        modelOptionsByProvider[option.value].map(({ slug, name }) => ({
-          provider: option.value,
-          providerLabel: option.label,
-          slug,
-          name,
-          searchSlug: slug.toLowerCase(),
-          searchName: name.toLowerCase(),
-          searchProvider: option.label.toLowerCase(),
-        })),
-      ),
-    [lockedProvider, modelOptionsByProvider],
-  );
   const phase = derivePhase(activeThread?.session ?? null);
   const showAgentCommandTranscripts = settings.showAgentCommandTranscripts;
   const alwaysExpandAgentCommandTranscripts = settings.alwaysExpandAgentCommandTranscripts;
@@ -1528,6 +1513,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const isSendBusy =
     pendingTurnDispatch !== null && pendingTurnDispatch.status !== "awaiting-user-action";
   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
+  useEffect(() => {
+    if (isPendingTurnDispatchBlocked) {
+      setIsModelPickerOpen(false);
+    }
+  }, [isPendingTurnDispatchBlocked]);
   const activeWorkStartedAt = useMemo(
     () =>
       deriveActiveWorkStartedAt(
@@ -1897,36 +1887,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }));
     }
 
-    if (composerTrigger.kind === "slash-command") {
-      return buildSlashComposerMenuItems({
-        query: composerTrigger.query,
-        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
-        provider: selectedProvider,
-        projectSkills: activeProject?.skills,
-      });
-    }
-
-    return searchableModelOptions
-      .filter(({ searchSlug, searchName, searchProvider }) => {
-        const query = composerTrigger.query.trim().toLowerCase();
-        if (!query) return true;
-        return (
-          searchSlug.includes(query) || searchName.includes(query) || searchProvider.includes(query)
-        );
-      })
-      .map(({ provider, providerLabel, slug, name }) => ({
-        id: `model:${provider}:${slug}`,
-        type: "model",
-        provider,
-        model: slug,
-        label: name,
-        description: `${providerLabel} · ${slug}`,
-      }));
+    return buildSlashComposerMenuItems({
+      query: composerTrigger.query,
+      runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+      provider: selectedProvider,
+      projectSkills: activeProject?.skills,
+    });
   }, [
     activeProject?.skills,
     composerTrigger,
     latestConfiguredRuntimeActivity?.slashCommands,
-    searchableModelOptions,
     selectedProvider,
     workspaceEntries,
   ]);
@@ -3188,6 +3158,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
         terminalOpen: Boolean(terminalState.terminalOpen),
+        modelPickerOpen: isModelPickerOpen,
       };
 
       const command = resolveShortcutCommand(event, keybindings, {
@@ -3237,6 +3208,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return;
       }
 
+      if (command === "modelPicker.toggle") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (isPendingTurnDispatchBlocked) {
+          setIsModelPickerOpen(false);
+          return;
+        }
+        setIsModelPickerOpen((open) => !open);
+        return;
+      }
+
       const scriptId = projectScriptIdFromCommand(command);
       if (!scriptId || !activeProject) return;
       const script = activeProject.scripts.find((entry) => entry.id === scriptId);
@@ -3254,6 +3236,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     activeThreadId,
     closeTerminal,
     createNewTerminal,
+    isPendingTurnDispatchBlocked,
+    isModelPickerOpen,
     setTerminalOpen,
     runProjectScript,
     splitTerminal,
@@ -4538,20 +4522,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
       }
       if (item.type === "slash-command") {
         if (item.command === "model") {
-          const replacement = "/model ";
-          const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
-            snapshot.value,
-            trigger.rangeEnd,
-            replacement,
-          );
-          const applied = applyPromptReplacement(
-            trigger.rangeStart,
-            replacementRangeEnd,
-            replacement,
-            { expectedText: snapshot.value.slice(trigger.rangeStart, replacementRangeEnd) },
-          );
+          const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
+            expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
+          });
           if (applied) {
             setComposerHighlightedItemId(null);
+            setIsModelPickerOpen(true);
           }
           return;
         }
@@ -4582,19 +4558,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
         }
         return;
       }
-      onProviderModelSelect(item.provider, item.model);
-      const applied = applyPromptReplacement(trigger.rangeStart, trigger.rangeEnd, "", {
-        expectedText: snapshot.value.slice(trigger.rangeStart, trigger.rangeEnd),
-      });
-      if (applied) {
-        setComposerHighlightedItemId(null);
-      }
     },
     [
       applyPromptReplacement,
       handleInteractionModeChange,
       isPendingTurnDispatchBlocked,
-      onProviderModelSelect,
       resolveActiveComposerTrigger,
     ],
   );
@@ -4643,6 +4611,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
         );
         return;
       }
+      if (!isPendingTurnDispatchBlocked && isStandaloneModelPickerSlashCommand(nextPrompt)) {
+        promptRef.current = "";
+        setPrompt("");
+        setComposerCursor(0);
+        setComposerTrigger(null);
+        setComposerHighlightedItemId(null);
+        setIsModelPickerOpen(true);
+        return;
+      }
       promptRef.current = nextPrompt;
       setPrompt(nextPrompt);
       if (!terminalContextIdListsEqual(composerTerminalContexts, terminalContextIds)) {
@@ -4660,6 +4637,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
       composerTerminalContexts,
+      isPendingTurnDispatchBlocked,
       onChangeActivePendingUserInputCustomAnswer,
       setPrompt,
       setComposerDraftTerminalContexts,
@@ -5267,6 +5245,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           lockedProvider={lockedProvider}
                           modelOptionsByProvider={modelOptionsByProvider}
                           ultrathinkActive={isClaudeUltrathink}
+                          providers={providerStatuses}
+                          keybindings={keybindings}
+                          terminalOpen={Boolean(terminalState.terminalOpen)}
+                          open={isModelPickerOpen}
+                          onOpenChange={setIsModelPickerOpen}
                           disabled={isPendingTurnDispatchBlocked}
                           onProviderModelChange={onProviderModelSelect}
                         />

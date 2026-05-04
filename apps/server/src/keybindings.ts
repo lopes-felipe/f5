@@ -12,6 +12,7 @@ import {
   KeybindingShortcut,
   KeybindingWhenNode,
   MAX_KEYBINDINGS_COUNT,
+  MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
   MAX_WHEN_EXPRESSION_DEPTH,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
@@ -78,6 +79,12 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "ctrl+tab", command: "thread.switchRecentNext" },
   { key: "ctrl+shift+tab", command: "thread.switchRecentPrevious" },
   { key: "alt+tab", command: "model.switchRecent" },
+  { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
+  ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
+    key: `mod+${index + 1}`,
+    command,
+    when: "modelPickerOpen",
+  })),
   { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
 ];
 

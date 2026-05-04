@@ -6,6 +6,7 @@ import {
   detectComposerTrigger,
   expandCollapsedComposerCursor,
   isCollapsedCursorAdjacentToInlineToken,
+  isStandaloneModelPickerSlashCommand,
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "./composer-logic";
@@ -36,16 +37,18 @@ describe("detectComposerTrigger", () => {
     });
   });
 
-  it("detects slash model query after /model", () => {
+  it("does not keep the old inline model query trigger after /model", () => {
     const text = "/model spark";
     const trigger = detectComposerTrigger(text, text.length);
 
-    expect(trigger).toEqual({
-      kind: "slash-model",
-      query: "spark",
-      rangeStart: 0,
-      rangeEnd: text.length,
-    });
+    expect(trigger).toBeNull();
+  });
+
+  it("recognizes /model followed by whitespace as the picker shortcut", () => {
+    expect(isStandaloneModelPickerSlashCommand("/model ")).toBe(true);
+    expect(isStandaloneModelPickerSlashCommand("/MODEL\t")).toBe(true);
+    expect(isStandaloneModelPickerSlashCommand("/model spark")).toBe(false);
+    expect(isStandaloneModelPickerSlashCommand("/model")).toBe(false);
   });
 
   it("detects non-model slash commands while typing", () => {

@@ -28,6 +28,7 @@ import {
 import { normalizeAttachedFilePaths, resolveAttachedFileReferencePath } from "../lib/attachedFiles";
 import { setupProjectScript } from "~/projectScripts";
 import { type ComposerCommandItem } from "./chat/ComposerCommandMenu";
+import type { ModelPickerModelOption } from "./chat/providerIconUtils";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 
@@ -423,7 +424,7 @@ export function cloneComposerImageForRetry(
 export function getCustomModelOptionsByProvider(settings: {
   customCodexModels: readonly string[];
   customClaudeModels: readonly string[];
-}): Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>> {
+}): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
   return {
     codex: getAppModelOptions("codex", settings.customCodexModels),
     claudeAgent: getAppModelOptions("claudeAgent", settings.customClaudeModels),

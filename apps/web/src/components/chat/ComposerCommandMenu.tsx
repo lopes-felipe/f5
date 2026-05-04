@@ -1,9 +1,8 @@
-import { type ProjectEntry, type ModelSlug, type ProviderKind } from "@t3tools/contracts";
+import { type ProjectEntry } from "@t3tools/contracts";
 import { memo } from "react";
 import { type ComposerSlashCommand, type ComposerTriggerKind } from "../../composer-logic";
 import { BotIcon } from "lucide-react";
 import { cn } from "~/lib/utils";
-import { Badge } from "../ui/badge";
 import { Command, CommandItem, CommandList } from "../ui/command";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 
@@ -30,14 +29,6 @@ export type ComposerCommandItem =
       label: string;
       description: string;
       argumentHint: string | null;
-    }
-  | {
-      id: string;
-      type: "model";
-      provider: ProviderKind;
-      model: ModelSlug;
-      label: string;
-      description: string;
     };
 
 export const ComposerCommandMenu = memo(function ComposerCommandMenu(props: {
@@ -115,11 +106,6 @@ const ComposerCommandMenuItem = memo(function ComposerCommandMenuItem(props: {
         <BotIcon className="size-4 text-muted-foreground/80" />
       ) : null}
       {props.item.type === "skill" ? <BotIcon className="size-4 text-muted-foreground/80" /> : null}
-      {props.item.type === "model" ? (
-        <Badge variant="outline" className="px-1.5 py-0 text-[10px]">
-          model
-        </Badge>
-      ) : null}
       <span className="flex min-w-0 items-center gap-1.5 truncate">
         <span className="truncate">{props.item.label}</span>
       </span>

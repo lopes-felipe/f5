@@ -177,6 +177,30 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }),
   );
 
+  it.effect("includes model picker toggle and jump defaults", () =>
+    Effect.sync(() => {
+      assert.isTrue(
+        DEFAULT_KEYBINDINGS.some(
+          (entry) =>
+            entry.key === "mod+shift+m" &&
+            entry.command === "modelPicker.toggle" &&
+            entry.when === "!terminalFocus",
+        ),
+      );
+
+      for (let index = 1; index <= 9; index += 1) {
+        assert.isTrue(
+          DEFAULT_KEYBINDINGS.some(
+            (entry) =>
+              entry.key === `mod+${index}` &&
+              entry.command === `modelPicker.jump.${index}` &&
+              entry.when === "modelPickerOpen",
+          ),
+        );
+      }
+    }),
+  );
+
   it.effect("encodes resolved plus-key shortcuts", () =>
     Effect.gen(function* () {
       const encoded = yield* Schema.encodeEffect(ResolvedKeybindingFromConfig)({

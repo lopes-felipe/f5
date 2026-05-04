@@ -1,7 +1,9 @@
 import { DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vitest";
 
 import {
+  AppSettingsSchema,
   CLAUDE_SUBAGENT_MODEL_INHERIT,
   DEFAULT_TIMESTAMP_FORMAT,
   DISPLAY_PROFILE_KEYS,
@@ -12,6 +14,8 @@ import {
   getClaudeProjectSettings,
   getAppModelOptions,
   getSlashModelOptions,
+  MAX_CUSTOM_MODEL_LENGTH,
+  normalizeFavoriteModels,
   normalizeCustomModelSlugs,
   parsePersistedAppSettings,
   type AppSettings,
@@ -94,6 +98,69 @@ describe("parsePersistedAppSettings", () => {
 
   it("defaults task sidebar auto-open to true", () => {
     expect(parsePersistedAppSettings(null).tasksPanelAutoOpen).toBe(true);
+  });
+
+  it("defaults favorite models to an empty list", () => {
+    expect(parsePersistedAppSettings(null).favoriteModels).toEqual([]);
+  });
+
+  it("decodes stored settings that predate favorite models without losing other settings", () => {
+    const persisted: Record<string, unknown> = {
+      ...parsePersistedAppSettings(null),
+      codexBinaryPath: "/opt/t3/bin/codex",
+      showAgentCommandTranscripts: false,
+    };
+    delete persisted.favoriteModels;
+
+    const decoded = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema))(
+      JSON.stringify(persisted),
+    );
+
+    expect(decoded.favoriteModels).toEqual([]);
+    expect(decoded.codexBinaryPath).toBe("/opt/t3/bin/codex");
+    expect(decoded.showAgentCommandTranscripts).toBe(false);
+  });
+
+  it("normalizes persisted favorite models by provider and slug", () => {
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        favoriteModels: [
+          { providerKind: "codex", modelId: " gpt-5.3 " },
+          { providerKind: "codex", modelId: "gpt-5.3-codex" },
+          { providerKind: "claudeAgent", modelId: " sonnet-4.6 " },
+          { providerKind: "claudeAgent", modelId: "" },
+          { providerKind: "cursor", modelId: "gpt-5.3-codex" },
+          null,
+        ],
+      }),
+    );
+
+    expect(parsed.favoriteModels).toEqual([
+      { providerKind: "codex", modelId: "gpt-5.3-codex" },
+      { providerKind: "claudeAgent", modelId: "claude-sonnet-4-6" },
+    ]);
+  });
+
+  it("normalizes favorite model values without decoding the full settings payload", () => {
+    expect(
+      normalizeFavoriteModels([
+        { providerKind: "codex", modelId: "gpt-5.3" },
+        { providerKind: "codex", modelId: "gpt-5.3-codex" },
+        { providerKind: "claudeAgent", modelId: "sonnet-4.6" },
+      ]),
+    ).toEqual([
+      { providerKind: "codex", modelId: "gpt-5.3-codex" },
+      { providerKind: "claudeAgent", modelId: "claude-sonnet-4-6" },
+    ]);
+  });
+
+  it("drops favorite model ids that exceed the maximum stored model length", () => {
+    expect(
+      normalizeFavoriteModels([
+        { providerKind: "codex", modelId: "x".repeat(MAX_CUSTOM_MODEL_LENGTH + 1) },
+        { providerKind: "codex", modelId: "gpt-5.3" },
+      ]),
+    ).toEqual([{ providerKind: "codex", modelId: "gpt-5.3-codex" }]);
   });
 
   it("defaults Claude project subagent settings to enabled + inherit", () => {
@@ -426,6 +493,26 @@ describe("getAppModelOptions", () => {
     });
   });
 
+  it("adds picker display metadata for built-in and known provider-prefixed custom models", () => {
+    const claudeOptions = getAppModelOptions("claudeAgent", []);
+    const codexOptions = getAppModelOptions("codex", ["openai/gpt-oss-120b"]);
+
+    expect(claudeOptions.find((option) => option.slug === "claude-sonnet-4-6")).toMatchObject({
+      name: "Claude Sonnet 4.6",
+      shortName: "Sonnet 4.6",
+    });
+    expect(codexOptions.find((option) => option.slug === "gpt-5.3-codex")).toMatchObject({
+      name: "GPT-5.3 Codex",
+      shortName: "5.3 Codex",
+    });
+    expect(codexOptions.at(-1)).toMatchObject({
+      slug: "openai/gpt-oss-120b",
+      name: "gpt-oss-120b",
+      subProvider: "OpenAI",
+      isCustom: true,
+    });
+  });
+
   it("lists Claude Opus models before Sonnet and Haiku in built-in Claude options", () => {
     const options = getAppModelOptions("claudeAgent", []);
 
@@ -518,13 +605,13 @@ describe("resolveThreadTitleModel", () => {
 });
 
 describe("getSlashModelOptions", () => {
-  it("includes saved custom model slugs for /model command suggestions", () => {
+  it("includes saved custom model slugs for model option sources", () => {
     const options = getSlashModelOptions("codex", ["custom/internal-model"], "", "gpt-5.3-codex");
 
     expect(options.some((option) => option.slug === "custom/internal-model")).toBe(true);
   });
 
-  it("filters slash-model suggestions across built-in and custom model names", () => {
+  it("filters model options across built-in and custom model names", () => {
     const options = getSlashModelOptions("codex", ["openai/gpt-oss-120b"], "oss", "gpt-5.3-codex");
 
     expect(options.map((option) => option.slug)).toEqual(["openai/gpt-oss-120b"]);

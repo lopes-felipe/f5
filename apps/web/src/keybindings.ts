@@ -1,5 +1,7 @@
 import {
   type KeybindingCommand,
+  MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
+  type ModelPickerJumpKeybindingCommand,
   type ResolvedKeybindingRule,
   type KeybindingShortcut,
   type KeybindingWhenNode,
@@ -255,6 +257,17 @@ export function isThreadSwitchRecentPreviousShortcut(
   options?: ShortcutMatchOptions,
 ): boolean {
   return matchesCommandShortcut(event, keybindings, "thread.switchRecentPrevious", options);
+}
+
+export function modelPickerJumpCommandForIndex(
+  index: number,
+): ModelPickerJumpKeybindingCommand | null {
+  return MODEL_PICKER_JUMP_KEYBINDING_COMMANDS[index] ?? null;
+}
+
+export function modelPickerJumpIndexFromCommand(command: string): number | null {
+  const index = (MODEL_PICKER_JUMP_KEYBINDING_COMMANDS as readonly string[]).indexOf(command);
+  return index === -1 ? null : index;
 }
 
 export function isTerminalClearShortcut(

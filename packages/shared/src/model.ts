@@ -208,6 +208,39 @@ export function resolveModelSlugForProvider(
   return resolveModelSlug(model, provider);
 }
 
+export function resolveSelectableModel(
+  provider: ProviderKind,
+  value: string | null | undefined,
+  options: ReadonlyArray<{ slug: string; name: string }>,
+): ModelSlug | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const direct = options.find((option) => option.slug === trimmed);
+  if (direct) {
+    return direct.slug;
+  }
+
+  const byName = options.find((option) => option.name.toLowerCase() === trimmed.toLowerCase());
+  if (byName) {
+    return byName.slug;
+  }
+
+  const normalized = normalizeModelSlug(trimmed, provider);
+  if (!normalized) {
+    return null;
+  }
+
+  const resolved = options.find((option) => option.slug === normalized);
+  return resolved ? resolved.slug : null;
+}
+
 export function inferProviderForModel(
   model: string | null | undefined,
   fallback: ProviderKind = "codex",

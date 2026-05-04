@@ -60,6 +60,10 @@
       "types": "./src/projectScripts.ts",
       "import": "./src/projectScripts.ts"
     },
+    "./searchRanking": {
+      "types": "./src/searchRanking.ts",
+      "import": "./src/searchRanking.ts"
+    },
     "./worktree": {
       "types": "./src/worktree.ts",
       "import": "./src/worktree.ts"

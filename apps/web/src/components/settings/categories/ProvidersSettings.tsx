@@ -9,6 +9,7 @@ import {
   getAppModelOptions,
   resolveAuxiliaryAppModelSelection,
 } from "../../../appSettings";
+import { PROVIDER_LABEL_BY_PROVIDER } from "../../chat/providerIconUtils";
 import {
   getCustomModelsForProvider,
   getDefaultCustomModelsForProvider,
@@ -29,14 +30,14 @@ const MODEL_PROVIDER_SETTINGS: Array<{
   {
     provider: "codex",
     title: "Codex",
-    description: "Save additional Codex model slugs for the picker and `/model` command.",
+    description: "Save additional Codex model slugs for the picker.",
     placeholder: "your-codex-model-slug",
     example: "gpt-6.7-codex-ultra-preview",
   },
   {
     provider: "claudeAgent",
     title: "Claude",
-    description: "Save additional Claude model slugs for the picker and `/model` command.",
+    description: "Save additional Claude model slugs for the picker.",
     placeholder: "your-claude-model-slug",
     example: "claude-sonnet-5-0",
   },
@@ -60,6 +61,25 @@ export function ProvidersSettings() {
     gitTextGenerationModelOptions,
     selectedGitTextGenerationModelLabel,
   } = useSettingsRouteContext();
+  const favoriteModelRows = settings.favoriteModels.map((favorite) => {
+    const customModels = getCustomModelsForProvider(settings, favorite.providerKind);
+    const option = getAppModelOptions(favorite.providerKind, customModels, favorite.modelId).find(
+      (modelOption) => modelOption.slug === favorite.modelId,
+    );
+    return {
+      ...favorite,
+      label: option?.name ?? favorite.modelId,
+      providerLabel: PROVIDER_LABEL_BY_PROVIDER[favorite.providerKind],
+    };
+  });
+  const removeFavoriteModel = (favorite: (typeof favoriteModelRows)[number]) => {
+    updateSettings({
+      favoriteModels: settings.favoriteModels.filter(
+        (entry) =>
+          entry.providerKind !== favorite.providerKind || entry.modelId !== favorite.modelId,
+      ),
+    });
+  };
 
   return (
     <>
@@ -199,12 +219,57 @@ export function ProvidersSettings() {
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Models</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            Save additional provider model slugs so they appear in the chat model picker and
-            `/model` command suggestions.
+            Save additional provider model slugs so they appear in the chat model picker.
           </p>
         </div>
 
         <div className="space-y-5">
+          <div className="rounded-xl border border-border bg-background/50 p-4">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-medium text-foreground">Favorite models</h3>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Star models in the picker to pin them at the top of model lists.
+                </p>
+              </div>
+              {favoriteModelRows.length > 0 ? (
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => updateSettings({ favoriteModels: defaults.favoriteModels })}
+                >
+                  Clear favorites
+                </Button>
+              ) : null}
+            </div>
+            {favoriteModelRows.length > 0 ? (
+              <div className="space-y-2">
+                {favoriteModelRows.map((favorite) => (
+                  <div
+                    key={`${favorite.providerKind}:${favorite.modelId}`}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-xs font-medium text-foreground">
+                        {favorite.label}
+                      </p>
+                      <p className="truncate text-[11px] text-muted-foreground">
+                        {favorite.providerLabel} · {favorite.modelId}
+                      </p>
+                    </div>
+                    <Button size="xs" variant="ghost" onClick={() => removeFavoriteModel(favorite)}>
+                      Remove
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-border bg-background px-3 py-4 text-xs text-muted-foreground">
+                No favorite models yet.
+              </div>
+            )}
+          </div>
+
           {MODEL_PROVIDER_SETTINGS.map((providerSettings) => {
             const provider = providerSettings.provider;
             const customModels = getCustomModelsForProvider(settings, provider);

@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { Option, Schema } from "effect";
 import {
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  ProviderKind as ProviderKindSchema,
   TrimmedNonEmptyString,
   type ProviderKind,
 } from "@t3tools/contracts";
@@ -24,6 +25,10 @@ export const ONBOARDING_LITE_STATUS_OPTIONS = [
   "reopened",
 ] as const;
 export type OnboardingLiteStatus = (typeof ONBOARDING_LITE_STATUS_OPTIONS)[number];
+export interface FavoriteModel {
+  providerKind: ProviderKind;
+  modelId: string;
+}
 
 // Excluded intentionally: keys whose preset value stays the same across every
 // named profile should not force the UI into Custom when toggled.
@@ -66,6 +71,7 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly showClaudeRuntimeMetadata?: boolean;
   readonly showProviderRuntimeMetadata?: boolean;
   readonly onboardingLiteStatus?: unknown;
+  readonly favoriteModels?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -75,6 +81,11 @@ const ClaudeProjectSettingsSchema = Schema.Struct({
   ),
 });
 export type ClaudeProjectSettings = typeof ClaudeProjectSettingsSchema.Type;
+
+const FavoriteModelSchema = Schema.Struct({
+  providerKind: ProviderKindSchema,
+  modelId: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_CUSTOM_MODEL_LENGTH)),
+});
 
 function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibility {
   if (value === "hidden" || value === "summarized" || value === "full") {
@@ -95,7 +106,7 @@ function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
   return "eligible";
 }
 
-const AppSettingsSchema = Schema.Struct({
+export const AppSettingsSchema = Schema.Struct({
   codexBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
@@ -152,6 +163,10 @@ const AppSettingsSchema = Schema.Struct({
   timestampFormat: Schema.Literals(["locale", "12-hour", "24-hour"]).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_TIMESTAMP_FORMAT)),
   ),
+  favoriteModels: Schema.Array(FavoriteModelSchema).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+    Schema.withDecodingDefault(() => []),
+  ),
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
@@ -179,6 +194,8 @@ export interface AppModelOption {
   slug: string;
   name: string;
   isCustom: boolean;
+  shortName?: string | undefined;
+  subProvider?: string | undefined;
 }
 export type DisplayProfilePatch = Pick<AppSettings, DisplayProfileKey>;
 
@@ -265,9 +282,51 @@ function normalizeClaudeProjectSettingsRecord(
   );
 }
 
+function normalizeFavoriteProviderKind(value: unknown): ProviderKind | null {
+  return value === "codex" || value === "claudeAgent" ? value : null;
+}
+
+export function normalizeFavoriteModels(value: unknown): FavoriteModel[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalizedModels: FavoriteModel[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const candidate = entry as Record<string, unknown>;
+    const providerKind = normalizeFavoriteProviderKind(candidate.providerKind);
+    if (!providerKind) {
+      continue;
+    }
+    const modelId = normalizeModelSlug(
+      typeof candidate.modelId === "string" ? candidate.modelId : null,
+      providerKind,
+    );
+    if (!modelId || modelId.length > MAX_CUSTOM_MODEL_LENGTH) {
+      continue;
+    }
+
+    const key = `${providerKind}:${modelId}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    normalizedModels.push({ providerKind, modelId });
+  }
+
+  return normalizedModels;
+}
+
 function normalizeAppSettings(settings: AppSettings): AppSettings {
   return {
     ...settings,
+    favoriteModels: normalizeFavoriteModels(settings.favoriteModels),
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
     customClaudeModels: normalizeCustomModelSlugs(settings.customClaudeModels, "claudeAgent"),
     claudeProjectSettings: normalizeClaudeProjectSettingsRecord(settings.claudeProjectSettings),
@@ -297,6 +356,7 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
         runtimeWarningVisibility: normalizeRuntimeWarningVisibility(
           migrated.runtimeWarningVisibility,
         ),
+        favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
       }),
     );
   } catch {
@@ -361,16 +421,86 @@ export function normalizeCustomModelSlugs(
   return normalizedModels;
 }
 
+const CUSTOM_MODEL_SUB_PROVIDER_LABELS: Record<string, string> = {
+  anthropic: "Anthropic",
+  cerebras: "Cerebras",
+  deepseek: "DeepSeek",
+  fireworks: "Fireworks",
+  google: "Google",
+  groq: "Groq",
+  meta: "Meta",
+  mistral: "Mistral",
+  openai: "OpenAI",
+  qwen: "Qwen",
+  xai: "xAI",
+};
+
+function getBuiltInModelShortName(provider: ProviderKind, name: string): string | undefined {
+  if (provider === "claudeAgent" && name.startsWith("Claude ")) {
+    return name.slice("Claude ".length);
+  }
+  if (provider === "codex" && name.startsWith("GPT-")) {
+    return name.slice("GPT-".length);
+  }
+  return undefined;
+}
+
+function getCustomModelDisplayMetadata(slug: string): {
+  name: string;
+  subProvider?: string | undefined;
+} {
+  const separatorIndex = slug.indexOf("/");
+  if (separatorIndex <= 0 || separatorIndex === slug.length - 1) {
+    return { name: slug };
+  }
+
+  const prefix = slug.slice(0, separatorIndex).toLowerCase();
+  const subProvider = CUSTOM_MODEL_SUB_PROVIDER_LABELS[prefix];
+  if (!subProvider) {
+    return { name: slug };
+  }
+
+  return {
+    name: slug.slice(separatorIndex + 1),
+    subProvider,
+  };
+}
+
+function buildAppModelOption(input: {
+  provider: ProviderKind;
+  slug: string;
+  name: string;
+  isCustom: boolean;
+}): AppModelOption {
+  if (input.isCustom) {
+    return {
+      slug: input.slug,
+      isCustom: true,
+      ...getCustomModelDisplayMetadata(input.slug),
+    };
+  }
+
+  return {
+    slug: input.slug,
+    name: input.name,
+    isCustom: false,
+    shortName: getBuiltInModelShortName(input.provider, input.name),
+  };
+}
+
 export function getAppModelOptions(
   provider: ProviderKind,
   customModels: readonly string[],
   selectedModel?: string | null,
 ): AppModelOption[] {
-  const options: AppModelOption[] = getModelOptions(provider).map(({ slug, name }) => ({
-    slug,
-    name,
-    isCustom: false,
-  }));
+  const options: AppModelOption[] = getModelOptions(provider).map(({ slug, name }) =>
+    buildAppModelOption({
+      provider,
+      slug,
+      name,
+      isCustom: false,
+    }),
+  );
   const seen = new Set(options.map((option) => option.slug));
 
   for (const slug of normalizeCustomModelSlugs(customModels, provider)) {
@@ -379,20 +509,26 @@ export function getAppModelOptions(
     }
 
     seen.add(slug);
-    options.push({
-      slug,
-      name: slug,
-      isCustom: true,
-    });
+    options.push(
+      buildAppModelOption({
+        provider,
+        slug,
+        isCustom: true,
+        name: slug,
+      }),
+    );
   }
 
   const normalizedSelectedModel = normalizeModelSlug(selectedModel, provider);
   if (normalizedSelectedModel && !seen.has(normalizedSelectedModel)) {
-    options.push({
-      slug: normalizedSelectedModel,
-      name: normalizedSelectedModel,
-      isCustom: true,
-    });
+    options.push(
+      buildAppModelOption({
+        provider,
+        slug: normalizedSelectedModel,
+        isCustom: true,
+        name: normalizedSelectedModel,
+      }),
+    );
   }
 
   return options;

@@ -34,6 +34,7 @@ export default mergeConfig(
         "src/components/chat/ChatHeader.browser.tsx",
         "src/components/chat/CommandTranscriptCard.browser.tsx",
         "src/components/chat/MessagesTimeline.browser.tsx",
+        "src/components/chat/ProviderModelPicker.browser.tsx",
         "src/components/ui/toast.browser.tsx",
         "src/components/workflow/WorkflowCreateDialog.browser.tsx",
         "src/components/workflow/WorkflowImplementDialog.browser.tsx",

@@ -19,6 +19,8 @@ import {
   isTerminalNewShortcut,
   isTerminalSplitShortcut,
   isTerminalToggleShortcut,
+  modelPickerJumpCommandForIndex,
+  modelPickerJumpIndexFromCommand,
   resolveShortcutBinding,
   resolveShortcutCommand,
   shortcutLabelForCommand,
@@ -113,6 +115,16 @@ const DEFAULT_BINDINGS = compile([
   },
   { shortcut: modShortcut("enter"), command: "chat.scrollToBottom" },
   { shortcut: modShortcut("o"), command: "editor.openFavorite" },
+  {
+    shortcut: modShortcut("m", { shiftKey: true }),
+    command: "modelPicker.toggle",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  ...Array.from({ length: 9 }, (_, index) => ({
+    shortcut: modShortcut(String(index + 1)),
+    command: `modelPicker.jump.${index + 1}` as KeybindingCommand,
+    whenAst: whenIdentifier("modelPickerOpen"),
+  })),
   {
     shortcut: { ...modShortcut("tab"), modKey: false, ctrlKey: true },
     command: "thread.switchRecentNext",
@@ -269,6 +281,14 @@ describe("shortcutLabelForCommand", () => {
     assert.strictEqual(
       shortcutLabelForCommand(DEFAULT_BINDINGS, "editor.openFavorite", "Linux"),
       "Ctrl+O",
+    );
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "modelPicker.toggle", "MacIntel"),
+      "⇧⌘M",
+    );
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "modelPicker.jump.3", "Linux"),
+      "Ctrl+3",
     );
   });
 });
@@ -457,6 +477,46 @@ describe("resolveShortcutCommand", () => {
       }),
       "chat.scrollToBottom",
     );
+  });
+
+  it("returns model picker commands only when their when clauses match", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "m", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+      "modelPicker.toggle",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "m", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+      null,
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "3", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { modelPickerOpen: false },
+      }),
+      null,
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "3", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { modelPickerOpen: true },
+      }),
+      "modelPicker.jump.3",
+    );
+  });
+
+  it("maps model picker jump commands to visible-row indexes", () => {
+    assert.strictEqual(modelPickerJumpCommandForIndex(0), "modelPicker.jump.1");
+    assert.strictEqual(modelPickerJumpCommandForIndex(8), "modelPicker.jump.9");
+    assert.strictEqual(modelPickerJumpCommandForIndex(9), null);
+    assert.strictEqual(modelPickerJumpIndexFromCommand("modelPicker.jump.1"), 0);
+    assert.strictEqual(modelPickerJumpIndexFromCommand("modelPicker.jump.9"), 8);
+    assert.strictEqual(modelPickerJumpIndexFromCommand("modelPicker.toggle"), null);
   });
 
   it("lets the last matching recent-thread rule win", () => {
