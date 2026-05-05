@@ -24,6 +24,7 @@ import { render } from "vitest-browser-react";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
+import { createTestServerProvider } from "../testServerProvider";
 import { resetWsConnectionStateForTests } from "../wsConnectionState";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
@@ -67,15 +68,7 @@ function createBaseServerConfig(keybindings = createDefaultCycleBindings()): Ser
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings,
     issues: [],
-    providers: [
-      {
-        provider: "codex",
-        status: "ready",
-        available: true,
-        authStatus: "authenticated",
-        checkedAt: NOW_ISO,
-      },
-    ],
+    providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
   };
 }

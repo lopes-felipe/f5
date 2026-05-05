@@ -86,6 +86,9 @@ const shouldLogProjectionTimings =
   process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true";
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
+    defaultModelSelection: Schema.NullOr(
+      Schema.fromJsonString(ProjectionProject.fields.defaultModelSelection),
+    ),
     scripts: Schema.fromJsonString(Schema.Array(ProjectScript)),
   }),
 );
@@ -107,6 +110,7 @@ const ProjectionThreadProposedPlanDbRowSchema = ProjectionThreadProposedPlan;
 const ProjectionThreadDbRowSchema = ProjectionThread.mapFields(
   Struct.assign({
     tasks: Schema.fromJsonString(Schema.Array(TaskItem)),
+    modelSelection: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.modelSelection)),
     compaction: Schema.NullOr(Schema.fromJsonString(ThreadCompaction)),
     sessionNotes: Schema.NullOr(Schema.fromJsonString(ThreadSessionNotes)),
     threadReferences: Schema.fromJsonString(Schema.Array(ThreadReference)),
@@ -117,6 +121,7 @@ const ProjectionThreadSummaryDbRowSchema = Schema.Struct({
   projectId: ProjectionThread.fields.projectId,
   title: ProjectionThread.fields.title,
   model: ProjectionThread.fields.model,
+  modelSelection: Schema.NullOr(Schema.fromJsonString(ProjectionThread.fields.modelSelection)),
   runtimeMode: ProjectionThread.fields.runtimeMode,
   interactionMode: ProjectionThread.fields.interactionMode,
   branch: ProjectionThread.fields.branch,
@@ -378,6 +383,7 @@ function buildThreadSnapshot(params: {
     projectId: row.projectId,
     title: row.title,
     model: row.model,
+    ...(row.modelSelection !== null ? { modelSelection: row.modelSelection } : {}),
     runtimeMode: row.runtimeMode,
     interactionMode: row.interactionMode,
     branch: row.branch,
@@ -644,6 +650,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           title,
           workspace_root AS "workspaceRoot",
           default_model AS "defaultModel",
+          default_model_selection_json AS "defaultModelSelection",
           scripts_json AS "scripts",
           created_at AS "createdAt",
           updated_at AS "updatedAt",
@@ -663,6 +670,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model,
+          model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -695,6 +703,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           project_id AS "projectId",
           title,
           model,
+          model_selection_json AS "modelSelection",
           runtime_mode AS "runtimeMode",
           interaction_mode AS "interactionMode",
           branch,
@@ -950,6 +959,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread_id AS "threadId",
           status,
           provider_name AS "providerName",
+          provider_instance_id AS "providerInstanceId",
           provider_session_id AS "providerSessionId",
           provider_thread_id AS "providerThreadId",
           runtime_mode AS "runtimeMode",
@@ -1775,6 +1785,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         title: row.title,
         workspaceRoot: row.workspaceRoot,
         defaultModel: row.defaultModel,
+        ...(row.defaultModelSelection !== null
+          ? { defaultModelSelection: row.defaultModelSelection }
+          : {}),
         scripts: row.scripts,
         memories: memoriesByProject.get(row.projectId) ?? [],
         skills: skillsByProject.get(row.projectId) ?? [],

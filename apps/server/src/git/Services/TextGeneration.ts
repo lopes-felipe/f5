@@ -8,7 +8,7 @@
  */
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
-import type { ChatAttachment } from "@t3tools/contracts";
+import type { ChatAttachment, ModelSelection } from "@t3tools/contracts";
 
 import type { TextGenerationError } from "../Errors.ts";
 
@@ -21,6 +21,7 @@ export interface CommitMessageGenerationInput {
   includeBranch?: boolean;
   /** Model to use for generation. Defaults to gpt-5.4-mini if not specified. */
   model?: string;
+  modelSelection?: ModelSelection;
 }
 
 export interface CommitMessageGenerationResult {
@@ -39,6 +40,7 @@ export interface PrContentGenerationInput {
   diffPatch: string;
   /** Model to use for generation. Defaults to gpt-5.4-mini if not specified. */
   model?: string;
+  modelSelection?: ModelSelection;
 }
 
 export interface PrContentGenerationResult {
@@ -52,6 +54,7 @@ export interface BranchNameGenerationInput {
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   /** Model to use for generation. Defaults to gpt-5.4-mini if not specified. */
   model?: string;
+  modelSelection?: ModelSelection;
 }
 
 export interface BranchNameGenerationResult {
@@ -62,7 +65,8 @@ export interface ThreadTitleGenerationInput {
   cwd: string;
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
-  model: string;
+  model?: string;
+  modelSelection?: ModelSelection;
 }
 
 export interface ThreadTitleGenerationResult {

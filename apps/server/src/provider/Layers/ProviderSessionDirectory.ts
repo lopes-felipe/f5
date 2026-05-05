@@ -1,4 +1,9 @@
-import { type ProviderKind, type ThreadId } from "@t3tools/contracts";
+import {
+  isKnownProviderKind,
+  ProviderInstanceId,
+  type ProviderKind,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { Effect, Layer, Option } from "effect";
 
 import type { ProviderSessionRuntime } from "../../persistence/Services/ProviderSessionRuntime.ts";
@@ -23,7 +28,7 @@ function decodeProviderKind(
   providerName: string,
   operation: string,
 ): Effect.Effect<ProviderKind, ProviderSessionDirectoryPersistenceError> {
-  if (providerName === "codex" || providerName === "claudeAgent") {
+  if (isKnownProviderKind(providerName)) {
     return Effect.succeed(providerName);
   }
   return Effect.fail(
@@ -60,6 +65,7 @@ function toRuntimeBinding(
       threadId: runtime.threadId,
       projectId: runtime.projectId,
       provider,
+      providerInstanceId: runtime.providerInstanceId ?? ProviderInstanceId.make(provider),
       adapterKey: runtime.adapterKey,
       runtimeMode: runtime.runtimeMode,
       status: runtime.status,
@@ -113,6 +119,7 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
             ? binding.projectId
             : (existingRuntime?.projectId ?? null),
         providerName: binding.provider,
+        providerInstanceId: binding.providerInstanceId ?? ProviderInstanceId.make(binding.provider),
         adapterKey:
           binding.adapterKey ??
           (providerChanged ? binding.provider : (existingRuntime?.adapterKey ?? binding.provider)),

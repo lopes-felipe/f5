@@ -39,7 +39,7 @@ export function buildCodexCliEnvOverrides(input?: {
 }
 
 export function runProviderCliCommand(
-  binary: "codex" | "claude",
+  binary: string,
   args: ReadonlyArray<string>,
   options?: ProviderCliCommandOptions,
 ) {
@@ -54,7 +54,6 @@ export function runProviderCliCommand(
         : [...args];
     const command = ChildProcess.make(resolvedBinary, [...commandArgs], {
       env: buildProviderChildProcessEnv(process.env, options?.envOverrides),
-      shell: process.platform === "win32",
       stdin: "ignore",
     });
 

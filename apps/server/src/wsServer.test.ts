@@ -9,10 +9,11 @@ import { describe, expect, it, afterEach, vi } from "vitest";
 import { createServer, resolveWorkspaceReadPath } from "./wsServer";
 import WebSocket from "ws";
 import { ServerConfig, type ServerConfigShape } from "./config";
-import { makeServerProviderLayer, makeServerRuntimeServicesLayer } from "./serverLayers";
+import { makeServerRuntimeServicesLayer } from "./serverLayers";
 
 import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
+  DEFAULT_SERVER_SETTINGS,
   DEFAULT_TERMINAL_ID,
   EDITORS,
   EventId,
@@ -29,12 +30,17 @@ import {
   WS_METHODS,
   type WebSocketResponse,
   type ProviderRuntimeEvent,
-  type ServerProviderStatus,
+  ProviderInstanceId,
+  type ServerSettings,
+  type ServerProvider,
   type KeybindingsConfig,
   type ResolvedKeybindingsConfig,
   type WsPushChannel,
   type WsPushMessage,
   type WsPush,
+  defaultInstanceIdForDriver,
+  PROVIDER_DISPLAY_NAMES,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 import { compileResolvedKeybindingRule, DEFAULT_KEYBINDINGS } from "./keybindings";
 import type {
@@ -51,15 +57,22 @@ import { makeSqlitePersistenceLive, SqlitePersistenceMemory } from "./persistenc
 import { SqlClient, SqlError } from "effect/unstable/sql";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { ProviderHealth, type ProviderHealthShape } from "./provider/Services/ProviderHealth";
+import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
+import {
+  ProviderRegistry,
+  type ProviderRegistryShape,
+} from "./provider/Services/ProviderRegistry.ts";
 import {
   HarnessValidation,
   type HarnessValidationShape,
 } from "./provider/Services/HarnessValidation";
 import { ProviderValidationBusyError } from "./provider/Errors.ts";
+import type { ProviderInstance } from "./provider/ProviderDriver.ts";
 import { Open, type OpenShape } from "./open";
 import { GitManager, type GitManagerShape } from "./git/Services/GitManager.ts";
 import type { GitCoreShape } from "./git/Services/GitCore.ts";
 import { GitCore } from "./git/Services/GitCore.ts";
+import { ServerSettingsLive } from "./serverSettings.ts";
 import { GitCommandError, GitManagerError } from "./git/Errors.ts";
 import { MigrationError } from "@effect/sql-sqlite-bun/SqliteMigrator";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
@@ -79,18 +92,32 @@ const defaultOpenService: OpenShape = {
   openInEditor: () => Effect.void,
 };
 
-const defaultProviderStatuses: ReadonlyArray<ServerProviderStatus> = [
+const defaultProviderSnapshots: ReadonlyArray<ServerProvider> = [
   {
-    provider: "codex",
+    instanceId: defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
+    driver: ProviderDriverKind.make("codex"),
+    displayName: PROVIDER_DISPLAY_NAMES.codex,
+    enabled: true,
+    installed: true,
+    version: null,
     status: "ready",
-    available: true,
-    authStatus: "authenticated",
+    auth: { status: "authenticated" },
     checkedAt: "2026-01-01T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
   },
 ];
 
 const defaultProviderHealthService: ProviderHealthShape = {
-  getStatuses: Effect.succeed(defaultProviderStatuses),
+  getStatuses: Effect.succeed([]),
+};
+
+const defaultProviderRegistryService: ProviderRegistryShape = {
+  getProviders: Effect.succeed(defaultProviderSnapshots),
+  refresh: () => Effect.succeed(defaultProviderSnapshots),
+  refreshInstance: () => Effect.succeed(defaultProviderSnapshots),
+  streamChanges: Stream.empty,
 };
 
 const defaultHarnessValidationService: HarnessValidationShape = {
@@ -138,6 +165,16 @@ const defaultProviderService: ProviderServiceShape = {
 function makeProviderRuntimeTestLayer(providerLayer: Layer.Layer<ProviderService, never>) {
   return Layer.mergeAll(
     providerLayer,
+    Layer.succeed(ProviderRegistry, defaultProviderRegistryService),
+    Layer.succeed(ProviderInstanceRegistry, {
+      getInstance: () => Effect.sync(() => undefined as ProviderInstance | undefined),
+      listInstances: Effect.succeed([]),
+      listUnavailable: Effect.succeed([]),
+      streamChanges: Stream.empty,
+      subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+        Effect.flatMap(PubSub.subscribe),
+      ),
+    }),
     Layer.succeed(CodexMcpEventBus, {
       publishStatusUpdated: () => Effect.void,
       streamStatusUpdates: Stream.empty,
@@ -682,11 +719,9 @@ describe("WebSocket Server", () => {
     const stateDir = options.stateDir ?? makeTempDir("t3code-ws-state-");
     const scope = await Effect.runPromise(Scope.make("sequential"));
     const persistenceLayer = options.persistenceLayer ?? SqlitePersistenceMemory;
-    const providerLayer = options.providerLayer
-      ? makeProviderRuntimeTestLayer(options.providerLayer)
-      : options.harnessValidation
-        ? makeProviderRuntimeTestLayer(Layer.succeed(ProviderService, defaultProviderService))
-        : makeServerProviderLayer();
+    const providerLayer = makeProviderRuntimeTestLayer(
+      options.providerLayer ?? Layer.succeed(ProviderService, defaultProviderService),
+    );
     const providerHealthLayer = Layer.succeed(
       ProviderHealth,
       options.providerHealth ?? defaultProviderHealthService,
@@ -741,6 +776,7 @@ describe("WebSocket Server", () => {
     );
     const dependenciesLayer = Layer.empty.pipe(
       Layer.provideMerge(runtimeLayer),
+      Layer.provideMerge(ServerSettingsLive),
       Layer.provideMerge(providerHealthLayer),
       Layer.provideMerge(harnessValidationLayer),
       Layer.provideMerge(openLayer),
@@ -1543,7 +1579,8 @@ describe("WebSocket Server", () => {
       keybindingsConfigPath: keybindingsPath,
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
       issues: [],
-      providers: defaultProviderStatuses,
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
       availableEditors: expect.any(Array),
     });
     expect(
@@ -1560,6 +1597,64 @@ describe("WebSocket Server", () => {
       ),
     ).toBe(true);
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
+  });
+
+  it("redacts server settings secrets in server.getConfig", async () => {
+    const stateDir = makeTempDir("t3code-state-get-config-redacted-");
+    const instanceId = ProviderInstanceId.make("codex_personal");
+    fs.writeFileSync(
+      path.join(stateDir, "settings.json"),
+      JSON.stringify(
+        {
+          providers: {
+            opencode: {
+              serverPassword: "server-password",
+            },
+          },
+          providerInstances: {
+            [instanceId]: {
+              driver: "opencode",
+              config: {
+                serverPassword: "instance-password",
+              },
+              environment: [
+                {
+                  name: "OPENAI_API_KEY",
+                  value: "sk-secret",
+                  sensitive: true,
+                },
+              ],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+
+    server = await createTestServer({ cwd: "/my/workspace", stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.serverGetConfig);
+    expect(response.error).toBeUndefined();
+    const settings = (response.result as { settings: ServerSettings }).settings;
+    expect(settings.providers.opencode.serverPassword).toBe("");
+    expect(settings.providerInstances[instanceId]?.config).toMatchObject({
+      serverPassword: "",
+    });
+    expect(settings.providerInstances[instanceId]?.environment).toEqual([
+      {
+        name: "OPENAI_API_KEY",
+        value: "",
+        sensitive: true,
+        valueRedacted: true,
+      },
+    ]);
   });
 
   it("routes server.validateHarnesses through the harness validation service", async () => {
@@ -1691,7 +1786,8 @@ describe("WebSocket Server", () => {
       keybindingsConfigPath: keybindingsPath,
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
       issues: [],
-      providers: defaultProviderStatuses,
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
@@ -1726,7 +1822,8 @@ describe("WebSocket Server", () => {
           message: expect.stringContaining("expected JSON array"),
         },
       ],
-      providers: defaultProviderStatuses,
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
@@ -1760,7 +1857,7 @@ describe("WebSocket Server", () => {
       keybindingsConfigPath: string;
       keybindings: ResolvedKeybindingsConfig;
       issues: Array<{ kind: string; index?: number; message: string }>;
-      providers: ReadonlyArray<ServerProviderStatus>;
+      providers: ReadonlyArray<ServerProvider>;
       availableEditors: unknown;
     };
     expect(result.cwd).toBe("/my/workspace");
@@ -1780,7 +1877,7 @@ describe("WebSocket Server", () => {
     expect(result.keybindings).toHaveLength(DEFAULT_RESOLVED_KEYBINDINGS.length);
     expect(result.keybindings.some((entry) => entry.command === "terminal.toggle")).toBe(true);
     expect(result.keybindings.some((entry) => entry.command === "terminal.new")).toBe(true);
-    expect(result.providers).toEqual(defaultProviderStatuses);
+    expect(result.providers).toEqual(defaultProviderSnapshots);
     expectAvailableEditors(result.availableEditors);
   });
 
@@ -1806,8 +1903,10 @@ describe("WebSocket Server", () => {
         push.data.issues[0]!.kind === "keybindings.malformed-config",
     );
     expect(malformedPush.data).toEqual({
+      source: "keybindings",
       issues: [{ kind: "keybindings.malformed-config", message: expect.any(String) }],
-      providers: defaultProviderStatuses,
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
     });
 
     const successPush = await rewriteKeybindingsAndWaitForPush(
@@ -1816,7 +1915,12 @@ describe("WebSocket Server", () => {
       "[]",
       (push) => Array.isArray(push.data.issues) && push.data.issues.length === 0,
     );
-    expect(successPush.data).toEqual({ issues: [], providers: defaultProviderStatuses });
+    expect(successPush.data).toEqual({
+      source: "keybindings",
+      issues: [],
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
+    });
   });
 
   it("routes shell.openInEditor through the injected open service", async () => {
@@ -1873,7 +1977,8 @@ describe("WebSocket Server", () => {
       keybindingsConfigPath: keybindingsPath,
       keybindings: compileKeybindings(persistedConfig),
       issues: [],
-      providers: defaultProviderStatuses,
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors((response.result as { availableEditors: unknown }).availableEditors);
@@ -1920,7 +2025,8 @@ describe("WebSocket Server", () => {
       keybindingsConfigPath: keybindingsPath,
       keybindings: compileKeybindings(persistedConfig),
       issues: [],
-      providers: defaultProviderStatuses,
+      providers: defaultProviderSnapshots,
+      settings: DEFAULT_SERVER_SETTINGS,
       availableEditors: expect.any(Array),
     });
     expectAvailableEditors(

@@ -109,9 +109,11 @@ export const ModelListRow = memo(function ModelListRow(props: {
         <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs font-normal leading-snug text-muted-foreground/70">
           {props.showProvider ? (
             <>
-              <ProviderIcon
-                className={cn("size-3 shrink-0", providerIconClassName(props.providerKind))}
-              />
+              {ProviderIcon ? (
+                <ProviderIcon
+                  className={cn("size-3 shrink-0", providerIconClassName(props.providerKind))}
+                />
+              ) : null}
               <span className="truncate">{getProviderLabel(props.providerKind, props.model)}</span>
             </>
           ) : (

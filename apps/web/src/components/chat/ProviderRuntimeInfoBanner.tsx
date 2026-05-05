@@ -20,7 +20,15 @@ export const ProviderRuntimeInfoBanner = memo(function ProviderRuntimeInfoBanner
   }
 
   const providerLabel =
-    provider === "claudeAgent" ? "Claude" : provider === "codex" ? "Codex" : provider;
+    provider === "claudeAgent"
+      ? "Claude"
+      : provider === "codex"
+        ? "Codex"
+        : provider === "cursor"
+          ? "Cursor"
+          : provider === "opencode"
+            ? "OpenCode"
+            : provider;
 
   return (
     <div className="mx-auto max-w-3xl px-3 pt-3 sm:px-5">

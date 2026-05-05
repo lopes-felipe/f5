@@ -76,6 +76,7 @@ import { ProjectReadFileInput, ProjectSearchEntriesInput, ProjectWriteFileInput 
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import { ServerConfigUpdatedPayload, ServerValidateHarnessesInput } from "./server";
+import { ServerSettingsPatch } from "./settings";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -117,6 +118,8 @@ export const WS_METHODS = {
 
   // Server meta
   serverGetConfig: "server.getConfig",
+  serverUpdateSettings: "server.updateSettings",
+  serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
   serverUpsertKeybinding: "server.upsertKeybinding",
   mcpGetCommonConfig: "mcp.getCommonConfig",
@@ -258,6 +261,8 @@ const WebSocketRequestBody = Schema.Union([
 
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
+  tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.mcpGetCommonConfig, McpGetCommonConfigRequest),

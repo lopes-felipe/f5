@@ -197,6 +197,9 @@ export function getProviderSessionRestartOptions(
       return normalized.mcpServers ? { mcpServers: normalized.mcpServers } : undefined;
     case "claudeAgent":
       return normalized;
+    case "cursor":
+    case "opencode":
+      return normalized;
   }
 }
 
@@ -277,6 +280,48 @@ export function normalizeProviderStartOptions(
           : {}),
       };
     }
+    case "cursor": {
+      const binaryPath = normalizeOptionalString(providerOptions?.cursor?.binaryPath);
+      const apiEndpoint = normalizeOptionalString(providerOptions?.cursor?.apiEndpoint);
+
+      if (!binaryPath && !apiEndpoint && !hasMcpServers) {
+        return undefined;
+      }
+
+      return {
+        ...(hasMcpServers ? { mcpServers: normalizedMcpServers } : {}),
+        ...(binaryPath || apiEndpoint
+          ? {
+              cursor: {
+                ...(binaryPath ? { binaryPath } : {}),
+                ...(apiEndpoint ? { apiEndpoint } : {}),
+              },
+            }
+          : {}),
+      };
+    }
+    case "opencode": {
+      const binaryPath = normalizeOptionalString(providerOptions?.opencode?.binaryPath);
+      const serverUrl = normalizeOptionalString(providerOptions?.opencode?.serverUrl);
+      const serverPassword = normalizeOptionalString(providerOptions?.opencode?.serverPassword);
+
+      if (!binaryPath && !serverUrl && !serverPassword && !hasMcpServers) {
+        return undefined;
+      }
+
+      return {
+        ...(hasMcpServers ? { mcpServers: normalizedMcpServers } : {}),
+        ...(binaryPath || serverUrl || serverPassword
+          ? {
+              opencode: {
+                ...(binaryPath ? { binaryPath } : {}),
+                ...(serverUrl ? { serverUrl } : {}),
+                ...(serverPassword ? { serverPassword } : {}),
+              },
+            }
+          : {}),
+      };
+    }
   }
 }
 
@@ -313,5 +358,9 @@ export function getProviderEnvironmentKey(
         : "";
       return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${normalized?.claudeAgent?.subagentsEnabled ?? ""}|subagentModel:${normalized?.claudeAgent?.subagentModel ?? ""}|launchArgs:${launchArgsKey}`;
     }
+    case "cursor":
+      return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;
+    case "opencode":
+      return `opencode|binary:${normalized?.opencode?.binaryPath ?? ""}|serverUrl:${normalized?.opencode?.serverUrl ?? ""}|serverPassword:${normalized?.opencode?.serverPassword ? "__set__" : ""}`;
   }
 }

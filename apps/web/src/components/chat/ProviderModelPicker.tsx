@@ -2,7 +2,7 @@ import {
   type ModelSlug,
   type ProviderKind,
   type ResolvedKeybindingsConfig,
-  type ServerProviderStatus,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { memo, useCallback, useEffect, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
@@ -28,7 +28,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   provider: ProviderKind;
   model: ModelSlug;
   lockedProvider: ProviderKind | null;
-  providers?: ReadonlyArray<ServerProviderStatus> | undefined;
+  providers?: ReadonlyArray<ServerProvider> | undefined;
   keybindings?: ResolvedKeybindingsConfig | undefined;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
   ultrathinkActive?: boolean;
@@ -110,16 +110,18 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
             props.compact ? "max-w-36 sm:pl-1" : undefined,
           )}
         >
-          <ProviderIcon
-            aria-hidden="true"
-            className={cn(
-              "size-4 shrink-0",
-              providerIconClassName(activeProvider),
-              activeProvider === "claudeAgent" && props.ultrathinkActive
-                ? "ultrathink-chroma"
-                : undefined,
-            )}
-          />
+          {ProviderIcon ? (
+            <ProviderIcon
+              aria-hidden="true"
+              className={cn(
+                "size-4 shrink-0",
+                providerIconClassName(activeProvider),
+                activeProvider === "claudeAgent" && props.ultrathinkActive
+                  ? "ultrathink-chroma"
+                  : undefined,
+              )}
+            />
+          ) : null}
           <Tooltip>
             <TooltipTrigger
               render={

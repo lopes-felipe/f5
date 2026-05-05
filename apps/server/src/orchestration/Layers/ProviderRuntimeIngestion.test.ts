@@ -2438,6 +2438,9 @@ describe("ProviderRuntimeIngestion", () => {
           session_id: "session-123",
           fast_mode_state: "off",
           effort: "max",
+          reasoning: "high",
+          context_window: "200k",
+          thinking_state: "on",
           output_style: "default",
           slashCommands: [
             {
@@ -2471,6 +2474,9 @@ describe("ProviderRuntimeIngestion", () => {
       sessionId: "session-123",
       fastModeState: "off",
       effort: "max",
+      reasoning: "high",
+      contextWindow: "200k",
+      thinkingState: "on",
       outputStyle: "default",
       slashCommands: [
         {

@@ -1,4 +1,4 @@
-import { type ProviderKind, type ServerProviderStatus } from "@t3tools/contracts";
+import { type ProviderKind, type ServerProvider } from "@t3tools/contracts";
 import { memo } from "react";
 import { Clock3Icon, StarIcon } from "lucide-react";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -22,7 +22,7 @@ const SOON_BADGE_CLASS =
 
 export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   selectedProvider: ProviderKind | "favorites";
-  providers?: ReadonlyArray<ServerProviderStatus> | undefined;
+  providers?: ReadonlyArray<ServerProvider> | undefined;
   onSelectProvider: (provider: ProviderKind | "favorites") => void;
 }) {
   return (

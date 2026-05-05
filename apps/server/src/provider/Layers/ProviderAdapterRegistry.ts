@@ -1,53 +1,91 @@
 /**
- * ProviderAdapterRegistryLive - In-memory provider adapter lookup layer.
+ * ProviderAdapterRegistryLive — facade over ProviderInstanceRegistry.
  *
- * Binds provider kinds (codex/cursor/...) to concrete adapter services.
- * This layer only performs adapter lookup; it does not route session-scoped
- * calls or own provider lifecycle workflows.
- *
- * @module ProviderAdapterRegistryLive
+ * Adapter construction now happens inside ProviderDriver.create(). This layer
+ * performs dynamic lookups against the live instance registry so settings
+ * changes and custom instances are visible without rebuilding the server layer.
  */
+import {
+  defaultInstanceIdForDriver,
+  type ProviderKind,
+  type ProviderDriverKind,
+  type ProviderInstanceId,
+} from "@t3tools/contracts";
 import { Effect, Layer } from "effect";
 
-import { ProviderUnsupportedError, type ProviderAdapterError } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import { ProviderUnsupportedError } from "../Errors.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 import {
   ProviderAdapterRegistry,
   type ProviderAdapterRegistryShape,
 } from "../Services/ProviderAdapterRegistry.ts";
-import { ClaudeAdapter } from "../Services/ClaudeAdapter.ts";
-import { CodexAdapter } from "../Services/CodexAdapter.ts";
 
-export interface ProviderAdapterRegistryLiveOptions {
-  readonly adapters?: ReadonlyArray<ProviderAdapterShape<ProviderAdapterError>>;
-}
+const makeProviderAdapterRegistry = Effect.gen(function* () {
+  const registry = yield* ProviderInstanceRegistry;
 
-const makeProviderAdapterRegistry = (options?: ProviderAdapterRegistryLiveOptions) =>
-  Effect.gen(function* () {
-    const adapters =
-      options?.adapters !== undefined
-        ? options.adapters
-        : [yield* CodexAdapter, yield* ClaudeAdapter];
-    const byProvider = new Map(adapters.map((adapter) => [adapter.provider, adapter]));
+  const getByInstance: ProviderAdapterRegistryShape["getByInstance"] = (instanceId) =>
+    registry
+      .getInstance(instanceId)
+      .pipe(
+        Effect.flatMap((instance) =>
+          instance
+            ? Effect.succeed(instance.adapter)
+            : Effect.fail(new ProviderUnsupportedError({ provider: instanceId })),
+        ),
+      );
 
-    const getByProvider: ProviderAdapterRegistryShape["getByProvider"] = (provider) => {
-      const adapter = byProvider.get(provider);
-      if (!adapter) {
-        return Effect.fail(new ProviderUnsupportedError({ provider }));
-      }
-      return Effect.succeed(adapter);
-    };
+  const getInstanceInfo: ProviderAdapterRegistryShape["getInstanceInfo"] = (instanceId) =>
+    registry.getInstance(instanceId).pipe(
+      Effect.flatMap((instance) =>
+        instance
+          ? Effect.succeed({
+              instanceId: instance.instanceId,
+              driverKind: instance.driverKind,
+              displayName: instance.displayName,
+              accentColor: instance.accentColor,
+              enabled: instance.enabled,
+              continuationIdentity: instance.continuationIdentity,
+            })
+          : Effect.fail(new ProviderUnsupportedError({ provider: instanceId })),
+      ),
+    );
 
-    const listProviders: ProviderAdapterRegistryShape["listProviders"] = () =>
-      Effect.sync(() => Array.from(byProvider.keys()));
+  const listInstances: ProviderAdapterRegistryShape["listInstances"] = () =>
+    registry.listInstances.pipe(
+      Effect.map((instances) => instances.map((instance) => instance.instanceId)),
+    );
 
-    return {
-      getByProvider,
-      listProviders,
-    } satisfies ProviderAdapterRegistryShape;
-  });
+  const getByProvider: ProviderAdapterRegistryShape["getByProvider"] = (provider) =>
+    getByInstance(defaultInstanceIdForDriver(provider as ProviderDriverKind));
+
+  const listProviders: ProviderAdapterRegistryShape["listProviders"] = () =>
+    registry.listInstances.pipe(
+      Effect.map((instances) => {
+        const providers = new Set<ProviderKind>();
+        for (const instance of instances) {
+          if (instance.instanceId === defaultInstanceIdForDriver(instance.driverKind)) {
+            providers.add(instance.driverKind as ProviderKind);
+          }
+        }
+        return Array.from(providers);
+      }),
+    );
+
+  return {
+    getByInstance,
+    getInstanceInfo,
+    listInstances,
+    getByProvider,
+    listProviders,
+    streamChanges: registry.streamChanges,
+    subscribeChanges: registry.subscribeChanges,
+  } satisfies ProviderAdapterRegistryShape;
+});
 
 export const ProviderAdapterRegistryLive = Layer.effect(
   ProviderAdapterRegistry,
-  makeProviderAdapterRegistry(),
+  makeProviderAdapterRegistry,
 );
+
+export { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
+export { ProviderInstanceId };

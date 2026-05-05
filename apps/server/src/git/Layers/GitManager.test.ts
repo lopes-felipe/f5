@@ -75,7 +75,7 @@ interface FakeGitTextGeneration {
   generateThreadTitle: (input: {
     cwd: string;
     message: string;
-    model: string;
+    model?: string;
   }) => Effect.Effect<{ title: string }, TextGenerationError>;
 }
 
@@ -658,7 +658,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt",
         );
       }),
-    20_000,
+    180_000,
   );
 
   it.effect("status returns merged PR state when latest PR was merged", () =>

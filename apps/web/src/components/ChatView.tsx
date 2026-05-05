@@ -13,12 +13,14 @@ import {
   type ProjectEntry,
   type ProjectScript,
   type ModelSlug,
+  type ModelSelection,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
-  type ServerProviderStatus,
+  type ServerProvider,
   type ProviderKind,
+  type ProviderInstanceId,
   type ProviderModelOptions,
   type ThreadId,
   type TurnId,
@@ -26,8 +28,11 @@ import {
   RuntimeMode,
   ProviderInteractionMode,
   type WorkflowModelSlot,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
 } from "@t3tools/contracts";
 import {
+  createModelSelection,
   getDefaultModel,
   inferProviderForModel,
   isClaudeUltrathinkPrompt,
@@ -35,6 +40,7 @@ import {
   normalizeCodexModelOptions,
   normalizeModelSlug,
   resolveModelSlugForProvider,
+  resolveSelectableModel,
   supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import {
@@ -84,6 +90,7 @@ import {
   isLatestTurnSettled,
   formatElapsed,
 } from "../session-logic";
+import { areUnknownEqual } from "../orchestrationState";
 import { type LegendListRef } from "@legendapp/list/react";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
@@ -192,6 +199,10 @@ import {
   useComposerThreadDraft,
 } from "../composerDraftStore";
 import {
+  providerModelOptionsToSelections,
+  providerSelectionsToModelOptions,
+} from "../providerModelOptions";
+import {
   appendAttachedFilesToPrompt,
   relativePathForDisplay,
   sanitizeAttachedFileReferencePaths,
@@ -217,6 +228,11 @@ import { buildExpandedImagePreview, ExpandedImagePreview } from "./chat/Expanded
 import { ProviderModelPicker } from "./chat/ProviderModelPicker";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./chat/ComposerPendingApprovalActions";
+import {
+  getComposerProviderState,
+  renderProviderTraitsMenuContent,
+  renderProviderTraitsPicker,
+} from "./chat/composerProviderState";
 import {
   ClaudeTraitsMenuContent,
   ClaudeTraitsPicker,
@@ -271,7 +287,7 @@ const EMPTY_TASKS: ThreadTaskItem[] = [];
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
-const EMPTY_PROVIDER_STATUSES: ServerProviderStatus[] = [];
+const EMPTY_PROVIDER_STATUSES: ServerProvider[] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
@@ -501,6 +517,27 @@ interface ChatViewProps {
   threadId: ThreadId;
 }
 
+function providerInstanceBelongsToProvider(input: {
+  readonly instanceId: ProviderInstanceId | null | undefined;
+  readonly provider: ProviderKind;
+  readonly providers: ReadonlyArray<ServerProvider>;
+  readonly providerInstances:
+    | Readonly<Record<string, { readonly driver: ProviderDriverKind } | undefined>>
+    | undefined;
+}): boolean {
+  if (!input.instanceId) return false;
+  const driver = ProviderDriverKind.make(input.provider);
+  const liveProvider = input.providers.find((provider) => provider.instanceId === input.instanceId);
+  if (liveProvider) {
+    return liveProvider.driver === driver;
+  }
+  const configuredInstance = input.providerInstances?.[input.instanceId];
+  if (configuredInstance) {
+    return configuredInstance.driver === driver;
+  }
+  return input.instanceId === defaultInstanceIdForDriver(driver);
+}
+
 export default function ChatView({ threadId }: ChatViewProps) {
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
@@ -514,6 +551,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const changedFilesExpandedByThreadId = useStore((store) => store.changedFilesExpandedByThreadId);
   const { settings } = useAppSettings();
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const timestampFormat = settings.timestampFormat;
   const tasksPanelAutoOpen = settings.tasksPanelAutoOpen;
   const tasksPanelAutoOpenRef = useRef(tasksPanelAutoOpen);
@@ -1008,31 +1046,154 @@ export default function ChatView({ threadId }: ChatViewProps) {
     : null;
   const selectedProvider: ProviderKind =
     lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
-  const baseThreadModel = resolveModelSlugForProvider(
+  const selectedThreadTitleModel = resolveThreadTitleModel(settings);
+  const draftModelOptions = composerDraft.modelOptions;
+  const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
+  const selectedProviderInstanceId = useMemo(() => {
+    const fallbackInstanceId = defaultInstanceIdForDriver(
+      ProviderDriverKind.make(selectedProvider),
+    );
+    const threadInstanceId =
+      activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection?.instanceId;
+    return providerInstanceBelongsToProvider({
+      instanceId: threadInstanceId,
+      provider: selectedProvider,
+      providers: serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES,
+      providerInstances: serverConfigQuery.data?.settings?.providerInstances,
+    })
+      ? threadInstanceId!
+      : fallbackInstanceId;
+  }, [
+    activeThread?.modelSelection?.instanceId,
+    activeThread?.session?.providerInstanceId,
+    serverConfigQuery.data?.providers,
+    serverConfigQuery.data?.settings?.providerInstances,
     selectedProvider,
-    activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider),
+  ]);
+  const modelOptionsByProvider = useMemo(
+    () =>
+      getCustomModelOptionsByProvider(
+        settings,
+        serverConfigQuery.data?.providers,
+        serverConfigQuery.data?.settings,
+      ),
+    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
   );
-  const customModelsByProvider = useMemo(
-    () => ({
-      codex: settings.customCodexModels,
-      claudeAgent: settings.customClaudeModels,
-    }),
-    [settings.customClaudeModels, settings.customCodexModels],
-  );
-  const customModelsForSelectedProvider = customModelsByProvider[selectedProvider];
+  const selectedProviderPickerOptions = modelOptionsByProvider[selectedProvider];
+  const baseThreadModel = useMemo(() => {
+    const rawModel =
+      activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider);
+    return (
+      resolveSelectableModel(selectedProviderDriver, rawModel, selectedProviderPickerOptions) ??
+      resolveModelSlugForProvider(selectedProvider, rawModel)
+    );
+  }, [
+    activeProject?.model,
+    activeThread?.model,
+    selectedProvider,
+    selectedProviderDriver,
+    selectedProviderPickerOptions,
+  ]);
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
       return baseThreadModel;
     }
-    return resolveAppModelSelection(
-      selectedProvider,
-      customModelsForSelectedProvider,
+    return (resolveSelectableModel(
+      selectedProviderDriver,
       draftModel,
-    ) as ModelSlug;
-  }, [baseThreadModel, composerDraft.model, customModelsForSelectedProvider, selectedProvider]);
-  const selectedThreadTitleModel = resolveThreadTitleModel(settings);
-  const draftModelOptions = composerDraft.modelOptions;
+      selectedProviderPickerOptions,
+    ) ?? resolveAppModelSelection(selectedProvider, [], draftModel)) as ModelSlug;
+  }, [
+    baseThreadModel,
+    composerDraft.model,
+    selectedProvider,
+    selectedProviderDriver,
+    selectedProviderPickerOptions,
+  ]);
+  const selectedProviderModelOptions = useMemo(
+    () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
+    [draftModelOptions, selectedProvider],
+  );
+  const selectedProviderModels = useMemo(() => {
+    const providers = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
+    return (
+      providers.find((provider) => provider.instanceId === selectedProviderInstanceId)?.models ??
+      providers.find((provider) => provider.driver === selectedProviderDriver)?.models ??
+      []
+    );
+  }, [selectedProviderDriver, selectedProviderInstanceId, serverConfigQuery.data?.providers]);
+  const genericComposerProviderState = useMemo(
+    () =>
+      getComposerProviderState({
+        provider: selectedProviderDriver,
+        model: selectedModel,
+        models: selectedProviderModels,
+        prompt,
+        modelOptions: selectedProviderModelOptions,
+      }),
+    [
+      prompt,
+      selectedModel,
+      selectedProviderDriver,
+      selectedProviderModelOptions,
+      selectedProviderModels,
+    ],
+  );
+  const selectedProviderModelOptionsForDispatch =
+    genericComposerProviderState.modelOptionsForDispatch ?? selectedProviderModelOptions;
+  const genericModelOptionsForDispatch = useMemo(
+    () =>
+      providerSelectionsToModelOptions(selectedProvider, selectedProviderModelOptionsForDispatch) ??
+      undefined,
+    [selectedProvider, selectedProviderModelOptionsForDispatch],
+  );
+  const genericProviderTraitsMenuContent = useMemo(() => {
+    if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
+      return null;
+    }
+    return renderProviderTraitsMenuContent({
+      provider: selectedProviderDriver,
+      draftId: threadId,
+      model: selectedModel,
+      models: selectedProviderModels,
+      modelOptions: selectedProviderModelOptions,
+      prompt,
+      onPromptChange: setPromptFromTraits,
+    });
+  }, [
+    prompt,
+    selectedModel,
+    selectedProvider,
+    selectedProviderDriver,
+    selectedProviderModelOptions,
+    selectedProviderModels,
+    setPromptFromTraits,
+    threadId,
+  ]);
+  const genericProviderTraitsPicker = useMemo(() => {
+    if (selectedProvider === "codex" || selectedProvider === "claudeAgent") {
+      return null;
+    }
+    return renderProviderTraitsPicker({
+      provider: selectedProviderDriver,
+      draftId: threadId,
+      model: selectedModel,
+      models: selectedProviderModels,
+      modelOptions: selectedProviderModelOptions,
+      prompt,
+      onPromptChange: setPromptFromTraits,
+    });
+  }, [
+    prompt,
+    selectedModel,
+    selectedProvider,
+    selectedProviderDriver,
+    selectedProviderModelOptions,
+    selectedProviderModels,
+    setPromptFromTraits,
+    threadId,
+  ]);
   const isClaudeUltrathink =
     selectedProvider === "claudeAgent" &&
     supportsClaudeUltrathinkKeyword(selectedModel) &&
@@ -1049,8 +1210,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
       );
       return claudeOptions ? { claudeAgent: claudeOptions } : undefined;
     }
-    return undefined;
-  }, [draftModelOptions, selectedModel, selectedProvider]);
+    return genericModelOptionsForDispatch;
+  }, [draftModelOptions, genericModelOptionsForDispatch, selectedModel, selectedProvider]);
+  const selectedModelSelectionForDispatch = useMemo(
+    () =>
+      createModelSelection(
+        selectedProviderInstanceId,
+        selectedModel,
+        selectedProviderModelOptionsForDispatch,
+      ),
+    [selectedModel, selectedProviderInstanceId, selectedProviderModelOptionsForDispatch],
+  );
   const activeProjectClaudeSettings = useMemo(
     () =>
       getClaudeProjectSettings(
@@ -1113,10 +1283,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
     settings.codexHomePath,
   ]);
   const selectedModelForPicker = selectedModel;
-  const modelOptionsByProvider = useMemo(
-    () => getCustomModelOptionsByProvider(settings),
-    [settings],
-  );
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByProvider[selectedProvider];
     return currentOptions.some((option) => option.slug === selectedModelForPicker)
@@ -1864,7 +2030,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
       autoRefresh: settings.enableGitStatusAutoRefresh,
     }),
   );
-  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const workspaceEntriesQuery = useQuery(
     projectSearchEntriesQueryOptions({
       cwd: gitCwd,
@@ -1919,12 +2084,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const availableEditors = serverConfigQuery.data?.availableEditors ?? EMPTY_AVAILABLE_EDITORS;
   const providerStatuses = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
   const activeProvider = activeThread?.session?.provider ?? "codex";
+  const activeProviderDefaultInstanceId = defaultInstanceIdForDriver(
+    ProviderDriverKind.make(activeProvider),
+  );
+  const activeProviderInstanceId =
+    activeThread?.session?.providerInstanceId ??
+    activeThread?.modelSelection?.instanceId ??
+    activeProviderDefaultInstanceId;
   const activeProviderStatus = useMemo(
-    () => providerStatuses.find((status) => status.provider === activeProvider) ?? null,
-    [activeProvider, providerStatuses],
+    () =>
+      providerStatuses.find((status) => status.instanceId === activeProviderInstanceId) ??
+      providerStatuses.find(
+        (status) => status.driver === ProviderDriverKind.make(activeProvider),
+      ) ??
+      null,
+    [activeProvider, activeProviderInstanceId, providerStatuses],
   );
   const activeProviderStatusKey = activeProviderStatus
-    ? `${activeProviderStatus.provider}:${activeProviderStatus.status}:${activeProviderStatus.message ?? ""}`
+    ? `${activeProviderStatus.instanceId}:${activeProviderStatus.status}:${activeProviderStatus.message ?? activeProviderStatus.unavailableReason ?? ""}`
     : null;
   const [dismissedProviderStatusKey, setDismissedProviderStatusKey] = useLocalStorage(
     DISMISSED_PROVIDER_STATUS_KEY,
@@ -2494,6 +2671,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       threadId: ThreadId;
       createdAt: string;
       model?: string;
+      modelSelection?: ModelSelection;
       runtimeMode: RuntimeMode;
       interactionMode: ProviderInteractionMode;
     }) => {
@@ -2505,12 +2683,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
         return;
       }
 
-      if (input.model !== undefined && input.model !== serverThread.model) {
+      const modelChanged = input.model !== undefined && input.model !== serverThread.model;
+      const modelSelectionChanged =
+        input.modelSelection !== undefined &&
+        !areUnknownEqual(input.modelSelection, serverThread.modelSelection ?? null);
+      if (modelChanged || modelSelectionChanged) {
         await api.orchestration.dispatchCommand({
           type: "thread.meta.update",
           commandId: newCommandId(),
           threadId: input.threadId,
-          model: input.model,
+          ...(modelChanged ? { model: input.model } : {}),
+          ...(modelSelectionChanged ? { modelSelection: input.modelSelection } : {}),
         });
       }
 
@@ -3739,6 +3922,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         projectModel: activeProject.model,
         projectScripts: activeProject.scripts,
         selectedModel,
+        selectedModelSelection: selectedModelSelectionForDispatch,
         runtimeMode,
         interactionMode,
         thread: {
@@ -3754,6 +3938,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
           ...(selectedModel ? { model: selectedModel } : {}),
+          modelSelection: selectedModelSelectionForDispatch,
           runtimeMode,
           interactionMode,
         });
@@ -3771,6 +3956,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           attachments: turnAttachments,
         },
         model: selectedModel || undefined,
+        modelSelection: selectedModelSelectionForDispatch,
         titleGenerationModel: selectedThreadTitleModel,
         titleSourceText,
         ...(selectedModelOptionsForDispatch
@@ -4049,6 +4235,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
           ...(selectedModel ? { model: selectedModel } : {}),
+          modelSelection: selectedModelSelectionForDispatch,
           runtimeMode,
           interactionMode: nextInteractionMode,
         });
@@ -4068,6 +4255,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           },
           provider: selectedProvider,
           model: selectedModel || undefined,
+          modelSelection: selectedModelSelectionForDispatch,
           titleGenerationModel: selectedThreadTitleModel,
           titleSourceText: trimmed,
           ...(selectedModelOptionsForDispatch
@@ -4151,6 +4339,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       restoreComposerRollback,
       runtimeMode,
       selectedModel,
+      selectedModelSelectionForDispatch,
       selectedThreadTitleModel,
       selectedModelOptionsForDispatch,
       providerOptionsForDispatch,
@@ -4225,6 +4414,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           },
           provider: selectedProvider,
           model: selectedModel || undefined,
+          modelSelection: selectedModelSelectionForDispatch,
           titleGenerationModel: selectedThreadTitleModel,
           titleSourceText: outgoingImplementationPrompt,
           ...(selectedModelOptionsForDispatch
@@ -4279,6 +4469,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     navigate,
     runtimeMode,
     selectedModel,
+    selectedModelSelectionForDispatch,
     selectedThreadTitleModel,
     selectedModelOptionsForDispatch,
     providerOptionsForDispatch,
@@ -4375,22 +4566,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
-      const resolvedModel = resolveAppModelSelection(
-        provider,
-        customModelsByProvider[provider],
-        model,
-      );
+      const resolvedModel = resolveAppModelSelection(provider, [], model);
+      const pickerResolvedModel =
+        resolveSelectableModel(
+          ProviderDriverKind.make(provider),
+          model,
+          modelOptionsByProvider[provider],
+        ) ?? resolvedModel;
       setComposerDraftProvider(activeThread.id, provider);
-      setComposerDraftModel(activeThread.id, resolvedModel);
-      recordModelSelection(provider, resolvedModel, composerDraft.modelOptions);
+      setComposerDraftModel(activeThread.id, pickerResolvedModel);
+      recordModelSelection(provider, pickerResolvedModel, composerDraft.modelOptions);
       scheduleComposerFocus();
     },
     [
       activeThread,
       composerDraft.modelOptions,
-      customModelsByProvider,
       isPendingTurnDispatchBlocked,
       lockedProvider,
+      modelOptionsByProvider,
       scheduleComposerFocus,
       setComposerDraftModel,
       setComposerDraftProvider,
@@ -5275,7 +5468,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   model={selectedModel}
                                   onPromptChange={setPromptFromTraits}
                                 />
-                              ) : null
+                              ) : (
+                                genericProviderTraitsMenuContent
+                              )
                             }
                             onCompactConversation={onCompactConversation}
                             onToggleInteractionMode={toggleInteractionMode}
@@ -5304,6 +5499,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   model={selectedModel}
                                   onPromptChange={setPromptFromTraits}
                                 />
+                              </>
+                            ) : genericProviderTraitsPicker ? (
+                              <>
+                                <Separator
+                                  orientation="vertical"
+                                  className="mx-0.5 hidden h-4 sm:block"
+                                />
+                                {genericProviderTraitsPicker}
                               </>
                             ) : null}
 

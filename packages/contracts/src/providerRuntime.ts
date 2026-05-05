@@ -12,6 +12,7 @@ import {
   TurnId,
 } from "./baseSchemas";
 import { ProviderKind, ProviderRequestKind } from "./orchestration";
+import { ProviderInstanceId } from "./providerInstance";
 import { TOOL_LIFECYCLE_ITEM_TYPES } from "./toolLifecycle";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
@@ -24,6 +25,9 @@ const RuntimeEventRawSource = Schema.Literals([
   "claude.sdk.message",
   "claude.sdk.permission",
   "codex.sdk.thread-event",
+  "acp.jsonrpc",
+  "acp.cursor.extension",
+  "opencode.sdk.event",
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 
@@ -238,6 +242,7 @@ const RuntimeErrorType = Schema.Literal("runtime.error");
 const ProviderRuntimeEventBase = Schema.Struct({
   eventId: EventId,
   provider: ProviderKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   threadId: ThreadId,
   createdAt: IsoDateTime,
   turnId: Schema.optional(TurnId),

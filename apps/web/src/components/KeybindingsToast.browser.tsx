@@ -21,6 +21,7 @@ import type { ReactNode } from "react";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
+import { createTestServerProvider } from "../testServerProvider";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -48,15 +49,7 @@ function createBaseServerConfig(): ServerConfig {
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
-    providers: [
-      {
-        provider: "codex",
-        status: "ready",
-        available: true,
-        authStatus: "authenticated",
-        checkedAt: NOW_ISO,
-      },
-    ],
+    providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
   };
 }
@@ -164,6 +157,8 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
             threadId: detailThreadId,
             messages: thread.messages,
             checkpoints: thread.checkpoints,
+            activities: thread.activities,
+            commandExecutions: [],
             tasks: thread.tasks,
             tasksTurnId: thread.tasksTurnId,
             tasksUpdatedAt: thread.tasksUpdatedAt,
@@ -171,6 +166,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
             threadReferences: [],
             hasOlderMessages: false,
             hasOlderCheckpoints: false,
+            hasOlderCommandExecutions: false,
             oldestLoadedMessageCursor:
               thread.messages[0] === undefined
                 ? null
@@ -179,6 +175,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
                     messageId: thread.messages[0].id,
                   },
             oldestLoadedCheckpointTurnCount: thread.checkpoints[0]?.checkpointTurnCount ?? null,
+            oldestLoadedCommandExecutionCursor: null,
             detailSequence: fixture.snapshot.snapshotSequence,
           }
         : null,
@@ -191,6 +188,8 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       threadId,
       messages: thread?.messages ?? [],
       checkpoints: thread?.checkpoints ?? [],
+      activities: thread?.activities ?? [],
+      commandExecutions: [],
       tasks: thread?.tasks ?? [],
       tasksTurnId: thread?.tasksTurnId ?? null,
       tasksUpdatedAt: thread?.tasksUpdatedAt ?? null,
@@ -198,6 +197,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       threadReferences: [],
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderCommandExecutions: false,
       oldestLoadedMessageCursor:
         thread?.messages[0] === undefined
           ? null
@@ -206,6 +206,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
               messageId: thread.messages[0].id,
             },
       oldestLoadedCheckpointTurnCount: thread?.checkpoints[0]?.checkpointTurnCount ?? null,
+      oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
     };
   }
@@ -215,10 +216,13 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       threadId,
       messages: [],
       checkpoints: [],
+      commandExecutions: [],
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderCommandExecutions: false,
       oldestLoadedMessageCursor: null,
       oldestLoadedCheckpointTurnCount: null,
+      oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
     };
   }
@@ -284,7 +288,10 @@ const worker = setupWorker(
   http.get("*/api/project-favicon", () => new HttpResponse(null, { status: 204 })),
 );
 
-function sendServerConfigUpdatedPush(issues: Array<{ kind: string; message: string }>) {
+function sendServerConfigUpdatedPush(
+  issues: Array<{ kind: string; message: string }>,
+  source: "keybindings" | "settings" | "providers" = "keybindings",
+) {
   if (!wsClient) throw new Error("WebSocket client not connected");
   wsClient.send(
     JSON.stringify({
@@ -292,6 +299,7 @@ function sendServerConfigUpdatedPush(issues: Array<{ kind: string; message: stri
       sequence: pushSequence++,
       channel: WS_CHANNELS.serverConfigUpdated,
       data: {
+        source,
         issues,
         providers: fixture.serverConfig.providers,
       },
@@ -413,6 +421,17 @@ describe("Keybindings update toast", () => {
       // Each server push represents a distinct file change, so it should produce its own toast.
       sendServerConfigUpdatedPush([]);
       await waitForToast("Keybindings updated", 2);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not show a keybindings toast for provider-only config updates", async () => {
+    const mounted = await mountApp();
+
+    try {
+      sendServerConfigUpdatedPush([], "providers");
+      await waitForNoToast("Keybindings updated");
     } finally {
       await mounted.cleanup();
     }

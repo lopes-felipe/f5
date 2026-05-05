@@ -1,15 +1,21 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
+  defaultInstanceIdForDriver,
   type DesktopBridge,
+  ProviderDriverKind,
   ProjectId,
   type ProjectSkill,
   type ProjectScript,
   type ProviderInteractionMode,
   type RuntimeMode,
+  type ServerProvider,
+  type ServerProviderModel,
+  type ServerSettings,
   type ThreadTurnStartBootstrap,
   type CompactRuntimeConfiguredActivityPayload,
   type ProviderKind,
+  type ModelSelection,
 } from "@t3tools/contracts";
 import {
   isReservedHostLocalSlashCommandName,
@@ -20,6 +26,7 @@ import { type ChatMessage } from "../types";
 import { getAppModelOptions } from "../appSettings";
 import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
+import { sortModelsForProviderInstance } from "../modelOrdering";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -363,6 +370,7 @@ export function buildFirstSendBootstrap(input: {
   projectModel: string | null | undefined;
   projectScripts: ProjectScript[];
   selectedModel: string | null | undefined;
+  selectedModelSelection?: ModelSelection | undefined;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   thread: {
@@ -377,6 +385,7 @@ export function buildFirstSendBootstrap(input: {
         projectId: input.projectId,
         title: DEFAULT_NEW_THREAD_TITLE,
         model: input.selectedModel ?? input.projectModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+        ...(input.selectedModelSelection ? { modelSelection: input.selectedModelSelection } : {}),
         runtimeMode: input.runtimeMode,
         interactionMode: input.interactionMode,
         branch: input.thread.branch,
@@ -421,14 +430,159 @@ export function cloneComposerImageForRetry(
   }
 }
 
-export function getCustomModelOptionsByProvider(settings: {
-  customCodexModels: readonly string[];
-  customClaudeModels: readonly string[];
-}): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
+const PICKER_PROVIDERS = ["codex", "claudeAgent", "cursor", "opencode"] as const;
+
+type ModelPickerOptionWithCustomFlag = ModelPickerModelOption & {
+  readonly isCustom?: boolean;
+};
+
+function readOptionalConfigStringArray(
+  config: unknown,
+  key: string,
+): ReadonlyArray<string> | undefined {
+  if (config === null || typeof config !== "object") {
+    return undefined;
+  }
+  const value = (config as Record<string, unknown>)[key];
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  return value.filter((entry): entry is string => typeof entry === "string");
+}
+
+function getDefaultInstanceId(provider: ProviderKind) {
+  return defaultInstanceIdForDriver(ProviderDriverKind.make(provider));
+}
+
+function getServerCustomModelsForProvider(
+  serverSettings: Pick<ServerSettings, "providers" | "providerInstances"> | null | undefined,
+  provider: ProviderKind,
+): ReadonlyArray<string> {
+  if (!serverSettings) {
+    return [];
+  }
+
+  const defaultInstanceId = getDefaultInstanceId(provider);
+  const instanceCustomModels = readOptionalConfigStringArray(
+    serverSettings.providerInstances?.[defaultInstanceId]?.config,
+    "customModels",
+  );
+  if (instanceCustomModels !== undefined) {
+    return instanceCustomModels;
+  }
+
+  return serverSettings.providers[provider].customModels;
+}
+
+function getProviderCustomModelsForPicker(
+  settings: {
+    readonly customCodexModels: readonly string[];
+    readonly customClaudeModels: readonly string[];
+  },
+  serverSettings: Pick<ServerSettings, "providers" | "providerInstances"> | null | undefined,
+  provider: ProviderKind,
+): ReadonlyArray<string> {
+  const appCustomModels =
+    provider === "codex"
+      ? settings.customCodexModels
+      : provider === "claudeAgent"
+        ? settings.customClaudeModels
+        : [];
+  const serverCustomModels = getServerCustomModelsForProvider(serverSettings, provider);
+  return [...appCustomModels, ...serverCustomModels];
+}
+
+function getLiveProviderModels(
+  providers: ReadonlyArray<ServerProvider> | null | undefined,
+  provider: ProviderKind,
+): ReadonlyArray<ServerProviderModel> {
+  if (!providers || providers.length === 0) {
+    return [];
+  }
+  const driver = ProviderDriverKind.make(provider);
+  const defaultInstanceId = defaultInstanceIdForDriver(driver);
+  return (
+    providers.find((candidate) => candidate.instanceId === defaultInstanceId)?.models ??
+    providers.find((candidate) => candidate.driver === driver)?.models ??
+    []
+  );
+}
+
+function toModelPickerOption(model: ServerProviderModel): ModelPickerOptionWithCustomFlag {
   return {
-    codex: getAppModelOptions("codex", settings.customCodexModels),
-    claudeAgent: getAppModelOptions("claudeAgent", settings.customClaudeModels),
+    slug: model.slug,
+    name: model.name,
+    ...(model.shortName ? { shortName: model.shortName } : {}),
+    ...(model.subProvider ? { subProvider: model.subProvider } : {}),
+    ...(model.isCustom ? { isCustom: true } : {}),
   };
+}
+
+function applyPickerModelPreferences(
+  provider: ProviderKind,
+  models: ReadonlyArray<ModelPickerOptionWithCustomFlag>,
+  settings: {
+    readonly providerModelPreferences?: Readonly<
+      Record<
+        string,
+        | {
+            readonly hiddenModels: ReadonlyArray<string>;
+            readonly modelOrder: ReadonlyArray<string>;
+          }
+        | undefined
+      >
+    >;
+  },
+): ReadonlyArray<ModelPickerModelOption> {
+  const instanceId = getDefaultInstanceId(provider);
+  const preferences = settings.providerModelPreferences?.[instanceId];
+  const hiddenModels = new Set(preferences?.hiddenModels ?? []);
+  return sortModelsForProviderInstance(
+    models.filter((model) => model.isCustom || !hiddenModels.has(model.slug)),
+    { modelOrder: preferences?.modelOrder ?? [] },
+  ).map(({ isCustom: _isCustom, ...model }) => model);
+}
+
+export function getCustomModelOptionsByProvider(
+  settings: {
+    customCodexModels: readonly string[];
+    customClaudeModels: readonly string[];
+    providerModelPreferences?: Readonly<
+      Record<
+        string,
+        | {
+            readonly hiddenModels: ReadonlyArray<string>;
+            readonly modelOrder: ReadonlyArray<string>;
+          }
+        | undefined
+      >
+    >;
+  },
+  providers?: ReadonlyArray<ServerProvider> | null,
+  serverSettings?: Pick<ServerSettings, "providers" | "providerInstances"> | null,
+): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
+  return Object.fromEntries(
+    PICKER_PROVIDERS.map((provider) => {
+      const liveModels = getLiveProviderModels(providers, provider);
+      const liveModelsIncludeBuiltIns = liveModels.some((model) => !model.isCustom);
+      const customModels = getProviderCustomModelsForPicker(settings, serverSettings, provider);
+      const appOptions = getAppModelOptions(provider, customModels);
+      const options: ModelPickerOptionWithCustomFlag[] = liveModelsIncludeBuiltIns
+        ? liveModels.map(toModelPickerOption)
+        : appOptions;
+
+      const seen = new Set(options.map((option) => option.slug));
+      for (const customOption of appOptions.filter((option) => option.isCustom)) {
+        if (seen.has(customOption.slug)) {
+          continue;
+        }
+        seen.add(customOption.slug);
+        options.push(customOption);
+      }
+
+      return [provider, applyPickerModelPreferences(provider, options, settings)] as const;
+    }),
+  ) as Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
 }
 
 function readRerouteString(payload: Record<string, unknown> | null, key: string): string | null {
@@ -493,6 +647,33 @@ export function deriveProviderRuntimeInfoEntries(input: {
         : null,
       readRerouteString(input.rerouteActivity, "reason")
         ? { label: "Reason", value: readRerouteString(input.rerouteActivity, "reason")! }
+        : null,
+      input.mcpSummary ? { label: "MCP", value: input.mcpSummary } : null,
+      input.cliVersion ? { label: "CLI", value: input.cliVersion } : null,
+    ].filter((entry): entry is ProviderRuntimeInfoEntry => entry !== null);
+  }
+
+  if (input.provider === "cursor") {
+    return [
+      input.configuredRuntime?.model
+        ? { label: "Actual model", value: input.configuredRuntime.model }
+        : input.threadModel
+          ? { label: "Actual model", value: input.threadModel }
+          : null,
+      input.configuredRuntime?.reasoning
+        ? { label: "Reasoning", value: input.configuredRuntime.reasoning }
+        : null,
+      input.configuredRuntime?.contextWindow
+        ? { label: "Context", value: input.configuredRuntime.contextWindow }
+        : null,
+      input.configuredRuntime?.fastModeState
+        ? { label: "Fast mode", value: input.configuredRuntime.fastModeState }
+        : null,
+      input.configuredRuntime?.thinkingState
+        ? { label: "Thinking", value: input.configuredRuntime.thinkingState }
+        : null,
+      input.configuredRuntime?.sessionId
+        ? { label: "Session", value: input.configuredRuntime.sessionId }
         : null,
       input.mcpSummary ? { label: "MCP", value: input.mcpSummary } : null,
       input.cliVersion ? { label: "CLI", value: input.cliVersion } : null,

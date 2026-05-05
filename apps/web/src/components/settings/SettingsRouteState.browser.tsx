@@ -8,6 +8,7 @@ import { render } from "vitest-browser-react";
 
 import { parsePersistedAppSettings } from "../../appSettings";
 import { useStore } from "../../store";
+import { createTestServerProvider } from "../../testServerProvider";
 import { SettingsRouteContext } from "./SettingsRouteContext";
 import { useSettingsRouteState } from "./useSettingsRouteState";
 import { ProjectsSettings } from "./categories/ProjectsSettings";
@@ -94,15 +95,7 @@ function createNativeApiMock() {
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
-    providers: [
-      {
-        provider: "codex",
-        status: "ready",
-        available: true,
-        authStatus: "authenticated",
-        checkedAt: NOW_ISO,
-      },
-    ],
+    providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
   };
 

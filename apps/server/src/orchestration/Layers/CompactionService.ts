@@ -1,5 +1,4 @@
 import { CommandId, EventId, type OrchestrationEvent, ThreadId } from "@t3tools/contracts";
-import { inferProviderForModel } from "@t3tools/shared/model";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Effect, Layer, Stream } from "effect";
 
@@ -11,6 +10,7 @@ import {
   getCompactPrompt,
   getPartialCompactPrompt,
 } from "../compactionPrompts.ts";
+import { resolveOneOffPromptRoute } from "../oneOffPromptRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { CompactionService, type CompactionServiceShape } from "../Services/CompactionService.ts";
 
@@ -21,13 +21,6 @@ type ThreadCompactRequestedEvent = Extract<
 
 const compactionCommandId = (tag: string) =>
   CommandId.makeUnsafe(`compaction:${tag}:${crypto.randomUUID()}`);
-
-function providerForThread(model: string, providerName: string | null) {
-  if (providerName === "claudeAgent" || providerName === "codex") {
-    return providerName;
-  }
-  return inferProviderForModel(model, "codex");
-}
 
 function laterIsoString(left: string, right: string): string {
   return left.localeCompare(right) >= 0 ? left : right;
@@ -92,7 +85,10 @@ const make = Effect.gen(function* () {
         return;
       }
 
-      const provider = providerForThread(thread.model, thread.session?.providerName ?? null);
+      const oneOffRoute = resolveOneOffPromptRoute({
+        model: thread.model,
+        sessionProviderName: thread.session?.providerName ?? null,
+      });
       if (
         thread.session?.status === "running" &&
         thread.session.activeTurnId !== null &&
@@ -145,10 +141,10 @@ const make = Effect.gen(function* () {
       const summaryResult = yield* providerService
         .runOneOffPrompt({
           threadId: thread.id,
-          provider,
+          provider: oneOffRoute.provider,
           prompt,
           ...(cwd ? { cwd } : {}),
-          model: thread.model,
+          model: oneOffRoute.model,
           runtimeMode: thread.runtimeMode,
         })
         .pipe(

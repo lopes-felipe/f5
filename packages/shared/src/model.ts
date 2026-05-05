@@ -10,14 +10,23 @@ import {
   type ClaudeCodeEffort,
   type CodexModelOptions,
   type CodexReasoningEffort,
+  type CursorModelOptions,
+  type ModelCapabilities,
+  type ModelSelection,
   type ModelSlug,
+  type ProviderOptionDescriptor,
+  type ProviderOptionSelection,
   type ProviderReasoningEffort,
   type ProviderKind,
+  type ProviderDriverKind,
 } from "@t3tools/contracts";
+import { ProviderInstanceId } from "@t3tools/contracts";
 
 const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> = {
   claudeAgent: new Set(MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((option) => option.slug)),
   codex: new Set(MODEL_OPTIONS_BY_PROVIDER.codex.map((option) => option.slug)),
+  cursor: new Set(MODEL_OPTIONS_BY_PROVIDER.cursor.map((option) => option.slug)),
+  opencode: new Set(MODEL_OPTIONS_BY_PROVIDER.opencode.map((option) => option.slug)),
 };
 
 const CLAUDE_OPUS_4_7_MODEL = "claude-opus-4-7";
@@ -132,6 +141,179 @@ export function getDefaultModel(provider: ProviderKind = "codex"): ModelSlug {
   return DEFAULT_MODEL_BY_PROVIDER[provider];
 }
 
+function toBuiltInProviderKind(provider: ProviderKind | ProviderDriverKind): ProviderKind {
+  switch (provider) {
+    case "codex":
+    case "claudeAgent":
+    case "cursor":
+    case "opencode":
+      return provider as ProviderKind;
+    default:
+      return "codex";
+  }
+}
+
+export function createModelSelection(
+  instanceId: ProviderInstanceId,
+  model: string,
+  options?: ReadonlyArray<ProviderOptionSelection> | null,
+): ModelSelection {
+  return {
+    instanceId,
+    model,
+    ...(options && options.length > 0
+      ? { options: options.map((selection) => ({ ...selection })) }
+      : {}),
+  };
+}
+
+export function cursorModelOptionsToProviderOptionSelections(
+  options: CursorModelOptions | null | undefined,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  if (!options) {
+    return undefined;
+  }
+  const selections: ProviderOptionSelection[] = [];
+  if (options.reasoning) {
+    selections.push({ id: "reasoning", value: options.reasoning });
+  }
+  if (typeof options.thinking === "boolean") {
+    selections.push({ id: "thinking", value: options.thinking });
+  }
+  if (typeof options.fastMode === "boolean") {
+    selections.push({ id: "fastMode", value: options.fastMode });
+  }
+  if (typeof options.contextWindow === "string" && options.contextWindow.trim().length > 0) {
+    selections.push({ id: "contextWindow", value: options.contextWindow.trim() });
+  }
+  return selections.length > 0 ? selections : undefined;
+}
+
+export function createModelCapabilities(input: {
+  optionDescriptors: ReadonlyArray<ProviderOptionDescriptor>;
+}): ModelCapabilities {
+  return {
+    optionDescriptors: input.optionDescriptors.map(cloneProviderOptionDescriptor),
+  };
+}
+
+function cloneProviderOptionDescriptor(
+  descriptor: ProviderOptionDescriptor,
+): ProviderOptionDescriptor {
+  if (descriptor.type === "select") {
+    return {
+      ...descriptor,
+      options: descriptor.options.map((option) => ({ ...option })),
+      ...(descriptor.promptInjectedValues
+        ? { promptInjectedValues: [...descriptor.promptInjectedValues] }
+        : {}),
+    };
+  }
+  return { ...descriptor };
+}
+
+export function getProviderOptionSelectionValue(
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+  id: string,
+): string | boolean | undefined {
+  return selections?.find((selection) => selection.id === id)?.value;
+}
+
+export function getProviderOptionStringSelectionValue(
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+  id: string,
+): string | undefined {
+  const value = getProviderOptionSelectionValue(selections, id);
+  return typeof value === "string" ? value : undefined;
+}
+
+export function getProviderOptionBooleanSelectionValue(
+  selections: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+  id: string,
+): boolean | undefined {
+  const value = getProviderOptionSelectionValue(selections, id);
+  return typeof value === "boolean" ? value : undefined;
+}
+
+export function getModelSelectionStringOptionValue(
+  modelSelection: ModelSelection | null | undefined,
+  id: string,
+): string | undefined {
+  return getProviderOptionStringSelectionValue(modelSelection?.options, id);
+}
+
+export function getProviderOptionCurrentValue(
+  descriptor: ProviderOptionDescriptor | null | undefined,
+): string | boolean | undefined {
+  if (!descriptor) return undefined;
+  if (descriptor.type === "boolean") {
+    return descriptor.currentValue;
+  }
+  return descriptor.currentValue ?? descriptor.options.find((option) => option.isDefault)?.id;
+}
+
+export function getProviderOptionCurrentLabel(
+  descriptor: ProviderOptionDescriptor | null | undefined,
+): string | undefined {
+  if (!descriptor) return undefined;
+  const value = getProviderOptionCurrentValue(descriptor);
+  if (descriptor.type === "boolean") {
+    return typeof value === "boolean" ? (value ? "On" : "Off") : undefined;
+  }
+  return descriptor.options.find((option) => option.id === value)?.label;
+}
+
+function resolveSelectDescriptorValue(
+  descriptor: Extract<ProviderOptionDescriptor, { type: "select" }>,
+  raw: string | null | undefined,
+): string | undefined {
+  const trimmed = raw?.trim();
+  if (!trimmed) {
+    return descriptor.currentValue ?? descriptor.options.find((option) => option.isDefault)?.id;
+  }
+  if (descriptor.options.some((option) => option.id === trimmed)) {
+    return trimmed;
+  }
+  return descriptor.currentValue ?? descriptor.options.find((option) => option.isDefault)?.id;
+}
+
+export function getProviderOptionDescriptors(input: {
+  caps: ModelCapabilities | null | undefined;
+  selections?: ReadonlyArray<ProviderOptionSelection> | null | undefined;
+}): ReadonlyArray<ProviderOptionDescriptor> {
+  return (input.caps?.optionDescriptors ?? []).map((descriptor) => {
+    if (descriptor.type === "boolean") {
+      const selected = getProviderOptionBooleanSelectionValue(input.selections, descriptor.id);
+      return {
+        ...descriptor,
+        ...(selected !== undefined ? { currentValue: selected } : {}),
+      };
+    }
+    const selected = getProviderOptionStringSelectionValue(input.selections, descriptor.id);
+    return {
+      ...descriptor,
+      options: descriptor.options.map((option) => ({ ...option })),
+      ...(descriptor.promptInjectedValues
+        ? { promptInjectedValues: [...descriptor.promptInjectedValues] }
+        : {}),
+      currentValue: resolveSelectDescriptorValue(descriptor, selected),
+    };
+  });
+}
+
+export function buildProviderOptionSelectionsFromDescriptors(
+  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  const selections: ProviderOptionSelection[] = [];
+  for (const descriptor of descriptors) {
+    const value = getProviderOptionCurrentValue(descriptor);
+    if (typeof value === "string" || typeof value === "boolean") {
+      selections.push({ id: descriptor.id, value });
+    }
+  }
+  return selections.length > 0 ? selections : undefined;
+}
+
 function getClaudeModelMetadata(model: string | null | undefined): ClaudeModelMetadata | undefined {
   const normalized = normalizeModelSlug(model, "claudeAgent");
   return normalized ? CLAUDE_MODEL_METADATA[normalized] : undefined;
@@ -169,7 +351,7 @@ export function isClaudeUltrathinkPrompt(text: string | null | undefined): boole
 
 export function normalizeModelSlug(
   model: string | null | undefined,
-  provider: ProviderKind = "codex",
+  provider: ProviderKind | ProviderDriverKind = "codex",
 ): ModelSlug | null {
   if (typeof model !== "string") {
     return null;
@@ -180,7 +362,8 @@ export function normalizeModelSlug(
     return null;
   }
 
-  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[provider] as Record<string, ModelSlug>;
+  const builtInProvider = toBuiltInProviderKind(provider);
+  const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[builtInProvider] as Record<string, ModelSlug>;
   const aliased = Object.prototype.hasOwnProperty.call(aliases, trimmed)
     ? aliases[trimmed]
     : undefined;
@@ -189,16 +372,17 @@ export function normalizeModelSlug(
 
 export function resolveModelSlug(
   model: string | null | undefined,
-  provider: ProviderKind = "codex",
+  provider: ProviderKind | ProviderDriverKind = "codex",
 ): ModelSlug {
-  const normalized = normalizeModelSlug(model, provider);
+  const builtInProvider = toBuiltInProviderKind(provider);
+  const normalized = normalizeModelSlug(model, builtInProvider);
   if (!normalized) {
-    return getDefaultModel(provider);
+    return getDefaultModel(builtInProvider);
   }
 
-  return MODEL_SLUG_SET_BY_PROVIDER[provider].has(normalized)
+  return MODEL_SLUG_SET_BY_PROVIDER[builtInProvider].has(normalized)
     ? normalized
-    : getDefaultModel(provider);
+    : getDefaultModel(builtInProvider);
 }
 
 export function resolveModelSlugForProvider(
@@ -209,7 +393,7 @@ export function resolveModelSlugForProvider(
 }
 
 export function resolveSelectableModel(
-  provider: ProviderKind,
+  provider: ProviderKind | ProviderDriverKind,
   value: string | null | undefined,
   options: ReadonlyArray<{ slug: string; name: string }>,
 ): ModelSlug | null {

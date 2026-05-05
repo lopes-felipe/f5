@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
+import { ProviderInstanceId } from "./providerInstance";
 import {
   ApprovalRequestId,
   EventId,
@@ -12,6 +13,7 @@ import {
 } from "./baseSchemas";
 import {
   ChatAttachment,
+  ModelSelection,
   ProjectMemory,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
@@ -38,6 +40,7 @@ const ProviderSessionStatus = Schema.Literals([
 
 export const ProviderSession = Schema.Struct({
   provider: ProviderKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   status: ProviderSessionStatus,
   runtimeMode: RuntimeMode,
   cwd: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -55,6 +58,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   threadId: ThreadId,
   projectId: Schema.optional(ProjectId),
   provider: Schema.optional(ProviderKind),
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   cwd: Schema.optional(TrimmedNonEmptyStringSchema),
   projectTitle: Schema.optional(TrimmedNonEmptyStringSchema),
   threadTitle: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -69,6 +73,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   projectMemories: Schema.optional(Schema.Array(ProjectMemory)),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   modelOptions: Schema.optional(ProviderModelOptions),
+  modelSelection: Schema.optional(ModelSelection),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
@@ -87,6 +92,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   ),
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   modelOptions: Schema.optional(ProviderModelOptions),
+  modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
@@ -129,6 +135,7 @@ export const ProviderEvent = Schema.Struct({
   id: EventId,
   kind: ProviderEventKind,
   provider: ProviderKind,
+  providerInstanceId: Schema.optional(ProviderInstanceId),
   threadId: ThreadId,
   createdAt: IsoDateTime,
   method: TrimmedNonEmptyStringSchema,

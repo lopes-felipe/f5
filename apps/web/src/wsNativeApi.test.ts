@@ -14,9 +14,10 @@ import {
   WS_CHANNELS,
   WS_METHODS,
   type WsPush,
-  type ServerProviderStatus,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createTestServerProvider } from "./testServerProvider";
 
 const requestMock = vi.fn<(...args: Array<unknown>) => Promise<unknown>>();
 const showContextMenuFallbackMock =
@@ -93,14 +94,8 @@ function getWindowForTest(): Window & typeof globalThis & { desktopBridge?: unkn
   return testGlobal.window;
 }
 
-const defaultProviders: ReadonlyArray<ServerProviderStatus> = [
-  {
-    provider: "codex",
-    status: "ready",
-    available: true,
-    authStatus: "authenticated",
-    checkedAt: "2026-01-01T00:00:00.000Z",
-  },
+const defaultProviders: ReadonlyArray<ServerProvider> = [
+  createTestServerProvider("codex", { checkedAt: "2026-01-01T00:00:00.000Z" }),
 ];
 
 beforeEach(() => {

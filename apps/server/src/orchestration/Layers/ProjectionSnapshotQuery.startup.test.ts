@@ -368,6 +368,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         threadId: asThreadId("thread-1"),
         status: "running",
         providerName: "codex",
+        providerInstanceId: null,
         runtimeMode: "full-access",
         activeTurnId: asTurnId("turn-1"),
         lastError: null,

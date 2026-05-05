@@ -1,6 +1,8 @@
 import type {
   ClaudeModelOptions,
   CodexModelOptions,
+  CursorModelOptions,
+  OpenCodeModelOptions,
   ProviderKind,
   ProviderModelOptions,
 } from "@t3tools/contracts";
@@ -21,7 +23,12 @@ export type WorkflowCreatePreferenceSlot = "branchA" | "branchB" | "merge";
 export interface RecentModelSelection {
   provider: ProviderKind;
   model: string;
-  options: CodexModelOptions | ClaudeModelOptions | null;
+  options:
+    | CodexModelOptions
+    | ClaudeModelOptions
+    | CursorModelOptions
+    | OpenCodeModelOptions
+    | null;
 }
 
 /**
@@ -88,7 +95,9 @@ function getModelPreferencesStorage() {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" || value === "claudeAgent" ? value : null;
+  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+    ? value
+    : null;
 }
 
 function normalizePersistedModel(value: unknown): string | null {
@@ -115,6 +124,16 @@ function normalizePersistedModelMap(value: unknown): ModelPreferencesState["last
   const claudeModel = normalizePersistedModel(candidate.claudeAgent);
   if (claudeModel) {
     next.claudeAgent = claudeModel;
+  }
+
+  const cursorModel = normalizePersistedModel(candidate.cursor);
+  if (cursorModel) {
+    next.cursor = cursorModel;
+  }
+
+  const openCodeModel = normalizePersistedModel(candidate.opencode);
+  if (openCodeModel) {
+    next.opencode = openCodeModel;
   }
 
   return next;

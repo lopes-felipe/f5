@@ -5,13 +5,13 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
-import { inferProviderForModel } from "@t3tools/shared/model";
 import { Data, Effect, Layer, Schema, Stream } from "effect";
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { roughTokenEstimateFromCharacters } from "../../provider/providerContext.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { deriveActivePlan, deriveTaskLines } from "../compactionService.ts";
+import { resolveOneOffPromptRoute } from "../oneOffPromptRouting.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   SessionNotesService,
@@ -399,7 +399,10 @@ const make = Effect.gen(function* () {
       }
 
       const now = new Date().toISOString();
-      const notesProvider = inferProviderForModel(thread.model, "codex");
+      const notesRoute = resolveOneOffPromptRoute({
+        model: thread.model,
+        sessionProviderName: thread.session?.providerName ?? null,
+      });
       const cwd = resolveThreadWorkspaceCwd({
         thread,
         projects: readModel.projects,
@@ -419,10 +422,10 @@ const make = Effect.gen(function* () {
       const invokeNotesProvider = (promptText: string) =>
         providerService.runOneOffPrompt({
           threadId: thread.id,
-          provider: notesProvider,
+          provider: notesRoute.provider,
           prompt: promptText,
           ...(cwd ? { cwd } : {}),
-          model: thread.model,
+          model: notesRoute.model,
           runtimeMode: thread.runtimeMode,
           timeoutMs: SESSION_NOTES_ONE_OFF_PROMPT_TIMEOUT_MS,
         });

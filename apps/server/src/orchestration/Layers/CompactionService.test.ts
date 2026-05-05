@@ -1,5 +1,6 @@
 import {
   CommandId,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
   EventId,
   MessageId,
   ProjectId,
@@ -390,6 +391,51 @@ describe("CompactionService", () => {
 
     expect(requestedProvider).toBe("codex");
     expect(requestedRuntimeMode).toBe("approval-required");
+    expect(harness.dispatched.some((command) => command.type === "thread.compacted.record")).toBe(
+      true,
+    );
+  });
+
+  it("uses a safe Codex one-off model when compacting OpenCode threads", async () => {
+    const requests: Array<{ provider: string; model: string | undefined }> = [];
+    const harness = await createHarness({
+      runOneOffPrompt: (input) =>
+        Effect.sync(() => {
+          requests.push({ provider: input.provider, model: input.model });
+          return {
+            text: "<summary>Compacted summary</summary>",
+          };
+        }),
+    });
+    disposers.push(harness.dispose);
+
+    harness.mutateReadModel((current) => ({
+      ...current,
+      threads: current.threads.map((thread) =>
+        thread.id === THREAD_ID
+          ? {
+              ...thread,
+              model: "opencode/big-pickle",
+              session: thread.session
+                ? {
+                    ...thread.session,
+                    providerName: "opencode",
+                  }
+                : null,
+            }
+          : thread,
+      ),
+    }));
+
+    harness.emit(makeCompactRequestedEvent("event-opencode"));
+    await Effect.runPromise(harness.service.drain);
+
+    expect(requests).toEqual([
+      {
+        provider: "codex",
+        model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+      },
+    ]);
     expect(harness.dispatched.some((command) => command.type === "thread.compacted.record")).toBe(
       true,
     );

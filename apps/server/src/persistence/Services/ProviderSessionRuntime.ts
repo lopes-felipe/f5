@@ -8,6 +8,7 @@
 import {
   IsoDateTime,
   ProjectId,
+  ProviderInstanceId,
   ProviderSessionRuntimeStatus,
   RuntimeMode,
   ThreadId,
@@ -22,6 +23,9 @@ export const ProviderSessionRuntime = Schema.Struct({
   threadId: ThreadId,
   projectId: Schema.NullOr(ProjectId).pipe(Schema.withDecodingDefault(() => null)),
   providerName: Schema.String,
+  providerInstanceId: Schema.optional(Schema.NullOr(ProviderInstanceId)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   adapterKey: Schema.String,
   runtimeMode: RuntimeMode,
   status: ProviderSessionRuntimeStatus,

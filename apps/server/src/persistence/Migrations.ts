@@ -49,6 +49,10 @@ import Migration0034 from "./Migrations/034_ProjectionThreadCommandExecutionsCwd
 import Migration0035 from "./Migrations/035_ProjectionThreadFileChanges.ts";
 import Migration0036 from "./Migrations/036_ProjectionThreadMessagesCreatedMessageId.ts";
 import Migration0037 from "./Migrations/037_CleanupInvalidProjectionPendingApprovals.ts";
+import Migration0038 from "./Migrations/038_ProviderSessionRuntimeInstanceId.ts";
+import Migration0039 from "./Migrations/039_ProjectionThreadSessionInstanceId.ts";
+import Migration0040 from "./Migrations/040_ProjectionThreadsModelSelection.ts";
+import Migration0041 from "./Migrations/041_ProjectionProjectsDefaultModelSelection.ts";
 import { Effect } from "effect";
 
 /**
@@ -99,6 +103,10 @@ const loader = Migrator.fromRecord({
   "35_ProjectionThreadFileChanges": Migration0035,
   "36_ProjectionThreadMessagesCreatedMessageId": Migration0036,
   "37_CleanupInvalidProjectionPendingApprovals": Migration0037,
+  "38_ProviderSessionRuntimeInstanceId": Migration0038,
+  "39_ProjectionThreadSessionInstanceId": Migration0039,
+  "40_ProjectionThreadsModelSelection": Migration0040,
+  "41_ProjectionProjectsDefaultModelSelection": Migration0041,
 });
 
 /**

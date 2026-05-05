@@ -70,7 +70,12 @@ export function toLegacySessionStatus(
 }
 
 export function toLegacyProvider(providerName: string | null): ProviderKind {
-  if (providerName === "codex" || providerName === "claudeAgent") {
+  if (
+    providerName === "codex" ||
+    providerName === "claudeAgent" ||
+    providerName === "cursor" ||
+    providerName === "opencode"
+  ) {
     return providerName;
   }
   return "codex";
@@ -80,7 +85,12 @@ export function inferProviderForThreadModel(input: {
   readonly model: string;
   readonly sessionProviderName: string | null;
 }): ProviderKind {
-  if (input.sessionProviderName === "codex" || input.sessionProviderName === "claudeAgent") {
+  if (
+    input.sessionProviderName === "codex" ||
+    input.sessionProviderName === "claudeAgent" ||
+    input.sessionProviderName === "cursor" ||
+    input.sessionProviderName === "opencode"
+  ) {
     return input.sessionProviderName;
   }
   return inferProviderForModel(input.model);
@@ -107,6 +117,7 @@ export function mapSessionFromReadModel(
   const lastError = sanitizeThreadErrorMessage(incoming.lastError);
   const next: Thread["session"] = {
     provider: toLegacyProvider(incoming.providerName),
+    providerInstanceId: incoming.providerInstanceId ?? null,
     status: toLegacySessionStatus(incoming.status),
     orchestrationStatus: incoming.status,
     activeTurnId: incoming.activeTurnId ?? undefined,
@@ -123,6 +134,7 @@ export function mapSessionFromReadModel(
   if (
     previous &&
     previous.provider === next.provider &&
+    previous.providerInstanceId === next.providerInstanceId &&
     previous.status === next.status &&
     previous.orchestrationStatus === next.orchestrationStatus &&
     previous.activeTurnId === next.activeTurnId &&

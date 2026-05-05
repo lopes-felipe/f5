@@ -138,6 +138,7 @@ describe("parsePersistedAppSettings", () => {
     expect(parsed.favoriteModels).toEqual([
       { providerKind: "codex", modelId: "gpt-5.3-codex" },
       { providerKind: "claudeAgent", modelId: "claude-sonnet-4-6" },
+      { providerKind: "cursor", modelId: "gpt-5.3-codex" },
     ]);
   });
 

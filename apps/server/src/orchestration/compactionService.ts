@@ -1,9 +1,10 @@
-import type {
-  OrchestrationCheckpointSummary,
-  OrchestrationMessage,
-  OrchestrationThread,
-  TaskItem,
-  ThreadCompactionDirection,
+import {
+  isKnownProviderKind,
+  type OrchestrationCheckpointSummary,
+  type OrchestrationMessage,
+  type OrchestrationThread,
+  type TaskItem,
+  type ThreadCompactionDirection,
 } from "@t3tools/contracts";
 import { inferProviderForModel } from "@t3tools/shared/model";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
@@ -488,11 +489,9 @@ export function buildThreadCompactionTranscript(input: {
   const transcript = sections.join("\n");
   const turnRange = deriveCompactionTurnRange(input.thread, compactedMessages);
   const transcriptChars = transcript.length;
-  const provider =
-    input.thread.session?.providerName === "claudeAgent" ||
-    input.thread.session?.providerName === "codex"
-      ? input.thread.session.providerName
-      : inferProviderForModel(input.thread.model, "codex");
+  const provider = isKnownProviderKind(input.thread.session?.providerName)
+    ? input.thread.session.providerName
+    : inferProviderForModel(input.thread.model, "codex");
 
   return {
     transcript,

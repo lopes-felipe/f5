@@ -1,4 +1,4 @@
-import { type ServerProviderStatus } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type ServerProvider } from "@t3tools/contracts";
 import { XIcon } from "lucide-react";
 import { memo } from "react";
 
@@ -9,7 +9,7 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
   status,
   onDismiss,
 }: {
-  status: ServerProviderStatus | null;
+  status: ServerProvider | null;
   onDismiss?: () => void;
 }) {
   if (!status || status.status === "ready") {
@@ -17,18 +17,18 @@ export const ProviderHealthBanner = memo(function ProviderHealthBanner({
   }
 
   const providerLabel =
-    status.provider === "codex"
-      ? "Codex"
-      : status.provider === "claudeAgent"
-        ? "Claude"
-        : status.provider;
+    status.displayName ??
+    (PROVIDER_DISPLAY_NAMES as Partial<Record<string, string>>)[status.driver] ??
+    status.driver;
   const defaultMessage =
     status.status === "error"
       ? `${providerLabel} provider is unavailable.`
       : `${providerLabel} provider has limited availability.`;
   const title = providerLabel === "Codex" ? "Codex provider status" : `${providerLabel} status`;
   const isError = status.status === "error";
-  const presentation = presentProviderStatus({ status: status.status });
+  const presentation = presentProviderStatus({
+    status: status.status === "disabled" ? "warning" : status.status,
+  });
   const StatusIcon = presentation.icon;
   const dismissButtonClassName = isError
     ? "inline-flex size-6 items-center justify-center rounded-md text-destructive/60 transition-colors hover:text-destructive"

@@ -1,4 +1,12 @@
-import { ProjectId, ThreadId, type ProjectSkill } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProjectId,
+  ProviderDriverKind,
+  ThreadId,
+  type ProjectSkill,
+  type ProviderKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -9,6 +17,7 @@ import {
   createCachedAbsolutePathComparisonNormalizer,
   deriveComposerSendState,
   deriveProviderRuntimeInfoEntries,
+  getCustomModelOptionsByProvider,
   identityAbsolutePathNormalizer,
   readAttachedFileAbsolutePath,
   resolveAttachedFileReferencePaths,
@@ -31,6 +40,100 @@ function createProjectSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill
     ...overrides,
   };
 }
+
+function provider(input: {
+  provider: ProviderKind;
+  models: ReadonlyArray<{ slug: string; name: string; isCustom?: boolean }>;
+}): ServerProvider {
+  const driver = ProviderDriverKind.make(input.provider);
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version: null,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-01-01T00:00:00.000Z",
+    models: input.models.map((model) => ({
+      slug: model.slug,
+      name: model.name,
+      isCustom: model.isCustom ?? false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
+  };
+}
+
+describe("getCustomModelOptionsByProvider", () => {
+  it("uses live Cursor-discovered models instead of the static fallback list", () => {
+    const options = getCustomModelOptionsByProvider(
+      {
+        customCodexModels: [],
+        customClaudeModels: [],
+        providerModelPreferences: {},
+      },
+      [
+        provider({
+          provider: "cursor",
+          models: [
+            { slug: "composer-1.5", name: "Composer 1.5" },
+            { slug: "gpt-5.5", name: "GPT-5.5" },
+            { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
+          ],
+        }),
+      ],
+    );
+
+    expect(options.cursor.map((option) => option.slug)).toEqual([
+      "composer-1.5",
+      "gpt-5.5",
+      "claude-opus-4-7",
+    ]);
+  });
+
+  it("keeps the static Cursor fallback before live discovery reports built-ins", () => {
+    const options = getCustomModelOptionsByProvider({
+      customCodexModels: [],
+      customClaudeModels: [],
+      providerModelPreferences: {},
+    });
+
+    expect(options.cursor.map((option) => option.slug)).toEqual([
+      "auto",
+      "composer-2",
+      "composer-1.5",
+      "claude-opus-4-6",
+      "claude-sonnet-4-6",
+      "claude-opus-4-5",
+    ]);
+  });
+
+  it("uses live OpenCode-discovered models instead of the static fallback list", () => {
+    const options = getCustomModelOptionsByProvider(
+      {
+        customCodexModels: [],
+        customClaudeModels: [],
+        providerModelPreferences: {},
+      },
+      [
+        provider({
+          provider: "opencode",
+          models: [
+            { slug: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+            { slug: "openai/gpt-5.5", name: "GPT-5.5" },
+          ],
+        }),
+      ],
+    );
+
+    expect(options.opencode.map((option) => option.slug)).toEqual([
+      "anthropic/claude-sonnet-4-6",
+      "openai/gpt-5.5",
+    ]);
+  });
+});
 
 describe("buildSlashComposerMenuItems", () => {
   it("shows Codex runtime skills in the slash menu", () => {
@@ -770,6 +873,34 @@ describe("deriveProviderRuntimeInfoEntries", () => {
       { label: "Session", value: "session-123" },
       { label: "MCP", value: "2/3 connected" },
       { label: "CLI", value: "1.2.3" },
+    ]);
+  });
+
+  it("builds Cursor runtime banner entries from configured model options", () => {
+    expect(
+      deriveProviderRuntimeInfoEntries({
+        provider: "cursor",
+        threadModel: "composer-2",
+        configuredRuntime: {
+          model: "composer-2",
+          reasoning: "high",
+          contextWindow: "200k",
+          fastModeState: "on",
+          thinkingState: "off",
+          sessionId: "cursor-session-1",
+        },
+        rerouteActivity: null,
+        cliVersion: "2026.04.09",
+        mcpSummary: null,
+      }),
+    ).toEqual([
+      { label: "Actual model", value: "composer-2" },
+      { label: "Reasoning", value: "high" },
+      { label: "Context", value: "200k" },
+      { label: "Fast mode", value: "on" },
+      { label: "Thinking", value: "off" },
+      { label: "Session", value: "cursor-session-1" },
+      { label: "CLI", value: "2026.04.09" },
     ]);
   });
 });

@@ -8,7 +8,6 @@ import { Cause, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Scope, Stream 
 
 import {
   ProviderAdapterRequestError,
-  ProviderUnsupportedError,
   ProviderValidationBusyError,
   type ProviderAdapterError,
 } from "../Errors.ts";
@@ -16,6 +15,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { HarnessValidation } from "../Services/HarnessValidation.ts";
 import { HarnessValidationLive } from "./HarnessValidation.ts";
+import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMock.ts";
 
 type RunOneOffPrompt = NonNullable<ProviderAdapterShape<ProviderAdapterError>["runOneOffPrompt"]>;
 type OneOffInput = Parameters<RunOneOffPrompt>[0];
@@ -112,15 +112,13 @@ function makeValidationLayer(adapters: {
 }) {
   return HarnessValidationLive.pipe(
     Layer.provide(
-      Layer.succeed(ProviderAdapterRegistry, {
-        getByProvider: (provider) =>
-          provider === "codex"
-            ? Effect.succeed(adapters.codex)
-            : provider === "claudeAgent"
-              ? Effect.succeed(adapters.claudeAgent)
-              : Effect.fail(new ProviderUnsupportedError({ provider })),
-        listProviders: () => Effect.succeed(["codex", "claudeAgent"] as const),
-      }),
+      Layer.succeed(
+        ProviderAdapterRegistry,
+        makeAdapterRegistryMock({
+          codex: adapters.codex,
+          claudeAgent: adapters.claudeAgent,
+        }),
+      ),
     ),
   );
 }

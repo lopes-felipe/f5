@@ -5,6 +5,8 @@ import {
   ThreadId,
   type CodexReasoningEffort,
   type ProviderKind,
+  type ProviderDriverKind,
+  type ProviderOptionSelection,
   type ProviderInteractionMode,
   type ProviderModelOptions,
   type RuntimeMode,
@@ -18,12 +20,16 @@ import {
   normalizeTerminalContextText,
 } from "./lib/terminalContext";
 import { normalizeAttachedFilePaths } from "./lib/attachedFiles";
-import { normalizeProviderModelOptions } from "./providerModelOptions";
+import {
+  normalizeProviderModelOptions,
+  providerSelectionsToModelOptions,
+} from "./providerModelOptions";
 import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
+export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
 const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
@@ -307,6 +313,12 @@ interface ComposerDraftStoreState {
     threadId: ThreadId,
     modelOptions: ProviderModelOptions | null | undefined,
   ) => void;
+  setProviderModelOptions: (
+    target: ThreadId | { threadId: ThreadId },
+    provider: ProviderDriverKind,
+    modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
+    options?: { model?: string | null; persistSticky?: boolean },
+  ) => void;
   setRuntimeMode: (threadId: ThreadId, runtimeMode: RuntimeMode | null | undefined) => void;
   setInteractionMode: (
     threadId: ThreadId,
@@ -474,7 +486,9 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" || value === "claudeAgent" ? value : null;
+  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+    ? value
+    : null;
 }
 
 function revokeObjectPreviewUrl(previewUrl: string): void {
@@ -1333,6 +1347,21 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           return { draftsByThreadId: nextDraftsByThreadId };
         });
+      },
+      setProviderModelOptions: (target, provider, nextProviderOptions) => {
+        const threadId = typeof target === "string" ? target : target.threadId;
+        if (threadId.length === 0) {
+          return;
+        }
+        const normalizedProvider = normalizeProviderKind(provider);
+        if (!normalizedProvider) {
+          return;
+        }
+        const legacyOptions = providerSelectionsToModelOptions(
+          normalizedProvider,
+          nextProviderOptions,
+        );
+        get().setModelOptions(threadId, legacyOptions);
       },
       setRuntimeMode: (threadId, runtimeMode) => {
         if (threadId.length === 0) {

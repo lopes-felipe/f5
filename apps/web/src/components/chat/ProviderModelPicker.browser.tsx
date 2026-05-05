@@ -3,31 +3,22 @@ import "../../index.css";
 import { page } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import type { ModelSlug, ProviderKind, ServerProviderStatus } from "@t3tools/contracts";
+import type { ModelSlug, ProviderKind, ServerProvider } from "@t3tools/contracts";
 
 import { ProviderModelPicker } from "./ProviderModelPicker";
 import type { ModelPickerModelOption } from "./providerIconUtils";
 import { parsePersistedAppSettings } from "../../appSettings";
 import { useModelPreferencesStore } from "../../modelPreferencesStore";
+import { createTestServerProvider } from "../../testServerProvider";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const NOW_ISO = "2026-05-04T12:00:00.000Z";
 
-const READY_PROVIDERS: ServerProviderStatus[] = [
-  {
-    provider: "codex",
-    status: "ready",
-    available: true,
-    authStatus: "authenticated",
-    checkedAt: NOW_ISO,
-  },
-  {
-    provider: "claudeAgent",
-    status: "ready",
-    available: true,
-    authStatus: "authenticated",
-    checkedAt: NOW_ISO,
-  },
+const READY_PROVIDERS: ServerProvider[] = [
+  createTestServerProvider("codex", { checkedAt: NOW_ISO }),
+  createTestServerProvider("claudeAgent", { checkedAt: NOW_ISO }),
+  createTestServerProvider("cursor", { checkedAt: NOW_ISO }),
+  createTestServerProvider("opencode", { checkedAt: NOW_ISO }),
 ];
 
 const MODEL_OPTIONS_BY_PROVIDER = {
@@ -40,13 +31,15 @@ const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", shortName: "Sonnet 4.6" },
     { slug: "claude-haiku-4-5", name: "Claude Haiku 4.5", shortName: "Haiku 4.5" },
   ],
+  cursor: [{ slug: "auto", name: "Auto" }],
+  opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
 } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
 
 async function mountPicker(props?: {
   provider?: ProviderKind;
   model?: ModelSlug;
   lockedProvider?: ProviderKind | null;
-  providers?: ServerProviderStatus[];
+  providers?: ServerProvider[];
 }) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -154,14 +147,13 @@ describe("ProviderModelPicker", () => {
     const mounted = await mountPicker({
       providers: [
         READY_PROVIDERS[0]!,
-        {
-          provider: "claudeAgent",
+        createTestServerProvider("claudeAgent", {
           status: "error",
-          available: false,
-          authStatus: "unauthenticated",
+          availability: "unavailable",
+          auth: { status: "unauthenticated" },
           checkedAt: NOW_ISO,
           message: "Claude unavailable",
-        },
+        }),
       ],
     });
 

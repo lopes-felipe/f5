@@ -999,6 +999,7 @@ function EventRouter() {
     const unsubServerConfigUpdated = onServerConfigUpdated((payload) => {
       void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
       if (!subscribed) return;
+      if (payload.source !== "keybindings") return;
       const issue = payload.issues.find((entry) => entry.kind.startsWith("keybindings."));
       if (!issue) {
         toastManager.add({

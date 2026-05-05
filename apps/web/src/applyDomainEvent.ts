@@ -706,6 +706,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           model: event.payload.model,
           sessionProviderName: null,
         }),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
         runtimeMode: event.payload.runtimeMode,
         interactionMode: event.payload.interactionMode,
         session: null,
@@ -780,9 +783,14 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           event.payload.model !== undefined
             ? estimateModelContextWindowTokens(event.payload.model, thread.session?.provider)
             : thread.modelContextWindowTokens;
+        const modelSelection =
+          event.payload.modelSelection !== undefined
+            ? event.payload.modelSelection
+            : thread.modelSelection;
         if (
           (event.payload.title ?? thread.title) === thread.title &&
           model === thread.model &&
+          areUnknownEqual(modelSelection ?? null, thread.modelSelection ?? null) &&
           modelContextWindowTokens === thread.modelContextWindowTokens &&
           (event.payload.branch ?? thread.branch) === thread.branch &&
           (event.payload.worktreePath ?? thread.worktreePath) === thread.worktreePath
@@ -793,6 +801,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           ...thread,
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
           ...(model !== thread.model ? { model } : {}),
+          ...(!areUnknownEqual(modelSelection ?? null, thread.modelSelection ?? null)
+            ? { modelSelection }
+            : {}),
           ...(modelContextWindowTokens !== thread.modelContextWindowTokens
             ? { modelContextWindowTokens }
             : {}),

@@ -35,7 +35,6 @@ import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
 import { ProjectionCheckpointRepository } from "../src/persistence/Services/ProjectionCheckpoints.ts";
 import { ProjectionPendingApprovalRepository } from "../src/persistence/Services/ProjectionPendingApprovals.ts";
-import { ProviderUnsupportedError } from "../src/provider/Errors.ts";
 import { ProviderAdapterRegistry } from "../src/provider/Services/ProviderAdapterRegistry.ts";
 import { ProviderSessionDirectoryLive } from "../src/provider/Layers/ProviderSessionDirectory.ts";
 import { makeProviderServiceLive } from "../src/provider/Layers/ProviderService.ts";
@@ -58,6 +57,7 @@ import { ProjectSkillSyncServiceLive } from "../src/orchestration/Layers/Project
 import { SessionNotesServiceLive } from "../src/orchestration/Layers/SessionNotesService.ts";
 import { CodeReviewWorkflowServiceLive } from "../src/orchestration/Layers/CodeReviewWorkflowService.ts";
 import { WorkflowServiceLive } from "../src/orchestration/Layers/WorkflowService.ts";
+import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -231,12 +231,8 @@ export const makeOrchestrationIntegrationHarness = (
         });
     const fakeRegistry = adapterHarness
       ? Layer.succeed(ProviderAdapterRegistry, {
-          getByProvider: (resolvedProvider) =>
-            resolvedProvider === adapterHarness.provider
-              ? Effect.succeed(adapterHarness.adapter)
-              : Effect.fail(new ProviderUnsupportedError({ provider: resolvedProvider })),
-          listProviders: () => Effect.succeed([adapterHarness.provider]),
-        } as typeof ProviderAdapterRegistry.Service)
+          ...makeAdapterRegistryMock({ [adapterHarness.provider]: adapterHarness.adapter }),
+        })
       : null;
     const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-orchestration-integration-"));
     const workspaceDir = path.join(rootDir, "workspace");
@@ -326,13 +322,7 @@ export const makeOrchestrationIntegrationHarness = (
       ProviderAdapterRegistry,
       Effect.gen(function* () {
         const codexAdapter = yield* CodexAdapter;
-        return {
-          getByProvider: (resolvedProvider) =>
-            resolvedProvider === "codex"
-              ? Effect.succeed(codexAdapter)
-              : Effect.fail(new ProviderUnsupportedError({ provider: resolvedProvider })),
-          listProviders: () => Effect.succeed(["codex"] as const),
-        } as typeof ProviderAdapterRegistry.Service;
+        return makeAdapterRegistryMock({ codex: codexAdapter });
       }),
     ).pipe(
       Layer.provide(makeCodexAdapterLive()),

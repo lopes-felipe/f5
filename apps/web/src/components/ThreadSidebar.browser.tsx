@@ -25,6 +25,7 @@ import { parsePersistedAppSettings } from "../appSettings";
 import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
+import { createTestServerProvider } from "../testServerProvider";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   THREAD_SIDEBAR_MAX_WIDTH_PX,
@@ -74,15 +75,7 @@ function createBaseServerConfig(): ServerConfig {
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
-    providers: [
-      {
-        provider: "codex",
-        status: "ready",
-        available: true,
-        authStatus: "authenticated",
-        checkedAt: NOW_ISO,
-      },
-    ],
+    providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
   };
 }

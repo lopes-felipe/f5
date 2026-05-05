@@ -83,7 +83,8 @@ import {
   type ProviderSessionDirectoryShape,
 } from "./provider/Services/ProviderSessionDirectory.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
-import { ProviderHealth } from "./provider/Services/ProviderHealth";
+import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
 import { clamp } from "effect/Number";
@@ -125,6 +126,7 @@ import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
+import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -405,8 +407,10 @@ export type ServerCoreRuntimeServices =
   | ThreadFileChangeQuery
   | CheckpointDiffQuery
   | ProviderService
-  | ProviderHealth
+  | ProviderInstanceRegistry
+  | ProviderRegistry
   | HarnessValidation
+  | ServerSettingsService
   | CodexMcpEventBus
   | CodexMcpSyncService
   | CodexOAuthManager
@@ -487,8 +491,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const terminalManager = yield* TerminalManager;
   const keybindingsManager = yield* Keybindings;
   const providerService = yield* ProviderService;
-  const providerHealth = yield* ProviderHealth;
+  const providerRegistry = yield* ProviderRegistry;
   const harnessValidation = yield* HarnessValidation;
+  const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
   const codexMcpSyncService = yield* CodexMcpSyncService;
   const codexOAuthManager = yield* CodexOAuthManager;
@@ -505,6 +510,15 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         detail: error.detail,
         cause: error.cause,
       }),
+    ),
+  );
+  yield* serverSettings.start.pipe(
+    Effect.mapError(
+      (cause) =>
+        new ServerLifecycleError({
+          operation: "startServerSettings",
+          cause,
+        }),
     ),
   );
 
@@ -896,11 +910,47 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
-    providerHealth.getStatuses.pipe(
-      Effect.flatMap((providerStatuses) =>
+    providerRegistry.getProviders.pipe(
+      Effect.bindTo("providers"),
+      Effect.bind("settings", () =>
+        serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
+      ),
+      Effect.flatMap(({ providers, settings }) =>
         pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+          source: "keybindings",
           issues: event.issues,
-          providers: providerStatuses,
+          providers,
+          settings,
+        }),
+      ),
+    ),
+  ).pipe(Effect.forkIn(subscriptionsScope));
+  yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
+    Effect.all({
+      keybindingsConfig: keybindingsManager.loadConfigState,
+      providers: providerRegistry.getProviders,
+    }).pipe(
+      Effect.flatMap(({ keybindingsConfig, providers }) =>
+        pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+          source: "settings",
+          issues: keybindingsConfig.issues,
+          providers,
+          settings: redactServerSettingsForClient(settings),
+        }),
+      ),
+    ),
+  ).pipe(Effect.forkIn(subscriptionsScope));
+  yield* Stream.runForEach(providerRegistry.streamChanges, (providers) =>
+    Effect.all({
+      keybindingsConfig: keybindingsManager.loadConfigState,
+      settings: serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
+    }).pipe(
+      Effect.flatMap(({ keybindingsConfig, settings }) =>
+        pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+          source: "providers",
+          issues: keybindingsConfig.issues,
+          providers,
+          settings,
         }),
       ),
     ),
@@ -1718,15 +1768,37 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
-        const providerStatuses = yield* providerHealth.getStatuses;
+        const providers = yield* providerRegistry.getProviders;
+        const settings = yield* serverSettings.getSettings.pipe(
+          Effect.map(redactServerSettingsForClient),
+        );
         return {
           cwd,
           keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
           issues: keybindingsConfig.issues,
-          providers: providerStatuses,
+          providers,
           availableEditors,
+          settings,
         };
+
+      case WS_METHODS.serverUpdateSettings: {
+        const body = stripRequestTag(request.body);
+        return yield* serverSettings.updateSettings(body).pipe(
+          Effect.map(redactServerSettingsForClient),
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.serverRefreshProviders: {
+        const providers = yield* providerRegistry.refresh();
+        return { providers };
+      }
 
       case WS_METHODS.serverValidateHarnesses: {
         const body = stripRequestTag(request.body);

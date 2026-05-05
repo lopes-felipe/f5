@@ -99,7 +99,7 @@ function sanitizePrTitle(raw: string): string {
   return "Update project changes";
 }
 
-const makeCodexTextGeneration = Effect.gen(function* () {
+export const makeCodexTextGeneration = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -518,7 +518,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         outputSchemaJson: Schema.Struct({
           title: Schema.String,
         }),
-        model: input.model,
+        ...(input.model ? { model: input.model } : {}),
         imagePaths,
       });
 

@@ -3,10 +3,14 @@ import {
   CommandId,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  defaultInstanceIdForDriver,
   EventId,
+  type ModelSelection,
   type McpApplyToLiveSessionsResult,
   type OrchestrationEvent,
   ProjectId,
+  ProviderDriverKind,
+  type ProviderInstanceId,
   type ProjectMemory,
   type OrchestrationThread,
   type ProviderModelOptions,
@@ -86,6 +90,22 @@ function readPersistedProviderOptions(runtimePayload: unknown): ProviderStartOpt
 
   const raw = "providerOptions" in runtimePayload ? runtimePayload.providerOptions : undefined;
   return isRecord(raw) ? (raw as ProviderStartOptions) : undefined;
+}
+
+function providerFromSessionName(value: string | null | undefined): ProviderKind | undefined {
+  switch (value) {
+    case "codex":
+    case "claudeAgent":
+    case "cursor":
+    case "opencode":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function defaultInstanceForProvider(provider: ProviderKind): ProviderInstanceId {
+  return defaultInstanceIdForDriver(ProviderDriverKind.make(provider));
 }
 
 function mapProviderSessionStatusToOrchestrationStatus(
@@ -366,6 +386,7 @@ const make = Effect.gen(function* () {
             threadId: input.thread.id,
             status: mapProviderSessionStatusToOrchestrationStatus(input.session.status),
             providerName: input.session.provider,
+            providerInstanceId: input.session.providerInstanceId ?? null,
             runtimeMode: input.desiredRuntimeMode,
             activeTurnId: null,
             lastError: input.session.lastError ?? null,
@@ -389,6 +410,7 @@ const make = Effect.gen(function* () {
     options?: {
       readonly provider?: ProviderKind;
       readonly model?: string;
+      readonly modelSelection?: ModelSelection;
       readonly modelOptions?: ProviderModelOptions;
       readonly providerOptions?: ProviderStartOptions;
     },
@@ -396,12 +418,21 @@ const make = Effect.gen(function* () {
     return yield* Effect.gen(function* () {
       const sessionContext = yield* resolveThreadSessionStartContext(threadId);
       const { thread, instructionContext, persistedBinding, desiredRuntimeMode } = sessionContext;
-      const currentProvider: ProviderKind | undefined =
-        thread.session?.providerName === "codex" || thread.session?.providerName === "claudeAgent"
-          ? thread.session.providerName
-          : undefined;
+      const currentProvider = providerFromSessionName(thread.session?.providerName);
+      const currentInstanceId =
+        thread.session?.providerInstanceId ??
+        persistedBinding?.providerInstanceId ??
+        (currentProvider ? defaultInstanceForProvider(currentProvider) : undefined);
+      const preferredInstanceId =
+        options?.modelSelection?.instanceId ??
+        thread.modelSelection?.instanceId ??
+        currentInstanceId;
       const preferredProvider: ProviderKind | undefined = options?.provider ?? currentProvider;
-      const desiredModel = options?.model ?? sessionContext.desiredModel;
+      const desiredModel =
+        options?.model ??
+        options?.modelSelection?.model ??
+        thread.modelSelection?.model ??
+        sessionContext.desiredModel;
       yield* Effect.annotateCurrentSpan({
         "provider.thread_id": threadId,
         "provider.operation": "ensure-session",
@@ -438,8 +469,14 @@ const make = Effect.gen(function* () {
             threadId,
             projectId: thread.projectId,
             ...(providerForStart ? { provider: providerForStart } : {}),
+            ...(preferredInstanceId ? { providerInstanceId: preferredInstanceId } : {}),
             ...instructionContext,
             ...(desiredModel ? { model: desiredModel } : {}),
+            ...(options?.modelSelection !== undefined
+              ? { modelSelection: options.modelSelection }
+              : thread.modelSelection !== undefined
+                ? { modelSelection: thread.modelSelection }
+                : {}),
             ...(options?.modelOptions !== undefined ? { modelOptions: options.modelOptions } : {}),
             ...(options?.providerOptions !== undefined
               ? { providerOptions: options.providerOptions }
@@ -466,12 +503,16 @@ const make = Effect.gen(function* () {
       if (existingSessionThreadId) {
         const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
         const providerChanged =
-          options?.provider !== undefined && options.provider !== currentProvider;
+          (options?.provider !== undefined && options.provider !== currentProvider) ||
+          (options?.modelSelection?.instanceId !== undefined &&
+            options.modelSelection.instanceId !== currentInstanceId);
         const sessionModelSwitch =
           currentProvider === undefined
             ? "in-session"
             : (yield* providerService.getCapabilities(currentProvider)).sessionModelSwitch;
-        const modelChanged = options?.model !== undefined && options.model !== activeSession?.model;
+        const requestedModel = options?.model ?? options?.modelSelection?.model;
+        const modelChanged =
+          requestedModel !== undefined && requestedModel !== activeSession?.model;
         const shouldRestartForModelChange =
           modelChanged &&
           (sessionModelSwitch === "restart-session" || currentProvider === "claudeAgent");
@@ -614,6 +655,7 @@ const make = Effect.gen(function* () {
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly provider?: ProviderKind;
     readonly model?: string;
+    readonly modelSelection?: ModelSelection;
     readonly modelOptions?: ProviderModelOptions;
     readonly providerOptions?: ProviderStartOptions;
     readonly interactionMode?: "default" | "plan";
@@ -626,6 +668,7 @@ const make = Effect.gen(function* () {
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.provider !== undefined ? { provider: input.provider } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
       ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
     });
@@ -636,6 +679,9 @@ const make = Effect.gen(function* () {
       .pipe(
         Effect.map((sessions) => sessions.find((session) => session.threadId === input.threadId)),
       );
+    const persistedBinding = yield* providerSessionDirectory
+      .getBinding(input.threadId)
+      .pipe(Effect.map(Option.getOrUndefined));
     if (input.providerOptions !== undefined) {
       const normalizedProviderOptions = activeSession?.provider
         ? normalizeProviderStartOptions(activeSession.provider, input.providerOptions)
@@ -677,18 +723,26 @@ const make = Effect.gen(function* () {
       activeSession === undefined
         ? "in-session"
         : (yield* providerService.getCapabilities(activeSession.provider)).sessionModelSwitch;
-    const modelForTurn = sessionModelSwitch === "unsupported" ? activeSession?.model : input.model;
+    const modelForTurn =
+      sessionModelSwitch === "unsupported"
+        ? activeSession?.model
+        : (input.model ?? input.modelSelection?.model);
     const recoveryProvider =
       activeSession?.provider ??
-      (thread.session?.providerName === "codex" || thread.session?.providerName === "claudeAgent"
-        ? thread.session.providerName
-        : undefined) ??
+      providerFromSessionName(thread.session?.providerName) ??
       input.provider ??
       inferProviderForModel(thread.model, "codex");
 
     yield* providerSessionDirectory.upsert({
       threadId: input.threadId,
       provider: recoveryProvider,
+      providerInstanceId:
+        activeSession?.providerInstanceId ??
+        input.modelSelection?.instanceId ??
+        (persistedBinding?.provider === recoveryProvider
+          ? persistedBinding.providerInstanceId
+          : undefined) ??
+        defaultInstanceForProvider(recoveryProvider),
       runtimeMode: thread.runtimeMode,
       runtimePayload: {
         instructionContext,
@@ -700,6 +754,7 @@ const make = Effect.gen(function* () {
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { model: modelForTurn } : {}),
+      ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
     });
@@ -890,6 +945,9 @@ const make = Effect.gen(function* () {
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.provider !== undefined ? { provider: event.payload.provider } : {}),
       ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
+      ...(event.payload.modelSelection !== undefined
+        ? { modelSelection: event.payload.modelSelection }
+        : {}),
       ...(event.payload.modelOptions !== undefined
         ? { modelOptions: event.payload.modelOptions }
         : {}),
@@ -1031,6 +1089,7 @@ const make = Effect.gen(function* () {
         threadId: thread.id,
         status: "stopped",
         providerName: thread.session?.providerName ?? null,
+        providerInstanceId: thread.session?.providerInstanceId ?? null,
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
@@ -1090,6 +1149,7 @@ const make = Effect.gen(function* () {
       threadId: binding.threadId,
       projectId: activeThread.projectId,
       provider: "claudeAgent",
+      providerInstanceId: binding.providerInstanceId ?? defaultInstanceForProvider("claudeAgent"),
       ...sessionContext.instructionContext,
       ...(sessionContext.desiredModel ? { model: sessionContext.desiredModel } : {}),
       ...(modelOptions !== undefined ? { modelOptions } : {}),

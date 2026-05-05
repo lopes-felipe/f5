@@ -40,13 +40,16 @@ function getSingleProviderModelOptions(
   provider: ProviderKind,
   modelOptions: ProviderModelOptions | null | undefined,
 ): ProviderModelOptions | undefined {
-  const providerModelOptions = modelOptions?.[provider];
-  if (!providerModelOptions) {
-    return undefined;
+  switch (provider) {
+    case "codex":
+      return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
+    case "claudeAgent":
+      return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
+    case "cursor":
+      return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
+    case "opencode":
+      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
   }
-  return provider === "codex"
-    ? { codex: providerModelOptions }
-    : { claudeAgent: providerModelOptions };
 }
 
 function resolveImplementationDefaults(workflow: PlanningWorkflow) {
@@ -202,7 +205,11 @@ export function WorkflowImplementDialog(props: {
   ): ModelSlug =>
     resolveAppModelSelection(
       nextProvider,
-      nextProvider === "codex" ? settings.customCodexModels : settings.customClaudeModels,
+      nextProvider === "codex"
+        ? settings.customCodexModels
+        : nextProvider === "claudeAgent"
+          ? settings.customClaudeModels
+          : [],
       nextModel,
     ) as ModelSlug;
 

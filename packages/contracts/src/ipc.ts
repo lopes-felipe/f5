@@ -32,9 +32,11 @@ import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem
 import type {
   ServerConfig,
   ServerHarnessValidationResult,
+  ServerProviderUpdatedPayload,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server";
+import type { ServerSettings, ServerSettingsPatch } from "./settings";
 import type { ProviderStartOptions } from "./orchestration";
 import type {
   McpApplyToLiveSessionsRequest,
@@ -231,6 +233,8 @@ export interface NativeApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
+    updateSettings: (input: ServerSettingsPatch) => Promise<ServerSettings>;
+    refreshProviders: () => Promise<ServerProviderUpdatedPayload>;
     validateHarnesses: (input?: {
       providerOptions?: ProviderStartOptions;
     }) => Promise<{ results: ReadonlyArray<ServerHarnessValidationResult> }>;

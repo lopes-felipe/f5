@@ -19,8 +19,10 @@ import type {
   ProjectId,
   TurnId,
   MessageId,
+  ModelSelection,
   CheckpointRef,
   ProviderKind,
+  ProviderInstanceId,
   ProviderInteractionMode,
   RuntimeMode,
 } from "@t3tools/contracts";
@@ -130,6 +132,7 @@ export interface Thread {
   projectId: ProjectId;
   title: string;
   model: string;
+  modelSelection?: ModelSelection | undefined;
   runtimeMode: RuntimeMode;
   interactionMode: ProviderInteractionMode;
   session: ThreadSession | null;
@@ -160,6 +163,7 @@ export interface Thread {
 
 export interface ThreadSession {
   provider: ProviderKind;
+  providerInstanceId?: ProviderInstanceId | null | undefined;
   status: SessionPhase | "error" | "closed";
   activeTurnId?: TurnId | undefined;
   createdAt: string;

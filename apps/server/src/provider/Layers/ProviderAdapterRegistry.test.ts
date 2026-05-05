@@ -1,15 +1,21 @@
-import type { ProviderKind } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  type ProviderKind,
+} from "@t3tools/contracts";
 import { it, assert, vi } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
 
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, PubSub, Stream } from "effect";
 
-import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
-import { CodexAdapter, CodexAdapterShape } from "../Services/CodexAdapter.ts";
+import type { ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import type { CodexAdapterShape } from "../Services/CodexAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderAdapterRegistryLive } from "./ProviderAdapterRegistry.ts";
 import { ProviderUnsupportedError } from "../Errors.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { defaultProviderContinuationIdentity, type ProviderInstance } from "../ProviderDriver.ts";
+import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
 
 const fakeCodexAdapter: CodexAdapterShape = {
   provider: "codex",
@@ -47,14 +53,43 @@ const fakeClaudeAdapter: ClaudeAdapterShape = {
   streamEvents: Stream.empty,
 };
 
+function makeInstance(input: {
+  provider: ProviderKind;
+  adapter: CodexAdapterShape | ClaudeAdapterShape;
+}): ProviderInstance {
+  const driverKind = ProviderDriverKind.make(input.provider);
+  const instanceId = defaultInstanceIdForDriver(driverKind);
+  return {
+    instanceId,
+    driverKind,
+    displayName: input.provider,
+    enabled: true,
+    continuationIdentity: defaultProviderContinuationIdentity({ driverKind, instanceId }),
+    adapter: input.adapter,
+    snapshot: {} as never,
+    textGeneration: {} as never,
+  };
+}
+
+const instances = [
+  makeInstance({ provider: "codex", adapter: fakeCodexAdapter }),
+  makeInstance({ provider: "claudeAgent", adapter: fakeClaudeAdapter }),
+];
+
 const layer = it.layer(
   Layer.mergeAll(
     Layer.provide(
       ProviderAdapterRegistryLive,
-      Layer.mergeAll(
-        Layer.succeed(CodexAdapter, fakeCodexAdapter),
-        Layer.succeed(ClaudeAdapter, fakeClaudeAdapter),
-      ),
+      Layer.succeed(ProviderInstanceRegistry, {
+        getInstance: (instanceId) =>
+          Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
+        listInstances: Effect.succeed(instances),
+        listUnavailable: Effect.succeed([]),
+        streamChanges: Stream.empty,
+        subscribeChanges: Effect.acquireRelease(PubSub.unbounded<void>(), PubSub.shutdown).pipe(
+          Effect.flatMap(PubSub.subscribe),
+        ),
+      }),
     ),
     NodeServices.layer,
   ),

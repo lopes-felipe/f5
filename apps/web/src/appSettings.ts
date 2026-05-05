@@ -2,6 +2,7 @@ import { useCallback } from "react";
 import { Option, Schema } from "effect";
 import {
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  ProviderInstanceId,
   ProviderKind as ProviderKindSchema,
   TrimmedNonEmptyString,
   type ProviderKind,
@@ -65,6 +66,8 @@ const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
   claudeAgent: new Set(getModelOptions("claudeAgent").map((option) => option.slug)),
+  cursor: new Set(getModelOptions("cursor").map((option) => option.slug)),
+  opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
 };
 
 type PersistedAppSettingsValue = Record<string, unknown> & {
@@ -72,6 +75,8 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly showProviderRuntimeMetadata?: boolean;
   readonly onboardingLiteStatus?: unknown;
   readonly favoriteModels?: unknown;
+  readonly favorites?: unknown;
+  readonly providerModelPreferences?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -166,6 +171,25 @@ export const AppSettingsSchema = Schema.Struct({
   favoriteModels: Schema.Array(FavoriteModelSchema).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
     Schema.withDecodingDefault(() => []),
+  ),
+  favorites: Schema.Array(
+    Schema.Struct({
+      provider: ProviderInstanceId,
+      model: TrimmedNonEmptyString,
+    }),
+  ).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+    Schema.withDecodingDefault(() => []),
+  ),
+  providerModelPreferences: Schema.Record(
+    ProviderInstanceId,
+    Schema.Struct({
+      hiddenModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+      modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+    }),
+  ).pipe(
+    Schema.withConstructorDefault(() => Option.some({})),
+    Schema.withDecodingDefault(() => ({})),
   ),
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
@@ -283,7 +307,9 @@ function normalizeClaudeProjectSettingsRecord(
 }
 
 function normalizeFavoriteProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" || value === "claudeAgent" ? value : null;
+  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+    ? value
+    : null;
 }
 
 export function normalizeFavoriteModels(value: unknown): FavoriteModel[] {

@@ -664,6 +664,9 @@ function compactRuntimeConfiguredPayload(
     ...(payload.sessionId ? { sessionId: payload.sessionId } : {}),
     ...(payload.fastModeState ? { fastModeState: payload.fastModeState } : {}),
     ...(payload.effort ? { effort: payload.effort } : {}),
+    ...(payload.reasoning ? { reasoning: payload.reasoning } : {}),
+    ...(payload.contextWindow ? { contextWindow: payload.contextWindow } : {}),
+    ...(payload.thinkingState ? { thinkingState: payload.thinkingState } : {}),
     ...(payload.outputStyle ? { outputStyle: payload.outputStyle } : {}),
     ...(payload.instructionContractVersion
       ? { instructionContractVersion: payload.instructionContractVersion }
@@ -819,6 +822,19 @@ export function readRuntimeConfiguredPayload(
       : {}),
     ...(readConfiguredValue(record.effort, config?.effort)
       ? { effort: readConfiguredValue(record.effort, config?.effort)! }
+      : {}),
+    ...(readConfiguredValue(record.reasoning, config?.reasoning)
+      ? { reasoning: readConfiguredValue(record.reasoning, config?.reasoning)! }
+      : {}),
+    ...(readConfiguredValue(record.contextWindow, config?.context_window)
+      ? {
+          contextWindow: readConfiguredValue(record.contextWindow, config?.context_window)!,
+        }
+      : {}),
+    ...(readConfiguredValue(record.thinkingState, config?.thinking_state)
+      ? {
+          thinkingState: readConfiguredValue(record.thinkingState, config?.thinking_state)!,
+        }
       : {}),
     ...(readConfiguredValue(record.outputStyle, config?.output_style)
       ? {

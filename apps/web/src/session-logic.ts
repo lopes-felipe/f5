@@ -32,7 +32,7 @@ import {
 import { compareCommandExecutions } from "./lib/commandExecutions";
 import type { RuntimeWarningVisibility } from "./appSettings";
 
-export type ProviderPickerKind = ProviderKind | "cursor";
+export type ProviderPickerKind = ProviderKind;
 
 export const PROVIDER_OPTIONS: Array<{
   value: ProviderPickerKind;
@@ -41,7 +41,8 @@ export const PROVIDER_OPTIONS: Array<{
 }> = [
   { value: "codex", label: "Codex", available: true },
   { value: "claudeAgent", label: "Claude", available: true },
-  { value: "cursor", label: "Cursor", available: false },
+  { value: "cursor", label: "Cursor", available: true },
+  { value: "opencode", label: "OpenCode", available: true },
 ];
 
 export interface WorkLogEntry {

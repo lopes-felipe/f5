@@ -655,4 +655,26 @@ describe("orchestrationActivityPayload", () => {
       ],
     });
   });
+
+  it("reads Cursor runtime model option fields", () => {
+    expect(
+      readRuntimeConfiguredPayload({
+        config: {
+          model: "composer-2",
+          reasoning: "high",
+          context_window: "200k",
+          fast_mode_state: "on",
+          thinking_state: "off",
+          session_id: "cursor-session-1",
+        },
+      }),
+    ).toEqual({
+      model: "composer-2",
+      reasoning: "high",
+      contextWindow: "200k",
+      fastModeState: "on",
+      thinkingState: "off",
+      sessionId: "cursor-session-1",
+    });
+  });
 });

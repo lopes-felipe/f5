@@ -5,6 +5,7 @@ import {
   MessageId,
   PlanningWorkflowId,
   ProjectId,
+  ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vitest";
@@ -285,7 +286,15 @@ describe("decider project scripts", () => {
           },
           provider: "codex",
           model: "gpt-5.3-codex",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
           titleGenerationModel: "gpt-5.3-codex",
+          titleGenerationModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.3-codex",
+          },
           titleSourceText: "",
           modelOptions: {
             codex: {
@@ -317,7 +326,15 @@ describe("decider project scripts", () => {
       messageId: asMessageId("message-user-1"),
       provider: "codex",
       model: "gpt-5.3-codex",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.3-codex",
+      },
       titleGenerationModel: "gpt-5.3-codex",
+      titleGenerationModelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.3-codex",
+      },
       titleSourceText: "",
       modelOptions: {
         codex: {

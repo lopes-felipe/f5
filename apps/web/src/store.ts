@@ -956,6 +956,7 @@ function buildThreadFromReadModel(
     existing.projectId === thread.projectId &&
     existing.title === thread.title &&
     existing.model === model &&
+    areUnknownEqual(existing.modelSelection ?? null, thread.modelSelection ?? null) &&
     existing.runtimeMode === thread.runtimeMode &&
     existing.interactionMode === thread.interactionMode &&
     existing.session === session &&
@@ -992,6 +993,7 @@ function buildThreadFromReadModel(
     projectId: thread.projectId,
     title: thread.title,
     model,
+    ...(thread.modelSelection !== undefined ? { modelSelection: thread.modelSelection } : {}),
     runtimeMode: thread.runtimeMode,
     interactionMode: thread.interactionMode,
     session,

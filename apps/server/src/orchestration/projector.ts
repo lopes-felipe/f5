@@ -1,6 +1,7 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import {
   CodeReviewWorkflow,
+  isKnownProviderKind,
   PlanningWorkflow,
   OrchestrationCheckpointSummary,
   OrchestrationMessage,
@@ -93,9 +94,9 @@ function totalMessageCharacters(messages: ReadonlyArray<OrchestrationMessage>): 
 
 function threadProviderName(
   thread: Pick<OrchestrationThread, "session"> | null | undefined,
-): "codex" | "claudeAgent" | undefined {
+): "codex" | "claudeAgent" | "cursor" | "opencode" | undefined {
   const providerName = thread?.session?.providerName;
-  return providerName === "codex" || providerName === "claudeAgent" ? providerName : undefined;
+  return isKnownProviderKind(providerName) ? providerName : undefined;
 }
 
 function updateThread(

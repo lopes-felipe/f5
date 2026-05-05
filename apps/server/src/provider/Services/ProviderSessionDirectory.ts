@@ -1,5 +1,6 @@
 import type {
   ProjectId,
+  ProviderInstanceId,
   ProviderKind,
   ProviderSessionRuntimeStatus,
   RuntimeMode,
@@ -17,6 +18,7 @@ export interface ProviderRuntimeBinding {
   readonly threadId: ThreadId;
   readonly projectId?: ProjectId | null;
   readonly provider: ProviderKind;
+  readonly providerInstanceId?: ProviderInstanceId | null;
   readonly adapterKey?: string;
   readonly status?: ProviderSessionRuntimeStatus;
   readonly mcpEffectiveConfigVersion?: string | null;

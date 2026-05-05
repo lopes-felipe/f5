@@ -30,13 +30,17 @@ import {
   type ProviderCliCommandResult as CommandResult,
   runClaudeCliCommand as runClaudeCommand,
   runCodexCliCommand as runCodexCommand,
+  runProviderCliCommand,
 } from "../providerCli.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
 export const AUTH_TIMEOUT_MS = 10_000;
 const PROVIDER_HEALTH_CACHE_TTL_MS = 15_000;
 const CODEX_PROVIDER = "codex" as const;
 const CLAUDE_AGENT_PROVIDER = "claudeAgent" as const;
+const CURSOR_PROVIDER = "cursor" as const;
+const OPENCODE_PROVIDER = "opencode" as const;
 
 export type ProviderPreflightStatus = ServerProviderStatus & {
   readonly failureReason?: HarnessValidationFailureKind;
@@ -710,6 +714,54 @@ export const checkClaudeProviderStatus: Effect.Effect<
   ChildProcessSpawner.ChildProcessSpawner
 > = checkClaudeProviderPreflight().pipe(Effect.map(stripFailureReason));
 
+function checkGenericCliProviderStatus(input: {
+  readonly provider: typeof CURSOR_PROVIDER | typeof OPENCODE_PROVIDER;
+  readonly binaryPath: string;
+  readonly enabled: boolean;
+}): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> {
+  const checkedAt = new Date().toISOString();
+  if (!input.enabled) {
+    return Effect.succeed({
+      provider: input.provider,
+      status: "warning",
+      available: false,
+      authStatus: "unknown",
+      checkedAt,
+      message: "Provider is disabled in settings.",
+    });
+  }
+  return runProviderCliCommand(input.binaryPath, ["--version"], {
+    binaryPath: input.binaryPath,
+  }).pipe(
+    Effect.map((result) => {
+      const version = parseSimpleCommandVersion(result.stdout, result.stderr);
+      return {
+        provider: input.provider,
+        status: result.code === 0 ? "ready" : "error",
+        available: result.code === 0,
+        authStatus: "unknown",
+        checkedAt,
+        ...(version ? { version } : {}),
+        ...(result.code === 0
+          ? {}
+          : { message: `${input.binaryPath} --version exited ${result.code}.` }),
+      } satisfies ServerProviderStatus;
+    }),
+    Effect.catch((cause) =>
+      Effect.succeed({
+        provider: input.provider,
+        status: "error",
+        available: false,
+        authStatus: "unknown",
+        checkedAt,
+        message: isCommandMissingCause(cause, input.binaryPath)
+          ? `${input.binaryPath} CLI not found.`
+          : `Failed to probe ${input.binaryPath}.`,
+      } satisfies ServerProviderStatus),
+    ),
+  );
+}
+
 // ── Layer ───────────────────────────────────────────────────────────
 
 export const ProviderHealthLive = Layer.effect(
@@ -718,23 +770,43 @@ export const ProviderHealthLive = Layer.effect(
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const serverSettings = yield* ServerSettingsService;
     const statusCache = yield* Effect.sync(() => ({
       value: null as ReadonlyArray<ServerProviderStatus> | null,
       checkedAtMs: 0,
     })).pipe(Effect.flatMap(Ref.make));
 
-    const computeStatuses = Effect.all(
-      [
-        checkCodexProviderStatus.pipe(
-          Effect.provideService(FileSystem.FileSystem, fileSystem),
-          Effect.provideService(Path.Path, path),
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+    const computeStatuses = serverSettings.getSettings.pipe(
+      Effect.orDie,
+      Effect.flatMap((settings) =>
+        Effect.all(
+          [
+            checkCodexProviderStatus.pipe(
+              Effect.provideService(FileSystem.FileSystem, fileSystem),
+              Effect.provideService(Path.Path, path),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            ),
+            checkClaudeProviderStatus.pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            ),
+            checkGenericCliProviderStatus({
+              provider: CURSOR_PROVIDER,
+              binaryPath: settings.providers.cursor.binaryPath,
+              enabled: settings.providers.cursor.enabled,
+            }).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            ),
+            checkGenericCliProviderStatus({
+              provider: OPENCODE_PROVIDER,
+              binaryPath: settings.providers.opencode.binaryPath,
+              enabled: settings.providers.opencode.enabled,
+            }).pipe(
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+            ),
+          ],
+          { concurrency: 4 },
         ),
-        checkClaudeProviderStatus.pipe(
-          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-        ),
-      ],
-      { concurrency: 2 },
+      ),
     );
 
     return {

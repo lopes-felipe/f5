@@ -1,32 +1,42 @@
-import { type ProviderKind, type ServerProviderStatus } from "@t3tools/contracts";
+import {
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  type ProviderKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import { ClaudeAI, CursorIcon, Gemini, Icon, OpenAI, OpenCodeIcon } from "../Icons";
 import { PROVIDER_OPTIONS, type ProviderPickerKind } from "../../session-logic";
 
-export type ModelPickerModelOption = {
+export type ModelEsque = {
   slug: string;
   name: string;
   shortName?: string | undefined;
   subProvider?: string | undefined;
 };
+export type ModelPickerModelOption = ModelEsque;
 
 export const PROVIDER_LABEL_BY_PROVIDER: Record<ProviderKind, string> = {
   codex: "Codex",
   claudeAgent: "Claude",
+  cursor: "Cursor",
+  opencode: "OpenCode",
 };
 
-export const PROVIDER_ICON_BY_PROVIDER: Record<ProviderKind, Icon> = {
-  codex: OpenAI,
-  claudeAgent: ClaudeAI,
+export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
+  [ProviderDriverKind.make("codex")]: OpenAI,
+  [ProviderDriverKind.make("claudeAgent")]: ClaudeAI,
+  [ProviderDriverKind.make("cursor")]: CursorIcon,
+  [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
 };
 
 export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
   codex: OpenAI,
   claudeAgent: ClaudeAI,
   cursor: CursorIcon,
+  opencode: OpenCodeIcon,
 };
 
 export const COMING_SOON_PROVIDER_OPTIONS = [
-  { id: "opencode", label: "OpenCode", icon: OpenCodeIcon },
   { id: "gemini", label: "Gemini", icon: Gemini },
 ] as const;
 
@@ -46,31 +56,44 @@ export function providerIconClassName(provider: ProviderKind | ProviderPickerKin
 }
 
 export function findProviderStatus(
-  providers: ReadonlyArray<ServerProviderStatus> | undefined,
+  providers: ReadonlyArray<ServerProvider> | undefined,
   providerKind: ProviderKind,
-): ServerProviderStatus | null {
-  return providers?.find((provider) => provider.provider === providerKind) ?? null;
+): ServerProvider | null {
+  const driverKind = ProviderDriverKind.make(providerKind);
+  const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
+  return (
+    providers?.find((provider) => provider.instanceId === defaultInstanceId) ??
+    providers?.find((provider) => provider.driver === driverKind) ??
+    null
+  );
 }
 
-export function isProviderSelectable(status: ServerProviderStatus | null): boolean {
-  return !status || (status.available && status.status !== "error");
+export function isProviderSelectable(status: ServerProvider | null): boolean {
+  return (
+    !status ||
+    (status.enabled &&
+      status.availability !== "unavailable" &&
+      status.status !== "error" &&
+      status.status !== "disabled")
+  );
 }
 
-export function providerDisabledReason(status: ServerProviderStatus | null): string | null {
+export function providerDisabledReason(status: ServerProvider | null): string | null {
   if (isProviderSelectable(status)) {
     return null;
   }
-  return status?.message ?? "Provider unavailable";
+  return status?.message ?? status?.unavailableReason ?? "Provider unavailable";
 }
 
-export function describeProviderStatus(label: string, status: ServerProviderStatus | null): string {
+export function describeProviderStatus(label: string, status: ServerProvider | null): string {
   if (!status) {
     return label;
   }
   if (isProviderSelectable(status)) {
     return status.message ? `${label}. ${status.message}` : label;
   }
-  return status.message ? `${label}. ${status.message}` : `${label} is unavailable.`;
+  const message = status.message ?? status.unavailableReason;
+  return message ? `${label}. ${message}` : `${label} is unavailable.`;
 }
 
 export function getProviderLabel(provider: ProviderKind, model?: ModelPickerModelOption): string {

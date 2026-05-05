@@ -10,6 +10,7 @@ import { render } from "vitest-browser-react";
 import { parsePersistedAppSettings } from "../appSettings";
 import { getRouter } from "../router";
 import { useStore } from "../store";
+import { createTestServerProvider } from "../testServerProvider";
 
 vi.mock("../components/CommandPalette", () => ({
   CommandPalette: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -184,15 +185,7 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
     keybindings: [],
     issues: [],
-    providers: [
-      {
-        provider: "codex",
-        status: "ready",
-        available: true,
-        authStatus: "authenticated",
-        checkedAt: NOW_ISO,
-      },
-    ],
+    providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
     ...options?.serverConfig,
   };

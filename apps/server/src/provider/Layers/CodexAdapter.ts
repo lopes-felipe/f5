@@ -1509,7 +1509,7 @@ function mapToRuntimeEvents(
   return [];
 }
 
-const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
+export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const serverConfig = yield* Effect.service(ServerConfig);

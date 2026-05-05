@@ -2,7 +2,7 @@ import {
   type ModelSlug,
   type ProviderKind,
   type ResolvedKeybindingsConfig,
-  type ServerProviderStatus,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -47,7 +47,13 @@ function parseModelKey(value: string): { providerKind: ProviderKind; modelId: st
   }
   const providerKind = value.slice(0, separatorIndex);
   const modelId = value.slice(separatorIndex + 1);
-  if ((providerKind !== "codex" && providerKind !== "claudeAgent") || !modelId) {
+  if (
+    (providerKind !== "codex" &&
+      providerKind !== "claudeAgent" &&
+      providerKind !== "cursor" &&
+      providerKind !== "opencode") ||
+    !modelId
+  ) {
     return null;
   }
   return { providerKind, modelId };
@@ -57,7 +63,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   provider: ProviderKind;
   model: string;
   lockedProvider: ProviderKind | null;
-  providers?: ReadonlyArray<ServerProviderStatus> | undefined;
+  providers?: ReadonlyArray<ServerProvider> | undefined;
   keybindings?: ResolvedKeybindingsConfig | undefined;
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
   terminalOpen: boolean;

@@ -1,8 +1,19 @@
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  defaultInstanceIdForDriver,
+  ProviderDriverKind,
+  type ProviderInstanceConfig,
+  type ProviderInstanceId,
   type ProviderKind,
+  type ServerProvider,
+  type ServerSettings,
 } from "@t3tools/contracts";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
+import { Equal } from "effect";
+import { PlusIcon, RotateCwIcon } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
 
 import {
   buildAppSettingsPatch,
@@ -16,9 +27,16 @@ import {
   patchCustomModels,
 } from "../useSettingsRouteState";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
+import { useSettings as useUnifiedSettings, useUpdateSettings } from "../../../hooks/useSettings";
+import { serverConfigQueryOptions, serverQueryKeys } from "../../../lib/serverReactQuery";
+import { ensureNativeApi } from "../../../nativeApi";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
+import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
+import { ProviderInstanceCard } from "../ProviderInstanceCard";
+import { getDriverOption } from "../providerDriverMeta";
+import { buildProviderInstanceUpdatePatch } from "../SettingsPanels.logic";
 
 const MODEL_PROVIDER_SETTINGS: Array<{
   provider: ProviderKind;
@@ -45,6 +63,36 @@ const MODEL_PROVIDER_SETTINGS: Array<{
 
 const CODEX_OVERRIDE_KEYS = ["codexBinaryPath", "codexHomePath"] as const;
 const GIT_KEYS = ["textGenerationModel"] as const;
+const BUILT_IN_PROVIDER_DRIVERS = [
+  ProviderDriverKind.make("codex"),
+  ProviderDriverKind.make("claudeAgent"),
+  ProviderDriverKind.make("cursor"),
+  ProviderDriverKind.make("opencode"),
+] as const;
+
+function withoutProviderInstanceKey<V>(
+  record: Readonly<Record<ProviderInstanceId, V>> | undefined,
+  key: ProviderInstanceId,
+): Record<ProviderInstanceId, V> {
+  const next = { ...record } as Record<ProviderInstanceId, V>;
+  delete next[key];
+  return next;
+}
+
+function withoutProviderInstanceFavorites(
+  favorites: ReadonlyArray<{ readonly provider: ProviderInstanceId; readonly model: string }>,
+  instanceId: ProviderInstanceId,
+) {
+  return favorites.filter((favorite) => favorite.provider !== instanceId);
+}
+
+interface ProviderInstanceRow {
+  readonly instanceId: ProviderInstanceId;
+  readonly instance: ProviderInstanceConfig;
+  readonly driver: ProviderDriverKind;
+  readonly isDefault: boolean;
+  readonly isDirty?: boolean;
+}
 
 export function ProvidersSettings() {
   const {
@@ -61,6 +109,14 @@ export function ProvidersSettings() {
     gitTextGenerationModelOptions,
     selectedGitTextGenerationModelLabel,
   } = useSettingsRouteContext();
+  const unifiedSettings = useUnifiedSettings();
+  const { updateSettings: updateUnifiedSettings } = useUpdateSettings();
+  const queryClient = useQueryClient();
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const liveProviders = serverConfigQuery.data?.providers ?? [];
+  const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
+  const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
+  const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const favoriteModelRows = settings.favoriteModels.map((favorite) => {
     const customModels = getCustomModelsForProvider(settings, favorite.providerKind);
     const option = getAppModelOptions(favorite.providerKind, customModels, favorite.modelId).find(
@@ -80,9 +136,305 @@ export function ProvidersSettings() {
       ),
     });
   };
+  const instancesByDriver = new Map<
+    ProviderDriverKind,
+    Array<[ProviderInstanceId, ProviderInstanceConfig]>
+  >();
+  for (const [rawId, instance] of Object.entries(unifiedSettings.providerInstances ?? {})) {
+    const driver = instance.driver;
+    const list = instancesByDriver.get(driver) ?? [];
+    list.push([rawId as ProviderInstanceId, instance]);
+    instancesByDriver.set(driver, list);
+  }
+
+  const providerInstanceRows: ProviderInstanceRow[] = [];
+  const visibleDriverKinds = new Set<ProviderDriverKind>(BUILT_IN_PROVIDER_DRIVERS);
+  for (const driver of BUILT_IN_PROVIDER_DRIVERS) {
+    type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
+    const legacyProviders = unifiedSettings.providers as Record<string, LegacyProviderSettings>;
+    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
+      string,
+      LegacyProviderSettings
+    >;
+    const defaultInstanceId = defaultInstanceIdForDriver(driver);
+    const explicitInstance = unifiedSettings.providerInstances?.[defaultInstanceId];
+    const legacyConfig = legacyProviders[driver]!;
+    const defaultLegacyConfig = defaultLegacyProviders[driver]!;
+    const effectiveInstance: ProviderInstanceConfig =
+      explicitInstance ??
+      ({
+        driver,
+        enabled: legacyConfig.enabled,
+        config: legacyConfig,
+      } satisfies ProviderInstanceConfig);
+    providerInstanceRows.push({
+      instanceId: defaultInstanceId,
+      instance: effectiveInstance,
+      driver,
+      isDefault: true,
+      isDirty: explicitInstance !== undefined || !Equal.equals(legacyConfig, defaultLegacyConfig),
+    });
+    for (const [id, instance] of instancesByDriver.get(driver) ?? []) {
+      if (id === defaultInstanceId) continue;
+      providerInstanceRows.push({
+        instanceId: id,
+        instance,
+        driver: instance.driver,
+        isDefault: false,
+      });
+    }
+  }
+  for (const [driver, list] of instancesByDriver) {
+    if (visibleDriverKinds.has(driver)) continue;
+    for (const [id, instance] of list) {
+      providerInstanceRows.push({
+        instanceId: id,
+        instance,
+        driver: instance.driver,
+        isDefault: false,
+      });
+    }
+  }
+
+  const lastCheckedAt =
+    liveProviders.length > 0
+      ? liveProviders.reduce(
+          (latest, provider) => (provider.checkedAt > latest ? provider.checkedAt : latest),
+          liveProviders[0]!.checkedAt,
+        )
+      : null;
+
+  const updateProviderInstance = (
+    row: ProviderInstanceRow,
+    next: ProviderInstanceConfig,
+    options?: {
+      readonly textGenerationModelSelection?: ServerSettings["textGenerationModelSelection"];
+    },
+  ) => {
+    updateUnifiedSettings(
+      buildProviderInstanceUpdatePatch({
+        settings: unifiedSettings,
+        instanceId: row.instanceId,
+        instance: next,
+        driver: row.driver,
+        isDefault: row.isDefault,
+        textGenerationModelSelection: options?.textGenerationModelSelection,
+      }),
+    );
+  };
+
+  const deleteProviderInstance = (id: ProviderInstanceId) => {
+    updateUnifiedSettings({
+      providerInstances: withoutProviderInstanceKey(unifiedSettings.providerInstances, id),
+      providerModelPreferences: withoutProviderInstanceKey(
+        unifiedSettings.providerModelPreferences,
+        id,
+      ),
+      favorites: withoutProviderInstanceFavorites(unifiedSettings.favorites ?? [], id),
+    });
+  };
+
+  const updateProviderModelPreferences = (
+    instanceId: ProviderInstanceId,
+    next: {
+      readonly hiddenModels: ReadonlyArray<string>;
+      readonly modelOrder: ReadonlyArray<string>;
+    },
+  ) => {
+    const hiddenModels = [...new Set(next.hiddenModels.filter((slug) => slug.trim().length > 0))];
+    const modelOrder = [...new Set(next.modelOrder.filter((slug) => slug.trim().length > 0))];
+    const rest = withoutProviderInstanceKey(unifiedSettings.providerModelPreferences, instanceId);
+    updateUnifiedSettings({
+      providerModelPreferences:
+        hiddenModels.length === 0 && modelOrder.length === 0
+          ? rest
+          : {
+              ...rest,
+              [instanceId]: {
+                hiddenModels,
+                modelOrder,
+              },
+            },
+    });
+  };
+
+  const updateProviderFavoriteModels = (
+    instanceId: ProviderInstanceId,
+    nextFavoriteModels: ReadonlyArray<string>,
+  ) => {
+    const favoriteModels = [
+      ...new Set(nextFavoriteModels.map((slug) => slug.trim()).filter((slug) => slug.length > 0)),
+    ];
+    updateUnifiedSettings({
+      favorites: [
+        ...withoutProviderInstanceFavorites(unifiedSettings.favorites ?? [], instanceId),
+        ...favoriteModels.map((model) => ({ provider: instanceId, model })),
+      ],
+    });
+  };
+
+  const resetDefaultInstance = (driverKind: ProviderDriverKind) => {
+    type LegacyProviderSettings = ServerSettings["providers"][keyof ServerSettings["providers"]];
+    const defaultLegacyProviders = DEFAULT_UNIFIED_SETTINGS.providers as Record<
+      string,
+      LegacyProviderSettings | undefined
+    >;
+    const defaultInstanceId = defaultInstanceIdForDriver(driverKind);
+    const defaultLegacyProvider = defaultLegacyProviders[driverKind];
+    if (defaultLegacyProvider === undefined) return;
+    updateUnifiedSettings({
+      providers: {
+        ...unifiedSettings.providers,
+        [driverKind]: defaultLegacyProvider,
+      } as typeof unifiedSettings.providers,
+      providerInstances: withoutProviderInstanceKey(
+        unifiedSettings.providerInstances,
+        defaultInstanceId,
+      ),
+      providerModelPreferences: withoutProviderInstanceKey(
+        unifiedSettings.providerModelPreferences,
+        defaultInstanceId,
+      ),
+      favorites: withoutProviderInstanceFavorites(
+        unifiedSettings.favorites ?? [],
+        defaultInstanceId,
+      ),
+    });
+  };
+  const refreshProviders = () => {
+    if (isRefreshingProviders) return;
+    setIsRefreshingProviders(true);
+    void ensureNativeApi()
+      .server.refreshProviders()
+      .then(({ providers }) => {
+        queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+          existing ? { ...existing, providers } : existing,
+        );
+      })
+      .catch((error) => {
+        console.warn("Failed to refresh providers", error);
+      })
+      .finally(() => {
+        setIsRefreshingProviders(false);
+      });
+  };
 
   return (
     <>
+      <section className="rounded-2xl border border-border bg-card">
+        <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+          <div>
+            <h2 className="text-sm font-medium text-foreground">Provider instances</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Configure built-in and custom provider instances. Unavailable providers stay visible
+              here and in the picker until their CLI/auth probe passes.
+            </p>
+            {lastCheckedAt ? (
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Last checked: <code>{lastCheckedAt}</code>
+              </p>
+            ) : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={refreshProviders}
+              disabled={isRefreshingProviders || serverConfigQuery.isFetching}
+            >
+              <RotateCwIcon className={`size-3 ${isRefreshingProviders ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+            <Button size="xs" onClick={() => setIsAddInstanceDialogOpen(true)}>
+              <PlusIcon className="size-3" />
+              Add
+            </Button>
+          </div>
+        </div>
+
+        <div>
+          {providerInstanceRows.map((row) => {
+            const driverOption = getDriverOption(row.driver);
+            const liveProvider: ServerProvider | undefined = liveProviders.find(
+              (candidate) => candidate.instanceId === row.instanceId,
+            );
+            const modelPreferences = unifiedSettings.providerModelPreferences?.[row.instanceId] ?? {
+              hiddenModels: [],
+              modelOrder: [],
+            };
+            const favoriteModels = (unifiedSettings.favorites ?? [])
+              .filter((favorite) => favorite.provider === row.instanceId)
+              .map((favorite) => favorite.model);
+            const resetLabel = driverOption?.label ?? String(row.driver);
+            return (
+              <ProviderInstanceCard
+                key={row.instanceId}
+                instanceId={row.instanceId}
+                instance={row.instance}
+                driverOption={driverOption}
+                liveProvider={liveProvider}
+                isExpanded={openInstanceDetails[row.instanceId] ?? false}
+                onExpandedChange={(open) =>
+                  setOpenInstanceDetails((existing) => ({
+                    ...existing,
+                    [row.instanceId]: open,
+                  }))
+                }
+                onUpdate={(next) => {
+                  const wasEnabled = row.instance.enabled ?? true;
+                  const isDisabling = next.enabled === false && wasEnabled;
+                  const shouldClearTextGen =
+                    isDisabling &&
+                    unifiedSettings.textGenerationModelSelection.instanceId === row.instanceId;
+                  updateProviderInstance(
+                    row,
+                    next,
+                    shouldClearTextGen
+                      ? {
+                          textGenerationModelSelection:
+                            DEFAULT_UNIFIED_SETTINGS.textGenerationModelSelection,
+                        }
+                      : undefined,
+                  );
+                }}
+                onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+                headerAction={
+                  row.isDefault && row.isDirty ? (
+                    <Button
+                      size="icon-xs"
+                      variant="ghost"
+                      className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                      onClick={() => resetDefaultInstance(row.driver)}
+                      aria-label={`Reset ${resetLabel} provider settings`}
+                    >
+                      <RotateCwIcon className="size-3" />
+                    </Button>
+                  ) : null
+                }
+                hiddenModels={modelPreferences.hiddenModels}
+                favoriteModels={favoriteModels}
+                modelOrder={modelPreferences.modelOrder}
+                onHiddenModelsChange={(hiddenModels) =>
+                  updateProviderModelPreferences(row.instanceId, {
+                    ...modelPreferences,
+                    hiddenModels,
+                  })
+                }
+                onFavoriteModelsChange={(nextFavoriteModels) =>
+                  updateProviderFavoriteModels(row.instanceId, nextFavoriteModels)
+                }
+                onModelOrderChange={(modelOrder) =>
+                  updateProviderModelPreferences(row.instanceId, {
+                    ...modelPreferences,
+                    modelOrder,
+                  })
+                }
+              />
+            );
+          })}
+        </div>
+      </section>
+
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Codex App Server</h2>
@@ -483,6 +835,11 @@ export function ProvidersSettings() {
           </div>
         ) : null}
       </section>
+
+      <AddProviderInstanceDialog
+        open={isAddInstanceDialogOpen}
+        onOpenChange={setIsAddInstanceDialogOpen}
+      />
     </>
   );
 }

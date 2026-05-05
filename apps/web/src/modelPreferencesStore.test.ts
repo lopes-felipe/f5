@@ -201,6 +201,27 @@ describe("modelPreferencesStore", () => {
     });
   });
 
+  it("round-trips Cursor runtime settings", () => {
+    const store = useModelPreferencesStore.getState();
+    store.setLastModel("cursor", "composer-2");
+    store.setLastModelOptions("cursor", {
+      cursor: { fastMode: false, thinking: false, reasoning: "high", contextWindow: "200k" },
+    });
+
+    const persistApi = getPersistApi();
+    const persistedState = persistApi.getOptions().partialize(useModelPreferencesStore.getState());
+    const mergedState = persistApi
+      .getOptions()
+      .merge(persistedState, useModelPreferencesStore.getInitialState());
+
+    expect(mergedState.lastModelByProvider).toEqual({
+      cursor: "composer-2",
+    });
+    expect(mergedState.lastModelOptions).toEqual({
+      cursor: { fastMode: false, thinking: false, reasoning: "high", contextWindow: "200k" },
+    });
+  });
+
   it("drops corrupted persisted state back to safe defaults", () => {
     const persistApi = getPersistApi();
     const mergedState = persistApi.getOptions().merge(

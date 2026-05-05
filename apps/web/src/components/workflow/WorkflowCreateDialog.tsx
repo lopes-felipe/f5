@@ -307,13 +307,16 @@ function getSingleProviderModelOptions(
   provider: ProviderKind,
   modelOptions: ProviderModelOptions | null | undefined,
 ): ProviderModelOptions | undefined {
-  const providerModelOptions = modelOptions?.[provider];
-  if (!providerModelOptions) {
-    return undefined;
+  switch (provider) {
+    case "codex":
+      return modelOptions?.codex ? { codex: modelOptions.codex } : undefined;
+    case "claudeAgent":
+      return modelOptions?.claudeAgent ? { claudeAgent: modelOptions.claudeAgent } : undefined;
+    case "cursor":
+      return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
+    case "opencode":
+      return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
   }
-  return provider === "codex"
-    ? { codex: providerModelOptions }
-    : { claudeAgent: providerModelOptions };
 }
 
 function getWorkflowSlotDefaults(
@@ -418,7 +421,11 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const resolveWorkflowModelSelection = (provider: ProviderKind, model: string): ModelSlug =>
     resolveAppModelSelection(
       provider,
-      provider === "codex" ? settings.customCodexModels : settings.customClaudeModels,
+      provider === "codex"
+        ? settings.customCodexModels
+        : provider === "claudeAgent"
+          ? settings.customClaudeModels
+          : [],
       model,
     ) as ModelSlug;
 

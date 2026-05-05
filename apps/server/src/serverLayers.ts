@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Layer, Path } from "effect";
+import { Effect, FileSystem, Layer, Path, PlatformError } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
@@ -26,16 +26,21 @@ import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus"
 import { CodeReviewWorkflowServiceLive } from "./orchestration/Layers/CodeReviewWorkflowService";
 import { WorkflowServiceLive } from "./orchestration/Layers/WorkflowService";
 import { ProviderUnsupportedError } from "./provider/Errors";
-import { makeClaudeAdapterLive } from "./provider/Layers/ClaudeAdapter";
-import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter";
-import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
 import { HarnessValidationLive } from "./provider/Layers/HarnessValidation";
+import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
+import { ProviderEventLoggers } from "./provider/Layers/ProviderEventLoggers";
+import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration";
+import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry";
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper";
 import { HarnessValidation } from "./provider/Services/HarnessValidation";
 import { ProviderService } from "./provider/Services/ProviderService";
+import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
+import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry";
+import { ProviderRegistry } from "./provider/Services/ProviderRegistry";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
+import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
@@ -45,7 +50,7 @@ import { KeybindingsLive } from "./keybindings";
 import { GitManagerLive } from "./git/Layers/GitManager";
 import { GitCoreLive } from "./git/Layers/GitCore";
 import { GitHubCliLive } from "./git/Layers/GitHubCli";
-import { CodexTextGenerationLive } from "./git/Layers/CodexTextGeneration";
+import { TextGenerationLive } from "./git/Layers/TextGenerationLive";
 import { GitServiceLive } from "./git/Layers/GitService";
 import { ObservabilityLive } from "./observability/Layers/Observability";
 import { ProjectSetupScriptRunnerLive } from "./project/Layers/ProjectSetupScriptRunner";
@@ -61,6 +66,8 @@ import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager";
+import { ServerSettingsLive, ServerSettingsService } from "./serverSettings";
+import { SecretStoreError } from "./auth/Services/ServerSecretStore";
 
 type RuntimePtyAdapterLoader = {
   layer: Layer.Layer<PtyAdapter, never, FileSystem.FileSystem | Path.Path>;
@@ -87,8 +94,12 @@ export function makeServerProviderLayer(): Layer.Layer<
   | CodexMcpSyncService
   | CodexOAuthManager
   | McpRuntimeService
-  | ProjectMcpConfigService,
-  ProviderUnsupportedError,
+  | ProjectMcpConfigService
+  | ProviderRegistry
+  | ProviderInstanceRegistry
+  | ProviderAdapterRegistry
+  | ServerSettingsService,
+  ProviderUnsupportedError | PlatformError.PlatformError | SecretStoreError,
   | SqlClient.SqlClient
   | ServerConfig
   | FileSystem.FileSystem
@@ -111,22 +122,27 @@ export function makeServerProviderLayer(): Layer.Layer<
     const projectMcpConfigServiceLayer = ProjectMcpConfigServiceLive.pipe(
       Layer.provide(projectMcpConfigRepositoryLayer),
     );
+    const providerEventLoggersLayer = Layer.succeed(ProviderEventLoggers, {
+      native: nativeEventLogger,
+      canonical: canonicalEventLogger,
+    });
+    const serverSettingsLayer = ServerSettingsLive;
+    const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
+      Layer.provide(serverSettingsLayer),
+      Layer.provide(providerEventLoggersLayer),
+      Layer.provide(OpenCodeRuntimeLive),
+    );
+    const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
+      Layer.provide(providerInstanceRegistryLayer),
+    );
+    const providerRegistryLayer = ProviderRegistryLive.pipe(
+      Layer.provide(providerInstanceRegistryLayer),
+    );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
     const codexControlClientRegistryLayer = CodexControlClientRegistryLive;
     const codexMcpSyncServiceLayer = CodexMcpSyncServiceLive.pipe(
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
-    );
-    const codexAdapterLayer = makeCodexAdapterLive(
-      nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
-    const claudeAdapterLayer = makeClaudeAdapterLive(
-      nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
-    const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
-      Layer.provide(codexAdapterLayer),
-      Layer.provide(claudeAdapterLayer),
-      Layer.provideMerge(providerSessionDirectoryLayer),
     );
     const providerServiceLayer = makeProviderServiceLive(
       canonicalEventLogger ? { canonicalEventLogger } : undefined,
@@ -152,8 +168,12 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
     );
     return Layer.mergeAll(
+      serverSettingsLayer,
       providerServiceLayer,
       harnessValidationLayer,
+      providerInstanceRegistryLayer,
+      adapterRegistryLayer,
+      providerRegistryLayer,
       codexMcpEventBusLayer,
       codexControlClientRegistryLayer,
       codexMcpSyncServiceLayer,
@@ -166,7 +186,7 @@ export function makeServerProviderLayer(): Layer.Layer<
 
 export function makeServerRuntimeServicesLayer() {
   const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
-  const textGenerationLayer = CodexTextGenerationLive;
+  const textGenerationLayer = TextGenerationLive;
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
     Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
@@ -202,7 +222,7 @@ export function makeServerRuntimeServicesLayer() {
 }
 
 export function makeServerOrchestrationRuntimeLayer() {
-  const textGenerationLayer = CodexTextGenerationLive;
+  const textGenerationLayer = TextGenerationLive;
   const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
     Layer.provide(ProviderSessionRuntimeRepositoryLive),
   );

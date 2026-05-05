@@ -1103,6 +1103,18 @@ function runtimeEventToActivities(
         typeof config.effort === "string" && config.effort.trim().length > 0
           ? config.effort.trim()
           : undefined;
+      const reasoning =
+        typeof config.reasoning === "string" && config.reasoning.trim().length > 0
+          ? config.reasoning.trim()
+          : undefined;
+      const contextWindow =
+        typeof config.context_window === "string" && config.context_window.trim().length > 0
+          ? config.context_window.trim()
+          : undefined;
+      const thinkingState =
+        typeof config.thinking_state === "string" && config.thinking_state.trim().length > 0
+          ? config.thinking_state.trim()
+          : undefined;
       const outputStyle =
         typeof config.output_style === "string" && config.output_style.trim().length > 0
           ? config.output_style.trim()
@@ -1127,6 +1139,9 @@ function runtimeEventToActivities(
               ...(sessionId ? { sessionId } : {}),
               ...(fastModeState ? { fastModeState } : {}),
               ...(effort ? { effort } : {}),
+              ...(reasoning ? { reasoning } : {}),
+              ...(contextWindow ? { contextWindow } : {}),
+              ...(thinkingState ? { thinkingState } : {}),
               ...(outputStyle ? { outputStyle } : {}),
               ...(instructionContractVersion ? { instructionContractVersion } : {}),
               ...(instructionSupplementVersion ? { instructionSupplementVersion } : {}),

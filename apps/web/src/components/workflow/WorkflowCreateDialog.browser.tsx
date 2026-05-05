@@ -215,6 +215,8 @@ describe("WorkflowCreateDialog", () => {
         modelOptionsByProvider={{
           codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
           claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          cursor: [{ slug: "auto", name: "Auto" }],
+          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}
@@ -257,6 +259,8 @@ describe("WorkflowCreateDialog", () => {
         modelOptionsByProvider={{
           codex: [{ slug: "gpt-5-codex", name: "GPT-5 Codex" }],
           claudeAgent: [{ slug: "claude-opus-4-7", name: "Claude Opus 4.7" }],
+          cursor: [{ slug: "auto", name: "Auto" }],
+          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
         }}
         onProviderModelChange={() => {}}
         onModelOptionsChange={onModelOptionsChange}

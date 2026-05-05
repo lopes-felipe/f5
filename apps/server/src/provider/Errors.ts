@@ -164,11 +164,29 @@ export type ProviderAdapterError =
   | ProviderAdapterRequestError
   | ProviderAdapterProcessError;
 
+/**
+ * ProviderDriverError - Provider instance driver creation/probe failure.
+ */
+export class ProviderDriverError extends Schema.TaggedErrorClass<ProviderDriverError>()(
+  "ProviderDriverError",
+  {
+    driver: Schema.String,
+    instanceId: Schema.optional(Schema.String),
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {
+  override get message(): string {
+    return `Provider driver '${this.driver}' failed: ${this.detail}`;
+  }
+}
+
 export type ProviderServiceError =
   | ProviderValidationError
   | ProviderValidationBusyError
   | ProviderUnsupportedError
   | ProviderSessionNotFoundError
   | ProviderSessionDirectoryPersistenceError
+  | ProviderDriverError
   | ProviderAdapterError
   | CheckpointServiceError;

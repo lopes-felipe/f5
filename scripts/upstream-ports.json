@@ -226,5 +226,23 @@
     "f5-sha": null,
     "skipped": false,
     "reason": "Already present and covered by workspace search gitignore smoke tests."
+  },
+  "9c64f12ea033eaff8ddb3fb1bdd53b2a2ff24db9": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Ported Cursor ACP support into f5's provider-driver, server settings, runtime event, text-generation, and UI surfaces."
+  },
+  "ce94feeea156e77f465c0330e89c0cb77eb0196f": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Ported OpenCode support with settings-backed probing, runtime cleanup, event mapping, model metadata, and text-generation routing."
+  },
+  "08e6d4cfbfe55af83fe5fb6b9e75364f42f1f22f": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Ported the provider-instance architecture, model-selection persistence/migrations, server-authoritative provider settings, and instance-aware web/provider flows."
   }
 }

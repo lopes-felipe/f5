@@ -1,6 +1,7 @@
 import {
   type EditorId,
   type ProjectScript,
+  type ProviderKind,
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -21,7 +22,7 @@ interface ChatHeaderProps {
   estimatedContextTokens: number | null;
   modelContextWindowTokens: number | null;
   model: string;
-  provider: "codex" | "claudeAgent" | null;
+  provider: ProviderKind | null;
   tokenUsageSource?: "provider" | "estimated" | null | undefined;
   activeProjectName: string | undefined;
   workflowTitle?: string | undefined;
