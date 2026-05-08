@@ -220,6 +220,47 @@ describe("_chat.index onboarding lite", () => {
     });
   });
 
+  it("renders the home startup skeleton until initial startup is ready", async () => {
+    const screen = await renderIndexRoute({
+      settings: { onboardingLiteStatus: "dismissed" },
+      threadsHydrated: false,
+      recoveryEpoch: 0,
+    });
+
+    try {
+      expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeTruthy();
+      expect(document.body.textContent).not.toContain("Planning workflows");
+      expect(document.body.textContent).not.toContain("Add a project to get started.");
+    } finally {
+      screen.queryClient.clear();
+      await screen.screen.unmount();
+    }
+  });
+
+  it("transitions from the home startup skeleton to loaded-empty content", async () => {
+    const screen = await renderIndexRoute({
+      settings: { onboardingLiteStatus: "dismissed" },
+      threadsHydrated: false,
+      recoveryEpoch: 0,
+    });
+
+    try {
+      expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeTruthy();
+
+      useStore.setState({ threadsHydrated: true });
+      useRecoveryStateStore.getState().markRecoveryComplete();
+
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
+        expect(document.body.textContent).toContain("Add a project to get started.");
+      });
+      expect(document.body.textContent).not.toContain("Planning workflows");
+    } finally {
+      screen.queryClient.clear();
+      await screen.screen.unmount();
+    }
+  });
+
   it("shows onboarding for a fresh empty startup and still shows it after reload", async () => {
     const firstRender = await renderIndexRoute();
 
@@ -396,6 +437,7 @@ describe("_chat.index onboarding lite", () => {
     });
 
     try {
+      expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeTruthy();
       expect(document.body.textContent).not.toContain("Planning workflows");
       expect(document.body.textContent).not.toContain("Add a project to get started.");
 
@@ -405,11 +447,11 @@ describe("_chat.index onboarding lite", () => {
       });
 
       await vi.waitFor(() => {
-        expect(document.body.textContent).toContain(
-          "Select a thread or create a new one to get started.",
-        );
+        expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
+        expect(document.body.textContent).toContain("Continue: Thread");
       });
       expect(document.body.textContent).not.toContain("Planning workflows");
+      expect(document.body.textContent).not.toContain("Add a project to get started.");
     } finally {
       screen.queryClient.clear();
       await screen.screen.unmount();

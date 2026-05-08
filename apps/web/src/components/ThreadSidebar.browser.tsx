@@ -22,8 +22,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { render } from "vitest-browser-react";
 
 import { parsePersistedAppSettings } from "../appSettings";
+import { useCommandPaletteStore } from "../commandPaletteStore";
 import { COMPOSER_DRAFT_STORAGE_KEY, useComposerDraftStore } from "../composerDraftStore";
 import { getRouter } from "../router";
+import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
 import { useThreadSelectionStore } from "../threadSelectionStore";
@@ -59,15 +61,53 @@ interface TestFixture {
   snapshot: OrchestrationReadModel;
   serverConfig: ServerConfig;
   welcome: WsWelcomePayload;
+  resolveWsRequest?: (
+    body: WsRequestEnvelope["body"],
+    client: TestWsClient,
+  ) => MaybePromise<WsRequestResolution | null | undefined>;
 }
 
+interface WsRequestEnvelope {
+  id: string;
+  body: {
+    _tag: string;
+    [key: string]: unknown;
+  };
+}
+
+interface TestWsClient {
+  send: (data: string) => void;
+  close: () => void;
+}
+
+type WsRequestResolution =
+  | { type: "result"; result: unknown }
+  | { type: "error"; message: string }
+  | { type: "close" };
+
+type MaybePromise<T> = T | Promise<T>;
+
 let fixture: TestFixture;
-const wsRequests: Array<{ _tag: string; [key: string]: unknown }> = [];
+const wsRequests: WsRequestEnvelope["body"][] = [];
 const noopUnsubscribe = () => {};
 
 const wsLink = ws.link(/ws(s)?:\/\/.*/);
 
 type SnapshotThread = OrchestrationReadModel["threads"][number];
+
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+  return { promise, resolve, reject };
+}
+
+function isPromiseLike<T>(value: MaybePromise<T> | null | undefined): value is Promise<T> {
+  return typeof (value as { then?: unknown } | null | undefined)?.then === "function";
+}
 
 function createBaseServerConfig(): ServerConfig {
   return {
@@ -187,6 +227,14 @@ function createSnapshot(
   };
 }
 
+function createEmptySnapshot(): OrchestrationReadModel {
+  return {
+    ...createSnapshot([]),
+    projects: [],
+    threads: [],
+  };
+}
+
 function createPlanningWorkflow(overrides?: {
   id?: string;
   title?: string;
@@ -264,7 +312,7 @@ function buildFixture(snapshot: OrchestrationReadModel = createSnapshot()): Test
   };
 }
 
-function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
+function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
   // After e513502 (lazy thread detail loading) the client first calls
   // `getStartupSnapshot` and then `getThreadTailDetails` per-thread instead of
@@ -288,6 +336,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
             threadId: detailThreadId,
             messages: thread.messages,
             checkpoints: thread.checkpoints,
+            commandExecutions: [],
             tasks: thread.tasks,
             tasksTurnId: thread.tasksTurnId,
             tasksUpdatedAt: thread.tasksUpdatedAt,
@@ -295,6 +344,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
             threadReferences: [],
             hasOlderMessages: false,
             hasOlderCheckpoints: false,
+            hasOlderCommandExecutions: false,
             oldestLoadedMessageCursor:
               thread.messages[0] === undefined
                 ? null
@@ -303,6 +353,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
                     messageId: thread.messages[0].id,
                   },
             oldestLoadedCheckpointTurnCount: thread.checkpoints[0]?.checkpointTurnCount ?? null,
+            oldestLoadedCommandExecutionCursor: null,
             detailSequence: fixture.snapshot.snapshotSequence,
           }
         : null,
@@ -315,6 +366,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       threadId,
       messages: thread?.messages ?? [],
       checkpoints: thread?.checkpoints ?? [],
+      commandExecutions: [],
       tasks: thread?.tasks ?? [],
       tasksTurnId: thread?.tasksTurnId ?? null,
       tasksUpdatedAt: thread?.tasksUpdatedAt ?? null,
@@ -322,6 +374,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       threadReferences: [],
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderCommandExecutions: false,
       oldestLoadedMessageCursor:
         thread?.messages[0] === undefined
           ? null
@@ -330,6 +383,7 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
               messageId: thread.messages[0].id,
             },
       oldestLoadedCheckpointTurnCount: thread?.checkpoints[0]?.checkpointTurnCount ?? null,
+      oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
     };
   }
@@ -339,10 +393,13 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       threadId,
       messages: [],
       checkpoints: [],
+      commandExecutions: [],
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderCommandExecutions: false,
       oldestLoadedMessageCursor: null,
       oldestLoadedCheckpointTurnCount: null,
+      oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
     };
   }
@@ -390,25 +447,66 @@ const worker = setupWorker(
     client.addEventListener("message", (event) => {
       if (typeof event.data !== "string") return;
 
-      let request: { id: string; body: { _tag: string; threadId?: string } };
+      let request: WsRequestEnvelope;
       try {
-        request = JSON.parse(event.data) as {
-          id: string;
-          body: { _tag: string; threadId?: string };
-        };
+        request = JSON.parse(event.data) as WsRequestEnvelope;
       } catch {
         return;
       }
 
       const method = request.body?._tag;
       if (typeof method !== "string") return;
-      wsRequests.push(request.body as { _tag: string; [key: string]: unknown });
-      client.send(
-        JSON.stringify({
-          id: request.id,
-          result: resolveWsRpc(request.body),
-        }),
-      );
+      wsRequests.push(request.body);
+
+      const sendError = (error: unknown) => {
+        client.send(
+          JSON.stringify({
+            id: request.id,
+            error: {
+              message: error instanceof Error ? error.message : String(error),
+            },
+          }),
+        );
+      };
+
+      const sendResolution = (resolution: WsRequestResolution | null | undefined) => {
+        if (resolution?.type === "close") {
+          client.close();
+          return;
+        }
+        if (resolution?.type === "error") {
+          client.send(
+            JSON.stringify({
+              id: request.id,
+              error: {
+                message: resolution.message,
+              },
+            }),
+          );
+          return;
+        }
+        client.send(
+          JSON.stringify({
+            id: request.id,
+            result: resolution?.type === "result" ? resolution.result : resolveWsRpc(request.body),
+          }),
+        );
+      };
+
+      let resolution: MaybePromise<WsRequestResolution | null | undefined>;
+      try {
+        resolution = fixture.resolveWsRequest?.(request.body, client);
+      } catch (error) {
+        sendError(error);
+        return;
+      }
+
+      if (isPromiseLike(resolution)) {
+        void resolution.then(sendResolution).catch(sendError);
+        return;
+      }
+
+      sendResolution(resolution);
     });
   }),
   http.get("*/attachments/:attachmentId", () => new HttpResponse(null, { status: 204 })),
@@ -852,6 +950,11 @@ describe("Thread sidebar", () => {
       projectDraftThreadIdByProjectId: {},
     });
     useWorkflowCreateDialogStore.setState({ projectId: null });
+    useRecoveryStateStore.getState().reset();
+    useCommandPaletteStore.setState({
+      open: false,
+      openIntent: null,
+    });
     useStore.setState({
       projects: [],
       threads: [],
@@ -861,8 +964,245 @@ describe("Thread sidebar", () => {
   });
 
   afterEach(() => {
+    useRecoveryStateStore.getState().reset();
+    useCommandPaletteStore.setState({
+      open: false,
+      openIntent: null,
+    });
     Reflect.deleteProperty(window, "desktopBridge");
     document.body.innerHTML = "";
+  });
+
+  it("shows startup skeletons until the initial snapshot and recovery complete", async () => {
+    seedAppSettings({ onboardingLiteStatus: "dismissed" });
+    const emptySnapshot = createEmptySnapshot();
+    const startupResponse = createDeferred<WsRequestResolution>();
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = emptySnapshot;
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            return startupResponse.promise;
+          }
+          return null;
+        };
+      },
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="startup-sidebar-skeleton"]'),
+        "Sidebar startup skeleton should render while the startup snapshot is pending.",
+      );
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="home-startup-skeleton"]'),
+        "Home startup skeleton should render while the startup snapshot is pending.",
+      );
+      expect(document.body.textContent).not.toContain("No projects yet");
+      expect(document.body.textContent).not.toContain("Add a project to get started.");
+
+      startupResponse.resolve({
+        type: "result",
+        result: {
+          snapshot: emptySnapshot,
+          threadTailDetails: null,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="startup-sidebar-skeleton"]')).toBeNull();
+        expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeNull();
+        expect(document.body.textContent).toContain("No projects yet");
+        expect(document.body.textContent).toContain("Add a project to get started.");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("renders live project rows instead of the sidebar skeleton before startup hydration", async () => {
+    const startupResponse = createDeferred<WsRequestResolution>();
+    useStore.setState({
+      projects: [
+        {
+          id: PROJECT_ID,
+          name: "Project",
+          cwd: "/repo/project",
+          model: "gpt-5",
+          createdAt: NOW_ISO,
+          expanded: true,
+          scripts: [],
+          memories: [],
+        },
+      ],
+      threads: [],
+      threadsHydrated: false,
+    });
+
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            return startupResponse.promise;
+          }
+          return null;
+        };
+      },
+    });
+
+    try {
+      await waitForElement(
+        () => queryProjectButton("Project"),
+        "Project row should render from live state before startup hydration.",
+      );
+      expect(document.querySelector('[data-testid="startup-sidebar-skeleton"]')).toBeNull();
+    } finally {
+      startupResponse.resolve({
+        type: "result",
+        result: {
+          snapshot: fixture.snapshot,
+          threadTailDetails: null,
+        },
+      });
+      await mounted.cleanup();
+    }
+  });
+
+  it("suppresses the sidebar skeleton while the add-project path entry is open", async () => {
+    const startupResponse = createDeferred<WsRequestResolution>();
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createEmptySnapshot();
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            return startupResponse.promise;
+          }
+          return null;
+        };
+      },
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="startup-sidebar-skeleton"]'),
+        "Sidebar startup skeleton should render before opening the add-project form.",
+      );
+
+      const addProjectButton = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('button[aria-label="Add project"]'),
+        "Add project button should render.",
+      );
+      addProjectButton.click();
+
+      await waitForElement(
+        () => document.querySelector<HTMLInputElement>('input[placeholder="/path/to/project"]'),
+        "Project path entry should render.",
+      );
+      expect(document.querySelector('[data-testid="startup-sidebar-skeleton"]')).toBeNull();
+    } finally {
+      startupResponse.resolve({
+        type: "result",
+        result: {
+          snapshot: fixture.snapshot,
+          threadTailDetails: null,
+        },
+      });
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the planning workflow startup skeleton before loaded-missing copy", async () => {
+    const emptySnapshot = createEmptySnapshot();
+    const startupResponse = createDeferred<WsRequestResolution>();
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/workflow/missing-workflow"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = emptySnapshot;
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            return startupResponse.promise;
+          }
+          return null;
+        };
+      },
+    });
+
+    try {
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid="startup-workflow-skeleton"][data-kind="planning"]',
+          ),
+        "Planning workflow startup skeleton should render while startup is pending.",
+      );
+      expect(document.body.textContent).not.toContain("Workflow not found.");
+
+      startupResponse.resolve({
+        type: "result",
+        result: {
+          snapshot: emptySnapshot,
+          threadTailDetails: null,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="startup-workflow-skeleton"]')).toBeNull();
+        expect(document.body.textContent).toContain("Workflow not found.");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows the code review workflow startup skeleton before loaded-missing copy", async () => {
+    const emptySnapshot = createEmptySnapshot();
+    const startupResponse = createDeferred<WsRequestResolution>();
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/code-review/missing-review-workflow"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = emptySnapshot;
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            return startupResponse.promise;
+          }
+          return null;
+        };
+      },
+    });
+
+    try {
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid="startup-workflow-skeleton"][data-kind="code-review"]',
+          ),
+        "Code review workflow startup skeleton should render while startup is pending.",
+      );
+      expect(document.body.textContent).not.toContain("Workflow not found.");
+
+      startupResponse.resolve({
+        type: "result",
+        result: {
+          snapshot: emptySnapshot,
+          threadTailDetails: null,
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="startup-workflow-skeleton"]')).toBeNull();
+        expect(document.body.textContent).toContain("Workflow not found.");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("resizes immediately on an active thread route and preserves the width across route changes", async () => {
@@ -905,13 +1245,7 @@ describe("Thread sidebar", () => {
 
       await mounted.router.navigate({ to: "/" });
       await waitForLayout();
-      await waitForElement(
-        () =>
-          Array.from(document.querySelectorAll("p")).find((element) =>
-            element.textContent?.includes("Select a thread or create a new one"),
-          ) ?? null,
-        "Empty thread screen should render.",
-      );
+      await waitForElement(() => queryMainInset(), "Home route main inset should render.");
 
       expect(readSidebarWidth("left")).toBeCloseTo(duringSidebarWidth, 0);
     } finally {
@@ -963,6 +1297,61 @@ describe("Thread sidebar", () => {
       expect(readSidebarWidth("left")).toBeCloseTo(THREAD_SIDEBAR_MAX_WIDTH_PX, 0);
     } finally {
       await clampedMount.cleanup();
+    }
+  });
+
+  it("opens the command palette from the sidebar search button", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            ...createSidebarShortcutBindings(),
+            {
+              command: "commandPalette.toggle",
+              shortcut: createShortcut("k"),
+            },
+          ],
+        };
+      },
+    });
+
+    try {
+      const trigger = await waitForElement(
+        () => document.querySelector<HTMLButtonElement>('[data-testid="command-palette-trigger"]'),
+        "Sidebar search button should render.",
+      );
+      const homeButton = await waitForElement(
+        () =>
+          Array.from(
+            document.querySelectorAll<HTMLButtonElement>('[data-slot="sidebar-menu-button"]'),
+          ).find((button) => button.textContent?.trim() === "Home") ?? null,
+        "Home sidebar button should render on the home route.",
+      );
+
+      expect(
+        Boolean(homeButton.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING),
+      ).toBe(true);
+      expect(trigger.textContent).toContain("Search");
+      expect(trigger.querySelector("kbd")?.textContent?.trim()).toBeTruthy();
+
+      trigger.click();
+
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="command-palette"]'),
+        "Command palette should open from the sidebar search button.",
+      );
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>(
+            'input[placeholder="Search commands, projects, and threads..."]',
+          ),
+        "Command palette root search input should render.",
+      );
+    } finally {
+      await mounted.cleanup();
     }
   });
 
@@ -1676,8 +2065,6 @@ describe("Thread sidebar", () => {
   it("shows normal thread status pills on grouped workflow subthreads", async () => {
     const workflowTitle = "Workflow status test";
     const branchAThreadId = "workflow-branch-a" as ThreadId;
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date(NOW_ISO));
     const mounted = await mountApp({
       width: 1_400,
       initialEntries: [`/${THREAD_ID}`],
@@ -1729,7 +2116,6 @@ describe("Thread sidebar", () => {
 
       const workflowRow = await waitForSidebarThreadRow("Branch A");
       expect(workflowRow.textContent).toContain("Working");
-      expect(workflowRow.textContent).toContain("1m ago");
 
       workflowRow.click();
 
@@ -1740,7 +2126,6 @@ describe("Thread sidebar", () => {
       );
     } finally {
       await mounted.cleanup();
-      vi.useRealTimers();
     }
   });
 

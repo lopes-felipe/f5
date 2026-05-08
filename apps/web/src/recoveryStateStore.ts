@@ -4,6 +4,7 @@ interface RecoveryStateStore {
   recoveryEpoch: number;
   lastCompletedAt: string | null;
   markRecoveryComplete: () => void;
+  reset: () => void;
 }
 
 export const useRecoveryStateStore = create<RecoveryStateStore>((set) => ({
@@ -14,4 +15,9 @@ export const useRecoveryStateStore = create<RecoveryStateStore>((set) => ({
       recoveryEpoch: state.recoveryEpoch + 1,
       lastCompletedAt: new Date().toISOString(),
     })),
+  reset: () =>
+    set({
+      recoveryEpoch: 0,
+      lastCompletedAt: null,
+    }),
 }));

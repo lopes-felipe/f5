@@ -275,7 +275,7 @@ import {
   revokeUserMessagePreviewUrls,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
-import { Skeleton } from "./ui/skeleton";
+import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -5142,24 +5142,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                   }
                 />
               ) : (
-                <div className="mx-auto w-full max-w-3xl space-y-4 px-3 py-3 sm:px-5 sm:py-4">
-                  <p className="px-1 text-xs text-muted-foreground">Loading thread details...</p>
-                  <div className="rounded-2xl border border-border/70 bg-card/70 p-4 shadow-sm backdrop-blur-sm">
-                    <div className="space-y-3">
-                      <Skeleton className="h-4 w-28 rounded-full" />
-                      <Skeleton className="h-3 w-full rounded-full" />
-                      <Skeleton className="h-3 w-11/12 rounded-full" />
-                      <Skeleton className="h-3 w-10/12 rounded-full" />
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-border/70 bg-card/70 p-4 shadow-sm backdrop-blur-sm">
-                    <div className="space-y-3">
-                      <Skeleton className="h-4 w-36 rounded-full" />
-                      <Skeleton className="h-3 w-full rounded-full" />
-                      <Skeleton className="h-3 w-8/12 rounded-full" />
-                    </div>
-                  </div>
-                </div>
+                <ThreadDetailsLoadingState testId="chat-thread-details-loading" />
               )}
 
               {/* scroll to bottom pill — shown when user has scrolled away from the bottom */}

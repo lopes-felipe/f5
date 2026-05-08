@@ -23,10 +23,12 @@ import {
 } from "../../appSettings";
 import { useCommandPaletteStore } from "../../commandPaletteStore";
 import { useOnboardingLiteState } from "../../lib/onboardingLite";
+import { useStartupReady } from "../../lib/startupReady";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import { HomeMissionControl } from "../home/HomeMissionControl";
+import { Skeleton } from "../ui/skeleton";
 import { HarnessValidationPanel } from "./HarnessValidationPanel";
 
 type AccentToken = "blue" | "emerald" | "amber" | "violet";
@@ -207,12 +209,52 @@ function DisplayProfileCard({
   );
 }
 
+function HomeStartupSkeleton() {
+  return (
+    <section
+      className="relative mx-auto flex w-full max-w-3xl flex-col gap-8 px-6 py-8"
+      role="status"
+      aria-live="polite"
+      aria-label="Loading workspace"
+      data-testid="home-startup-skeleton"
+    >
+      <span className="sr-only">Loading workspace</span>
+      <header aria-hidden="true" className="flex flex-col items-start gap-3">
+        <Skeleton className="h-7 w-28 rounded-full" />
+        <div className="space-y-3">
+          <Skeleton className="h-10 w-[min(28rem,78vw)] rounded-md md:h-12" />
+          <Skeleton className="h-10 w-[min(20rem,62vw)] rounded-md md:h-12" />
+        </div>
+        <div className="space-y-2">
+          <Skeleton className="h-4 w-[min(34rem,78vw)] rounded-full" />
+          <Skeleton className="h-4 w-[min(24rem,65vw)] rounded-full" />
+        </div>
+      </header>
+      <div aria-hidden="true" className="grid gap-3 sm:grid-cols-2">
+        {[0, 1, 2, 3].map((index) => (
+          <div key={index} className="rounded-lg border border-border bg-background/50 p-5">
+            <div className="mb-4 flex items-center gap-3">
+              <Skeleton className="size-9 rounded-md" />
+              <Skeleton className="h-4 w-32 rounded-full" />
+            </div>
+            <div className="space-y-2">
+              <Skeleton className="h-3 w-full rounded-full" />
+              <Skeleton className="h-3 w-9/12 rounded-full" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function HomeEmptyStatePanel() {
   const { settings, updateSettings } = useAppSettings();
   const { displayProfile, mode, showProfileOverwriteWarning } = useOnboardingLiteState();
+  const startupReady = useStartupReady();
 
-  if (mode === "loading") {
-    return null;
+  if (!startupReady || mode === "loading") {
+    return <HomeStartupSkeleton />;
   }
 
   const selectedDisplayProfile: DisplayProfileName =

@@ -98,6 +98,7 @@ function seedAppSettings(settings: Record<string, unknown> = {}) {
 function seedStores(input?: {
   readonly projects?: ReadonlyArray<Project>;
   readonly threads?: ReadonlyArray<Thread>;
+  readonly threadsHydrated?: boolean;
   readonly recoveryEpoch?: number;
 }) {
   useStore.setState({
@@ -105,7 +106,7 @@ function seedStores(input?: {
     threads: [...(input?.threads ?? [])],
     planningWorkflows: [],
     codeReviewWorkflows: [],
-    threadsHydrated: true,
+    threadsHydrated: input?.threadsHydrated ?? true,
   });
   useComposerDraftStore.setState({
     draftsByThreadId: {},
@@ -543,6 +544,22 @@ describe("HarnessValidationPanel", () => {
     } finally {
       emptyThreadsRender.queryClient.clear();
       await emptyThreadsRender.screen.unmount();
+    }
+  });
+
+  it("renders the home startup skeleton while onboarding data is still loading", async () => {
+    seedAppSettings({ onboardingLiteStatus: "dismissed" });
+    seedStores({ threadsHydrated: false, recoveryEpoch: 0 });
+    useRecoveryStateStore.getState().reset();
+
+    const { screen, queryClient } = await renderWithQueryClient(<HomeEmptyStatePanel />);
+
+    try {
+      expect(document.querySelector('[data-testid="home-startup-skeleton"]')).toBeTruthy();
+      expect(document.body.textContent).not.toContain("Add a project to get started.");
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
     }
   });
 });

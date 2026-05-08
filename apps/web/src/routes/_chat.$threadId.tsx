@@ -5,6 +5,7 @@ import { Suspense, lazy, useCallback, useEffect, useState } from "react";
 import { useAppSettings } from "../appSettings";
 import ChatView from "../components/ChatView";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
+import { StartupThreadRouteSkeleton } from "../components/StartupLoadingState";
 import {
   DiffPanelHeaderSkeleton,
   DiffPanelLoadingState,
@@ -21,6 +22,7 @@ import {
 } from "../diffRouteSearch";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
+import { useStartupReady } from "../lib/startupReady";
 import { useStore } from "../store";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
@@ -212,7 +214,7 @@ function ThreadDetailErrorView(props: {
 }
 
 function ChatThreadRouteView() {
-  const threadsHydrated = useStore((store) => store.threadsHydrated);
+  const startupReady = useStartupReady();
   const navigate = useNavigate();
   const threadId = Route.useParams({
     select: (params) => ThreadId.makeUnsafe(params.threadId),
@@ -275,7 +277,7 @@ function ChatThreadRouteView() {
   }, [fileViewOpen]);
 
   useEffect(() => {
-    if (!threadsHydrated) {
+    if (!startupReady) {
       return;
     }
 
@@ -283,9 +285,13 @@ function ChatThreadRouteView() {
       void navigate({ to: "/", replace: true });
       return;
     }
-  }, [navigate, routeThreadExists, threadsHydrated, threadId]);
+  }, [navigate, routeThreadExists, startupReady, threadId]);
 
-  if (!threadsHydrated || !routeThreadExists) {
+  if (!startupReady) {
+    return <StartupThreadRouteSkeleton />;
+  }
+
+  if (!routeThreadExists) {
     return null;
   }
 

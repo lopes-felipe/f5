@@ -7,6 +7,7 @@ import {
   GitPullRequestIcon,
   HomeIcon,
   RocketIcon,
+  SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   TerminalIcon,
@@ -52,6 +53,7 @@ import {
 import { isElectron } from "../env";
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
+import { useStartupReady } from "../lib/startupReady";
 import { isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
 import {
   getMostRecentProject,
@@ -110,6 +112,7 @@ import {
   SidebarTrigger,
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
+import { useCommandPaletteStore } from "../commandPaletteStore";
 import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
@@ -126,10 +129,12 @@ import {
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import { ThreadStatusPillBadge } from "./thread/ThreadStatusPillBadge";
+import { StartupSidebarSkeleton } from "./StartupLoadingState";
 import { WorkflowCreateDialog } from "./workflow/WorkflowCreateDialog";
 import { threadIdsForCodeReviewWorkflow } from "./workflow/codeReviewWorkflowUtils";
 import { threadIdsForWorkflow, workflowThreadDisplayTitle } from "./workflow/workflowUtils";
 import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
+import { Kbd } from "./ui/kbd";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const THREAD_PREVIEW_LIMIT = 6;
@@ -670,6 +675,7 @@ export default function Sidebar() {
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const threadsHydrated = useStore((store) => store.threadsHydrated);
+  const startupReady = useStartupReady();
   const markThreadUnread = useStore((store) => store.markThreadUnread);
   const toggleProject = useStore((store) => store.toggleProject);
   const setProjectExpanded = useStore((store) => store.setProjectExpanded);
@@ -701,6 +707,7 @@ export default function Sidebar() {
   const { settings: appSettings } = useAppSettings();
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
+  const setCommandPaletteOpen = useCommandPaletteStore((store) => store.setOpen);
   const routeThreadId = useParams({
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
@@ -1946,6 +1953,13 @@ export default function Sidebar() {
     () => shortcutLabelForCommand(keybindings, "workflow.new"),
     [keybindings],
   );
+  const commandPaletteShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "commandPalette.toggle"),
+    [keybindings],
+  );
+  const handleOpenCommandPalette = useCallback(() => {
+    setCommandPaletteOpen(true);
+  }, [setCommandPaletteOpen]);
 
   const handleDesktopUpdateButtonClick = useCallback(() => {
     const bridge = window.desktopBridge;
@@ -2120,22 +2134,38 @@ export default function Sidebar() {
       )}
 
       <SidebarContent className="gap-0">
-        {!isOnHome && !isOnSettings ? (
-          <SidebarGroup className="px-2 pt-2 pb-0">
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  size="sm"
-                  className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
-                  onClick={() => void navigate({ to: "/" })}
-                >
-                  <HomeIcon className="size-3.5" />
-                  <span className="text-xs">Home</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroup>
-        ) : null}
+        <SidebarGroup className="px-2 pt-2 pb-1">
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                size="sm"
+                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                isActive={isOnHome}
+                onClick={() => void navigate({ to: "/" })}
+              >
+                <HomeIcon className="size-3.5" />
+                <span className="text-xs">Home</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                type="button"
+                size="sm"
+                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
+                data-testid="command-palette-trigger"
+                onClick={handleOpenCommandPalette}
+              >
+                <SearchIcon className="size-3.5" />
+                <span className="flex-1 truncate text-left text-xs">Search</span>
+                {commandPaletteShortcutLabel ? (
+                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
+                    {commandPaletteShortcutLabel}
+                  </Kbd>
+                ) : null}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarGroup>
         {showArm64IntelBuildWarning && arm64IntelBuildWarningDescription ? (
           <SidebarGroup className="px-2 pt-2 pb-0">
             <Alert variant="warning" className="rounded-2xl border-warning/40 bg-warning/8">
@@ -3174,11 +3204,13 @@ export default function Sidebar() {
             </SidebarMenu>
           </DndContext>
 
-          {projects.length === 0 && !shouldShowProjectPathEntry && (
+          {!startupReady && projects.length === 0 && !shouldShowProjectPathEntry ? (
+            <StartupSidebarSkeleton />
+          ) : startupReady && projects.length === 0 && !shouldShowProjectPathEntry ? (
             <div className="px-2 pt-4 text-center text-xs text-muted-foreground/60">
               No projects yet
             </div>
-          )}
+          ) : null}
         </SidebarGroup>
       </SidebarContent>
 

@@ -1776,6 +1776,52 @@ describe("ChatView timeline (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it("renders a startup thread skeleton for deep links until the snapshot resolves", async () => {
+    const targetText = "deep link startup content";
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-deep-link-startup" as MessageId,
+      targetText,
+      fillerPairCount: 1,
+      targetPairIndex: 0,
+    });
+    const startupResponse = createDeferred<WsRequestResolution>();
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === ORCHESTRATION_WS_METHODS.getStartupSnapshot) {
+            return startupResponse.promise;
+          }
+          return null;
+        };
+      },
+    });
+
+    try {
+      await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="startup-thread-skeleton"]'),
+        "Startup thread skeleton should render before the deep-linked thread hydrates.",
+      );
+      expect(document.body.textContent).not.toContain(targetText);
+
+      startupResponse.resolve({
+        type: "result",
+        result: {
+          snapshot,
+          threadTailDetails: createThreadTailDetailsResult(THREAD_ID),
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="startup-thread-skeleton"]')).toBeNull();
+        expect(document.body.textContent).toContain(targetText);
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders startup-bundled history without a follow-up thread-details RPC", async () => {
     const targetText = "startup bundled history";
     const mounted = await mountChatView({

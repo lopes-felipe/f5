@@ -11,6 +11,7 @@ import { useComposerDraftStore } from "../composerDraftStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
 import type { Project, Thread } from "../types";
+import { isStartupReady } from "./startupReady";
 
 export type OnboardingLiteMode = "loading" | "onboarding" | "empty-projects" | "empty-threads";
 
@@ -49,7 +50,7 @@ function countValidDraftThreads(
 export function deriveOnboardingLiteState(snapshot: OnboardingLiteSnapshot): OnboardingLiteState {
   const displayProfile = getDisplayProfile(snapshot.settings);
   const status = snapshot.settings.onboardingLiteStatus;
-  const startupReady = snapshot.threadsHydrated && snapshot.recoveryEpoch > 0;
+  const startupReady = isStartupReady(snapshot);
   const validDraftThreadCount = countValidDraftThreads(
     snapshot.projects,
     snapshot.draftThreadsByProjectId,
