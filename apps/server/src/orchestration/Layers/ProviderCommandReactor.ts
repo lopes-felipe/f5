@@ -380,27 +380,56 @@ const make = Effect.gen(function* () {
       }),
     ).pipe(
       Effect.flatMap((instructionTokens) =>
-        setThreadSession({
-          threadId: input.thread.id,
-          session: {
-            threadId: input.thread.id,
-            status: mapProviderSessionStatusToOrchestrationStatus(input.session.status),
-            providerName: input.session.provider,
-            providerInstanceId: input.session.providerInstanceId ?? null,
-            runtimeMode: input.desiredRuntimeMode,
-            activeTurnId: null,
-            lastError: input.session.lastError ?? null,
-            estimatedContextTokens:
-              instructionTokens + threadMessageContextCharacters(input.thread),
-            modelContextWindowTokens: resolveModelContextWindowTokens({
-              provider: input.session.provider,
-              model: input.session.model ?? input.desiredModel ?? input.thread.model,
+        Effect.sync(() => {
+          const estimatedContextTokens =
+            instructionTokens + threadMessageContextCharacters(input.thread);
+          const modelContextWindowTokens = resolveModelContextWindowTokens({
+            provider: input.session.provider,
+            model: input.session.model ?? input.desiredModel ?? input.thread.model,
+          });
+          const providerContextTokens =
+            input.thread.session?.estimatedContextTokens ??
+            input.thread.estimatedContextTokens ??
+            undefined;
+          const providerWindowTokens =
+            input.thread.session?.modelContextWindowTokens ??
+            input.thread.modelContextWindowTokens ??
+            undefined;
+          const shouldPreserveProviderTokenUsage =
+            input.thread.session?.tokenUsageSource === "provider" &&
+            input.thread.session.providerName === input.session.provider &&
+            providerContextTokens !== undefined;
+
+          return {
+            estimatedContextTokens: shouldPreserveProviderTokenUsage
+              ? providerContextTokens
+              : estimatedContextTokens,
+            modelContextWindowTokens: shouldPreserveProviderTokenUsage
+              ? (providerWindowTokens ?? modelContextWindowTokens)
+              : modelContextWindowTokens,
+            tokenUsageSource: shouldPreserveProviderTokenUsage
+              ? ("provider" as const)
+              : ("estimated" as const),
+          };
+        }).pipe(
+          Effect.flatMap((tokenUsage) =>
+            setThreadSession({
+              threadId: input.thread.id,
+              session: {
+                threadId: input.thread.id,
+                status: mapProviderSessionStatusToOrchestrationStatus(input.session.status),
+                providerName: input.session.provider,
+                providerInstanceId: input.session.providerInstanceId ?? null,
+                runtimeMode: input.desiredRuntimeMode,
+                activeTurnId: null,
+                lastError: input.session.lastError ?? null,
+                ...tokenUsage,
+                updatedAt: input.session.updatedAt,
+              },
+              createdAt: input.createdAt,
             }),
-            tokenUsageSource: "estimated",
-            updatedAt: input.session.updatedAt,
-          },
-          createdAt: input.createdAt,
-        }),
+          ),
+        ),
       ),
     );
 

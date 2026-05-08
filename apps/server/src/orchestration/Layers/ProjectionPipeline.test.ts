@@ -461,6 +461,130 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     }),
   );
 
+  it.effect("preserves provider-reported token usage when projecting a new message", () =>
+    Effect.gen(function* () {
+      const projectionPipeline = yield* OrchestrationProjectionPipeline;
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const threadId = ThreadId.makeUnsafe("thread-provider-token-usage");
+      const projectId = ProjectId.makeUnsafe("project-provider-token-usage");
+      const createdAt = "2026-04-10T11:30:00.000Z";
+      const sessionAt = "2026-04-10T11:30:05.000Z";
+      const messageAt = "2026-04-10T11:30:10.000Z";
+
+      yield* eventStore.append({
+        type: "thread.created",
+        eventId: EventId.makeUnsafe("evt-provider-created"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: createdAt,
+        commandId: CommandId.makeUnsafe("cmd-provider-created"),
+        causationEventId: null,
+        correlationId: CorrelationId.makeUnsafe("cmd-provider-created"),
+        metadata: {},
+        payload: {
+          threadId,
+          projectId,
+          title: "Provider token thread",
+          model: "gpt-5.4",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+          updatedAt: createdAt,
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.session-set",
+        eventId: EventId.makeUnsafe("evt-provider-session"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: sessionAt,
+        commandId: CommandId.makeUnsafe("cmd-provider-session"),
+        causationEventId: null,
+        correlationId: CorrelationId.makeUnsafe("cmd-provider-session"),
+        metadata: {},
+        payload: {
+          threadId,
+          session: {
+            threadId,
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            estimatedContextTokens: 157_823,
+            modelContextWindowTokens: 258_400,
+            tokenUsageSource: "provider",
+            updatedAt: sessionAt,
+          },
+        },
+      });
+      yield* eventStore.append({
+        type: "thread.message-sent",
+        eventId: EventId.makeUnsafe("evt-provider-message"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: messageAt,
+        commandId: CommandId.makeUnsafe("cmd-provider-message"),
+        causationEventId: null,
+        correlationId: CorrelationId.makeUnsafe("cmd-provider-message"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.makeUnsafe("message-provider-1"),
+          role: "user",
+          text: "Hello there",
+          reasoningText: undefined,
+          attachments: undefined,
+          turnId: null,
+          streaming: false,
+          createdAt: messageAt,
+          updatedAt: messageAt,
+        },
+      });
+
+      yield* projectionPipeline.bootstrap;
+
+      const threadRows = yield* sql<{
+        readonly estimatedContextTokens: number | null;
+        readonly modelContextWindowTokens: number | null;
+      }>`
+        SELECT
+          estimated_context_tokens AS "estimatedContextTokens",
+          model_context_window_tokens AS "modelContextWindowTokens"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      const sessionRows = yield* sql<{
+        readonly estimatedContextTokens: number | null;
+        readonly modelContextWindowTokens: number | null;
+        readonly tokenUsageSource: string | null;
+      }>`
+        SELECT
+          estimated_context_tokens AS "estimatedContextTokens",
+          model_context_window_tokens AS "modelContextWindowTokens",
+          token_usage_source AS "tokenUsageSource"
+        FROM projection_thread_sessions
+        WHERE thread_id = ${threadId}
+      `;
+
+      assert.deepEqual(threadRows, [
+        {
+          estimatedContextTokens: 157_823,
+          modelContextWindowTokens: 258_400,
+        },
+      ]);
+      assert.deepEqual(sessionRows, [
+        {
+          estimatedContextTokens: 157_823,
+          modelContextWindowTokens: 258_400,
+          tokenUsageSource: "provider",
+        },
+      ]);
+    }),
+  );
+
   it.effect(
     "preserves hidden-context baseline when estimated token usage is updated from message traffic",
     () =>

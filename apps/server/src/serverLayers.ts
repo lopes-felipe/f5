@@ -151,7 +151,11 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
     );
-    const harnessValidationLayer = HarnessValidationLive.pipe(Layer.provide(adapterRegistryLayer));
+    const harnessValidationLayer = HarnessValidationLive.pipe(
+      Layer.provide(adapterRegistryLayer),
+      Layer.provide(serverSettingsLayer),
+      Layer.provide(OpenCodeRuntimeLive),
+    );
     const codexOAuthManagerLayer = CodexOAuthManagerLive.pipe(
       Layer.provide(providerServiceLayer),
       Layer.provide(codexControlClientRegistryLayer),

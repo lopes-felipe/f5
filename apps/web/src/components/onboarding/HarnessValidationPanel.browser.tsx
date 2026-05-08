@@ -200,6 +200,14 @@ function makeResult(
   };
 }
 
+function makeReadyResults(
+  overrides: Partial<
+    Record<ServerHarnessValidationResult["provider"], Partial<ServerHarnessValidationResult>>
+  > = {},
+): ReadonlyArray<ServerHarnessValidationResult> {
+  return HARNESSES.map((meta) => makeResult(meta.provider, overrides[meta.provider] ?? {}));
+}
+
 async function renderWithQueryClient(node: ReactElement) {
   const queryClient = makeQueryClient();
   const router = createTestRouter(node);
@@ -234,7 +242,9 @@ describe("HarnessValidationPanel", () => {
 
     try {
       expect(document.body.textContent).toContain("Check your model harnesses");
-      expect((document.body.textContent ?? "").match(/Not checked yet\./g)?.length).toBe(2);
+      expect((document.body.textContent ?? "").match(/Not checked yet\./g)?.length).toBe(
+        HARNESSES.length,
+      );
       expect(document.querySelector('[aria-label="Ready"]')).toBeNull();
       expect(document.querySelector('[aria-label="Error"]')).toBeNull();
       expect(nativeApiRef.validateHarnesses).not.toHaveBeenCalled();
@@ -270,7 +280,7 @@ describe("HarnessValidationPanel", () => {
       });
 
       resolveValidation?.({
-        results: [makeResult("claudeAgent"), makeResult("codex")],
+        results: makeReadyResults(),
       });
 
       await vi.waitFor(() => {
@@ -296,15 +306,14 @@ describe("HarnessValidationPanel", () => {
       createNativeApiMock();
       seedAppSettings();
       nativeApiRef.validateHarnesses.mockResolvedValue({
-        results: [
-          makeResult("claudeAgent"),
-          makeResult("codex", {
+        results: makeReadyResults({
+          codex: {
             status: "error",
             authStatus: failureKind === "unauthenticated" ? "unauthenticated" : "unknown",
             failureKind,
             message: `Failure: ${failureKind}`,
-          }),
-        ],
+          },
+        }),
       });
 
       const { screen, queryClient } = await renderWithQueryClient(<HarnessValidationPanel />);
@@ -336,13 +345,12 @@ describe("HarnessValidationPanel", () => {
     createNativeApiMock();
     seedAppSettings();
     nativeApiRef.validateHarnesses.mockResolvedValue({
-      results: [
-        makeResult("claudeAgent"),
-        makeResult("codex", {
+      results: makeReadyResults({
+        codex: {
           message: "Using a custom Codex model provider; OpenAI login check skipped.",
           authStatus: "unknown",
-        }),
-      ],
+        },
+      }),
     });
 
     const { screen, queryClient } = await renderWithQueryClient(<HarnessValidationPanel />);
@@ -366,16 +374,15 @@ describe("HarnessValidationPanel", () => {
     seedAppSettings();
     const codexMeta = HARNESSES.find((meta) => meta.provider === "codex");
     nativeApiRef.validateHarnesses.mockResolvedValue({
-      results: [
-        makeResult("claudeAgent"),
-        makeResult("codex", {
+      results: makeReadyResults({
+        codex: {
           status: "error",
           installed: false,
           authStatus: "unknown",
           failureKind: "notInstalled",
           message: "Codex CLI (`codex`) is not installed or not on PATH.",
-        }),
-      ],
+        },
+      }),
     });
 
     const { screen, queryClient } = await renderWithQueryClient(<HarnessValidationPanel />);
@@ -410,16 +417,15 @@ describe("HarnessValidationPanel", () => {
     const claudeMeta = HARNESSES.find((meta) => meta.provider === "claudeAgent");
     nativeApiRef.openExternal.mockRejectedValue(new Error("boom"));
     nativeApiRef.validateHarnesses.mockResolvedValue({
-      results: [
-        makeResult("claudeAgent", {
+      results: makeReadyResults({
+        claudeAgent: {
           status: "error",
           installed: false,
           authStatus: "unknown",
           failureKind: "notInstalled",
           message: "Claude Agent CLI (`claude`) is not installed or not on PATH.",
-        }),
-        makeResult("codex"),
-      ],
+        },
+      }),
     });
 
     const { screen, queryClient } = await renderWithQueryClient(<HarnessValidationPanel />);
@@ -452,11 +458,11 @@ describe("HarnessValidationPanel", () => {
     seedAppSettings();
     nativeApiRef.validateHarnesses
       .mockResolvedValueOnce({
-        results: [makeResult("claudeAgent"), makeResult("codex", { message: "Ready" })],
+        results: makeReadyResults({ codex: { message: "Ready" } }),
       })
       .mockRejectedValueOnce(new Error("Server unavailable"))
       .mockResolvedValueOnce({
-        results: [makeResult("claudeAgent"), makeResult("codex")],
+        results: makeReadyResults(),
       });
 
     const { screen, queryClient } = await renderWithQueryClient(<HarnessValidationPanel />);
@@ -493,7 +499,9 @@ describe("HarnessValidationPanel", () => {
       await vi.waitFor(() => {
         expect(document.body.textContent).toContain("Native API not found");
       });
-      expect((document.body.textContent ?? "").match(/Not checked yet\./g)?.length).toBe(2);
+      expect((document.body.textContent ?? "").match(/Not checked yet\./g)?.length).toBe(
+        HARNESSES.length,
+      );
     } finally {
       queryClient.clear();
       await screen.unmount();

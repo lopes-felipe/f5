@@ -837,6 +837,62 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("normalizes Codex thread token usage snapshots", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const usagePayload = {
+        threadId: "codex-thread-1",
+        turnId: "turn-usage-1",
+        tokenUsage: {
+          total: {
+            totalTokens: 56_249_600,
+            inputTokens: 56_103_983,
+            cachedInputTokens: 53_735_936,
+            outputTokens: 145_617,
+            reasoningOutputTokens: 64_521,
+          },
+          last: {
+            totalTokens: 157_823,
+            inputTokens: 157_043,
+            cachedInputTokens: 153_984,
+            outputTokens: 780,
+            reasoningOutputTokens: 516,
+          },
+          modelContextWindow: 258_400,
+        },
+      };
+
+      const event: ProviderEvent = {
+        id: asEventId("evt-thread-token-usage"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "thread/tokenUsage/updated",
+        turnId: asTurnId("turn-usage-1"),
+        payload: usagePayload,
+      };
+
+      lifecycleManager.emit("event", event);
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some") {
+        return;
+      }
+      assert.equal(firstEvent.value.type, "thread.token-usage.updated");
+      if (firstEvent.value.type !== "thread.token-usage.updated") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        usage: usagePayload,
+        contextTokens: 157_823,
+        modelContextWindowTokens: 258_400,
+      });
+    }),
+  );
+
   it.effect("preserves file-read request type when mapping serverRequest/resolved", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

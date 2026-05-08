@@ -1258,16 +1258,32 @@ export const makeWorkflowService = Effect.gen(function* () {
       return true;
     });
 
+  const completedProposedPlanForTurn = (
+    snapshot: OrchestrationReadModel,
+    threadId: ThreadId,
+    expectedTurnId: string | null,
+  ): { readonly planMarkdown: string } | null => {
+    if (!expectedTurnId) {
+      return null;
+    }
+
+    const thread = snapshot.threads.find((entry) => entry.id === threadId);
+    if (!thread?.latestTurn || thread.latestTurn.turnId !== expectedTurnId) {
+      return null;
+    }
+    if (thread.latestTurn.state !== "completed") {
+      return null;
+    }
+    if (thread.session?.status === "running" && thread.session.activeTurnId === expectedTurnId) {
+      return null;
+    }
+
+    return thread.proposedPlans.find((plan) => plan.turnId === expectedTurnId) ?? null;
+  };
+
   const maybeStartReviews = (
     workflow: PlanningWorkflow,
-    snapshot: {
-      readonly threads: ReadonlyArray<{
-        readonly id: ThreadId;
-        readonly proposedPlans: ReadonlyArray<{
-          readonly planMarkdown: string;
-        }>;
-      }>;
-    },
+    snapshot: OrchestrationReadModel,
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
@@ -1280,12 +1296,16 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const planA = snapshot.threads
-        .find((thread) => thread.id === workflow.branchA.authorThreadId)
-        ?.proposedPlans.at(-1)?.planMarkdown;
-      const planB = snapshot.threads
-        .find((thread) => thread.id === workflow.branchB.authorThreadId)
-        ?.proposedPlans.at(-1)?.planMarkdown;
+      const planA = completedProposedPlanForTurn(
+        snapshot,
+        workflow.branchA.authorThreadId,
+        workflow.branchA.planTurnId,
+      )?.planMarkdown;
+      const planB = completedProposedPlanForTurn(
+        snapshot,
+        workflow.branchB.authorThreadId,
+        workflow.branchB.planTurnId,
+      )?.planMarkdown;
       if (!planA || !planB) {
         return;
       }
@@ -1478,14 +1498,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const maybeStartMerge = (
     workflow: PlanningWorkflow,
-    snapshot: {
-      readonly threads: ReadonlyArray<{
-        readonly id: ThreadId;
-        readonly proposedPlans: ReadonlyArray<{
-          readonly planMarkdown: string;
-        }>;
-      }>;
-    },
+    snapshot: OrchestrationReadModel,
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
@@ -1497,12 +1510,16 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const planA = snapshot.threads
-        .find((thread) => thread.id === workflow.branchA.authorThreadId)
-        ?.proposedPlans.at(-1)?.planMarkdown;
-      const planB = snapshot.threads
-        .find((thread) => thread.id === workflow.branchB.authorThreadId)
-        ?.proposedPlans.at(-1)?.planMarkdown;
+      const planA = completedProposedPlanForTurn(
+        snapshot,
+        workflow.branchA.authorThreadId,
+        workflow.branchA.revisionTurnId,
+      )?.planMarkdown;
+      const planB = completedProposedPlanForTurn(
+        snapshot,
+        workflow.branchB.authorThreadId,
+        workflow.branchB.revisionTurnId,
+      )?.planMarkdown;
       if (!planA || !planB) {
         return;
       }
@@ -2188,101 +2205,31 @@ export const makeWorkflowService = Effect.gen(function* () {
       switch (event.type) {
         case "thread.proposed-plan-upserted": {
           const readModel = yield* orchestrationEngine.getReadModel();
-          const match = workflowForAuthorThread(
-            readModel.planningWorkflows,
-            event.payload.threadId,
-          );
-          if (!match) {
-            const mergeWorkflow = readModel.planningWorkflows.find(
-              (workflow) =>
-                !isDeletedWorkflow(workflow) && workflow.merge.threadId === event.payload.threadId,
-            );
-            if (!mergeWorkflow) {
-              return;
-            }
-            const mergeThread = readModel.threads.find(
-              (thread) => thread.id === event.payload.threadId,
-            );
-            yield* upsertWorkflow(
-              markMergeReadyForManualReview(mergeWorkflow, {
-                turnId: event.payload.proposedPlan.turnId,
-                updatedAt: event.occurredAt,
-                approvedPlanId: event.payload.proposedPlan.id,
-                ...(mergeThread && event.payload.proposedPlan.turnId
-                  ? {
-                      outputFilePath: latestMarkdownFileChangePath(
-                        mergeThread,
-                        event.payload.proposedPlan.turnId,
-                      ),
-                    }
-                  : {}),
-              }),
-            );
+          const planningWorkflow =
+            workflowForAuthorThread(readModel.planningWorkflows, event.payload.threadId)
+              ?.workflow ??
+            workflowForMergeThread(readModel.planningWorkflows, event.payload.threadId)?.workflow ??
+            null;
+          if (!planningWorkflow) {
             return;
           }
-          const branch = match.branchId === "a" ? match.workflow.branchA : match.workflow.branchB;
-          switch (branch.status) {
-            case "revising":
-            case "revised": {
-              if (
-                event.payload.proposedPlan.turnId === null ||
-                event.payload.proposedPlan.turnId === branch.planTurnId
-              ) {
-                return;
-              }
-              const nextWorkflow =
-                branch.status === "revised"
-                  ? match.workflow
-                  : markBranchRevised(match.workflow, match.branchId, {
-                      turnId: event.payload.proposedPlan.turnId,
-                      updatedAt: event.occurredAt,
-                    });
-              if (nextWorkflow !== match.workflow) {
-                yield* upsertWorkflow(nextWorkflow);
-              }
-              yield* maybeStartMerge(nextWorkflow, readModel, event.occurredAt);
-              return;
-            }
 
-            case "plan_saved": {
-              yield* maybeStartReviews(match.workflow, readModel, event.occurredAt);
-              return;
-            }
-
-            case "authoring": {
-              const nextWorkflow = markBranchPlanSaved(match.workflow, match.branchId, {
-                turnId: event.payload.proposedPlan.turnId,
-                updatedAt: event.occurredAt,
-              });
-              yield* upsertWorkflow(nextWorkflow);
-              yield* maybeStartReviews(nextWorkflow, readModel, event.occurredAt);
-              return;
-            }
-
-            default: {
-              if (branch.status === "reviews_requested" || branch.status === "reviews_saved") {
-                yield* Effect.logInfo(
-                  "discarding stale author proposed plan after reviews already started",
-                  {
-                    workflowId: match.workflow.id,
-                    branchId: match.branchId,
-                    branchStatus: branch.status,
-                    threadId: event.payload.threadId,
-                    proposedPlanTurnId: event.payload.proposedPlan.turnId,
-                  },
-                );
-                return;
-              }
-              yield* Effect.logDebug("ignoring author proposed plan after branch advanced", {
-                workflowId: match.workflow.id,
-                branchId: match.branchId,
-                branchStatus: branch.status,
-                threadId: event.payload.threadId,
-                proposedPlanTurnId: event.payload.proposedPlan.turnId,
-              });
-              return;
-            }
-          }
+          const nextWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            planningWorkflow,
+            readModel,
+            event.payload.threadId,
+            event.occurredAt,
+          );
+          const lifecycleSnapshot =
+            nextWorkflow !== planningWorkflow
+              ? yield* orchestrationEngine.getReadModel()
+              : readModel;
+          yield* maybeContinuePlanningWorkflowLifecycle(
+            nextWorkflow,
+            lifecycleSnapshot,
+            event.occurredAt,
+          );
+          return;
         }
 
         case "thread.turn-diff-completed": {

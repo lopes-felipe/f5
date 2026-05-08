@@ -6,6 +6,36 @@ import { ProviderRuntimeEvent } from "./providerRuntime";
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
+  it("decodes thread token usage snapshots with normalized context fields", () => {
+    const parsed = decodeRuntimeEvent({
+      type: "thread.token-usage.updated",
+      eventId: "event-token-usage-1",
+      provider: "codex",
+      createdAt: "2026-02-28T00:00:00.000Z",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      payload: {
+        usage: {
+          tokenUsage: {
+            last: {
+              totalTokens: 157_823,
+            },
+            modelContextWindow: 258_400,
+          },
+        },
+        contextTokens: 157_823,
+        modelContextWindowTokens: 258_400,
+      },
+    });
+
+    expect(parsed.type).toBe("thread.token-usage.updated");
+    if (parsed.type !== "thread.token-usage.updated") {
+      throw new Error("expected thread.token-usage.updated");
+    }
+    expect(parsed.payload.contextTokens).toBe(157_823);
+    expect(parsed.payload.modelContextWindowTokens).toBe(258_400);
+  });
+
   it("decodes turn.plan.updated for plan rendering", () => {
     const parsed = decodeRuntimeEvent({
       type: "turn.plan.updated",

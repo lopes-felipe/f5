@@ -191,7 +191,12 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
 
           return {
             ...fileSystem,
-            makeDirectory: () => Effect.void,
+            open: (path, options) => {
+              if (options?.mode !== undefined) {
+                chmodCalls.push({ path: String(path), mode: options.mode });
+              }
+              return fileSystem.open(path, options);
+            },
             writeFile: () => Effect.void,
             rename: () => Effect.void,
             chmod: (path, mode) =>
@@ -202,7 +207,10 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
         }),
       ).pipe(Layer.provide(NodeServices.layer));
 
-      const secretStore = yield* Effect.service(ServerSecretStore).pipe(
+      yield* Effect.gen(function* () {
+        const secretStore = yield* ServerSecretStore;
+        yield* secretStore.set("session-signing-key", Uint8Array.from([1, 2, 3]));
+      }).pipe(
         Effect.provide(
           ServerSecretStoreLive.pipe(
             Layer.provide(makeServerConfigLayer()),
@@ -210,8 +218,6 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
           ),
         ),
       );
-
-      yield* secretStore.set("session-signing-key", Uint8Array.from([1, 2, 3]));
 
       expect(chmodCalls.some((call) => call.mode === 0o700 && call.path.endsWith("/secrets"))).toBe(
         true,

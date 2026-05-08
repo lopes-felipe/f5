@@ -25,14 +25,11 @@ import { Server, type ServerShape } from "./wsServer";
 const start = vi.fn(() => undefined);
 const stop = vi.fn(() => undefined);
 let resolvedConfig: ServerConfigShape | null = null;
-const serverStart = Effect.acquireRelease(
-  Effect.gen(function* () {
-    resolvedConfig = yield* ServerConfig;
-    start();
-    return {} as unknown as Http.Server;
-  }),
-  () => Effect.sync(() => stop()),
-);
+const serverStart = Effect.gen(function* () {
+  resolvedConfig = yield* ServerConfig;
+  start();
+  return {} as unknown as Http.Server;
+});
 const findAvailablePort = vi.fn((preferred: number) => Effect.succeed(preferred));
 
 // Shared service layer used by this CLI test suite.
@@ -50,7 +47,7 @@ const testLayer = Layer.mergeAll(
   }),
   Layer.succeed(Server, {
     start: serverStart,
-    stopSignal: Effect.void,
+    stopSignal: Effect.sync(() => stop()),
   } satisfies ServerShape),
   Layer.succeed(Open, {
     openBrowser: (_target: string) => Effect.void,

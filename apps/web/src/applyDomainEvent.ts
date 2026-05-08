@@ -878,9 +878,12 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         const nextMessage =
           messages.find((message) => message.id === event.payload.messageId) ??
           nextMessageForEstimate;
-        const shouldRecomputeFromMessages = thread.estimatedContextTokens === null;
-        const nextEstimatedContextTokens =
-          nextMessage === undefined
+        const hasProviderTokenUsage = thread.session?.tokenUsageSource === "provider";
+        const shouldRecomputeFromMessages =
+          !hasProviderTokenUsage && thread.estimatedContextTokens === null;
+        const nextEstimatedContextTokens = hasProviderTokenUsage
+          ? thread.estimatedContextTokens
+          : nextMessage === undefined
             ? thread.estimatedContextTokens
             : shouldRecomputeFromMessages && detailGate.applyDetailMutations
               ? roughTokenEstimateFromCharacters(totalMessageCharacters(messages))
@@ -894,11 +897,12 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
                     ? totalMessageCharacters(messages)
                     : undefined,
                 });
-        const nextSession =
-          thread.session &&
-          nextEstimatedContextTokens !== null &&
-          (thread.session.tokenUsageSource !== "estimated" ||
-            nextEstimatedContextTokens !== thread.estimatedContextTokens)
+        const nextSession = hasProviderTokenUsage
+          ? thread.session
+          : thread.session &&
+              nextEstimatedContextTokens !== null &&
+              (thread.session.tokenUsageSource !== "estimated" ||
+                nextEstimatedContextTokens !== thread.estimatedContextTokens)
             ? { ...thread.session, tokenUsageSource: "estimated" as const }
             : thread.session;
         if (

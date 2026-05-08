@@ -277,6 +277,44 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.session?.tokenUsageSource).toBe("estimated");
   });
 
+  it("does not downgrade provider-reported token usage when a new message is sent", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const next = applyDomainEvent(
+      makeState({
+        threads: [
+          makeThread({
+            estimatedContextTokens: 157_823,
+            modelContextWindowTokens: 258_400,
+            session: {
+              provider: "codex",
+              status: "ready",
+              orchestrationStatus: "ready",
+              createdAt: "2026-04-01T09:04:00.000Z",
+              updatedAt: "2026-04-01T09:04:00.000Z",
+              tokenUsageSource: "provider",
+            },
+          }),
+        ],
+      }),
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId: MessageId.makeUnsafe("user-provider-usage-1"),
+        role: "user",
+        text: "Hello there",
+        reasoningText: undefined,
+        attachments: undefined,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T09:04:03.000Z",
+        updatedAt: "2026-04-01T09:04:03.000Z",
+      }),
+    );
+
+    expect(next.threads[0]?.estimatedContextTokens).toBe(157_823);
+    expect(next.threads[0]?.modelContextWindowTokens).toBe(258_400);
+    expect(next.threads[0]?.session?.tokenUsageSource).toBe("provider");
+  });
+
   it("updates the mapped session state and thread error", () => {
     const turnId = TurnId.makeUnsafe("turn-2");
     const next = applyDomainEvent(
@@ -300,6 +338,7 @@ describe("applyDomainEvent", () => {
 
     expect(next.threads[0]?.session).toEqual({
       provider: "codex",
+      providerInstanceId: null,
       status: "running",
       orchestrationStatus: "running",
       activeTurnId: turnId,

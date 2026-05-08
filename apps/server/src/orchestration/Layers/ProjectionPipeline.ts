@@ -867,14 +867,22 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (Option.isNone(existingRow)) {
             return;
           }
+          const existingSessionRow = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
           const currentMessages = yield* projectionThreadMessageRepository.listByThreadId({
             threadId: event.payload.threadId,
           });
-          const estimatedContextTokens = estimateThreadContextTokensForMessageEvent({
-            currentMessages,
-            payload: event.payload,
-            estimatedContextTokens: existingRow.value.estimatedContextTokens,
-          });
+          const hasProviderTokenUsage =
+            Option.isSome(existingSessionRow) &&
+            existingSessionRow.value.tokenUsageSource === "provider";
+          const estimatedContextTokens = hasProviderTokenUsage
+            ? existingRow.value.estimatedContextTokens
+            : estimateThreadContextTokensForMessageEvent({
+                currentMessages,
+                payload: event.payload,
+                estimatedContextTokens: existingRow.value.estimatedContextTokens,
+              });
 
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
@@ -1405,19 +1413,24 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           const existingThreadRow = yield* projectionThreadRepository.getById({
             threadId: event.payload.threadId,
           });
-          const estimatedContextTokens = estimateThreadContextTokensForMessageEvent({
-            currentMessages,
-            payload: event.payload,
-            estimatedContextTokens:
-              existingRow.value.estimatedContextTokens ??
-              (Option.isSome(existingThreadRow)
-                ? existingThreadRow.value.estimatedContextTokens
-                : null),
-          });
+          const hasProviderTokenUsage = existingRow.value.tokenUsageSource === "provider";
+          const estimatedContextTokens = hasProviderTokenUsage
+            ? existingRow.value.estimatedContextTokens
+            : estimateThreadContextTokensForMessageEvent({
+                currentMessages,
+                payload: event.payload,
+                estimatedContextTokens:
+                  existingRow.value.estimatedContextTokens ??
+                  (Option.isSome(existingThreadRow)
+                    ? existingThreadRow.value.estimatedContextTokens
+                    : null),
+              });
           yield* projectionThreadSessionRepository.upsert({
             ...existingRow.value,
             estimatedContextTokens,
-            tokenUsageSource: "estimated",
+            tokenUsageSource: hasProviderTokenUsage
+              ? existingRow.value.tokenUsageSource
+              : "estimated",
             updatedAt: event.occurredAt,
           });
           return;

@@ -730,28 +730,35 @@ export function projectEvent(
           cappedMessages.find((entry) => entry.id === message.id) ??
           thread.messages.find((entry) => entry.id === message.id) ??
           message;
-        const shouldRecomputeFromMessages = thread.estimatedContextTokens === null;
-        const estimatedContextTokens = shouldRecomputeFromMessages
-          ? roughTokenEstimateFromCharacters(totalMessageCharacters(cappedMessages))
-          : estimateContextTokensAfterMessageUpdate({
-              previousEstimatedContextTokens: thread.estimatedContextTokens,
-              previousMessageCharacters: existingMessage ? messageCharacters(existingMessage) : 0,
-              nextMessageCharacters: messageCharacters(nextMessage),
-            });
-        const session =
-          thread.session !== null && thread.session.tokenUsageSource !== "estimated"
-            ? {
-                ...thread.session,
-                estimatedContextTokens,
-                tokenUsageSource: "estimated" as const,
-              }
-            : thread.session !== null &&
-                thread.session.estimatedContextTokens !== estimatedContextTokens
+        const hasProviderTokenUsage = thread.session?.tokenUsageSource === "provider";
+        const shouldRecomputeFromMessages =
+          !hasProviderTokenUsage && thread.estimatedContextTokens === null;
+        let estimatedContextTokens = thread.estimatedContextTokens;
+        let session = thread.session;
+        if (!hasProviderTokenUsage) {
+          const localEstimatedContextTokens = shouldRecomputeFromMessages
+            ? roughTokenEstimateFromCharacters(totalMessageCharacters(cappedMessages))
+            : estimateContextTokensAfterMessageUpdate({
+                previousEstimatedContextTokens: thread.estimatedContextTokens,
+                previousMessageCharacters: existingMessage ? messageCharacters(existingMessage) : 0,
+                nextMessageCharacters: messageCharacters(nextMessage),
+              });
+          estimatedContextTokens = localEstimatedContextTokens;
+          session =
+            thread.session !== null && thread.session.tokenUsageSource !== "estimated"
               ? {
                   ...thread.session,
-                  estimatedContextTokens,
+                  estimatedContextTokens: localEstimatedContextTokens,
+                  tokenUsageSource: "estimated" as const,
                 }
-              : thread.session;
+              : thread.session !== null &&
+                  thread.session.estimatedContextTokens !== localEstimatedContextTokens
+                ? {
+                    ...thread.session,
+                    estimatedContextTokens: localEstimatedContextTokens,
+                  }
+                : thread.session;
+        }
         const latestTurn =
           payload.role === "assistant" &&
           payload.turnId !== null &&

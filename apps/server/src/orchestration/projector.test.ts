@@ -720,6 +720,97 @@ describe("orchestration projector", () => {
     expect(afterReady.threads[0]?.session?.tokenUsageSource).toBe("provider");
   });
 
+  it("does not downgrade provider-reported token usage when a new message is sent", async () => {
+    const createdAt = "2026-02-23T08:00:00.000Z";
+    const sessionAt = "2026-02-23T08:00:05.000Z";
+    const messageAt = "2026-02-23T08:00:10.000Z";
+    const model = createEmptyReadModel(createdAt);
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: createdAt,
+          commandId: "cmd-create",
+          payload: {
+            threadId: "thread-1",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5.4",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+
+    const afterSession = await Effect.runPromise(
+      projectEvent(
+        afterCreate,
+        makeEvent({
+          sequence: 2,
+          type: "thread.session-set",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: sessionAt,
+          commandId: "cmd-session",
+          payload: {
+            threadId: "thread-1",
+            session: {
+              threadId: "thread-1",
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              estimatedContextTokens: 157_823,
+              modelContextWindowTokens: 258_400,
+              tokenUsageSource: "provider",
+              updatedAt: sessionAt,
+            },
+          },
+        }),
+      ),
+    );
+
+    const afterMessage = await Effect.runPromise(
+      projectEvent(
+        afterSession,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-1",
+          occurredAt: messageAt,
+          commandId: "cmd-message",
+          payload: {
+            threadId: "thread-1",
+            messageId: "message-1",
+            role: "user",
+            text: "Hello there",
+            turnId: null,
+            streaming: false,
+            createdAt: messageAt,
+            updatedAt: messageAt,
+          },
+        }),
+      ),
+    );
+
+    expect(afterMessage.threads[0]?.estimatedContextTokens).toBe(157_823);
+    expect(afterMessage.threads[0]?.modelContextWindowTokens).toBe(258_400);
+    expect(afterMessage.threads[0]?.session?.estimatedContextTokens).toBe(157_823);
+    expect(afterMessage.threads[0]?.session?.modelContextWindowTokens).toBe(258_400);
+    expect(afterMessage.threads[0]?.session?.tokenUsageSource).toBe("provider");
+  });
+
   it("estimates context tokens locally from message traffic when the provider does not report usage", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const sessionAt = "2026-02-23T08:00:05.000Z";

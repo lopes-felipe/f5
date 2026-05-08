@@ -192,7 +192,10 @@ async function createHarness(input: {
   return {
     service,
     dispatched,
-    emit: (event: OrchestrationEvent) => Effect.runSync(PubSub.publish(domainEventPubSub, event)),
+    emit: async (event: OrchestrationEvent) => {
+      await Effect.runPromise(PubSub.publish(domainEventPubSub, event));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    },
     mutateReadModel: (mutator: (current: OrchestrationReadModel) => OrchestrationReadModel) => {
       readModel = mutator(readModel);
     },
@@ -232,7 +235,7 @@ describe("SessionNotesService", () => {
     });
     disposers.push(harness.dispose);
 
-    harness.emit(makeSessionSetEvent("ready"));
+    await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
     const recordCommand = harness.dispatched.find(
@@ -261,7 +264,7 @@ describe("SessionNotesService", () => {
     });
     disposers.push(harness.dispose);
 
-    harness.emit(makeSessionSetEvent("ready"));
+    await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
     // Initial attempt + one retry with a stricter reminder.
@@ -298,7 +301,7 @@ describe("SessionNotesService", () => {
     });
     disposers.push(harness.dispose);
 
-    harness.emit(makeSessionSetEvent("ready"));
+    await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
     // Tolerant extraction should succeed on the first call, so no retry.
@@ -339,7 +342,7 @@ describe("SessionNotesService", () => {
     });
     disposers.push(harness.dispose);
 
-    harness.emit(makeSessionSetEvent("ready"));
+    await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
     expect(prompts.length).toBe(2);
@@ -366,7 +369,7 @@ describe("SessionNotesService", () => {
     });
     disposers.push(harness.dispose);
 
-    harness.emit(makeSessionSetEvent("running"));
+    await harness.emit(makeSessionSetEvent("running"));
     await Effect.runPromise(harness.service.drain);
 
     expect(runOneOffPromptCalls).toBe(0);
@@ -423,7 +426,7 @@ describe("SessionNotesService", () => {
       ),
     }));
 
-    harness.emit(makeSessionSetEvent("ready"));
+    await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
     expect(requestedProvider).toBe("codex");
@@ -478,7 +481,7 @@ describe("SessionNotesService", () => {
       ),
     }));
 
-    harness.emit(makeSessionSetEvent("ready"));
+    await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
     expect(requests).toEqual([

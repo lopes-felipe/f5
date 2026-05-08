@@ -583,6 +583,101 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.estimatedContextTokens).toBe(1_500);
   });
 
+  it("uses normalized Codex token usage snapshots as authoritative context occupancy", async () => {
+    const harness = await createHarness();
+    const estimatedAt = "2026-04-15T00:00:05.000Z";
+    const updatedAt = "2026-04-15T00:00:06.000Z";
+    const completedAt = "2026-04-15T00:00:07.000Z";
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-codex-estimated-usage"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          estimatedContextTokens: 94_430,
+          modelContextWindowTokens: 1_050_000,
+          tokenUsageSource: "estimated",
+          updatedAt: estimatedAt,
+        },
+        createdAt: estimatedAt,
+      }),
+    );
+
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-thread-token-usage-codex-normalized"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: updatedAt,
+      turnId: asTurnId("turn-codex-usage"),
+      payload: {
+        usage: {
+          tokenUsage: {
+            total: {
+              totalTokens: 56_249_600,
+              inputTokens: 56_103_983,
+              cachedInputTokens: 53_735_936,
+              outputTokens: 145_617,
+              reasoningOutputTokens: 64_521,
+            },
+            last: {
+              totalTokens: 157_823,
+              inputTokens: 157_043,
+              cachedInputTokens: 153_984,
+              outputTokens: 780,
+              reasoningOutputTokens: 516,
+            },
+            modelContextWindow: 258_400,
+          },
+        },
+        contextTokens: 157_823,
+        modelContextWindowTokens: 258_400,
+      },
+    });
+
+    let thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.updatedAt === updatedAt &&
+        entry.session?.estimatedContextTokens === 157_823 &&
+        entry.session?.modelContextWindowTokens === 258_400 &&
+        entry.estimatedContextTokens === 157_823 &&
+        entry.modelContextWindowTokens === 258_400,
+    );
+
+    expect(thread.session?.tokenUsageSource).toBe("provider");
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-preserve-codex-usage"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAt,
+      turnId: asTurnId("turn-codex-usage"),
+      payload: {
+        state: "completed",
+      },
+    });
+
+    thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.updatedAt === completedAt && entry.session?.status === "ready",
+    );
+
+    expect(thread.session?.estimatedContextTokens).toBe(157_823);
+    expect(thread.session?.modelContextWindowTokens).toBe(258_400);
+    expect(thread.session?.tokenUsageSource).toBe("provider");
+    expect(thread.estimatedContextTokens).toBe(157_823);
+    expect(thread.modelContextWindowTokens).toBe(258_400);
+  });
+
   it("allows Claude token usage snapshots to correct stale higher estimates", async () => {
     const harness = await createHarness();
     const estimatedAt = "2026-04-15T00:00:03.000Z";

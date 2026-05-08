@@ -665,8 +665,10 @@ describe("store read model sync", () => {
       },
       session: {
         provider: "codex",
+        providerInstanceId: null,
         status: "ready",
         orchestrationStatus: "ready",
+        activeTurnId: undefined,
         createdAt: "2026-03-10T09:00:02.000Z",
         updatedAt: "2026-03-10T09:00:02.000Z",
       },

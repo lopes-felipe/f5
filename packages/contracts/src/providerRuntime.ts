@@ -298,6 +298,8 @@ export type ThreadMetadataUpdatedPayload = typeof ThreadMetadataUpdatedPayload.T
 
 const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   usage: Schema.Unknown,
+  contextTokens: Schema.optional(NonNegativeInt),
+  modelContextWindowTokens: Schema.optional(NonNegativeInt),
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
 

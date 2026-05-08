@@ -1,6 +1,6 @@
 import { MODEL_OPTIONS_BY_PROVIDER, type ProviderKind } from "@t3tools/contracts";
 
-export type HarnessBrandAccent = "claude" | "openai";
+export type HarnessBrandAccent = "claude" | "cursor" | "opencode" | "openai";
 
 export interface HarnessMeta {
   readonly provider: ProviderKind;
@@ -30,5 +30,21 @@ export const HARNESSES: ReadonlyArray<HarnessMeta> = [
     installUrl: "https://github.com/openai/codex#quickstart",
     brandAccent: "openai",
     supportedModels: MODEL_OPTIONS_BY_PROVIDER.codex,
+  },
+  {
+    provider: "cursor",
+    displayName: "Cursor Agent",
+    cliLabel: "agent",
+    installUrl: "https://docs.cursor.com/en/cli/installation",
+    brandAccent: "cursor",
+    supportedModels: MODEL_OPTIONS_BY_PROVIDER.cursor,
+  },
+  {
+    provider: "opencode",
+    displayName: "OpenCode",
+    cliLabel: "opencode",
+    installUrl: "https://dev.opencode.ai/docs/",
+    brandAccent: "opencode",
+    supportedModels: MODEL_OPTIONS_BY_PROVIDER.opencode,
   },
 ] as const;

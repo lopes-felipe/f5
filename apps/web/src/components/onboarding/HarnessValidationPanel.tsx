@@ -19,7 +19,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { validateHarnessesMutationOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import { ensureNativeApi } from "../../nativeApi";
-import { ClaudeAI, type Icon, OpenAI } from "../Icons";
+import { ClaudeAI, CursorIcon, type Icon, OpenAI, OpenCodeIcon } from "../Icons";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "../ui/alert";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
@@ -55,6 +55,16 @@ const BRAND_ACCENTS: Record<HarnessBrandAccent, BrandAccentStyles> = {
     tile: "bg-[#D97757]/12 border border-[#D97757]/20 dark:bg-[#D97757]/15",
     icon: ClaudeAI,
     iconClass: "size-6",
+  },
+  cursor: {
+    tile: "bg-cyan-500/10 border border-cyan-500/20",
+    icon: CursorIcon,
+    iconClass: "size-6 text-cyan-500",
+  },
+  opencode: {
+    tile: "bg-zinc-500/10 border border-zinc-500/20",
+    icon: OpenCodeIcon,
+    iconClass: "size-5",
   },
   openai: {
     tile: "bg-foreground/[0.08] border border-foreground/10",
@@ -439,8 +449,8 @@ export function HarnessValidationPanel() {
               Check your model harnesses
             </h2>
             <p className="max-w-2xl text-sm text-muted-foreground">
-              Verify that the CLI harnesses behind GPT and Claude models are installed and can
-              answer a simple prompt before you start a thread.
+              Verify that the CLI harnesses behind your model providers are installed,
+              authenticated, and reachable before you start a thread.
             </p>
             <p className="text-xs text-muted-foreground/80">
               This checks harness connectivity only; MCP and project setup are not validated.

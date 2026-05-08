@@ -863,6 +863,91 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
+  it("preserves provider-reported token usage when reusing a provider session for a new turn", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-provider-usage-1"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-provider-usage-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-provider-usage"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          estimatedContextTokens: 157_823,
+          modelContextWindowTokens: 258_400,
+          tokenUsageSource: "provider",
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
+      return (
+        thread?.session?.tokenUsageSource === "provider" &&
+        thread.session.estimatedContextTokens === 157_823
+      );
+    });
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-provider-usage-2"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-provider-usage-2"),
+          role: "user",
+          text: "second",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    expect(thread?.estimatedContextTokens).toBe(157_823);
+    expect(thread?.modelContextWindowTokens).toBe(258_400);
+    expect(thread?.session?.estimatedContextTokens).toBe(157_823);
+    expect(thread?.session?.modelContextWindowTokens).toBe(258_400);
+    expect(thread?.session?.tokenUsageSource).toBe("provider");
+    expect(harness.startSession.mock.calls.length).toBe(1);
+  });
+
   it("starts a fresh session when only projected session state exists", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

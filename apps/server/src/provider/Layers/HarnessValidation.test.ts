@@ -6,11 +6,18 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, describe, it, vi } from "vitest";
 import { Cause, Deferred, Effect, Exit, Fiber, FileSystem, Layer, Scope, Stream } from "effect";
 
+import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   ProviderAdapterRequestError,
   ProviderValidationBusyError,
   type ProviderAdapterError,
 } from "../Errors.ts";
+import {
+  OpenCodeRuntime,
+  type OpenCodeInventory,
+  type OpenCodeRuntimeShape,
+} from "../opencodeRuntime.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { HarnessValidation } from "../Services/HarnessValidation.ts";
@@ -78,6 +85,59 @@ exit 1
 `,
   );
 }
+
+function makeReadyCursorCli(filePath: string): void {
+  writeExecutable(
+    filePath,
+    `#!/bin/sh
+if [ "$1" = "about" ]; then
+  echo '{"cliVersion":"2026.04.08-test","userEmail":"cursor@example.com","subscriptionTier":"pro"}'
+  exit 0
+fi
+echo "unexpected args: $*" >&2
+exit 1
+`,
+  );
+}
+
+const readyOpenCodeInventory = {
+  providerList: {
+    connected: ["openai"],
+    all: [
+      {
+        id: "openai",
+        name: "OpenAI",
+        models: {
+          "gpt-5": {
+            id: "gpt-5",
+            name: "GPT-5",
+            variants: {},
+          },
+        },
+      },
+    ],
+    default: {},
+  },
+  agents: [],
+} as unknown as OpenCodeInventory;
+
+const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
+  startOpenCodeServerProcess: () =>
+    Effect.succeed({
+      url: "http://127.0.0.1:4301",
+      exitCode: Effect.never,
+    }),
+  connectToOpenCodeServer: ({ serverUrl }) =>
+    Effect.succeed({
+      url: serverUrl ?? "http://127.0.0.1:4301",
+      exitCode: null,
+      external: Boolean(serverUrl),
+    }),
+  runOpenCodeCommand: () => Effect.succeed({ stdout: "opencode 1.14.19\n", stderr: "", code: 0 }),
+  createOpenCodeSdkClient: () =>
+    ({}) as unknown as ReturnType<OpenCodeRuntimeShape["createOpenCodeSdkClient"]>,
+  loadOpenCodeInventory: () => Effect.succeed(readyOpenCodeInventory),
+};
 
 function unexpectedEffect(label: string) {
   return vi.fn(() => Effect.die(new Error(`Unexpected adapter call: ${label}`)));
@@ -156,8 +216,19 @@ async function runValidationEffect<A, E>(
     readonly codex: ProviderAdapterShape<ProviderAdapterError>;
     readonly claudeAgent: ProviderAdapterShape<ProviderAdapterError>;
   },
+  settingsOverrides: Parameters<typeof ServerSettingsService.layerTest>[0] = {
+    providers: {
+      cursor: { enabled: false },
+      opencode: { enabled: false },
+    },
+  },
 ) {
-  const validationLayer = makeValidationLayer(adapters).pipe(Layer.provide(NodeServices.layer));
+  const validationLayer = makeValidationLayer(adapters).pipe(
+    Layer.provide(ServerSettingsService.layerTest(settingsOverrides)),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "t3-harness-config-test-" })),
+    Layer.provide(Layer.succeed(OpenCodeRuntime, OpenCodeRuntimeTestDouble)),
+    Layer.provide(NodeServices.layer),
+  );
   const appLayer = Layer.mergeAll(NodeServices.layer, validationLayer);
   return await Effect.runPromise(Effect.scoped(effect.pipe(Effect.provide(appLayer))));
 }
@@ -186,6 +257,8 @@ describe("HarnessValidationLive", () => {
         expect(results.map((result) => [result.provider, result.failureKind])).toEqual([
           ["claudeAgent", "notInstalled"],
           ["codex", "unsupportedVersion"],
+          ["cursor", "preflight"],
+          ["opencode", "preflight"],
         ]);
         expect(claudeRunOneOffPrompt).not.toHaveBeenCalled();
         expect(codexRunOneOffPrompt).not.toHaveBeenCalled();
@@ -244,7 +317,11 @@ describe("HarnessValidationLive", () => {
           }),
         });
 
-        expect(results.map((result) => result.status)).toEqual(["ready", "ready"]);
+        expect(
+          results
+            .filter((result) => result.provider === "claudeAgent" || result.provider === "codex")
+            .map((result) => result.status),
+        ).toEqual(["ready", "ready"]);
 
         const codexInput = capturedInputs.find((entry) => entry.provider === "codex");
         const claudeInput = capturedInputs.find((entry) => entry.provider === "claudeAgent");
@@ -299,6 +376,63 @@ describe("HarnessValidationLive", () => {
     );
   });
 
+  it("validates Cursor and OpenCode alongside Codex and Claude", async () => {
+    const codexRunOneOffPrompt = vi.fn(() => Effect.succeed({ text: "OK" }));
+    const claudeRunOneOffPrompt = vi.fn(() => Effect.succeed({ text: "OK" }));
+
+    const results = await runValidationEffect(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const service = yield* Effect.service(HarnessValidation);
+        const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
+        const codexPath = path.join(tempDir, "codex");
+        const claudePath = path.join(tempDir, "claude");
+        const cursorPath = path.join(tempDir, "agent");
+        makeReadyCodexCli(codexPath);
+        makeReadyClaudeCli(claudePath);
+        makeReadyCursorCli(cursorPath);
+
+        return yield* service.validate({
+          providerOptions: {
+            ...makeProviderOptions({
+              codexBinaryPath: codexPath,
+              claudeBinaryPath: claudePath,
+            }),
+            cursor: {
+              binaryPath: cursorPath,
+            },
+            opencode: {
+              binaryPath: "opencode",
+            },
+          },
+        });
+      }),
+      {
+        codex: makeAdapter("codex", codexRunOneOffPrompt),
+        claudeAgent: makeAdapter("claudeAgent", claudeRunOneOffPrompt),
+      },
+      {},
+    );
+
+    expect(results.map((result) => result.provider)).toEqual([
+      "claudeAgent",
+      "codex",
+      "cursor",
+      "opencode",
+    ]);
+    expect(results.map((result) => result.status)).toEqual(["ready", "ready", "ready", "ready"]);
+    expect(results.find((result) => result.provider === "cursor")).toMatchObject({
+      authStatus: "authenticated",
+      version: "2026.04.08-test",
+    });
+    expect(results.find((result) => result.provider === "opencode")).toMatchObject({
+      authStatus: "authenticated",
+      version: "1.14.19",
+    });
+    expect(codexRunOneOffPrompt).toHaveBeenCalledTimes(1);
+    expect(claudeRunOneOffPrompt).toHaveBeenCalledTimes(1);
+  });
+
   it("runs validations in parallel and preserves provider order", async () => {
     const started: Array<"codex" | "claudeAgent"> = [];
     const releaseCodex = Deferred.makeUnsafe<void>();
@@ -350,7 +484,12 @@ describe("HarnessValidationLive", () => {
         yield* Deferred.succeed(releaseCodex, undefined);
         yield* Deferred.succeed(releaseClaude, undefined);
         const results = yield* Fiber.join(validationFiber);
-        expect(results.map((result) => result.provider)).toEqual(["claudeAgent", "codex"]);
+        expect(results.map((result) => result.provider)).toEqual([
+          "claudeAgent",
+          "codex",
+          "cursor",
+          "opencode",
+        ]);
       }),
       {
         codex: makeAdapter("codex", codexRunOneOffPrompt),

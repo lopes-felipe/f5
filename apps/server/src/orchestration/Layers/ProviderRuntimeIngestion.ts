@@ -256,12 +256,16 @@ function mergeProviderReportedContextTokens(input: {
   readonly eventType: "turn.completed" | "thread.token-usage.updated";
   readonly providerReportedContextTokens: number | undefined;
   readonly previousEstimatedContextTokens: number | null;
+  readonly authoritativeSnapshot?: boolean | undefined;
 }): number | undefined {
   if (input.providerReportedContextTokens === undefined) {
     return undefined;
   }
 
-  if (input.provider === "claudeAgent" && input.eventType === "thread.token-usage.updated") {
+  if (
+    input.authoritativeSnapshot ||
+    (input.provider === "claudeAgent" && input.eventType === "thread.token-usage.updated")
+  ) {
     return input.providerReportedContextTokens;
   }
 
@@ -2789,16 +2793,18 @@ const make = Effect.gen(function* () {
       }
 
       if (event.type === "thread.token-usage.updated") {
-        const providerReportedContextTokens = extractThreadTokenUsageContextTokens(
-          event.payload?.usage,
-        );
+        const normalizedContextTokens = event.payload.contextTokens;
+        const providerReportedContextTokens =
+          normalizedContextTokens ?? extractThreadTokenUsageContextTokens(event.payload?.usage);
         const estimatedContextTokens = mergeProviderReportedContextTokens({
           provider: event.provider,
           eventType: "thread.token-usage.updated",
           providerReportedContextTokens,
           previousEstimatedContextTokens: thread.estimatedContextTokens ?? null,
+          authoritativeSnapshot: normalizedContextTokens !== undefined,
         });
-        if (estimatedContextTokens !== undefined) {
+        const modelContextWindowTokens = event.payload.modelContextWindowTokens;
+        if (estimatedContextTokens !== undefined || modelContextWindowTokens !== undefined) {
           yield* orchestrationEngine.dispatch({
             type: "thread.session.set",
             commandId: providerCommandId(event, "thread-token-usage-set"),
@@ -2810,9 +2816,16 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
-              estimatedContextTokens,
-              tokenUsageSource:
-                estimatedContextTokens === providerReportedContextTokens ? "provider" : "estimated",
+              ...(estimatedContextTokens !== undefined
+                ? {
+                    estimatedContextTokens,
+                    tokenUsageSource:
+                      estimatedContextTokens === providerReportedContextTokens
+                        ? ("provider" as const)
+                        : ("estimated" as const),
+                  }
+                : {}),
+              ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
               updatedAt: now,
             },
             createdAt: now,

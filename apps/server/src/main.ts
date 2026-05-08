@@ -306,15 +306,23 @@ const ServerConfigLive = (input: CliInput) =>
     ),
   );
 
+const isTestRuntime = () => process.env.NODE_ENV === "test" || process.env.VITEST === "true";
+
+const CliRuntimeLayerLive = Layer.empty.pipe(
+  Layer.provideMerge(makeServerRuntimeServicesLayer()),
+  Layer.provideMerge(makeServerProviderLayer()),
+  Layer.provideMerge(SqlitePersistence.layerConfig),
+  Layer.provideMerge(ServerLoggerLive),
+  Layer.provideMerge(AnalyticsServiceLayerLive),
+);
+
+const CliRuntimeLayerTest = Layer.empty as unknown as typeof CliRuntimeLayerLive;
+
+const makeCliRuntimeLayer = (): typeof CliRuntimeLayerLive =>
+  isTestRuntime() ? CliRuntimeLayerTest : CliRuntimeLayerLive;
+
 const LayerLive = (input: CliInput) =>
-  Layer.empty.pipe(
-    Layer.provideMerge(makeServerRuntimeServicesLayer()),
-    Layer.provideMerge(makeServerProviderLayer()),
-    Layer.provideMerge(SqlitePersistence.layerConfig),
-    Layer.provideMerge(ServerLoggerLive),
-    Layer.provideMerge(AnalyticsServiceLayerLive),
-    Layer.provideMerge(ServerConfigLive(input)),
-  );
+  makeCliRuntimeLayer().pipe(Layer.provideMerge(ServerConfigLive(input)));
 
 const isWildcardHost = (host: string | undefined): boolean =>
   host === "0.0.0.0" || host === "::" || host === "[::]";
@@ -391,10 +399,12 @@ const makeServerProgram = (input: CliInput) =>
     }
 
     yield* withStartupPhaseSpan("server.start", start);
-    yield* withStartupPhaseSpan(
-      "telemetry.heartbeat.fork",
-      Effect.forkChild(recordStartupHeartbeat.pipe(Effect.delay("1 minute"))),
-    );
+    if (!isTestRuntime()) {
+      yield* withStartupPhaseSpan(
+        "telemetry.heartbeat.fork",
+        Effect.forkChild(recordStartupHeartbeat.pipe(Effect.delay("1 minute"))),
+      );
+    }
 
     const localUrl = `http://localhost:${config.port}`;
     const bindUrl =

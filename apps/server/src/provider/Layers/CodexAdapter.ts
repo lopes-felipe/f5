@@ -112,6 +112,25 @@ function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function asNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function codexThreadTokenUsageSnapshot(payload: Record<string, unknown> | undefined): {
+  readonly contextTokens?: number;
+  readonly modelContextWindowTokens?: number;
+} {
+  const tokenUsage = asObject(payload?.tokenUsage);
+  const lastUsage = asObject(tokenUsage?.last);
+  const contextTokens = asNonNegativeInteger(lastUsage?.totalTokens);
+  const modelContextWindowTokens = asNonNegativeInteger(tokenUsage?.modelContextWindow);
+
+  return {
+    ...(contextTokens !== undefined ? { contextTokens } : {}),
+    ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
+  };
+}
+
 function asMcpStartupStatus(
   value: unknown,
 ): "starting" | "ready" | "failed" | "cancelled" | undefined {
@@ -809,12 +828,14 @@ function mapToRuntimeEvents(
   }
 
   if (event.method === "thread/tokenUsage/updated") {
+    const snapshot = codexThreadTokenUsageSnapshot(payload);
     return [
       {
         type: "thread.token-usage.updated",
         ...runtimeEventBase(event, canonicalThreadId),
         payload: {
           usage: event.payload ?? {},
+          ...snapshot,
         },
       },
     ];
