@@ -147,6 +147,37 @@ function mapCodexServerStatus(
   const toolCount = Object.keys(controlStatus.tools ?? {}).length;
   const resourceCount = controlStatus.resources?.length ?? 0;
   const resourceTemplateCount = controlStatus.resourceTemplates?.length ?? 0;
+  const controlAuthStatus =
+    controlStatus.authStatus === "notLoggedIn"
+      ? "unauthenticated"
+      : controlStatus.authStatus
+        ? "authenticated"
+        : "unknown";
+  if (controlStatus.startupStatus === "failed" || controlStatus.startupStatus === "cancelled") {
+    return {
+      name,
+      state: "failed",
+      authStatus: controlAuthStatus,
+      toolCount,
+      resourceCount,
+      resourceTemplateCount,
+      message:
+        controlStatus.error ??
+        (controlStatus.startupStatus === "cancelled"
+          ? "Codex cancelled startup for this MCP server."
+          : "Codex reported that this MCP server failed to start."),
+    };
+  }
+  if (controlStatus.startupStatus === "starting") {
+    return {
+      name,
+      state: "starting",
+      authStatus: controlAuthStatus,
+      toolCount,
+      resourceCount,
+      resourceTemplateCount,
+    };
+  }
   if (controlStatus.authStatus === "notLoggedIn") {
     return {
       name,
@@ -156,6 +187,24 @@ function mapCodexServerStatus(
       resourceCount,
       resourceTemplateCount,
       message: "Codex can see this server, but it is not logged in yet.",
+    };
+  }
+
+  if (
+    controlStatus.startupStatus !== "ready" &&
+    toolCount === 0 &&
+    resourceCount === 0 &&
+    resourceTemplateCount === 0
+  ) {
+    return {
+      name,
+      state: "failed",
+      authStatus: controlAuthStatus,
+      toolCount,
+      resourceCount,
+      resourceTemplateCount,
+      message:
+        "Codex authenticated this MCP server, but did not report any tools or resources. It may have failed during startup; check the work log for the exact error.",
     };
   }
 

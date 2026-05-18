@@ -148,6 +148,9 @@ function makeRuntimeLayer(input?: {
   readonly controlStatuses?: ReadonlyArray<{
     readonly name: string;
     readonly authStatus?: string;
+    readonly startupStatus?: "starting" | "ready" | "failed" | "cancelled";
+    readonly error?: string;
+    readonly toolCount?: number;
   }>;
 }) {
   const oauthStartStatus = input?.oauthStartStatus ??
@@ -174,7 +177,14 @@ function makeRuntimeLayer(input?: {
                     data: controlStatuses.map((status) => ({
                       name: status.name,
                       authStatus: status.authStatus,
-                      tools: {},
+                      ...(status.startupStatus ? { startupStatus: status.startupStatus } : {}),
+                      ...(status.error ? { error: status.error } : {}),
+                      tools: Object.fromEntries(
+                        Array.from({ length: status.toolCount ?? 0 }, (_, index) => [
+                          `tool-${index}`,
+                          {},
+                        ]),
+                      ),
                       resources: [],
                       resourceTemplates: [],
                     })),
@@ -301,6 +311,94 @@ describe("McpRuntimeService", () => {
           controlStatuses: [
             {
               name: "glean",
+              authStatus: "oAuth",
+              toolCount: 4,
+            },
+          ],
+          spawnerLayer: mockSpawnerLayer((args) => {
+            const joined = args.join(" ");
+            if (joined.endsWith("--version")) {
+              return { stdout: "codex 1.2.3\n", stderr: "", code: 0 };
+            }
+            if (joined.endsWith("login status")) {
+              return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+            }
+            throw new Error(`Unexpected CLI args: ${joined}`);
+          }),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("uses Codex startup failures over authenticated MCP control status", () =>
+    Effect.gen(function* () {
+      const service = yield* McpRuntimeService;
+      const statuses = yield* service.getServerStatuses({
+        provider: "codex",
+        projectId,
+      });
+
+      assert.strictEqual(statuses.statuses.length, 1);
+      assert.strictEqual(statuses.statuses[0]?.name, "Observability");
+      assert.strictEqual(statuses.statuses[0]?.state, "failed");
+      assert.strictEqual(statuses.statuses[0]?.authStatus, "authenticated");
+      assert.strictEqual(statuses.statuses[0]?.message, "Token refresh failed");
+    }).pipe(
+      Effect.provide(
+        makeRuntimeLayer({
+          servers: {
+            Observability: {
+              type: "http",
+              url: "https://example.test/mcp",
+            },
+          },
+          controlStatuses: [
+            {
+              name: "Observability",
+              authStatus: "oAuth",
+              startupStatus: "failed",
+              error: "Token refresh failed",
+            },
+          ],
+          spawnerLayer: mockSpawnerLayer((args) => {
+            const joined = args.join(" ");
+            if (joined.endsWith("--version")) {
+              return { stdout: "codex 1.2.3\n", stderr: "", code: 0 };
+            }
+            if (joined.endsWith("login status")) {
+              return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+            }
+            throw new Error(`Unexpected CLI args: ${joined}`);
+          }),
+        }),
+      ),
+    ),
+  );
+
+  it.effect("does not mark authenticated zero-capability Codex MCP status as ready", () =>
+    Effect.gen(function* () {
+      const service = yield* McpRuntimeService;
+      const statuses = yield* service.getServerStatuses({
+        provider: "codex",
+        projectId,
+      });
+
+      assert.strictEqual(statuses.statuses.length, 1);
+      assert.strictEqual(statuses.statuses[0]?.name, "Observability");
+      assert.strictEqual(statuses.statuses[0]?.state, "failed");
+      assert.match(statuses.statuses[0]?.message ?? "", /did not report any tools or resources/u);
+    }).pipe(
+      Effect.provide(
+        makeRuntimeLayer({
+          servers: {
+            Observability: {
+              type: "http",
+              url: "https://example.test/mcp",
+            },
+          },
+          controlStatuses: [
+            {
+              name: "Observability",
               authStatus: "oAuth",
             },
           ],

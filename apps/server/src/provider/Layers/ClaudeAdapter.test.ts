@@ -357,6 +357,125 @@ async function readFirstPromptMessage(
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-claude-1");
 const RESUME_THREAD_ID = ThreadId.makeUnsafe("thread-claude-resume");
+const BACKGROUND_SESSION_ID = "sdk-session-background-task";
+
+function emitBashToolStart(
+  query: FakeClaudeQuery,
+  input: {
+    readonly toolUseId: string;
+    readonly command?: string;
+    readonly index?: number;
+    readonly sessionId?: string;
+    readonly uuid?: string;
+  },
+): void {
+  query.emit({
+    type: "stream_event",
+    session_id: input.sessionId ?? BACKGROUND_SESSION_ID,
+    uuid: input.uuid ?? `stream-${input.toolUseId}-start`,
+    parent_tool_use_id: null,
+    event: {
+      type: "content_block_start",
+      index: input.index ?? 0,
+      content_block: {
+        type: "tool_use",
+        id: input.toolUseId,
+        name: "Bash",
+        input: {
+          command: input.command ?? "sleep 10",
+        },
+      },
+    },
+  } as unknown as SDKMessage);
+}
+
+function emitClaudeTaskStarted(
+  query: FakeClaudeQuery,
+  input: {
+    readonly taskId: string;
+    readonly toolUseId: string;
+    readonly description?: string;
+    readonly sessionId?: string;
+    readonly uuid?: string;
+  },
+): void {
+  query.emit({
+    type: "system",
+    subtype: "task_started",
+    task_id: input.taskId,
+    tool_use_id: input.toolUseId,
+    task_type: "bash",
+    description: input.description ?? "Run background command",
+    session_id: input.sessionId ?? BACKGROUND_SESSION_ID,
+    uuid: input.uuid ?? `task-started-${input.taskId}`,
+  } as unknown as SDKMessage);
+}
+
+function emitClaudeTaskUpdated(
+  query: FakeClaudeQuery,
+  input: {
+    readonly taskId: string;
+    readonly patch: Record<string, unknown>;
+    readonly sessionId?: string;
+    readonly uuid?: string;
+  },
+): void {
+  query.emit({
+    type: "system",
+    subtype: "task_updated",
+    task_id: input.taskId,
+    patch: input.patch,
+    session_id: input.sessionId ?? BACKGROUND_SESSION_ID,
+    uuid: input.uuid ?? `task-updated-${input.taskId}`,
+  } as unknown as SDKMessage);
+}
+
+function emitBackgroundToolResult(
+  query: FakeClaudeQuery,
+  input: {
+    readonly toolUseId: string;
+    readonly taskId: string;
+    readonly sessionId?: string;
+    readonly uuid?: string;
+  },
+): void {
+  query.emit({
+    type: "user",
+    session_id: input.sessionId ?? BACKGROUND_SESSION_ID,
+    uuid: input.uuid ?? `user-background-${input.taskId}`,
+    parent_tool_use_id: null,
+    tool_use_result: {
+      backgroundTaskId: input.taskId,
+    },
+    message: {
+      role: "user",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: input.toolUseId,
+          content: `Command is running in the background with ID: ${input.taskId}`,
+        },
+      ],
+    },
+  } as unknown as SDKMessage);
+}
+
+function emitClaudeSuccessResult(
+  query: FakeClaudeQuery,
+  input?: {
+    readonly sessionId?: string;
+    readonly uuid?: string;
+  },
+): void {
+  query.emit({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    errors: [],
+    session_id: input?.sessionId ?? BACKGROUND_SESSION_ID,
+    uuid: input?.uuid ?? "result-background-task",
+  } as unknown as SDKMessage);
+}
 
 describe("ClaudeAdapterLive", () => {
   it.effect("returns validation error for non-claude provider on startSession", () => {
@@ -2882,6 +3001,259 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(progressEvent?.type, "task.progress");
       if (progressEvent?.type === "task.progress") {
         assert.equal(progressEvent.payload.description, "Running background teammate");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("maps Claude task_updated background patches to in-progress tool rows", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run a background command",
+        attachments: [],
+      });
+
+      emitBashToolStart(harness.query, {
+        toolUseId: "tool-bg-running",
+      });
+      emitClaudeTaskStarted(harness.query, {
+        taskId: "task-bg-running",
+        toolUseId: "tool-bg-running",
+      });
+      emitClaudeTaskUpdated(harness.query, {
+        taskId: "task-bg-running",
+        patch: {
+          is_backgrounded: true,
+        },
+      });
+      emitBackgroundToolResult(harness.query, {
+        taskId: "task-bg-running",
+        toolUseId: "tool-bg-running",
+      });
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.warning"),
+        false,
+      );
+
+      const backgroundUpdates = runtimeEvents.filter(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "item.updated" }> =>
+          event.type === "item.updated" &&
+          String(event.itemId) === "tool-bg-running" &&
+          event.payload.title === "Background command running",
+      );
+      assert.equal(backgroundUpdates.length, 2);
+      for (const event of backgroundUpdates) {
+        assert.equal(event.payload.status, "inProgress");
+      }
+
+      const latestUpdate = backgroundUpdates.at(-1);
+      assert.equal(latestUpdate?.type, "item.updated");
+      if (latestUpdate?.type === "item.updated") {
+        const data = latestUpdate.payload.data as { result?: Record<string, unknown> } | undefined;
+        assert.equal(data?.result?.backgroundTaskId, "task-bg-running");
+        assert.equal(data?.result?.backgroundStatus, "running");
+      }
+
+      assert.equal(
+        runtimeEvents.some(
+          (event) => event.type === "item.completed" && String(event.itemId) === "tool-bg-running",
+        ),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("completes background tools from terminal Claude task_updated patches", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 11).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "run a background command",
+        attachments: [],
+      });
+
+      emitBashToolStart(harness.query, {
+        toolUseId: "tool-bg-complete",
+      });
+      emitClaudeTaskStarted(harness.query, {
+        taskId: "task-bg-complete",
+        toolUseId: "tool-bg-complete",
+      });
+      emitBackgroundToolResult(harness.query, {
+        taskId: "task-bg-complete",
+        toolUseId: "tool-bg-complete",
+      });
+      emitClaudeSuccessResult(harness.query);
+      emitClaudeTaskUpdated(harness.query, {
+        taskId: "task-bg-complete",
+        patch: {
+          status: "completed",
+          end_time: 1_785_000_000,
+        },
+      });
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.warning"),
+        false,
+      );
+
+      const completions = runtimeEvents.filter(
+        (event) => event.type === "item.completed" && String(event.itemId) === "tool-bg-complete",
+      );
+      assert.equal(completions.length, 1);
+
+      const completion = completions[0];
+      assert.equal(completion?.type, "item.completed");
+      if (completion?.type === "item.completed") {
+        assert.equal(String(completion.turnId), String(turn.turnId));
+        assert.equal(completion.payload.status, "completed");
+        assert.equal(completion.payload.title, "Background command completed");
+        const data = completion.payload.data as { result?: Record<string, unknown> } | undefined;
+        assert.equal(data?.result?.backgroundTaskId, "task-bg-complete");
+        assert.equal(data?.result?.backgroundStatus, "completed");
+        assert.equal(data?.result?.backgroundEndedAt, "2026-07-25T17:20:00.000Z");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "fails background tools from terminal Claude task_updated patches after the turn ends",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 10).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+
+        const turn = yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "run a background command",
+          attachments: [],
+        });
+
+        emitBashToolStart(harness.query, {
+          toolUseId: "tool-bg-failed",
+        });
+        emitBackgroundToolResult(harness.query, {
+          taskId: "task-bg-failed",
+          toolUseId: "tool-bg-failed",
+        });
+        emitClaudeSuccessResult(harness.query);
+        emitClaudeTaskUpdated(harness.query, {
+          taskId: "task-bg-failed",
+          patch: {
+            status: "failed",
+          },
+        });
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.equal(
+          runtimeEvents.some((event) => event.type === "runtime.warning"),
+          false,
+        );
+
+        const completion = runtimeEvents.find(
+          (event) => event.type === "item.completed" && String(event.itemId) === "tool-bg-failed",
+        );
+        assert.equal(completion?.type, "item.completed");
+        if (completion?.type === "item.completed") {
+          assert.equal(String(completion.turnId), String(turn.turnId));
+          assert.equal(completion.payload.status, "failed");
+          assert.equal(completion.payload.title, "Background command failed");
+          const data = completion.payload.data as { result?: Record<string, unknown> } | undefined;
+          assert.equal(data?.result?.backgroundTaskId, "task-bg-failed");
+          assert.equal(data?.result?.backgroundStatus, "failed");
+        }
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
+  it.effect("maps unassociated terminal Claude task_updated patches to task completion", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 5).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      emitClaudeTaskUpdated(harness.query, {
+        taskId: "task-unassociated",
+        patch: {
+          status: "completed",
+        },
+        sessionId: "sdk-session-unassociated-task",
+      });
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.warning"),
+        false,
+      );
+
+      const completion = runtimeEvents.find((event) => event.type === "task.completed");
+      assert.equal(completion?.type, "task.completed");
+      if (completion?.type === "task.completed") {
+        assert.equal(String(completion.payload.taskId), "task-unassociated");
+        assert.equal(completion.payload.status, "completed");
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

@@ -32,6 +32,7 @@ import {
   type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderUserInputAnswers,
+  type RuntimeItemStatus,
   type RuntimeContentStreamKind,
   RuntimeItemId,
   RuntimeRequestId,
@@ -195,6 +196,32 @@ interface ToolInFlight {
   readonly lastEmittedInputFingerprint?: string;
 }
 
+type ClaudeTaskTerminalStatus = "completed" | "failed" | "stopped";
+type ClaudeBackgroundStatus = "running" | ClaudeTaskTerminalStatus;
+
+interface ClaudeTaskState {
+  readonly taskId: string;
+  readonly toolUseId?: string;
+  readonly turnId?: TurnId;
+  readonly description?: string;
+  readonly taskType?: string;
+  readonly tool?: ToolInFlight;
+  readonly launchResult?: Record<string, unknown>;
+  readonly backgrounded?: boolean;
+}
+
+interface ClaudeTaskUpdatedPatch {
+  readonly isBackgrounded?: true;
+  readonly terminalStatus?: ClaudeTaskTerminalStatus;
+  readonly backgroundEndedAt?: string;
+}
+
+interface ClaudeTaskUpdatedMessage {
+  readonly taskId?: string;
+  readonly patch?: ClaudeTaskUpdatedPatch;
+  readonly malformed: boolean;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
@@ -211,6 +238,7 @@ interface ClaudeSessionContext {
     approximateChars: number;
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
+  readonly taskStates: Map<string, ClaudeTaskState>;
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
@@ -574,6 +602,108 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function normalizeClaudeTaskStatus(value: unknown): ClaudeTaskTerminalStatus | undefined {
+  switch (value) {
+    case "completed":
+    case "failed":
+    case "stopped":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeClaudeTaskEndTime(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  }
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const timestampMs = value > 10_000_000_000 ? value : value * 1000;
+  const date = new Date(timestampMs);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function readClaudeTaskUpdatedPatch(
+  patch: Record<string, unknown>,
+): ClaudeTaskUpdatedPatch | undefined {
+  const isBackgrounded = patch.is_backgrounded === true;
+  const terminalStatus = normalizeClaudeTaskStatus(patch.status);
+  const backgroundEndedAt = normalizeClaudeTaskEndTime(patch.end_time);
+
+  if (!isBackgrounded && !terminalStatus) {
+    return undefined;
+  }
+
+  return {
+    ...(isBackgrounded ? { isBackgrounded: true as const } : {}),
+    ...(terminalStatus ? { terminalStatus } : {}),
+    ...(backgroundEndedAt ? { backgroundEndedAt } : {}),
+  };
+}
+
+function readClaudeTaskUpdatedMessage(message: SDKMessage): ClaudeTaskUpdatedMessage | undefined {
+  if (sdkMessageType(message) !== "system" || sdkMessageSubtype(message) !== "task_updated") {
+    return undefined;
+  }
+
+  const record = asUnknownRecord(message);
+  const taskId = normalizeOptionalString(record?.task_id);
+  const patchRecord = asUnknownRecord(record?.patch);
+  if (!taskId || !patchRecord) {
+    return {
+      malformed: true,
+    };
+  }
+
+  const patch = readClaudeTaskUpdatedPatch(patchRecord);
+  return {
+    taskId,
+    ...(patch ? { patch } : {}),
+    malformed: false,
+  };
+}
+
+function runtimeItemStatusFromClaudeTaskStatus(
+  status: ClaudeTaskTerminalStatus,
+): RuntimeItemStatus {
+  return status === "completed" ? "completed" : "failed";
+}
+
+function backgroundToolTitle(tool: ToolInFlight, status: ClaudeBackgroundStatus): string {
+  const subject =
+    tool.itemType === "command_execution"
+      ? "command"
+      : tool.itemType === "collab_agent_tool_call"
+        ? "agent"
+        : "task";
+  return `Background ${subject} ${status}`;
+}
+
+function backgroundTaskResult(input: {
+  readonly result?: Record<string, unknown>;
+  readonly backgroundTaskId: string;
+  readonly backgroundStatus: ClaudeBackgroundStatus;
+  readonly backgroundEndedAt?: string;
+}): Record<string, unknown> {
+  return {
+    ...input.result,
+    backgroundTaskId: input.backgroundTaskId,
+    backgroundStatus: input.backgroundStatus,
+    ...(input.backgroundEndedAt ? { backgroundEndedAt: input.backgroundEndedAt } : {}),
+  };
 }
 
 function usageFromClaudeStreamEvent(
@@ -1189,6 +1319,56 @@ function toolResultBlocksFromUserMessage(message: SDKMessage): Array<{
   return blocks;
 }
 
+function readBackgroundTaskIdFromToolResult(
+  message: SDKMessage,
+  toolResult: {
+    readonly block: Record<string, unknown>;
+    readonly text: string;
+  },
+): string | undefined {
+  const topLevelResult = asUnknownRecord(asUnknownRecord(message)?.tool_use_result);
+  const candidates = [
+    topLevelResult?.backgroundTaskId,
+    topLevelResult?.background_task_id,
+    toolResult.block.backgroundTaskId,
+    toolResult.block.background_task_id,
+  ];
+
+  for (const candidate of candidates) {
+    const taskId = normalizeOptionalString(candidate);
+    if (taskId) {
+      return taskId;
+    }
+  }
+
+  const match = toolResult.text.match(
+    /\bbackground(?:\s+task)?(?:\s+with)?\s+id:\s*([A-Za-z0-9_-]+)/i,
+  );
+  return normalizeOptionalString(match?.[1]);
+}
+
+function findInFlightToolEntryByItemId(
+  context: ClaudeSessionContext,
+  itemId: string,
+): readonly [number, ToolInFlight] | undefined {
+  return Array.from(context.inFlightTools.entries()).find(([, tool]) => tool.itemId === itemId);
+}
+
+function findTaskStateEntryByToolUseId(
+  context: ClaudeSessionContext,
+  toolUseId: string,
+): readonly [string, ClaudeTaskState] | undefined {
+  return Array.from(context.taskStates.entries()).find(
+    ([, state]) => state.toolUseId === toolUseId,
+  );
+}
+
+function hasBackgroundTaskStateForTool(context: ClaudeSessionContext, toolUseId: string): boolean {
+  return Array.from(context.taskStates.values()).some(
+    (state) => state.toolUseId === toolUseId && state.backgrounded === true,
+  );
+}
+
 function toSessionError(
   threadId: ThreadId,
   cause: unknown,
@@ -1787,6 +1967,232 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
       });
 
+    const rememberTaskState = (
+      context: ClaudeSessionContext,
+      input: {
+        readonly taskId: string;
+        readonly toolUseId?: string;
+        readonly turnId?: TurnId;
+        readonly description?: string;
+        readonly taskType?: string;
+        readonly tool?: ToolInFlight;
+        readonly launchResult?: Record<string, unknown>;
+        readonly backgrounded?: boolean;
+      },
+    ): ClaudeTaskState => {
+      const existing = context.taskStates.get(input.taskId);
+      const toolUseId = input.toolUseId ?? existing?.toolUseId;
+      const inFlightTool = toolUseId
+        ? findInFlightToolEntryByItemId(context, toolUseId)?.[1]
+        : undefined;
+      const tool = input.tool ?? existing?.tool ?? inFlightTool;
+      const turnId = input.turnId ?? existing?.turnId ?? context.turnState?.turnId;
+      const description = input.description ?? existing?.description;
+      const taskType = input.taskType ?? existing?.taskType;
+      const launchResult = input.launchResult ?? existing?.launchResult;
+      const backgrounded = input.backgrounded ?? existing?.backgrounded;
+
+      const state: ClaudeTaskState = {
+        taskId: input.taskId,
+        ...(toolUseId ? { toolUseId } : {}),
+        ...(turnId ? { turnId } : {}),
+        ...(description ? { description } : {}),
+        ...(taskType ? { taskType } : {}),
+        ...(tool ? { tool } : {}),
+        ...(launchResult ? { launchResult } : {}),
+        ...(backgrounded !== undefined ? { backgrounded } : {}),
+      };
+      context.taskStates.set(input.taskId, state);
+      return state;
+    };
+
+    const emitBackgroundToolLifecycle = (
+      context: ClaudeSessionContext,
+      input: {
+        readonly eventType: "item.updated" | "item.completed";
+        readonly tool: ToolInFlight;
+        readonly taskId: string;
+        readonly backgroundStatus: ClaudeBackgroundStatus;
+        readonly itemStatus: RuntimeItemStatus;
+        readonly turnId?: TurnId;
+        readonly launchResult?: Record<string, unknown>;
+        readonly backgroundEndedAt?: string;
+        readonly rawPayload: unknown;
+      },
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const result = backgroundTaskResult({
+          backgroundTaskId: input.taskId,
+          backgroundStatus: input.backgroundStatus,
+          ...(input.launchResult ? { result: input.launchResult } : {}),
+          ...(input.backgroundEndedAt ? { backgroundEndedAt: input.backgroundEndedAt } : {}),
+        });
+        const payload = {
+          itemType: input.tool.itemType,
+          status: input.itemStatus,
+          title: backgroundToolTitle(input.tool, input.backgroundStatus),
+          ...(input.tool.detail ? { detail: input.tool.detail } : {}),
+          ...(input.tool.requestKind ? { requestKind: input.tool.requestKind } : {}),
+          data: buildToolLifecycleData({
+            toolName: input.tool.toolName,
+            toolInput: input.tool.input,
+            result,
+          }),
+        };
+        const stamp = yield* makeEventStamp();
+        const base = {
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(input.turnId ? { turnId: input.turnId } : {}),
+          itemId: asRuntimeItemId(input.tool.itemId),
+          payload,
+          providerRefs: nativeProviderRefs(context, { providerItemId: input.tool.itemId }),
+          raw: {
+            source: "claude.sdk.message" as const,
+            method: "claude/system/task_updated",
+            payload: input.rawPayload,
+          },
+        };
+
+        yield* offerRuntimeEvent({
+          ...base,
+          type: input.eventType,
+        });
+      });
+
+    const emitTaskUpdatedFallback = (
+      context: ClaudeSessionContext,
+      input: {
+        readonly eventType: "task.progress" | "task.completed";
+        readonly state: ClaudeTaskState;
+        readonly status?: ClaudeTaskTerminalStatus;
+        readonly rawPayload: unknown;
+      },
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        const stamp = yield* makeEventStamp();
+        const base = {
+          eventId: stamp.eventId,
+          provider: PROVIDER,
+          createdAt: stamp.createdAt,
+          threadId: context.session.threadId,
+          ...(input.state.turnId ? { turnId: input.state.turnId } : {}),
+          providerRefs: nativeProviderRefs(context),
+          raw: {
+            source: "claude.sdk.message" as const,
+            method: "claude/system/task_updated",
+            payload: input.rawPayload,
+          },
+        };
+
+        if (input.eventType === "task.progress") {
+          yield* offerRuntimeEvent({
+            ...base,
+            type: "task.progress",
+            payload: {
+              taskId: RuntimeTaskId.makeUnsafe(input.state.taskId),
+              description: input.state.description ?? "Background task running",
+              ...(input.state.tool ? { lastToolName: input.state.tool.toolName } : {}),
+            },
+          });
+          return;
+        }
+
+        yield* offerRuntimeEvent({
+          ...base,
+          type: "task.completed",
+          payload: {
+            taskId: RuntimeTaskId.makeUnsafe(input.state.taskId),
+            status: input.status ?? "completed",
+            ...(input.state.description ? { summary: input.state.description } : {}),
+          },
+        });
+      });
+
+    const handleTaskUpdatedMessage = (
+      context: ClaudeSessionContext,
+      message: SDKMessage,
+      taskUpdated: ClaudeTaskUpdatedMessage,
+    ): Effect.Effect<void> =>
+      Effect.gen(function* () {
+        if (taskUpdated.malformed || !taskUpdated.taskId) {
+          yield* emitRuntimeWarning(context, "Malformed Claude task_updated message.", message);
+          return;
+        }
+        if (!taskUpdated.patch) {
+          yield* emitRuntimeWarning(context, "Unhandled Claude task_updated patch.", message);
+          return;
+        }
+
+        const existing = context.taskStates.get(taskUpdated.taskId);
+        const state = rememberTaskState(context, {
+          taskId: taskUpdated.taskId,
+          ...(taskUpdated.patch.isBackgrounded ? { backgrounded: true } : {}),
+        });
+        const tool = state.tool;
+        const turnId = state.turnId ?? context.turnState?.turnId;
+
+        if (taskUpdated.patch.terminalStatus) {
+          if (tool) {
+            yield* emitBackgroundToolLifecycle(context, {
+              eventType: "item.completed",
+              tool,
+              taskId: state.taskId,
+              backgroundStatus: taskUpdated.patch.terminalStatus,
+              itemStatus: runtimeItemStatusFromClaudeTaskStatus(taskUpdated.patch.terminalStatus),
+              ...(turnId ? { turnId } : {}),
+              ...(state.launchResult ? { launchResult: state.launchResult } : {}),
+              ...(taskUpdated.patch.backgroundEndedAt
+                ? { backgroundEndedAt: taskUpdated.patch.backgroundEndedAt }
+                : {}),
+              rawPayload: message,
+            });
+            const inFlightEntry = state.toolUseId
+              ? findInFlightToolEntryByItemId(context, state.toolUseId)
+              : undefined;
+            if (inFlightEntry) {
+              context.inFlightTools.delete(inFlightEntry[0]);
+            }
+          } else {
+            yield* emitTaskUpdatedFallback(context, {
+              eventType: "task.completed",
+              state,
+              status: taskUpdated.patch.terminalStatus,
+              rawPayload: message,
+            });
+          }
+          context.taskStates.delete(state.taskId);
+          return;
+        }
+
+        if (taskUpdated.patch.isBackgrounded) {
+          if (tool) {
+            yield* emitBackgroundToolLifecycle(context, {
+              eventType: "item.updated",
+              tool,
+              taskId: state.taskId,
+              backgroundStatus: "running",
+              itemStatus: "inProgress",
+              ...(turnId ? { turnId } : {}),
+              ...(state.launchResult ? { launchResult: state.launchResult } : {}),
+              rawPayload: message,
+            });
+            return;
+          }
+
+          yield* emitTaskUpdatedFallback(context, {
+            eventType: "task.progress",
+            state: {
+              ...state,
+              ...(existing?.description ? { description: existing.description } : {}),
+            },
+            rawPayload: message,
+          });
+        }
+      });
+
     const maybeRecommendCompaction = (
       context: ClaudeSessionContext,
       turnId: TurnId | undefined,
@@ -1925,6 +2331,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         for (const [index, tool] of context.inFlightTools.entries()) {
+          if (hasBackgroundTaskStateForTool(context, tool.itemId)) {
+            context.inFlightTools.delete(index);
+            continue;
+          }
+
           const toolStamp = yield* makeEventStamp();
           yield* offerRuntimeEvent({
             type: "item.completed",
@@ -2277,14 +2688,100 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         for (const toolResult of toolResultBlocksFromUserMessage(message)) {
-          const toolEntry = Array.from(context.inFlightTools.entries()).find(
-            ([, tool]) => tool.itemId === toolResult.toolUseId,
-          );
+          const toolEntry = findInFlightToolEntryByItemId(context, toolResult.toolUseId);
           if (!toolEntry) {
             continue;
           }
 
           const [index, tool] = toolEntry;
+          const taskEntry = findTaskStateEntryByToolUseId(context, tool.itemId);
+          const backgroundTaskId =
+            readBackgroundTaskIdFromToolResult(message, toolResult) ??
+            (taskEntry?.[1].backgrounded === true ? taskEntry[0] : undefined);
+
+          if (backgroundTaskId) {
+            if (taskEntry && taskEntry[0] !== backgroundTaskId) {
+              context.taskStates.delete(taskEntry[0]);
+            }
+
+            const taskDescription =
+              taskEntry?.[1].description ??
+              normalizeOptionalString(tool.input.description) ??
+              tool.detail;
+            const taskState = rememberTaskState(context, {
+              taskId: backgroundTaskId,
+              toolUseId: tool.itemId,
+              ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+              ...(taskDescription ? { description: taskDescription } : {}),
+              ...(taskEntry?.[1].taskType ? { taskType: taskEntry[1].taskType } : {}),
+              tool,
+              launchResult: toolResult.block,
+              backgrounded: true,
+            });
+            const result = backgroundTaskResult({
+              result: toolResult.block,
+              backgroundTaskId,
+              backgroundStatus: "running",
+            });
+            const toolData = buildToolLifecycleData({
+              toolName: tool.toolName,
+              toolInput: tool.input,
+              result,
+            });
+
+            const updatedStamp = yield* makeEventStamp();
+            yield* offerRuntimeEvent({
+              type: "item.updated",
+              eventId: updatedStamp.eventId,
+              provider: PROVIDER,
+              createdAt: updatedStamp.createdAt,
+              threadId: context.session.threadId,
+              ...(taskState.turnId ? { turnId: taskState.turnId } : {}),
+              itemId: asRuntimeItemId(tool.itemId),
+              payload: {
+                itemType: tool.itemType,
+                status: "inProgress",
+                title: backgroundToolTitle(tool, "running"),
+                ...(tool.detail ? { detail: tool.detail } : {}),
+                ...(tool.requestKind ? { requestKind: tool.requestKind } : {}),
+                data: toolData,
+              },
+              providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+              raw: {
+                source: "claude.sdk.message",
+                method: "claude/user",
+                payload: message,
+              },
+            });
+
+            const streamKind = toolResultStreamKind(tool.itemType);
+            if (streamKind && toolResult.text.length > 0 && context.turnState) {
+              const deltaStamp = yield* makeEventStamp();
+              yield* offerRuntimeEvent({
+                type: "content.delta",
+                eventId: deltaStamp.eventId,
+                provider: PROVIDER,
+                createdAt: deltaStamp.createdAt,
+                threadId: context.session.threadId,
+                turnId: context.turnState.turnId,
+                itemId: asRuntimeItemId(tool.itemId),
+                payload: {
+                  streamKind,
+                  delta: toolResult.text,
+                },
+                providerRefs: nativeProviderRefs(context, { providerItemId: tool.itemId }),
+                raw: {
+                  source: "claude.sdk.message",
+                  method: "claude/user",
+                  payload: message,
+                },
+              });
+            }
+
+            context.inFlightTools.delete(index);
+            continue;
+          }
+
           const itemStatus = toolResult.isError ? "failed" : "completed";
           const toolData = buildToolLifecycleData({
             toolName: tool.toolName,
@@ -2520,6 +3017,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
+        const taskUpdated = readClaudeTaskUpdatedMessage(message);
+        if (taskUpdated) {
+          yield* handleTaskUpdatedMessage(context, message, taskUpdated);
+          return;
+        }
+
         const stamp = yield* makeEventStamp();
         const base = {
           eventId: stamp.eventId,
@@ -2600,6 +3103,26 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             });
             return;
           case "task_started":
+            {
+              const messageRecord = asUnknownRecord(message);
+              const taskId = normalizeOptionalString(message.task_id);
+              const toolUseId = normalizeOptionalString(messageRecord?.tool_use_id);
+              if (taskId) {
+                const tool = toolUseId
+                  ? findInFlightToolEntryByItemId(context, toolUseId)?.[1]
+                  : undefined;
+                const description = normalizeOptionalString(message.description);
+                const taskType = normalizeOptionalString(message.task_type);
+                rememberTaskState(context, {
+                  taskId,
+                  ...(toolUseId ? { toolUseId } : {}),
+                  ...(context.turnState ? { turnId: context.turnState.turnId } : {}),
+                  ...(description ? { description } : {}),
+                  ...(taskType ? { taskType } : {}),
+                  ...(tool ? { tool } : {}),
+                });
+              }
+            }
             yield* offerRuntimeEvent({
               ...base,
               type: "task.started",
@@ -3128,6 +3651,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
         const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
         const inFlightTools = new Map<number, ToolInFlight>();
+        const taskStates = new Map<string, ClaudeTaskState>();
 
         const contextRef = yield* Ref.make<ClaudeSessionContext | undefined>(undefined);
         const providerOptions = input.providerOptions?.claudeAgent;
@@ -3610,6 +4134,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           pendingUserInputs,
           turns: [],
           inFlightTools,
+          taskStates,
           turnState: undefined,
           lastAssistantUuid: resumeState?.resumeSessionAt,
           lastThreadStartedId: undefined,

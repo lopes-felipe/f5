@@ -2,7 +2,7 @@ import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
-import { type CodexMcpServerEntry } from "@t3tools/contracts";
+import { type CodexMcpServerEntry, type McpServerStartupStatus } from "@t3tools/contracts";
 import {
   assertSupportedCodexCliVersion,
   buildCodexInitializeParams,
@@ -93,6 +93,8 @@ export interface CodexControlMcpServerStatus {
   readonly resources?: ReadonlyArray<unknown>;
   readonly resourceTemplates?: ReadonlyArray<unknown>;
   readonly authStatus?: string;
+  readonly startupStatus?: McpServerStartupStatus;
+  readonly error?: string;
 }
 
 export interface CodexControlListMcpServerStatusResult {
@@ -152,6 +154,22 @@ function asTrimmedString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function asMcpServerStartupStatus(value: unknown): McpServerStartupStatus | undefined {
+  switch (value) {
+    case "starting":
+    case "ready":
+    case "failed":
+    case "cancelled":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeMcpServerName(name: string): string {
+  return name.trim().toLowerCase();
+}
+
 export function isMethodNotFoundError(error: unknown): boolean {
   return (
     (error instanceof CodexControlRequestError && error.code === -32601) ||
@@ -168,6 +186,14 @@ export class CodexControlClient extends EventEmitter<{
   private readonly output: readline.Interface;
   private readonly writer: JsonRpcStdinWriter;
   private readonly pending = new Map<string, PendingRequest>();
+  private readonly mcpStartupStatuses = new Map<
+    string,
+    {
+      readonly name: string;
+      readonly startupStatus: McpServerStartupStatus;
+      readonly error?: string;
+    }
+  >();
   private nextRequestId = 1;
   private closed = false;
 
@@ -263,6 +289,7 @@ export class CodexControlClient extends EventEmitter<{
       }
 
       if (isJsonRpcNotification(parsed)) {
+        this.recordMcpStartupStatus(parsed);
         this.emit("notification", {
           method: parsed.method,
           params: parsed.params,
@@ -296,6 +323,25 @@ export class CodexControlClient extends EventEmitter<{
           )}).`,
         ),
       );
+    });
+  }
+
+  private recordMcpStartupStatus(notification: JsonRpcNotification): void {
+    if (notification.method !== "mcpServer/startupStatus/updated") {
+      return;
+    }
+
+    const params = isObject(notification.params) ? notification.params : undefined;
+    const name = asTrimmedString(params?.name);
+    const startupStatus = asMcpServerStartupStatus(params?.status);
+    if (!name || !startupStatus) {
+      return;
+    }
+
+    this.mcpStartupStatuses.set(normalizeMcpServerName(name), {
+      name,
+      startupStatus,
+      ...(asTrimmedString(params?.error) ? { error: asTrimmedString(params?.error)! } : {}),
     });
   }
 
@@ -426,12 +472,22 @@ export class CodexControlClient extends EventEmitter<{
       ...(cursor ? { cursor } : {}),
       ...(typeof limit === "number" ? { limit } : {}),
     });
+    const data = Array.isArray(result.data)
+      ? (result.data.filter((entry): entry is CodexControlMcpServerStatus =>
+          isObject(entry),
+        ) as ReadonlyArray<CodexControlMcpServerStatus>)
+      : [];
+    const merged = data.map((status) => {
+      const startupStatus = this.mcpStartupStatuses.get(normalizeMcpServerName(status.name));
+      return startupStatus ? { ...status, ...startupStatus, name: status.name } : status;
+    });
+    const returnedNames = new Set(merged.map((status) => normalizeMcpServerName(status.name)));
+    const startupOnly = [...this.mcpStartupStatuses.values()].filter(
+      (status) => !returnedNames.has(normalizeMcpServerName(status.name)),
+    );
+
     return {
-      data: Array.isArray(result.data)
-        ? (result.data.filter((entry): entry is CodexControlMcpServerStatus =>
-            isObject(entry),
-          ) as ReadonlyArray<CodexControlMcpServerStatus>)
-        : [],
+      data: [...merged, ...startupOnly],
       nextCursor: result.nextCursor === null ? null : (asTrimmedString(result.nextCursor) ?? null),
     };
   }
