@@ -393,6 +393,28 @@ function applyWorkflowEventToSnapshot(
         updatedAt: event.occurredAt,
       };
 
+    case "thread.turn-diff-completed":
+      return {
+        ...snapshot,
+        threads: snapshot.threads.map((thread) =>
+          thread.id === event.payload.threadId && thread.latestTurn?.turnId === event.payload.turnId
+            ? {
+                ...thread,
+                latestTurn: {
+                  ...thread.latestTurn,
+                  state: event.payload.status === "error" ? "error" : "completed",
+                  completedAt: event.payload.completedAt,
+                  assistantMessageId:
+                    event.payload.assistantMessageId ?? thread.latestTurn.assistantMessageId,
+                },
+                updatedAt: event.occurredAt,
+                lastInteractionAt: event.occurredAt,
+              }
+            : thread,
+        ),
+        updatedAt: event.occurredAt,
+      };
+
     default:
       return snapshot;
   }
@@ -456,6 +478,7 @@ async function createHarness(initialSnapshot: OrchestrationReadModel) {
         snapshot = applyWorkflowCommandToSnapshot(snapshot, command);
         return { sequence: dispatched.length };
       }),
+    acquireMaintenanceLock: () => Scope.make("sequential"),
     streamDomainEvents: Stream.fromQueue(queue),
   };
 
@@ -3362,6 +3385,375 @@ describe("WorkflowService", () => {
       revisionTurnB,
     );
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.merge.status).toBe("in_progress");
+  });
+
+  it("does not complete a revising branch from the previous authoring turn", async () => {
+    const oldPlanTurn = TurnId.makeUnsafe("plan-turn-b");
+    const revisionStartedAt = "2026-03-26T12:01:00.000Z";
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        revisionTurnId: TurnId.makeUnsafe("revision-turn-a"),
+        status: "revised",
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: oldPlanTurn,
+        revisionTurnId: null,
+        status: "revising",
+        updatedAt: revisionStartedAt,
+      },
+      merge: {
+        ...makeWorkflow().merge,
+        threadId: null,
+        outputFilePath: null,
+        turnId: null,
+        approvedPlanId: null,
+        status: "not_started",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("revision-turn-a"),
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("assistant-author-a"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-a"),
+                turnId: TurnId.makeUnsafe("revision-turn-a"),
+                planMarkdown: "Revised plan A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+          makeThread({
+            id: ThreadId.makeUnsafe("author-b"),
+            latestTurn: {
+              turnId: oldPlanTurn,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("assistant-author-b-old"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-b"),
+              status: "ready",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: revisionStartedAt,
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-b-old"),
+                turnId: oldPlanTurn,
+                planMarkdown: "Original plan B",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent(
+        "thread.session-set",
+        {
+          threadId: ThreadId.makeUnsafe("author-b"),
+          session: {
+            threadId: ThreadId.makeUnsafe("author-b"),
+            status: "ready",
+            providerName: "claudeAgent",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: revisionStartedAt,
+          },
+        },
+        revisionStartedAt,
+      ),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchB.status).toBe("revising");
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchB.revisionTurnId).toBeNull();
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Merge",
+      ),
+    ).toBe(false);
+  });
+
+  it("advances a revising branch from a completed turn when its plan was already captured", async () => {
+    const revisionTurnA = TurnId.makeUnsafe("revision-turn-a");
+    const revisionTurnB = TurnId.makeUnsafe("revision-turn-b");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        revisionTurnId: revisionTurnA,
+        status: "revised",
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        revisionTurnId: null,
+        status: "revising",
+      },
+      merge: {
+        ...makeWorkflow().merge,
+        threadId: null,
+        outputFilePath: null,
+        turnId: null,
+        approvedPlanId: null,
+        status: "not_started",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: revisionTurnA,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("assistant-author-a"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-a"),
+                turnId: revisionTurnA,
+                planMarkdown: "Revised plan A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+          makeThread({
+            id: ThreadId.makeUnsafe("author-b"),
+            latestTurn: {
+              turnId: revisionTurnB,
+              state: "running",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: null,
+              assistantMessageId: MessageId.makeUnsafe("assistant-author-b"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-b"),
+              status: "ready",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-b"),
+                turnId: revisionTurnB,
+                planMarkdown: "Revised plan B",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.turn-diff-completed", {
+        threadId: ThreadId.makeUnsafe("author-b"),
+        turnId: revisionTurnB,
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.makeUnsafe("checkpoint-revision-b"),
+        status: "ready",
+        files: [],
+        assistantMessageId: MessageId.makeUnsafe("assistant-author-b"),
+        completedAt: NOW,
+      }),
+    );
+
+    await waitFor(() =>
+      harness!.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Merge",
+      ),
+    );
+
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchB.status).toBe("revised");
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchB.revisionTurnId).toBe(
+      revisionTurnB,
+    );
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.merge.status).toBe("in_progress");
+  });
+
+  it("repairs stale revised branch turn ids during reconciliation and starts merge", async () => {
+    const planTurnA = TurnId.makeUnsafe("plan-turn-a");
+    const planTurnB = TurnId.makeUnsafe("plan-turn-b");
+    const revisionTurnA = TurnId.makeUnsafe("revision-turn-a");
+    const revisionTurnB = TurnId.makeUnsafe("revision-turn-b");
+    const revisionStartedAt = "2026-03-26T12:00:30.000Z";
+    const revisionRequestedAt = "2026-03-26T12:01:00.000Z";
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: planTurnA,
+        revisionTurnId: planTurnA,
+        status: "revised",
+        updatedAt: revisionStartedAt,
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: planTurnB,
+        revisionTurnId: planTurnB,
+        status: "revised",
+        updatedAt: revisionStartedAt,
+      },
+      merge: {
+        ...makeWorkflow().merge,
+        threadId: null,
+        outputFilePath: null,
+        turnId: null,
+        approvedPlanId: null,
+        status: "not_started",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: revisionTurnA,
+              state: "completed",
+              requestedAt: revisionRequestedAt,
+              startedAt: revisionRequestedAt,
+              completedAt: revisionRequestedAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-author-a"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: revisionRequestedAt,
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-a-revision"),
+                turnId: revisionTurnA,
+                planMarkdown: "Revised plan A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: revisionRequestedAt,
+                updatedAt: revisionRequestedAt,
+              },
+            ],
+          }),
+          makeThread({
+            id: ThreadId.makeUnsafe("author-b"),
+            latestTurn: {
+              turnId: revisionTurnB,
+              state: "completed",
+              requestedAt: revisionRequestedAt,
+              startedAt: revisionRequestedAt,
+              completedAt: revisionRequestedAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-author-b"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-b"),
+              status: "ready",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: revisionRequestedAt,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-author-b"),
+                role: "assistant",
+                text: "Revised plan B",
+                turnId: revisionTurnB,
+                streaming: false,
+                createdAt: revisionRequestedAt,
+                updatedAt: revisionRequestedAt,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    await waitFor(() =>
+      harness!.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Merge",
+      ),
+    );
+
+    const finalWorkflow = lastWorkflowUpsert(harness.dispatched)?.workflow;
+    expect(finalWorkflow?.branchA.revisionTurnId).toBe(revisionTurnA);
+    expect(finalWorkflow?.branchB.revisionTurnId).toBe(revisionTurnB);
+    expect(finalWorkflow?.merge.status).toBe("in_progress");
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "thread.proposed-plan.upsert" &&
+          command.threadId === ThreadId.makeUnsafe("author-b") &&
+          command.proposedPlan.turnId === revisionTurnB,
+      ),
+    ).toBe(true);
   });
 
   it("starts merge with the proposed plans that match each recorded revision turn", async () => {

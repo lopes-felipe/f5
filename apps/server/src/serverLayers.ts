@@ -44,6 +44,7 @@ import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
+import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
 import { KeybindingsLive } from "./keybindings";
@@ -231,6 +232,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provide(ProviderSessionRuntimeRepositoryLive),
   );
   const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
+  const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(projectionSnapshotQueryLayer),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -242,8 +244,12 @@ export function makeServerOrchestrationRuntimeLayer() {
     projectionSnapshotQueryLayer,
     providerSessionDirectoryLayer,
     RuntimeReceiptBusLive,
+    StorageMaintenanceLive.pipe(
+      Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(gitCoreLayer),
+      Layer.provideMerge(OrchestrationEventStoreLive),
+    ),
   );
-  const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
   const workflowServiceLayer = WorkflowServiceLive.pipe(
     Layer.provideMerge(orchestrationLayer),
     Layer.provideMerge(projectionSnapshotQueryLayer),

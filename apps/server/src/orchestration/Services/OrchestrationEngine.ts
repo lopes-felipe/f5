@@ -16,7 +16,7 @@ import type {
   OrchestrationReadModel,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
-import type { Effect, Stream } from "effect";
+import type { Effect, Scope, Stream } from "effect";
 
 import type { OrchestrationDispatchError } from "../Errors.ts";
 import type { OrchestrationEventStoreError } from "../../persistence/Errors.ts";
@@ -54,6 +54,15 @@ export interface OrchestrationEngineShape {
   readonly dispatch: (
     command: OrchestrationCommand,
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
+
+  /**
+   * Acquire an exclusive process-local maintenance lock.
+   *
+   * Command dispatch processing takes a shared lock; callers must close the
+   * returned scope to release the exclusive lock. This is intended for storage
+   * cleanup and database maintenance that must not race with command writes.
+   */
+  readonly acquireMaintenanceLock: () => Effect.Effect<Scope.Closeable, never, never>;
 
   /**
    * Stream persisted domain events in dispatch order.

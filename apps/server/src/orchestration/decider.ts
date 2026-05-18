@@ -528,11 +528,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.delete": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedArchivedAt !== undefined &&
+        thread.archivedAt !== command.expectedArchivedAt
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' archive state changed before deletion.`,
+        });
+      }
+      if (
+        command.expectedWorktreePath !== undefined &&
+        thread.worktreePath !== command.expectedWorktreePath
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' worktree path changed before deletion.`,
+        });
+      }
       const occurredAt = nowIso();
       return {
         ...withEventBase({
@@ -592,11 +610,29 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.meta.update": {
-      yield* requireThread({
+      const thread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
+      if (
+        command.expectedArchivedAt !== undefined &&
+        thread.archivedAt !== command.expectedArchivedAt
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' archive state changed before metadata update.`,
+        });
+      }
+      if (
+        command.expectedWorktreePath !== undefined &&
+        thread.worktreePath !== command.expectedWorktreePath
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' worktree path changed before metadata update.`,
+        });
+      }
       const occurredAt = nowIso();
       return {
         ...withEventBase({

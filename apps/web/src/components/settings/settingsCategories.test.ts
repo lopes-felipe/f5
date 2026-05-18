@@ -7,7 +7,7 @@ import {
 
 describe("resolveSettingsCategoryFromSearch", () => {
   it("returns the requested category when valid", () => {
-    expect(resolveSettingsCategoryFromSearch({ category: "projects" })).toBe("projects");
+    expect(resolveSettingsCategoryFromSearch({ category: "storage" })).toBe("storage");
   });
 
   it("falls back to general for missing or malformed values", () => {

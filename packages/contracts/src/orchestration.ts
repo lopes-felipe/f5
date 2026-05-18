@@ -856,6 +856,8 @@ const ThreadDeleteCommand = Schema.Struct({
   type: Schema.Literal("thread.delete"),
   commandId: CommandId,
   threadId: ThreadId,
+  expectedArchivedAt: Schema.optional(IsoDateTime),
+  expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
 const ThreadArchiveCommand = Schema.Struct({
@@ -881,6 +883,8 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
+  expectedArchivedAt: Schema.optional(IsoDateTime),
+  expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({

@@ -1583,6 +1583,9 @@ export const makeWorkflowService = Effect.gen(function* () {
     snapshot: OrchestrationReadModel,
     threadId: ThreadId,
     updatedAt: string,
+    options?: {
+      readonly expectedTurnId?: TurnId | null;
+    },
   ) =>
     Effect.gen(function* () {
       const thread = snapshot.threads.find((entry) => entry.id === threadId);
@@ -1603,7 +1606,13 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
 
         const turnId = getFinishedLatestTurnId(thread);
-        if (!turnId) {
+        if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
+          return workflow;
+        }
+        if (branch.status === "revising" && turnId === branch.planTurnId) {
+          return workflow;
+        }
+        if (!thread.latestTurn || thread.latestTurn.requestedAt < branch.updatedAt) {
           return workflow;
         }
 
@@ -1660,7 +1669,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       const turnId = getFinishedLatestTurnId(thread);
-      if (!turnId) {
+      if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
         return workflow;
       }
 
@@ -2049,6 +2058,53 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* reconcilePendingBranch("b");
       yield* refreshWorkflowFromSnapshot;
 
+      const repairStaleRevisedBranch = (branchId: "a" | "b") =>
+        Effect.gen(function* () {
+          const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+          if (
+            branch.status !== "revised" ||
+            reconciledWorkflow.merge.status !== "not_started" ||
+            (branch.revisionTurnId !== null && branch.revisionTurnId !== branch.planTurnId)
+          ) {
+            return;
+          }
+
+          const authorThread = latestSnapshot.threads.find(
+            (thread) => thread.id === branch.authorThreadId,
+          );
+          const turnId = getFinishedLatestTurnId(authorThread);
+          if (
+            !turnId ||
+            !authorThread?.latestTurn ||
+            authorThread.latestTurn.requestedAt < branch.updatedAt ||
+            turnId === branch.revisionTurnId
+          ) {
+            return;
+          }
+
+          if (!hasProposedPlanForTurn(authorThread, turnId)) {
+            const synthesized = yield* maybeSynthesizeProposedPlan({
+              thread: authorThread,
+              turnId,
+              createdAt: updatedAt,
+            });
+            if (!synthesized) {
+              return;
+            }
+            yield* refreshWorkflowFromSnapshot;
+          }
+
+          reconciledWorkflow = markBranchRevised(reconciledWorkflow, branchId, {
+            turnId,
+            updatedAt,
+          });
+          yield* upsertWorkflow(reconciledWorkflow);
+          yield* refreshWorkflowFromSnapshot;
+        });
+
+      yield* repairStaleRevisedBranch("a");
+      yield* repairStaleRevisedBranch("b");
+
       const lifecycleThreadIds = [
         reconciledWorkflow.branchA.authorThreadId,
         reconciledWorkflow.branchB.authorThreadId,
@@ -2219,6 +2275,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             readModel,
             event.payload.threadId,
             event.occurredAt,
+            { expectedTurnId: event.payload.proposedPlan.turnId },
           );
           const lifecycleSnapshot =
             nextWorkflow !== planningWorkflow
@@ -2263,11 +2320,33 @@ export const makeWorkflowService = Effect.gen(function* () {
                 ? authorMatch.workflow.branchA
                 : authorMatch.workflow.branchB;
             if (authorThread && (branch.status === "authoring" || branch.status === "revising")) {
-              yield* maybeSynthesizeProposedPlan({
+              const synthesized = yield* maybeSynthesizeProposedPlan({
                 thread: authorThread,
                 turnId: event.payload.turnId,
                 createdAt: event.occurredAt,
               });
+              const nextReadModel = synthesized
+                ? yield* orchestrationEngine.getReadModel()
+                : readModel;
+              const nextAuthorMatch =
+                workflowForAuthorThread(nextReadModel.planningWorkflows, event.payload.threadId) ??
+                authorMatch;
+              const nextWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+                nextAuthorMatch.workflow,
+                nextReadModel,
+                event.payload.threadId,
+                event.occurredAt,
+                { expectedTurnId: event.payload.turnId },
+              );
+              const lifecycleSnapshot =
+                nextWorkflow !== nextAuthorMatch.workflow
+                  ? yield* orchestrationEngine.getReadModel()
+                  : nextReadModel;
+              yield* maybeContinuePlanningWorkflowLifecycle(
+                nextWorkflow,
+                lifecycleSnapshot,
+                event.occurredAt,
+              );
             }
             return;
           }
@@ -2289,11 +2368,31 @@ export const makeWorkflowService = Effect.gen(function* () {
             return;
           }
 
-          yield* maybeSynthesizeProposedPlan({
+          const synthesized = yield* maybeSynthesizeProposedPlan({
             thread: mergeThread,
             turnId: event.payload.turnId,
             createdAt: event.occurredAt,
           });
+          const nextReadModel = synthesized ? yield* orchestrationEngine.getReadModel() : readModel;
+          const nextMergeWorkflow =
+            workflowForMergeThread(nextReadModel.planningWorkflows, event.payload.threadId)
+              ?.workflow ?? mergeWorkflow;
+          const nextWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            nextMergeWorkflow,
+            nextReadModel,
+            event.payload.threadId,
+            event.occurredAt,
+            { expectedTurnId: event.payload.turnId },
+          );
+          const lifecycleSnapshot =
+            nextWorkflow !== nextMergeWorkflow
+              ? yield* orchestrationEngine.getReadModel()
+              : nextReadModel;
+          yield* maybeContinuePlanningWorkflowLifecycle(
+            nextWorkflow,
+            lifecycleSnapshot,
+            event.occurredAt,
+          );
           return;
         }
 

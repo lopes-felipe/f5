@@ -61,6 +61,12 @@ const ReadFromSequenceRequestSchema = Schema.Struct({
   sequenceExclusive: NonNegativeInt,
   limit: Schema.Number,
 });
+const ThreadStreamRequestSchema = Schema.Struct({
+  threadId: ThreadId,
+});
+const CommandIdRowSchema = Schema.Struct({
+  commandId: CommandId,
+});
 const DEFAULT_READ_FROM_SEQUENCE_LIMIT = 1_000;
 const READ_PAGE_SIZE = 500;
 
@@ -178,6 +184,30 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const collectCommandIdRowsForThread = SqlSchema.findAll({
+    Request: ThreadStreamRequestSchema,
+    Result: CommandIdRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT DISTINCT command_id AS "commandId"
+        FROM orchestration_events
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${threadId}
+          AND command_id IS NOT NULL
+        ORDER BY command_id ASC
+      `,
+  });
+
+  const deleteEventRowsForThread = SqlSchema.void({
+    Request: ThreadStreamRequestSchema,
+    execute: ({ threadId }) =>
+      sql`
+        DELETE FROM orchestration_events
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${threadId}
+      `,
+  });
+
   const append: OrchestrationEventStoreShape["append"] = (event) =>
     appendEventRow({
       eventId: event.eventId,
@@ -257,10 +287,30 @@ const makeEventStore = Effect.gen(function* () {
     return readPage(sequenceExclusive, normalizedLimit);
   };
 
+  const collectCommandIdsForThread: OrchestrationEventStoreShape["collectCommandIdsForThread"] = (
+    threadId,
+  ) =>
+    collectCommandIdRowsForThread({ threadId }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.collectCommandIdsForThread:query",
+          "OrchestrationEventStore.collectCommandIdsForThread:decodeRows",
+        ),
+      ),
+      Effect.map((rows) => rows.map((row) => row.commandId)),
+    );
+
+  const deleteForThreadStream: OrchestrationEventStoreShape["deleteForThreadStream"] = (threadId) =>
+    deleteEventRowsForThread({ threadId }).pipe(
+      Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.deleteForThreadStream:query")),
+    );
+
   return {
     append,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
+    collectCommandIdsForThread,
+    deleteForThreadStream,
   } satisfies OrchestrationEventStoreShape;
 });
 

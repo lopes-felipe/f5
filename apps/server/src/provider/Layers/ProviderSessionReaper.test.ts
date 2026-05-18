@@ -1,6 +1,6 @@
 import { ProjectId, ThreadId, type OrchestrationReadModel } from "@t3tools/contracts";
 import { it, assert } from "@effect/vitest";
-import { Effect, Fiber, Layer, Option, Stream } from "effect";
+import { Effect, Fiber, Layer, Option, Scope, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vitest";
 
@@ -97,6 +97,7 @@ function makeLayer(input: {
     getReadModel: () => Effect.succeed(input.readModel),
     readEvents: () => Stream.empty,
     dispatch: () => Effect.succeed({ sequence: 1 }),
+    acquireMaintenanceLock: () => Scope.make("sequential"),
     streamDomainEvents: Stream.empty,
   };
   const provider = {

@@ -7,6 +7,8 @@ import {
   type ContextMenuItem,
   type NativeApi,
   ServerConfigUpdatedPayload,
+  type StorageCleanupProgressPayload,
+  type StorageInvalidatedPayload,
   WS_CHANNELS,
   WS_METHODS,
   type WsWelcomePayload,
@@ -21,6 +23,8 @@ const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayloa
 const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
 const gitStatusInvalidatedListeners = new Set<(payload: GitStatusInvalidatedPayload) => void>();
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
+const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
+const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
 
 /**
  * Subscribe to the server welcome message. If a welcome was already received
@@ -116,6 +120,26 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(WS_CHANNELS.mcpStatusUpdated, (message) => {
     const payload = message.data;
     for (const listener of mcpStatusUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.storageInvalidated, (message) => {
+    const payload = message.data;
+    for (const listener of storageInvalidatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.storageCleanupProgress, (message) => {
+    const payload = message.data;
+    for (const listener of storageCleanupProgressListeners) {
       try {
         listener(payload);
       } catch {
@@ -239,6 +263,23 @@ export function createWsNativeApi(): NativeApi {
         };
       },
     },
+    storage: {
+      getUsage: (input = {}) => transport.request(WS_METHODS.storageGetUsage, input),
+      cleanup: (input) => transport.request(WS_METHODS.storageCleanup, input, { timeoutMs: null }),
+      cancelCleanup: (input) => transport.request(WS_METHODS.storageCancelCleanup, input),
+      onInvalidated: (callback) => {
+        storageInvalidatedListeners.add(callback);
+        return () => {
+          storageInvalidatedListeners.delete(callback);
+        };
+      },
+      onCleanupProgress: (callback) => {
+        storageCleanupProgressListeners.add(callback);
+        return () => {
+          storageCleanupProgressListeners.delete(callback);
+        };
+      },
+    },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),
       getStartupSnapshot: (input) =>
@@ -310,5 +351,25 @@ export function onMcpStatusUpdated(
 
   return () => {
     mcpStatusUpdatedListeners.delete(listener);
+  };
+}
+
+export function onStorageInvalidated(
+  listener: (payload: StorageInvalidatedPayload) => void,
+): () => void {
+  storageInvalidatedListeners.add(listener);
+
+  const latestPush =
+    instance?.transport.getLatestPush(WS_CHANNELS.storageInvalidated)?.data ?? null;
+  if (latestPush) {
+    try {
+      listener(latestPush);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+
+  return () => {
+    storageInvalidatedListeners.delete(listener);
   };
 }

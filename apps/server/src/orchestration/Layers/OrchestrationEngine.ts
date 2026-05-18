@@ -43,6 +43,7 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { makeStorageMaintenanceLock } from "../../storage/StorageMaintenanceLock.ts";
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
@@ -86,6 +87,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const commandReceiptRepository = yield* OrchestrationCommandReceiptRepository;
   const projectionPipeline = yield* OrchestrationProjectionPipeline;
   const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const maintenanceLock = yield* makeStorageMaintenanceLock;
 
   let readModel = createEmptyReadModel(new Date().toISOString());
 
@@ -316,7 +318,11 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     }),
   );
 
-  const worker = Effect.forever(Queue.take(commandQueue).pipe(Effect.flatMap(processEnvelope)));
+  const worker = Effect.forever(
+    Queue.take(commandQueue).pipe(
+      Effect.flatMap((envelope) => maintenanceLock.withShared(processEnvelope(envelope))),
+    ),
+  );
   yield* Effect.forkScoped(worker);
   yield* Effect.log("orchestration engine started").pipe(
     Effect.annotateLogs({
@@ -343,6 +349,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     getReadModel,
     readEvents,
     dispatch,
+    acquireMaintenanceLock: maintenanceLock.acquireExclusive,
     // Each access creates a fresh PubSub subscription so that multiple
     // consumers (wsServer, ProviderRuntimeIngestion, CheckpointReactor, etc.)
     // each independently receive all domain events.

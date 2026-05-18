@@ -9,7 +9,7 @@
  *
  * @module OrchestrationEventStore
  */
-import { OrchestrationEvent } from "@t3tools/contracts";
+import { CommandId, OrchestrationEvent, ThreadId } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect, Stream } from "effect";
 
@@ -51,6 +51,24 @@ export interface OrchestrationEventStoreShape {
    * @returns Stream containing all stored events.
    */
   readonly readAll: () => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
+
+  /**
+   * Collect command ids associated with a thread event stream.
+   */
+  readonly collectCommandIdsForThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ReadonlyArray<CommandId>, OrchestrationEventStoreError>;
+
+  /**
+   * Delete all events for a thread stream.
+   *
+   * Causation references are intentionally not updated. The column is not a
+   * foreign key, and historical dangling references are tolerated for purged
+   * soft-deleted threads.
+   */
+  readonly deleteForThreadStream: (
+    threadId: ThreadId,
+  ) => Effect.Effect<void, OrchestrationEventStoreError>;
 }
 
 /**

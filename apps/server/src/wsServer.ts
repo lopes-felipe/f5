@@ -25,6 +25,7 @@ import {
   ThreadId,
   WS_CHANNELS,
   WS_METHODS,
+  type StorageCleanupProgressPayload,
   WebSocketRequest,
   type WsResponse as WsResponseMessage,
   WsResponse,
@@ -127,6 +128,7 @@ import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
 import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts";
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
+import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -461,6 +463,7 @@ interface OrchestrationRuntimeServices {
   readonly workflowService: WorkflowServiceShape;
   readonly codeReviewWorkflowService: CodeReviewWorkflowServiceShape;
   readonly projectSetupScriptRunner: ProjectSetupScriptRunnerShape;
+  readonly storageMaintenance: StorageMaintenanceShape;
 }
 
 export const createServer = Effect.fn(function* (): Effect.fn.Return<
@@ -1000,6 +1003,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       orchestrationRuntimeServices,
       ProjectSetupScriptRunner,
     );
+    const storageMaintenance = ServiceMap.get(orchestrationRuntimeServices, StorageMaintenance);
 
     yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
       Effect.gen(function* () {
@@ -1023,6 +1027,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       workflowService,
       codeReviewWorkflowService,
       projectSetupScriptRunner,
+      storageMaintenance,
     }).pipe(Effect.orDie);
 
     // Fire-and-forget cleanup: clear stale `worktreePath` projections whose
@@ -1826,6 +1831,48 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
         return { keybindings: keybindingsConfig, issues: [] };
+      }
+
+      case WS_METHODS.storageGetUsage: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        return yield* storageMaintenance.inspect(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.storageCleanup: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        const publishProgress = (event: StorageCleanupProgressPayload) =>
+          pushBus.publishClient(ws, WS_CHANNELS.storageCleanupProgress, event).pipe(Effect.asVoid);
+        const result = yield* storageMaintenance.cleanup(body, { publishProgress }).pipe(
+          Effect.tap(() =>
+            pushBus.publishAll(WS_CHANNELS.storageInvalidated, {
+              reason: "cleanup-completed",
+              operationId: body.operationId,
+            }),
+          ),
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+        return result;
+      }
+
+      case WS_METHODS.storageCancelCleanup: {
+        const { storageMaintenance } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        yield* storageMaintenance.cancel(body.operationId);
+        return undefined;
       }
 
       case WS_METHODS.mcpGetProjectConfig: {

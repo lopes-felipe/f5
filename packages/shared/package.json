@@ -103,6 +103,10 @@
     "./appStatePaths": {
       "types": "./src/appStatePaths.ts",
       "import": "./src/appStatePaths.ts"
+    },
+    "./byteSize": {
+      "types": "./src/byteSize.ts",
+      "import": "./src/byteSize.ts"
     }
   },
   "scripts": {

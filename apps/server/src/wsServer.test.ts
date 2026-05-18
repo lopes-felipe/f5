@@ -1245,11 +1245,15 @@ describe("WebSocket Server", () => {
       const providerSessionReaperModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionReaper.ts")
       >("./provider/Services/ProviderSessionReaper.ts");
+      const storageMaintenanceModule = await vi.importActual<
+        typeof import("./storage/StorageMaintenance.ts")
+      >("./storage/StorageMaintenance.ts");
       const pendingRuntimeLayer = Layer.mergeAll(
         Layer.succeed(orchestrationEngineModule.OrchestrationEngineService, {
           getReadModel: () => Effect.die(new Error("unused in pending-runtime ws test")),
           readEvents: () => Stream.empty,
           dispatch: () => Effect.die(new Error("unused in pending-runtime ws test")),
+          acquireMaintenanceLock: () => Scope.make("sequential"),
           streamDomainEvents: Stream.empty,
         }),
         Layer.succeed(orchestrationReactorModule.OrchestrationReactor, {
@@ -1264,6 +1268,7 @@ describe("WebSocket Server", () => {
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
         Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
+        Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
       );
       return {
         ...actual,
@@ -1397,6 +1402,9 @@ describe("WebSocket Server", () => {
       const providerSessionReaperModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionReaper.ts")
       >("./provider/Services/ProviderSessionReaper.ts");
+      const storageMaintenanceModule = await vi.importActual<
+        typeof import("./storage/StorageMaintenance.ts")
+      >("./storage/StorageMaintenance.ts");
 
       const readModelThread: OrchestrationThread = {
         id: threadId,
@@ -1449,6 +1457,7 @@ describe("WebSocket Server", () => {
           getReadModel: () => Effect.succeed(readModel),
           readEvents: () => Stream.empty,
           dispatch: () => Effect.succeed({ sequence: 1 }),
+          acquireMaintenanceLock: () => Scope.make("sequential"),
           streamDomainEvents: Stream.empty,
         }),
         Layer.succeed(orchestrationReactorModule.OrchestrationReactor, {
@@ -1476,6 +1485,7 @@ describe("WebSocket Server", () => {
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
         Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
+        Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
       );
 
       return {

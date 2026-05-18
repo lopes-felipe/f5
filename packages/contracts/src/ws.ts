@@ -77,6 +77,13 @@ import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import { ServerConfigUpdatedPayload, ServerValidateHarnessesInput } from "./server";
 import { ServerSettingsPatch } from "./settings";
+import {
+  StorageCancelCleanupRequest,
+  StorageCleanupProgressPayload,
+  StorageCleanupRequest,
+  StorageGetUsageRequest,
+  StorageInvalidatedPayload,
+} from "./storage";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -122,6 +129,12 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
   serverUpsertKeybinding: "server.upsertKeybinding",
+
+  // Storage maintenance
+  storageGetUsage: "storage.getUsage",
+  storageCleanup: "storage.cleanup",
+  storageCancelCleanup: "storage.cancelCleanup",
+
   mcpGetCommonConfig: "mcp.getCommonConfig",
   mcpReplaceCommonConfig: "mcp.replaceCommonConfig",
   mcpGetProjectConfig: "mcp.getProjectConfig",
@@ -147,6 +160,8 @@ export const WS_CHANNELS = {
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
   mcpStatusUpdated: "mcp.statusUpdated",
+  storageInvalidated: "storage.invalidated",
+  storageCleanupProgress: "storage.cleanupProgress",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -265,6 +280,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+  tagRequestBody(WS_METHODS.storageGetUsage, StorageGetUsageRequest),
+  tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
+  tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
   tagRequestBody(WS_METHODS.mcpGetCommonConfig, McpGetCommonConfigRequest),
   tagRequestBody(WS_METHODS.mcpReplaceCommonConfig, McpReplaceCommonConfigRequest),
   tagRequestBody(WS_METHODS.mcpGetProjectConfig, McpGetProjectConfigRequest),
@@ -316,6 +334,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.gitStatusInvalidated]: typeof GitStatusInvalidatedPayload.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
+  readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
+  readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
 }
 
@@ -351,6 +371,14 @@ export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
   McpStatusUpdatedPayload,
 );
+export const WsPushStorageInvalidated = makeWsPushSchema(
+  WS_CHANNELS.storageInvalidated,
+  StorageInvalidatedPayload,
+);
+export const WsPushStorageCleanupProgress = makeWsPushSchema(
+  WS_CHANNELS.storageCleanupProgress,
+  StorageCleanupProgressPayload,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -363,6 +391,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.mcpStatusUpdated,
+  WS_CHANNELS.storageInvalidated,
+  WS_CHANNELS.storageCleanupProgress,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
@@ -374,6 +404,8 @@ export const WsPush = Schema.Union([
   WsPushGitStatusInvalidated,
   WsPushTerminalEvent,
   WsPushMcpStatusUpdated,
+  WsPushStorageInvalidated,
+  WsPushStorageCleanupProgress,
   WsPushOrchestrationDomainEvent,
 ]);
 export type WsPush = typeof WsPush.Type;

@@ -166,6 +166,7 @@ async function createHarness(input?: {
         }
         return { sequence: dispatched.length };
       }),
+    acquireMaintenanceLock: () => Scope.make("sequential"),
     streamDomainEvents: Stream.fromPubSub(domainEventPubSub),
   };
 

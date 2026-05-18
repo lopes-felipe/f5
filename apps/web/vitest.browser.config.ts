@@ -25,6 +25,7 @@ export default mergeConfig(
         "src/components/settings/DisplayProfileSelector.browser.tsx",
         "src/components/settings/McpServersSettings.browser.tsx",
         "src/components/settings/SettingsRouteState.browser.tsx",
+        "src/components/settings/categories/StorageSettings.browser.tsx",
         "src/components/onboarding/HarnessValidationPanel.browser.tsx",
         "src/routes/-_chat.settings.browser.tsx",
         "src/routes/-_chat.index.browser.tsx",

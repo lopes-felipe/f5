@@ -703,6 +703,22 @@ describe("OrchestrationEngine", () => {
       readAll() {
         return Stream.fromIterable(events);
       },
+      collectCommandIdsForThread(threadId) {
+        return Effect.succeed(
+          events
+            .filter((event) => event.aggregateKind === "thread" && event.aggregateId === threadId)
+            .map((event) => event.commandId)
+            .filter((commandId): commandId is CommandId => commandId !== null),
+        );
+      },
+      deleteForThreadStream(threadId) {
+        return Effect.sync(() => {
+          const retained = events.filter(
+            (event) => event.aggregateKind !== "thread" || event.aggregateId !== threadId,
+          );
+          events.splice(0, events.length, ...retained);
+        });
+      },
     };
 
     const runtime = ManagedRuntime.make(
@@ -905,6 +921,22 @@ describe("OrchestrationEngine", () => {
       },
       readAll() {
         return Stream.fromIterable(events);
+      },
+      collectCommandIdsForThread(threadId) {
+        return Effect.succeed(
+          events
+            .filter((event) => event.aggregateKind === "thread" && event.aggregateId === threadId)
+            .map((event) => event.commandId)
+            .filter((commandId): commandId is CommandId => commandId !== null),
+        );
+      },
+      deleteForThreadStream(threadId) {
+        return Effect.sync(() => {
+          const retained = events.filter(
+            (event) => event.aggregateKind !== "thread" || event.aggregateId !== threadId,
+          );
+          events.splice(0, events.length, ...retained);
+        });
       },
     };
 

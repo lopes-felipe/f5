@@ -289,6 +289,7 @@ async function createHarness(
         snapshot = applyCodeReviewWorkflowCommandToSnapshot(snapshot, command);
         return { sequence: dispatched.length };
       }),
+    acquireMaintenanceLock: () => Scope.make("sequential"),
     streamDomainEvents: Stream.fromQueue(queue),
   };
 

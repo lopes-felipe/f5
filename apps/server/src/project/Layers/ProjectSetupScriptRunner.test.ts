@@ -5,7 +5,7 @@ import {
   type OrchestrationReadModel,
   type TerminalSessionSnapshot,
 } from "@t3tools/contracts";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, Scope, Stream } from "effect";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -125,6 +125,7 @@ function makeOrchestrationEngine(readModel: OrchestrationReadModel): Orchestrati
     getReadModel: () => Effect.succeed(readModel),
     readEvents: () => Stream.empty,
     dispatch: () => Effect.succeed({ sequence: 1 }),
+    acquireMaintenanceLock: () => Scope.make("sequential"),
     streamDomainEvents: Stream.empty,
   };
 }

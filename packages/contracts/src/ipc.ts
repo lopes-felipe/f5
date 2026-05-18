@@ -75,6 +75,15 @@ import type {
   TerminalWriteInput,
 } from "./terminal";
 import type {
+  StorageCancelCleanupRequest,
+  StorageCleanupProgressPayload,
+  StorageCleanupRequest,
+  StorageCleanupResult,
+  StorageGetUsageRequest,
+  StorageInvalidatedPayload,
+  StorageUsageReport,
+} from "./storage";
+import type {
   OrchestrationArchiveCodeReviewWorkflowInput,
   OrchestrationArchiveWorkflowInput,
   ClientOrchestrationCommand,
@@ -260,6 +269,13 @@ export interface NativeApi {
     startOAuthLogin: (input: McpStartOauthLoginRequest) => Promise<McpOauthLoginStatusResult>;
     getOAuthStatus: (input: McpOauthLoginStatusRequest) => Promise<McpOauthLoginStatusResult>;
     onStatusUpdated: (callback: (payload: McpStatusUpdatedPayload) => void) => () => void;
+  };
+  storage: {
+    getUsage: (input?: StorageGetUsageRequest) => Promise<StorageUsageReport>;
+    cleanup: (input: StorageCleanupRequest) => Promise<StorageCleanupResult>;
+    cancelCleanup: (input: StorageCancelCleanupRequest) => Promise<void>;
+    onInvalidated: (callback: (payload: StorageInvalidatedPayload) => void) => () => void;
+    onCleanupProgress: (callback: (payload: StorageCleanupProgressPayload) => void) => () => void;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

@@ -7,6 +7,7 @@ import { IntegrationsSettings } from "./categories/IntegrationsSettings";
 import { NotificationsSettings } from "./categories/NotificationsSettings";
 import { ProjectsSettings } from "./categories/ProjectsSettings";
 import { ProvidersSettings } from "./categories/ProvidersSettings";
+import { StorageSettings } from "./categories/StorageSettings";
 import {
   SETTINGS_CATEGORIES,
   SETTINGS_CATEGORY_LABELS,
@@ -18,7 +19,13 @@ interface SettingsLayoutProps {
   readonly onCategoryChange: (category: SettingsCategory) => void;
 }
 
-function CategoryContent({ category }: { readonly category: SettingsCategory }) {
+function CategoryContent({
+  category,
+  active,
+}: {
+  readonly category: SettingsCategory;
+  readonly active: boolean;
+}) {
   switch (category) {
     case "general":
       return <GeneralSettings />;
@@ -32,6 +39,8 @@ function CategoryContent({ category }: { readonly category: SettingsCategory }) 
       return <IntegrationsSettings />;
     case "projects":
       return <ProjectsSettings />;
+    case "storage":
+      return active ? <StorageSettings /> : null;
     case "about":
       return <AboutSettings />;
     default:
@@ -102,7 +111,7 @@ export function SettingsLayout({ category, onCategoryChange }: SettingsLayoutPro
                         hidden={!selected}
                         aria-hidden={!selected}
                       >
-                        <CategoryContent category={candidate} />
+                        <CategoryContent category={candidate} active={selected} />
                       </div>
                     );
                   })}
