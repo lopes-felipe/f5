@@ -1,12 +1,18 @@
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Layer, Path } from "effect";
 import { describe, expect, it } from "vitest";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import type { CursorSettings, ServerProviderModel } from "@t3tools/contracts";
+import {
+  ProviderInstanceId,
+  type CursorSettings,
+  type ServerProviderModel,
+} from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
 
+import { ServerConfig } from "../../config.ts";
+import { CursorDriver } from "../Drivers/CursorDriver.ts";
 import {
   buildCursorProviderSnapshot,
   buildCursorCapabilitiesFromConfigOptions,
@@ -22,6 +28,7 @@ import {
   resolveCursorAcpBaseModelId,
   resolveCursorAcpConfigUpdates,
 } from "./CursorProvider.ts";
+import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 
 const runNode = <A, E>(
   effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>,
@@ -80,7 +87,9 @@ exec ${JSON.stringify("bun")} ${JSON.stringify(mockAgentPath)} "$@"
   return wrapperPath;
 });
 
-const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* () {
+const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* (
+  extraEnv?: Record<string, string>,
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const mockAgentPath = yield* resolveMockAgentPath();
@@ -89,7 +98,11 @@ const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")
     prefix: "cursor-provider-about-mock-",
   });
   const wrapperPath = path.join(dir, "fake-agent.sh");
+  const envExports = Object.entries(extraEnv ?? {})
+    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
+    .join("\n");
   const script = `#!/bin/sh
+${envExports}
 if [ "$1" = "about" ]; then
   printf 'CLI Version         2026.04.09-f2b0fcd\\n'
   printf 'User Email          cursor@example.com\\n'
@@ -121,6 +134,11 @@ const waitForFileContent = Effect.fn("waitForFileContent")(function* (
   return yield* Effect.fail(new Error(`Timed out waiting for file content at ${filePath}`));
 });
 
+const readFileIfPresent = Effect.fn("readFileIfPresent")(function* (filePath: string) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  return yield* fileSystem.readFileString(filePath).pipe(Effect.catch(() => Effect.succeed("")));
+});
+
 const makeProviderStatusEnvFixture = Effect.fn("makeProviderStatusEnvFixture")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -128,9 +146,12 @@ const makeProviderStatusEnvFixture = Effect.fn("makeProviderStatusEnvFixture")(f
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-status-env-",
   });
+  const requestLogPath = path.join(tempDir, "requests.ndjson");
   return {
-    requestLogPath: path.join(tempDir, "requests.ndjson"),
-    wrapperPath: yield* makeMockAgentWithAboutWrapper(),
+    requestLogPath,
+    wrapperPath: yield* makeMockAgentWithAboutWrapper({
+      T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+    }),
   };
 });
 
@@ -519,31 +540,58 @@ describe("buildCursorDiscoveredModelsFromConfigOptions", () => {
 });
 
 describe("checkCursorProviderStatus", () => {
-  it("passes the injected environment to ACP model discovery", async () => {
+  it("keeps provider status passive and does not start ACP", async () => {
     const { requestLogPath, wrapperPath } = await runNode(makeProviderStatusEnvFixture());
 
     const provider = await Effect.runPromise(
-      checkCursorProviderStatus(
-        {
-          enabled: true,
-          binaryPath: wrapperPath,
-          apiEndpoint: "",
-          customModels: [],
-        },
-        {
-          ...process.env,
-          T3_ACP_REQUEST_LOG_PATH: requestLogPath,
-        },
-      ).pipe(Effect.provide(NodeServices.layer)),
+      checkCursorProviderStatus({
+        enabled: true,
+        binaryPath: wrapperPath,
+        apiEndpoint: "",
+        customModels: [],
+      }).pipe(Effect.provide(NodeServices.layer)),
     );
 
-    expect(provider.models.map((model) => model.slug)).toEqual([
-      "default",
-      "composer-2",
-      "gpt-5.4",
-      "claude-opus-4-6",
-    ]);
-    await expect(runNode(waitForFileContent(requestLogPath))).resolves.toContain("initialize");
+    expect(provider.status).toBe("ready");
+    expect(provider.auth.status).toBe("authenticated");
+    expect(provider.version).toBe("2026.04.09-f2b0fcd");
+    expect(provider.models.map((model) => model.slug)).toEqual([]);
+    await expect(runNode(readFileIfPresent(requestLogPath))).resolves.toBe("");
+  });
+
+  it("keeps CursorDriver snapshot refresh passive", async () => {
+    const { requestLogPath, wrapperPath } = await runNode(makeProviderStatusEnvFixture());
+    const testLayer = ServerConfig.layerTest(process.cwd(), {
+      prefix: "cursor-driver-passive-",
+    }).pipe(
+      Layer.provideMerge(NodeServices.layer),
+      Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    );
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const instance = yield* CursorDriver.create({
+            instanceId: ProviderInstanceId.make("cursor"),
+            displayName: undefined,
+            accentColor: undefined,
+            environment: [],
+            enabled: true,
+            config: {
+              enabled: true,
+              binaryPath: wrapperPath,
+              apiEndpoint: "",
+              customModels: [],
+            },
+          });
+          const snapshot = yield* instance.snapshot.refresh;
+          expect(snapshot.status).toBe("ready");
+          expect(snapshot.models.map((model) => model.slug)).toEqual([]);
+        }),
+      ).pipe(Effect.provide(testLayer)),
+    );
+
+    await expect(runNode(readFileIfPresent(requestLogPath))).resolves.toBe("");
   });
 });
 

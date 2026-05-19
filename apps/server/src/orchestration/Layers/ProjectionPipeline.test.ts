@@ -178,6 +178,50 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
   );
 
   it.effect(
+    "persists skill call metadata from message events",
+    () =>
+      Effect.gen(function* () {
+        const projectionPipeline = yield* OrchestrationProjectionPipeline;
+        const eventStore = yield* OrchestrationEventStore;
+        const sql = yield* SqlClient.SqlClient;
+        const now = new Date().toISOString();
+
+        yield* eventStore.append({
+          type: "thread.message-sent",
+          eventId: EventId.makeUnsafe("evt-skill-call"),
+          aggregateKind: "thread",
+          aggregateId: ThreadId.makeUnsafe("thread-skill-call"),
+          occurredAt: now,
+          commandId: CommandId.makeUnsafe("cmd-skill-call"),
+          causationEventId: null,
+          correlationId: CommandId.makeUnsafe("cmd-skill-call"),
+          metadata: {},
+          payload: {
+            threadId: ThreadId.makeUnsafe("thread-skill-call"),
+            messageId: MessageId.makeUnsafe("message-skill-call"),
+            role: "user",
+            text: "$review target",
+            skillCall: { name: "review" },
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+
+        yield* projectionPipeline.bootstrap;
+
+        const rows = yield* sql<{ readonly skillCallJson: string | null }>`
+          SELECT skill_call_json AS "skillCallJson"
+          FROM projection_thread_messages
+          WHERE message_id = 'message-skill-call'
+        `;
+        assert.deepEqual(rows, [{ skillCallJson: JSON.stringify({ name: "review" }) }]);
+      }),
+    { timeout: 10_000 },
+  );
+
+  it.effect(
     "persists thread token metadata across create, session-set, compaction, and revert",
     () =>
       Effect.gen(function* () {

@@ -293,11 +293,18 @@ export type OrchestrationProject = typeof OrchestrationProject.Type;
 export const OrchestrationMessageRole = Schema.Literals(["user", "assistant", "system"]);
 export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
+export const UserMessageSkillCall = Schema.Struct({
+  // Produced by normalizeHostCompatibleRuntimeSlashCommandName in @t3tools/shared/slashCommands.
+  name: TrimmedNonEmptyString,
+});
+export type UserMessageSkillCall = typeof UserMessageSkillCall.Type;
+
 export const OrchestrationMessage = Schema.Struct({
   id: MessageId,
   role: OrchestrationMessageRole,
   text: Schema.String,
   reasoningText: Schema.optional(Schema.String),
+  skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,
@@ -939,6 +946,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
+    skillCall: Schema.optional(UserMessageSkillCall),
     attachments: Schema.Array(ChatAttachment),
   }),
   provider: Schema.optional(ProviderKind),
@@ -967,6 +975,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
     text: Schema.String,
+    skillCall: Schema.optional(UserMessageSkillCall),
     attachments: Schema.Array(UploadChatAttachment),
   }),
   provider: Schema.optional(ProviderKind),
@@ -1439,6 +1448,7 @@ export const ThreadMessageSentPayload = Schema.Struct({
   role: OrchestrationMessageRole,
   text: Schema.String,
   reasoningText: Schema.optional(Schema.String),
+  skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
   turnId: Schema.NullOr(TurnId),
   streaming: Schema.Boolean,

@@ -119,6 +119,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           role,
           text,
           reasoning_text,
+          skill_call_json,
           is_streaming,
           created_at,
           updated_at
@@ -130,6 +131,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           'assistant',
           'hello from projection',
           'thinking from projection',
+          '{"name":"review"}',
           0,
           '2026-02-24T00:00:04.000Z',
           '2026-02-24T00:00:05.000Z'
@@ -329,6 +331,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               role: "assistant",
               text: "hello from projection",
               reasoningText: "thinking from projection",
+              skillCall: { name: "review" },
               turnId: asTurnId("turn-1"),
               streaming: false,
               createdAt: "2026-02-24T00:00:04.000Z",

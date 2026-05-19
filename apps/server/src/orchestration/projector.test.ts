@@ -102,6 +102,142 @@ describe("orchestration projector", () => {
     ]);
   });
 
+  it("preserves skill call metadata on user messages", async () => {
+    const now = new Date().toISOString();
+    const model = createEmptyReadModel(now);
+    const afterThread = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-skill",
+          occurredAt: now,
+          commandId: "cmd-thread-create-skill",
+          payload: {
+            threadId: "thread-skill",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    const next = await Effect.runPromise(
+      projectEvent(
+        afterThread,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-skill",
+          occurredAt: now,
+          commandId: "cmd-message-skill",
+          payload: {
+            threadId: "thread-skill",
+            messageId: "message-skill",
+            role: "user",
+            text: "$review target",
+            skillCall: { name: "review" },
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
+  it("keeps skill call metadata when merging an existing message", async () => {
+    const now = new Date().toISOString();
+    const model = createEmptyReadModel(now);
+    const afterThread = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-skill-merge",
+          occurredAt: now,
+          commandId: "cmd-thread-create-skill-merge",
+          payload: {
+            threadId: "thread-skill-merge",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5-codex",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+    const afterMessage = await Effect.runPromise(
+      projectEvent(
+        afterThread,
+        makeEvent({
+          sequence: 2,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-skill-merge",
+          occurredAt: now,
+          commandId: "cmd-message-skill-merge",
+          payload: {
+            threadId: "thread-skill-merge",
+            messageId: "message-skill-merge",
+            role: "user",
+            text: "$review target",
+            skillCall: { name: "review" },
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    const next = await Effect.runPromise(
+      projectEvent(
+        afterMessage,
+        makeEvent({
+          sequence: 3,
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: "thread-skill-merge",
+          occurredAt: now,
+          commandId: "cmd-message-skill-merge-update",
+          payload: {
+            threadId: "thread-skill-merge",
+            messageId: "message-skill-merge",
+            role: "user",
+            text: "$review target updated",
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        }),
+      ),
+    );
+
+    expect(next.threads[0]?.messages[0]?.text).toBe("$review target updated");
+    expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
   it("fails when event payload cannot be decoded by runtime schema", async () => {
     const now = new Date().toISOString();
     const model = createEmptyReadModel(now);

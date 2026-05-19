@@ -24,6 +24,7 @@ import {
   rewriteComposerRuntimeSkillInvocationForSend,
   shouldRenderTimelineContent,
 } from "./ChatView.logic";
+import { appendTerminalContextsToPrompt } from "../lib/terminalContext";
 
 function createProjectSkill(overrides: Partial<ProjectSkill> = {}): ProjectSkill {
   return {
@@ -405,7 +406,49 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("$review target");
+    ).toEqual({ text: "$review target", skillCall: { name: "review" } });
+  });
+
+  it("recognizes known manual dollar-form Codex runtime skills", () => {
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "$review target",
+        provider: "codex",
+        runtimeSlashCommands: [
+          {
+            name: "review",
+            description: "Review the diff",
+          },
+        ],
+      }),
+    ).toEqual({ text: "$review target", skillCall: { name: "review" } });
+  });
+
+  it("recognizes runtime skills followed by non-space whitespace", () => {
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "/review\nplease inspect",
+        provider: "codex",
+        runtimeSlashCommands: [
+          {
+            name: "review",
+            description: "Review the diff",
+          },
+        ],
+      }),
+    ).toEqual({ text: "$review\nplease inspect", skillCall: { name: "review" } });
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "/review\tplease inspect",
+        provider: "codex",
+        runtimeSlashCommands: [
+          {
+            name: "review",
+            description: "Review the diff",
+          },
+        ],
+      }),
+    ).toEqual({ text: "$review\tplease inspect", skillCall: { name: "review" } });
   });
 
   it("leaves unknown commands unchanged", () => {
@@ -420,7 +463,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("/unknown target");
+    ).toEqual({ text: "/unknown target", skillCall: undefined });
   });
 
   it("ignores runtime skill names that are not host-compatible", () => {
@@ -435,7 +478,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("/$review target");
+    ).toEqual({ text: "/$review target", skillCall: undefined });
   });
 
   it("never rewrites host-local slash commands", () => {
@@ -450,7 +493,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("/plan target");
+    ).toEqual({ text: "/plan target", skillCall: undefined });
     expect(
       rewriteComposerRuntimeSkillInvocationForSend({
         text: "/default target",
@@ -462,7 +505,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("/default target");
+    ).toEqual({ text: "/default target", skillCall: undefined });
     expect(
       rewriteComposerRuntimeSkillInvocationForSend({
         text: "/model gpt-5.4",
@@ -474,7 +517,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("/model gpt-5.4");
+    ).toEqual({ text: "/model gpt-5.4", skillCall: undefined });
   });
 
   it("leaves non-Codex providers unchanged", () => {
@@ -489,7 +532,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("/review target");
+    ).toEqual({ text: "/review target", skillCall: undefined });
   });
 
   it("only rewrites leading slash skills", () => {
@@ -504,7 +547,33 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
-    ).toBe("please /review target");
+    ).toEqual({ text: "please /review target", skillCall: undefined });
+  });
+
+  it("keeps rewritten skill prefixes before appended terminal context blocks", () => {
+    const rewrite = rewriteComposerRuntimeSkillInvocationForSend({
+      text: "/review target",
+      provider: "codex",
+      runtimeSlashCommands: [
+        {
+          name: "review",
+          description: "Review the diff",
+        },
+      ],
+    });
+
+    const textWithContext = appendTerminalContextsToPrompt(rewrite.text, [
+      {
+        terminalId: "default",
+        terminalLabel: "Terminal 1",
+        lineStart: 1,
+        lineEnd: 1,
+        text: "npm test",
+      },
+    ]);
+
+    expect(rewrite.skillCall).toEqual({ name: "review" });
+    expect(textWithContext.startsWith("$review")).toBe(true);
   });
 });
 

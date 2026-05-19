@@ -25,6 +25,7 @@ import type {
   ProviderInstanceId,
   ProviderInteractionMode,
   RuntimeMode,
+  UserMessageSkillCall as ContractUserMessageSkillCall,
 } from "@t3tools/contracts";
 
 export type SessionPhase = "disconnected" | "connecting" | "ready" | "running";
@@ -45,6 +46,7 @@ export type ThreadSessionNotes = ContractThreadSessionNotes;
 export type ThreadCompaction = ContractThreadCompaction;
 export type ThreadHistoryMessageCursor = OrchestrationMessageCursor;
 export type ThreadHistoryCommandExecutionCursor = OrchestrationCommandExecutionCursor;
+export type UserMessageSkillCall = ContractUserMessageSkillCall;
 
 export type ThreadHistoryStage = "empty" | "tail" | "backfilling" | "complete" | "error";
 
@@ -80,6 +82,7 @@ export interface ChatMessage {
   role: "user" | "assistant" | "system";
   text: string;
   reasoningText?: string;
+  skillCall?: UserMessageSkillCall;
   attachments?: ChatAttachment[];
   turnId?: TurnId | null;
   createdAt: string;

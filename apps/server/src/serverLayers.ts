@@ -44,6 +44,7 @@ import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
+import { McpRuntimeDiagnosticsLive } from "./mcp/McpRuntimeDiagnostics";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
@@ -165,6 +166,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
     );
     const mcpRuntimeServiceLayer = McpRuntimeServiceLive.pipe(
+      Layer.provide(McpRuntimeDiagnosticsLive),
       Layer.provide(providerServiceLayer),
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(codexMcpSyncServiceLayer),

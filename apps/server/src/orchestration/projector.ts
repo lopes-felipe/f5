@@ -689,6 +689,7 @@ export function projectEvent(
             role: payload.role,
             text: payload.text,
             reasoningText: payload.reasoningText ?? (payload.role === "assistant" ? "" : undefined),
+            ...(payload.skillCall !== undefined ? { skillCall: payload.skillCall } : {}),
             ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
             turnId: payload.turnId,
             streaming: payload.streaming,
@@ -718,6 +719,7 @@ export function projectEvent(
                     streaming: message.streaming,
                     updatedAt: message.updatedAt,
                     turnId: message.turnId,
+                    ...(message.skillCall !== undefined ? { skillCall: message.skillCall } : {}),
                     ...(message.attachments !== undefined
                       ? { attachments: message.attachments }
                       : {}),

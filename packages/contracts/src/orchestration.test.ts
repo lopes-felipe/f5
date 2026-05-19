@@ -11,16 +11,19 @@ import {
   OrchestrationThread,
   OrchestrationGetTurnDiffInput,
   OrchestrationProposedPlan,
+  OrchestrationMessage,
   OrchestrationSession,
   TaskItem,
   ProjectCreateCommand,
   ThreadArchivedPayload,
+  ThreadMessageSentPayload,
   ThreadTurnStartCommand,
   ThreadCreatedPayload,
   ThreadTurnDiff,
   ThreadTurnStartRequestedPayload,
   ThreadUnarchivedPayload,
 } from "./orchestration";
+import { MessageId, ThreadId } from "./baseSchemas";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
 const decodeThreadTurnDiff = Schema.decodeUnknownEffect(ThreadTurnDiff);
@@ -29,6 +32,11 @@ const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrches
 const decodeThreadTurnStartCommand = Schema.decodeUnknownEffect(ThreadTurnStartCommand);
 const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
+);
+const decodeOrchestrationMessage = Schema.decodeUnknownEffect(OrchestrationMessage);
+const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageSentPayload);
+const encodeThreadMessageSentPayloadJson = Schema.encodeEffect(
+  Schema.fromJsonString(ThreadMessageSentPayload),
 );
 const decodeOrchestrationProposedPlan = Schema.decodeUnknownEffect(OrchestrationProposedPlan);
 const decodeOrchestrationSession = Schema.decodeUnknownEffect(OrchestrationSession);
@@ -51,6 +59,75 @@ it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
     });
     assert.strictEqual(parsed.fromTurnCount, 1);
     assert.strictEqual(parsed.toTurnCount, 2);
+  }),
+);
+
+it.effect("decodes messages without skill call metadata", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationMessage({
+      id: "message-1",
+      role: "user",
+      text: "$review target",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:00:00.000Z",
+      updatedAt: "2026-04-01T09:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.skillCall, undefined);
+  }),
+);
+
+it.effect("decodes message-sent payloads without skill call metadata", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "message-1",
+      role: "user",
+      text: "$review target",
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:00:00.000Z",
+      updatedAt: "2026-04-01T09:00:00.000Z",
+    });
+
+    assert.strictEqual(parsed.skillCall, undefined);
+  }),
+);
+
+it.effect("preserves message-sent skill call metadata when present", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadMessageSentPayload({
+      threadId: "thread-1",
+      messageId: "message-1",
+      role: "user",
+      text: "$review target",
+      skillCall: { name: "review" },
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:00:00.000Z",
+      updatedAt: "2026-04-01T09:00:00.000Z",
+    });
+
+    assert.deepStrictEqual(parsed.skillCall, { name: "review" });
+  }),
+);
+
+it.effect("omits undefined skill call metadata from encoded JSON payloads", () =>
+  Effect.gen(function* () {
+    const encodedJson = yield* encodeThreadMessageSentPayloadJson({
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      messageId: MessageId.makeUnsafe("message-1"),
+      role: "user",
+      text: "$review target",
+      skillCall: undefined,
+      turnId: null,
+      streaming: false,
+      createdAt: "2026-04-01T09:00:00.000Z",
+      updatedAt: "2026-04-01T09:00:00.000Z",
+    });
+
+    assert.strictEqual(encodedJson.includes('"skillCall"'), false);
   }),
 );
 

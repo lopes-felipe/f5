@@ -16,6 +16,7 @@ import {
   type CompactRuntimeConfiguredActivityPayload,
   type ProviderKind,
   type ModelSelection,
+  type UserMessageSkillCall,
 } from "@t3tools/contracts";
 import {
   isReservedHostLocalSlashCommandName,
@@ -167,21 +168,21 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
     | CompactRuntimeConfiguredActivityPayload["slashCommands"]
     | null
     | undefined;
-}): string {
+}): { text: string; skillCall: UserMessageSkillCall | undefined } {
   if (input.provider !== "codex") {
-    return input.text;
+    return { text: input.text, skillCall: undefined };
   }
 
-  const leadingCommandMatch = /^\/([^\s/]+)(?=\s|$)/.exec(input.text);
+  const leadingCommandMatch = /^([/$])([^\s/$]+)(?=\s|$)/.exec(input.text);
   if (!leadingCommandMatch) {
-    return input.text;
+    return { text: input.text, skillCall: undefined };
   }
 
   const leadingCommandName = normalizeHostCompatibleRuntimeSlashCommandName(
-    leadingCommandMatch[1] ?? "",
+    leadingCommandMatch[2] ?? "",
   );
   if (!leadingCommandName) {
-    return input.text;
+    return { text: input.text, skillCall: undefined };
   }
 
   const knownRuntimeSkillNames = new Set(
@@ -190,10 +191,16 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
       .flatMap((name) => (name ? [name] : [])),
   );
   if (!knownRuntimeSkillNames.has(leadingCommandName)) {
-    return input.text;
+    return { text: input.text, skillCall: undefined };
   }
 
-  return `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`;
+  // Slash-form runtime skills are rewritten for Codex; manual dollar-form
+  // input is left intact but still gets structured metadata for rendering.
+  const text =
+    leadingCommandMatch[1] === "$"
+      ? input.text
+      : `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`;
+  return { text, skillCall: { name: leadingCommandName } };
 }
 
 export function shouldRenderTimelineContent(input: {

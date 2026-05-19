@@ -273,6 +273,7 @@ function mapMessagesFromReadModel(
       existing.role === message.role &&
       existing.text === message.text &&
       existing.reasoningText === message.reasoningText &&
+      areUnknownEqual(existing.skillCall, message.skillCall) &&
       (existing.turnId ?? null) === message.turnId &&
       existing.createdAt === message.createdAt &&
       existing.streaming === message.streaming &&
@@ -287,6 +288,7 @@ function mapMessagesFromReadModel(
       role: message.role,
       text: message.text,
       ...(message.reasoningText !== undefined ? { reasoningText: message.reasoningText } : {}),
+      ...(message.skillCall !== undefined ? { skillCall: message.skillCall } : {}),
       ...(message.turnId !== null ? { turnId: message.turnId } : {}),
       createdAt: message.createdAt,
       streaming: message.streaming,

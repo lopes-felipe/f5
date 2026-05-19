@@ -11,6 +11,7 @@ import {
   type OrchestrationFileChangeSummary,
   ThreadId,
   TurnId,
+  type UserMessageSkillCall,
 } from "@t3tools/contracts";
 import type { LegendListRef } from "@legendapp/list/react";
 import { useRef, useState } from "react";
@@ -21,6 +22,7 @@ import type { deriveTimelineEntries } from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 
@@ -58,7 +60,12 @@ function makeQueryClient() {
   });
 }
 
-function makeUserEntry(id: string, text: string, offsetSeconds: number): TimelineEntry {
+function makeUserEntry(
+  id: string,
+  text: string,
+  offsetSeconds: number,
+  options: { skillCall?: UserMessageSkillCall } = {},
+): TimelineEntry {
   const createdAt = new Date(
     Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
   ).toISOString();
@@ -70,6 +77,7 @@ function makeUserEntry(id: string, text: string, offsetSeconds: number): Timelin
       id: id as MessageId,
       role: "user",
       text,
+      ...(options.skillCall !== undefined ? { skillCall: options.skillCall } : {}),
       createdAt,
       completedAt: createdAt,
       streaming: false,
@@ -730,6 +738,304 @@ describe("MessagesTimeline (LegendList)", () => {
       await vi.waitFor(() => {
         expect(host.querySelector('[data-message-id="msg-user-a"]')).not.toBeNull();
         expect(host.querySelector('[data-message-id="msg-asst-b"]')).not.toBeNull();
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("collapses long single-line user messages", async () => {
+    const tail = "VISIBLE_TAIL";
+    const longText = `${"a".repeat(600)}${tail}`;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("msg-long-single", longText, 0)]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Show more");
+        expect(host.textContent).not.toContain(tail);
+      });
+
+      host.querySelector<HTMLButtonElement>('[data-message-id="msg-long-single"] button')?.click();
+
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Show less");
+        expect(host.textContent).toContain(tail);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("collapses multi-line user messages by line count", async () => {
+    const text = Array.from({ length: 12 }, (_, index) => `line-${index}`).join("\n");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("msg-long-lines", text, 0)]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Show more");
+        expect(host.textContent).toContain("line-7");
+        expect(host.textContent).not.toContain("line-11");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("does not collapse short user messages", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("msg-short", "short message", 0)]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("short message");
+        expect(host.textContent).not.toContain("Show more");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("does not collapse terminal-context user messages", async () => {
+    const text = appendTerminalContextsToPrompt("a".repeat(700), [
+      {
+        terminalId: "default",
+        terminalLabel: "Terminal 1",
+        lineStart: 4,
+        lineEnd: 4,
+        text: "bun run build",
+      },
+    ]);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("msg-terminal-context-long", text, 0)]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Terminal 1 line 4");
+        expect(host.textContent).not.toContain("Show more");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps long user message expansion state isolated per message", async () => {
+    const firstTail = "FIRST_TAIL";
+    const secondTail = "SECOND_TAIL";
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("msg-long-first", `${"a".repeat(600)}${firstTail}`, 0),
+          makeUserEntry("msg-long-second", `${"b".repeat(600)}${secondTail}`, 1),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Show more");
+        expect(host.textContent).not.toContain(firstTail);
+        expect(host.textContent).not.toContain(secondTail);
+      });
+
+      const secondBodyBefore = host.querySelector<HTMLElement>(
+        '[data-message-id="msg-long-second"] [data-render-count]',
+      );
+      expect(secondBodyBefore).not.toBeNull();
+      const secondRenderCountBefore = secondBodyBefore?.dataset.renderCount;
+      host.querySelector<HTMLButtonElement>('[data-message-id="msg-long-first"] button')?.click();
+
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain(firstTail);
+        expect(host.textContent).not.toContain(secondTail);
+        const secondBodyAfter = host.querySelector<HTMLElement>(
+          '[data-message-id="msg-long-second"] [data-render-count]',
+        );
+        expect(secondBodyAfter?.dataset.renderCount).toBe(secondRenderCountBefore);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("copies the full user message while collapsed", async () => {
+    const clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
+    const tail = "COPY_TAIL";
+    const longText = `${"a".repeat(600)}${tail}`;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("msg-copy-collapsed", longText, 0)]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Show more");
+        expect(host.textContent).not.toContain(tail);
+      });
+
+      host.querySelector<HTMLButtonElement>('button[title="Copy message"]')?.click();
+
+      await vi.waitFor(() => {
+        expect(clipboardWrite).toHaveBeenCalledWith(longText);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders skill call metadata as an inline chip", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("msg-skill-chip", "$review please look at this", 0, {
+            skillCall: { name: "review" },
+          }),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('[aria-label="/review"]')).not.toBeNull();
+        expect(host.textContent).toContain("please look at this");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders skill chips with newline-delimited text", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("msg-skill-chip-newline", "$review\nplease look at this", 0, {
+            skillCall: { name: "review" },
+          }),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('[aria-label="/review"]')).not.toBeNull();
+        expect(host.textContent).toContain("please look at this");
+        expect(host.textContent).not.toContain("$review");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders skill chips alongside terminal context labels", async () => {
+    const text = appendTerminalContextsToPrompt("$review please look at this", [
+      {
+        terminalId: "default",
+        terminalLabel: "Terminal 1",
+        lineStart: 4,
+        lineEnd: 4,
+        text: "bun run build",
+      },
+    ]);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("msg-skill-terminal-context", text, 0, {
+            skillCall: { name: "review" },
+          }),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('[aria-label="/review"]')).not.toBeNull();
+        expect(host.textContent).toContain("Terminal 1 line 4");
+        expect(host.textContent).toContain("please look at this");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps dollar-form skill text plain without metadata", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[makeUserEntry("msg-skill-plain", "$review please look at this", 0)]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('[aria-label="/review"]')).toBeNull();
+        expect(host.textContent).toContain("$review please look at this");
       });
     } finally {
       await screen.unmount();

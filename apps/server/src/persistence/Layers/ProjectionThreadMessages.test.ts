@@ -138,4 +138,51 @@ layer("ProjectionThreadMessageRepository", (it) => {
       assert.equal(rows[0]?.reasoningText, "thinking");
     }),
   );
+
+  it.effect("round-trips skill call metadata", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.makeUnsafe("thread-skill-call");
+      const messageId = MessageId.makeUnsafe("message-skill-call");
+      const createdAt = "2026-02-28T19:30:00.000Z";
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "$review target",
+        skillCall: { name: "review" },
+        isStreaming: false,
+        createdAt,
+        updatedAt: "2026-02-28T19:30:01.000Z",
+      });
+
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.deepEqual(rows[0]?.skillCall, { name: "review" });
+    }),
+  );
+
+  it.effect("omits skill call metadata when absent", () =>
+    Effect.gen(function* () {
+      const repository = yield* ProjectionThreadMessageRepository;
+      const threadId = ThreadId.makeUnsafe("thread-no-skill-call");
+      const messageId = MessageId.makeUnsafe("message-no-skill-call");
+      const createdAt = "2026-02-28T19:40:00.000Z";
+
+      yield* repository.upsert({
+        messageId,
+        threadId,
+        turnId: null,
+        role: "user",
+        text: "plain target",
+        isStreaming: false,
+        createdAt,
+        updatedAt: "2026-02-28T19:40:01.000Z",
+      });
+
+      const rows = yield* repository.listByThreadId({ threadId });
+      assert.equal(rows[0]?.skillCall, undefined);
+    }),
+  );
 });

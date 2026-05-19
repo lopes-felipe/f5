@@ -205,6 +205,7 @@ function upsertMessage(
     existing.role === payload.role &&
     existing.text === nextText &&
     existing.reasoningText === nextReasoningText &&
+    areUnknownEqual(existing.skillCall, payload.skillCall) &&
     (existing.turnId ?? null) === payload.turnId &&
     existing.createdAt === payload.createdAt &&
     existing.streaming === payload.streaming &&
@@ -219,6 +220,7 @@ function upsertMessage(
     role: payload.role,
     text: nextText,
     ...(nextReasoningText !== undefined ? { reasoningText: nextReasoningText } : {}),
+    ...(payload.skillCall !== undefined ? { skillCall: payload.skillCall } : {}),
     ...(payload.turnId !== null ? { turnId: payload.turnId } : {}),
     createdAt: existing?.createdAt ?? payload.createdAt,
     streaming: payload.streaming,

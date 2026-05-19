@@ -225,6 +225,7 @@ function resolveProjectedMessageState(
 ): {
   readonly text: string;
   readonly reasoningText?: string | undefined;
+  readonly skillCall?: ProjectionThreadMessage["skillCall"] | undefined;
   readonly attachments?: ReadonlyArray<ChatAttachment> | undefined;
 } {
   const text =
@@ -241,11 +242,13 @@ function resolveProjectedMessageState(
           ? existingMessage.reasoningText
           : payload.reasoningText
       : existingMessage?.reasoningText;
+  const skillCall = payload.skillCall ?? existingMessage?.skillCall;
   const attachments = payload.attachments ?? existingMessage?.attachments;
 
   return {
     text,
     ...(reasoningText !== undefined ? { reasoningText } : {}),
+    ...(skillCall !== undefined ? { skillCall } : {}),
     ...(attachments !== undefined ? { attachments } : {}),
   };
 }
@@ -1040,6 +1043,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             ...(nextMessage.reasoningText !== undefined
               ? { reasoningText: nextMessage.reasoningText }
               : {}),
+            ...(nextMessage.skillCall !== undefined ? { skillCall: nextMessage.skillCall } : {}),
             ...(nextAttachments !== undefined ? { attachments: [...nextAttachments] } : {}),
             isStreaming: event.payload.streaming,
             createdAt: existingMessage?.createdAt ?? event.payload.createdAt,

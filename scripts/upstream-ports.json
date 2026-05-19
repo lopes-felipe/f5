@@ -1,4 +1,22 @@
 {
+  "c27109cc20cd9c56bec3ce9f396f4c7250429ab2": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 1.2 - composer placeholder mentions skills and slash commands"
+  },
+  "99efaa0faae572344f2bcb7cfc97becc6420e645": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 1.3 - collapse long user messages with show more toggle"
+  },
+  "11f40556de8a37c7f16486c23fb6bce058275557": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 1.1 - render leading $skill invocations as inline chips with structured metadata"
+  },
   "9acf46a76d60e31098034267b36fd4f6e3a15ea6": {
     "ported": true,
     "f5-sha": null,

@@ -26,6 +26,12 @@ import {
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
 import { combineStatusMessage } from "./combineStatusMessage.ts";
 import {
+  indexMcpRuntimeServerDiagnostics,
+  type McpRuntimeServerDiagnostic,
+  McpRuntimeDiagnostics,
+  normalizeMcpRuntimeDiagnosticName,
+} from "./McpRuntimeDiagnostics.ts";
+import {
   checkClaudeProviderPreflight,
   checkCodexProviderPreflight,
 } from "../provider/Layers/ProviderHealth.ts";
@@ -107,6 +113,7 @@ function mapCodexServerStatus(
   server: McpServerDefinition,
   controlStatus: CodexControlMcpServerStatus | undefined,
   providerStatus: McpProviderStatusResult,
+  runtimeDiagnostic: McpRuntimeServerDiagnostic | undefined,
 ): McpServerStatusEntry {
   if (server.enabled === false) {
     return {
@@ -192,6 +199,42 @@ function mapCodexServerStatus(
 
   if (
     controlStatus.startupStatus !== "ready" &&
+    (runtimeDiagnostic?.status === "failed" || runtimeDiagnostic?.status === "cancelled")
+  ) {
+    return {
+      name,
+      state: "failed",
+      authStatus: controlAuthStatus,
+      toolCount,
+      resourceCount,
+      resourceTemplateCount,
+      message:
+        runtimeDiagnostic.message ??
+        (runtimeDiagnostic.status === "cancelled"
+          ? "Codex cancelled startup for this MCP server."
+          : "Codex reported that this MCP server failed to start."),
+    };
+  }
+
+  if (
+    controlStatus.startupStatus !== "ready" &&
+    runtimeDiagnostic?.status === "starting" &&
+    toolCount === 0 &&
+    resourceCount === 0 &&
+    resourceTemplateCount === 0
+  ) {
+    return {
+      name,
+      state: "starting",
+      authStatus: controlAuthStatus,
+      toolCount,
+      resourceCount,
+      resourceTemplateCount,
+    };
+  }
+
+  if (
+    controlStatus.startupStatus !== "ready" &&
     toolCount === 0 &&
     resourceCount === 0 &&
     resourceTemplateCount === 0
@@ -204,6 +247,7 @@ function mapCodexServerStatus(
       resourceCount,
       resourceTemplateCount,
       message:
+        runtimeDiagnostic?.message ??
         "Codex authenticated this MCP server, but did not report any tools or resources. It may have failed during startup; check the work log for the exact error.",
     };
   }
@@ -343,6 +387,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
   const codexMcpSyncService = yield* CodexMcpSyncService;
   const codexControlClientRegistry = yield* CodexControlClientRegistry;
   const codexOAuthManager = yield* CodexOAuthManager;
+  const mcpRuntimeDiagnostics = yield* McpRuntimeDiagnostics;
   const providerService = yield* ProviderService;
   const eventBus = yield* CodexMcpEventBus;
   const fileSystem = yield* FileSystem.FileSystem;
@@ -588,7 +633,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
             : {}),
           configVersion: effectiveConfig.effectiveVersion,
           statuses: orderedServers.map(([name, server]) =>
-            mapCodexServerStatus(name, server, undefined, providerStatus),
+            mapCodexServerStatus(name, server, undefined, providerStatus, undefined),
           ),
         } satisfies McpServerStatusesResult;
       }
@@ -619,6 +664,12 @@ const makeMcpRuntimeService = Effect.gen(function* () {
               cause instanceof Error ? cause.message : "Failed to load Codex MCP server statuses.",
           }),
       });
+      const runtimeDiagnostics = yield* mcpRuntimeDiagnostics.listLatestServerDiagnostics({
+        projectId: input.projectId,
+        provider: "codex",
+        configVersion: effectiveConfig.effectiveVersion,
+      });
+      const runtimeDiagnosticsByName = indexMcpRuntimeServerDiagnostics(runtimeDiagnostics);
 
       return {
         provider: input.provider,
@@ -632,6 +683,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
             server,
             findCodexServerStatusByName(controlStatuses, name),
             providerStatus,
+            runtimeDiagnosticsByName.get(normalizeMcpRuntimeDiagnosticName(name)),
           ),
         ),
       } satisfies McpServerStatusesResult;

@@ -750,13 +750,14 @@ function McpServerRow(props: {
   );
 
   const isCodexProvider = props.selectedProvider === "codex";
-  const loginModeHint =
-    loginStatusQuery.data?.mode ??
-    (props.server.type === "http" || props.server.oauthResource ? "oauth" : "cli");
+  const supportsCodexOauthLogin =
+    props.server.type === "http" || typeof props.server.oauthResource === "string";
+  const loginModeHint = loginStatusQuery.data?.mode ?? (supportsCodexOauthLogin ? "oauth" : "cli");
   const shouldShowLoginAction =
     isCodexProvider &&
     !props.isOverridden &&
     (props.serverStatus?.state === "login-required" ||
+      (supportsCodexOauthLogin && props.serverStatus?.state === "failed") ||
       loginStatusQuery.data?.status === "pending" ||
       loginStatusQuery.data?.status === "failed");
   const loginDisabledReason = !isCodexProvider

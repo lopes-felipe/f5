@@ -623,6 +623,30 @@ describe("store read model sync", () => {
     expect(next.threads[0]?.messages[0]?.reasoningText).toBe("private chain summary");
   });
 
+  it("maps user skill call metadata from the read model", () => {
+    const initialState = makeState(makeThread());
+    const readModel = makeReadModel(
+      makeReadModelThread({
+        messages: [
+          {
+            id: MessageId.makeUnsafe("user-skill-1"),
+            role: "user",
+            text: "$review target",
+            skillCall: { name: "review" },
+            turnId: null,
+            streaming: false,
+            createdAt: "2026-03-10T09:00:00.000Z",
+            updatedAt: "2026-03-10T09:00:01.000Z",
+          },
+        ],
+      }),
+    );
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
   it("maps persisted thread tasks from the read model", () => {
     const initialState = makeState(makeThread());
     const readModel = makeReadModel(

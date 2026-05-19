@@ -53,6 +53,7 @@ import Migration0038 from "./Migrations/038_ProviderSessionRuntimeInstanceId.ts"
 import Migration0039 from "./Migrations/039_ProjectionThreadSessionInstanceId.ts";
 import Migration0040 from "./Migrations/040_ProjectionThreadsModelSelection.ts";
 import Migration0041 from "./Migrations/041_ProjectionProjectsDefaultModelSelection.ts";
+import Migration0042 from "./Migrations/042_ProjectionThreadMessagesSkillCall.ts";
 import { Effect } from "effect";
 
 /**
@@ -107,6 +108,7 @@ const loader = Migrator.fromRecord({
   "39_ProjectionThreadSessionInstanceId": Migration0039,
   "40_ProjectionThreadsModelSelection": Migration0040,
   "41_ProjectionProjectsDefaultModelSelection": Migration0041,
+  "42_ProjectionThreadMessagesSkillCall": Migration0042,
 });
 
 /**

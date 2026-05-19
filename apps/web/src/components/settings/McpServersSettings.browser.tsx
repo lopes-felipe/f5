@@ -3,7 +3,9 @@ import "../../index.css";
 import type {
   McpCommonConfigResult,
   McpEffectiveConfigResult,
+  McpLoginStatusResult,
   McpProjectConfigResult,
+  McpServerStatusesResult,
   NativeApi,
   ProjectId,
 } from "@t3tools/contracts";
@@ -104,7 +106,7 @@ function createNativeApiMock() {
     }: {
       provider: "codex" | "claudeAgent";
       projectId: ProjectId;
-    }) => ({
+    }): Promise<McpServerStatusesResult> => ({
       provider,
       projectId,
       support: "supported" as const,
@@ -138,7 +140,7 @@ function createNativeApiMock() {
       provider: "codex" | "claudeAgent";
       projectId: ProjectId;
       serverName?: string;
-    }) => ({
+    }): Promise<McpLoginStatusResult> => ({
       target: serverName ? ("server" as const) : ("provider" as const),
       mode: "cli" as const,
       provider,
@@ -148,6 +150,7 @@ function createNativeApiMock() {
     }),
   );
   const startLogin = vi.fn();
+  const openExternal = vi.fn(async (_url: string) => undefined);
   const applyToLiveSessions = vi.fn(
     async (input: { scope: "common" | "project"; projectId?: ProjectId }) => ({
       scope: input.scope,
@@ -171,6 +174,9 @@ function createNativeApiMock() {
       applyToLiveSessions,
       onStatusUpdated: vi.fn(() => () => {}),
     },
+    shell: {
+      openExternal,
+    },
   } as unknown as NativeApi;
 
   return {
@@ -181,6 +187,7 @@ function createNativeApiMock() {
     getServerStatuses,
     getLoginStatus,
     startLogin,
+    openExternal,
     applyToLiveSessions,
   };
 }
@@ -211,6 +218,14 @@ async function renderSettings() {
   });
 
   return { screen, queryClient };
+}
+
+function clickButtonWithExactText(label: string) {
+  const button = Array.from(document.querySelectorAll("button")).find(
+    (candidate) => candidate.textContent?.trim() === label,
+  );
+  expect(button).toBeDefined();
+  button?.click();
 }
 
 describe("McpServersSettings", () => {
@@ -252,7 +267,7 @@ describe("McpServersSettings", () => {
     try {
       expect(document.body.textContent).toContain("Project servers (1/16)");
 
-      await page.getByRole("button", { name: "Common" }).click();
+      clickButtonWithExactText("Common");
 
       await vi.waitFor(() => {
         expect(document.body.textContent).toContain("Common servers (1/16)");
@@ -266,7 +281,7 @@ describe("McpServersSettings", () => {
         });
       });
 
-      await page.getByRole("button", { name: "Project" }).click();
+      clickButtonWithExactText("Project");
 
       await vi.waitFor(() => {
         expect(document.body.textContent).toContain("Project servers (1/16)");
@@ -280,6 +295,94 @@ describe("McpServersSettings", () => {
           projectId: PROJECT_ID,
         });
       });
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("shows Connect for a failed Codex OAuth MCP server and starts OAuth login", async () => {
+    const mocks = createNativeApiMock();
+    const observabilityServer = {
+      type: "http" as const,
+      url: "https://observability.example.test/v1/mcp",
+    };
+
+    mocks.getProjectConfig.mockResolvedValue({
+      ...projectConfig,
+      servers: {
+        ...projectConfig.servers,
+        Observability: observabilityServer,
+      },
+    });
+    mocks.getEffectiveConfig.mockResolvedValue({
+      ...effectiveConfig,
+      servers: {
+        ...effectiveConfig.servers,
+        Observability: observabilityServer,
+      },
+    });
+    mocks.getServerStatuses.mockResolvedValue({
+      provider: "codex",
+      projectId: PROJECT_ID,
+      support: "supported",
+      configVersion: "effective-v1",
+      statuses: [
+        {
+          name: "project-server",
+          state: "ready",
+          authStatus: "authenticated",
+          toolCount: 1,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+        },
+        {
+          name: "Observability",
+          state: "failed",
+          authStatus: "authenticated",
+          toolCount: 0,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+          message:
+            "OAuth token refresh failed: Failed to parse server response, when send initialize request",
+        },
+      ],
+    });
+    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
+      target: serverName ? ("server" as const) : ("provider" as const),
+      mode: serverName === "Observability" ? ("oauth" as const) : ("cli" as const),
+      provider,
+      projectId,
+      ...(serverName ? { serverName } : {}),
+      status: "idle" as const,
+    }));
+    mocks.startLogin.mockResolvedValue({
+      target: "server",
+      mode: "oauth",
+      provider: "codex",
+      projectId: PROJECT_ID,
+      serverName: "Observability",
+      status: "pending",
+      authorizationUrl: "https://auth.example.test",
+    });
+
+    const { screen, queryClient } = await renderSettings();
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain("Observability");
+      });
+
+      await page.getByRole("button", { name: "Connect" }).click();
+
+      await vi.waitFor(() => {
+        expect(mocks.startLogin).toHaveBeenCalledWith({
+          provider: "codex",
+          projectId: PROJECT_ID,
+          serverName: "Observability",
+        });
+      });
+      expect(mocks.openExternal).toHaveBeenCalledWith("https://auth.example.test");
     } finally {
       queryClient.clear();
       await screen.unmount();

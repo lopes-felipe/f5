@@ -1,10 +1,9 @@
 /**
  * CursorDriver — `ProviderDriver` for the Cursor Agent (`agent`) runtime.
  *
- * Cursor exposes an ACP-based CLI. The driver is still a plain value, but
- * its snapshot uses `makeManagedServerProvider`'s optional `enrichSnapshot`
- * hook to run the slow ACP model-capability probe in the background without
- * blocking the initial `ready`-state publish.
+ * Cursor exposes an ACP-based CLI. Status refreshes intentionally stay
+ * passive (`agent about` only) because ACP authentication can open Cursor's
+ * browser login flow.
  *
  * Text generation is supported via the ACP runtime — `makeCursorTextGeneration`
  * drives `runtime.prompt` with a structured-output schema and collects the
@@ -23,7 +22,6 @@ import { makeCursorAdapter } from "../Layers/CursorAdapter.ts";
 import {
   buildInitialCursorProviderSnapshot,
   checkCursorProviderStatus,
-  enrichCursorSnapshot,
 } from "../Layers/CursorProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
@@ -108,18 +106,6 @@ export const CursorDriver: ProviderDriver<CursorSettings, CursorDriverEnv> = {
         haveSettingsChanged: () => false,
         initialSnapshot: (settings) => stampIdentity(buildInitialCursorProviderSnapshot(settings)),
         checkProvider,
-        // Preserve the background ACP model-capability probe that used to
-        // live on `CursorProviderLive`. Only fires when the snapshot reports
-        // an authenticated, enabled provider with at least one non-custom
-        // model whose capabilities haven't been captured yet.
-        enrichSnapshot: ({ settings, snapshot: currentSnapshot, publishSnapshot }) =>
-          enrichCursorSnapshot({
-            settings,
-            environment: processEnv,
-            snapshot: currentSnapshot,
-            publishSnapshot,
-            stampIdentity,
-          }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
         refreshInterval: SNAPSHOT_REFRESH_INTERVAL,
       }).pipe(
         Effect.mapError(

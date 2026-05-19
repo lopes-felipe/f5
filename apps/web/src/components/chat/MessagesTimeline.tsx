@@ -4,6 +4,7 @@ import {
   type OrchestrationFileChangeSummary,
   type ThreadId,
   type TurnId,
+  type UserMessageSkillCall,
 } from "@t3tools/contracts";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
@@ -41,6 +42,7 @@ import { MessageCopyButton } from "./MessageCopyButton";
 import { AssistantMessageActions } from "./AssistantMessageActions";
 import { computeMessageDurationStart, normalizeCompactToolLabel } from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
+import { SkillInlineChip } from "./SkillInlineChip";
 import {
   deriveDisplayedUserMessageState,
   type ParsedTerminalContextEntry,
@@ -60,6 +62,7 @@ import {
   formatInlineTerminalContextLabel,
   textContainsInlineTerminalContextLabels,
 } from "./userMessageTerminalContexts";
+import { buildCollapsedUserMessageText, shouldCollapseUserMessage } from "./userMessageCollapse";
 import { ReasoningSection } from "./ReasoningSection";
 import { COMPOSER_INLINE_CHIP_CLASS_NAME } from "../composerInlineChip";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
@@ -501,6 +504,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row.message.streaming ? "streaming" : "stable",
                 row.message.text.length,
                 row.message.reasoningText?.length ?? 0,
+                row.message.skillCall?.name ?? "",
               ].join(":");
             case "work":
               return [
@@ -704,10 +708,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 )}
                 {(displayedUserMessage.visibleText.trim().length > 0 ||
                   terminalContexts.length > 0) && (
-                  <UserMessageBody
-                    text={displayedUserMessage.visibleText}
-                    terminalContexts={terminalContexts}
-                  />
+                  <>
+                    {/* The copy button below uses copyText, which is derived before
+                    visual collapse, so collapsed messages still copy in full. */}
+                    <CollapsibleUserMessageBody
+                      key={row.message.id}
+                      text={displayedUserMessage.visibleText}
+                      skillCall={row.message.skillCall}
+                      terminalContexts={terminalContexts}
+                    />
+                  </>
                 )}
                 <div className="mt-1.5 flex items-center justify-end gap-2">
                   <div className="flex items-center gap-1.5 opacity-0 transition-opacity duration-200 focus-within:opacity-100 group-hover:opacity-100">
@@ -1117,24 +1127,115 @@ const UserMessageTerminalContextInlineLabel = memo(
   },
 );
 
-const UserMessageBody = memo(function UserMessageBody(props: {
+const CollapsibleUserMessageBody = memo(function CollapsibleUserMessageBody(props: {
   text: string;
+  skillCall?: UserMessageSkillCall | undefined;
   terminalContexts: ParsedTerminalContextEntry[];
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse =
+    props.terminalContexts.length === 0 && shouldCollapseUserMessage(props.text);
+  const collapsedText = shouldCollapse ? buildCollapsedUserMessageText(props.text) : props.text;
+  const canCollapse =
+    shouldCollapse &&
+    collapsedTextPreservesSkillPrefix({
+      text: props.text,
+      collapsedText,
+      skillCall: props.skillCall,
+    });
+  if (!canCollapse) {
+    return <UserMessageBody {...props} />;
+  }
+
+  const displayText = expanded ? props.text : collapsedText;
+  return (
+    <>
+      <UserMessageBody text={displayText} skillCall={props.skillCall} terminalContexts={[]} />
+      <button
+        type="button"
+        className="mt-1 text-[11px] text-muted-foreground/80 transition-colors hover:text-muted-foreground"
+        aria-expanded={expanded}
+        data-scroll-anchor-ignore
+        onClick={() => setExpanded((current) => !current)}
+      >
+        {expanded ? "Show less" : "Show more"}
+      </button>
+    </>
+  );
+});
+
+function isSkillPrefixBoundary(value: string): boolean {
+  return value.length === 0 || /\s/u.test(value);
+}
+
+function hasRenderableSkillPrefix(
+  text: string,
+  skillCall: UserMessageSkillCall | undefined,
+): boolean {
+  if (!skillCall) {
+    return false;
+  }
+  const skillPrefix = `$${skillCall.name}`;
+  return text.startsWith(skillPrefix) && isSkillPrefixBoundary(text.charAt(skillPrefix.length));
+}
+
+function collapsedTextPreservesSkillPrefix(input: {
+  text: string;
+  collapsedText: string;
+  skillCall: UserMessageSkillCall | undefined;
+}): boolean {
+  if (!hasRenderableSkillPrefix(input.text, input.skillCall)) {
+    return true;
+  }
+  return hasRenderableSkillPrefix(input.collapsedText, input.skillCall);
+}
+
+const UserMessageBody = memo(function UserMessageBody(props: {
+  text: string;
+  skillCall?: UserMessageSkillCall | undefined;
+  terminalContexts: ParsedTerminalContextEntry[];
+}) {
+  // Test-only render-attempt counter used by browser regression tests. This
+  // intentionally measures render calls, not committed renders.
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  const testRenderCountProps =
+    import.meta.env.MODE === "test" ? { "data-render-count": renderCountRef.current } : undefined;
+  const skillPrefix = props.skillCall ? `$${props.skillCall.name}` : null;
+  const hasSkillPrefix =
+    skillPrefix !== null &&
+    props.text.startsWith(skillPrefix) &&
+    isSkillPrefixBoundary(props.text.charAt(skillPrefix.length));
+  const skillNodes: ReactNode[] = [];
+  const text =
+    hasSkillPrefix && skillPrefix !== null ? props.text.slice(skillPrefix.length) : props.text;
+  const skillSeparator = hasSkillPrefix ? text.charAt(0) : "";
+  const textAfterSkillPrefix = hasSkillPrefix && skillSeparator.length > 0 ? text.slice(1) : text;
+  if (hasSkillPrefix && props.skillCall) {
+    skillNodes.push(<SkillInlineChip key="user-message-skill-call" name={props.skillCall.name} />);
+    if (skillSeparator.length > 0) {
+      skillNodes.push(
+        <span key="user-message-skill-call-space" aria-hidden="true">
+          {skillSeparator}
+        </span>,
+      );
+    }
+  }
+
   if (props.terminalContexts.length > 0) {
     const hasEmbeddedInlineLabels = textContainsInlineTerminalContextLabels(
-      props.text,
+      textAfterSkillPrefix,
       props.terminalContexts,
     );
     const inlinePrefix = buildInlineTerminalContextText(props.terminalContexts);
-    const inlineNodes: ReactNode[] = [];
+    const inlineNodes: ReactNode[] = [...skillNodes];
 
     if (hasEmbeddedInlineLabels) {
       let cursor = 0;
 
       for (const context of props.terminalContexts) {
         const label = formatInlineTerminalContextLabel(context.header);
-        const matchIndex = props.text.indexOf(label, cursor);
+        const matchIndex = textAfterSkillPrefix.indexOf(label, cursor);
         if (matchIndex === -1) {
           inlineNodes.length = 0;
           break;
@@ -1142,7 +1243,7 @@ const UserMessageBody = memo(function UserMessageBody(props: {
         if (matchIndex > cursor) {
           inlineNodes.push(
             <span key={`user-terminal-context-inline-before:${context.header}:${cursor}`}>
-              {props.text.slice(cursor, matchIndex)}
+              {textAfterSkillPrefix.slice(cursor, matchIndex)}
             </span>,
           );
         }
@@ -1156,22 +1257,27 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       }
 
       if (inlineNodes.length > 0) {
-        if (cursor < props.text.length) {
+        if (cursor < textAfterSkillPrefix.length) {
           inlineNodes.push(
             <span key={`user-message-terminal-context-inline-rest:${cursor}`}>
-              {props.text.slice(cursor)}
+              {textAfterSkillPrefix.slice(cursor)}
             </span>,
           );
         }
 
         return (
-          <div className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground">
+          <div
+            className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground"
+            {...(testRenderCountProps ?? {})}
+          >
             {inlineNodes}
           </div>
         );
       }
     }
 
+    inlineNodes.length = 0;
+    inlineNodes.push(...skillNodes);
     for (const context of props.terminalContexts) {
       inlineNodes.push(
         <UserMessageTerminalContextInlineLabel
@@ -1186,26 +1292,48 @@ const UserMessageBody = memo(function UserMessageBody(props: {
       );
     }
 
-    if (props.text.length > 0) {
-      inlineNodes.push(<span key="user-message-terminal-context-inline-text">{props.text}</span>);
+    if (textAfterSkillPrefix.length > 0) {
+      inlineNodes.push(
+        <span key="user-message-terminal-context-inline-text">{textAfterSkillPrefix}</span>,
+      );
     } else if (inlinePrefix.length === 0) {
       return null;
     }
 
     return (
-      <div className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground">
+      <div
+        className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground"
+        {...(testRenderCountProps ?? {})}
+      >
         {inlineNodes}
       </div>
     );
   }
 
-  if (props.text.length === 0) {
+  if (!hasSkillPrefix && textAfterSkillPrefix.length === 0) {
     return null;
   }
 
+  if (hasSkillPrefix) {
+    return (
+      <div
+        className="wrap-break-word whitespace-pre-wrap font-mono text-sm leading-relaxed text-foreground"
+        {...(testRenderCountProps ?? {})}
+      >
+        {skillNodes}
+        {textAfterSkillPrefix.length > 0 ? (
+          <span key="user-message-skill-call-rest">{textAfterSkillPrefix}</span>
+        ) : null}
+      </div>
+    );
+  }
+
   return (
-    <pre className="whitespace-pre-wrap wrap-break-word font-mono text-sm leading-relaxed text-foreground">
-      {props.text}
+    <pre
+      className="whitespace-pre-wrap wrap-break-word font-mono text-sm leading-relaxed text-foreground"
+      {...(testRenderCountProps ?? {})}
+    >
+      {textAfterSkillPrefix}
     </pre>
   );
 });

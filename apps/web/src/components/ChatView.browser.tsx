@@ -946,7 +946,10 @@ function createSnapshotWithSettlingInlineFileChange(options?: {
   });
   const turnId = TurnId.makeUnsafe("turn-inline-settling");
   const settled = options?.settled ?? false;
-  const updatedAt = settled ? isoAt(76) : isoAt(60);
+  // Keep this row near the end of the long browser-test timeline so LegendList
+  // renders it before the test explicitly scrolls to it.
+  const fileChangeOffsetSeconds = 130;
+  const updatedAt = settled ? isoAt(fileChangeOffsetSeconds + 16) : isoAt(fileChangeOffsetSeconds);
 
   return {
     ...base,
@@ -989,7 +992,7 @@ function createSnapshotWithSettlingInlineFileChange(options?: {
             activities: [
               createThreadActivity({
                 id: "activity-inline-settling-file-change",
-                createdAt: isoAt(60),
+                createdAt: isoAt(fileChangeOffsetSeconds),
                 turnId,
                 kind: "tool.completed",
                 summary: "File change",
@@ -1017,7 +1020,7 @@ function createSnapshotWithSettlingInlineFileChange(options?: {
                   },
                 ],
                 assistantMessageId: "msg-assistant-inline-settling-summary" as MessageId,
-                completedAt: isoAt(60),
+                completedAt: isoAt(fileChangeOffsetSeconds),
               },
             ],
             latestTurn: settled
@@ -1026,7 +1029,7 @@ function createSnapshotWithSettlingInlineFileChange(options?: {
                   state: "completed" as const,
                   requestedAt: isoAt(50),
                   startedAt: isoAt(57),
-                  completedAt: isoAt(60),
+                  completedAt: isoAt(fileChangeOffsetSeconds),
                   assistantMessageId: "msg-assistant-inline-settling-summary" as MessageId,
                 }
               : {
@@ -1099,6 +1102,7 @@ function createThreadTailDetailsResult(threadId: ThreadId) {
     threadId,
     messages: thread?.messages ?? [],
     checkpoints: thread?.checkpoints ?? [],
+    activities: thread?.activities ?? [],
     commandExecutions,
     tasks: thread?.tasks ?? [],
     tasksTurnId: thread?.tasksTurnId ?? null,
@@ -2063,12 +2067,17 @@ describe("ChatView timeline (full app)", () => {
       startedSequence: 1,
       lastUpdatedSequence: 2,
     });
+    const commandRowSelector =
+      '[data-timeline-row-id="command-late-output"][data-timeline-row-kind="command"]';
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
-      snapshot: createSnapshotForTargetUser({
-        targetMessageId: "msg-user-command-late-output" as MessageId,
-        targetText: "show command transcripts",
-      }),
+      snapshot: {
+        ...createSnapshotForTargetUser({
+          targetMessageId: "msg-user-command-late-output" as MessageId,
+          targetText: "show command transcripts",
+        }),
+        snapshotSequence: initialExecution.lastUpdatedSequence,
+      },
       configureFixture: (nextFixture) => {
         nextFixture.threadCommandExecutionsByThreadId[THREAD_ID] =
           createThreadCommandExecutionsResult(THREAD_ID, [initialExecution]);
@@ -2081,14 +2090,20 @@ describe("ChatView timeline (full app)", () => {
 
     try {
       const row = await waitForElement(
-        () =>
-          document.querySelector<HTMLElement>(
-            '[data-timeline-row-id="command-late-output"][data-timeline-row-kind="command"]',
-          ),
+        () => document.querySelector<HTMLElement>(commandRowSelector),
         "Unable to find the command transcript row.",
       );
       await vi.waitFor(() => {
         expect(row.textContent).toContain("(no output)");
+      });
+      await vi.waitFor(() => {
+        expect(
+          wsRequests.some(
+            (request) =>
+              request._tag === ORCHESTRATION_WS_METHODS.getThreadCommandExecution &&
+              request.commandExecutionId === initialExecution.id,
+          ),
+        ).toBe(true);
       });
 
       fixture.threadCommandExecutionsByThreadId[THREAD_ID] = createThreadCommandExecutionsResult(
@@ -2139,7 +2154,8 @@ describe("ChatView timeline (full app)", () => {
       );
 
       await vi.waitFor(() => {
-        expect(row.textContent).toContain("/repo/project");
+        const refreshedRow = document.querySelector<HTMLElement>(commandRowSelector);
+        expect(refreshedRow?.textContent).toContain("/repo/project");
       });
     } finally {
       await mounted.cleanup();
@@ -3160,13 +3176,15 @@ describe("ChatView timeline (full app)", () => {
 
           const dispatchCommand = dispatchRequests[0]?.command as
             | {
-                message?: { text?: string };
+                message?: { text?: string; skillCall?: unknown };
                 titleSourceText?: string;
               }
             | undefined;
           expect(dispatchCommand?.titleSourceText).toBe(typedPrompt);
           expect(dispatchCommand?.message?.text).toBe("$review current diff");
-          expect(document.body.textContent).toContain("$review current diff");
+          expect(dispatchCommand?.message?.skillCall).toEqual({ name: "review" });
+          expect(document.querySelector('[aria-label="/review"]')).not.toBeNull();
+          expect(document.body.textContent).toContain("current diff");
         },
         { timeout: 8_000, interval: 16 },
       );

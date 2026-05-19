@@ -11,7 +11,7 @@ import type {
 } from "@t3tools/contracts";
 import { ProviderDriverKind } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
-import { Cause, Effect, Exit, FileSystem, Layer, Option, Path, Result } from "effect";
+import { Cause, Effect, FileSystem, Layer, Option, Path, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import {
   createModelCapabilities,
@@ -41,7 +41,6 @@ const EMPTY_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
 });
 
-const CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const CURSOR_ACP_MODEL_CAPABILITY_TIMEOUT = "4 seconds";
 const CURSOR_ACP_MODEL_DISCOVERY_CONCURRENCY = 4;
 const CURSOR_AUTH_UNKNOWN_MESSAGE = "Could not verify Cursor Agent authentication status.";
@@ -1200,36 +1199,10 @@ export const checkCursorProviderStatus = Effect.fn("checkCursorProviderStatus")(
       },
     });
   }
-  let discoveredModels = Option.none<ReadonlyArray<ServerProviderModel>>();
-  let discoveryWarning: string | undefined;
-  if (parsed.auth.status !== "unauthenticated") {
-    const discoveryExit = yield* Effect.exit(
-      discoverCursorModelsViaAcp(cursorSettings, environment).pipe(
-        Effect.timeoutOption(CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
-      ),
-    );
-    if (Exit.isFailure(discoveryExit)) {
-      yield* Effect.logWarning("Cursor ACP model discovery failed", {
-        cause: Cause.pretty(discoveryExit.cause),
-      });
-      discoveryWarning = "Cursor ACP model discovery failed. Check server logs for details.";
-    } else if (Option.isNone(discoveryExit.value)) {
-      discoveryWarning = `Cursor ACP model discovery timed out after ${CURSOR_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`;
-    } else if (discoveryExit.value.value.length === 0) {
-      discoveryWarning = CURSOR_ACP_MODEL_DISCOVERY_EMPTY_MESSAGE;
-    } else {
-      discoveredModels = discoveryExit.value;
-    }
-  }
   return buildCursorProviderSnapshot({
     checkedAt,
     cursorSettings,
     parsed,
-    discoveredModels: Option.getOrElse(
-      Option.filter(discoveredModels, (models) => models.length > 0),
-      () => [] as const,
-    ),
-    ...(discoveryWarning ? { discoveryWarning } : {}),
   });
 });
 
@@ -1238,14 +1211,13 @@ export function hasUncapturedCursorModels(snapshot: Pick<ServerProvider, "models
 }
 
 /**
- * Background capability enrichment for a Cursor snapshot.
+ * Explicit capability enrichment for a Cursor snapshot.
  *
- * Used by `CursorDriver` as the `makeManagedServerProvider.enrichSnapshot`
- * hook: runs the slow ACP per-model capability probe, and republishes the
- * snapshot through `publishSnapshot` when new capabilities arrive. Skips
- * the probe when the provider is disabled, unauthenticated, or has no
- * uncaptured models. Keeps `EMPTY_CAPABILITIES` and the `PROVIDER` literal
- * private to this module.
+ * This starts Cursor ACP and therefore may trigger Cursor's browser login
+ * flow. Keep it out of automatic startup/status refreshes; it is reserved for
+ * a future explicit user-initiated model refresh. Skips the probe when the
+ * provider is disabled, unauthenticated, or has no uncaptured models. Keeps
+ * `EMPTY_CAPABILITIES` and the `PROVIDER` literal private to this module.
  */
 export const enrichCursorSnapshot = (input: {
   readonly settings: CursorSettings;

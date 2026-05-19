@@ -239,6 +239,103 @@ describe("applyDomainEvent", () => {
     expect(next.threads[0]?.session?.tokenUsageSource).toBe("estimated");
   });
 
+  it("maps skill call metadata from live message events", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("user-skill-1");
+
+    const next = applyDomainEvent(
+      makeState(),
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId,
+        role: "user",
+        text: "$review target",
+        skillCall: { name: "review" },
+        attachments: undefined,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T09:04:01.000Z",
+        updatedAt: "2026-04-01T09:04:01.000Z",
+      }),
+    );
+
+    expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
+  it("reuses live messages when skill call metadata is unchanged", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("user-skill-reuse");
+    const initialThread = makeThread({
+      messages: [
+        {
+          id: messageId,
+          role: "user",
+          text: "$review target",
+          skillCall: { name: "review" },
+          createdAt: "2026-04-01T09:04:01.000Z",
+          completedAt: "2026-04-01T09:04:01.000Z",
+          streaming: false,
+        },
+      ],
+    });
+    const initialState = makeState({ threads: [initialThread] });
+
+    const next = applyDomainEvent(
+      initialState,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId,
+        role: "user",
+        text: "$review target",
+        skillCall: { name: "review" },
+        attachments: undefined,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T09:04:01.000Z",
+        updatedAt: "2026-04-01T09:04:01.000Z",
+      }),
+    );
+
+    expect(next.threads[0]?.messages).toBe(initialThread.messages);
+  });
+
+  it("updates live messages when skill call metadata changes", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("user-skill-flip");
+    const initialThread = makeThread({
+      messages: [
+        {
+          id: messageId,
+          role: "user",
+          text: "$review target",
+          createdAt: "2026-04-01T09:04:01.000Z",
+          completedAt: "2026-04-01T09:04:01.000Z",
+          streaming: false,
+        },
+      ],
+    });
+    const initialState = makeState({ threads: [initialThread] });
+
+    const next = applyDomainEvent(
+      initialState,
+      makeEvent("thread.message-sent", {
+        threadId,
+        messageId,
+        role: "user",
+        text: "$review target",
+        skillCall: { name: "review" },
+        attachments: undefined,
+        turnId: null,
+        streaming: false,
+        createdAt: "2026-04-01T09:04:01.000Z",
+        updatedAt: "2026-04-01T09:04:01.000Z",
+      }),
+    );
+
+    expect(next.threads[0]?.messages).not.toBe(initialThread.messages);
+    expect(next.threads[0]?.messages[0]?.skillCall).toEqual({ name: "review" });
+  });
+
   it("preserves hidden-context baseline when estimated token usage is updated from message traffic", () => {
     const threadId = ThreadId.makeUnsafe("thread-1");
     const next = applyDomainEvent(

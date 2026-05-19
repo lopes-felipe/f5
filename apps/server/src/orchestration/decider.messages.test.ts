@@ -63,6 +63,67 @@ async function createThreadReadModelWithCompletedAssistantMessage() {
 }
 
 describe("decider assistant message handling", () => {
+  it("adds skill call metadata to user message events when starting a turn", async () => {
+    const readModel = await createThreadReadModelWithCompletedAssistantMessage();
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-turn-start-skill"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: MessageId.makeUnsafe("message-skill"),
+            role: "user",
+            text: "$review target",
+            skillCall: { name: "review" },
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: NOW,
+        },
+        readModel,
+      }),
+    );
+
+    if (!Array.isArray(result)) {
+      throw new Error("Expected turn start to produce events.");
+    }
+    const messageEvent = result.find((event) => event.type === "thread.message-sent");
+    expect(messageEvent?.payload.skillCall).toEqual({ name: "review" });
+  });
+
+  it("omits skill call metadata from user message events when absent", async () => {
+    const readModel = await createThreadReadModelWithCompletedAssistantMessage();
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-turn-start-no-skill"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: MessageId.makeUnsafe("message-no-skill"),
+            role: "user",
+            text: "plain target",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdAt: NOW,
+        },
+        readModel,
+      }),
+    );
+
+    if (!Array.isArray(result)) {
+      throw new Error("Expected turn start to produce events.");
+    }
+    const messageEvent = result.find((event) => event.type === "thread.message-sent");
+    expect(messageEvent?.payload).not.toHaveProperty("skillCall");
+  });
+
   it("drops assistant deltas for messages that are already completed", async () => {
     const readModel = await createThreadReadModelWithCompletedAssistantMessage();
 

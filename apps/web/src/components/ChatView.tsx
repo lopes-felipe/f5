@@ -3829,11 +3829,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
       terminalContexts: composerTerminalContextsSnapshot,
       interactionMode,
     };
-    const rewrittenPromptForSend = rewriteComposerRuntimeSkillInvocationForSend({
-      text: promptForSend,
-      provider: selectedProvider,
-      runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
-    });
+    const { text: rewrittenPromptForSend, skillCall } =
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: promptForSend,
+        provider: selectedProvider,
+        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+      });
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
     const messageTextWithContexts = appendTerminalContextsToPrompt(
@@ -3879,6 +3880,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         id: messageIdForSend,
         role: "user",
         text: messageTextForSend,
+        ...(skillCall !== undefined ? { skillCall } : {}),
         ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
         createdAt: messageCreatedAt,
         streaming: false,
@@ -3953,6 +3955,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           messageId: messageIdForSend,
           role: "user",
           text: outgoingMessageText,
+          ...(skillCall !== undefined ? { skillCall } : {}),
           attachments: turnAttachments,
         },
         model: selectedModel || undefined,
@@ -4196,11 +4199,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const threadIdForSend = activeThread.id;
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
-      const outgoingMessageText = rewriteComposerRuntimeSkillInvocationForSend({
-        text: trimmed,
-        provider: selectedProvider,
-        runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
-      });
+      const { text: outgoingMessageText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend(
+        {
+          text: trimmed,
+          provider: selectedProvider,
+          runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+        },
+      );
       const rollback: PendingTurnDispatchRollback = {
         prompt: promptRef.current,
         images: composerImagesRef.current.map(cloneComposerImageForRetry),
@@ -4219,6 +4224,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           id: messageIdForSend,
           role: "user",
           text: outgoingMessageText,
+          ...(skillCall !== undefined ? { skillCall } : {}),
           createdAt: messageCreatedAt,
           streaming: false,
         },
@@ -4251,6 +4257,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
             messageId: messageIdForSend,
             role: "user",
             text: outgoingMessageText,
+            ...(skillCall !== undefined ? { skillCall } : {}),
             attachments: [],
           },
           provider: selectedProvider,
@@ -5371,7 +5378,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               ? "Add feedback to refine the plan, or leave this blank to implement it"
                               : phase === "disconnected"
                                 ? "Ask for follow-up changes or attach files"
-                                : "Ask anything, @tag files/folders, or use / to show available commands"
+                                : "Ask anything, @tag files/folders, or use / for skills and slash commands"
                       }
                       disabled={
                         isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked

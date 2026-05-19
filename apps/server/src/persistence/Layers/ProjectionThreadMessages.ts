@@ -1,7 +1,7 @@
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqlSchema from "effect/unstable/sql/SqlSchema";
 import { Effect, Layer, Schema, Struct } from "effect";
-import { ChatAttachment } from "@t3tools/contracts";
+import { ChatAttachment, UserMessageSkillCall } from "@t3tools/contracts";
 
 import { toPersistenceSqlError } from "../Errors.ts";
 import {
@@ -16,6 +16,7 @@ const ProjectionThreadMessageDbRowSchema = ProjectionThreadMessage.mapFields(
   Struct.assign({
     isStreaming: Schema.Number,
     reasoningText: Schema.NullOr(Schema.String),
+    skillCall: Schema.NullOr(Schema.fromJsonString(UserMessageSkillCall)),
     attachments: Schema.NullOr(Schema.fromJsonString(Schema.Array(ChatAttachment))),
   }),
 );
@@ -29,6 +30,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
       const nextAttachmentsJson =
         row.attachments !== undefined ? JSON.stringify(row.attachments) : null;
       const nextReasoningText = row.reasoningText ?? null;
+      const nextSkillCallJson = row.skillCall !== undefined ? JSON.stringify(row.skillCall) : null;
       return sql`
         INSERT INTO projection_thread_messages (
           message_id,
@@ -37,6 +39,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role,
           text,
           reasoning_text,
+          skill_call_json,
           attachments_json,
           is_streaming,
           created_at,
@@ -52,6 +55,14 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
             ${nextReasoningText},
             (
               SELECT reasoning_text
+              FROM projection_thread_messages
+              WHERE message_id = ${row.messageId}
+            )
+          ),
+          COALESCE(
+            ${nextSkillCallJson},
+            (
+              SELECT skill_call_json
               FROM projection_thread_messages
               WHERE message_id = ${row.messageId}
             )
@@ -75,6 +86,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role = excluded.role,
           text = excluded.text,
           reasoning_text = COALESCE(excluded.reasoning_text, projection_thread_messages.reasoning_text),
+          skill_call_json = COALESCE(excluded.skill_call_json, projection_thread_messages.skill_call_json),
           attachments_json = COALESCE(
             excluded.attachments_json,
             projection_thread_messages.attachments_json
@@ -98,6 +110,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role,
           text,
           reasoning_text AS "reasoningText",
+          skill_call_json AS "skillCall",
           attachments_json AS "attachments",
           is_streaming AS "isStreaming",
           created_at AS "createdAt",
@@ -135,6 +148,7 @@ const makeProjectionThreadMessageRepository = Effect.gen(function* () {
           role: row.role,
           text: row.text,
           ...(row.reasoningText !== null ? { reasoningText: row.reasoningText } : {}),
+          ...(row.skillCall !== null ? { skillCall: row.skillCall } : {}),
           isStreaming: row.isStreaming === 1,
           createdAt: row.createdAt,
           updatedAt: row.updatedAt,

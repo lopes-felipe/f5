@@ -16,6 +16,7 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
+import { McpRuntimeDiagnostics } from "./McpRuntimeDiagnostics.ts";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./McpRuntimeService.ts";
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
 
@@ -152,6 +153,12 @@ function makeRuntimeLayer(input?: {
     readonly error?: string;
     readonly toolCount?: number;
   }>;
+  readonly runtimeDiagnostics?: ReadonlyArray<{
+    readonly name: string;
+    readonly status: "starting" | "ready" | "failed" | "cancelled";
+    readonly message?: string;
+    readonly createdAt: string;
+  }>;
 }) {
   const oauthStartStatus = input?.oauthStartStatus ??
     input?.oauthStatus ?? { status: "idle" as const };
@@ -217,6 +224,9 @@ function makeRuntimeLayer(input?: {
         Layer.succeed(CodexMcpEventBus, {
           publishStatusUpdated: () => Effect.void,
           streamStatusUpdates: Stream.empty,
+        }),
+        Layer.succeed(McpRuntimeDiagnostics, {
+          listLatestServerDiagnostics: () => Effect.succeed(input?.runtimeDiagnostics ?? []),
         }),
         NodeFileSystem.layer,
         NodePath.layer,
@@ -415,6 +425,61 @@ describe("McpRuntimeService", () => {
         }),
       ),
     ),
+  );
+
+  it.effect(
+    "uses latest runtime MCP failure details for authenticated zero-capability status",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* McpRuntimeService;
+        const statuses = yield* service.getServerStatuses({
+          provider: "codex",
+          projectId,
+        });
+
+        assert.strictEqual(statuses.statuses.length, 1);
+        assert.strictEqual(statuses.statuses[0]?.name, "Observability");
+        assert.strictEqual(statuses.statuses[0]?.state, "failed");
+        assert.strictEqual(
+          statuses.statuses[0]?.message,
+          "OAuth token refresh failed: Failed to parse server response",
+        );
+      }).pipe(
+        Effect.provide(
+          makeRuntimeLayer({
+            servers: {
+              Observability: {
+                type: "http",
+                url: "https://example.test/mcp",
+              },
+            },
+            controlStatuses: [
+              {
+                name: "Observability",
+                authStatus: "oAuth",
+              },
+            ],
+            runtimeDiagnostics: [
+              {
+                name: "Observability",
+                status: "failed",
+                message: "OAuth token refresh failed: Failed to parse server response",
+                createdAt: "2026-05-18T20:05:24.138Z",
+              },
+            ],
+            spawnerLayer: mockSpawnerLayer((args) => {
+              const joined = args.join(" ");
+              if (joined.endsWith("--version")) {
+                return { stdout: "codex 1.2.3\n", stderr: "", code: 0 };
+              }
+              if (joined.endsWith("login status")) {
+                return { stdout: '{"loggedIn":true}\n', stderr: "", code: 0 };
+              }
+              throw new Error(`Unexpected CLI args: ${joined}`);
+            }),
+          }),
+        ),
+      ),
   );
 
   it.effect("rejects integrated Claude login with instructions to use a real terminal", () =>
