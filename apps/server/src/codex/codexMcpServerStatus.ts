@@ -21,6 +21,30 @@ export function codexServerStatusHasAuthenticatedOauth(
   return status?.authStatus === "oAuth" || status?.authStatus === "bearerToken";
 }
 
+function codexServerStatusHasReportedCapabilities(
+  status: CodexControlMcpServerStatus | undefined,
+): boolean {
+  return (
+    Object.keys(status?.tools ?? {}).length > 0 ||
+    (status?.resources?.length ?? 0) > 0 ||
+    (status?.resourceTemplates?.length ?? 0) > 0
+  );
+}
+
+export function codexServerStatusCanReconcileCompletedOauthLogin(
+  status: CodexControlMcpServerStatus | undefined,
+): boolean {
+  if (!codexServerStatusHasAuthenticatedOauth(status)) {
+    return false;
+  }
+
+  if (status?.startupStatus === "failed" || status?.startupStatus === "cancelled") {
+    return false;
+  }
+
+  return status?.startupStatus === "ready" || codexServerStatusHasReportedCapabilities(status);
+}
+
 export async function listAllCodexServerStatuses(
   client: CodexControlClient,
 ): Promise<ReadonlyArray<CodexControlMcpServerStatus>> {

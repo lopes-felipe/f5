@@ -16,6 +16,7 @@ import {
   type WsPush,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestServerProvider } from "./testServerProvider";
 
@@ -354,6 +355,30 @@ describe("wsNativeApi", () => {
         },
       },
     });
+  });
+
+  it("uses the OAuth request timeout for Codex MCP login starts", async () => {
+    requestMock.mockResolvedValue({ status: "pending" });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    await api.mcp.startLogin({
+      provider: "codex",
+      projectId: ProjectId.makeUnsafe("project-1"),
+      serverName: "Observability",
+    });
+
+    expect(requestMock).toHaveBeenCalledWith(
+      WS_METHODS.mcpStartLogin,
+      {
+        provider: "codex",
+        projectId: "project-1",
+        serverName: "Observability",
+      },
+      {
+        timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
+      },
+    );
   });
 
   it("forwards full-thread diff requests to the orchestration websocket method", async () => {

@@ -4,6 +4,7 @@ import {
   type McpStartOauthLoginRequest,
   type ProviderStartOptions,
 } from "@t3tools/contracts";
+import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTiming";
 import { Effect, FiberSet, Layer, Schema, ServiceMap } from "effect";
 
 import { combineStatusMessage } from "../mcp/combineStatusMessage.ts";
@@ -14,10 +15,9 @@ import { ProviderService } from "../provider/Services/ProviderService.ts";
 import type { CodexControlClient } from "./CodexControlClient.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
-import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "./CodexOAuthTiming.ts";
 import {
   codexServerNamesMatch,
-  codexServerStatusHasAuthenticatedOauth,
+  codexServerStatusCanReconcileCompletedOauthLogin,
   findCodexServerStatusByName,
   listAllCodexServerStatuses,
 } from "./codexMcpServerStatus.ts";
@@ -211,7 +211,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
     }).pipe(
       Effect.flatMap((statuses) => {
         const status = findCodexServerStatusByName(statuses, input.serverName);
-        if (!codexServerStatusHasAuthenticatedOauth(status)) {
+        if (!codexServerStatusCanReconcileCompletedOauthLogin(status)) {
           return Effect.succeed(existing);
         }
 

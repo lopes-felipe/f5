@@ -7,11 +7,11 @@ import {
   getProviderEnvironmentKey,
   readCodexEnvironmentOptions,
 } from "@t3tools/shared/providerOptions";
+import { CODEX_MCP_OAUTH_CLIENT_TTL_MS } from "@t3tools/shared/codexOAuthTiming";
 import { Effect, Layer, Schema, ServiceMap } from "effect";
 
 import { ServerConfig } from "../config.ts";
 import { CodexControlClient, type CodexControlEnvironmentConfig } from "./CodexControlClient.ts";
-import { CODEX_MCP_OAUTH_CLIENT_TTL_MS } from "./CodexOAuthTiming.ts";
 
 const ADMIN_CLIENT_TTL_MS = 30_000;
 const MAX_OAUTH_CLIENTS = 4;

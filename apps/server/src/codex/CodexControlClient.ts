@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
 import { type CodexMcpServerEntry, type McpServerStartupStatus } from "@t3tools/contracts";
+import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
 import {
   assertSupportedCodexCliVersion,
   buildCodexInitializeParams,
@@ -499,11 +500,15 @@ export class CodexControlClient extends EventEmitter<{
   async startOAuthLogin(
     input: CodexControlStartOauthLoginInput,
   ): Promise<CodexControlStartOauthLoginResult> {
-    const result = await this.sendRequest<Record<string, unknown>>("mcpServer/oauth/login", {
-      name: input.name,
-      ...(input.scopes && input.scopes.length > 0 ? { scopes: [...input.scopes] } : {}),
-      ...(typeof input.timeoutSecs === "number" ? { timeoutSecs: input.timeoutSecs } : {}),
-    });
+    const result = await this.sendRequest<Record<string, unknown>>(
+      "mcpServer/oauth/login",
+      {
+        name: input.name,
+        ...(input.scopes && input.scopes.length > 0 ? { scopes: [...input.scopes] } : {}),
+        ...(typeof input.timeoutSecs === "number" ? { timeoutSecs: input.timeoutSecs } : {}),
+      },
+      CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
+    );
     const authorizationUrl = asTrimmedString(result.authorizationUrl);
     if (!authorizationUrl) {
       throw new Error("mcpServer/oauth/login did not return an authorization URL.");

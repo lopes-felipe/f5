@@ -8,6 +8,10 @@
       "types": "./src/codexStderr.ts",
       "import": "./src/codexStderr.ts"
     },
+    "./codexOAuthTiming": {
+      "types": "./src/codexOAuthTiming.ts",
+      "import": "./src/codexOAuthTiming.ts"
+    },
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"

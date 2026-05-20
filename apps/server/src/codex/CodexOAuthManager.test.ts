@@ -5,6 +5,7 @@ import {
   type McpOauthLoginStatusRequest,
   type ProviderSession,
 } from "@t3tools/contracts";
+import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "@t3tools/shared/codexOAuthTiming";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -19,7 +20,6 @@ import {
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./CodexMcpSyncService.ts";
 import { CodexOAuthManager, CodexOAuthManagerLive } from "./CodexOAuthManager.ts";
-import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "./CodexOAuthTiming.ts";
 
 const request: McpOauthLoginStatusRequest = {
   projectId: ProjectId.makeUnsafe("project-oauth"),
@@ -28,8 +28,18 @@ const request: McpOauthLoginStatusRequest = {
   homePath: "/tmp/codex-home",
 };
 
+interface FakeOauthStatus {
+  readonly name: string;
+  readonly authStatus?: string;
+  readonly startupStatus?: "starting" | "ready" | "failed" | "cancelled";
+  readonly error?: string;
+  readonly tools?: Record<string, unknown>;
+  readonly resources?: ReadonlyArray<unknown>;
+  readonly resourceTemplates?: ReadonlyArray<unknown>;
+}
+
 class FakeOauthClient extends EventEmitter {
-  statuses: ReadonlyArray<{ readonly name: string; readonly authStatus?: string }> = [
+  statuses: ReadonlyArray<FakeOauthStatus> = [
     {
       name: request.serverName,
       authStatus: "notLoggedIn",
@@ -43,9 +53,11 @@ class FakeOauthClient extends EventEmitter {
     data: this.statuses.map((status) => ({
       name: status.name,
       authStatus: status.authStatus,
-      tools: {},
-      resources: [],
-      resourceTemplates: [],
+      ...(status.startupStatus ? { startupStatus: status.startupStatus } : {}),
+      ...(status.error ? { error: status.error } : {}),
+      tools: status.tools ?? {},
+      resources: status.resources ?? [],
+      resourceTemplates: status.resourceTemplates ?? [],
     })),
     nextCursor: null,
   }));
@@ -340,6 +352,7 @@ describe("CodexOAuthManager", () => {
         {
           name: request.serverName,
           authStatus: "oAuth",
+          startupStatus: "ready",
         },
       ];
 
@@ -353,6 +366,64 @@ describe("CodexOAuthManager", () => {
       expect(status.status).toBe("completed");
       expect(leaseActive).toBe(false);
       expect(client.listenerCount("notification")).toBe(0);
+    });
+  });
+
+  it("does not complete pending OAuth login from stale failed auth status", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(leaseActive),
+        acquireOauthClient: (_input) =>
+          Effect.sync(() => {
+            leaseActive = true;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.sync(() => {
+                leaseActive = false;
+              }),
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      client.statuses = [
+        {
+          name: request.serverName,
+          authStatus: "oAuth",
+          startupStatus: "failed",
+          error: "OAuth token refresh failed: Failed to parse server response",
+        },
+      ];
+
+      const status = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+
+      expect(status.status).toBe("pending");
+      expect(leaseActive).toBe(true);
+      expect(client.listenerCount("notification")).toBe(1);
     });
   });
 

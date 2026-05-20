@@ -13,6 +13,7 @@ import {
   WS_METHODS,
   type WsWelcomePayload,
 } from "@t3tools/contracts";
+import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { WsTransport } from "./wsTransport";
@@ -249,12 +250,22 @@ export function createWsNativeApi(): NativeApi {
       getEffectiveConfig: (input) => transport.request(WS_METHODS.mcpGetEffectiveConfig, input),
       getProviderStatus: (input) => transport.request(WS_METHODS.mcpGetProviderStatus, input),
       getServerStatuses: (input) => transport.request(WS_METHODS.mcpGetServerStatuses, input),
-      startLogin: (input) => transport.request(WS_METHODS.mcpStartLogin, input),
+      startLogin: (input) =>
+        transport.request(
+          WS_METHODS.mcpStartLogin,
+          input,
+          input.provider === "codex"
+            ? { timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS }
+            : undefined,
+        ),
       getLoginStatus: (input) => transport.request(WS_METHODS.mcpGetLoginStatus, input),
       getCodexStatus: (input) => transport.request(WS_METHODS.mcpGetCodexStatus, input),
       reloadProject: (input) => transport.request(WS_METHODS.mcpReloadProject, input),
       applyToLiveSessions: (input) => transport.request(WS_METHODS.mcpApplyToLiveSessions, input),
-      startOAuthLogin: (input) => transport.request(WS_METHODS.mcpStartOAuthLogin, input),
+      startOAuthLogin: (input) =>
+        transport.request(WS_METHODS.mcpStartOAuthLogin, input, {
+          timeoutMs: CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS,
+        }),
       getOAuthStatus: (input) => transport.request(WS_METHODS.mcpGetOAuthStatus, input),
       onStatusUpdated: (callback) => {
         mcpStatusUpdatedListeners.add(callback);
