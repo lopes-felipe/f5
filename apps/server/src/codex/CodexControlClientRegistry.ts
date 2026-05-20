@@ -11,9 +11,9 @@ import { Effect, Layer, Schema, ServiceMap } from "effect";
 
 import { ServerConfig } from "../config.ts";
 import { CodexControlClient, type CodexControlEnvironmentConfig } from "./CodexControlClient.ts";
+import { CODEX_MCP_OAUTH_CLIENT_TTL_MS } from "./CodexOAuthTiming.ts";
 
 const ADMIN_CLIENT_TTL_MS = 30_000;
-const OAUTH_CLIENT_TTL_MS = 5 * 60_000;
 const MAX_OAUTH_CLIENTS = 4;
 
 export interface CodexControlClientAccessInput {
@@ -213,7 +213,7 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
             client,
             timer: setTimeout(() => {
               releaseOauthLease(leaseKey);
-            }, OAUTH_CLIENT_TTL_MS),
+            }, CODEX_MCP_OAUTH_CLIENT_TTL_MS),
           };
           oauthClients.set(leaseKey, lease);
 

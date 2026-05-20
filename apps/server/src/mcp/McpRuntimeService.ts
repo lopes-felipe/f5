@@ -25,6 +25,7 @@ import {
 } from "../codex/codexMcpServerStatus.ts";
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
 import { combineStatusMessage } from "./combineStatusMessage.ts";
+import { reloadCodexMcpConfigAfterLogin } from "./reloadCodexMcpConfigAfterLogin.ts";
 import {
   indexMcpRuntimeServerDiagnostics,
   type McpRuntimeServerDiagnostic,
@@ -449,51 +450,38 @@ const makeMcpRuntimeService = Effect.gen(function* () {
     readonly configVersion: string;
   }) =>
     runLoginTask(
-      providerService
-        .reloadMcpConfigForProject({
-          provider: "codex",
-          projectId: input.projectId,
-          ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
-        })
-        .pipe(
-          Effect.as<string | undefined>(undefined),
-          Effect.catch((cause) =>
-            Effect.logWarning("Codex MCP login succeeded but reloading live sessions failed.", {
-              cause,
-              projectId: input.projectId,
-              serverName: input.serverName,
-            }).pipe(
-              Effect.as(
-                "Login completed, but reloading live Codex sessions failed. Apply the shared MCP config to live sessions to retry.",
-              ),
-            ),
-          ),
-          Effect.flatMap((reloadMessage) =>
-            Effect.gen(function* () {
-              if (reloadMessage) {
-                const statusInput = {
-                  provider: "codex" as const,
-                  projectId: input.projectId,
-                  ...(input.serverName ? { serverName: input.serverName } : {}),
-                };
-                const current = loginStatuses.get(loginStatusKey(statusInput));
-                if (current?.status === "completed") {
-                  setLoginStatus(statusInput, {
-                    ...current,
-                    message: combineStatusMessage(current.message, reloadMessage),
-                  });
-                }
-              }
-
-              yield* publishLoginCompletion({
-                provider: "codex",
+      reloadCodexMcpConfigAfterLogin({
+        providerService,
+        projectId: input.projectId,
+        ...(input.serverName ? { serverName: input.serverName } : {}),
+        ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
+      }).pipe(
+        Effect.flatMap((reloadMessage) =>
+          Effect.gen(function* () {
+            if (reloadMessage) {
+              const statusInput = {
+                provider: "codex" as const,
                 projectId: input.projectId,
-                configVersion: input.configVersion,
-              });
-            }),
-          ),
-          Effect.asVoid,
+                ...(input.serverName ? { serverName: input.serverName } : {}),
+              };
+              const current = loginStatuses.get(loginStatusKey(statusInput));
+              if (current?.status === "completed") {
+                setLoginStatus(statusInput, {
+                  ...current,
+                  message: combineStatusMessage(current.message, reloadMessage),
+                });
+              }
+            }
+
+            yield* publishLoginCompletion({
+              provider: "codex",
+              projectId: input.projectId,
+              configVersion: input.configVersion,
+            });
+          }),
         ),
+        Effect.asVoid,
+      ),
     );
 
   const setLoginStatus = (input: McpGetLoginStatusRequest, status: McpLoginStatusResult) => {

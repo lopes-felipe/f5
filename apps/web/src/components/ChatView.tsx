@@ -3834,6 +3834,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         text: promptForSend,
         provider: selectedProvider,
         runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+        projectSkills: activeProject?.skills,
       });
     // Rewrite provider-specific runtime skill syntax before any send-time
     // context helpers append extra text ahead of the user's leading token.
@@ -4204,6 +4205,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           text: trimmed,
           provider: selectedProvider,
           runtimeSlashCommands: latestConfiguredRuntimeActivity?.slashCommands,
+          projectSkills: activeProject?.skills,
         },
       );
       const rollback: PendingTurnDispatchRollback = {
@@ -4332,6 +4334,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     },
     [
       activeThread,
+      activeProject?.skills,
       activeProposedPlan,
       clearComposerDraftContent,
       composerMatchesClearedState,

@@ -985,6 +985,32 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("renders slash-form skill call metadata as an inline chip", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[
+          makeUserEntry("msg-skill-chip-slash", "/review please look at this", 0, {
+            skillCall: { name: "review" },
+          }),
+        ]}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('[aria-label="/review"]')).not.toBeNull();
+        expect(host.textContent).toContain("please look at this");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("renders skill chips alongside terminal context labels", async () => {
     const text = appendTerminalContextsToPrompt("$review please look at this", [
       {

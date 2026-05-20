@@ -520,7 +520,7 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
     ).toEqual({ text: "/model gpt-5.4", skillCall: undefined });
   });
 
-  it("leaves non-Codex providers unchanged", () => {
+  it("records non-Codex runtime skills without rewriting native slash syntax", () => {
     expect(
       rewriteComposerRuntimeSkillInvocationForSend({
         text: "/review target",
@@ -532,7 +532,42 @@ describe("rewriteComposerRuntimeSkillInvocationForSend", () => {
           },
         ],
       }),
+    ).toEqual({ text: "/review target", skillCall: { name: "review" } });
+  });
+
+  it("records Claude project skills without rewriting native slash syntax", () => {
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "/review target",
+        provider: "claudeAgent",
+        projectSkills: [createProjectSkill()],
+      }),
+    ).toEqual({ text: "/review target", skillCall: { name: "review" } });
+  });
+
+  it("does not record path-scoped Claude project skills", () => {
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "/review target",
+        provider: "claudeAgent",
+        projectSkills: [createProjectSkill({ paths: ["src/**"] })],
+      }),
     ).toEqual({ text: "/review target", skillCall: undefined });
+  });
+
+  it("does not recognize dollar-form skill input outside Codex", () => {
+    expect(
+      rewriteComposerRuntimeSkillInvocationForSend({
+        text: "$review target",
+        provider: "claudeAgent",
+        runtimeSlashCommands: [
+          {
+            name: "review",
+            description: "Review the diff",
+          },
+        ],
+      }),
+    ).toEqual({ text: "$review target", skillCall: undefined });
   });
 
   it("only rewrites leading slash skills", () => {

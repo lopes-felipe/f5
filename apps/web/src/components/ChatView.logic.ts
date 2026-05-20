@@ -168,11 +168,8 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
     | CompactRuntimeConfiguredActivityPayload["slashCommands"]
     | null
     | undefined;
+  projectSkills?: ReadonlyArray<ProjectSkill> | null | undefined;
 }): { text: string; skillCall: UserMessageSkillCall | undefined } {
-  if (input.provider !== "codex") {
-    return { text: input.text, skillCall: undefined };
-  }
-
   const leadingCommandMatch = /^([/$])([^\s/$]+)(?=\s|$)/.exec(input.text);
   if (!leadingCommandMatch) {
     return { text: input.text, skillCall: undefined };
@@ -190,16 +187,33 @@ export function rewriteComposerRuntimeSkillInvocationForSend(input: {
       .map((command) => normalizeHostCompatibleRuntimeSlashCommandName(command.name))
       .flatMap((name) => (name ? [name] : [])),
   );
+  if (input.provider === "claudeAgent") {
+    for (const skill of input.projectSkills ?? []) {
+      if (skill.paths.length > 0) {
+        continue;
+      }
+      const name = normalizeHostCompatibleRuntimeSlashCommandName(skill.commandName);
+      if (name) {
+        knownRuntimeSkillNames.add(name);
+      }
+    }
+  }
   if (!knownRuntimeSkillNames.has(leadingCommandName)) {
     return { text: input.text, skillCall: undefined };
   }
 
-  // Slash-form runtime skills are rewritten for Codex; manual dollar-form
-  // input is left intact but still gets structured metadata for rendering.
+  if (leadingCommandMatch[1] === "$") {
+    return input.provider === "codex"
+      ? { text: input.text, skillCall: { name: leadingCommandName } }
+      : { text: input.text, skillCall: undefined };
+  }
+
+  // Codex runtime skills use dollar-form invocation; other providers keep
+  // their native slash-form text and only attach structured metadata.
   const text =
-    leadingCommandMatch[1] === "$"
-      ? input.text
-      : `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`;
+    input.provider === "codex"
+      ? `$${leadingCommandName}${input.text.slice(leadingCommandMatch[0].length)}`
+      : input.text;
   return { text, skillCall: { name: leadingCommandName } };
 }
 

@@ -295,6 +295,7 @@ export type OrchestrationMessageRole = typeof OrchestrationMessageRole.Type;
 
 export const UserMessageSkillCall = Schema.Struct({
   // Produced by normalizeHostCompatibleRuntimeSlashCommandName in @t3tools/shared/slashCommands.
+  // The message text may use provider-native slash form or Codex dollar form.
   name: TrimmedNonEmptyString,
 });
 export type UserMessageSkillCall = typeof UserMessageSkillCall.Type;

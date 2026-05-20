@@ -1172,11 +1172,22 @@ function hasRenderableSkillPrefix(
   text: string,
   skillCall: UserMessageSkillCall | undefined,
 ): boolean {
+  return getRenderableSkillPrefix(text, skillCall) !== null;
+}
+
+function getRenderableSkillPrefix(
+  text: string,
+  skillCall: UserMessageSkillCall | undefined,
+): string | null {
   if (!skillCall) {
-    return false;
+    return null;
   }
-  const skillPrefix = `$${skillCall.name}`;
-  return text.startsWith(skillPrefix) && isSkillPrefixBoundary(text.charAt(skillPrefix.length));
+  for (const prefix of [`$${skillCall.name}`, `/${skillCall.name}`]) {
+    if (text.startsWith(prefix) && isSkillPrefixBoundary(text.charAt(prefix.length))) {
+      return prefix;
+    }
+  }
+  return null;
 }
 
 function collapsedTextPreservesSkillPrefix(input: {
@@ -1201,11 +1212,8 @@ const UserMessageBody = memo(function UserMessageBody(props: {
   renderCountRef.current += 1;
   const testRenderCountProps =
     import.meta.env.MODE === "test" ? { "data-render-count": renderCountRef.current } : undefined;
-  const skillPrefix = props.skillCall ? `$${props.skillCall.name}` : null;
-  const hasSkillPrefix =
-    skillPrefix !== null &&
-    props.text.startsWith(skillPrefix) &&
-    isSkillPrefixBoundary(props.text.charAt(skillPrefix.length));
+  const skillPrefix = getRenderableSkillPrefix(props.text, props.skillCall);
+  const hasSkillPrefix = skillPrefix !== null;
   const skillNodes: ReactNode[] = [];
   const text =
     hasSkillPrefix && skillPrefix !== null ? props.text.slice(skillPrefix.length) : props.text;

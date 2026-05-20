@@ -8,11 +8,13 @@ import { Effect, FiberSet, Layer, Schema, ServiceMap } from "effect";
 
 import { combineStatusMessage } from "../mcp/combineStatusMessage.ts";
 import { ProjectMcpConfigService } from "../mcp/ProjectMcpConfigService.ts";
+import { reloadCodexMcpConfigAfterLogin } from "../mcp/reloadCodexMcpConfigAfterLogin.ts";
 import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
 import type { CodexControlClient } from "./CodexControlClient.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
+import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "./CodexOAuthTiming.ts";
 import {
   codexServerNamesMatch,
   codexServerStatusHasAuthenticatedOauth,
@@ -20,7 +22,6 @@ import {
   listAllCodexServerStatuses,
 } from "./codexMcpServerStatus.ts";
 
-const OAUTH_LOGIN_TIMEOUT_SEC = 300;
 const OAUTH_RECONCILE_INTERVAL_MS = 5_000;
 
 function nowIso(): string {
@@ -121,45 +122,29 @@ const makeCodexOAuthManager = Effect.gen(function* () {
     metadata: PendingOAuthMetadata,
   ) =>
     runBackgroundTask(
-      providerService
-        .reloadMcpConfigForProject({
-          provider: "codex",
-          projectId: input.projectId,
-          ...(metadata.providerOptions ? { providerOptions: metadata.providerOptions } : {}),
-        })
-        .pipe(
-          Effect.as<string | undefined>(undefined),
-          Effect.catch((cause) =>
-            Effect.logWarning(
-              "Codex MCP OAuth login succeeded but reloading live sessions failed.",
-              {
-                cause,
-                projectId: input.projectId,
-                serverName: input.serverName,
-              },
-            ).pipe(
-              Effect.as(
-                "Login completed, but reloading live Codex sessions failed. Apply the shared MCP config to live sessions to retry.",
-              ),
-            ),
-          ),
-          Effect.flatMap((reloadMessage) =>
-            Effect.gen(function* () {
-              if (reloadMessage) {
-                const current = statusByKey.get(statusKeyFor(input));
-                if (current?.status === "completed") {
-                  setStatus(input, {
-                    ...current,
-                    message: combineStatusMessage(current.message, reloadMessage),
-                  });
-                }
+      reloadCodexMcpConfigAfterLogin({
+        providerService,
+        projectId: input.projectId,
+        serverName: input.serverName,
+        ...(metadata.providerOptions ? { providerOptions: metadata.providerOptions } : {}),
+      }).pipe(
+        Effect.flatMap((reloadMessage) =>
+          Effect.gen(function* () {
+            if (reloadMessage) {
+              const current = statusByKey.get(statusKeyFor(input));
+              if (current?.status === "completed") {
+                setStatus(input, {
+                  ...current,
+                  message: combineStatusMessage(current.message, reloadMessage),
+                });
               }
+            }
 
-              yield* publishStatusUpdated(input, metadata);
-            }),
-          ),
-          Effect.asVoid,
+            yield* publishStatusUpdated(input, metadata);
+          }),
         ),
+        Effect.asVoid,
+      ),
     );
 
   const finalizePendingStatus = (
@@ -417,7 +402,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
           try: () =>
             lease.client.startOAuthLogin({
               name: input.serverName,
-              timeoutSecs: OAUTH_LOGIN_TIMEOUT_SEC,
+              timeoutSecs: CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC,
             }),
           catch: (cause) =>
             new CodexOAuthManagerError({

@@ -19,6 +19,7 @@ import {
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./CodexMcpSyncService.ts";
 import { CodexOAuthManager, CodexOAuthManagerLive } from "./CodexOAuthManager.ts";
+import { CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC } from "./CodexOAuthTiming.ts";
 
 const request: McpOauthLoginStatusRequest = {
   projectId: ProjectId.makeUnsafe("project-oauth"),
@@ -204,7 +205,10 @@ describe("CodexOAuthManager", () => {
         }),
       );
       expect(pending.status).toBe("pending");
-      expect(client.startOAuthLogin).toHaveBeenCalledTimes(1);
+      expect(client.startOAuthLogin).toHaveBeenCalledWith({
+        name: request.serverName,
+        timeoutSecs: CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC,
+      });
 
       leaseActive = false;
 
