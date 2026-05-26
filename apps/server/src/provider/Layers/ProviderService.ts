@@ -30,6 +30,7 @@ import {
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
+import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { Effect, Layer, Option, PubSub, Queue, Ref, Schema, SchemaIssue, Stream } from "effect";
 
 import {
@@ -810,6 +811,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
 
     const sendTurn: ProviderServiceShape["sendTurn"] = (rawInput) =>
       Effect.gen(function* () {
+        if (isRecord(rawInput) && typeof rawInput.input === "string") {
+          const inputLengthIssue = getProviderTurnInputLengthIssue(rawInput.input);
+          if (inputLengthIssue) {
+            return yield* toValidationError("ProviderService.sendTurn", inputLengthIssue.message);
+          }
+        }
+
         const parsed = yield* decodeInputOrValidationError({
           operation: "ProviderService.sendTurn",
           schema: ProviderSendTurnInput,

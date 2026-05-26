@@ -89,6 +89,10 @@
   --success-foreground: var(--color-emerald-700);
   --warning: var(--color-amber-500);
   --warning-foreground: var(--color-amber-700);
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-right: env(safe-area-inset-right, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-inset-left: env(safe-area-inset-left, 0px);
 
   @variant dark {
     color-scheme: dark;
@@ -117,6 +121,12 @@
     --success-foreground: var(--color-emerald-400);
     --warning: var(--color-amber-500);
     --warning-foreground: var(--color-amber-400);
+  }
+}
+
+@layer utilities {
+  .pb-safe-add {
+    padding-bottom: env(safe-area-inset-bottom, 0px);
   }
 }
 

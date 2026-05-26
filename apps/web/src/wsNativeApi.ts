@@ -6,6 +6,7 @@ import {
   ORCHESTRATION_WS_METHODS,
   type ContextMenuItem,
   type NativeApi,
+  type ServerProviderAdvisoriesUpdatedPayload,
   ServerConfigUpdatedPayload,
   type StorageCleanupProgressPayload,
   type StorageInvalidatedPayload,
@@ -21,6 +22,9 @@ import { WsTransport } from "./wsTransport";
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
+const providerAdvisoriesUpdatedListeners = new Set<
+  (payload: ServerProviderAdvisoriesUpdatedPayload) => void
+>();
 const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
 const gitStatusInvalidatedListeners = new Set<(payload: GitStatusInvalidatedPayload) => void>();
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
@@ -73,6 +77,26 @@ export function onServerConfigUpdated(
   };
 }
 
+export function onProviderAdvisoriesUpdated(
+  listener: (payload: ServerProviderAdvisoriesUpdatedPayload) => void,
+): () => void {
+  providerAdvisoriesUpdatedListeners.add(listener);
+
+  const latestAdvisories =
+    instance?.transport.getLatestPush(WS_CHANNELS.providerAdvisoriesUpdated)?.data ?? null;
+  if (latestAdvisories) {
+    try {
+      listener(latestAdvisories);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+
+  return () => {
+    providerAdvisoriesUpdatedListeners.delete(listener);
+  };
+}
+
 export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
@@ -91,6 +115,16 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(WS_CHANNELS.serverConfigUpdated, (message) => {
     const payload = message.data;
     for (const listener of serverConfigUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.providerAdvisoriesUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of providerAdvisoriesUpdatedListeners) {
       try {
         listener(payload);
       } catch {

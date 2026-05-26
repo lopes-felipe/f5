@@ -30,15 +30,19 @@ import { HarnessValidationLive } from "./provider/Layers/HarnessValidation";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
 import { ProviderEventLoggers } from "./provider/Layers/ProviderEventLoggers";
 import { ProviderInstanceRegistryHydrationLive } from "./provider/Layers/ProviderInstanceRegistryHydration";
+import { ProviderAdvisoryProjectionLive } from "./provider/Layers/ProviderAdvisoryProjectionLive";
 import { ProviderRegistryLive } from "./provider/Layers/ProviderRegistry";
+import { ProviderUpdateAdvisorLive } from "./provider/Layers/ProviderUpdateAdvisorLive";
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
 import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReaper";
 import { HarnessValidation } from "./provider/Services/HarnessValidation";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderAdapterRegistry } from "./provider/Services/ProviderAdapterRegistry";
+import { ProviderAdvisoryProjection } from "./provider/Services/ProviderAdvisoryProjection";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry";
+import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 import { OpenCodeRuntimeLive } from "./provider/opencodeRuntime";
 import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
@@ -70,6 +74,7 @@ import { CodexMcpSyncService } from "./codex/CodexMcpSyncService";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager";
 import { ServerSettingsLive, ServerSettingsService } from "./serverSettings";
 import { SecretStoreError } from "./auth/Services/ServerSecretStore";
+import { HttpClient } from "effect/unstable/http";
 
 type RuntimePtyAdapterLoader = {
   layer: Layer.Layer<PtyAdapter, never, FileSystem.FileSystem | Path.Path>;
@@ -98,6 +103,8 @@ export function makeServerProviderLayer(): Layer.Layer<
   | McpRuntimeService
   | ProjectMcpConfigService
   | ProviderRegistry
+  | ProviderUpdateAdvisor
+  | ProviderAdvisoryProjection
   | ProviderInstanceRegistry
   | ProviderAdapterRegistry
   | ServerSettingsService,
@@ -107,6 +114,7 @@ export function makeServerProviderLayer(): Layer.Layer<
   | FileSystem.FileSystem
   | Path.Path
   | ChildProcessSpawner.ChildProcessSpawner
+  | HttpClient.HttpClient
   | AnalyticsService
 > {
   return Effect.gen(function* () {
@@ -139,6 +147,13 @@ export function makeServerProviderLayer(): Layer.Layer<
     );
     const providerRegistryLayer = ProviderRegistryLive.pipe(
       Layer.provide(providerInstanceRegistryLayer),
+    );
+    const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
+      Layer.provide(providerRegistryLayer),
+    );
+    const providerAdvisoryProjectionLayer = ProviderAdvisoryProjectionLive.pipe(
+      Layer.provide(providerRegistryLayer),
+      Layer.provide(providerUpdateAdvisorLayer),
     );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
     const codexControlClientRegistryLayer = CodexControlClientRegistryLive;
@@ -181,6 +196,8 @@ export function makeServerProviderLayer(): Layer.Layer<
       providerInstanceRegistryLayer,
       adapterRegistryLayer,
       providerRegistryLayer,
+      providerUpdateAdvisorLayer,
+      providerAdvisoryProjectionLayer,
       codexMcpEventBusLayer,
       codexControlClientRegistryLayer,
       codexMcpSyncServiceLayer,

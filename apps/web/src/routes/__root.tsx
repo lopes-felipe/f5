@@ -1,4 +1,7 @@
 import {
+  type ProviderInstanceId,
+  type ServerProviderAdvisoriesUpdatedPayload,
+  type ServerConfig,
   ThreadId,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -13,7 +16,7 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
-import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { APP_DISPLAY_NAME } from "../branding";
 import {
@@ -33,7 +36,12 @@ import {
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
 import { useTerminalStateStore } from "../terminalStateStore";
-import { onMcpStatusUpdated, onServerConfigUpdated, onServerWelcome } from "../wsNativeApi";
+import {
+  onMcpStatusUpdated,
+  onProviderAdvisoriesUpdated,
+  onServerConfigUpdated,
+  onServerWelcome,
+} from "../wsNativeApi";
 import { providerQueryKeys } from "../lib/providerReactQuery";
 import { projectQueryKeys } from "../lib/projectReactQuery";
 import { collectActiveTerminalThreadIds } from "../lib/terminalStateCleanup";
@@ -66,6 +74,26 @@ export const Route = createRootRouteWithContext<{
     meta: [{ name: "title", content: APP_DISPLAY_NAME }],
   }),
 });
+
+export function applyProviderAdvisoriesToServerConfig(
+  existing: ServerConfig | undefined,
+  payload: ServerProviderAdvisoriesUpdatedPayload,
+): ServerConfig | undefined {
+  if (!existing) return existing;
+  const byId = new Map(
+    payload.advisories.map((entry) => [entry.instanceId, entry.versionAdvisory] as const),
+  );
+  const providers = existing.providers.map((provider) => {
+    const advisory = byId.get(provider.instanceId);
+    if (!advisory) {
+      if (!provider.versionAdvisory) return provider;
+      const { versionAdvisory: _versionAdvisory, ...rest } = provider;
+      return rest;
+    }
+    return { ...provider, versionAdvisory: advisory };
+  });
+  return { ...existing, providers };
+}
 
 function RootRouteView() {
   if (!readNativeApi()) {
@@ -247,6 +275,7 @@ function EventRouter() {
   const markRecoveryComplete = useRecoveryStateStore((store) => store.markRecoveryComplete);
   const syncThreadTailDetails = useStore((store) => store.syncThreadTailDetails);
   const queryClient = useQueryClient();
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const navigate = useNavigate();
   const { settings, updateSettings } = useAppSettings();
   const pathname = useRouterState({ select: (state) => state.location.pathname });
@@ -276,6 +305,26 @@ function EventRouter() {
   threadWarmProfileRef.current = {
     includeFileChanges: settings.showFileChangeDiffsInline,
   };
+
+  useEffect(() => {
+    const providers = serverConfigQuery.data?.providers;
+    if (!providers) return;
+    const dismissed = settings.dismissedProviderUpdateAdvisories;
+    const providerIds = new Set(providers.map((provider) => provider.instanceId));
+    const pruned = Object.fromEntries(
+      Object.entries(dismissed).filter(([instanceId]) =>
+        providerIds.has(instanceId as ProviderInstanceId),
+      ),
+    ) as Record<ProviderInstanceId, string>;
+    if (Object.keys(pruned).length === Object.keys(dismissed).length) {
+      return;
+    }
+    updateSettings({ dismissedProviderUpdateAdvisories: pruned });
+  }, [
+    serverConfigQuery.data?.providers,
+    settings.dismissedProviderUpdateAdvisories,
+    updateSettings,
+  ]);
 
   useEffect(() => {
     const api = readNativeApi();
@@ -1039,6 +1088,11 @@ function EventRouter() {
       });
     });
     subscribed = true;
+    const unsubProviderAdvisoriesUpdated = onProviderAdvisoriesUpdated((payload) => {
+      queryClient.setQueryData<ServerConfig>(serverQueryKeys.config(), (existing) =>
+        applyProviderAdvisoriesToServerConfig(existing, payload),
+      );
+    });
     const unsubMcpStatusUpdated = onMcpStatusUpdated(() => {
       void queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
     });
@@ -1059,6 +1113,7 @@ function EventRouter() {
       unsubTerminalEvent();
       unsubWelcome();
       unsubServerConfigUpdated();
+      unsubProviderAdvisoriesUpdated();
       unsubMcpStatusUpdated();
       unsubGitStatusInvalidated();
     };

@@ -1,4 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerConfig,
+  type ServerProvider,
+  type ServerProviderVersionAdvisory,
+} from "@t3tools/contracts";
 
 const { clearPromotedDraftThreads, getStoreState, pruneOrphanedDraftThreads } = vi.hoisted(() => ({
   clearPromotedDraftThreads: vi.fn(),
@@ -24,9 +31,46 @@ vi.mock("../store", () => ({
 }));
 
 import {
+  applyProviderAdvisoriesToServerConfig,
   pruneDraftThreadsForCurrentProjects,
   reconcileDraftThreadsAfterStartupSnapshot,
 } from "./__root";
+
+function makeProvider(input: {
+  readonly instanceId: string;
+  readonly driver: "codex" | "claudeAgent";
+  readonly versionAdvisory?: ServerProviderVersionAdvisory;
+}): ServerProvider {
+  return {
+    instanceId: ProviderInstanceId.make(input.instanceId),
+    driver: ProviderDriverKind.make(input.driver),
+    enabled: true,
+    installed: true,
+    version: "1.0.0",
+    status: "ready",
+    auth: { status: "unknown" },
+    checkedAt: "2026-05-26T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+    ...(input.versionAdvisory ? { versionAdvisory: input.versionAdvisory } : {}),
+  };
+}
+
+function makeAdvisory(latestVersion: string): ServerProviderVersionAdvisory {
+  return {
+    status: "behind_latest",
+    currentVersion: "1.0.0",
+    latestVersion,
+    updateCommand: {
+      executable: "npm",
+      args: ["install", "-g", "@openai/codex@latest"],
+      channel: "npm",
+    },
+    checkedAt: "2026-05-26T00:00:00.000Z",
+    message: `Installed v1.0.0 · latest v${latestVersion}`,
+  };
+}
 
 describe("__root draft cleanup helpers", () => {
   beforeEach(() => {
@@ -67,5 +111,47 @@ describe("__root draft cleanup helpers", () => {
     pruneDraftThreadsForCurrentProjects();
 
     expect(pruneOrphanedDraftThreads).toHaveBeenCalledWith(new Set(["project-1", "project-2"]));
+  });
+});
+
+describe("__root provider advisory cache patch", () => {
+  it("adds, updates, and strips provider advisories using authoritative payload entries", () => {
+    const staleAdvisory = makeAdvisory("1.1.0");
+    const nextAdvisory = makeAdvisory("1.2.0");
+    const existing = {
+      providers: [
+        makeProvider({
+          instanceId: "codex",
+          driver: "codex",
+          versionAdvisory: staleAdvisory,
+        }),
+        makeProvider({
+          instanceId: "claudeAgent",
+          driver: "claudeAgent",
+          versionAdvisory: staleAdvisory,
+        }),
+      ],
+    } as unknown as ServerConfig;
+
+    const patched = applyProviderAdvisoriesToServerConfig(existing, {
+      advisories: [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          versionAdvisory: nextAdvisory,
+        },
+      ],
+    });
+
+    expect(patched?.providers[0]?.versionAdvisory?.latestVersion).toBe("1.2.0");
+    expect(patched?.providers[1]?.versionAdvisory).toBeUndefined();
+  });
+
+  it("leaves an empty cache result unchanged", () => {
+    expect(
+      applyProviderAdvisoriesToServerConfig(undefined, {
+        advisories: [],
+      }),
+    ).toBeUndefined();
   });
 });

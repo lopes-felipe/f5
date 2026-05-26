@@ -2,10 +2,16 @@ import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
 import { ProviderInstanceId } from "./providerInstance";
-import { DEFAULT_SERVER_SETTINGS, ServerSettings, ServerSettingsPatch } from "./settings";
+import {
+  ClientSettingsSchema,
+  DEFAULT_SERVER_SETTINGS,
+  ServerSettings,
+  ServerSettingsPatch,
+} from "./settings";
 
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {
   it("defaults to an empty record so legacy configs without the key still decode", () => {
@@ -90,5 +96,28 @@ describe("ServerSettingsPatch.providerInstances", () => {
     });
     const ollamaId = ProviderInstanceId.make("ollama_local");
     expect(patch.providerInstances?.[ollamaId]?.driver).toBe("ollama");
+  });
+});
+
+describe("ClientSettings.dismissedProviderUpdateAdvisories", () => {
+  it("defaults advisory dismissals to an empty record for older settings payloads", () => {
+    const decoded = decodeClientSettings({});
+    expect(decoded.dismissedProviderUpdateAdvisories).toEqual({});
+  });
+
+  it("decodes advisory dismissals keyed by provider instance id", () => {
+    const decoded = decodeClientSettings({
+      dismissedProviderUpdateAdvisories: {
+        codex: "1.2.3",
+        codex_work: "2.0.0",
+      },
+    });
+
+    expect(decoded.dismissedProviderUpdateAdvisories[ProviderInstanceId.make("codex")]).toBe(
+      "1.2.3",
+    );
+    expect(decoded.dismissedProviderUpdateAdvisories[ProviderInstanceId.make("codex_work")]).toBe(
+      "2.0.0",
+    );
   });
 });

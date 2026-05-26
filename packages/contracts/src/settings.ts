@@ -56,6 +56,9 @@ export const ClientSettingsSchema = Schema.Struct({
       modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
     }),
   ).pipe(Schema.withDecodingDefault(() => ({}))),
+  dismissedProviderUpdateAdvisories: Schema.Record(ProviderInstanceId, Schema.String).pipe(
+    Schema.withDecodingDefault(() => ({})),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE),
   ),

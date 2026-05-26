@@ -76,6 +76,7 @@ import { ProjectReadFileInput, ProjectSearchEntriesInput, ProjectWriteFileInput 
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import {
+  ServerProviderAdvisoriesUpdatedPayload,
   ServerAddKeybindingInput,
   ServerConfigUpdatedPayload,
   ServerRemoveKeybindingInput,
@@ -170,6 +171,7 @@ export const WS_CHANNELS = {
   terminalEvent: "terminal.event",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
+  providerAdvisoriesUpdated: "provider.advisoriesUpdated",
   mcpStatusUpdated: "mcp.statusUpdated",
   storageInvalidated: "storage.invalidated",
   storageCleanupProgress: "storage.cleanupProgress",
@@ -345,6 +347,7 @@ export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
+  readonly [WS_CHANNELS.providerAdvisoriesUpdated]: typeof ServerProviderAdvisoriesUpdatedPayload.Type;
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.gitStatusInvalidated]: typeof GitStatusInvalidatedPayload.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
@@ -372,6 +375,10 @@ export const WsPushServerWelcome = makeWsPushSchema(WS_CHANNELS.serverWelcome, W
 export const WsPushServerConfigUpdated = makeWsPushSchema(
   WS_CHANNELS.serverConfigUpdated,
   ServerConfigUpdatedPayload,
+);
+export const WsPushProviderAdvisoriesUpdated = makeWsPushSchema(
+  WS_CHANNELS.providerAdvisoriesUpdated,
+  ServerProviderAdvisoriesUpdatedPayload,
 );
 export const WsPushGitActionProgress = makeWsPushSchema(
   WS_CHANNELS.gitActionProgress,
@@ -404,6 +411,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.gitStatusInvalidated,
   WS_CHANNELS.serverWelcome,
   WS_CHANNELS.serverConfigUpdated,
+  WS_CHANNELS.providerAdvisoriesUpdated,
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
@@ -415,6 +423,7 @@ export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 export const WsPush = Schema.Union([
   WsPushServerWelcome,
   WsPushServerConfigUpdated,
+  WsPushProviderAdvisoriesUpdated,
   WsPushGitActionProgress,
   WsPushGitStatusInvalidated,
   WsPushTerminalEvent,

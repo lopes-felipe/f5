@@ -64,6 +64,10 @@
       "types": "./src/providerOptions.ts",
       "import": "./src/providerOptions.ts"
     },
+    "./providerInput": {
+      "types": "./src/providerInput.ts",
+      "import": "./src/providerInput.ts"
+    },
     "./cliArgs": {
       "types": "./src/cliArgs.ts",
       "import": "./src/cliArgs.ts"

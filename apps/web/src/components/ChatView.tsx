@@ -32,6 +32,7 @@ import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
 } from "@t3tools/contracts";
+import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import {
   createModelSelection,
   getDefaultModel,
@@ -3862,6 +3863,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const messageIdForSend = newMessageId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
+    const inputLengthIssue = getProviderTurnInputLengthIssue(outgoingMessageText);
+    if (inputLengthIssue) {
+      setThreadError(threadIdForSend, inputLengthIssue.message);
+      sendInFlightRef.current = false;
+      return;
+    }
     const titleSourceText =
       trimmed.length > 0
         ? trimmed
@@ -4221,6 +4228,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
           projectSkills: activeProject?.skills,
         },
       );
+      const inputLengthIssue = getProviderTurnInputLengthIssue(outgoingMessageText);
+      if (inputLengthIssue) {
+        setThreadError(threadIdForSend, inputLengthIssue.message);
+        return;
+      }
       const rollback: PendingTurnDispatchRollback = {
         prompt: promptRef.current,
         images: composerImagesRef.current.map(cloneComposerImageForRetry),
@@ -4396,6 +4408,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const planMarkdown = activeProposedPlan.planMarkdown;
     const implementationPrompt = buildPlanImplementationPrompt(planMarkdown);
     const outgoingImplementationPrompt = implementationPrompt;
+    const inputLengthIssue = getProviderTurnInputLengthIssue(outgoingImplementationPrompt);
+    if (inputLengthIssue) {
+      setThreadError(activeThread.id, inputLengthIssue.message);
+      return;
+    }
     const nextThreadTitle = normalizeGeneratedThreadTitle(
       buildPlanImplementationThreadTitle(planMarkdown),
     );
@@ -5186,588 +5203,592 @@ export default function ChatView({ threadId }: ChatViewProps) {
             </div>
 
             {/* Input bar */}
-            <div className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}>
-              <form
-                ref={composerFormRef}
-                onSubmit={onSend}
-                className="mx-auto w-full min-w-0 max-w-3xl"
-                data-chat-composer-form="true"
+            <div className="pb-safe-add">
+              <div
+                className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}
               >
-                <div
-                  data-chat-composer-shell="true"
-                  className={cn(
-                    "group rounded-[20px] border bg-card transition-colors duration-200",
-                    isDragOverComposer
-                      ? "border-primary/70 bg-accent/30"
-                      : interactionMode === "plan"
-                        ? "border-warning/10 focus-within:border-warning/45"
-                        : "border-border focus-within:border-ring/45",
-                  )}
-                  onDragEnter={onComposerDragEnter}
-                  onDragOver={onComposerDragOver}
-                  onDragLeave={onComposerDragLeave}
-                  onDrop={onComposerDrop}
+                <form
+                  ref={composerFormRef}
+                  onSubmit={onSend}
+                  className="mx-auto w-full min-w-0 max-w-3xl"
+                  data-chat-composer-form="true"
                 >
-                  {activePendingApproval ? (
-                    <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
-                      <ComposerPendingApprovalPanel
-                        approval={activePendingApproval}
-                        pendingCount={pendingApprovals.length}
-                      />
-                    </div>
-                  ) : pendingUserInputs.length > 0 ? (
-                    <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
-                      <ComposerPendingUserInputPanel
-                        pendingUserInputs={pendingUserInputs}
-                        respondingRequestIds={respondingRequestIds}
-                        answers={activePendingDraftAnswers}
-                        questionIndex={activePendingQuestionIndex}
-                        onSelectOption={onSelectActivePendingUserInputOption}
-                        onToggleOption={onToggleActivePendingUserInputOption}
-                        onAdvance={onAdvanceActivePendingUserInput}
-                      />
-                    </div>
-                  ) : showPlanFollowUpPrompt && activeProposedPlan ? (
-                    <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
-                      <ComposerPlanFollowUpBanner
-                        key={activeProposedPlan.id}
-                        planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
-                      />
-                    </div>
-                  ) : null}
-
-                  {/* Textarea area */}
                   <div
+                    data-chat-composer-shell="true"
                     className={cn(
-                      "relative px-3 pb-2 sm:px-4",
-                      hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
+                      "group rounded-[20px] border bg-card transition-colors duration-200",
+                      isDragOverComposer
+                        ? "border-primary/70 bg-accent/30"
+                        : interactionMode === "plan"
+                          ? "border-warning/10 focus-within:border-warning/45"
+                          : "border-border focus-within:border-ring/45",
                     )}
+                    onDragEnter={onComposerDragEnter}
+                    onDragOver={onComposerDragOver}
+                    onDragLeave={onComposerDragLeave}
+                    onDrop={onComposerDrop}
                   >
-                    {composerMenuOpen && !isComposerApprovalState && (
-                      <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
-                        <ComposerCommandMenu
-                          items={composerMenuItems}
-                          resolvedTheme={resolvedTheme}
-                          isLoading={isComposerMenuLoading}
-                          triggerKind={composerTriggerKind}
-                          activeItemId={activeComposerMenuItem?.id ?? null}
-                          onHighlightedItemChange={onComposerMenuItemHighlighted}
-                          onSelect={onSelectComposerItem}
+                    {activePendingApproval ? (
+                      <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                        <ComposerPendingApprovalPanel
+                          approval={activePendingApproval}
+                          pendingCount={pendingApprovals.length}
                         />
                       </div>
-                    )}
+                    ) : pendingUserInputs.length > 0 ? (
+                      <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                        <ComposerPendingUserInputPanel
+                          pendingUserInputs={pendingUserInputs}
+                          respondingRequestIds={respondingRequestIds}
+                          answers={activePendingDraftAnswers}
+                          questionIndex={activePendingQuestionIndex}
+                          onSelectOption={onSelectActivePendingUserInputOption}
+                          onToggleOption={onToggleActivePendingUserInputOption}
+                          onAdvance={onAdvanceActivePendingUserInput}
+                        />
+                      </div>
+                    ) : showPlanFollowUpPrompt && activeProposedPlan ? (
+                      <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">
+                        <ComposerPlanFollowUpBanner
+                          key={activeProposedPlan.id}
+                          planTitle={proposedPlanTitle(activeProposedPlan.planMarkdown) ?? null}
+                        />
+                      </div>
+                    ) : null}
 
-                    {!isComposerApprovalState && pendingUserInputs.length === 0 && (
-                      <>
-                        {composerImages.length > 0 && (
-                          <div className="mb-3 flex flex-wrap gap-2">
-                            {composerImages.map((image) => (
-                              <div
-                                key={image.id}
-                                className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
-                              >
-                                {image.previewUrl ? (
-                                  <button
-                                    type="button"
-                                    className="h-full w-full cursor-zoom-in"
-                                    aria-label={`Preview ${image.name}`}
-                                    onClick={() => {
-                                      const preview = buildExpandedImagePreview(
-                                        composerImages,
-                                        image.id,
-                                      );
-                                      if (!preview) return;
-                                      setExpandedImage(preview);
-                                    }}
-                                  >
-                                    <img
-                                      src={image.previewUrl}
-                                      alt={image.name}
-                                      className="h-full w-full object-cover"
-                                    />
-                                  </button>
-                                ) : (
-                                  <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
-                                    {image.name}
-                                  </div>
-                                )}
-                                {nonPersistedComposerImageIdSet.has(image.id) && (
-                                  <Tooltip>
-                                    <TooltipTrigger
-                                      render={
-                                        <span
-                                          role="img"
-                                          aria-label="Draft attachment may not persist"
-                                          className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
-                                        >
-                                          <CircleAlertIcon className="size-3" />
-                                        </span>
-                                      }
-                                    />
-                                    <TooltipPopup
-                                      side="top"
-                                      className="max-w-64 whitespace-normal leading-tight"
+                    {/* Textarea area */}
+                    <div
+                      className={cn(
+                        "relative px-3 pb-2 sm:px-4",
+                        hasComposerHeader ? "pt-2.5 sm:pt-3" : "pt-3.5 sm:pt-4",
+                      )}
+                    >
+                      {composerMenuOpen && !isComposerApprovalState && (
+                        <div className="absolute inset-x-0 bottom-full z-20 mb-2 px-1">
+                          <ComposerCommandMenu
+                            items={composerMenuItems}
+                            resolvedTheme={resolvedTheme}
+                            isLoading={isComposerMenuLoading}
+                            triggerKind={composerTriggerKind}
+                            activeItemId={activeComposerMenuItem?.id ?? null}
+                            onHighlightedItemChange={onComposerMenuItemHighlighted}
+                            onSelect={onSelectComposerItem}
+                          />
+                        </div>
+                      )}
+
+                      {!isComposerApprovalState && pendingUserInputs.length === 0 && (
+                        <>
+                          {composerImages.length > 0 && (
+                            <div className="mb-3 flex flex-wrap gap-2">
+                              {composerImages.map((image) => (
+                                <div
+                                  key={image.id}
+                                  className="relative h-16 w-16 overflow-hidden rounded-lg border border-border/80 bg-background"
+                                >
+                                  {image.previewUrl ? (
+                                    <button
+                                      type="button"
+                                      className="h-full w-full cursor-zoom-in"
+                                      aria-label={`Preview ${image.name}`}
+                                      onClick={() => {
+                                        const preview = buildExpandedImagePreview(
+                                          composerImages,
+                                          image.id,
+                                        );
+                                        if (!preview) return;
+                                        setExpandedImage(preview);
+                                      }}
                                     >
-                                      Draft attachment could not be saved locally and may be lost on
-                                      navigation.
-                                    </TooltipPopup>
-                                  </Tooltip>
-                                )}
-                                <Button
-                                  variant="ghost"
-                                  size="icon-xs"
-                                  className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
-                                  onClick={() => removeComposerImage(image.id)}
-                                  aria-label={`Remove ${image.name}`}
-                                  disabled={isPendingTurnDispatchBlocked}
-                                >
-                                  <XIcon />
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {composerFilePaths.length > 0 && (
-                          <div className="mb-3 flex flex-wrap gap-1.5">
-                            {composerFilePaths.map((filePath) => {
-                              const displayPath = relativePathForDisplay(
-                                filePath,
-                                activeThread?.worktreePath ?? activeProject?.cwd,
-                              );
-                              return (
-                                <span
-                                  key={filePath}
-                                  className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-accent/40 px-1.5 py-1 text-[12px] text-foreground"
-                                  title={displayPath}
-                                >
-                                  <VscodeEntryIcon
-                                    pathValue={filePath}
-                                    kind="file"
-                                    theme={resolvedTheme}
-                                    className="size-3.5"
-                                  />
-                                  <span className="max-w-[200px] truncate">
-                                    {basenameOfPath(displayPath)}
-                                  </span>
+                                      <img
+                                        src={image.previewUrl}
+                                        alt={image.name}
+                                        className="h-full w-full object-cover"
+                                      />
+                                    </button>
+                                  ) : (
+                                    <div className="flex h-full w-full items-center justify-center px-1 text-center text-[10px] text-muted-foreground/70">
+                                      {image.name}
+                                    </div>
+                                  )}
+                                  {nonPersistedComposerImageIdSet.has(image.id) && (
+                                    <Tooltip>
+                                      <TooltipTrigger
+                                        render={
+                                          <span
+                                            role="img"
+                                            aria-label="Draft attachment may not persist"
+                                            className="absolute left-1 top-1 inline-flex items-center justify-center rounded bg-background/85 p-0.5 text-amber-600"
+                                          >
+                                            <CircleAlertIcon className="size-3" />
+                                          </span>
+                                        }
+                                      />
+                                      <TooltipPopup
+                                        side="top"
+                                        className="max-w-64 whitespace-normal leading-tight"
+                                      >
+                                        Draft attachment could not be saved locally and may be lost
+                                        on navigation.
+                                      </TooltipPopup>
+                                    </Tooltip>
+                                  )}
                                   <Button
                                     variant="ghost"
                                     size="icon-xs"
-                                    onClick={() => removeComposerFilePath(filePath)}
+                                    className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
+                                    onClick={() => removeComposerImage(image.id)}
+                                    aria-label={`Remove ${image.name}`}
                                     disabled={isPendingTurnDispatchBlocked}
-                                    aria-label={`Remove ${displayPath}`}
                                   >
-                                    <XIcon className="size-3" />
+                                    <XIcon />
                                   </Button>
-                                </span>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </>
-                    )}
-                    <ComposerPromptEditor
-                      ref={composerEditorRef}
-                      value={
-                        isComposerApprovalState
-                          ? ""
-                          : activePendingProgress
-                            ? activePendingProgress.customAnswer
-                            : prompt
-                      }
-                      cursor={composerCursor}
-                      terminalContexts={
-                        !isComposerApprovalState && pendingUserInputs.length === 0
-                          ? composerTerminalContexts
-                          : []
-                      }
-                      onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
-                      onChange={onPromptChange}
-                      onCommandKeyDown={onComposerCommandKey}
-                      onPaste={onComposerPaste}
-                      placeholder={
-                        isComposerApprovalState
-                          ? (activePendingApproval?.detail ??
-                            "Resolve this approval request to continue")
-                          : activePendingProgress
-                            ? "Type your own answer, or leave this blank to use the selected option"
-                            : showPlanFollowUpPrompt && activeProposedPlan
-                              ? "Add feedback to refine the plan, or leave this blank to implement it"
-                              : phase === "disconnected"
-                                ? "Ask for follow-up changes or attach files"
-                                : "Ask anything, @tag files/folders, or use / for skills and slash commands"
-                      }
-                      disabled={
-                        isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked
-                      }
-                    />
-                  </div>
-
-                  {/* Bottom toolbar */}
-                  {activePendingApproval ? (
-                    <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
-                      <ComposerPendingApprovalActions
-                        requestId={activePendingApproval.requestId}
-                        requestKind={activePendingApproval.requestKind}
-                        canApprove={
-                          activePendingApproval.requestKind !== "permission" ||
-                          activePendingApproval.requestedPermissions !== undefined
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {composerFilePaths.length > 0 && (
+                            <div className="mb-3 flex flex-wrap gap-1.5">
+                              {composerFilePaths.map((filePath) => {
+                                const displayPath = relativePathForDisplay(
+                                  filePath,
+                                  activeThread?.worktreePath ?? activeProject?.cwd,
+                                );
+                                return (
+                                  <span
+                                    key={filePath}
+                                    className="inline-flex max-w-full items-center gap-1 rounded-md border border-border/70 bg-accent/40 px-1.5 py-1 text-[12px] text-foreground"
+                                    title={displayPath}
+                                  >
+                                    <VscodeEntryIcon
+                                      pathValue={filePath}
+                                      kind="file"
+                                      theme={resolvedTheme}
+                                      className="size-3.5"
+                                    />
+                                    <span className="max-w-[200px] truncate">
+                                      {basenameOfPath(displayPath)}
+                                    </span>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon-xs"
+                                      onClick={() => removeComposerFilePath(filePath)}
+                                      disabled={isPendingTurnDispatchBlocked}
+                                      aria-label={`Remove ${displayPath}`}
+                                    >
+                                      <XIcon className="size-3" />
+                                    </Button>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </>
+                      )}
+                      <ComposerPromptEditor
+                        ref={composerEditorRef}
+                        value={
+                          isComposerApprovalState
+                            ? ""
+                            : activePendingProgress
+                              ? activePendingProgress.customAnswer
+                              : prompt
                         }
-                        isResponding={respondingRequestIds.includes(
-                          activePendingApproval.requestId,
-                        )}
-                        onRespondToApproval={onRespondToApproval}
+                        cursor={composerCursor}
+                        terminalContexts={
+                          !isComposerApprovalState && pendingUserInputs.length === 0
+                            ? composerTerminalContexts
+                            : []
+                        }
+                        onRemoveTerminalContext={removeComposerTerminalContextFromDraft}
+                        onChange={onPromptChange}
+                        onCommandKeyDown={onComposerCommandKey}
+                        onPaste={onComposerPaste}
+                        placeholder={
+                          isComposerApprovalState
+                            ? (activePendingApproval?.detail ??
+                              "Resolve this approval request to continue")
+                            : activePendingProgress
+                              ? "Type your own answer, or leave this blank to use the selected option"
+                              : showPlanFollowUpPrompt && activeProposedPlan
+                                ? "Add feedback to refine the plan, or leave this blank to implement it"
+                                : phase === "disconnected"
+                                  ? "Ask for follow-up changes or attach files"
+                                  : "Ask anything, @tag files/folders, or use / for skills and slash commands"
+                        }
+                        disabled={
+                          isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked
+                        }
                       />
                     </div>
-                  ) : (
-                    <div
-                      data-chat-composer-footer="true"
-                      className={cn(
-                        "flex items-center justify-between px-2.5 pb-2.5 sm:px-3 sm:pb-3",
-                        isComposerFooterCompact
-                          ? "gap-1.5"
-                          : "flex-wrap gap-2 sm:flex-nowrap sm:gap-0",
-                      )}
-                    >
+
+                    {/* Bottom toolbar */}
+                    {activePendingApproval ? (
+                      <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
+                        <ComposerPendingApprovalActions
+                          requestId={activePendingApproval.requestId}
+                          requestKind={activePendingApproval.requestKind}
+                          canApprove={
+                            activePendingApproval.requestKind !== "permission" ||
+                            activePendingApproval.requestedPermissions !== undefined
+                          }
+                          isResponding={respondingRequestIds.includes(
+                            activePendingApproval.requestId,
+                          )}
+                          onRespondToApproval={onRespondToApproval}
+                        />
+                      </div>
+                    ) : (
                       <div
+                        data-chat-composer-footer="true"
                         className={cn(
-                          "flex min-w-0 flex-1 items-center",
+                          "flex items-center justify-between px-2.5 pb-2.5 sm:px-3 sm:pb-3",
                           isComposerFooterCompact
-                            ? "-m-1 gap-1 overflow-hidden p-1"
-                            : "-m-1 gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                            ? "gap-1.5"
+                            : "flex-wrap gap-2 sm:flex-nowrap sm:gap-0",
                         )}
                       >
-                        {/* Provider/model picker */}
-                        <ProviderModelPicker
-                          compact={isComposerFooterCompact}
-                          provider={selectedProvider}
-                          model={selectedModelForPickerWithCustomFallback}
-                          lockedProvider={lockedProvider}
-                          modelOptionsByProvider={modelOptionsByProvider}
-                          ultrathinkActive={isClaudeUltrathink}
-                          providers={providerStatuses}
-                          keybindings={keybindings}
-                          terminalOpen={Boolean(terminalState.terminalOpen)}
-                          open={isModelPickerOpen}
-                          onOpenChange={setIsModelPickerOpen}
-                          disabled={isPendingTurnDispatchBlocked}
-                          onProviderModelChange={onProviderModelSelect}
-                        />
-
-                        {isComposerFooterCompact ? (
-                          <CompactComposerControlsMenu
-                            activePlan={Boolean(
-                              activePlan || activeProposedPlan || planSidebarOpen,
-                            )}
-                            canCompactConversation={canCompactConversation}
-                            compactConversationDisabled={isWorking || hasPendingTurnDispatch}
+                        <div
+                          className={cn(
+                            "flex min-w-0 flex-1 items-center",
+                            isComposerFooterCompact
+                              ? "-m-1 gap-1 overflow-hidden p-1"
+                              : "-m-1 gap-1 overflow-x-auto p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+                          )}
+                        >
+                          {/* Provider/model picker */}
+                          <ProviderModelPicker
+                            compact={isComposerFooterCompact}
+                            provider={selectedProvider}
+                            model={selectedModelForPickerWithCustomFallback}
+                            lockedProvider={lockedProvider}
+                            modelOptionsByProvider={modelOptionsByProvider}
+                            ultrathinkActive={isClaudeUltrathink}
+                            providers={providerStatuses}
+                            keybindings={keybindings}
+                            terminalOpen={Boolean(terminalState.terminalOpen)}
+                            open={isModelPickerOpen}
+                            onOpenChange={setIsModelPickerOpen}
                             disabled={isPendingTurnDispatchBlocked}
-                            interactionMode={interactionMode}
-                            planSidebarOpen={planSidebarOpen}
-                            runtimeMode={runtimeMode}
-                            traitsMenuContent={
-                              selectedProvider === "codex" ? (
-                                <CodexTraitsMenuContent threadId={threadId} />
-                              ) : selectedProvider === "claudeAgent" &&
-                                supportsClaudeTraitsControls(selectedModel) ? (
-                                <ClaudeTraitsMenuContent
-                                  threadId={threadId}
-                                  model={selectedModel}
-                                  onPromptChange={setPromptFromTraits}
-                                />
-                              ) : (
-                                genericProviderTraitsMenuContent
-                              )
-                            }
-                            onCompactConversation={onCompactConversation}
-                            onToggleInteractionMode={toggleInteractionMode}
-                            onTogglePlanSidebar={togglePlanSidebar}
-                            onToggleRuntimeMode={toggleRuntimeMode}
+                            onProviderModelChange={onProviderModelSelect}
                           />
-                        ) : (
-                          <>
-                            {selectedProvider === "codex" ? (
-                              <>
-                                <Separator
-                                  orientation="vertical"
-                                  className="mx-0.5 hidden h-4 sm:block"
-                                />
-                                <CodexTraitsPicker threadId={threadId} />
-                              </>
-                            ) : selectedProvider === "claudeAgent" &&
-                              supportsClaudeTraitsControls(selectedModel) ? (
-                              <>
-                                <Separator
-                                  orientation="vertical"
-                                  className="mx-0.5 hidden h-4 sm:block"
-                                />
-                                <ClaudeTraitsPicker
-                                  threadId={threadId}
-                                  model={selectedModel}
-                                  onPromptChange={setPromptFromTraits}
-                                />
-                              </>
-                            ) : genericProviderTraitsPicker ? (
-                              <>
-                                <Separator
-                                  orientation="vertical"
-                                  className="mx-0.5 hidden h-4 sm:block"
-                                />
-                                {genericProviderTraitsPicker}
-                              </>
-                            ) : null}
 
-                            <Separator
-                              orientation="vertical"
-                              className="mx-0.5 hidden h-4 sm:block"
-                            />
-
-                            <Button
-                              variant="ghost"
-                              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-                              size="sm"
-                              type="button"
-                              onClick={toggleInteractionMode}
+                          {isComposerFooterCompact ? (
+                            <CompactComposerControlsMenu
+                              activePlan={Boolean(
+                                activePlan || activeProposedPlan || planSidebarOpen,
+                              )}
+                              canCompactConversation={canCompactConversation}
+                              compactConversationDisabled={isWorking || hasPendingTurnDispatch}
                               disabled={isPendingTurnDispatchBlocked}
-                              title={
-                                interactionMode === "plan"
-                                  ? "Plan mode — click to return to normal chat mode"
-                                  : "Default mode — click to enter plan mode"
-                              }
-                            >
-                              {interactionMode === "plan" ? <NotebookPenIcon /> : <BotIcon />}
-                              <span className="sr-only sm:not-sr-only">
-                                {interactionMode === "plan" ? "Plan" : "Agent"}
-                              </span>
-                            </Button>
-
-                            <Separator
-                              orientation="vertical"
-                              className="mx-0.5 hidden h-4 sm:block"
-                            />
-
-                            <Button
-                              variant="ghost"
-                              className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-                              size="sm"
-                              type="button"
-                              onClick={() =>
-                                void handleRuntimeModeChange(
-                                  runtimeMode === "full-access"
-                                    ? "approval-required"
-                                    : "full-access",
+                              interactionMode={interactionMode}
+                              planSidebarOpen={planSidebarOpen}
+                              runtimeMode={runtimeMode}
+                              traitsMenuContent={
+                                selectedProvider === "codex" ? (
+                                  <CodexTraitsMenuContent threadId={threadId} />
+                                ) : selectedProvider === "claudeAgent" &&
+                                  supportsClaudeTraitsControls(selectedModel) ? (
+                                  <ClaudeTraitsMenuContent
+                                    threadId={threadId}
+                                    model={selectedModel}
+                                    onPromptChange={setPromptFromTraits}
+                                  />
+                                ) : (
+                                  genericProviderTraitsMenuContent
                                 )
                               }
-                              disabled={isPendingTurnDispatchBlocked}
-                              title={
-                                runtimeMode === "full-access"
-                                  ? "Full access — click to require approvals"
-                                  : "Approval required — click for full access"
-                              }
-                            >
-                              {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
-                              <span className="sr-only sm:not-sr-only">
-                                {runtimeMode === "full-access" ? "Full access" : "Supervised"}
-                              </span>
-                            </Button>
+                              onCompactConversation={onCompactConversation}
+                              onToggleInteractionMode={toggleInteractionMode}
+                              onTogglePlanSidebar={togglePlanSidebar}
+                              onToggleRuntimeMode={toggleRuntimeMode}
+                            />
+                          ) : (
+                            <>
+                              {selectedProvider === "codex" ? (
+                                <>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="mx-0.5 hidden h-4 sm:block"
+                                  />
+                                  <CodexTraitsPicker threadId={threadId} />
+                                </>
+                              ) : selectedProvider === "claudeAgent" &&
+                                supportsClaudeTraitsControls(selectedModel) ? (
+                                <>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="mx-0.5 hidden h-4 sm:block"
+                                  />
+                                  <ClaudeTraitsPicker
+                                    threadId={threadId}
+                                    model={selectedModel}
+                                    onPromptChange={setPromptFromTraits}
+                                  />
+                                </>
+                              ) : genericProviderTraitsPicker ? (
+                                <>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="mx-0.5 hidden h-4 sm:block"
+                                  />
+                                  {genericProviderTraitsPicker}
+                                </>
+                              ) : null}
 
-                            {activePlan || activeProposedPlan || planSidebarOpen ? (
-                              <>
-                                <Separator
-                                  orientation="vertical"
-                                  className="mx-0.5 hidden h-4 sm:block"
-                                />
-                                <Button
-                                  variant="ghost"
-                                  className={cn(
-                                    "shrink-0 whitespace-nowrap px-2 sm:px-3",
-                                    planSidebarOpen
-                                      ? "text-blue-400 hover:text-blue-300"
-                                      : "text-muted-foreground/70 hover:text-foreground/80",
-                                  )}
-                                  size="sm"
-                                  type="button"
-                                  onClick={togglePlanSidebar}
-                                  disabled={isPendingTurnDispatchBlocked}
-                                  title={
-                                    planSidebarOpen ? "Hide plan sidebar" : "Show plan sidebar"
-                                  }
-                                >
-                                  <ListTodoIcon />
-                                  <span className="sr-only sm:not-sr-only">Plan</span>
-                                </Button>
-                              </>
-                            ) : null}
-                          </>
-                        )}
-                      </div>
+                              <Separator
+                                orientation="vertical"
+                                className="mx-0.5 hidden h-4 sm:block"
+                              />
 
-                      {/* Right side: send / stop button */}
-                      <div
-                        data-chat-composer-actions="right"
-                        className="flex shrink-0 items-center gap-2"
-                      >
-                        {isPreparingWorktree ? (
-                          <span className="text-muted-foreground/70 text-xs">
-                            Preparing worktree...
-                          </span>
-                        ) : null}
-                        {activePendingProgress ? (
-                          <div className="flex items-center gap-2">
-                            {activePendingProgress.questionIndex > 0 ? (
                               <Button
+                                variant="ghost"
+                                className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
                                 size="sm"
-                                variant="outline"
-                                className="rounded-full"
-                                onClick={onPreviousActivePendingUserInputQuestion}
-                                disabled={activePendingIsResponding}
+                                type="button"
+                                onClick={toggleInteractionMode}
+                                disabled={isPendingTurnDispatchBlocked}
+                                title={
+                                  interactionMode === "plan"
+                                    ? "Plan mode — click to return to normal chat mode"
+                                    : "Default mode — click to enter plan mode"
+                                }
                               >
-                                Previous
+                                {interactionMode === "plan" ? <NotebookPenIcon /> : <BotIcon />}
+                                <span className="sr-only sm:not-sr-only">
+                                  {interactionMode === "plan" ? "Plan" : "Agent"}
+                                </span>
                               </Button>
-                            ) : null}
-                            <Button
-                              type="submit"
-                              size="sm"
-                              className="rounded-full px-4"
-                              disabled={
-                                activePendingIsResponding ||
-                                (activePendingProgress.isLastQuestion
-                                  ? !activePendingResolvedAnswers
-                                  : !activePendingProgress.canAdvance)
-                              }
-                            >
-                              {activePendingIsResponding
-                                ? "Submitting..."
-                                : activePendingProgress.isLastQuestion
-                                  ? "Submit answers"
-                                  : "Next question"}
-                            </Button>
-                          </div>
-                        ) : phase === "running" ? (
-                          <button
-                            type="button"
-                            className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
-                            onClick={() => void onInterrupt()}
-                            aria-label="Stop generation"
-                          >
-                            <svg
-                              width="12"
-                              height="12"
-                              viewBox="0 0 12 12"
-                              fill="currentColor"
-                              aria-hidden="true"
-                            >
-                              <rect x="2" y="2" width="8" height="8" rx="1.5" />
-                            </svg>
-                          </button>
-                        ) : pendingUserInputs.length === 0 ? (
-                          showPlanFollowUpPrompt ? (
-                            prompt.trim().length > 0 ? (
+
+                              <Separator
+                                orientation="vertical"
+                                className="mx-0.5 hidden h-4 sm:block"
+                              />
+
+                              <Button
+                                variant="ghost"
+                                className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+                                size="sm"
+                                type="button"
+                                onClick={() =>
+                                  void handleRuntimeModeChange(
+                                    runtimeMode === "full-access"
+                                      ? "approval-required"
+                                      : "full-access",
+                                  )
+                                }
+                                disabled={isPendingTurnDispatchBlocked}
+                                title={
+                                  runtimeMode === "full-access"
+                                    ? "Full access — click to require approvals"
+                                    : "Approval required — click for full access"
+                                }
+                              >
+                                {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
+                                <span className="sr-only sm:not-sr-only">
+                                  {runtimeMode === "full-access" ? "Full access" : "Supervised"}
+                                </span>
+                              </Button>
+
+                              {activePlan || activeProposedPlan || planSidebarOpen ? (
+                                <>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="mx-0.5 hidden h-4 sm:block"
+                                  />
+                                  <Button
+                                    variant="ghost"
+                                    className={cn(
+                                      "shrink-0 whitespace-nowrap px-2 sm:px-3",
+                                      planSidebarOpen
+                                        ? "text-blue-400 hover:text-blue-300"
+                                        : "text-muted-foreground/70 hover:text-foreground/80",
+                                    )}
+                                    size="sm"
+                                    type="button"
+                                    onClick={togglePlanSidebar}
+                                    disabled={isPendingTurnDispatchBlocked}
+                                    title={
+                                      planSidebarOpen ? "Hide plan sidebar" : "Show plan sidebar"
+                                    }
+                                  >
+                                    <ListTodoIcon />
+                                    <span className="sr-only sm:not-sr-only">Plan</span>
+                                  </Button>
+                                </>
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+
+                        {/* Right side: send / stop button */}
+                        <div
+                          data-chat-composer-actions="right"
+                          className="flex shrink-0 items-center gap-2"
+                        >
+                          {isPreparingWorktree ? (
+                            <span className="text-muted-foreground/70 text-xs">
+                              Preparing worktree...
+                            </span>
+                          ) : null}
+                          {activePendingProgress ? (
+                            <div className="flex items-center gap-2">
+                              {activePendingProgress.questionIndex > 0 ? (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="rounded-full"
+                                  onClick={onPreviousActivePendingUserInputQuestion}
+                                  disabled={activePendingIsResponding}
+                                >
+                                  Previous
+                                </Button>
+                              ) : null}
                               <Button
                                 type="submit"
                                 size="sm"
-                                className="h-9 rounded-full px-4 sm:h-8"
-                                disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                className="rounded-full px-4"
+                                disabled={
+                                  activePendingIsResponding ||
+                                  (activePendingProgress.isLastQuestion
+                                    ? !activePendingResolvedAnswers
+                                    : !activePendingProgress.canAdvance)
+                                }
                               >
-                                {isConnecting || isSendBusy ? "Sending..." : "Refine"}
+                                {activePendingIsResponding
+                                  ? "Submitting..."
+                                  : activePendingProgress.isLastQuestion
+                                    ? "Submit answers"
+                                    : "Next question"}
                               </Button>
-                            ) : (
-                              <div className="flex items-center">
+                            </div>
+                          ) : phase === "running" ? (
+                            <button
+                              type="button"
+                              className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
+                              onClick={() => void onInterrupt()}
+                              aria-label="Stop generation"
+                            >
+                              <svg
+                                width="12"
+                                height="12"
+                                viewBox="0 0 12 12"
+                                fill="currentColor"
+                                aria-hidden="true"
+                              >
+                                <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                              </svg>
+                            </button>
+                          ) : pendingUserInputs.length === 0 ? (
+                            showPlanFollowUpPrompt ? (
+                              prompt.trim().length > 0 ? (
                                 <Button
                                   type="submit"
                                   size="sm"
-                                  className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
+                                  className="h-9 rounded-full px-4 sm:h-8"
                                   disabled={isPendingTurnDispatchBlocked || isConnecting}
                                 >
-                                  {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+                                  {isConnecting || isSendBusy ? "Sending..." : "Refine"}
                                 </Button>
-                                <Menu>
-                                  <MenuTrigger
-                                    render={
-                                      <Button
-                                        size="sm"
-                                        variant="default"
-                                        className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
-                                        aria-label="Implementation actions"
-                                        disabled={isPendingTurnDispatchBlocked || isConnecting}
-                                      />
-                                    }
-                                  >
-                                    <ChevronDownIcon className="size-3.5" />
-                                  </MenuTrigger>
-                                  <MenuPopup align="end" side="top">
-                                    <MenuItem
-                                      disabled={isPendingTurnDispatchBlocked || isConnecting}
-                                      onClick={() => void onImplementPlanInNewThread()}
-                                    >
-                                      Implement in a new thread
-                                    </MenuItem>
-                                  </MenuPopup>
-                                </Menu>
-                              </div>
-                            )
-                          ) : (
-                            <button
-                              type="submit"
-                              className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
-                              disabled={
-                                isPendingTurnDispatchBlocked ||
-                                isConnecting ||
-                                !composerSendState.hasSendableContent
-                              }
-                              aria-label={
-                                isConnecting
-                                  ? "Connecting"
-                                  : isPreparingWorktree
-                                    ? "Preparing worktree"
-                                    : isSendBusy
-                                      ? "Sending"
-                                      : "Send message"
-                              }
-                            >
-                              {isConnecting || isSendBusy ? (
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 14 14"
-                                  fill="none"
-                                  className="animate-spin"
-                                  aria-hidden="true"
-                                >
-                                  <circle
-                                    cx="7"
-                                    cy="7"
-                                    r="5.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.5"
-                                    strokeLinecap="round"
-                                    strokeDasharray="20 12"
-                                  />
-                                </svg>
                               ) : (
-                                <svg
-                                  width="14"
-                                  height="14"
-                                  viewBox="0 0 14 14"
-                                  fill="none"
-                                  aria-hidden="true"
-                                >
-                                  <path
-                                    d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-                                    stroke="currentColor"
-                                    strokeWidth="1.8"
-                                    strokeLinecap="round"
-                                    strokeLinejoin="round"
-                                  />
-                                </svg>
-                              )}
-                            </button>
-                          )
-                        ) : null}
+                                <div className="flex items-center">
+                                  <Button
+                                    type="submit"
+                                    size="sm"
+                                    className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
+                                    disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                  >
+                                    {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+                                  </Button>
+                                  <Menu>
+                                    <MenuTrigger
+                                      render={
+                                        <Button
+                                          size="sm"
+                                          variant="default"
+                                          className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
+                                          aria-label="Implementation actions"
+                                          disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                        />
+                                      }
+                                    >
+                                      <ChevronDownIcon className="size-3.5" />
+                                    </MenuTrigger>
+                                    <MenuPopup align="end" side="top">
+                                      <MenuItem
+                                        disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                        onClick={() => void onImplementPlanInNewThread()}
+                                      >
+                                        Implement in a new thread
+                                      </MenuItem>
+                                    </MenuPopup>
+                                  </Menu>
+                                </div>
+                              )
+                            ) : (
+                              <button
+                                type="submit"
+                                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
+                                disabled={
+                                  isPendingTurnDispatchBlocked ||
+                                  isConnecting ||
+                                  !composerSendState.hasSendableContent
+                                }
+                                aria-label={
+                                  isConnecting
+                                    ? "Connecting"
+                                    : isPreparingWorktree
+                                      ? "Preparing worktree"
+                                      : isSendBusy
+                                        ? "Sending"
+                                        : "Send message"
+                                }
+                              >
+                                {isConnecting || isSendBusy ? (
+                                  <svg
+                                    width="14"
+                                    height="14"
+                                    viewBox="0 0 14 14"
+                                    fill="none"
+                                    className="animate-spin"
+                                    aria-hidden="true"
+                                  >
+                                    <circle
+                                      cx="7"
+                                      cy="7"
+                                      r="5.5"
+                                      stroke="currentColor"
+                                      strokeWidth="1.5"
+                                      strokeLinecap="round"
+                                      strokeDasharray="20 12"
+                                    />
+                                  </svg>
+                                ) : (
+                                  <svg
+                                    width="14"
+                                    height="14"
+                                    viewBox="0 0 14 14"
+                                    fill="none"
+                                    aria-hidden="true"
+                                  >
+                                    <path
+                                      d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
+                                      stroke="currentColor"
+                                      strokeWidth="1.8"
+                                      strokeLinecap="round"
+                                      strokeLinejoin="round"
+                                    />
+                                  </svg>
+                                )}
+                              </button>
+                            )
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              </form>
+                    )}
+                  </div>
+                </form>
+              </div>
             </div>
 
             {isGitRepo && (

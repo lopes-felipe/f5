@@ -7,6 +7,8 @@ import {
   OrchestrationFileChangeId,
   type OrchestrationEvent,
   ProjectId,
+  ProviderDriverKind,
+  ProviderInstanceId,
   ThreadId,
   type WsPushChannel,
   type WsPushData,
@@ -228,6 +230,44 @@ describe("wsNativeApi", () => {
       issues: [],
       providers: defaultProviders,
     });
+  });
+
+  it("delivers and caches provider advisory update payloads", async () => {
+    const { createWsNativeApi, onProviderAdvisoriesUpdated } = await import("./wsNativeApi");
+
+    createWsNativeApi();
+    const listener = vi.fn();
+    onProviderAdvisoriesUpdated(listener);
+
+    const payload = {
+      advisories: [
+        {
+          instanceId: ProviderInstanceId.make("codex"),
+          driver: ProviderDriverKind.make("codex"),
+          versionAdvisory: {
+            status: "behind_latest",
+            currentVersion: "1.0.0",
+            latestVersion: "1.1.0",
+            updateCommand: {
+              executable: "npm",
+              args: ["install", "-g", "@openai/codex@latest"],
+              channel: "npm",
+            },
+            checkedAt: "2026-05-26T00:00:00.000Z",
+            message: "Installed v1.0.0 · latest v1.1.0",
+          },
+        },
+      ],
+    } as const;
+    emitPush(WS_CHANNELS.providerAdvisoriesUpdated, payload);
+
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledWith(payload);
+
+    const lateListener = vi.fn();
+    onProviderAdvisoriesUpdated(lateListener);
+    expect(lateListener).toHaveBeenCalledTimes(1);
+    expect(lateListener).toHaveBeenCalledWith(payload);
   });
 
   it("forwards valid terminal and orchestration events", async () => {

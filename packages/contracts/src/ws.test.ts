@@ -219,6 +219,62 @@ it.effect("accepts git status invalidation push envelopes", () =>
   }),
 );
 
+it.effect("accepts provider advisory push envelopes", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWsResponse({
+      type: "push",
+      sequence: 4,
+      channel: WS_CHANNELS.providerAdvisoriesUpdated,
+      data: {
+        advisories: [
+          {
+            instanceId: "codex",
+            driver: "codex",
+            versionAdvisory: {
+              status: "behind_latest",
+              currentVersion: "1.0.0",
+              latestVersion: "1.1.0",
+              updateCommand: {
+                executable: "npm",
+                args: ["install", "-g", "@openai/codex@latest"],
+                channel: "npm",
+              },
+              checkedAt: "2026-05-26T00:00:00.000Z",
+              message: "Installed v1.0.0 · latest v1.1.0",
+            },
+          },
+        ],
+      },
+    });
+
+    if (!("type" in parsed) || parsed.type !== "push") {
+      assert.fail("expected websocket response to decode as a push envelope");
+    }
+
+    if (parsed.channel !== WS_CHANNELS.providerAdvisoriesUpdated) {
+      assert.fail("expected provider advisories channel");
+    }
+    assert.strictEqual(parsed.data.advisories[0]?.versionAdvisory.status, "behind_latest");
+  }),
+);
+
+it.effect("rejects malformed provider advisory push envelopes", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeWsResponse({
+        type: "push",
+        sequence: 5,
+        channel: WS_CHANNELS.providerAdvisoriesUpdated,
+        data: {
+          advisories: [{ instanceId: "codex", driver: "codex" }],
+        },
+      }),
+    );
+
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
 it.effect("accepts global git status invalidation push envelopes", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWsResponse({

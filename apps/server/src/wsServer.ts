@@ -36,6 +36,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import {
   Cause,
   Deferred,
+  Duration,
   Effect,
   Exit,
   FileSystem,
@@ -44,6 +45,7 @@ import {
   Path,
   Ref,
   Result,
+  Schedule,
   Schema,
   Scope,
   ServiceMap,
@@ -85,7 +87,9 @@ import {
 } from "./provider/Services/ProviderSessionDirectory.ts";
 import { ProviderSessionReaper } from "./provider/Services/ProviderSessionReaper.ts";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
+import { ProviderAdvisoryProjection } from "./provider/Services/ProviderAdvisoryProjection.ts";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
+import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
 import { clamp } from "effect/Number";
@@ -120,6 +124,7 @@ import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCle
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
+import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
@@ -411,6 +416,8 @@ export type ServerCoreRuntimeServices =
   | ProviderService
   | ProviderInstanceRegistry
   | ProviderRegistry
+  | ProviderUpdateAdvisor
+  | ProviderAdvisoryProjection
   | HarnessValidation
   | ServerSettingsService
   | CodexMcpEventBus
@@ -495,6 +502,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const keybindingsManager = yield* Keybindings;
   const providerService = yield* ProviderService;
   const providerRegistry = yield* ProviderRegistry;
+  const providerUpdateAdvisor = yield* ProviderUpdateAdvisor;
+  const providerAdvisoryProjection = yield* ProviderAdvisoryProjection;
   const harnessValidation = yield* HarnessValidation;
   const serverSettings = yield* ServerSettingsService;
   const codexMcpEventBus = yield* CodexMcpEventBus;
@@ -624,6 +633,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return input.command as OrchestrationCommand;
     }
     const turnStartCommand = input.command;
+    const inputLengthIssue = getProviderTurnInputLengthIssue(turnStartCommand.message.text);
+    if (inputLengthIssue) {
+      return yield* new RouteRequestError({
+        message: inputLengthIssue.message,
+      });
+    }
     const normalizedBootstrap =
       turnStartCommand.bootstrap?.prepareWorktree?.projectCwd !== undefined
         ? {
@@ -913,7 +928,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Effect.addFinalizer(() => Scope.close(subscriptionsScope, Exit.void));
 
   yield* Stream.runForEach(keybindingsManager.streamChanges, (event) =>
-    providerRegistry.getProviders.pipe(
+    providerAdvisoryProjection.getProviders.pipe(
       Effect.bindTo("providers"),
       Effect.bind("settings", () =>
         serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
@@ -931,7 +946,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
     Effect.all({
       keybindingsConfig: keybindingsManager.loadConfigState,
-      providers: providerRegistry.getProviders,
+      providers: providerAdvisoryProjection.getProviders,
     }).pipe(
       Effect.flatMap(({ keybindingsConfig, providers }) =>
         pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
@@ -943,7 +958,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
-  yield* Stream.runForEach(providerRegistry.streamChanges, (providers) =>
+  yield* Stream.runForEach(providerAdvisoryProjection.streamChanges, (providers) =>
     Effect.all({
       keybindingsConfig: keybindingsManager.loadConfigState,
       settings: serverSettings.getSettings.pipe(Effect.map(redactServerSettingsForClient)),
@@ -956,8 +971,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           settings,
         }),
       ),
+      Effect.tap(() => providerUpdateAdvisor.noteRegistryChanged),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
+  yield* Stream.runForEach(providerUpdateAdvisor.streamChanges, (advisories) =>
+    pushBus.publishAll(WS_CHANNELS.providerAdvisoriesUpdated, { advisories }),
+  ).pipe(Effect.forkIn(subscriptionsScope));
+  const providerAdvisoryRefreshSchedule = Schedule.spaced(Duration.hours(6)).pipe(
+    Schedule.modifyDelay((_, delay) =>
+      Effect.sync(() => Duration.millis(Duration.toMillis(delay) * (0.95 + Math.random() * 0.1))),
+    ),
+  );
+  const providerAdvisoryRefreshLoop = Effect.sleep(Duration.seconds(5)).pipe(
+    Effect.andThen(
+      providerUpdateAdvisor
+        .refreshAdvisories()
+        .pipe(Effect.repeat(providerAdvisoryRefreshSchedule)),
+    ),
+  );
   yield* Stream.runForEach(codexMcpEventBus.streamStatusUpdates, (event) =>
     pushBus.publishAll(WS_CHANNELS.mcpStatusUpdated, event),
   ).pipe(Effect.forkIn(subscriptionsScope));
@@ -1161,6 +1192,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
   yield* readiness.markHttpListening;
+  yield* providerAdvisoryRefreshLoop.pipe(Effect.forkIn(subscriptionsScope));
 
   yield* Effect.addFinalizer(() =>
     Effect.all([closeAllClients, closeWebSocketServer.pipe(Effect.ignoreCause({ log: true }))]),
@@ -1773,7 +1805,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
-        const providers = yield* providerRegistry.getProviders;
+        const providers = yield* providerAdvisoryProjection.getProviders;
         const settings = yield* serverSettings.getSettings.pipe(
           Effect.map(redactServerSettingsForClient),
         );
@@ -1802,7 +1834,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.serverRefreshProviders: {
-        const providers = yield* providerRegistry.refresh();
+        yield* providerRegistry.refresh();
+        yield* providerUpdateAdvisor.refreshAdvisories({ force: true }).pipe(Effect.forkChild);
+        const providers = yield* providerAdvisoryProjection.getProviders;
         return { providers };
       }
 

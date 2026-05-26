@@ -230,6 +230,10 @@ export function ProvidersSettings() {
         unifiedSettings.providerModelPreferences,
         id,
       ),
+      dismissedProviderUpdateAdvisories: withoutProviderInstanceKey(
+        unifiedSettings.dismissedProviderUpdateAdvisories,
+        id,
+      ),
       favorites: withoutProviderInstanceFavorites(unifiedSettings.favorites ?? [], id),
     });
   };
@@ -398,6 +402,17 @@ export function ProvidersSettings() {
                   );
                 }}
                 onDelete={row.isDefault ? undefined : () => deleteProviderInstance(row.instanceId)}
+                dismissedProviderUpdateAdvisory={
+                  unifiedSettings.dismissedProviderUpdateAdvisories[row.instanceId]
+                }
+                onDismissProviderUpdateAdvisory={(latestVersion) =>
+                  updateUnifiedSettings({
+                    dismissedProviderUpdateAdvisories: {
+                      ...unifiedSettings.dismissedProviderUpdateAdvisories,
+                      [row.instanceId]: latestVersion,
+                    },
+                  })
+                }
                 headerAction={
                   row.isDefault && row.isDirty ? (
                     <Button

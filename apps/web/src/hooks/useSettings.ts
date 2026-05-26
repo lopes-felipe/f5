@@ -20,6 +20,7 @@ function mergeSettings(appSettings: AppSettings, serverSettings?: ServerSettings
     confirmThreadDelete: appSettings.confirmThreadDelete,
     favorites: appSettings.favorites,
     providerModelPreferences: appSettings.providerModelPreferences,
+    dismissedProviderUpdateAdvisories: appSettings.dismissedProviderUpdateAdvisories,
   };
 }
 
@@ -40,7 +41,8 @@ function splitSettingsPatch(patch: Partial<UnifiedSettings>): {
       key === "timestampFormat" ||
       key === "confirmThreadDelete" ||
       key === "favorites" ||
-      key === "providerModelPreferences"
+      key === "providerModelPreferences" ||
+      key === "dismissedProviderUpdateAdvisories"
     ) {
       appPatch[key] = value;
     }

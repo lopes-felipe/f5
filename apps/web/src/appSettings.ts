@@ -226,6 +226,13 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some({})),
     Schema.withDecodingDefault(() => ({})),
   ),
+  dismissedProviderUpdateAdvisories: Schema.Record(
+    ProviderInstanceId,
+    Schema.String.check(Schema.isMaxLength(64)),
+  ).pipe(
+    Schema.withConstructorDefault(() => Option.some({})),
+    Schema.withDecodingDefault(() => ({})),
+  ),
   customCodexModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),

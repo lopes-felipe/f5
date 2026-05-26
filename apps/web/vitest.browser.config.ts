@@ -26,6 +26,7 @@ export default mergeConfig(
         "src/components/settings/DisplayProfileSelector.browser.tsx",
         "src/components/settings/KeybindingEditor.browser.tsx",
         "src/components/settings/McpServersSettings.browser.tsx",
+        "src/components/settings/ProviderInstanceCard.browser.tsx",
         "src/components/settings/SettingsRouteState.browser.tsx",
         "src/components/settings/categories/StorageSettings.browser.tsx",
         "src/components/onboarding/HarnessValidationPanel.browser.tsx",

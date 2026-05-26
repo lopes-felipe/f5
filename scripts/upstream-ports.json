@@ -27,7 +27,31 @@
     "ported": true,
     "f5-sha": null,
     "skipped": false,
-    "reason": "Replaced the add-project plus icon with FolderPlusIcon."
+    "reason": "Re-verified: Sidebar and command palette add-project actions both use FolderPlusIcon."
+  },
+  "9b604bcae1e2cfe0e0566bc2aff660850e276c6d": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 4 - added per-provider-instance update advisories with copy-first npm commands and local dismissals."
+  },
+  "7e20b23e7ea5dc1daf4cbfa65d61301d99168bae": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 4 - used an overflow-safe update advisory popover."
+  },
+  "8f50ca8e2c0e7dc4464fbbc17763dab2e109ac0c": {
+    "ported": false,
+    "f5-sha": null,
+    "skipped": true,
+    "reason": "N/A: f5 web auth has no pairing-token bootstrap flow."
+  },
+  "16c69ba7ffe950aa054b84e8052b03abe0f7379a": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Already correct: f5 git action success toasts do not use the upstream actionVariant styling path."
   },
   "3a1daa87ac103da0c176426e82eb576d87046bdf": {
     "ported": true,
@@ -57,7 +81,7 @@
     "ported": true,
     "f5-sha": null,
     "skipped": false,
-    "reason": "Allowed closing an already-open diff panel when the project is not a git repository."
+    "reason": "Already implemented: ChatHeader allows closing an already-open diff panel when the project is not a git repository."
   },
   "69d9a659a36ee246c543e46a522556918ed4ed9e": {
     "ported": true,

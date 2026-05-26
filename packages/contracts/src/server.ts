@@ -25,6 +25,7 @@ export const ServerConfigIssue = Schema.Union([
 export type ServerConfigIssue = typeof ServerConfigIssue.Type;
 
 const ServerConfigIssues = Schema.Array(ServerConfigIssue);
+const ServerProviderLatestVersionString = TrimmedNonEmptyString.check(Schema.isMaxLength(64));
 
 export const ServerProviderStatusState = Schema.Literals(["ready", "warning", "error"]);
 export type ServerProviderStatusState = typeof ServerProviderStatusState.Type;
@@ -99,6 +100,32 @@ export const ServerProviderContinuation = Schema.Struct({
 });
 export type ServerProviderContinuation = typeof ServerProviderContinuation.Type;
 
+export const ServerProviderVersionAdvisoryStatus = Schema.Literals([
+  "unknown",
+  "current",
+  "behind_latest",
+]);
+export type ServerProviderVersionAdvisoryStatus = typeof ServerProviderVersionAdvisoryStatus.Type;
+
+export const ServerProviderUpdateCommand = Schema.Struct({
+  executable: TrimmedNonEmptyString,
+  args: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  channel: Schema.Literals(["npm"]),
+  cwd: Schema.optional(TrimmedNonEmptyString),
+  env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+});
+export type ServerProviderUpdateCommand = typeof ServerProviderUpdateCommand.Type;
+
+export const ServerProviderVersionAdvisory = Schema.Struct({
+  status: ServerProviderVersionAdvisoryStatus,
+  currentVersion: Schema.NullOr(TrimmedNonEmptyString),
+  latestVersion: Schema.NullOr(ServerProviderLatestVersionString),
+  updateCommand: Schema.NullOr(ServerProviderUpdateCommand),
+  checkedAt: Schema.NullOr(IsoDateTime),
+  message: Schema.NullOr(TrimmedNonEmptyString),
+});
+export type ServerProviderVersionAdvisory = typeof ServerProviderVersionAdvisory.Type;
+
 export const ServerProvider = Schema.Struct({
   instanceId: ProviderInstanceId,
   driver: ProviderDriverKind,
@@ -116,6 +143,7 @@ export const ServerProvider = Schema.Struct({
   message: Schema.optional(TrimmedNonEmptyString),
   availability: Schema.optional(ServerProviderAvailability),
   unavailableReason: Schema.optional(TrimmedNonEmptyString),
+  versionAdvisory: Schema.optional(ServerProviderVersionAdvisory),
   models: Schema.Array(ServerProviderModel),
   slashCommands: Schema.Array(ServerProviderSlashCommand).pipe(
     Schema.withDecodingDefault(() => []),
@@ -134,6 +162,19 @@ export const ServerProviderUpdatedPayload = Schema.Struct({
   providers: ServerProviders,
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
+
+export const ServerProviderAdvisoryEntry = Schema.Struct({
+  instanceId: ProviderInstanceId,
+  driver: ProviderDriverKind,
+  versionAdvisory: ServerProviderVersionAdvisory,
+});
+export type ServerProviderAdvisoryEntry = typeof ServerProviderAdvisoryEntry.Type;
+
+export const ServerProviderAdvisoriesUpdatedPayload = Schema.Struct({
+  advisories: Schema.Array(ServerProviderAdvisoryEntry),
+});
+export type ServerProviderAdvisoriesUpdatedPayload =
+  typeof ServerProviderAdvisoriesUpdatedPayload.Type;
 
 export const HarnessValidationFailureKind = Schema.Literals([
   "notInstalled",

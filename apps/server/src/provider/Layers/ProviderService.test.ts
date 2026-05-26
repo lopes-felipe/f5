@@ -13,6 +13,7 @@ import {
   ApprovalRequestId,
   EventId,
   ProjectId,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProviderKind,
   ProviderSessionStartInput,
   ThreadId,
@@ -1367,6 +1368,33 @@ validation.layer("ProviderServiceLive validation", (it) => {
       }
       assert.equal(failure.failure.operation, "ProviderService.startSession");
       assert.equal(failure.failure.issue.includes("invalid-provider"), true);
+    }),
+  );
+
+  it.effect("returns concise validation errors for oversized turn input", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      validation.codex.sendTurn.mockClear();
+
+      const failure = yield* Effect.result(
+        provider.sendTurn({
+          threadId: asThreadId("thread-validation-oversized"),
+          input: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 1),
+        }),
+      );
+
+      assert.equal(failure._tag, "Failure");
+      if (failure._tag !== "Failure") {
+        return;
+      }
+      assert.equal(failure.failure._tag, "ProviderValidationError");
+      if (failure.failure._tag !== "ProviderValidationError") {
+        return;
+      }
+      assert.equal(failure.failure.operation, "ProviderService.sendTurn");
+      assert.equal(failure.failure.issue.includes("120,000 character provider input limit"), true);
+      assert.equal(failure.failure.issue.length < 240, true);
+      assert.equal(validation.codex.sendTurn.mock.calls.length, 0);
     }),
   );
 

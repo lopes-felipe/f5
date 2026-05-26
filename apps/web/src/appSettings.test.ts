@@ -129,6 +129,26 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).favoriteModels).toEqual([]);
   });
 
+  it("defaults provider update advisory dismissals to an empty record", () => {
+    expect(parsePersistedAppSettings(null).dismissedProviderUpdateAdvisories).toEqual({});
+  });
+
+  it("restores persisted provider update advisory dismissals", () => {
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        dismissedProviderUpdateAdvisories: {
+          codex: "1.2.3",
+          codex_work: "2.0.0",
+        },
+      }),
+    );
+
+    expect(parsed.dismissedProviderUpdateAdvisories).toEqual({
+      codex: "1.2.3",
+      codex_work: "2.0.0",
+    });
+  });
+
   it("decodes stored settings that predate favorite models without losing other settings", () => {
     const persisted: Record<string, unknown> = {
       ...parsePersistedAppSettings(null),

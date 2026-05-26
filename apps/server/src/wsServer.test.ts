@@ -22,6 +22,7 @@ import {
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   PROJECT_READ_FILE_MAX_SIZE,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ProviderItemId,
   ProjectId,
   ThreadId,
@@ -60,9 +61,17 @@ import { ProviderService, type ProviderServiceShape } from "./provider/Services/
 import { ProviderHealth, type ProviderHealthShape } from "./provider/Services/ProviderHealth";
 import { ProviderInstanceRegistry } from "./provider/Services/ProviderInstanceRegistry.ts";
 import {
+  ProviderAdvisoryProjection,
+  type ProviderAdvisoryProjectionShape,
+} from "./provider/Services/ProviderAdvisoryProjection.ts";
+import {
   ProviderRegistry,
   type ProviderRegistryShape,
 } from "./provider/Services/ProviderRegistry.ts";
+import {
+  ProviderUpdateAdvisor,
+  type ProviderUpdateAdvisorShape,
+} from "./provider/Services/ProviderUpdateAdvisor.ts";
 import {
   HarnessValidation,
   type HarnessValidationShape,
@@ -121,6 +130,26 @@ const defaultProviderRegistryService: ProviderRegistryShape = {
   streamChanges: Stream.empty,
 };
 
+const defaultProviderUpdateAdvisorService: ProviderUpdateAdvisorShape = {
+  getAdvisoryFor: ({ currentVersion }) =>
+    Effect.succeed({
+      status: "unknown",
+      currentVersion,
+      latestVersion: null,
+      updateCommand: null,
+      checkedAt: null,
+      message: null,
+    }),
+  streamChanges: Stream.empty,
+  noteRegistryChanged: Effect.void,
+  refreshAdvisories: () => Effect.void,
+};
+
+const defaultProviderAdvisoryProjectionService: ProviderAdvisoryProjectionShape = {
+  getProviders: Effect.succeed(defaultProviderSnapshots),
+  streamChanges: Stream.empty,
+};
+
 const defaultHarnessValidationService: HarnessValidationShape = {
   validate: () =>
     Effect.succeed([
@@ -167,6 +196,8 @@ function makeProviderRuntimeTestLayer(providerLayer: Layer.Layer<ProviderService
   return Layer.mergeAll(
     providerLayer,
     Layer.succeed(ProviderRegistry, defaultProviderRegistryService),
+    Layer.succeed(ProviderUpdateAdvisor, defaultProviderUpdateAdvisorService),
+    Layer.succeed(ProviderAdvisoryProjection, defaultProviderAdvisoryProjectionService),
     Layer.succeed(ProviderInstanceRegistry, {
       getInstance: () => Effect.sync(() => undefined as ProviderInstance | undefined),
       listInstances: Effect.succeed([]),
@@ -2159,6 +2190,67 @@ describe("WebSocket Server", () => {
     });
     expect(response.result).toBeUndefined();
     expect(response.error?.message).toContain("exceeds current turn count");
+  });
+
+  it("rejects oversized turn-start messages before dispatching orchestration events", async () => {
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const workspaceRoot = makeTempDir("t3code-ws-oversized-project-");
+    const createdAt = new Date().toISOString();
+    const createProjectResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-oversized-project-create",
+      projectId: "project-oversized",
+      title: "Oversized Project",
+      workspaceRoot,
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(createProjectResponse.error).toBeUndefined();
+    const createThreadResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.create",
+      commandId: "cmd-oversized-thread-create",
+      threadId: "thread-oversized",
+      projectId: "project-oversized",
+      title: "Oversized Thread",
+      model: "gpt-5-codex",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+    expect(createThreadResponse.error).toBeUndefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.turn.start",
+      commandId: "cmd-oversized-turn-start",
+      threadId: "thread-oversized",
+      message: {
+        messageId: "msg-oversized",
+        role: "user",
+        text: "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS + 1),
+        attachments: [],
+      },
+      assistantDeliveryMode: "streaming",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt,
+    });
+
+    expect(response.result).toBeUndefined();
+    expect(response.error?.message).toContain("120,000 character provider input limit");
+    expect(response.error?.message.length).toBeLessThan(240);
+
+    const snapshotResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+    const snapshot = snapshotResponse.result as OrchestrationReadModel;
+    const thread = snapshot.threads.find((entry) => entry.id === "thread-oversized");
+    expect(thread?.messages).toEqual([]);
   });
 
   it("keeps orchestration domain push behavior for provider runtime events", async () => {

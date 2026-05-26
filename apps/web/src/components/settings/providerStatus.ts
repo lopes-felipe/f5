@@ -1,4 +1,4 @@
-import type { ServerProvider } from "@t3tools/contracts";
+import type { ServerProvider, ServerProviderUpdateCommand } from "@t3tools/contracts";
 
 /**
  * Visual treatment for each server-reported provider status. Centralized so
@@ -88,4 +88,61 @@ export function getProviderSummary(provider: ServerProvider | undefined) {
 export function getProviderVersionLabel(version: string | null | undefined) {
   if (!version) return null;
   return version.startsWith("v") ? version : `v${version}`;
+}
+
+const SHELL_SAFE_TOKEN_PATTERN = /^[A-Za-z0-9_@%+=:,./-]+$/;
+const SHELL_SAFE_ENV_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function quoteShellToken(token: string): string {
+  if (token.length > 0 && SHELL_SAFE_TOKEN_PATTERN.test(token)) return token;
+  return `'${token.replaceAll("'", "'\\''")}'`;
+}
+
+export function formatProviderUpdateCommand(command: ServerProviderUpdateCommand): string {
+  const commandTokens = [command.executable, ...command.args].map(quoteShellToken).join(" ");
+  const envEntries = Object.entries(command.env ?? {}).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const envPrefix =
+    envEntries.length === 0
+      ? ""
+      : `${envEntries
+          .map(([key, value]) =>
+            SHELL_SAFE_ENV_KEY_PATTERN.test(key)
+              ? `${key}=${quoteShellToken(value)}`
+              : quoteShellToken(`${key}=${value}`),
+          )
+          .join(" ")} `;
+  if (!command.cwd) return `${envPrefix}${commandTokens}`;
+  return `cd ${quoteShellToken(command.cwd)} && ${envPrefix}${commandTokens}`;
+}
+
+export function getProviderVersionAdvisoryPresentation(
+  provider: ServerProvider | undefined,
+  dismissedVersion: string | undefined,
+): {
+  readonly message: string;
+  readonly updateCommand: ServerProviderUpdateCommand;
+  readonly latestVersion: string;
+} | null {
+  const advisory = provider?.versionAdvisory;
+  if (
+    !advisory ||
+    advisory.status !== "behind_latest" ||
+    advisory.latestVersion === null ||
+    advisory.updateCommand === null ||
+    dismissedVersion === advisory.latestVersion
+  ) {
+    return null;
+  }
+
+  return {
+    message:
+      advisory.message ??
+      `Installed ${getProviderVersionLabel(advisory.currentVersion) ?? "unknown"} · latest ${
+        getProviderVersionLabel(advisory.latestVersion) ?? advisory.latestVersion
+      }`,
+    updateCommand: advisory.updateCommand,
+    latestVersion: advisory.latestVersion,
+  };
 }

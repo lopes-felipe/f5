@@ -25,6 +25,7 @@ import {
 import { Cache, Cause, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
+import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import {
   areProviderModelOptionsEqual,
   areProviderStartOptionsEqual,
@@ -932,6 +933,19 @@ const make = Effect.gen(function* () {
         kind: "provider.turn.start.failed",
         summary: "Provider turn start failed",
         detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+        turnId: null,
+        createdAt: event.payload.createdAt,
+      });
+      return;
+    }
+
+    const inputLengthIssue = getProviderTurnInputLengthIssue(message.text);
+    if (inputLengthIssue) {
+      yield* appendProviderFailureActivity({
+        threadId: event.payload.threadId,
+        kind: "provider.turn.start.failed",
+        summary: "Provider turn start failed",
+        detail: inputLengthIssue.message,
         turnId: null,
         createdAt: event.payload.createdAt,
       });

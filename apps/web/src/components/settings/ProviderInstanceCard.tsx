@@ -1,6 +1,14 @@
 "use client";
 
-import { ChevronDownIcon, PlusIcon, Trash2Icon, XIcon } from "lucide-react";
+import {
+  ArrowUpCircleIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  PlusIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
   isProviderDriverKind,
@@ -18,13 +26,18 @@ import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { Collapsible, CollapsibleContent } from "../ui/collapsible";
 import { DraftInput } from "../ui/draft-input";
+import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
+import { ScrollArea } from "../ui/scroll-area";
 import { Switch } from "../ui/switch";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { DriverOption } from "./providerDriverMeta";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import {
   PROVIDER_STATUS_STYLES,
+  formatProviderUpdateCommand,
+  getProviderVersionAdvisoryPresentation,
   getProviderSummary,
   getProviderVersionLabel,
   type ProviderStatusKey,
@@ -459,6 +472,8 @@ interface ProviderInstanceCardProps {
   readonly isExpanded: boolean;
   readonly onExpandedChange: (open: boolean) => void;
   readonly onUpdate: (nextInstance: ProviderInstanceConfig) => void;
+  readonly dismissedProviderUpdateAdvisory?: string | undefined;
+  readonly onDismissProviderUpdateAdvisory?: ((latestVersion: string) => void) | undefined;
   /**
    * Pass `undefined` to hide the delete button entirely. Built-in default
    * instance slots use `undefined` — they can't be deleted without losing
@@ -515,6 +530,8 @@ export function ProviderInstanceCard({
   onExpandedChange,
   onUpdate,
   onDelete,
+  dismissedProviderUpdateAdvisory,
+  onDismissProviderUpdateAdvisory,
   headerAction,
   hiddenModels,
   favoriteModels,
@@ -539,6 +556,13 @@ export function ProviderInstanceCard({
     : null;
   const summary = rawSummary;
   const versionLabel = getProviderVersionLabel(liveProvider?.version);
+  const versionAdvisory = enabled
+    ? getProviderVersionAdvisoryPresentation(liveProvider, dismissedProviderUpdateAdvisory)
+    : null;
+  const updateCommandDisplay = versionAdvisory
+    ? formatProviderUpdateCommand(versionAdvisory.updateCommand)
+    : null;
+  const { copyToClipboard, isCopied } = useCopyToClipboard<{ readonly providerName: string }>();
   const FallbackIconComponent = driverOption?.icon;
   const displayName =
     instance.displayName?.trim() || driverOption?.label || String(instance.driver);
@@ -660,6 +684,96 @@ export function ProviderInstanceCard({
               ) : null}
               {versionLabel ? (
                 <code className="text-xs text-muted-foreground">{versionLabel}</code>
+              ) : null}
+              {versionAdvisory && updateCommandDisplay ? (
+                <Popover>
+                  <PopoverTrigger
+                    render={
+                      <Button
+                        type="button"
+                        size="xs"
+                        variant="outline"
+                        className="h-5 shrink-0 gap-1 rounded-full border-warning/50 px-1.5 text-[10px] text-warning hover:text-warning"
+                        aria-label="Update available - view details"
+                      >
+                        <ArrowUpCircleIcon className="size-3" />
+                        Update
+                      </Button>
+                    }
+                  />
+                  <PopoverPopup
+                    side="bottom"
+                    align="start"
+                    className="w-[min(21rem,calc(100vw-1.5rem))] [--popup-width:min(21rem,calc(100vw-1.5rem))]"
+                  >
+                    <div className="grid min-w-0 gap-3">
+                      <div className="grid gap-1">
+                        <p className="text-[13px] leading-tight font-semibold text-foreground">
+                          Update available
+                        </p>
+                        <p className="text-xs leading-snug text-muted-foreground">
+                          {versionAdvisory.message}
+                        </p>
+                      </div>
+                      <div className="grid gap-1.5">
+                        <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
+                          {versionAdvisory.updateCommand.channel} install command
+                        </p>
+                        <div className="flex min-w-0 items-center gap-1 rounded-md border border-border/70 bg-muted/40 py-0.5 pr-0.5 pl-2">
+                          <ScrollArea scrollFade className="h-8 min-w-0 flex-1 rounded-none">
+                            <code className="flex h-full w-max items-center pr-3 font-mono text-[11px] whitespace-nowrap text-foreground">
+                              {updateCommandDisplay}
+                            </code>
+                          </ScrollArea>
+                          <Tooltip>
+                            <TooltipTrigger
+                              render={
+                                <Button
+                                  type="button"
+                                  size="icon-xs"
+                                  variant="ghost"
+                                  className="size-6 shrink-0 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                                  onClick={() =>
+                                    copyToClipboard(updateCommandDisplay, {
+                                      providerName: displayName,
+                                    })
+                                  }
+                                  aria-label="Copy update command"
+                                >
+                                  {isCopied ? (
+                                    <CheckIcon className="size-3" />
+                                  ) : (
+                                    <CopyIcon className="size-3" />
+                                  )}
+                                </Button>
+                              }
+                            />
+                            <TooltipPopup side="top">
+                              {isCopied ? "Copied" : "Copy command"}
+                            </TooltipPopup>
+                          </Tooltip>
+                        </div>
+                      </div>
+                      <p className="text-xs leading-snug text-muted-foreground">
+                        If you installed via Homebrew or another channel, use that channel's upgrade
+                        command.
+                      </p>
+                      {onDismissProviderUpdateAdvisory ? (
+                        <Button
+                          type="button"
+                          size="xs"
+                          variant="ghost"
+                          className="justify-self-start text-muted-foreground"
+                          onClick={() =>
+                            onDismissProviderUpdateAdvisory(versionAdvisory.latestVersion)
+                          }
+                        >
+                          Dismiss
+                        </Button>
+                      ) : null}
+                    </div>
+                  </PopoverPopup>
+                </Popover>
               ) : null}
               {headerAction ? (
                 <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center">
