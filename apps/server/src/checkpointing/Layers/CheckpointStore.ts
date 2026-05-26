@@ -241,10 +241,16 @@ const makeCheckpointStore = Effect.gen(function* () {
         });
       }
 
+      const diffArgs = ["diff", "--patch", "--minimal", "--no-color"];
+      if (input.options?.ignoreWhitespace === true) {
+        diffArgs.push("--ignore-all-space");
+      }
+      diffArgs.push(fromCommitOid, toCommitOid);
+
       const result = yield* git.execute({
         operation,
         cwd: input.cwd,
-        args: ["diff", "--patch", "--minimal", "--no-color", fromCommitOid, toCommitOid],
+        args: diffArgs,
       });
 
       return result.stdout;
@@ -277,6 +283,8 @@ const makeCheckpointStore = Effect.gen(function* () {
   } satisfies CheckpointStoreShape;
 });
 
-export const CheckpointStoreLive = Layer.effect(CheckpointStore, makeCheckpointStore).pipe(
+export const CheckpointStoreLiveWithGitService = Layer.effect(CheckpointStore, makeCheckpointStore);
+
+export const CheckpointStoreLive = CheckpointStoreLiveWithGitService.pipe(
   Layer.provideMerge(GitServiceLive),
 );

@@ -8,6 +8,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   OrchestrationCreateCodeReviewWorkflowInput,
   OrchestrationCreateWorkflowInput,
+  OrchestrationGetFullThreadDiffInput,
   OrchestrationThread,
   OrchestrationGetTurnDiffInput,
   OrchestrationProposedPlan,
@@ -26,6 +27,7 @@ import {
 import { MessageId, ThreadId } from "./baseSchemas";
 
 const decodeTurnDiffInput = Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput);
+const decodeFullThreadDiffInput = Schema.decodeUnknownEffect(OrchestrationGetFullThreadDiffInput);
 const decodeThreadTurnDiff = Schema.decodeUnknownEffect(ThreadTurnDiff);
 const decodeProjectCreateCommand = Schema.decodeUnknownEffect(ProjectCreateCommand);
 const decodeClientOrchestrationCommand = Schema.decodeUnknownEffect(ClientOrchestrationCommand);
@@ -59,6 +61,44 @@ it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>
     });
     assert.strictEqual(parsed.fromTurnCount, 1);
     assert.strictEqual(parsed.toTurnCount, 2);
+  }),
+);
+
+it.effect("decodes additive turn diff options and rejects null options", () =>
+  Effect.gen(function* () {
+    const oldShape = yield* decodeTurnDiffInput({
+      threadId: "thread-1",
+      fromTurnCount: 1,
+      toTurnCount: 2,
+    });
+    assert.equal(oldShape.options, undefined);
+
+    const newShape = yield* decodeTurnDiffInput({
+      threadId: "thread-1",
+      fromTurnCount: 1,
+      toTurnCount: 2,
+      options: { ignoreWhitespace: true },
+    });
+    assert.deepEqual(newShape.options, { ignoreWhitespace: true });
+
+    const nullResult = yield* Schema.decodeUnknownEffect(OrchestrationGetTurnDiffInput)({
+      threadId: "thread-1",
+      fromTurnCount: 1,
+      toTurnCount: 2,
+      options: null,
+    }).pipe(Effect.exit);
+    assert.equal(nullResult._tag, "Failure");
+  }),
+);
+
+it.effect("decodes additive full-thread diff options", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeFullThreadDiffInput({
+      threadId: "thread-1",
+      toTurnCount: 2,
+      options: { ignoreWhitespace: true },
+    });
+    assert.deepEqual(parsed.options, { ignoreWhitespace: true });
   }),
 );
 

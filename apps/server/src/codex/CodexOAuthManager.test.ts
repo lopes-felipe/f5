@@ -174,6 +174,79 @@ describe("CodexOAuthManager", () => {
     });
   });
 
+  it("keeps setup pending while the OAuth control client is still starting", async () => {
+    const client = new FakeOauthClient();
+    let leaseActive = false;
+    let resolveLease:
+      | ((value: {
+          readonly client: CodexControlClient;
+          readonly release: Effect.Effect<void>;
+        }) => void)
+      | undefined;
+    let resolveAcquireStarted: (() => void) | undefined;
+    const leasePromise = new Promise<{
+      readonly client: CodexControlClient;
+      readonly release: Effect.Effect<void>;
+    }>((resolve) => {
+      resolveLease = resolve;
+    });
+    const acquireStarted = new Promise<void>((resolve) => {
+      resolveAcquireStarted = resolve;
+    });
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(leaseActive),
+        acquireOauthClient: (_input) =>
+          Effect.promise(async () => {
+            resolveAcquireStarted?.();
+            return await leasePromise;
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      const startLoginPromise = runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      await acquireStarted;
+
+      const statusDuringSetup = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+
+      expect(statusDuringSetup.status).toBe("pending");
+      expect(client.startOAuthLogin).not.toHaveBeenCalled();
+
+      leaseActive = true;
+      resolveLease?.({
+        client: client as unknown as CodexControlClient,
+        release: Effect.sync(() => {
+          leaseActive = false;
+        }),
+      });
+
+      const pending = await startLoginPromise;
+      expect(pending.status).toBe("pending");
+      expect(client.startOAuthLogin).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it("expires stale pending status once the OAuth lease is gone", async () => {
     const client = new FakeOauthClient();
     let leaseActive = false;

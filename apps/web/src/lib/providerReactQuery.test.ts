@@ -42,6 +42,22 @@ describe("providerQueryKeys.checkpointDiff", () => {
       }),
     );
   });
+
+  it("keeps cacheScope stable while splitting whitespace variants", () => {
+    const baseInput = {
+      threadId,
+      fromTurnCount: 1,
+      toTurnCount: 2,
+      cacheScope: "turn:abc",
+    } as const;
+
+    expect(providerQueryKeys.checkpointDiff(baseInput).slice(0, -1)).toEqual(
+      providerQueryKeys.checkpointDiff({ ...baseInput, ignoreWhitespace: true }).slice(0, -1),
+    );
+    expect(providerQueryKeys.checkpointDiff(baseInput)).not.toEqual(
+      providerQueryKeys.checkpointDiff({ ...baseInput, ignoreWhitespace: true }),
+    );
+  });
 });
 
 describe("checkpointDiffQueryOptions", () => {
@@ -66,6 +82,43 @@ describe("checkpointDiffQueryOptions", () => {
       toTurnCount: 4,
     });
     expect(getFullThreadDiff).not.toHaveBeenCalled();
+  });
+
+  it("omits diff options by default and forwards ignoreWhitespace only when enabled", async () => {
+    const getTurnDiff = vi.fn().mockResolvedValue({ diff: "patch" });
+    const getFullThreadDiff = vi.fn().mockResolvedValue({ diff: "patch" });
+    mockNativeApi({ getTurnDiff, getFullThreadDiff });
+
+    const queryClient = new QueryClient();
+    await queryClient.fetchQuery(
+      checkpointDiffQueryOptions({
+        threadId,
+        fromTurnCount: 3,
+        toTurnCount: 4,
+        cacheScope: "turn:abc",
+      }),
+    );
+    await queryClient.fetchQuery(
+      checkpointDiffQueryOptions({
+        threadId,
+        fromTurnCount: 3,
+        toTurnCount: 4,
+        cacheScope: "turn:abc",
+        ignoreWhitespace: true,
+      }),
+    );
+
+    expect(getTurnDiff).toHaveBeenNthCalledWith(1, {
+      threadId,
+      fromTurnCount: 3,
+      toTurnCount: 4,
+    });
+    expect(getTurnDiff).toHaveBeenNthCalledWith(2, {
+      threadId,
+      fromTurnCount: 3,
+      toTurnCount: 4,
+      options: { ignoreWhitespace: true },
+    });
   });
 
   it("uses explicit full thread diff API when range starts from zero", async () => {

@@ -1999,8 +1999,12 @@ export type OrchestrationGetStartupSnapshotResult =
 const OrchestrationGetThreadDetailsResult = OrchestrationThreadDetails;
 export type OrchestrationGetThreadDetailsResult = typeof OrchestrationGetThreadDetailsResult.Type;
 
+const DiffOptions = Schema.Struct({
+  ignoreWhitespace: Schema.optionalKey(Schema.Boolean),
+});
+
 export const OrchestrationGetTurnDiffInput = TurnCountRange.mapFields(
-  Struct.assign({ threadId: ThreadId }),
+  Struct.assign({ threadId: ThreadId, options: Schema.optionalKey(DiffOptions) }),
   { unsafePreserveChecks: true },
 );
 export type OrchestrationGetTurnDiffInput = typeof OrchestrationGetTurnDiffInput.Type;
@@ -2011,6 +2015,7 @@ export type OrchestrationGetTurnDiffResult = typeof OrchestrationGetTurnDiffResu
 export const OrchestrationGetFullThreadDiffInput = Schema.Struct({
   threadId: ThreadId,
   toTurnCount: NonNegativeInt,
+  options: Schema.optionalKey(DiffOptions),
 });
 export type OrchestrationGetFullThreadDiffInput = typeof OrchestrationGetFullThreadDiffInput.Type;
 

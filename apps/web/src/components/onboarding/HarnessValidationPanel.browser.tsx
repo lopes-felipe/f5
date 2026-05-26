@@ -132,6 +132,10 @@ function createNativeApiMock() {
       getConfig: vi.fn(),
       validateHarnesses: nativeApiRef.validateHarnesses,
       upsertKeybinding: vi.fn(),
+      addKeybinding: vi.fn(),
+      updateKeybinding: vi.fn(),
+      removeKeybinding: vi.fn(),
+      resetKeybindings: vi.fn(),
     },
     shell: {
       openExternal: nativeApiRef.openExternal,

@@ -241,6 +241,10 @@ export function createWsNativeApi(): NativeApi {
       refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
       validateHarnesses: (input) => transport.request(WS_METHODS.serverValidateHarnesses, input),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
+      addKeybinding: (input) => transport.request(WS_METHODS.serverAddKeybinding, input),
+      updateKeybinding: (input) => transport.request(WS_METHODS.serverUpdateKeybinding, input),
+      removeKeybinding: (input) => transport.request(WS_METHODS.serverRemoveKeybinding, input),
+      resetKeybindings: (input = {}) => transport.request(WS_METHODS.serverResetKeybindings, input),
     },
     mcp: {
       getCommonConfig: (input) => transport.request(WS_METHODS.mcpGetCommonConfig, input),

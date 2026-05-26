@@ -9,16 +9,23 @@
 import {
   KeybindingRule,
   KeybindingsConfig,
-  KeybindingShortcut,
-  KeybindingWhenNode,
   MAX_KEYBINDINGS_COUNT,
-  MODEL_PICKER_JUMP_KEYBINDING_COMMANDS,
-  MAX_WHEN_EXPRESSION_DEPTH,
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
   type ServerConfigIssue,
 } from "@t3tools/contracts";
-import { Mutable } from "effect/Types";
+import {
+  DEFAULT_KEYBINDINGS,
+  OBSOLETE_DEFAULT_KEYBINDINGS,
+  compileResolvedKeybindingRule,
+  compileResolvedKeybindingsConfig,
+  encodeKeybindingShortcut,
+  encodeWhenAst,
+  hasEquivalentKeybindingRule,
+  matchesKeybindingTarget,
+  mergeWithDefaultKeybindings,
+  parseKeybindingShortcut,
+} from "@t3tools/shared/keybindings";
 import {
   Array,
   Cache,
@@ -45,6 +52,14 @@ import * as Semaphore from "effect/Semaphore";
 import { writeFileStringAtomically } from "./atomicWrite";
 import { ServerConfig } from "./config";
 
+export {
+  DEFAULT_KEYBINDINGS,
+  OBSOLETE_DEFAULT_KEYBINDINGS,
+  compileResolvedKeybindingRule,
+  compileResolvedKeybindingsConfig,
+  parseKeybindingShortcut,
+} from "@t3tools/shared/keybindings";
+
 export class KeybindingsConfigError extends Schema.TaggedErrorClass<KeybindingsConfigError>()(
   "KeybindingsConfigParseError",
   {
@@ -58,278 +73,18 @@ export class KeybindingsConfigError extends Schema.TaggedErrorClass<KeybindingsC
   }
 }
 
-type WhenToken =
-  | { type: "identifier"; value: string }
-  | { type: "not" }
-  | { type: "and" }
-  | { type: "or" }
-  | { type: "lparen" }
-  | { type: "rparen" };
-
-export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
-  { key: "mod+j", command: "terminal.toggle" },
-  { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
-  { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
-  { key: "mod+w", command: "terminal.close", when: "terminalFocus" },
-  { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
-  { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
-  { key: "mod+shift+n", command: "workflow.new", when: "!terminalFocus" },
-  { key: "mod+enter", command: "chat.scrollToBottom" },
-  { key: "mod+o", command: "editor.openFavorite" },
-  { key: "ctrl+tab", command: "thread.switchRecentNext" },
-  { key: "ctrl+shift+tab", command: "thread.switchRecentPrevious" },
-  { key: "alt+tab", command: "model.switchRecent" },
-  { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
-  ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
-    key: `mod+${index + 1}`,
-    command,
-    when: "modelPickerOpen",
-  })),
-  { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
-];
-
-const OBSOLETE_DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
-  { key: "mod+shift+o", command: "chat.new", when: "!terminalFocus" },
-  { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" },
-];
-
-function normalizeKeyToken(token: string): string {
-  if (token === "space") return " ";
-  if (token === "esc") return "escape";
-  return token;
-}
-
-/** @internal - Exported for testing */
-export function parseKeybindingShortcut(value: string): KeybindingShortcut | null {
-  const rawTokens = value
-    .toLowerCase()
-    .split("+")
-    .map((token) => token.trim());
-  const tokens = [...rawTokens];
-  let trailingEmptyCount = 0;
-  while (tokens[tokens.length - 1] === "") {
-    trailingEmptyCount += 1;
-    tokens.pop();
+export class KeybindingTargetNotFoundError extends Schema.TaggedErrorClass<KeybindingTargetNotFoundError>()(
+  "KeybindingTargetNotFoundError",
+  {
+    command: KeybindingRule.fields.command,
+    key: Schema.String,
+    when: Schema.optional(Schema.String),
+  },
+) {
+  override get message(): string {
+    const when = this.when ? ` when '${this.when}'` : "";
+    return `Keybinding target not found for ${this.command} at ${this.key}${when}.`;
   }
-  if (trailingEmptyCount > 0) {
-    tokens.push("+");
-  }
-  if (tokens.some((token) => token.length === 0)) {
-    return null;
-  }
-  if (tokens.length === 0) return null;
-
-  let key: string | null = null;
-  let metaKey = false;
-  let ctrlKey = false;
-  let shiftKey = false;
-  let altKey = false;
-  let modKey = false;
-
-  for (const token of tokens) {
-    switch (token) {
-      case "cmd":
-      case "meta":
-        metaKey = true;
-        break;
-      case "ctrl":
-      case "control":
-        ctrlKey = true;
-        break;
-      case "shift":
-        shiftKey = true;
-        break;
-      case "alt":
-      case "option":
-        altKey = true;
-        break;
-      case "mod":
-        modKey = true;
-        break;
-      default: {
-        if (key !== null) return null;
-        key = normalizeKeyToken(token);
-      }
-    }
-  }
-
-  if (key === null) return null;
-  return {
-    key,
-    metaKey,
-    ctrlKey,
-    shiftKey,
-    altKey,
-    modKey,
-  };
-}
-
-function tokenizeWhenExpression(expression: string): WhenToken[] | null {
-  const tokens: WhenToken[] = [];
-  let index = 0;
-
-  while (index < expression.length) {
-    const current = expression[index];
-    if (!current) break;
-
-    if (/\s/.test(current)) {
-      index += 1;
-      continue;
-    }
-    if (expression.startsWith("&&", index)) {
-      tokens.push({ type: "and" });
-      index += 2;
-      continue;
-    }
-    if (expression.startsWith("||", index)) {
-      tokens.push({ type: "or" });
-      index += 2;
-      continue;
-    }
-    if (current === "!") {
-      tokens.push({ type: "not" });
-      index += 1;
-      continue;
-    }
-    if (current === "(") {
-      tokens.push({ type: "lparen" });
-      index += 1;
-      continue;
-    }
-    if (current === ")") {
-      tokens.push({ type: "rparen" });
-      index += 1;
-      continue;
-    }
-
-    const identifier = /^[A-Za-z_][A-Za-z0-9_.-]*/.exec(expression.slice(index));
-    if (!identifier) {
-      return null;
-    }
-    tokens.push({ type: "identifier", value: identifier[0] });
-    index += identifier[0].length;
-  }
-
-  return tokens;
-}
-
-function parseKeybindingWhenExpression(expression: string): KeybindingWhenNode | null {
-  const tokens = tokenizeWhenExpression(expression);
-  if (!tokens || tokens.length === 0) return null;
-  let index = 0;
-
-  const parsePrimary = (depth: number): KeybindingWhenNode | null => {
-    if (depth > MAX_WHEN_EXPRESSION_DEPTH) {
-      return null;
-    }
-    const token = tokens[index];
-    if (!token) return null;
-
-    if (token.type === "identifier") {
-      index += 1;
-      return { type: "identifier", name: token.value };
-    }
-
-    if (token.type === "lparen") {
-      index += 1;
-      const expressionNode = parseOr(depth + 1);
-      const closeToken = tokens[index];
-      if (!expressionNode || !closeToken || closeToken.type !== "rparen") {
-        return null;
-      }
-      index += 1;
-      return expressionNode;
-    }
-
-    return null;
-  };
-
-  const parseUnary = (depth: number): KeybindingWhenNode | null => {
-    let notCount = 0;
-    while (tokens[index]?.type === "not") {
-      index += 1;
-      notCount += 1;
-      if (notCount > MAX_WHEN_EXPRESSION_DEPTH) {
-        return null;
-      }
-    }
-
-    let node = parsePrimary(depth);
-    if (!node) return null;
-
-    while (notCount > 0) {
-      node = { type: "not", node };
-      notCount -= 1;
-    }
-
-    return node;
-  };
-
-  const parseAnd = (depth: number): KeybindingWhenNode | null => {
-    let left = parseUnary(depth);
-    if (!left) return null;
-
-    while (tokens[index]?.type === "and") {
-      index += 1;
-      const right = parseUnary(depth);
-      if (!right) return null;
-      left = { type: "and", left, right };
-    }
-
-    return left;
-  };
-
-  const parseOr = (depth: number): KeybindingWhenNode | null => {
-    let left = parseAnd(depth);
-    if (!left) return null;
-
-    while (tokens[index]?.type === "or") {
-      index += 1;
-      const right = parseAnd(depth);
-      if (!right) return null;
-      left = { type: "or", left, right };
-    }
-
-    return left;
-  };
-
-  const ast = parseOr(0);
-  if (!ast || index !== tokens.length) return null;
-  return ast;
-}
-
-/** @internal - Exported for testing */
-export function compileResolvedKeybindingRule(rule: KeybindingRule): ResolvedKeybindingRule | null {
-  const shortcut = parseKeybindingShortcut(rule.key);
-  if (!shortcut) return null;
-
-  if (rule.when !== undefined) {
-    const whenAst = parseKeybindingWhenExpression(rule.when);
-    if (!whenAst) return null;
-    return {
-      command: rule.command,
-      shortcut,
-      whenAst,
-    };
-  }
-
-  return {
-    command: rule.command,
-    shortcut,
-  };
-}
-
-export function compileResolvedKeybindingsConfig(
-  config: KeybindingsConfig,
-): ResolvedKeybindingsConfig {
-  const compiled: Mutable<ResolvedKeybindingsConfig> = [];
-  for (const rule of config) {
-    const result = Schema.decodeExit(ResolvedKeybindingFromConfig)(rule);
-    if (result._tag === "Success") {
-      compiled.push(result.value);
-    }
-  }
-  return compiled;
 }
 
 export const ResolvedKeybindingFromConfig = KeybindingRule.pipe(
@@ -350,7 +105,7 @@ export const ResolvedKeybindingFromConfig = KeybindingRule.pipe(
 
       encode: (resolved) =>
         Effect.gen(function* () {
-          const key = encodeShortcut(resolved.shortcut);
+          const key = encodeKeybindingShortcut(resolved.shortcut);
           if (!key) {
             return yield* Effect.fail(
               new SchemaIssue.InvalidValue(Option.some(resolved), {
@@ -374,57 +129,6 @@ export const ResolvedKeybindingsFromConfig = Schema.Array(ResolvedKeybindingFrom
   Schema.isMaxLength(MAX_KEYBINDINGS_COUNT),
 );
 
-function isSameKeybindingRule(left: KeybindingRule, right: KeybindingRule): boolean {
-  return (
-    left.command === right.command &&
-    left.key === right.key &&
-    (left.when ?? undefined) === (right.when ?? undefined)
-  );
-}
-
-function keybindingShortcutContext(rule: KeybindingRule): string | null {
-  const parsed = parseKeybindingShortcut(rule.key);
-  if (!parsed) return null;
-  const encoded = encodeShortcut(parsed);
-  if (!encoded) return null;
-  return `${encoded}\u0000${rule.when ?? ""}`;
-}
-
-function hasSameShortcutContext(left: KeybindingRule, right: KeybindingRule): boolean {
-  const leftContext = keybindingShortcutContext(left);
-  const rightContext = keybindingShortcutContext(right);
-  if (!leftContext || !rightContext) return false;
-  return leftContext === rightContext;
-}
-
-function encodeShortcut(shortcut: KeybindingShortcut): string | null {
-  const modifiers: string[] = [];
-  if (shortcut.modKey) modifiers.push("mod");
-  if (shortcut.metaKey) modifiers.push("meta");
-  if (shortcut.ctrlKey) modifiers.push("ctrl");
-  if (shortcut.altKey) modifiers.push("alt");
-  if (shortcut.shiftKey) modifiers.push("shift");
-  if (!shortcut.key) return null;
-  if (shortcut.key !== "+" && shortcut.key.includes("+")) return null;
-  const key = shortcut.key === " " ? "space" : shortcut.key;
-  return [...modifiers, key].join("+");
-}
-
-function encodeWhenAst(node: KeybindingWhenNode): string {
-  switch (node.type) {
-    case "identifier":
-      return node.name;
-    case "not":
-      return `!(${encodeWhenAst(node.node)})`;
-    case "and":
-      return `(${encodeWhenAst(node.left)} && ${encodeWhenAst(node.right)})`;
-    case "or":
-      return `(${encodeWhenAst(node.left)} || ${encodeWhenAst(node.right)})`;
-  }
-}
-
-const DEFAULT_RESOLVED_KEYBINDINGS = compileResolvedKeybindingsConfig(DEFAULT_KEYBINDINGS);
-
 const RawKeybindingsEntries = Schema.fromJsonString(Schema.Array(Schema.Unknown));
 const KeybindingsConfigJson = Schema.fromJsonString(KeybindingsConfig);
 const PrettyJsonString = SchemaGetter.parseJson<string>().compose(
@@ -439,11 +143,13 @@ const KeybindingsConfigPrettyJson = KeybindingsConfigJson.pipe(
 
 export interface KeybindingsConfigState {
   readonly keybindings: ResolvedKeybindingsConfig;
+  readonly customKeybindings: KeybindingsConfig;
   readonly issues: readonly ServerConfigIssue[];
 }
 
 export interface KeybindingsChangeEvent {
   readonly keybindings: ResolvedKeybindingsConfig;
+  readonly customKeybindings: KeybindingsConfig;
   readonly issues: readonly ServerConfigIssue[];
 }
 
@@ -467,25 +173,6 @@ function invalidEntryIssue(index: number, detail: string): ServerConfigIssue {
   };
 }
 
-function mergeWithDefaultKeybindings(custom: ResolvedKeybindingsConfig): ResolvedKeybindingsConfig {
-  if (custom.length === 0) {
-    return [...DEFAULT_RESOLVED_KEYBINDINGS];
-  }
-
-  const overriddenCommands = new Set(custom.map((binding) => binding.command));
-  const retainedDefaults = DEFAULT_RESOLVED_KEYBINDINGS.filter(
-    (binding) => !overriddenCommands.has(binding.command),
-  );
-  const merged = [...retainedDefaults, ...custom];
-
-  if (merged.length <= MAX_KEYBINDINGS_COUNT) {
-    return merged;
-  }
-
-  // Keep the latest rules when the config exceeds max size; later rules have higher precedence.
-  return merged.slice(-MAX_KEYBINDINGS_COUNT);
-}
-
 /**
  * KeybindingsShape - Service API for keybinding configuration operations.
  */
@@ -507,8 +194,9 @@ export interface KeybindingsShape {
   readonly ready: Effect.Effect<void, KeybindingsConfigError>;
 
   /**
-   * Ensure the on-disk keybindings file exists and includes all default
-   * commands so newly-added defaults are backfilled on startup.
+   * Ensure the on-disk keybindings file exists and remove legacy persisted
+   * defaults. Runtime defaults are merged in memory; the writable file stores
+   * custom rules only.
    */
   readonly syncDefaultKeybindingsOnStartup: Effect.Effect<void, KeybindingsConfigError>;
 
@@ -535,7 +223,25 @@ export interface KeybindingsShape {
    */
   readonly upsertKeybindingRule: (
     rule: KeybindingRule,
-  ) => Effect.Effect<ResolvedKeybindingsConfig, KeybindingsConfigError>;
+  ) => Effect.Effect<KeybindingsConfigState, KeybindingsConfigError>;
+
+  readonly addKeybindingRule: (
+    rule: KeybindingRule,
+  ) => Effect.Effect<KeybindingsConfigState, KeybindingsConfigError>;
+
+  readonly updateKeybindingRule: (input: {
+    readonly target: KeybindingRule;
+    readonly rule: KeybindingRule;
+  }) => Effect.Effect<
+    KeybindingsConfigState,
+    KeybindingsConfigError | KeybindingTargetNotFoundError
+  >;
+
+  readonly removeKeybindingRule: (input: {
+    readonly target: KeybindingRule;
+  }) => Effect.Effect<KeybindingsConfigState, KeybindingsConfigError>;
+
+  readonly resetKeybindingRules: Effect.Effect<KeybindingsConfigState, KeybindingsConfigError>;
 }
 
 /**
@@ -553,6 +259,8 @@ const makeKeybindings = Effect.gen(function* () {
   const resolvedConfigCacheKey = "resolved" as const;
   const changesPubSub = yield* PubSub.unbounded<KeybindingsChangeEvent>();
   const startedRef = yield* Ref.make(false);
+  const pendingSelfWriteIds = yield* Ref.make<ReadonlySet<number>>(new Set());
+  const nextSelfWriteId = yield* Ref.make(0);
   const startedDeferred = yield* Deferred.make<void, KeybindingsConfigError>();
   const watcherScope = yield* Scope.make("sequential");
   yield* Effect.addFinalizer(() => Scope.close(watcherScope, Exit.void));
@@ -703,11 +411,93 @@ const makeKeybindings = Effect.gen(function* () {
       ),
     );
 
+  const SELF_WRITE_SUPPRESSION_WINDOW_MS = 500;
+  const registerSelfWrite = Effect.gen(function* () {
+    const writeId = yield* Ref.modify(nextSelfWriteId, (current) => [current, current + 1]);
+    yield* Ref.update(pendingSelfWriteIds, (ids) => {
+      const next = new Set(ids);
+      next.add(writeId);
+      return next;
+    });
+    yield* Effect.sync(() => {
+      const timeout = setTimeout(() => {
+        Effect.runFork(
+          Ref.update(pendingSelfWriteIds, (ids) => {
+            if (!ids.has(writeId)) {
+              return ids;
+            }
+            const next = new Set(ids);
+            next.delete(writeId);
+            return next;
+          }),
+        );
+      }, SELF_WRITE_SUPPRESSION_WINDOW_MS);
+      timeout.unref?.();
+    });
+    return writeId;
+  });
+
+  const clearSelfWrite = (writeId: number) =>
+    Ref.update(pendingSelfWriteIds, (ids) => {
+      if (!ids.has(writeId)) {
+        return ids;
+      }
+      const next = new Set(ids);
+      next.delete(writeId);
+      return next;
+    });
+
+  const writeConfigForServiceMutation = (rules: readonly KeybindingRule[]) =>
+    Effect.gen(function* () {
+      const writeId = yield* registerSelfWrite;
+      return yield* writeConfigAtomically(rules).pipe(
+        Effect.tapError(() => clearSelfWrite(writeId)),
+      );
+    });
+
+  const isLegacyPersistedDefault = (rule: KeybindingRule) =>
+    hasEquivalentKeybindingRule(DEFAULT_KEYBINDINGS, rule) ||
+    hasEquivalentKeybindingRule(OBSOLETE_DEFAULT_KEYBINDINGS, rule);
+
+  const sanitizeCustomKeybindings = (rules: readonly KeybindingRule[]) =>
+    rules.filter((rule) => !isLegacyPersistedDefault(rule));
+
+  const buildConfigState = (
+    customKeybindings: readonly KeybindingRule[],
+    issues: readonly ServerConfigIssue[],
+  ): KeybindingsConfigState => ({
+    keybindings: mergeWithDefaultKeybindings(
+      compileResolvedKeybindingsConfig(sanitizeCustomKeybindings(customKeybindings)),
+    ),
+    customKeybindings: sanitizeCustomKeybindings(customKeybindings),
+    issues,
+  });
+
+  const capKeybindingsConfig = (rules: readonly KeybindingRule[]) =>
+    rules.length > MAX_KEYBINDINGS_COUNT ? rules.slice(-MAX_KEYBINDINGS_COUNT) : [...rules];
+
+  const persistConfigState = (
+    customKeybindings: readonly KeybindingRule[],
+    issues: readonly ServerConfigIssue[] = [],
+  ) =>
+    Effect.gen(function* () {
+      const sanitizedConfig = sanitizeCustomKeybindings(customKeybindings);
+      const cappedConfig = capKeybindingsConfig(sanitizedConfig);
+      if (sanitizedConfig.length > MAX_KEYBINDINGS_COUNT) {
+        yield* Effect.logWarning("truncating keybindings config to max entries", {
+          path: keybindingsConfigPath,
+          maxEntries: MAX_KEYBINDINGS_COUNT,
+        });
+      }
+      yield* writeConfigForServiceMutation(cappedConfig);
+      const nextState = buildConfigState(cappedConfig, issues);
+      yield* Cache.set(resolvedConfigCache, resolvedConfigCacheKey, nextState);
+      yield* emitChange(nextState);
+      return nextState;
+    });
+
   const loadConfigStateFromDisk = loadRuntimeCustomKeybindingsConfig().pipe(
-    Effect.map(({ keybindings, issues }) => ({
-      keybindings: mergeWithDefaultKeybindings(compileResolvedKeybindingsConfig(keybindings)),
-      issues,
-    })),
+    Effect.map(({ keybindings, issues }) => buildConfigState(keybindings, issues)),
   );
 
   const resolvedConfigCache = yield* Cache.make<
@@ -731,9 +521,8 @@ const makeKeybindings = Effect.gen(function* () {
 
   const syncDefaultKeybindingsOnStartup = upsertSemaphore.withPermits(1)(
     Effect.gen(function* () {
-      const configExists = yield* readConfigExists;
-      if (!configExists) {
-        yield* writeConfigAtomically(DEFAULT_KEYBINDINGS);
+      if (!(yield* readConfigExists)) {
+        yield* writeConfigForServiceMutation([]);
         yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
         return;
       }
@@ -751,88 +540,21 @@ const makeKeybindings = Effect.gen(function* () {
         return;
       }
       const customConfig = runtimeConfig.keybindings;
-      const sanitizedConfig = customConfig.filter(
-        (rule) =>
-          !OBSOLETE_DEFAULT_KEYBINDINGS.some((obsoleteRule) =>
-            isSameKeybindingRule(rule, obsoleteRule),
-          ),
-      );
+      const sanitizedConfig = sanitizeCustomKeybindings(customConfig);
       const removedObsoleteDefaults = customConfig.length - sanitizedConfig.length;
       if (removedObsoleteDefaults > 0) {
-        yield* Effect.logInfo("removed obsolete default keybindings from persisted config", {
+        yield* Effect.logInfo("removed legacy persisted default keybindings from config", {
           path: keybindingsConfigPath,
           removedEntries: removedObsoleteDefaults,
-          commands: OBSOLETE_DEFAULT_KEYBINDINGS.map((rule) => rule.command),
+          commands: customConfig
+            .filter((rule) => isLegacyPersistedDefault(rule))
+            .map((rule) => rule.command),
         });
       }
 
-      const existingCommands = new Set(sanitizedConfig.map((entry) => entry.command));
-      const missingDefaults: KeybindingRule[] = [];
-      const shortcutConflictWarnings: Array<{
-        defaultCommand: KeybindingRule["command"];
-        conflictingCommand: KeybindingRule["command"];
-        key: string;
-        when: string | null;
-      }> = [];
-      for (const defaultRule of DEFAULT_KEYBINDINGS) {
-        if (existingCommands.has(defaultRule.command)) {
-          continue;
-        }
-        const conflictingEntry = sanitizedConfig.find((entry) =>
-          hasSameShortcutContext(entry, defaultRule),
-        );
-        if (conflictingEntry) {
-          shortcutConflictWarnings.push({
-            defaultCommand: defaultRule.command,
-            conflictingCommand: conflictingEntry.command,
-            key: defaultRule.key,
-            when: defaultRule.when ?? null,
-          });
-          continue;
-        }
-        missingDefaults.push(defaultRule);
+      if (removedObsoleteDefaults > 0) {
+        yield* writeConfigForServiceMutation(sanitizedConfig);
       }
-      for (const conflict of shortcutConflictWarnings) {
-        yield* Effect.logWarning("skipping default keybinding due to shortcut conflict", {
-          path: keybindingsConfigPath,
-          defaultCommand: conflict.defaultCommand,
-          conflictingCommand: conflict.conflictingCommand,
-          key: conflict.key,
-          when: conflict.when,
-          reason: "shortcut context already used by existing rule",
-        });
-      }
-      if (missingDefaults.length === 0) {
-        if (removedObsoleteDefaults > 0) {
-          yield* writeConfigAtomically(sanitizedConfig);
-        }
-        yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
-        return;
-      }
-
-      const matchingDefaults = DEFAULT_KEYBINDINGS.filter((defaultRule) =>
-        sanitizedConfig.some((entry) => isSameKeybindingRule(entry, defaultRule)),
-      ).map((rule) => rule.command);
-      if (matchingDefaults.length > 0) {
-        yield* Effect.logWarning("default keybinding rule already defined in user config", {
-          path: keybindingsConfigPath,
-          commands: matchingDefaults,
-        });
-      }
-
-      const nextConfig = [...sanitizedConfig, ...missingDefaults];
-      const cappedConfig =
-        nextConfig.length > MAX_KEYBINDINGS_COUNT
-          ? nextConfig.slice(-MAX_KEYBINDINGS_COUNT)
-          : nextConfig;
-      if (nextConfig.length > MAX_KEYBINDINGS_COUNT) {
-        yield* Effect.logWarning("truncating keybindings config to max entries", {
-          path: keybindingsConfigPath,
-          maxEntries: MAX_KEYBINDINGS_COUNT,
-        });
-      }
-
-      yield* writeConfigAtomically(cappedConfig);
       yield* Cache.invalidate(resolvedConfigCache, resolvedConfigCacheKey);
     }),
   );
@@ -863,7 +585,18 @@ const makeKeybindings = Effect.gen(function* () {
       if (!isTargetConfigEvent) {
         return Effect.void;
       }
-      return revalidateAndEmitSafely;
+      const skipSelfWrite = Ref.modify(pendingSelfWriteIds, (ids) => {
+        const [writeId] = ids;
+        if (writeId === undefined) {
+          return [false, ids];
+        }
+        const next = new Set(ids);
+        next.delete(writeId);
+        return [true, next];
+      });
+      return skipSelfWrite.pipe(
+        Effect.flatMap((shouldSkip) => (shouldSkip ? Effect.void : revalidateAndEmitSafely)),
+      );
     }).pipe(Effect.ignoreCause({ log: true }), Effect.forkIn(watcherScope), Effect.asVoid);
   });
 
@@ -902,36 +635,75 @@ const makeKeybindings = Effect.gen(function* () {
     upsertKeybindingRule: (rule) =>
       upsertSemaphore.withPermits(1)(
         Effect.gen(function* () {
+          const preWriteState = yield* loadConfigStateFromCacheOrDisk;
           const customConfig = yield* loadWritableCustomKeybindingsConfig();
           const nextConfig = [
             ...customConfig.filter((entry) => entry.command !== rule.command),
             rule,
           ];
-          const cappedConfig =
-            nextConfig.length > MAX_KEYBINDINGS_COUNT
-              ? nextConfig.slice(-MAX_KEYBINDINGS_COUNT)
-              : nextConfig;
-          if (nextConfig.length > MAX_KEYBINDINGS_COUNT) {
-            yield* Effect.logWarning("truncating keybindings config to max entries", {
-              path: keybindingsConfigPath,
-              maxEntries: MAX_KEYBINDINGS_COUNT,
-            });
-          }
-          yield* writeConfigAtomically(cappedConfig);
-          const nextResolved = mergeWithDefaultKeybindings(
-            compileResolvedKeybindingsConfig(cappedConfig),
-          );
-          yield* Cache.set(resolvedConfigCache, resolvedConfigCacheKey, {
-            keybindings: nextResolved,
-            issues: [],
-          });
-          yield* emitChange({
-            keybindings: nextResolved,
-            issues: [],
-          });
-          return nextResolved;
+          return yield* persistConfigState(nextConfig, preWriteState.issues);
         }),
       ),
+    addKeybindingRule: (rule) =>
+      upsertSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const preWriteState = yield* loadConfigStateFromCacheOrDisk;
+          const customConfig = yield* loadWritableCustomKeybindingsConfig();
+          if (hasEquivalentKeybindingRule(customConfig, rule)) {
+            return buildConfigState(customConfig, preWriteState.issues);
+          }
+          return yield* persistConfigState([...customConfig, rule], preWriteState.issues);
+        }),
+      ),
+    updateKeybindingRule: ({ target, rule }) =>
+      upsertSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const preWriteState = yield* loadConfigStateFromCacheOrDisk;
+          const customConfig = yield* loadWritableCustomKeybindingsConfig();
+          const targetIndex = customConfig.findIndex((entry) =>
+            matchesKeybindingTarget(entry, target),
+          );
+          if (targetIndex === -1) {
+            return yield* new KeybindingTargetNotFoundError({
+              command: target.command,
+              key: target.key,
+              ...(target.when !== undefined ? { when: target.when } : {}),
+            });
+          }
+          const nextConfig: KeybindingRule[] = [];
+          for (const [index, entry] of customConfig.entries()) {
+            if (index === targetIndex) {
+              nextConfig.push(rule);
+              continue;
+            }
+            if (hasEquivalentKeybindingRule([entry], rule)) {
+              continue;
+            }
+            nextConfig.push(entry);
+          }
+          return yield* persistConfigState(nextConfig, preWriteState.issues);
+        }),
+      ),
+    removeKeybindingRule: ({ target }) =>
+      upsertSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          const preWriteState = yield* loadConfigStateFromCacheOrDisk;
+          const customConfig = yield* loadWritableCustomKeybindingsConfig();
+          const nextConfig = customConfig.filter(
+            (entry) => !matchesKeybindingTarget(entry, target),
+          );
+          if (nextConfig.length === customConfig.length) {
+            return buildConfigState(customConfig, preWriteState.issues);
+          }
+          return yield* persistConfigState(nextConfig, preWriteState.issues);
+        }),
+      ),
+    resetKeybindingRules: upsertSemaphore.withPermits(1)(
+      Effect.gen(function* () {
+        const preWriteState = yield* loadConfigStateFromCacheOrDisk;
+        return yield* persistConfigState([], preWriteState.issues);
+      }),
+    ),
   } satisfies KeybindingsShape;
 });
 

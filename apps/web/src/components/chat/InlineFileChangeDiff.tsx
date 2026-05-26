@@ -7,6 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { ChevronRightIcon } from "lucide-react";
 import { memo, useCallback, useMemo } from "react";
+import { useAppSettings } from "../../appSettings";
 import { openInPreferredEditor } from "../../editorPreferences";
 import { useFileNavigation } from "../../fileNavigationContext";
 import type { TurnDiffSummary } from "../../types";
@@ -24,6 +25,7 @@ import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
 import { resolvePathLinkTarget } from "../../terminal-links";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
+import { buildInlineFileChangeCheckpointDiffQueryInput } from "./InlineFileChangeDiff.logic";
 
 interface InlineFileChangeDiffProps {
   workEntryId: string;
@@ -56,19 +58,19 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
     onOpenTurnDiff,
   } = props;
   const handleFileNavigation = useFileNavigation();
+  const { settings } = useAppSettings();
   const diffUnavailable =
     threadId === null || typeof checkpointTurnCount !== "number" || filePaths.length === 0;
 
   const checkpointDiffQuery = useQuery(
-    checkpointDiffQueryOptions({
-      threadId,
-      fromTurnCount:
-        typeof checkpointTurnCount === "number" ? Math.max(0, checkpointTurnCount - 1) : null,
-      toTurnCount: checkpointTurnCount ?? null,
-      cacheScope: `turn:${turnId}`,
-      enabled: !diffUnavailable,
-      retryMode: "inline",
-    }),
+    checkpointDiffQueryOptions(
+      buildInlineFileChangeCheckpointDiffQueryInput({
+        threadId,
+        turnId,
+        checkpointTurnCount,
+        diffUnavailable,
+      }),
+    ),
   );
   const checkpointDiffData = checkpointDiffQuery.data as OrchestrationGetTurnDiffResult | undefined;
 
@@ -225,6 +227,7 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
                   lineDiffType: "none",
                   theme: resolveDiffThemeName(resolvedTheme),
                   themeType: resolvedTheme,
+                  overflow: settings.diffWordWrap ? "wrap" : "scroll",
                   disableFileHeader: true,
                   unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                 }}

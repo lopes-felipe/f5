@@ -1781,6 +1781,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           cwd,
           keybindingsConfigPath,
           keybindings: keybindingsConfig.keybindings,
+          customKeybindings: keybindingsConfig.customKeybindings,
           issues: keybindingsConfig.issues,
           providers,
           availableEditors,
@@ -1830,7 +1831,54 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.serverUpsertKeybinding: {
         const body = stripRequestTag(request.body);
         const keybindingsConfig = yield* keybindingsManager.upsertKeybindingRule(body);
-        return { keybindings: keybindingsConfig, issues: [] };
+        return keybindingsConfig;
+      }
+
+      case WS_METHODS.serverAddKeybinding: {
+        const body = stripRequestTag(request.body);
+        return yield* keybindingsManager.addKeybindingRule(body.rule).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.serverUpdateKeybinding: {
+        const body = stripRequestTag(request.body);
+        return yield* keybindingsManager.updateKeybindingRule(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.serverRemoveKeybinding: {
+        const body = stripRequestTag(request.body);
+        return yield* keybindingsManager.removeKeybindingRule(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.serverResetKeybindings: {
+        return yield* keybindingsManager.resetKeybindingRules.pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
       }
 
       case WS_METHODS.storageGetUsage: {

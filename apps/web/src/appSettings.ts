@@ -1,5 +1,5 @@
 import { useCallback } from "react";
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema, SchemaTransformation } from "effect";
 import {
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   ProviderInstanceId,
@@ -63,6 +63,9 @@ export const DISPLAY_PROFILE_CUSTOM_WARNING =
   "Selecting a preset will overwrite your custom display settings.";
 const DEFAULT_SHOW_REASONING_EXPANDED = false;
 const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized";
+export const SIDEBAR_THREAD_PREVIEW_COUNT_MIN = 1;
+export const SIDEBAR_THREAD_PREVIEW_COUNT_MAX = 15;
+export const SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT = 6;
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
   claudeAgent: new Set(getModelOptions("claudeAgent").map((option) => option.slug)),
@@ -91,6 +94,29 @@ const FavoriteModelSchema = Schema.Struct({
   providerKind: ProviderKindSchema,
   modelId: TrimmedNonEmptyString.check(Schema.isMaxLength(MAX_CUSTOM_MODEL_LENGTH)),
 });
+
+const SidebarThreadPreviewCountSchema = Schema.Union([Schema.Number, Schema.String]).pipe(
+  Schema.decodeTo(
+    Schema.Number,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => {
+        const numberValue = typeof value === "string" ? Number(value) : value;
+        if (!Number.isFinite(numberValue)) {
+          return Effect.succeed(SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT);
+        }
+        return Effect.succeed(
+          Math.max(
+            SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
+            Math.min(SIDEBAR_THREAD_PREVIEW_COUNT_MAX, Math.round(numberValue)),
+          ),
+        );
+      },
+      encode: (value) => Effect.succeed(value),
+    }),
+  ),
+  Schema.withConstructorDefault(() => Option.some(SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT)),
+  Schema.withDecodingDefault(() => SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT),
+);
 
 function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibility {
   if (value === "hidden" || value === "summarized" || value === "full") {
@@ -151,6 +177,15 @@ export const AppSettingsSchema = Schema.Struct({
   showFileChangeDiffsInline: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
+  diffIgnoreWhitespace: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  diffWordWrap: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(false)),
+    Schema.withDecodingDefault(() => false),
+  ),
+  sidebarThreadPreviewCount: SidebarThreadPreviewCountSchema,
   showReasoningExpanded: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_SHOW_REASONING_EXPANDED)),
   ),

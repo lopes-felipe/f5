@@ -90,13 +90,26 @@ function findProviderFieldButton(labelText: string): HTMLButtonElement {
 
 function findMenuItemRadio(text: string): HTMLElement | null {
   return (
-    Array.from(document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')).find(
-      (element) => element.textContent?.trim() === text,
+    Array.from(
+      document.querySelectorAll<HTMLElement>(
+        '[role="menuitemradio"], [role="option"], [data-slot="combobox-item"]',
+      ),
+    ).find(
+      (element) =>
+        element.getAttribute("aria-label") === text || element.textContent?.trim() === text,
     ) ?? null
   );
 }
 
 function findMenuItem(text: string): HTMLElement | null {
+  if (text === "Claude") {
+    const providerButton = document.querySelector<HTMLElement>(
+      '[data-model-picker-provider="claudeAgent"]',
+    );
+    if (providerButton) {
+      return providerButton;
+    }
+  }
   return (
     Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
       (element) => element.textContent?.trim() === text,
@@ -317,7 +330,9 @@ describe("WorkflowCreateDialog", () => {
       findMenuItem("Claude")?.click();
 
       await vi.waitFor(() => {
-        expect(findMenuItemRadio("Claude Opus 4.7")?.getAttribute("aria-checked")).toBe("false");
+        const rememberedOption = findMenuItemRadio("Claude Opus 4.7");
+        expect(rememberedOption).not.toBeNull();
+        expect(rememberedOption?.textContent ?? "").not.toContain("Active");
       });
 
       findMenuItemRadio("Claude Sonnet 4.6")?.click();
@@ -376,7 +391,7 @@ describe("WorkflowCreateDialog", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(findProviderFieldButton("Merge").textContent ?? "").toContain("Claude Sonnet 4.6");
+        expect(findProviderFieldButton("Merge").textContent ?? "").toContain("Sonnet 4.6");
       });
     } finally {
       await secondScreen.unmount();

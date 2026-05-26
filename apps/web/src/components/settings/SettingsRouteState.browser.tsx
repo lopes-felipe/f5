@@ -94,6 +94,7 @@ function createNativeApiMock() {
     cwd: "/repo/project-one",
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
     keybindings: [],
+    customKeybindings: [],
     issues: [],
     providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],

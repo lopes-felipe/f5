@@ -114,6 +114,7 @@ function createBaseServerConfig(): ServerConfig {
     cwd: "/repo/project",
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
+    customKeybindings: [],
     issues: [],
     providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
@@ -2239,6 +2240,39 @@ describe("Thread sidebar", () => {
       expect(mounted.router.state.location.pathname).toBe(draftPath);
       expect(useThreadSelectionStore.getState().selectedThreadIds.size).toBe(0);
       expect(useThreadSelectionStore.getState().anchorThreadId).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("uses the configured sidebar thread preview count", async () => {
+    seedAppSettings({ sidebarThreadPreviewCount: 3 });
+    const previewThreads = Array.from({ length: 6 }, (_, index) =>
+      createSnapshotThread({
+        id: `configured-preview-thread-${index}` as ThreadId,
+        title: `Configured preview thread ${index}`,
+        createdAt: `2026-03-11T12:0${index}:00.000Z`,
+        lastInteractionAt: `2026-03-11T12:0${index}:00.000Z`,
+        updatedAt: `2026-03-11T12:0${index}:00.000Z`,
+      }),
+    ).toReversed();
+
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${previewThreads[0]!.id}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot(previewThreads);
+        nextFixture.welcome = {
+          ...nextFixture.welcome,
+          bootstrapThreadId: previewThreads[0]!.id,
+        };
+      },
+    });
+
+    try {
+      await waitForSidebarThreadRow("Configured preview thread 5");
+      expect(querySidebarThreadRowByTitle("Configured preview thread 3")).toBeTruthy();
+      expect(querySidebarThreadRowByTitle("Configured preview thread 2")).toBeNull();
     } finally {
       await mounted.cleanup();
     }

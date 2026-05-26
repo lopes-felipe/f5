@@ -75,7 +75,14 @@ import { KeybindingRule } from "./keybindings";
 import { ProjectReadFileInput, ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
-import { ServerConfigUpdatedPayload, ServerValidateHarnessesInput } from "./server";
+import {
+  ServerAddKeybindingInput,
+  ServerConfigUpdatedPayload,
+  ServerRemoveKeybindingInput,
+  ServerResetKeybindingsInput,
+  ServerUpdateKeybindingInput,
+  ServerValidateHarnessesInput,
+} from "./server";
 import { ServerSettingsPatch } from "./settings";
 import {
   StorageCancelCleanupRequest,
@@ -129,6 +136,10 @@ export const WS_METHODS = {
   serverRefreshProviders: "server.refreshProviders",
   serverValidateHarnesses: "server.validateHarnesses",
   serverUpsertKeybinding: "server.upsertKeybinding",
+  serverAddKeybinding: "server.addKeybinding",
+  serverUpdateKeybinding: "server.updateKeybinding",
+  serverRemoveKeybinding: "server.removeKeybinding",
+  serverResetKeybindings: "server.resetKeybindings",
 
   // Storage maintenance
   storageGetUsage: "storage.getUsage",
@@ -280,6 +291,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverValidateHarnesses, ServerValidateHarnessesInput),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
+  tagRequestBody(WS_METHODS.serverAddKeybinding, ServerAddKeybindingInput),
+  tagRequestBody(WS_METHODS.serverUpdateKeybinding, ServerUpdateKeybindingInput),
+  tagRequestBody(WS_METHODS.serverRemoveKeybinding, ServerRemoveKeybindingInput),
+  tagRequestBody(WS_METHODS.serverResetKeybindings, ServerResetKeybindingsInput),
   tagRequestBody(WS_METHODS.storageGetUsage, StorageGetUsageRequest),
   tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),

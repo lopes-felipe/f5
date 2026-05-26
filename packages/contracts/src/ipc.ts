@@ -31,8 +31,13 @@ import type {
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import type {
   ServerConfig,
+  ServerAddKeybindingInput,
   ServerHarnessValidationResult,
+  ServerKeybindingMutationResult,
   ServerProviderUpdatedPayload,
+  ServerRemoveKeybindingInput,
+  ServerResetKeybindingsInput,
+  ServerUpdateKeybindingInput,
   ServerUpsertKeybindingInput,
   ServerUpsertKeybindingResult,
 } from "./server";
@@ -248,6 +253,16 @@ export interface NativeApi {
       providerOptions?: ProviderStartOptions;
     }) => Promise<{ results: ReadonlyArray<ServerHarnessValidationResult> }>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
+    addKeybinding: (input: ServerAddKeybindingInput) => Promise<ServerKeybindingMutationResult>;
+    updateKeybinding: (
+      input: ServerUpdateKeybindingInput,
+    ) => Promise<ServerKeybindingMutationResult>;
+    removeKeybinding: (
+      input: ServerRemoveKeybindingInput,
+    ) => Promise<ServerKeybindingMutationResult>;
+    resetKeybindings: (
+      input?: ServerResetKeybindingsInput,
+    ) => Promise<ServerKeybindingMutationResult>;
   };
   mcp: {
     getCommonConfig: (input: McpGetCommonConfigRequest) => Promise<McpCommonConfigResult>;

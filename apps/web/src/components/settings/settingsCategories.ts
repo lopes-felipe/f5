@@ -11,7 +11,7 @@ export const SETTINGS_CATEGORIES = [
 
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 
-export const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = {
+export const SETTINGS_CATEGORY_LABELS = {
   general: "General",
   display: "Display",
   notifications: "Notifications",
@@ -20,7 +20,7 @@ export const SETTINGS_CATEGORY_LABELS: Record<SettingsCategory, string> = {
   projects: "Projects",
   storage: "Storage",
   about: "About",
-};
+} as const satisfies Record<SettingsCategory, string>;
 
 export function isSettingsCategory(value: unknown): value is SettingsCategory {
   return typeof value === "string" && (SETTINGS_CATEGORIES as readonly string[]).includes(value);

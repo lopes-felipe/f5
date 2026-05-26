@@ -250,11 +250,14 @@ const makeCodexOAuthManager = Effect.gen(function* () {
       }
 
       const metadata = pendingMetadataByKey.get(key);
-      if (metadata) {
-        const reconciled = yield* reconcilePendingStatus(input, existing, metadata);
-        if (reconciled.status !== "pending") {
-          return reconciled;
-        }
+      if (!metadata) {
+        // Status polling can observe the setup window before the OAuth lease exists.
+        return existing;
+      }
+
+      const reconciled = yield* reconcilePendingStatus(input, existing, metadata);
+      if (reconciled.status !== "pending") {
+        return reconciled;
       }
 
       const hasLease = yield* registry.hasOauthLease({

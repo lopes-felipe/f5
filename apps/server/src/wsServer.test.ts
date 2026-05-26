@@ -43,6 +43,7 @@ import {
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import { compileResolvedKeybindingRule, DEFAULT_KEYBINDINGS } from "./keybindings";
+import { mergeWithDefaultKeybindings } from "@t3tools/shared/keybindings";
 import type {
   TerminalClearInput,
   TerminalCloseInput,
@@ -663,6 +664,10 @@ function compileKeybindings(bindings: KeybindingsConfig): ResolvedKeybindingsCon
     resolved.push(compiled);
   }
   return resolved;
+}
+
+function compileMergedKeybindings(bindings: KeybindingsConfig): ResolvedKeybindingsConfig {
+  return mergeWithDefaultKeybindings(compileKeybindings(bindings));
 }
 
 const DEFAULT_RESOLVED_KEYBINDINGS = compileKeybindings([...DEFAULT_KEYBINDINGS]);
@@ -1588,6 +1593,7 @@ describe("WebSocket Server", () => {
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+      customKeybindings: [],
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
@@ -1795,6 +1801,7 @@ describe("WebSocket Server", () => {
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+      customKeybindings: [],
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
@@ -1805,7 +1812,7 @@ describe("WebSocket Server", () => {
     const persistedConfig = JSON.parse(
       fs.readFileSync(keybindingsPath, "utf8"),
     ) as KeybindingsConfig;
-    expect(persistedConfig).toEqual(DEFAULT_KEYBINDINGS);
+    expect(persistedConfig).toEqual([]);
   });
 
   it("falls back to defaults and reports malformed keybindings config issues", async () => {
@@ -1826,6 +1833,7 @@ describe("WebSocket Server", () => {
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
       keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
+      customKeybindings: [],
       issues: [
         {
           kind: "keybindings.malformed-config",
@@ -1964,9 +1972,8 @@ describe("WebSocket Server", () => {
     fs.writeFileSync(
       keybindingsPath,
       JSON.stringify([
-        { key: "cmd+j", command: "terminal.toggle" },
-        { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
-        { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
+        { key: "mod+y", command: "terminal.toggle" },
+        { key: "mod+shift+r", command: "script.run-tests.run" },
       ]),
       "utf8",
     );
@@ -1985,7 +1992,8 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
-      keybindings: compileKeybindings(persistedConfig),
+      keybindings: compileMergedKeybindings(persistedConfig),
+      customKeybindings: persistedConfig,
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,
@@ -2019,12 +2027,11 @@ describe("WebSocket Server", () => {
       fs.readFileSync(keybindingsPath, "utf8"),
     ) as KeybindingsConfig;
     const persistedCommands = new Set(persistedConfig.map((entry) => entry.command));
-    for (const defaultRule of DEFAULT_KEYBINDINGS) {
-      expect(persistedCommands.has(defaultRule.command)).toBe(true);
-    }
+    expect(persistedConfig).toHaveLength(1);
     expect(persistedCommands.has("script.run-tests.run")).toBe(true);
     expect(upsertResponse.result).toEqual({
-      keybindings: compileKeybindings(persistedConfig),
+      keybindings: compileMergedKeybindings(persistedConfig),
+      customKeybindings: persistedConfig,
       issues: [],
     });
 
@@ -2033,7 +2040,8 @@ describe("WebSocket Server", () => {
     expect(configResponse.result).toEqual({
       cwd: "/my/workspace",
       keybindingsConfigPath: keybindingsPath,
-      keybindings: compileKeybindings(persistedConfig),
+      keybindings: compileMergedKeybindings(persistedConfig),
+      customKeybindings: persistedConfig,
       issues: [],
       providers: defaultProviderSnapshots,
       settings: DEFAULT_SERVER_SETTINGS,

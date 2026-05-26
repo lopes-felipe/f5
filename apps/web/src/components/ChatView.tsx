@@ -19,6 +19,7 @@ import {
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
   type ServerProvider,
+  type ServerConfig,
   type ProviderKind,
   type ProviderInstanceId,
   type ProviderModelOptions,
@@ -2490,8 +2491,20 @@ export default function ChatView({ threadId }: ChatViewProps) {
         command: input.keybindingCommand,
       });
 
-      if (isElectron && keybindingRule) {
-        await api.server.upsertKeybinding(keybindingRule);
+      if (isElectron) {
+        const currentServerConfig = queryClient.getQueryData<ServerConfig>(
+          serverQueryKeys.config(),
+        );
+        const staleRules =
+          currentServerConfig?.customKeybindings.filter(
+            (rule) => rule.command === input.keybindingCommand,
+          ) ?? [];
+        for (const target of staleRules) {
+          await api.server.removeKeybinding({ target });
+        }
+        if (keybindingRule) {
+          await api.server.addKeybinding({ rule: keybindingRule });
+        }
         await queryClient.invalidateQueries({ queryKey: serverQueryKeys.all });
       }
     },

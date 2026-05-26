@@ -89,6 +89,46 @@ it.effect("accepts server.validateHarnesses requests without provider options", 
   }),
 );
 
+it.effect("accepts exact keybinding mutation requests", () =>
+  Effect.gen(function* () {
+    const add = yield* decodeWebSocketRequest({
+      id: "req-keybinding-add",
+      body: {
+        _tag: WS_METHODS.serverAddKeybinding,
+        rule: { key: "mod+t", command: "terminal.toggle" },
+      },
+    });
+    assert.strictEqual(add.body._tag, WS_METHODS.serverAddKeybinding);
+
+    const update = yield* decodeWebSocketRequest({
+      id: "req-keybinding-update",
+      body: {
+        _tag: WS_METHODS.serverUpdateKeybinding,
+        target: { key: "mod+t", command: "terminal.toggle" },
+        rule: { key: "mod+shift+t", command: "terminal.toggle", when: "!terminalFocus" },
+      },
+    });
+    assert.strictEqual(update.body._tag, WS_METHODS.serverUpdateKeybinding);
+
+    const remove = yield* decodeWebSocketRequest({
+      id: "req-keybinding-remove",
+      body: {
+        _tag: WS_METHODS.serverRemoveKeybinding,
+        target: { key: "mod+shift+t", command: "terminal.toggle", when: "!terminalFocus" },
+      },
+    });
+    assert.strictEqual(remove.body._tag, WS_METHODS.serverRemoveKeybinding);
+
+    const reset = yield* decodeWebSocketRequest({
+      id: "req-keybinding-reset",
+      body: {
+        _tag: WS_METHODS.serverResetKeybindings,
+      },
+    });
+    assert.strictEqual(reset.body._tag, WS_METHODS.serverResetKeybindings);
+  }),
+);
+
 it.effect("accepts server.validateHarnesses results", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeServerValidateHarnessesResult({

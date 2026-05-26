@@ -131,6 +131,7 @@ export function useSettingsRouteState() {
   );
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
   const keybindings = serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
+  const customKeybindings = serverConfigQuery.data?.customKeybindings ?? [];
   const availableEditors = serverConfigQuery.data?.availableEditors;
   const keybindingConflicts = useMemo(() => findKeybindingConflicts(keybindings), [keybindings]);
   const notificationPermissionSummary =
@@ -476,6 +477,7 @@ export function useSettingsRouteState() {
     isRequestingNotificationPermission,
     requestNotificationPermission,
     keybindings,
+    customKeybindings,
     keybindingConflicts,
     keybindingsConfigPath,
     isOpeningKeybindings,

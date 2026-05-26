@@ -793,8 +793,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   const summaryStat = summarizeTurnDiffStats(checkpointFiles);
                   const changedFileCountLabel = String(checkpointFiles.length);
                   return (
-                    <div className="mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
-                      <div className="mb-1.5 flex items-center justify-between gap-2">
+                    <div className="relative mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
+                      <div className="sticky top-0 z-[2] -mx-2.5 -mt-2.5 mb-1.5 flex items-center justify-between gap-2 rounded-t-lg border-b border-border/60 bg-card/95 px-2.5 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-card/80">
                         <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground/65">
                           <span>Changed files ({changedFileCountLabel})</span>
                           {hasNonZeroStat(summaryStat) && (
@@ -900,7 +900,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   // in useCallback with a dependency list that changes every render would be
   // dead weight. LegendList handles cell-level reuse itself.
   const renderItem = ({ item }: { item: TimelineRow }) => (
-    <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-hidden" data-timeline-root="true">
+    <div className="mx-auto w-full min-w-0 max-w-3xl overflow-x-clip" data-timeline-root="true">
       {renderRowContent(item)}
     </div>
   );

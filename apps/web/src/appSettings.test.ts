@@ -80,6 +80,31 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).showFileChangeDiffsInline).toBe(true);
   });
 
+  it("defaults diff workflow settings", () => {
+    const parsed = parsePersistedAppSettings(null);
+    expect(parsed.diffIgnoreWhitespace).toBe(false);
+    expect(parsed.diffWordWrap).toBe(false);
+  });
+
+  it("clamps persisted sidebar thread preview count", () => {
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ sidebarThreadPreviewCount: 99 }))
+        .sidebarThreadPreviewCount,
+    ).toBe(15);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ sidebarThreadPreviewCount: 0 }))
+        .sidebarThreadPreviewCount,
+    ).toBe(1);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ sidebarThreadPreviewCount: "6" }))
+        .sidebarThreadPreviewCount,
+    ).toBe(6);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ sidebarThreadPreviewCount: "nope" }))
+        .sidebarThreadPreviewCount,
+    ).toBe(6);
+  });
+
   it("defaults runtime warning visibility to summarized", () => {
     expect(parsePersistedAppSettings(null).runtimeWarningVisibility).toBe("summarized");
   });

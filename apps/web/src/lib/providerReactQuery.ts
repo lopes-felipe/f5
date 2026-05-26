@@ -12,6 +12,7 @@ interface CheckpointDiffQueryInput {
   fromTurnCount: number | null;
   toTurnCount: number | null;
   cacheScope?: string | null;
+  ignoreWhitespace?: boolean;
   enabled?: boolean;
   retryMode?: "panel" | "inline";
 }
@@ -28,16 +29,19 @@ export const providerQueryKeys = {
       input.fromTurnCount,
       input.toTurnCount,
       input.cacheScope ?? null,
+      input.ignoreWhitespace ?? false,
     ] as const,
   fileContent: (input: { cwd: string | undefined; relativePath: string | undefined }) =>
     ["fileContent", input.cwd, input.relativePath] as const,
 };
 
 function decodeCheckpointDiffRequest(input: CheckpointDiffQueryInput) {
+  const maybeOptions = input.ignoreWhitespace ? { options: { ignoreWhitespace: true } } : {};
   if (input.fromTurnCount === 0) {
     return Schema.decodeUnknownOption(OrchestrationGetFullThreadDiffInput)({
       threadId: input.threadId,
       toTurnCount: input.toTurnCount,
+      ...maybeOptions,
     }).pipe(Option.map((fields) => ({ kind: "fullThreadDiff" as const, input: fields })));
   }
 
@@ -45,6 +49,7 @@ function decodeCheckpointDiffRequest(input: CheckpointDiffQueryInput) {
     threadId: input.threadId,
     fromTurnCount: input.fromTurnCount,
     toTurnCount: input.toTurnCount,
+    ...maybeOptions,
   }).pipe(Option.map((fields) => ({ kind: "turnDiff" as const, input: fields })));
 }
 

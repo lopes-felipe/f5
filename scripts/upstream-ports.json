@@ -262,5 +262,47 @@
     "f5-sha": null,
     "skipped": false,
     "reason": "Ported the provider-instance architecture, model-selection persistence/migrations, server-authoritative provider settings, and instance-aware web/provider flows."
+  },
+  "f7748a0d656f918080828130aceda039457897e0": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 2.1 - added checkpoint diff ignore-whitespace plumbing, setting, toolbar toggle, and query-key separation."
+  },
+  "f4c9418d40358f61e4e9236992c0620d06c4bea3": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 2.2 - added collapsible per-file diffs and word-wrap controls."
+  },
+  "449e1aaa48061eb282bcaf3fc2d2280bc671c6c5": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 2.2 - applied sticky changed-files header polish inside timeline diff cards."
+  },
+  "131234be3fa53d9b0daff3e8116138d5bad079ba": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 2.2 - kept changed-files card overflow compatible with sticky headers."
+  },
+  "466d8ee5b0a003b3f735dd25e21273539b515316": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 3.1 - added configurable sidebar thread preview count setting and Display settings control."
+  },
+  "31b52acc8d230f66034f8dc1163cf6b4502ba77e": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 3.1 - wired the configured preview count through sidebar visible-thread helpers."
+  },
+  "0e388706470fdf8df7b5b5ae37f12bbeea777e06": {
+    "ported": true,
+    "f5-sha": null,
+    "skipped": false,
+    "reason": "Wave 3.2 - added shared keybinding logic, exact mutation RPCs, raw custom keybindings snapshot, and Integrations keybinding editor."
   }
 }

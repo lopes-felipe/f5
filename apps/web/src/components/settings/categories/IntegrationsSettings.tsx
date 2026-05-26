@@ -4,6 +4,7 @@ import { formatShortcutLabel } from "../../../keybindings";
 import { formatKeybindingCommandLabel } from "../../../lib/keybindingConflicts";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { McpServersSettings } from "../McpServersSettings";
+import { KeybindingEditor } from "../KeybindingEditor";
 import { Button } from "../../ui/button";
 
 export function IntegrationsSettings() {
@@ -53,6 +54,7 @@ export function IntegrationsSettings() {
           {openKeybindingsError ? (
             <p className="text-xs text-destructive">{openKeybindingsError}</p>
           ) : null}
+          <KeybindingEditor />
           {keybindingConflicts.length > 0 ? (
             <div
               className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-3"

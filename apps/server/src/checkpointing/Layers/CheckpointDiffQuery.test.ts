@@ -98,6 +98,7 @@ describe("CheckpointDiffQueryLive", () => {
       readonly fromCheckpointRef: CheckpointRef;
       readonly toCheckpointRef: CheckpointRef;
       readonly cwd: string;
+      readonly ignoreWhitespace?: boolean;
     }> = [];
 
     const snapshot = makeSnapshot({
@@ -118,9 +119,16 @@ describe("CheckpointDiffQueryLive", () => {
           return true;
         }),
       restoreCheckpoint: () => Effect.succeed(true),
-      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd }) =>
+      diffCheckpoints: ({ fromCheckpointRef, toCheckpointRef, cwd, options }) =>
         Effect.sync(() => {
-          diffCheckpointsCalls.push({ fromCheckpointRef, toCheckpointRef, cwd });
+          diffCheckpointsCalls.push({
+            fromCheckpointRef,
+            toCheckpointRef,
+            cwd,
+            ...(options?.ignoreWhitespace !== undefined
+              ? { ignoreWhitespace: options.ignoreWhitespace }
+              : {}),
+          });
           return "diff patch";
         }),
       deleteCheckpointRefs: () => Effect.void,
@@ -205,6 +213,7 @@ describe("CheckpointDiffQueryLive", () => {
         cwd: "/tmp/workspace",
         fromCheckpointRef: expectedFromRef,
         toCheckpointRef,
+        ignoreWhitespace: undefined,
       },
     ]);
     expect(result).toEqual({
@@ -213,6 +222,112 @@ describe("CheckpointDiffQueryLive", () => {
       toTurnCount: 1,
       diff: "diff patch",
     });
+  });
+
+  it("forwards whitespace diff options to checkpoint storage", async () => {
+    const projectId = ProjectId.makeUnsafe("project-1");
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+    const diffCheckpointsCalls: Array<{ readonly ignoreWhitespace?: boolean }> = [];
+    const snapshot = makeSnapshot({
+      projectId,
+      threadId,
+      workspaceRoot: "/tmp/workspace",
+      worktreePath: null,
+      checkpointTurnCount: 1,
+      checkpointRef: toCheckpointRef,
+    });
+
+    const checkpointStore: CheckpointStoreShape = {
+      isGitRepository: () => Effect.succeed(true),
+      captureCheckpoint: () => Effect.void,
+      hasCheckpointRef: () => Effect.succeed(true),
+      restoreCheckpoint: () => Effect.succeed(true),
+      diffCheckpoints: ({ options }) =>
+        Effect.sync(() => {
+          diffCheckpointsCalls.push(
+            options?.ignoreWhitespace !== undefined
+              ? { ignoreWhitespace: options.ignoreWhitespace }
+              : {},
+          );
+          return "diff patch";
+        }),
+      deleteCheckpointRefs: () => Effect.void,
+    };
+
+    const layer = CheckpointDiffQueryLive.pipe(
+      Layer.provideMerge(Layer.succeed(CheckpointStore, checkpointStore)),
+      Layer.provideMerge(
+        Layer.succeed(ProjectionSnapshotQuery, {
+          getSnapshot: () => Effect.succeed(snapshot),
+          getBootstrapSnapshot: () => Effect.succeed(snapshot),
+          getStartupSnapshot: () =>
+            Effect.succeed({
+              snapshot,
+              threadTailDetails: null,
+            }),
+          getThreadTailDetails: (input) =>
+            Effect.succeed({
+              threadId: input.threadId,
+              messages: [],
+              checkpoints: [],
+              activities: [],
+              commandExecutions: [],
+              tasks: [],
+              tasksTurnId: null,
+              tasksUpdatedAt: null,
+              sessionNotes: null,
+              threadReferences: [],
+              hasOlderMessages: false,
+              hasOlderCheckpoints: false,
+              hasOlderCommandExecutions: false,
+              oldestLoadedMessageCursor: null,
+              oldestLoadedCheckpointTurnCount: null,
+              oldestLoadedCommandExecutionCursor: null,
+              detailSequence: snapshot.snapshotSequence,
+            }),
+          getThreadHistoryPage: (input) =>
+            Effect.succeed({
+              threadId: input.threadId,
+              messages: [],
+              checkpoints: [],
+              commandExecutions: [],
+              hasOlderMessages: false,
+              hasOlderCheckpoints: false,
+              hasOlderCommandExecutions: false,
+              oldestLoadedMessageCursor: null,
+              oldestLoadedCheckpointTurnCount: null,
+              oldestLoadedCommandExecutionCursor: null,
+              detailSequence: snapshot.snapshotSequence,
+            }),
+          getThreadDetails: (input) =>
+            Effect.succeed({
+              threadId: input.threadId,
+              messages: [],
+              checkpoints: [],
+              tasks: [],
+              tasksTurnId: null,
+              tasksUpdatedAt: null,
+              sessionNotes: null,
+              threadReferences: [],
+              detailSequence: snapshot.snapshotSequence,
+            }),
+        }),
+      ),
+    );
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const query = yield* CheckpointDiffQuery;
+        yield* query.getFullThreadDiff({
+          threadId,
+          toTurnCount: 1,
+          options: { ignoreWhitespace: true },
+        });
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(diffCheckpointsCalls).toEqual([{ ignoreWhitespace: true }]);
   });
 
   it("fails when the thread is missing from the snapshot", async () => {

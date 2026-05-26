@@ -6,6 +6,12 @@ import type {
   ResolvedKeybindingRule,
   ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import { STATIC_KEYBINDING_COMMANDS } from "@t3tools/contracts";
+import {
+  evaluateWhenNode,
+  parseKeybindingShortcut,
+  shortcutSignature,
+} from "@t3tools/shared/keybindings";
 
 import { projectScriptIdFromCommand } from "../projectScripts";
 
@@ -15,32 +21,8 @@ import { projectScriptIdFromCommand } from "../projectScripts";
 // can over-report conflicts for very complex clauses.
 const MAX_CONFLICT_IDENTIFIER_ENUMERATION = 10;
 
-const STATIC_COMMAND_LABELS: Partial<Record<KeybindingCommand, string>> = {
-  "terminal.toggle": "Toggle terminal",
-  "terminal.split": "Split terminal",
-  "terminal.new": "New terminal",
-  "terminal.close": "Close terminal",
-  "diff.toggle": "Toggle diff panel",
-  "chat.new": "New thread",
-  "chat.newLocal": "Reuse project draft",
-  "workflow.new": "New workflow",
-  "chat.scrollToBottom": "Scroll to bottom",
-  "editor.openFavorite": "Open in preferred editor",
-  "thread.switchRecentNext": "Next recent thread",
-  "thread.switchRecentPrevious": "Previous recent thread",
-  "model.switchRecent": "Switch recent model",
-  "modelPicker.toggle": "Toggle model picker",
-  "modelPicker.jump.1": "Pick model 1",
-  "modelPicker.jump.2": "Pick model 2",
-  "modelPicker.jump.3": "Pick model 3",
-  "modelPicker.jump.4": "Pick model 4",
-  "modelPicker.jump.5": "Pick model 5",
-  "modelPicker.jump.6": "Pick model 6",
-  "modelPicker.jump.7": "Pick model 7",
-  "modelPicker.jump.8": "Pick model 8",
-  "modelPicker.jump.9": "Pick model 9",
-  "commandPalette.toggle": "Toggle command palette",
-};
+type StaticKeybindingCommand = (typeof STATIC_KEYBINDING_COMMANDS)[number];
+const STATIC_KEYBINDING_COMMAND_SET = new Set<string>(STATIC_KEYBINDING_COMMANDS);
 
 export interface KeybindingConflict {
   readonly shortcut: KeybindingShortcut;
@@ -48,110 +30,8 @@ export interface KeybindingConflict {
   readonly winner: ResolvedKeybindingRule;
 }
 
-function normalizeKeyToken(token: string): string {
-  if (token === "space") return " ";
-  if (token === "esc") return "escape";
-  return token;
-}
-
 export function parseKeybindingShortcutValue(value: string): KeybindingShortcut | null {
-  const rawTokens = value
-    .toLowerCase()
-    .split("+")
-    .map((token) => token.trim());
-  const tokens = [...rawTokens];
-  let trailingEmptyCount = 0;
-
-  while (tokens[tokens.length - 1] === "") {
-    trailingEmptyCount += 1;
-    tokens.pop();
-  }
-
-  if (trailingEmptyCount > 0) {
-    tokens.push("+");
-  }
-  if (tokens.length === 0 || tokens.some((token) => token.length === 0)) {
-    return null;
-  }
-
-  let key: string | null = null;
-  let metaKey = false;
-  let ctrlKey = false;
-  let shiftKey = false;
-  let altKey = false;
-  let modKey = false;
-
-  for (const token of tokens) {
-    switch (token) {
-      case "cmd":
-      case "meta":
-        metaKey = true;
-        break;
-      case "ctrl":
-      case "control":
-        ctrlKey = true;
-        break;
-      case "shift":
-        shiftKey = true;
-        break;
-      case "alt":
-      case "option":
-        altKey = true;
-        break;
-      case "mod":
-        modKey = true;
-        break;
-      default:
-        if (key !== null) return null;
-        key = normalizeKeyToken(token);
-    }
-  }
-
-  if (key === null) {
-    return null;
-  }
-
-  return {
-    key,
-    metaKey,
-    ctrlKey,
-    shiftKey,
-    altKey,
-    modKey,
-  };
-}
-
-function shortcutSignature(shortcut: KeybindingShortcut): string {
-  return [
-    shortcut.modKey ? "1" : "0",
-    shortcut.metaKey ? "1" : "0",
-    shortcut.ctrlKey ? "1" : "0",
-    shortcut.altKey ? "1" : "0",
-    shortcut.shiftKey ? "1" : "0",
-    shortcut.key,
-  ].join(":");
-}
-
-function evaluateWhenNode(
-  node: KeybindingWhenNode | undefined,
-  context: Record<string, boolean>,
-): boolean {
-  if (!node) {
-    return true;
-  }
-
-  switch (node.type) {
-    case "identifier":
-      if (node.name === "true") return true;
-      if (node.name === "false") return false;
-      return Boolean(context[node.name]);
-    case "not":
-      return !evaluateWhenNode(node.node, context);
-    case "and":
-      return evaluateWhenNode(node.left, context) && evaluateWhenNode(node.right, context);
-    case "or":
-      return evaluateWhenNode(node.left, context) || evaluateWhenNode(node.right, context);
-  }
+  return parseKeybindingShortcut(value);
 }
 
 function collectIdentifiers(
@@ -260,24 +140,77 @@ export function formatKeybindingCommandLabel(
   command: KeybindingCommand,
   scripts: ReadonlyArray<ProjectScript> = [],
 ): string {
-  const staticLabel = STATIC_COMMAND_LABELS[command];
-  if (staticLabel) {
-    return staticLabel;
+  const scriptId = projectScriptIdFromCommand(command);
+  if (scriptId) {
+    const matchingScripts = scripts.filter((script) => script.id === scriptId);
+    const distinctNames = [
+      ...new Set(matchingScripts.map((script) => script.name.trim()).filter(Boolean)),
+    ];
+
+    if (distinctNames.length === 1) {
+      return `Action: ${distinctNames[0]}`;
+    }
+
+    return `Action: ${scriptId} (unbound)`;
   }
 
-  const scriptId = projectScriptIdFromCommand(command);
-  if (!scriptId) {
+  if (!STATIC_KEYBINDING_COMMAND_SET.has(command)) {
     return command;
   }
 
-  const matchingScripts = scripts.filter((script) => script.id === scriptId);
-  const distinctNames = [
-    ...new Set(matchingScripts.map((script) => script.name.trim()).filter(Boolean)),
-  ];
-
-  if (distinctNames.length === 1) {
-    return `Action: ${distinctNames[0]}`;
+  const staticCommand = command as StaticKeybindingCommand;
+  switch (staticCommand) {
+    case "terminal.toggle":
+      return "Toggle terminal";
+    case "terminal.split":
+      return "Split terminal";
+    case "terminal.new":
+      return "New terminal";
+    case "terminal.close":
+      return "Close terminal";
+    case "diff.toggle":
+      return "Toggle diff panel";
+    case "chat.new":
+      return "New thread";
+    case "chat.newLocal":
+      return "Reuse project draft";
+    case "workflow.new":
+      return "New workflow";
+    case "chat.scrollToBottom":
+      return "Scroll to bottom";
+    case "editor.openFavorite":
+      return "Open in preferred editor";
+    case "thread.switchRecentNext":
+      return "Next recent thread";
+    case "thread.switchRecentPrevious":
+      return "Previous recent thread";
+    case "model.switchRecent":
+      return "Switch recent model";
+    case "modelPicker.toggle":
+      return "Toggle model picker";
+    case "modelPicker.jump.1":
+      return "Pick model 1";
+    case "modelPicker.jump.2":
+      return "Pick model 2";
+    case "modelPicker.jump.3":
+      return "Pick model 3";
+    case "modelPicker.jump.4":
+      return "Pick model 4";
+    case "modelPicker.jump.5":
+      return "Pick model 5";
+    case "modelPicker.jump.6":
+      return "Pick model 6";
+    case "modelPicker.jump.7":
+      return "Pick model 7";
+    case "modelPicker.jump.8":
+      return "Pick model 8";
+    case "modelPicker.jump.9":
+      return "Pick model 9";
+    case "commandPalette.toggle":
+      return "Toggle command palette";
+    default: {
+      const _exhaustive: never = staticCommand;
+      return _exhaustive;
+    }
   }
-
-  return `Action: ${scriptId} (unbound)`;
 }

@@ -48,6 +48,7 @@ function createBaseServerConfig(): ServerConfig {
     cwd: "/repo/project",
     keybindingsConfigPath: "/repo/project/.t3code-keybindings.json",
     keybindings: [],
+    customKeybindings: [],
     issues: [],
     providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],

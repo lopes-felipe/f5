@@ -184,6 +184,7 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
     cwd: "/repo/project-one",
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
     keybindings: [],
+    customKeybindings: [],
     issues: [],
     providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
@@ -327,6 +328,9 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
     },
     terminal: {
       onEvent: vi.fn(() => () => {}),
+    },
+    git: {
+      onStatusInvalidated: vi.fn(() => () => {}),
     },
   } as unknown as NativeApi;
 }

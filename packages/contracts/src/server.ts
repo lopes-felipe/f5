@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
-import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings";
+import { KeybindingRule, KeybindingsConfig, ResolvedKeybindingsConfig } from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
 import { ProviderKind, ProviderStartOptions } from "./orchestration";
@@ -172,6 +172,7 @@ export const ServerConfig = Schema.Struct({
   cwd: TrimmedNonEmptyString,
   keybindingsConfigPath: TrimmedNonEmptyString,
   keybindings: ResolvedKeybindingsConfig,
+  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
   issues: ServerConfigIssues,
   providers: ServerProviders,
   availableEditors: Schema.Array(EditorId),
@@ -184,9 +185,32 @@ export type ServerUpsertKeybindingInput = typeof ServerUpsertKeybindingInput.Typ
 
 export const ServerUpsertKeybindingResult = Schema.Struct({
   keybindings: ResolvedKeybindingsConfig,
+  customKeybindings: KeybindingsConfig.pipe(Schema.withDecodingDefault(() => [])),
   issues: ServerConfigIssues,
 });
 export type ServerUpsertKeybindingResult = typeof ServerUpsertKeybindingResult.Type;
+
+export const ServerAddKeybindingInput = Schema.Struct({
+  rule: KeybindingRule,
+});
+export type ServerAddKeybindingInput = typeof ServerAddKeybindingInput.Type;
+
+export const ServerUpdateKeybindingInput = Schema.Struct({
+  target: KeybindingRule,
+  rule: KeybindingRule,
+});
+export type ServerUpdateKeybindingInput = typeof ServerUpdateKeybindingInput.Type;
+
+export const ServerRemoveKeybindingInput = Schema.Struct({
+  target: KeybindingRule,
+});
+export type ServerRemoveKeybindingInput = typeof ServerRemoveKeybindingInput.Type;
+
+export const ServerResetKeybindingsInput = Schema.Struct({});
+export type ServerResetKeybindingsInput = typeof ServerResetKeybindingsInput.Type;
+
+export const ServerKeybindingMutationResult = ServerUpsertKeybindingResult;
+export type ServerKeybindingMutationResult = typeof ServerKeybindingMutationResult.Type;
 
 export const ServerConfigUpdatedPayload = Schema.Struct({
   source: Schema.optionalKey(Schema.Literals(["keybindings", "settings", "providers"])),

@@ -137,7 +137,6 @@ import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
 import { Kbd } from "./ui/kbd";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
-const THREAD_PREVIEW_LIMIT = 6;
 
 interface TerminalStatusIndicator {
   label: "Terminal process running";
@@ -705,6 +704,7 @@ export default function Sidebar() {
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const { settings: appSettings } = useAppSettings();
+  const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
   const setCommandPaletteOpen = useCommandPaletteStore((store) => store.setOpen);
@@ -2342,16 +2342,16 @@ export default function Sidebar() {
                   );
                   const visibleActiveThreads = getVisibleThreadsWithPinnedDraft({
                     threads: activeThreads,
-                    expanded: activeExpanded || activeThreads.length <= THREAD_PREVIEW_LIMIT,
-                    previewLimit: THREAD_PREVIEW_LIMIT,
+                    expanded: activeExpanded || activeThreads.length <= threadPreviewLimit,
+                    previewLimit: threadPreviewLimit,
                     draftThreadId: projectDraftThreadId,
                   });
                   const visibleArchivedItems =
-                    archivedExpanded || archivedSidebarItems.length <= THREAD_PREVIEW_LIMIT
+                    archivedExpanded || archivedSidebarItems.length <= threadPreviewLimit
                       ? archivedSidebarItems
-                      : archivedSidebarItems.slice(0, THREAD_PREVIEW_LIMIT);
-                  const hasHiddenActiveThreads = activeThreads.length > THREAD_PREVIEW_LIMIT;
-                  const hasHiddenArchivedItems = archivedSidebarItems.length > THREAD_PREVIEW_LIMIT;
+                      : archivedSidebarItems.slice(0, threadPreviewLimit);
+                  const hasHiddenActiveThreads = activeThreads.length > threadPreviewLimit;
+                  const hasHiddenArchivedItems = archivedSidebarItems.length > threadPreviewLimit;
                   const orderedProjectThreadIds = [
                     ...visibleActiveThreads
                       .filter(

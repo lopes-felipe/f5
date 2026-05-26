@@ -1,6 +1,8 @@
 import {
   DISPLAY_PROFILE_KEYS,
   RUNTIME_WARNING_VISIBILITY_OPTIONS,
+  SIDEBAR_THREAD_PREVIEW_COUNT_MAX,
+  SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
   type AppSettings,
   buildAppSettingsPatch,
   parsePersistedAppSettings,
@@ -12,6 +14,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../../ui/switch";
 
 const RESPONSE_AUXILIARY_KEYS = ["enableAssistantStreaming", "openFileLinksInPanel"] as const;
+const SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15] as const;
 const RUNTIME_WARNING_VISIBILITY_LABELS = {
   hidden: "Hidden",
   summarized: "Compact",
@@ -273,6 +276,40 @@ export function DisplaySettings() {
             />
           </div>
         </DisplayProfileSelector>
+
+        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">Sidebar thread preview count</p>
+            <p className="text-xs text-muted-foreground">
+              How many threads to show before "Show more" collapses the rest.
+            </p>
+          </div>
+          <Select
+            value={String(settings.sidebarThreadPreviewCount)}
+            onValueChange={(value) => {
+              if (value === null) return;
+              const next = Number.parseInt(value, 10);
+              if (
+                Number.isFinite(next) &&
+                next >= SIDEBAR_THREAD_PREVIEW_COUNT_MIN &&
+                next <= SIDEBAR_THREAD_PREVIEW_COUNT_MAX
+              ) {
+                updateSettings({ sidebarThreadPreviewCount: next });
+              }
+            }}
+          >
+            <SelectTrigger className="w-24" aria-label="Sidebar thread preview count">
+              <SelectValue>{settings.sidebarThreadPreviewCount}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end">
+              {SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS.map((option) => (
+                <SelectItem key={option} value={String(option)}>
+                  {option}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+        </div>
       </div>
 
       {hasSettingsChanges(RESPONSE_AUXILIARY_KEYS, settings, defaults) ||

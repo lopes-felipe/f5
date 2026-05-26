@@ -1,7 +1,9 @@
 import "../../index.css";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { OrchestrationCommandExecution } from "@t3tools/contracts";
 import { TurnId } from "@t3tools/contracts";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -33,6 +35,17 @@ function makeExecution(
   };
 }
 
+function renderWithQueryClient(ui: ReactElement, host: HTMLElement) {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
+  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>, {
+    container: host,
+  });
+}
+
 describe("CommandTranscriptCard", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -53,7 +66,7 @@ describe("CommandTranscriptCard", () => {
     const toastSpy = vi.spyOn(toastManager, "add");
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <CommandTranscriptCard
         execution={makeExecution()}
         expanded={false}
@@ -62,7 +75,7 @@ describe("CommandTranscriptCard", () => {
         onToggle={onToggle}
         onExpandedBodyResize={() => {}}
       />,
-      { container: host },
+      host,
     );
 
     try {
@@ -103,7 +116,7 @@ describe("CommandTranscriptCard", () => {
     const toastSpy = vi.spyOn(toastManager, "add");
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <CommandTranscriptCard
         execution={makeExecution({
           command: "Bash: {}",
@@ -116,7 +129,7 @@ describe("CommandTranscriptCard", () => {
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
       />,
-      { container: host },
+      host,
     );
 
     try {
@@ -141,7 +154,7 @@ describe("CommandTranscriptCard", () => {
   it("copies the command instead of a distinct summary title", async () => {
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <CommandTranscriptCard
         execution={makeExecution({
           command: "/bin/zsh -lc 'echo hello'",
@@ -153,7 +166,7 @@ describe("CommandTranscriptCard", () => {
         onToggle={() => {}}
         onExpandedBodyResize={() => {}}
       />,
-      { container: host },
+      host,
     );
 
     try {

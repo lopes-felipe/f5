@@ -194,6 +194,35 @@ function gitShowFileAtRef(cwd: string, ref: string, filePath: string): string {
   return runGit(cwd, ["show", `${ref}:${filePath}`]);
 }
 
+async function waitForGitFileAtRefContent(
+  cwd: string,
+  ref: string,
+  filePath: string,
+  expected: string,
+  timeoutMs = 5000,
+) {
+  const deadline = Date.now() + timeoutMs;
+  let lastObserved = "<unread>";
+  const poll = async (): Promise<void> => {
+    try {
+      lastObserved = gitShowFileAtRef(cwd, ref, filePath);
+      if (lastObserved === expected) {
+        return;
+      }
+    } catch (error) {
+      lastObserved = error instanceof Error ? error.message : String(error);
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `Timed out waiting for ${ref}:${filePath} to equal ${JSON.stringify(expected)}. Last observed: ${JSON.stringify(lastObserved)}.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    return poll();
+  };
+  return poll();
+}
+
 async function waitForGitRefExists(cwd: string, ref: string, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs;
   const poll = async (): Promise<void> => {
@@ -442,15 +471,12 @@ describe("CheckpointReactor", () => {
       }),
     );
 
-    await vi.waitFor(() => {
-      expect(
-        gitShowFileAtRef(
-          harness.cwd,
-          checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-          "README.md",
-        ),
-      ).toBe("v2\n");
-    });
+    await waitForGitFileAtRefContent(
+      harness.cwd,
+      checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+      "README.md",
+      "v2\n",
+    );
 
     fs.writeFileSync(path.join(harness.cwd, "README.md"), "v3\n", "utf8");
     await Effect.runPromise(
@@ -469,15 +495,12 @@ describe("CheckpointReactor", () => {
       }),
     );
 
-    await vi.waitFor(() => {
-      expect(
-        gitShowFileAtRef(
-          harness.cwd,
-          checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-          "README.md",
-        ),
-      ).toBe("v3\n");
-    });
+    await waitForGitFileAtRefContent(
+      harness.cwd,
+      checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+      "README.md",
+      "v3\n",
+    );
 
     const thread = await waitForThread(
       harness.engine,

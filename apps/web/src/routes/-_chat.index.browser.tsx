@@ -371,7 +371,7 @@ describe("_chat.index onboarding lite", () => {
     try {
       setItemSpy.mockClear();
       await page.getByRole("button", { name: /Balanced/ }).click();
-      expect(setItemSpy).not.toHaveBeenCalled();
+      expect(setItemSpy.mock.calls.some(([key]) => key === APP_SETTINGS_STORAGE_KEY)).toBe(false);
     } finally {
       setItemSpy.mockRestore();
       screen.queryClient.clear();
