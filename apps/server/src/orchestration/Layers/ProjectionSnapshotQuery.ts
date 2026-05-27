@@ -82,9 +82,11 @@ const decodeReadModel = Schema.decodeUnknownEffect(OrchestrationReadModel);
 const decodeThreadDetails = Schema.decodeUnknownEffect(OrchestrationThreadDetails);
 const decodeThreadTailDetails = Schema.decodeUnknownEffect(OrchestrationThreadTailDetails);
 const decodeThreadHistoryPage = Schema.decodeUnknownEffect(OrchestrationThreadHistoryPage);
+const isTestRuntime = () => process.env.NODE_ENV === "test" || process.env.VITEST === "true";
 const shouldLogProjectionTimings =
-  process.env.T3CODE_LOG_PROJECTION_TIMINGS === "1" ||
-  process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true";
+  !isTestRuntime() &&
+  (process.env.T3CODE_LOG_PROJECTION_TIMINGS === "1" ||
+    process.env.T3CODE_LOG_PROJECTION_TIMINGS === "true");
 const ProjectionProjectDbRowSchema = ProjectionProject.mapFields(
   Struct.assign({
     defaultModelSelection: Schema.NullOr(

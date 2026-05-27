@@ -44,6 +44,7 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
 import { makeStorageMaintenanceLock } from "../../storage/StorageMaintenanceLock.ts";
+import { withStartupPhaseTiming } from "../../startupTiming.ts";
 
 interface CommandEnvelope {
   command: OrchestrationCommand;
@@ -280,7 +281,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     );
   };
 
-  yield* projectionPipeline.bootstrap;
+  yield* withStartupPhaseTiming("orchestration.projection.bootstrap", projectionPipeline.bootstrap);
 
   let replayFromSequence = 0;
   let bootstrapSource: "projection-snapshot" | "event-replay" = "event-replay";

@@ -9,6 +9,7 @@ export default defineConfig({
   outDir: "dist",
   sourcemap: true,
   clean: true,
+  external: ["bun:sqlite"],
   noExternal: (id) => id.startsWith("@t3tools/"),
   inlineOnly: false,
   banner: {

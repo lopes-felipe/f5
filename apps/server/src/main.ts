@@ -32,6 +32,7 @@ import { Server } from "./wsServer";
 import { ServerLoggerLive } from "./serverLogger";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
+import { withStartupPhaseTiming } from "./startupTiming";
 
 export class StartupError extends Data.TaggedError("StartupError")<{
   readonly message: string;
@@ -361,15 +362,6 @@ export const recordStartupHeartbeat = Effect.gen(function* () {
   }),
 );
 
-const withStartupPhaseSpan = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.withSpan(`server.startup.${phase}`, {
-      attributes: {
-        "startup.phase": phase,
-      },
-    }),
-  );
-
 const makeServerProgram = (input: CliInput) =>
   Effect.gen(function* () {
     const cliConfig = yield* CliConfig;
@@ -377,7 +369,7 @@ const makeServerProgram = (input: CliInput) =>
     const openDeps = yield* Open;
     yield* cliConfig.fixPath;
 
-    const config = yield* withStartupPhaseSpan("config.resolve", ServerConfig.asEffect());
+    const config = yield* withStartupPhaseTiming("config.resolve", ServerConfig.asEffect());
     yield* Effect.logInfo("server instrumentation flags", {
       threadOpenTimingsEnv: process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS ?? null,
       threadOpenTimingsEnabled:
@@ -398,9 +390,9 @@ const makeServerProgram = (input: CliInput) =>
       );
     }
 
-    yield* withStartupPhaseSpan("server.start", start);
+    yield* withStartupPhaseTiming("server.start", start);
     if (!isTestRuntime()) {
-      yield* withStartupPhaseSpan(
+      yield* withStartupPhaseTiming(
         "telemetry.heartbeat.fork",
         Effect.forkChild(recordStartupHeartbeat.pipe(Effect.delay("1 minute"))),
       );
@@ -420,7 +412,7 @@ const makeServerProgram = (input: CliInput) =>
 
     if (!config.noBrowser) {
       const target = config.devUrl?.toString() ?? bindUrl;
-      yield* withStartupPhaseSpan(
+      yield* withStartupPhaseTiming(
         "browser.open",
         openDeps.openBrowser(target).pipe(
           Effect.catch(() =>

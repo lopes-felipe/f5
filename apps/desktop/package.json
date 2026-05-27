@@ -5,9 +5,9 @@
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "bun run --parallel dev:bundle dev:electron",
-    "dev:bundle": "tsdown --watch",
+    "dev:bundle": "tsdown --config tsdown.config.mts --watch",
     "dev:electron": "bun run scripts/dev-electron.mjs",
-    "build": "tsdown",
+    "build": "tsdown --config tsdown.config.mts",
     "start": "bun run scripts/start-electron.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",

@@ -122,6 +122,7 @@ import { makeServerPushBus } from "./wsServer/pushBus.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
+import { withStartupPhaseTiming } from "./startupTiming.ts";
 import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -538,8 +539,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const logger = createLogger("ws");
   const readiness = yield* makeServerReadiness;
   const shouldLogThreadOpenTimings =
-    process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
-    process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true";
+    process.env.NODE_ENV !== "test" &&
+    process.env.VITEST !== "true" &&
+    (process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "1" ||
+      process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
     if (!logWebSocketEvents) return;
@@ -1003,73 +1006,79 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Layer.provide(Layer.succeedServices(runtimeServices)),
   );
 
-  const startOrchestrationRuntime = Effect.gen(function* () {
-    const orchestrationRuntimeServices = yield* Layer.buildWithScope(
-      orchestrationRuntimeLayer,
-      subscriptionsScope,
-    );
-    const orchestrationEngine = ServiceMap.get(
-      orchestrationRuntimeServices,
-      OrchestrationEngineService,
-    );
-    const orchestrationReactor = ServiceMap.get(orchestrationRuntimeServices, OrchestrationReactor);
-    const providerSessionReaper = ServiceMap.get(
-      orchestrationRuntimeServices,
-      ProviderSessionReaper,
-    );
-    const providerCommandReactor = ServiceMap.get(
-      orchestrationRuntimeServices,
-      ProviderCommandReactor,
-    );
-    const providerSessionDirectory = ServiceMap.get(
-      orchestrationRuntimeServices,
-      ProviderSessionDirectory,
-    );
-    const workflowService = ServiceMap.get(orchestrationRuntimeServices, WorkflowService);
-    const codeReviewWorkflowService = ServiceMap.get(
-      orchestrationRuntimeServices,
-      CodeReviewWorkflowService,
-    );
-    const projectSetupScriptRunner = ServiceMap.get(
-      orchestrationRuntimeServices,
-      ProjectSetupScriptRunner,
-    );
-    const storageMaintenance = ServiceMap.get(orchestrationRuntimeServices, StorageMaintenance);
+  const startOrchestrationRuntime = withStartupPhaseTiming(
+    "orchestration.runtime.start",
+    Effect.gen(function* () {
+      const orchestrationRuntimeServices = yield* Layer.buildWithScope(
+        orchestrationRuntimeLayer,
+        subscriptionsScope,
+      );
+      const orchestrationEngine = ServiceMap.get(
+        orchestrationRuntimeServices,
+        OrchestrationEngineService,
+      );
+      const orchestrationReactor = ServiceMap.get(
+        orchestrationRuntimeServices,
+        OrchestrationReactor,
+      );
+      const providerSessionReaper = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ProviderSessionReaper,
+      );
+      const providerCommandReactor = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ProviderCommandReactor,
+      );
+      const providerSessionDirectory = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ProviderSessionDirectory,
+      );
+      const workflowService = ServiceMap.get(orchestrationRuntimeServices, WorkflowService);
+      const codeReviewWorkflowService = ServiceMap.get(
+        orchestrationRuntimeServices,
+        CodeReviewWorkflowService,
+      );
+      const projectSetupScriptRunner = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ProjectSetupScriptRunner,
+      );
+      const storageMaintenance = ServiceMap.get(orchestrationRuntimeServices, StorageMaintenance);
 
-    yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
-      Effect.gen(function* () {
-        yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
-        const gitStatusInvalidation = resolveGitStatusInvalidation(event);
-        if (gitStatusInvalidation.publish) {
-          yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
-            cwd: gitStatusInvalidation.cwd,
-          });
-        }
-      }),
-    ).pipe(Effect.forkIn(subscriptionsScope));
+      yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
+        Effect.gen(function* () {
+          yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          const gitStatusInvalidation = resolveGitStatusInvalidation(event);
+          if (gitStatusInvalidation.publish) {
+            yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
+              cwd: gitStatusInvalidation.cwd,
+            });
+          }
+        }),
+      ).pipe(Effect.forkIn(subscriptionsScope));
 
-    yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
-    yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
-    yield* readiness.markOrchestrationSubscriptionsReady;
-    yield* Deferred.succeed(orchestrationRuntime, {
-      orchestrationEngine,
-      providerCommandReactor,
-      providerSessionDirectory,
-      workflowService,
-      codeReviewWorkflowService,
-      projectSetupScriptRunner,
-      storageMaintenance,
-    }).pipe(Effect.orDie);
+      yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
+      yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
+      yield* readiness.markOrchestrationSubscriptionsReady;
+      yield* Deferred.succeed(orchestrationRuntime, {
+        orchestrationEngine,
+        providerCommandReactor,
+        providerSessionDirectory,
+        workflowService,
+        codeReviewWorkflowService,
+        projectSetupScriptRunner,
+        storageMaintenance,
+      }).pipe(Effect.orDie);
 
-    // Fire-and-forget cleanup: clear stale `worktreePath` projections whose
-    // directories have disappeared so polled git commands stop spamming
-    // ENOENT against missing cwds. Errors are swallowed inside the helper;
-    // failing cleanup must never block server startup.
-    yield* cleanupStaleWorktrees(orchestrationEngine).pipe(
-      Effect.ignoreCause({ log: true }),
-      Effect.forkIn(subscriptionsScope),
-    );
-  }).pipe(
+      // Fire-and-forget cleanup: clear stale `worktreePath` projections whose
+      // directories have disappeared so polled git commands stop spamming
+      // ENOENT against missing cwds. Errors are swallowed inside the helper;
+      // failing cleanup must never block server startup.
+      yield* cleanupStaleWorktrees(orchestrationEngine).pipe(
+        Effect.ignoreCause({ log: true }),
+        Effect.forkIn(subscriptionsScope),
+      );
+    }),
+  ).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         yield* Deferred.fail(
