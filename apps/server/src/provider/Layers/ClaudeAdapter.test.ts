@@ -3965,6 +3965,142 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("includes refreshed Claude context-window metadata on token usage snapshots", () => {
+    const harness = makeHarness();
+    harness.query.setSupportedModelsResult([
+      {
+        value: "claude-opus-4-7",
+        capabilities: {
+          max_input_tokens: 1_234_567,
+        },
+      },
+    ]);
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        model: "claude-opus-4-7",
+      });
+      yield* Stream.take(adapter.streamEvents, 4).pipe(Stream.runDrain);
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-thread-token-usage-refreshed",
+        uuid: "stream-thread-token-usage-refreshed",
+        parent_tool_use_id: null,
+        event: {
+          type: "message_delta",
+          delta: {
+            stop_reason: "end_turn",
+            stop_sequence: null,
+          },
+          usage: {
+            input_tokens: 500,
+            output_tokens: 40,
+          },
+        },
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(
+        yield* Stream.take(adapter.streamEvents, 2).pipe(Stream.runCollect),
+      );
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.type),
+        ["thread.started", "thread.token-usage.updated"],
+      );
+
+      const tokenUsageUpdated = runtimeEvents[1];
+      assert.equal(tokenUsageUpdated?.type, "thread.token-usage.updated");
+      if (tokenUsageUpdated?.type === "thread.token-usage.updated") {
+        assert.equal(String(tokenUsageUpdated.turnId), String(turn.turnId));
+        assert.equal(tokenUsageUpdated.payload.modelContextWindowTokens, 1_234_567);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses Claude init model metadata when no model was requested explicitly", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        session_id: "sdk-thread-init-model",
+        uuid: "system-init-model",
+        model: "claude-opus-4-7",
+      } as unknown as SDKMessage);
+
+      const configured = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(configured._tag, "Some");
+      if (configured._tag !== "Some" || configured.value.type !== "session.configured") {
+        return;
+      }
+      assert.equal(
+        (configured.value.payload.config as Record<string, unknown>).modelContextWindowTokens,
+        1_000_000,
+      );
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      yield* Stream.take(adapter.streamEvents, 1).pipe(Stream.runDrain);
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-thread-init-model",
+        uuid: "stream-thread-init-model-usage",
+        parent_tool_use_id: null,
+        event: {
+          type: "message_delta",
+          delta: {
+            stop_reason: "end_turn",
+            stop_sequence: null,
+          },
+          usage: {
+            input_tokens: 500,
+            output_tokens: 40,
+          },
+        },
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(
+        yield* Stream.take(adapter.streamEvents, 2).pipe(Stream.runCollect),
+      );
+      const tokenUsageUpdated = runtimeEvents[1];
+      assert.equal(tokenUsageUpdated?.type, "thread.token-usage.updated");
+      if (tokenUsageUpdated?.type === "thread.token-usage.updated") {
+        assert.equal(tokenUsageUpdated.payload.modelContextWindowTokens, 1_000_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("bridges approval request/response lifecycle through canUseTool", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

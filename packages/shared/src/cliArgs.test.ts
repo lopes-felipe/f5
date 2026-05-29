@@ -22,16 +22,16 @@ describe("parseClaudeLaunchArgs", () => {
   });
 
   it("parses --key=value form", () => {
-    expect(parseClaudeLaunchArgs("--model=claude-opus-4-7")).toEqual({
+    expect(parseClaudeLaunchArgs("--model=claude-opus-4-8")).toEqual({
       ok: true,
-      args: { model: "claude-opus-4-7" },
+      args: { model: "claude-opus-4-8" },
     });
   });
 
   it("parses --key value form", () => {
-    expect(parseClaudeLaunchArgs("--model claude-opus-4-7")).toEqual({
+    expect(parseClaudeLaunchArgs("--model claude-opus-4-8")).toEqual({
       ok: true,
-      args: { model: "claude-opus-4-7" },
+      args: { model: "claude-opus-4-8" },
     });
   });
 

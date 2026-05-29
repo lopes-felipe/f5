@@ -48,12 +48,25 @@ describe("modelContextWindowMetadata", () => {
           max_input_tokens: 1_000_000,
         },
       },
+      {
+        value: "claude-opus-4-8",
+        capabilities: {
+          max_input_tokens: 1_000_000,
+        },
+      },
     ]);
 
     expect(
       lookupModelContextWindowTokens({
         provider: "claudeAgent",
         model: "claude-opus-4-7",
+        catalog,
+      }),
+    ).toBe(1_000_000);
+    expect(
+      lookupModelContextWindowTokens({
+        provider: "claudeAgent",
+        model: "claude-opus-4-8",
         catalog,
       }),
     ).toBe(1_000_000);
@@ -73,6 +86,10 @@ describe("modelContextWindowMetadata", () => {
                 id: "claude-opus-4-7",
                 max_input_tokens: 1_000_000,
               },
+              {
+                id: "claude-opus-4-8",
+                max_input_tokens: 1_000_000,
+              },
             ],
           }),
           {
@@ -90,6 +107,13 @@ describe("modelContextWindowMetadata", () => {
       lookupModelContextWindowTokens({
         provider: "claudeAgent",
         model: "claude-opus-4-7",
+        catalog,
+      }),
+    ).toBe(1_000_000);
+    expect(
+      lookupModelContextWindowTokens({
+        provider: "claudeAgent",
+        model: "claude-opus-4-8",
         catalog,
       }),
     ).toBe(1_000_000);

@@ -104,8 +104,8 @@ describe("ClaudeTraitsPicker", () => {
     }
   });
 
-  it("shows effort controls for Claude Opus 4.7 without fast mode", async () => {
-    const mounted = await mountPicker({ model: "claude-opus-4-7" });
+  it("shows effort controls for Claude Opus 4.8 without fast mode", async () => {
+    const mounted = await mountPicker({ model: "claude-opus-4-8" });
 
     try {
       await vi.waitFor(() => {

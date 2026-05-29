@@ -180,9 +180,9 @@ describe("modelPreferencesStore", () => {
     });
   });
 
-  it("round-trips explicit Opus 4.7 xhigh effort selections", () => {
+  it("round-trips explicit Opus 4.8 xhigh effort selections", () => {
     const store = useModelPreferencesStore.getState();
-    store.setLastModel("claudeAgent", "claude-opus-4-7");
+    store.setLastModel("claudeAgent", "claude-opus-4-8");
     store.setLastModelOptions("claudeAgent", {
       claudeAgent: { effort: "xhigh" },
     });
@@ -194,7 +194,7 @@ describe("modelPreferencesStore", () => {
       .merge(persistedState, useModelPreferencesStore.getInitialState());
 
     expect(mergedState.lastModelByProvider).toEqual({
-      claudeAgent: "claude-opus-4-7",
+      claudeAgent: "claude-opus-4-8",
     });
     expect(mergedState.lastModelOptions).toEqual({
       claudeAgent: { effort: "xhigh" },

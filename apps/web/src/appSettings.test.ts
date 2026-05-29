@@ -400,7 +400,7 @@ describe("normalizeCustomModelSlugs", () => {
   it("removes built-in Claude aliases and slugs from saved custom models", () => {
     expect(
       normalizeCustomModelSlugs(
-        ["opus", "claude-opus-4-7", "claude-opus-4-6", "custom/claude-model"],
+        ["opus", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "custom/claude-model"],
         "claudeAgent",
       ),
     ).toEqual(["custom/claude-model"]);
@@ -562,7 +562,8 @@ describe("getAppModelOptions", () => {
   it("lists Claude Opus models before Sonnet and Haiku in built-in Claude options", () => {
     const options = getAppModelOptions("claudeAgent", []);
 
-    expect(options.slice(0, 5).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 6).map((option) => option.slug)).toEqual([
+      "claude-opus-4-8",
       "claude-opus-4-7",
       "claude-opus-4-6",
       "claude-opus-4-5",

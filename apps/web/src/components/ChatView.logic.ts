@@ -18,6 +18,7 @@ import {
   type ModelSelection,
   type UserMessageSkillCall,
 } from "@t3tools/contracts";
+import { resolveSelectableModel } from "@t3tools/shared/model";
 import {
   isReservedHostLocalSlashCommandName,
   normalizeHostCompatibleRuntimeSlashCommandName,
@@ -28,6 +29,7 @@ import { getAppModelOptions } from "../appSettings";
 import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
 import { sortModelsForProviderInstance } from "../modelOrdering";
+import { getDefaultServerModel } from "../providerModels";
 import {
   filterTerminalContextsWithText,
   stripInlineTerminalContextPlaceholders,
@@ -604,6 +606,26 @@ export function getCustomModelOptionsByProvider(
       return [provider, applyPickerModelPreferences(provider, options, settings)] as const;
     }),
   ) as Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
+}
+
+export function resolveComposerPickerModel(input: {
+  readonly provider: ProviderKind;
+  readonly rawModel: string | null | undefined;
+  readonly pickerOptions: ReadonlyArray<ModelPickerModelOption>;
+  readonly providers?: ReadonlyArray<ServerProvider> | null;
+}): string {
+  const providerDriver = ProviderDriverKind.make(input.provider);
+  const selectableModel = resolveSelectableModel(
+    providerDriver,
+    input.rawModel,
+    input.pickerOptions,
+  );
+  if (selectableModel) return selectableModel;
+
+  const serverDefault = getDefaultServerModel(input.providers ?? [], providerDriver);
+  return (
+    resolveSelectableModel(providerDriver, serverDefault, input.pickerOptions) ?? serverDefault
+  );
 }
 
 function readRerouteString(payload: Record<string, unknown> | null, key: string): string | null {

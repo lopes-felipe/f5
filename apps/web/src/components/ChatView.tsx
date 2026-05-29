@@ -41,8 +41,6 @@ import {
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeModelSlug,
-  resolveModelSlugForProvider,
-  resolveSelectableModel,
   supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import {
@@ -187,12 +185,7 @@ import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
-import {
-  getClaudeProjectSettings,
-  resolveAppModelSelection,
-  resolveThreadTitleModel,
-  useAppSettings,
-} from "../appSettings";
+import { getClaudeProjectSettings, resolveThreadTitleModel, useAppSettings } from "../appSettings";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -263,6 +256,7 @@ import {
   deriveComposerSendState,
   getCustomModelOptionsByProvider,
   identityAbsolutePathNormalizer,
+  resolveComposerPickerModel,
   DISMISSED_PROVIDER_STATUS_KEY,
   DismissedProviderStatusSchema,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -1085,33 +1079,36 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const baseThreadModel = useMemo(() => {
     const rawModel =
       activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider);
-    return (
-      resolveSelectableModel(selectedProviderDriver, rawModel, selectedProviderPickerOptions) ??
-      resolveModelSlugForProvider(selectedProvider, rawModel)
-    );
+    return resolveComposerPickerModel({
+      provider: selectedProvider,
+      rawModel,
+      pickerOptions: selectedProviderPickerOptions,
+      providers: serverConfigQuery.data?.providers ?? null,
+    });
   }, [
     activeProject?.model,
     activeThread?.model,
     selectedProvider,
-    selectedProviderDriver,
     selectedProviderPickerOptions,
+    serverConfigQuery.data?.providers,
   ]);
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
       return baseThreadModel;
     }
-    return (resolveSelectableModel(
-      selectedProviderDriver,
-      draftModel,
-      selectedProviderPickerOptions,
-    ) ?? resolveAppModelSelection(selectedProvider, [], draftModel)) as ModelSlug;
+    return resolveComposerPickerModel({
+      provider: selectedProvider,
+      rawModel: draftModel,
+      pickerOptions: selectedProviderPickerOptions,
+      providers: serverConfigQuery.data?.providers ?? null,
+    }) as ModelSlug;
   }, [
     baseThreadModel,
     composerDraft.model,
     selectedProvider,
-    selectedProviderDriver,
     selectedProviderPickerOptions,
+    serverConfigQuery.data?.providers,
   ]);
   const selectedProviderModelOptions = useMemo(
     () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
@@ -4606,13 +4603,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
         scheduleComposerFocus();
         return;
       }
-      const resolvedModel = resolveAppModelSelection(provider, [], model);
-      const pickerResolvedModel =
-        resolveSelectableModel(
-          ProviderDriverKind.make(provider),
-          model,
-          modelOptionsByProvider[provider],
-        ) ?? resolvedModel;
+      const pickerResolvedModel = resolveComposerPickerModel({
+        provider,
+        rawModel: model,
+        pickerOptions: modelOptionsByProvider[provider],
+        providers: serverConfigQuery.data?.providers ?? null,
+      });
       setComposerDraftProvider(activeThread.id, provider);
       setComposerDraftModel(activeThread.id, pickerResolvedModel);
       recordModelSelection(provider, pickerResolvedModel, composerDraft.modelOptions);
@@ -4625,6 +4621,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       lockedProvider,
       modelOptionsByProvider,
       scheduleComposerFocus,
+      serverConfigQuery.data?.providers,
       setComposerDraftModel,
       setComposerDraftProvider,
     ],

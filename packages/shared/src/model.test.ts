@@ -27,7 +27,9 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("5.5")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
-    expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-6");
+    expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-8");
+    expect(normalizeModelSlug("opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
+    expect(normalizeModelSlug("claude-opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("opus-4.6", "claudeAgent")).toBe("claude-opus-4-6");
     expect(normalizeModelSlug("opus-4.5", "claudeAgent")).toBe("claude-opus-4-5");
     expect(normalizeModelSlug("claude-opus-4.5", "claudeAgent")).toBe("claude-opus-4-5");
@@ -72,10 +74,11 @@ describe("resolveModelSlug", () => {
     expect(getModelOptions()).toEqual(MODEL_OPTIONS_BY_PROVIDER.codex);
   });
 
-  it("keeps Claude Sonnet 4.6 as the Claude default while exposing Opus 4.7", () => {
+  it("makes Claude Opus 4.8 the Claude default while exposing prior Opus releases", () => {
     expect(getDefaultModel("claudeAgent")).toBe(DEFAULT_MODEL_BY_PROVIDER.claudeAgent);
-    expect(DEFAULT_MODEL_BY_PROVIDER.claudeAgent).toBe("claude-sonnet-4-6");
+    expect(DEFAULT_MODEL_BY_PROVIDER.claudeAgent).toBe("claude-opus-4-8");
     expect(getModelOptions("claudeAgent").map((option) => option.slug)).toEqual([
+      "claude-opus-4-8",
       "claude-opus-4-7",
       "claude-opus-4-6",
       "claude-opus-4-5",
@@ -149,6 +152,17 @@ describe("getReasoningEffortOptions", () => {
       "ultrathink",
     ]);
   });
+
+  it("exposes full Claude Opus effort controls for Opus 4.8", () => {
+    expect(getReasoningEffortOptions("claudeAgent", "claude-opus-4-8")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultrathink",
+    ]);
+  });
 });
 
 describe("Claude capability predicates", () => {
@@ -158,6 +172,14 @@ describe("Claude capability predicates", () => {
     expect(supportsClaudeAdaptiveReasoning("claude-opus-4-7")).toBe(true);
     expect(supportsClaudeThinkingToggle("claude-opus-4-7")).toBe(false);
     expect(supportsClaudeUltrathinkKeyword("claude-opus-4-7")).toBe(true);
+  });
+
+  it("enables Claude Opus 4.8 effort capabilities while keeping fast mode off", () => {
+    expect(supportsClaudeFastMode("claude-opus-4-8")).toBe(false);
+    expect(supportsClaudeMaxEffort("claude-opus-4-8")).toBe(true);
+    expect(supportsClaudeAdaptiveReasoning("claude-opus-4-8")).toBe(true);
+    expect(supportsClaudeThinkingToggle("claude-opus-4-8")).toBe(false);
+    expect(supportsClaudeUltrathinkKeyword("claude-opus-4-8")).toBe(true);
   });
 
   it("retains documented Claude Opus 4.6 capabilities", () => {
@@ -183,6 +205,7 @@ describe("getDefaultReasoningEffort", () => {
   });
 
   it("uses model-aware Claude defaults", () => {
+    expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-8")).toBe("xhigh");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-7")).toBe("xhigh");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-6")).toBe("high");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-5")).toBe("high");
@@ -203,6 +226,7 @@ describe("estimateModelContextWindowTokens", () => {
     expect(estimateModelContextWindowTokens("gpt-5.5")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4-mini")).toBe(400_000);
+    expect(estimateModelContextWindowTokens("claude-opus-4-8")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-7")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-5")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-sonnet-4-6")).toBe(1_000_000);

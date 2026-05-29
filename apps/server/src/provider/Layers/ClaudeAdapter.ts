@@ -738,9 +738,15 @@ function usageFromClaudeStreamEvent(
 
 function getClaudeSessionModel(context: ClaudeSessionContext): string | undefined {
   return (
-    normalizeOptionalString(context.session.model) ??
-    normalizeOptionalString(context.configuredBase.model)
+    normalizeOptionalString(context.configuredBase.model) ??
+    normalizeOptionalString(context.session.model)
   );
+}
+
+function emittedModelContextWindowTokens(context: ClaudeSessionContext): number | undefined {
+  return getClaudeSessionModel(context) === undefined
+    ? undefined
+    : context.modelContextWindowTokens;
 }
 
 async function lookupClaudeReportedModelContextWindowTokens(
@@ -1511,6 +1517,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         context.configuredBase = config;
+        const modelContextWindowTokens = emittedModelContextWindowTokens(context);
 
         const stamp = yield* makeEventStamp();
         yield* offerRuntimeEvent({
@@ -1522,7 +1529,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           payload: {
             config: {
               ...context.configuredBase,
-              modelContextWindowTokens: context.modelContextWindowTokens,
+              ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
               ...(context.slashCommandsLoaded
                 ? { slashCommands: [...context.availableSlashCommands] }
                 : {}),
@@ -2440,6 +2447,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const usageSnapshot = usageFromClaudeStreamEvent(message);
 
         if (usageSnapshot) {
+          const modelContextWindowTokens = emittedModelContextWindowTokens(context);
           const stamp = yield* makeEventStamp();
           yield* offerRuntimeEvent({
             type: "thread.token-usage.updated",
@@ -2450,6 +2458,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(context.turnState ? { turnId: asCanonicalTurnId(context.turnState.turnId) } : {}),
             payload: {
               usage: usageSnapshot.usage,
+              ...(modelContextWindowTokens !== undefined ? { modelContextWindowTokens } : {}),
             },
             providerRefs: nativeProviderRefs(context),
             raw: {
@@ -3041,8 +3050,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         switch (message.subtype) {
           case "init":
-            context.configuredBase = message as Record<string, unknown>;
-            yield* emitSessionConfigured(context, context.configuredBase);
+            {
+              const previousModel = getClaudeSessionModel(context);
+              context.configuredBase = message as Record<string, unknown>;
+              const configuredModel = getClaudeSessionModel(context);
+              if (configuredModel !== undefined && configuredModel !== previousModel) {
+                context.modelContextWindowTokens = estimateModelContextWindowTokens(
+                  configuredModel,
+                  "claudeAgent",
+                );
+              }
+              yield* emitSessionConfigured(context, context.configuredBase);
+              if (configuredModel !== undefined) {
+                Effect.runFork(refreshModelContextWindowTokens(context));
+              }
+            }
             return;
           case "status":
             yield* offerRuntimeEvent({
