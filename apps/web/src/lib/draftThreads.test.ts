@@ -44,6 +44,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     archivedAt: null,
     lastInteractionAt: "2026-03-01T00:00:00.000Z",
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: null,
     lastVisitedAt: undefined,

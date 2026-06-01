@@ -512,6 +512,7 @@ export const OrchestrationSession = Schema.Struct({
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   turnCostUsd: Schema.optional(Schema.Number),
   estimatedContextTokens: Schema.optional(NonNegativeInt),
+  estimatedThinkingTokens: Schema.optional(NonNegativeInt),
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
   tokenUsageSource: Schema.optional(Schema.Literals(["provider", "estimated"])),
   updatedAt: IsoDateTime,
@@ -680,6 +681,12 @@ export const OrchestrationThread = Schema.Struct({
   updatedAt: IsoDateTime,
   deletedAt: Schema.NullOr(IsoDateTime),
   estimatedContextTokens: Schema.optional(Schema.NullOr(NonNegativeInt)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  // Live thinking-token estimate (ephemeral per-turn progress, not persisted to
+  // the projection DB). Defaults to null and shows blank after a cold reload
+  // until the next thinking frame.
+  estimatedThinkingTokens: Schema.optional(Schema.NullOr(NonNegativeInt)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   modelContextWindowTokens: Schema.optional(Schema.NullOr(NonNegativeInt)).pipe(

@@ -7,6 +7,7 @@ import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { ORCHESTRATION_PROJECTOR_NAMES } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import { MAX_THREAD_MESSAGES } from "../readModelRetention.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
@@ -324,6 +325,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           updatedAt: "2026-02-24T00:00:03.000Z",
           deletedAt: null,
           estimatedContextTokens: 42_000,
+          estimatedThinkingTokens: null,
           modelContextWindowTokens: null,
           messages: [
             {
@@ -1009,5 +1011,60 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         [ProjectId.makeUnsafe("project-visible"), ProjectId.makeUnsafe("project-hidden")],
       );
     }),
+  );
+
+  it.effect(
+    "getSnapshot caps per-thread message history to the retention window",
+    () =>
+      Effect.gen(function* () {
+        const snapshotQuery = yield* ProjectionSnapshotQuery;
+        const sql = yield* SqlClient.SqlClient;
+
+        yield* sql`DELETE FROM projection_projects`;
+        yield* sql`DELETE FROM projection_threads`;
+        yield* sql`DELETE FROM projection_thread_messages`;
+        yield* sql`DELETE FROM projection_state`;
+
+        yield* sql`
+          INSERT INTO projection_projects (
+            project_id, title, workspace_root, default_model, scripts_json, created_at, updated_at, deleted_at
+          ) VALUES (
+            'project-retain', 'Project', '/tmp/project-retain', 'gpt-5-codex', '[]',
+            '2026-02-24T00:00:00.000Z', '2026-02-24T00:00:01.000Z', NULL
+          )
+        `;
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model, branch, worktree_path, latest_turn_id,
+            estimated_context_tokens, created_at, last_interaction_at, updated_at, deleted_at
+          ) VALUES (
+            'thread-retain', 'project-retain', 'Thread', 'gpt-5-codex', NULL, NULL, 'turn-1',
+            NULL, '2026-02-24T00:00:02.000Z', '2026-02-24T00:00:03.000Z', '2026-02-24T00:00:03.000Z', NULL
+          )
+        `;
+
+        const overflow = MAX_THREAD_MESSAGES + 5;
+        const baseMs = Date.UTC(2026, 1, 24, 1, 0, 0, 0);
+        for (let index = 0; index < overflow; index += 1) {
+          const createdAt = new Date(baseMs + index * 1000).toISOString();
+          yield* sql`
+            INSERT INTO projection_thread_messages (
+              message_id, thread_id, turn_id, role, text, reasoning_text, skill_call_json, is_streaming, created_at, updated_at
+            ) VALUES (
+              ${`message-${index}`}, 'thread-retain', 'turn-1', 'assistant', ${`m${index}`}, NULL, NULL, 0, ${createdAt}, ${createdAt}
+            )
+          `;
+        }
+
+        const snapshot = yield* snapshotQuery.getSnapshot();
+        const thread = snapshot.threads.find(
+          (entry) => entry.id === ThreadId.makeUnsafe("thread-retain"),
+        );
+        assert.isDefined(thread);
+        // A "full" load would return all `overflow` rows; the bounded path caps
+        // per-thread history at the retention window.
+        assert.equal(thread!.messages.length, MAX_THREAD_MESSAGES);
+      }),
+    60_000,
   );
 });

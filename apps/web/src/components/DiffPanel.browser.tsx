@@ -132,6 +132,7 @@ function createThread(summaries: TurnDiffSummary[]): Thread {
     archivedAt: null,
     lastInteractionAt: NOW_ISO,
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: null,
     branch: "main",

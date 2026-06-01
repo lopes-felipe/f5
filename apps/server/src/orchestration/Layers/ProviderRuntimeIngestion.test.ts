@@ -37,6 +37,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { buildClaudeFileChangeStructuredChanges } from "../../provider/Layers/claudeFileChangePatch.ts";
 import { ThreadCommandExecutionQueryLive } from "./ThreadCommandExecutionQuery.ts";
 import { ThreadFileChangeQueryLive } from "./ThreadFileChangeQuery.ts";
 import {
@@ -498,6 +499,90 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.estimatedContextTokens).toBe(900);
     expect(thread.session?.tokenUsageSource).toBe("provider");
     expect(thread.estimatedContextTokens).toBe(900);
+  });
+
+  it("throttles high-frequency thinking-token frames into coalesced session updates", async () => {
+    const harness = await createHarness();
+
+    const emitThinking = (eventId: string, estimatedTokens: number, createdAt: string) =>
+      harness.emit({
+        type: "thread.thinking-tokens.updated",
+        eventId: asEventId(eventId),
+        provider: "claudeAgent",
+        threadId: asThreadId("thread-1"),
+        createdAt,
+        turnId: asTurnId("turn-thinking"),
+        payload: { estimatedTokens, estimatedTokensDelta: 1 },
+      });
+
+    // Sub-threshold frames from a 0 baseline must not produce any dispatch.
+    emitThinking("evt-think-100", 100, "2026-05-29T00:00:00.000Z");
+    emitThinking("evt-think-400", 400, "2026-05-29T00:00:01.000Z");
+    // First frame crossing the 500-token threshold dispatches and jumps the
+    // value straight to 500 (the 100/400 frames were coalesced away).
+    emitThinking("evt-think-500", 500, "2026-05-29T00:00:02.000Z");
+
+    await waitForThread(harness.engine, (entry) => entry.estimatedThinkingTokens === 500);
+
+    // A further sub-threshold frame (700 is < 500 + 500) must be coalesced.
+    emitThinking("evt-think-700", 700, "2026-05-29T00:00:03.000Z");
+
+    // Use an unrelated, ordered token-usage dispatch as a barrier: once it is
+    // observed, the 700 frame has already been processed. The thinking estimate
+    // remaining at 500 proves the 700 frame did not dispatch.
+    harness.emit({
+      type: "thread.token-usage.updated",
+      eventId: asEventId("evt-think-barrier-usage"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-05-29T00:00:04.000Z",
+      payload: { contextTokens: 4_242 },
+    });
+
+    const barrierThread = await waitForThread(
+      harness.engine,
+      (entry) => entry.estimatedContextTokens === 4_242,
+    );
+    expect(barrierThread.estimatedThinkingTokens).toBe(500);
+
+    // The next frame crossing the threshold (1000 >= 500 + 500) dispatches.
+    emitThinking("evt-think-1000", 1_000, "2026-05-29T00:00:05.000Z");
+    const grownThread = await waitForThread(
+      harness.engine,
+      (entry) => entry.estimatedThinkingTokens === 1_000,
+    );
+    expect(grownThread.session?.estimatedThinkingTokens).toBe(1_000);
+  });
+
+  it("resets the live thinking-token estimate on turn boundaries", async () => {
+    const harness = await createHarness();
+
+    harness.emit({
+      type: "thread.thinking-tokens.updated",
+      eventId: asEventId("evt-think-reset-900"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-05-29T01:00:00.000Z",
+      turnId: asTurnId("turn-reset"),
+      payload: { estimatedTokens: 900, estimatedTokensDelta: 900 },
+    });
+    await waitForThread(harness.engine, (entry) => entry.estimatedThinkingTokens === 900);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-think-reset-turn-started"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      createdAt: "2026-05-29T01:00:01.000Z",
+      turnId: asTurnId("turn-reset"),
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.activeTurnId === "turn-reset" && entry.estimatedThinkingTokens === 0,
+    );
+    expect(thread.estimatedThinkingTokens).toBe(0);
   });
 
   it("captures model context window tokens from session.configured metadata", async () => {
@@ -3854,6 +3939,73 @@ describe("ProviderRuntimeIngestion", () => {
       ? readToolActivityPayload(completedActivity.payload)
       : null;
     expect(toolPayload?.fileChangeId).toBe(fileChangeId);
+  });
+
+  it("synthesizes a file-change patch from Claude structured changes when the provider emits no patch", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const fileChangeId = "filechange:thread-1:item-claude-write";
+    // Produced by ClaudeAdapter.buildToolLifecycleData for a Write tool call.
+    const changes = buildClaudeFileChangeStructuredChanges("Write", {
+      file_path: "scratch-test.txt",
+      content: "This is a harmless scratch file.\n",
+    });
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-claude-write-turn-started"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-write"),
+      payload: {},
+    });
+    harness.emit({
+      type: "item.completed",
+      eventId: asEventId("evt-claude-write-completed"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-claude-write"),
+      itemId: asItemId("item-claude-write"),
+      payload: {
+        itemType: "file_change",
+        status: "completed",
+        title: "File change",
+        detail: "scratch-test.txt",
+        // Claude attaches `changes` at the top level of `data` (no Codex-style
+        // `item` wrapper); the shared ingestion path must still synthesize a patch.
+        data: {
+          toolName: "Write",
+          input: { file_path: "scratch-test.txt", content: "This is a harmless scratch file.\n" },
+          changes,
+        },
+      },
+    });
+
+    await harness.drain();
+
+    const summaries = await Effect.runPromise(
+      harness.threadFileChangeQuery.getThreadFileChanges({
+        threadId: asThreadId("thread-1"),
+      }),
+    );
+    expect(summaries.fileChanges).toHaveLength(1);
+    expect(summaries.fileChanges[0]).toMatchObject({
+      id: fileChangeId,
+      status: "completed",
+      changedFiles: ["scratch-test.txt"],
+      hasPatch: true,
+    });
+
+    const exact = await Effect.runPromise(
+      harness.threadFileChangeQuery.getThreadFileChange({
+        threadId: asThreadId("thread-1"),
+        fileChangeId: OrchestrationFileChangeId.makeUnsafe(fileChangeId),
+      }),
+    );
+    expect(exact.fileChange?.patch).toContain("new file mode 100644");
+    expect(exact.fileChange?.patch).toContain("+This is a harmless scratch file.");
   });
 
   it("preserves existing unified diff file headers without duplicating them", async () => {

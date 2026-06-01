@@ -103,6 +103,8 @@ import type {
   ProviderConversationCompactionResult,
   ProviderOneOffPromptResult,
 } from "../Services/ProviderAdapter.ts";
+import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.ts";
+import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "claudeAgent" as const;
@@ -842,11 +844,20 @@ function buildToolLifecycleData(input: {
     itemType === "collab_agent_tool_call"
       ? readSubagentMetadata(input.toolInput, input.result)
       : undefined;
+  // Claude does not emit a unified-diff patch with its edits, so synthesize
+  // Codex-shaped structured `changes` from the tool input. ProviderRuntimeIngestion
+  // turns these into the file-change patch, letting Claude diffs render through
+  // the same exact-diff path as Codex instead of the checkpoint fallback.
+  const changes =
+    itemType === "file_change"
+      ? buildClaudeFileChangeStructuredChanges(input.toolName, input.toolInput)
+      : undefined;
 
   return {
     toolName: input.toolName,
     input: input.toolInput,
     ...(input.result ? { result: input.result } : {}),
+    ...(changes ? { changes } : {}),
     ...subagentMetadata,
   };
 }
@@ -980,7 +991,7 @@ function buildUserMessage(input: {
       role: "user",
       content: input.sdkContent,
     },
-  } as SDKUserMessage;
+  } as unknown as SDKUserMessage;
 }
 
 function buildClaudeImageContentBlock(input: {
@@ -2389,6 +2400,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           approximateChars: approximateTurnChars,
         });
         context.approximateConversationChars += approximateTurnChars;
+        // Bound retained turn-item bodies so long file-writing sessions cannot
+        // exhaust the heap. `approximateConversationChars` above is maintained
+        // independently, so compaction/resume/rollback accounting is unaffected.
+        enforceTurnItemBudget(context.turns);
 
         const updatedAt = yield* nowIso;
         context.session = {
@@ -3199,6 +3214,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       })),
                     }
                   : {}),
+              },
+            });
+            return;
+          case "thinking_tokens":
+            // Live thinking-token estimate (approximate progress for spinners/
+            // pills, not authoritative billed output tokens). Surfaced as a
+            // dedicated runtime event; deliberately kept out of the context-token
+            // / compaction accounting since it is ephemeral per-thinking-block
+            // progress.
+            yield* offerRuntimeEvent({
+              ...base,
+              type: "thread.thinking-tokens.updated",
+              payload: {
+                estimatedTokens: message.estimated_tokens,
+                estimatedTokensDelta: message.estimated_tokens_delta,
               },
             });
             return;

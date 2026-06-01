@@ -175,6 +175,7 @@ function makeThread(projectId: ProjectId, id = "thread-1" as ThreadId): Thread {
     archivedAt: null,
     lastInteractionAt: NOW_ISO,
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: null,
     branch: null,

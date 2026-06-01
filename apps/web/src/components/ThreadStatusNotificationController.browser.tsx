@@ -70,6 +70,7 @@ function createThread(overrides: Partial<Thread> = {}): Thread {
     archivedAt: null,
     lastInteractionAt: "2026-03-10T12:00:00.000Z",
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: null,
     lastVisitedAt: "2026-03-10T12:00:00.000Z",

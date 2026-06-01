@@ -722,6 +722,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         archivedAt: null,
         lastInteractionAt: event.payload.createdAt,
         estimatedContextTokens: null,
+        estimatedThinkingTokens: null,
         modelContextWindowTokens: estimateModelContextWindowTokens(event.payload.model),
         latestTurn: null,
         lastVisitedAt: event.payload.createdAt,
@@ -988,6 +989,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
                 })();
           if (
             thread.estimatedContextTokens === null &&
+            thread.estimatedThinkingTokens === null &&
             nextSession === thread.session &&
             thread.lastInteractionAt === event.occurredAt
           ) {
@@ -997,6 +999,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             ...thread,
             ...(nextSession !== thread.session ? { session: nextSession } : {}),
             estimatedContextTokens: null,
+            estimatedThinkingTokens: null,
             lastInteractionAt: event.occurredAt,
           };
         }
@@ -1078,6 +1081,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
               }
             : {}),
           estimatedContextTokens: null,
+          estimatedThinkingTokens: null,
           activities,
           latestTurn,
           lastInteractionAt: event.occurredAt,
@@ -1093,6 +1097,8 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         const session = mapSessionFromReadModel(event.payload.session, thread.session);
         const nextEstimatedContextTokens =
           event.payload.session.estimatedContextTokens ?? thread.estimatedContextTokens;
+        const nextEstimatedThinkingTokens =
+          event.payload.session.estimatedThinkingTokens ?? thread.estimatedThinkingTokens;
         const nextModelContextWindowTokens =
           event.payload.session.modelContextWindowTokens ?? thread.modelContextWindowTokens;
         const latestTurn =
@@ -1121,6 +1127,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           latestTurn === thread.latestTurn &&
           error === thread.error &&
           nextEstimatedContextTokens === thread.estimatedContextTokens &&
+          nextEstimatedThinkingTokens === thread.estimatedThinkingTokens &&
           nextModelContextWindowTokens === thread.modelContextWindowTokens
         ) {
           return thread;
@@ -1132,6 +1139,9 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           ...(error !== thread.error ? { error } : {}),
           ...(nextEstimatedContextTokens !== thread.estimatedContextTokens
             ? { estimatedContextTokens: nextEstimatedContextTokens }
+            : {}),
+          ...(nextEstimatedThinkingTokens !== thread.estimatedThinkingTokens
+            ? { estimatedThinkingTokens: nextEstimatedThinkingTokens }
             : {}),
           ...(nextModelContextWindowTokens !== thread.modelContextWindowTokens
             ? { modelContextWindowTokens: nextModelContextWindowTokens }

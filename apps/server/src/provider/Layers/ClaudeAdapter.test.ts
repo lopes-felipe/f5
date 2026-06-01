@@ -331,7 +331,7 @@ async function readFirstPromptText(
     return undefined;
   }
   const content = next.value.message.content[0];
-  if (!content || content.type !== "text") {
+  if (!content || typeof content === "string" || content.type !== "text") {
     return undefined;
   }
   return content.text;
@@ -3957,6 +3957,74 @@ describe("ClaudeAdapterLive", () => {
             cache_read_input_tokens: 20,
             output_tokens: 40,
           },
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("emits a thinking-tokens update for Claude thinking_tokens system messages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      assert.equal(session.threadId, THREAD_ID);
+
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+      assert.equal(turn.threadId, THREAD_ID);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "thinking_tokens",
+        estimated_tokens: 1_280,
+        estimated_tokens_delta: 64,
+        uuid: "thinking-tokens-1",
+        session_id: "sdk-thinking-tokens",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.type),
+        [
+          "session.started",
+          "session.configured",
+          "session.state.changed",
+          "turn.started",
+          "thread.started",
+          "thread.thinking-tokens.updated",
+        ],
+      );
+
+      // Regression: the new subtype must not fall through to the default branch
+      // and emit a runtime warning.
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.warning"),
+        false,
+      );
+
+      const thinkingTokensUpdated = runtimeEvents[5];
+      assert.equal(thinkingTokensUpdated?.type, "thread.thinking-tokens.updated");
+      if (thinkingTokensUpdated?.type === "thread.thinking-tokens.updated") {
+        assert.equal(String(thinkingTokensUpdated.turnId), String(turn.turnId));
+        assert.deepEqual(thinkingTokensUpdated.payload, {
+          estimatedTokens: 1_280,
+          estimatedTokensDelta: 64,
         });
       }
     }).pipe(

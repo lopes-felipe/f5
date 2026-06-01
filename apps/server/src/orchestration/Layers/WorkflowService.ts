@@ -30,10 +30,6 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import {
-  ProjectionSnapshotQuery,
-  type ProjectionSnapshotQueryShape,
-} from "../Services/ProjectionSnapshotQuery.ts";
-import {
   WorkflowService,
   type CreateWorkflowInput,
   type WorkflowServiceShape,
@@ -1072,6 +1068,12 @@ function compareWorkflowReviewSlots(left: WorkflowReviewSlot, right: WorkflowRev
   return leftRank - rightRank;
 }
 
+// `mergeThread.proposedPlans` comes from the retention-capped read model
+// (MAX_THREAD_PROPOSED_PLANS). This is safe because a "Merge" thread is an
+// ephemeral, single-purpose workflow thread that produces on the order of one
+// proposed plan, far below the cap, so the pinned `approvedPlanId` is always
+// retained. The `.at(-1)` fallback additionally returns the most recent plan
+// (the merge plan) if the pinned id is ever absent.
 function resolveApprovedMergedPlan(
   workflow: PlanningWorkflow,
   mergeThread: {
@@ -1094,7 +1096,6 @@ function resolveApprovedMergedPlan(
 
 export const makeWorkflowService = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
-  const snapshotQuery = yield* ProjectionSnapshotQuery;
   const textGeneration = yield* TextGeneration;
   const gitCore = yield* GitCore;
   const serverConfig = yield* ServerConfig;
@@ -1119,7 +1120,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   }) =>
     Effect.gen(function* () {
       yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS));
-      const snapshot = yield* snapshotQuery.getSnapshot();
+      const snapshot = yield* orchestrationEngine.getReadModel();
       const workflow =
         snapshot.planningWorkflows.find(
           (entry) =>
@@ -1152,7 +1153,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   const titleGenerationWorker = yield* makeDrainableWorker(
     (item: WorkflowTitleGenerationWorkItem) =>
       Effect.gen(function* () {
-        const snapshot = yield* snapshotQuery.getSnapshot();
+        const snapshot = yield* orchestrationEngine.getReadModel();
         const workflow =
           snapshot.planningWorkflows.find(
             (entry) => entry.id === item.workflowId && !isDeletedWorkflow(entry),
@@ -1181,7 +1182,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           return;
         }
 
-        const latestSnapshot = yield* snapshotQuery.getSnapshot();
+        const latestSnapshot = yield* orchestrationEngine.getReadModel();
         const latestWorkflow =
           latestSnapshot.planningWorkflows.find(
             (entry) => entry.id === item.workflowId && !isDeletedWorkflow(entry),
@@ -1996,7 +1997,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     });
 
   const reconcileWorkflowImplementationLifecycles = Effect.gen(function* () {
-    const snapshot = yield* snapshotQuery.getSnapshot();
+    const snapshot = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(snapshot.planningWorkflows, (workflow) =>
       reconcileWorkflowImplementationLifecycle(workflow, snapshot).pipe(
         Effect.catchCause((cause) =>
@@ -2020,7 +2021,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       let latestSnapshot = snapshot;
 
       const refreshWorkflowFromSnapshot = Effect.gen(function* () {
-        latestSnapshot = yield* snapshotQuery.getSnapshot();
+        latestSnapshot = yield* orchestrationEngine.getReadModel();
         reconciledWorkflow =
           latestSnapshot.planningWorkflows.find((entry) => entry.id === workflow.id) ??
           reconciledWorkflow;
@@ -2243,7 +2244,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     });
 
   const reconcileStuckWorkflows = Effect.gen(function* () {
-    const snapshot = yield* snapshotQuery.getSnapshot();
+    const snapshot = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(snapshot.planningWorkflows, (workflow) =>
       reconcileStuckWorkflow(workflow, snapshot).pipe(
         Effect.catchCause((cause) =>
@@ -2848,7 +2849,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const createWorkflow: WorkflowServiceShape["createWorkflow"] = (input) =>
     Effect.gen(function* () {
-      const snapshot = yield* snapshotQuery.getSnapshot();
+      const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.planningWorkflows
           .filter(
@@ -2977,7 +2978,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const startImplementation: WorkflowServiceShape["startImplementation"] = (input) =>
     Effect.gen(function* () {
-      const workflow = yield* readWorkflow(snapshotQuery, input.workflowId).pipe(
+      const workflow = yield* readWorkflow(orchestrationEngine, input.workflowId).pipe(
         Effect.mapError((error) => new Error(`Failed to load workflow: ${String(error)}`)),
       );
       if (!workflow) {
@@ -2992,7 +2993,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         );
       }
 
-      const snapshot = yield* snapshotQuery.getSnapshot();
+      const snapshot = yield* orchestrationEngine.getReadModel();
       const mergeThread = snapshot.threads.find((thread) => thread.id === workflow.merge.threadId);
       if (!mergeThread) {
         return yield* Effect.fail(new Error("Merge thread not found."));
@@ -3121,7 +3122,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const deleteWorkflow: WorkflowServiceShape["deleteWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -3141,7 +3142,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const archiveWorkflow: WorkflowServiceShape["archiveWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -3163,7 +3164,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const unarchiveWorkflow: WorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -3185,7 +3186,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
   const retryWorkflow: WorkflowServiceShape["retryWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -3199,13 +3200,13 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* upsertWorkflow(resetWorkflow);
 
       if (resetWorkflow.implementation?.status === "code_reviews_saved") {
-        const snapshot = yield* snapshotQuery.getSnapshot();
+        const snapshot = yield* orchestrationEngine.getReadModel();
         yield* maybeStartImplementationRevision(resetWorkflow, snapshot, updatedAt);
         return;
       }
 
       if (resetWorkflow.implementation?.status === "code_reviews_requested") {
-        const snapshot = yield* snapshotQuery.getSnapshot();
+        const snapshot = yield* orchestrationEngine.getReadModel();
         const mergeThread = snapshot.threads.find(
           (thread) => thread.id === resetWorkflow.merge.threadId,
         );
@@ -3259,7 +3260,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     });
 
   const workflowForThread: WorkflowServiceShape["workflowForThread"] = (threadId) =>
-    snapshotQuery.getSnapshot().pipe(
+    orchestrationEngine.getReadModel().pipe(
       Effect.map((snapshot) => {
         for (const workflow of snapshot.planningWorkflows) {
           if (isDeletedWorkflow(workflow)) {
@@ -3561,9 +3562,12 @@ function dispatchWorkflowDeleteCompensation({
   });
 }
 
-function readWorkflow(snapshotQuery: ProjectionSnapshotQueryShape, workflowId: PlanningWorkflowId) {
-  return snapshotQuery
-    .getSnapshot()
+function readWorkflow(
+  orchestrationEngine: OrchestrationEngineShape,
+  workflowId: PlanningWorkflowId,
+) {
+  return orchestrationEngine
+    .getReadModel()
     .pipe(
       Effect.map(
         (snapshot) =>

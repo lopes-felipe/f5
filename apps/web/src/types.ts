@@ -147,6 +147,7 @@ export interface Thread {
   archivedAt: string | null;
   lastInteractionAt: string;
   estimatedContextTokens: number | null;
+  estimatedThinkingTokens: number | null;
   modelContextWindowTokens: number | null;
   latestTurn: OrchestrationLatestTurn | null;
   lastVisitedAt?: string | undefined;

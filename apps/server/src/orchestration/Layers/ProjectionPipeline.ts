@@ -66,6 +66,7 @@ import {
   parseThreadSegmentFromAttachmentId,
   toSafeThreadAttachmentSegment,
 } from "../../attachmentStore.ts";
+import { truncateMiddleByBytes } from "../outputTruncation.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -379,30 +380,12 @@ function truncateCommandTranscriptOutput(output: string): {
   output: string;
   outputTruncated: boolean;
 } {
-  if (Buffer.byteLength(output, "utf8") <= MAX_COMMAND_TRANSCRIPT_BYTES) {
-    return { output, outputTruncated: false };
-  }
-
-  const markerBytes = Buffer.byteLength(COMMAND_TRANSCRIPT_TRUNCATION_MARKER, "utf8");
-  const headBytes = Math.min(COMMAND_TRANSCRIPT_HEAD_BYTES, MAX_COMMAND_TRANSCRIPT_BYTES);
-  const tailBytes = Math.max(0, MAX_COMMAND_TRANSCRIPT_BYTES - headBytes - markerBytes);
-  const outputBuffer = Buffer.from(output, "utf8");
-  const head = outputBuffer
-    .subarray(0, headBytes)
-    .toString("utf8")
-    .replace(/\uFFFD+$/g, "");
-  const tail =
-    tailBytes > 0
-      ? outputBuffer
-          .subarray(outputBuffer.length - tailBytes)
-          .toString("utf8")
-          .replace(/^\uFFFD+/g, "")
-      : "";
-
-  return {
-    output: `${head}${COMMAND_TRANSCRIPT_TRUNCATION_MARKER}${tail}`,
-    outputTruncated: true,
-  };
+  const result = truncateMiddleByBytes(output, {
+    maxBytes: MAX_COMMAND_TRANSCRIPT_BYTES,
+    headBytes: COMMAND_TRANSCRIPT_HEAD_BYTES,
+    marker: COMMAND_TRANSCRIPT_TRUNCATION_MARKER,
+  });
+  return { output: result.output, outputTruncated: result.truncated };
 }
 
 const runAttachmentSideEffects = Effect.fn(function* (sideEffects: AttachmentSideEffects) {

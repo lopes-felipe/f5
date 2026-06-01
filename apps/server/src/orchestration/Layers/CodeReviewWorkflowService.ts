@@ -26,10 +26,6 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import {
-  ProjectionSnapshotQuery,
-  type ProjectionSnapshotQueryShape,
-} from "../Services/ProjectionSnapshotQuery.ts";
-import {
   CodeReviewWorkflowService,
   type CodeReviewWorkflowServiceShape,
 } from "../Services/CodeReviewWorkflowService.ts";
@@ -119,11 +115,11 @@ function updateReviewer(
 }
 
 function readCodeReviewWorkflow(
-  snapshotQuery: ProjectionSnapshotQueryShape,
+  orchestrationEngine: OrchestrationEngineShape,
   workflowId: CodeReviewWorkflowId,
 ) {
-  return snapshotQuery
-    .getSnapshot()
+  return orchestrationEngine
+    .getReadModel()
     .pipe(
       Effect.map(
         (snapshot) =>
@@ -483,13 +479,12 @@ function startConsolidationTurn(input: {
 
 export const makeCodeReviewWorkflowService = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
-  const snapshotQuery = yield* ProjectionSnapshotQuery;
   const textGeneration = yield* TextGeneration;
 
   const titleGenerationWorker = yield* makeDrainableWorker(
     (item: CodeReviewWorkflowTitleGenerationWorkItem) =>
       Effect.gen(function* () {
-        const snapshot = yield* snapshotQuery.getSnapshot();
+        const snapshot = yield* orchestrationEngine.getReadModel();
         const workflow =
           snapshot.codeReviewWorkflows.find(
             (entry) => entry.id === item.workflowId && !isDeletedWorkflow(entry),
@@ -518,7 +513,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           return;
         }
 
-        const latestSnapshot = yield* snapshotQuery.getSnapshot();
+        const latestSnapshot = yield* orchestrationEngine.getReadModel();
         const latestWorkflow =
           latestSnapshot.codeReviewWorkflows.find(
             (entry) => entry.id === item.workflowId && !isDeletedWorkflow(entry),
@@ -567,10 +562,14 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       const pendingWorkflow = withConsolidationPendingStart(workflow, updatedAt);
       yield* upsertWorkflow(orchestrationEngine, pendingWorkflow, updatedAt);
 
-      const snapshot = snapshotAtCall ?? (yield* snapshotQuery.getSnapshot());
+      const snapshot = snapshotAtCall ?? (yield* orchestrationEngine.getReadModel());
       const reviewerInputs = [pendingWorkflow.reviewerA, pendingWorkflow.reviewerB].map(
         (reviewer) => {
           const thread = snapshot.threads.find((entry) => entry.id === reviewer.threadId);
+          // Reviewer threads are ephemeral, single-review threads, so the
+          // pinned assistant message stays within the read model's retention
+          // window. latestAssistantFeedback also falls back to the latest
+          // assistant message if the pinned id is ever outside the window.
           const text = thread
             ? (latestAssistantFeedback(thread, reviewer.pinnedAssistantMessageId)?.text ?? null)
             : null;
@@ -837,7 +836,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     });
 
   const reconcileStuckWorkflows = Effect.gen(function* () {
-    const snapshot = yield* snapshotQuery.getSnapshot();
+    const snapshot = yield* orchestrationEngine.getReadModel();
     yield* Effect.forEach(snapshot.codeReviewWorkflows, (workflow) =>
       reconcileStuckWorkflow(workflow, snapshot).pipe(
         Effect.catchCause((cause) =>
@@ -993,7 +992,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   const createWorkflow: CodeReviewWorkflowServiceShape["createWorkflow"] = (input) =>
     Effect.gen(function* () {
-      const snapshot = yield* snapshotQuery.getSnapshot();
+      const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.codeReviewWorkflows
           .filter(
@@ -1094,7 +1093,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   const deleteWorkflow: CodeReviewWorkflowServiceShape["deleteWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readCodeReviewWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -1113,7 +1112,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   const archiveWorkflow: CodeReviewWorkflowServiceShape["archiveWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readCodeReviewWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -1135,7 +1134,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   const unarchiveWorkflow: CodeReviewWorkflowServiceShape["unarchiveWorkflow"] = (workflowId) =>
     Effect.gen(function* () {
-      const workflow = yield* readCodeReviewWorkflow(snapshotQuery, workflowId).pipe(
+      const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
         ),
@@ -1157,7 +1156,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
   const retryWorkflow: CodeReviewWorkflowServiceShape["retryWorkflow"] = (input) =>
     Effect.gen(function* () {
-      const workflow = yield* readCodeReviewWorkflow(snapshotQuery, input.workflowId).pipe(
+      const workflow = yield* readCodeReviewWorkflow(orchestrationEngine, input.workflowId).pipe(
         Effect.mapError(
           (error) => new Error(`Failed to load workflow '${input.workflowId}': ${String(error)}`),
         ),
@@ -1238,13 +1237,13 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         nextWorkflow.reviewerB.status === "completed" &&
         nextWorkflow.consolidation.status === "not_started"
       ) {
-        const snapshot = yield* snapshotQuery.getSnapshot();
+        const snapshot = yield* orchestrationEngine.getReadModel();
         yield* maybeStartConsolidation(nextWorkflow, snapshot, updatedAt);
       }
     });
 
   const workflowForThread: CodeReviewWorkflowServiceShape["workflowForThread"] = (threadId) =>
-    snapshotQuery.getSnapshot().pipe(
+    orchestrationEngine.getReadModel().pipe(
       Effect.map((snapshot) => {
         for (const workflow of snapshot.codeReviewWorkflows) {
           if (isDeletedWorkflow(workflow)) {

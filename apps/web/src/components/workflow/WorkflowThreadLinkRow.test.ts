@@ -28,6 +28,7 @@ const BASE_THREAD = {
   archivedAt: null,
   lastInteractionAt: "2026-03-09T10:00:00.000Z",
   estimatedContextTokens: null,
+  estimatedThinkingTokens: null,
   modelContextWindowTokens: null,
   latestTurn: null,
   branch: null,

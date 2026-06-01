@@ -86,6 +86,7 @@ describe("orchestration projector", () => {
         updatedAt: now,
         deletedAt: null,
         estimatedContextTokens: null,
+        estimatedThinkingTokens: null,
         modelContextWindowTokens: 200_000,
         messages: [],
         proposedPlans: [],

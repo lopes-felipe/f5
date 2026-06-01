@@ -947,6 +947,7 @@ function buildThreadFromReadModel(
   const error = sanitizeThreadErrorMessage(thread.session?.lastError);
   const lastVisitedAt = existing?.lastVisitedAt ?? thread.lastInteractionAt;
   const estimatedContextTokens = thread.estimatedContextTokens ?? null;
+  const estimatedThinkingTokens = thread.estimatedThinkingTokens ?? null;
   const modelContextWindowTokens = thread.modelContextWindowTokens ?? null;
   const compaction = thread.compaction ?? null;
   const existingCompaction = existing?.compaction ?? null;
@@ -970,6 +971,7 @@ function buildThreadFromReadModel(
     existing.archivedAt === thread.archivedAt &&
     existing.lastInteractionAt === thread.lastInteractionAt &&
     existing.estimatedContextTokens === estimatedContextTokens &&
+    existing.estimatedThinkingTokens === estimatedThinkingTokens &&
     existing.modelContextWindowTokens === modelContextWindowTokens &&
     existing.latestTurn === latestTurn &&
     existing.lastVisitedAt === lastVisitedAt &&
@@ -1007,6 +1009,7 @@ function buildThreadFromReadModel(
     archivedAt: thread.archivedAt,
     lastInteractionAt: thread.lastInteractionAt,
     estimatedContextTokens,
+    estimatedThinkingTokens,
     modelContextWindowTokens,
     latestTurn,
     lastVisitedAt,

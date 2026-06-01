@@ -30,6 +30,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     activeThreadId: "thread-1" as never,
     activeThreadTitle: "Thread",
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     model: "gpt-5.4",
     provider: "codex",
@@ -72,6 +73,35 @@ describe("ChatHeader", () => {
 
     try {
       expect(document.querySelector('[aria-label^="Context window occupancy for "]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("does not render the thinking-token pill when there is no live estimate", async () => {
+    const screen = await renderHeader({ estimatedThinkingTokens: 0 });
+
+    try {
+      expect(document.querySelector('[aria-label="Live thinking-token estimate"]')).toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders the thinking-token pill with a compact live estimate", async () => {
+    const screen = await renderHeader({ estimatedThinkingTokens: 12_500 });
+
+    try {
+      const badge = document.querySelector<HTMLButtonElement>(
+        '[aria-label="Live thinking-token estimate"]',
+      );
+      expect(badge?.textContent).toContain("12.5K thinking");
+
+      await page.getByRole("button", { name: "Live thinking-token estimate" }).hover();
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain("Thinking: ~12,500 tokens");
+        expect(document.body.textContent).toContain("not billed output tokens");
+      });
     } finally {
       await screen.unmount();
     }

@@ -36,6 +36,7 @@ export function buildLocalDraftThread(input: {
     archivedAt: null,
     lastInteractionAt: input.draftThread.createdAt,
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: null,
     lastVisitedAt: input.draftThread.createdAt,

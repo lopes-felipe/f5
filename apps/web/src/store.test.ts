@@ -86,6 +86,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     archivedAt: null,
     lastInteractionAt: "2026-02-13T00:00:00.000Z",
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: null,
     branch: null,
@@ -135,6 +136,7 @@ function makeReadModelThread(overrides: Partial<OrchestrationReadModel["threads"
     updatedAt: "2026-02-27T00:00:00.000Z",
     deletedAt: null,
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     messages: [],
     activities: [],
@@ -519,6 +521,27 @@ describe("store read model sync", () => {
     expect(next.threads[0]).toBe(initialThread);
     expect(next.threads[0]?.estimatedContextTokens).toBe(45_000);
     expect(next.threads[0]?.modelContextWindowTokens).toBe(1_050_000);
+  });
+
+  it("maps the live thinking-token estimate from the read model", () => {
+    const initialThread = makeThread({
+      model: "claude-sonnet-4-6",
+      estimatedThinkingTokens: null,
+      createdAt: "2026-02-27T00:00:00.000Z",
+      lastInteractionAt: "2026-02-27T00:00:00.000Z",
+      lastVisitedAt: "2026-02-27T00:00:00.000Z",
+    });
+    const initialState = makeState(initialThread);
+    const readModel = makeReadModel(
+      makeReadModelThread({
+        model: "claude-sonnet-4-6",
+        estimatedThinkingTokens: 3_200,
+      }),
+    );
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.threads[0]?.estimatedThinkingTokens).toBe(3_200);
   });
 
   it("preserves the current project order when syncing incoming read model updates", () => {

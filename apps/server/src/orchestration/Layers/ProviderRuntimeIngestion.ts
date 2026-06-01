@@ -52,6 +52,7 @@ import {
   type ProviderRuntimeIngestionShape,
 } from "../Services/ProviderRuntimeIngestion.ts";
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
+import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { validateThreadTasks } from "../threadTasks.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
@@ -67,10 +68,32 @@ const BUFFERED_REASONING_TEXT_BY_TURN_KEY_CACHE_CAPACITY = 10_000;
 const BUFFERED_REASONING_TEXT_BY_TURN_KEY_TTL = Duration.minutes(120);
 const BUFFERED_PROPOSED_PLAN_BY_ID_CACHE_CAPACITY = 10_000;
 const BUFFERED_PROPOSED_PLAN_BY_ID_TTL = Duration.minutes(120);
+const LAST_THINKING_TOKENS_BY_THREAD_CACHE_CAPACITY = 10_000;
+const LAST_THINKING_TOKENS_BY_THREAD_TTL = Duration.minutes(120);
+// Live `thinking_tokens` frames arrive at high frequency. Coalesce them so the
+// event store only sees a bounded number of `thread.session.set` dispatches per
+// turn: dispatch only when the running estimate grows by at least this many
+// tokens since the last dispatch (or when it drops, signalling a new thinking
+// block within the same turn).
+const THINKING_TOKENS_DISPATCH_THRESHOLD = 500;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_CHARS = 200_000;
 const COMMAND_OUTPUT_FLUSH_INTERVAL_MS = 100;
 const COMMAND_OUTPUT_BUFFER_FLUSH_BYTES = 4 * 1024;
+// File-change output (unlike command output) is not flushed incrementally; it
+// accumulates in `pendingFileChanges` until the change finalizes. Bound it so a
+// single huge write cannot grow the buffer without limit. The resolved patch is
+// normally sourced from a structured `exactPatch`; this buffer is only a
+// fallback, so head+tail truncation with a visible marker is safe.
+const MAX_FILE_CHANGE_OUTPUT_BYTES = 1024 * 1024;
+const FILE_CHANGE_OUTPUT_HEAD_BYTES = 512 * 1024;
+const FILE_CHANGE_OUTPUT_TRUNCATION_MARKER =
+  "\n\n[... file change output truncated; middle omitted ...]\n\n";
+// Only re-truncate once the buffer grows past this slack threshold (then back
+// down to MAX_FILE_CHANGE_OUTPUT_BYTES). This keeps memory bounded while
+// amortizing the truncation cost across many small deltas instead of
+// re-scanning/allocating the whole buffer on every delta.
+const FILE_CHANGE_OUTPUT_TRUNCATE_THRESHOLD_BYTES = 2 * MAX_FILE_CHANGE_OUTPUT_BYTES;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -136,6 +159,9 @@ interface PendingFileChangeState {
   updatedAt: string;
   exactPatch: string;
   bufferedOutput: string;
+  // UTF-8 byte length of bufferedOutput, tracked incrementally so appends do
+  // not re-scan the whole buffer on every delta.
+  bufferedOutputBytes: number;
 }
 
 function clearCommandExecutionFlushTimer(commandExecution: OpenCommandExecutionState) {
@@ -1700,6 +1726,16 @@ const make = Effect.gen(function* () {
     lookup: () => Effect.succeed({ text: "", createdAt: "" }),
   });
 
+  // Per-thread last-dispatched live thinking-token estimate, used to throttle the
+  // high-frequency `thread.thinking-tokens.updated` stream (see
+  // THINKING_TOKENS_DISPATCH_THRESHOLD). Reset to 0 on turn start/completion so
+  // each turn starts blank.
+  const lastThinkingTokensByThread = yield* Cache.make<ThreadId, number>({
+    capacity: LAST_THINKING_TOKENS_BY_THREAD_CACHE_CAPACITY,
+    timeToLive: LAST_THINKING_TOKENS_BY_THREAD_TTL,
+    lookup: () => Effect.succeed(0),
+  });
+
   const resolveWorkspaceCwdForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
     const readModel = yield* orchestrationEngine.getReadModel();
     const thread = readModel.threads.find((entry) => entry.id === threadId);
@@ -2179,6 +2215,7 @@ const make = Effect.gen(function* () {
         updatedAt: input.event.createdAt,
         exactPatch: structuredPatch ?? "",
         bufferedOutput: "",
+        bufferedOutputBytes: 0,
       } satisfies PendingFileChangeState);
 
     fileChange.firstSeenAt =
@@ -2254,6 +2291,7 @@ const make = Effect.gen(function* () {
           updatedAt: input.event.createdAt,
           exactPatch: "",
           bufferedOutput: "",
+          bufferedOutputBytes: 0,
         } satisfies PendingFileChangeState);
       nextState.firstSeenAt =
         nextState.firstSeenAt <= input.event.createdAt
@@ -2262,7 +2300,21 @@ const make = Effect.gen(function* () {
       nextState.turnId = nextState.turnId ?? turnId ?? null;
       nextState.updatedAt =
         nextState.updatedAt >= input.event.createdAt ? nextState.updatedAt : input.event.createdAt;
-      nextState.bufferedOutput = `${nextState.bufferedOutput}${input.event.payload.delta}`;
+      const appended = `${nextState.bufferedOutput}${input.event.payload.delta}`;
+      const appendedBytes =
+        nextState.bufferedOutputBytes + Buffer.byteLength(input.event.payload.delta, "utf8");
+      if (appendedBytes > FILE_CHANGE_OUTPUT_TRUNCATE_THRESHOLD_BYTES) {
+        const truncated = truncateMiddleByBytes(appended, {
+          maxBytes: MAX_FILE_CHANGE_OUTPUT_BYTES,
+          headBytes: FILE_CHANGE_OUTPUT_HEAD_BYTES,
+          marker: FILE_CHANGE_OUTPUT_TRUNCATION_MARKER,
+        }).output;
+        nextState.bufferedOutput = truncated;
+        nextState.bufferedOutputBytes = Buffer.byteLength(truncated, "utf8");
+      } else {
+        nextState.bufferedOutput = appended;
+        nextState.bufferedOutputBytes = appendedBytes;
+      }
       pendingFileChanges.set(input.fileChangeId, nextState);
     });
 
@@ -2734,6 +2786,13 @@ const make = Effect.gen(function* () {
                 : (thread.session?.lastError ?? null);
 
         if (shouldApplyThreadLifecycle) {
+          // Reset the live thinking-token estimate at turn boundaries so each turn
+          // starts blank and the throttle baseline restarts from 0.
+          const resetThinkingTokens =
+            event.type === "turn.started" || event.type === "turn.completed";
+          if (resetThinkingTokens) {
+            yield* Cache.set(lastThinkingTokensByThread, thread.id, 0);
+          }
           const turnCostUsd =
             event.type === "turn.completed" ? event.payload?.totalCostUsd : undefined;
           const providerReportedContextTokens =
@@ -2785,6 +2844,36 @@ const make = Effect.gen(function* () {
               ...(estimatedContextTokens !== undefined
                 ? { estimatedContextTokens, tokenUsageSource }
                 : {}),
+              ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
+              updatedAt: now,
+            },
+            createdAt: now,
+          });
+        }
+      }
+
+      if (event.type === "thread.thinking-tokens.updated") {
+        const estimatedThinkingTokens = event.payload.estimatedTokens;
+        const lastDispatched = yield* Cache.get(lastThinkingTokensByThread, thread.id);
+        // Coalesce high-frequency frames: dispatch only when the estimate grows
+        // past the threshold, or drops (a new thinking block within the turn).
+        const grewPastThreshold =
+          estimatedThinkingTokens >= lastDispatched + THINKING_TOKENS_DISPATCH_THRESHOLD;
+        const droppedToNewBlock = estimatedThinkingTokens < lastDispatched;
+        if (grewPastThreshold || droppedToNewBlock) {
+          yield* Cache.set(lastThinkingTokensByThread, thread.id, estimatedThinkingTokens);
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: providerCommandId(event, "thread-thinking-tokens-set"),
+            threadId: thread.id,
+            session: {
+              threadId: thread.id,
+              status: thread.session?.status ?? "ready",
+              providerName: event.provider,
+              runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+              activeTurnId: thread.session?.activeTurnId ?? null,
+              lastError: thread.session?.lastError ?? null,
+              estimatedThinkingTokens,
               updatedAt: now,
             },
             createdAt: now,

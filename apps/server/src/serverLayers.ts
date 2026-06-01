@@ -10,6 +10,9 @@ import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime";
 import { ProjectMcpConfigRepositoryLive } from "./persistence/Layers/ProjectMcpConfigs";
+import { ProjectionCheckpointRepositoryLive } from "./persistence/Layers/ProjectionCheckpoints";
+import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
+import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads";
 import { OrchestrationEngineLive } from "./orchestration/Layers/OrchestrationEngine";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor";
@@ -213,7 +216,9 @@ export function makeServerRuntimeServicesLayer() {
   const textGenerationLayer = TextGenerationLive;
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
-    Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+    Layer.provideMerge(ProjectionThreadRepositoryLive),
+    Layer.provideMerge(ProjectionProjectRepositoryLive),
+    Layer.provideMerge(ProjectionCheckpointRepositoryLive),
     Layer.provideMerge(CheckpointStoreLive),
   );
   const threadCommandExecutionQueryLayer = ThreadCommandExecutionQueryLive.pipe(

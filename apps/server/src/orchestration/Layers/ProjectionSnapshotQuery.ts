@@ -1852,7 +1852,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       name: "total",
       effect: readSnapshot({
         scope: "getSnapshot",
-        historyLoadMode: "full",
+        // Bounded to the same per-thread retention as the live in-memory read
+        // model (see readModelRetention.ts). A "full" load materialized every
+        // message/activity/checkpoint across all threads into a single object
+        // graph, which could spike the backend heap by hundreds of MB to GB on
+        // large databases. Older history is fetched on demand via the thread
+        // tail / history-page queries instead.
+        historyLoadMode: "retained",
         includeMessages: true,
         includeCheckpoints: true,
         includeActivities: true,

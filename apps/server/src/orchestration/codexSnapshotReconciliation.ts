@@ -210,6 +210,11 @@ export const reconcileCodexThreadSnapshots = (
         Effect.gen(function* () {
           const bindingOption = yield* dependencies.providerSessionDirectory.getBinding(threadId);
           const binding = Option.getOrUndefined(bindingOption);
+          // Codex-only by design. This gate is also what makes Claude turn-item
+          // eviction (claudeTurnRetention.ts) safe: Claude `readThread` bodies
+          // are never consumed here, so evicted (empty) turns cannot backfill
+          // empty history. Do not relax this to other providers without first
+          // making those providers' readThread sources retention-independent.
           if (!binding || binding.provider !== "codex") {
             return;
           }

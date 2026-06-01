@@ -879,6 +879,10 @@ export function projectEvent(
           thread.session?.estimatedContextTokens !== undefined
             ? { estimatedContextTokens: thread.session.estimatedContextTokens }
             : {}),
+          ...(session.estimatedThinkingTokens === undefined &&
+          thread.session?.estimatedThinkingTokens !== undefined
+            ? { estimatedThinkingTokens: thread.session.estimatedThinkingTokens }
+            : {}),
           ...(session.modelContextWindowTokens === undefined &&
           thread.session?.modelContextWindowTokens !== undefined
             ? { modelContextWindowTokens: thread.session.modelContextWindowTokens }
@@ -923,6 +927,8 @@ export function projectEvent(
             session: nextSession,
             estimatedContextTokens:
               nextSession.estimatedContextTokens ?? thread.estimatedContextTokens ?? null,
+            estimatedThinkingTokens:
+              nextSession.estimatedThinkingTokens ?? thread.estimatedThinkingTokens ?? null,
             modelContextWindowTokens:
               nextSession.modelContextWindowTokens ?? thread.modelContextWindowTokens ?? null,
             latestTurn,

@@ -540,7 +540,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const markThreadVisited = useStore((store) => store.markThreadVisited);
-  const syncServerReadModel = useStore((store) => store.syncServerReadModel);
+  const syncStartupSnapshot = useStore((store) => store.syncStartupSnapshot);
+  const syncThreadTailDetails = useStore((store) => store.syncThreadTailDetails);
   const setStoreThreadError = useStore((store) => store.setError);
   const setChangedFilesExpandedForThread = useStore(
     (store) => store.setChangedFilesExpandedForThread,
@@ -4464,9 +4465,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
           createdAt,
         });
       })
-      .then(() => api.orchestration.getSnapshot())
-      .then((snapshot) => {
-        syncServerReadModel(snapshot);
+      .then(() => api.orchestration.getStartupSnapshot({ detailThreadId: nextThreadId }))
+      .then((startup) => {
+        syncStartupSnapshot(startup.snapshot);
+        if (startup.threadTailDetails) {
+          syncThreadTailDetails(nextThreadId, startup.threadTailDetails);
+        }
         // Signal that the plan sidebar should open on the new thread.
         planSidebarOpenOnNextThreadRef.current = tasksPanelAutoOpen;
         return navigate({
@@ -4483,9 +4487,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
           })
           .catch(() => undefined);
         await api.orchestration
-          .getSnapshot()
-          .then((snapshot) => {
-            syncServerReadModel(snapshot);
+          .getStartupSnapshot()
+          .then(({ snapshot }) => {
+            syncStartupSnapshot(snapshot);
           })
           .catch(() => undefined);
         toastManager.add({
@@ -4512,7 +4516,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
     providerOptionsForDispatch,
     selectedProvider,
     settings.enableAssistantStreaming,
-    syncServerReadModel,
+    syncStartupSnapshot,
+    syncThreadTailDetails,
     tasksPanelAutoOpen,
   ]);
 
@@ -5043,6 +5048,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
             activeThreadId={activeThread.id}
             activeThreadTitle={activeThread.title}
             estimatedContextTokens={activeThread.estimatedContextTokens}
+            estimatedThinkingTokens={activeThread.estimatedThinkingTokens}
             modelContextWindowTokens={activeThread.modelContextWindowTokens}
             model={activeThread.model}
             provider={activeThread.session?.provider ?? null}

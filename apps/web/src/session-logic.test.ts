@@ -78,6 +78,7 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
     archivedAt: null,
     lastInteractionAt: "2026-02-23T00:00:00.000Z",
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: {
       turnId: TurnId.makeUnsafe("turn-1"),

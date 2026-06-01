@@ -4,9 +4,11 @@ import {
   type OrchestrationGetFullThreadDiffResult,
   type OrchestrationGetTurnDiffResult as OrchestrationGetTurnDiffResultType,
 } from "@t3tools/contracts";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 
-import { ProjectionSnapshotQuery } from "../../orchestration/Services/ProjectionSnapshotQuery.ts";
+import { ProjectionCheckpointRepository } from "../../persistence/Services/ProjectionCheckpoints.ts";
+import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
+import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { CheckpointInvariantError, CheckpointUnavailableError } from "../Errors.ts";
 import { checkpointRefForThreadTurn, resolveThreadWorkspaceCwd } from "../Utils.ts";
 import { CheckpointStore } from "../Services/CheckpointStore.ts";
@@ -18,7 +20,9 @@ import {
 const isTurnDiffResult = Schema.is(OrchestrationGetTurnDiffResult);
 
 const make = Effect.gen(function* () {
-  const projectionSnapshotQuery = yield* ProjectionSnapshotQuery;
+  const threadRepository = yield* ProjectionThreadRepository;
+  const projectRepository = yield* ProjectionProjectRepository;
+  const checkpointRepository = yield* ProjectionCheckpointRepository;
   const checkpointStore = yield* CheckpointStore;
 
   const getTurnDiff: CheckpointDiffQueryShape["getTurnDiff"] = (input) =>
@@ -41,8 +45,13 @@ const make = Effect.gen(function* () {
         return emptyDiff;
       }
 
-      const snapshot = yield* projectionSnapshotQuery.getSnapshot();
-      const thread = snapshot.threads.find((entry) => entry.id === input.threadId);
+      // Resolve thread/checkpoint data via targeted, retention-independent
+      // projection reads instead of a full read-model snapshot. The checkpoint
+      // projection table retains every checkpoint, so turn diffs work for any
+      // turn even when older than the in-memory read-model retention window.
+      const thread = Option.getOrUndefined(
+        yield* threadRepository.getById({ threadId: input.threadId }),
+      );
       if (!thread) {
         return yield* new CheckpointInvariantError({
           operation,
@@ -50,7 +59,11 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const maxTurnCount = thread.checkpoints.reduce(
+      const checkpoints = yield* checkpointRepository.listByThreadId({
+        threadId: input.threadId,
+      });
+
+      const maxTurnCount = checkpoints.reduce(
         (max, checkpoint) => Math.max(max, checkpoint.checkpointTurnCount),
         0,
       );
@@ -62,9 +75,12 @@ const make = Effect.gen(function* () {
         });
       }
 
+      const project = Option.getOrUndefined(
+        yield* projectRepository.getById({ projectId: thread.projectId }),
+      );
       const workspaceCwd = resolveThreadWorkspaceCwd({
-        thread,
-        projects: snapshot.projects,
+        thread: { projectId: thread.projectId, worktreePath: thread.worktreePath },
+        projects: project ? [{ id: project.projectId, workspaceRoot: project.workspaceRoot }] : [],
       });
       if (!workspaceCwd) {
         return yield* new CheckpointInvariantError({
@@ -76,9 +92,8 @@ const make = Effect.gen(function* () {
       const fromCheckpointRef =
         input.fromTurnCount === 0
           ? checkpointRefForThreadTurn(input.threadId, 0)
-          : thread.checkpoints.find(
-              (checkpoint) => checkpoint.checkpointTurnCount === input.fromTurnCount,
-            )?.checkpointRef;
+          : checkpoints.find((checkpoint) => checkpoint.checkpointTurnCount === input.fromTurnCount)
+              ?.checkpointRef;
       if (!fromCheckpointRef) {
         return yield* new CheckpointUnavailableError({
           threadId: input.threadId,
@@ -87,7 +102,7 @@ const make = Effect.gen(function* () {
         });
       }
 
-      const toCheckpointRef = thread.checkpoints.find(
+      const toCheckpointRef = checkpoints.find(
         (checkpoint) => checkpoint.checkpointTurnCount === input.toTurnCount,
       )?.checkpointRef;
       if (!toCheckpointRef) {

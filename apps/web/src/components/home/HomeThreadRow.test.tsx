@@ -39,6 +39,7 @@ function makePlanReadyThread(): Thread {
     archivedAt: null,
     lastInteractionAt: "2026-03-09T10:05:00.000Z",
     estimatedContextTokens: null,
+    estimatedThinkingTokens: null,
     modelContextWindowTokens: null,
     latestTurn: {
       turnId: "turn-1" as never,

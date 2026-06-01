@@ -15,11 +15,13 @@ import { Toggle } from "../ui/toggle";
 import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import ContextWindowBadge from "./ContextWindowBadge";
+import ThinkingTokenBadge from "./ThinkingTokenBadge";
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
   activeThreadTitle: string;
   estimatedContextTokens: number | null;
+  estimatedThinkingTokens: number | null;
   modelContextWindowTokens: number | null;
   model: string;
   provider: ProviderKind | null;
@@ -51,6 +53,7 @@ export const ChatHeader = memo(function ChatHeader({
   activeThreadId,
   activeThreadTitle,
   estimatedContextTokens,
+  estimatedThinkingTokens,
   modelContextWindowTokens,
   model,
   provider,
@@ -106,6 +109,7 @@ export const ChatHeader = memo(function ChatHeader({
           provider={provider}
           tokenUsageSource={tokenUsageSource}
         />
+        <ThinkingTokenBadge estimatedThinkingTokens={estimatedThinkingTokens} />
         {activeProjectName && !isGitRepo && (
           <Badge variant="outline" className="shrink-0 text-[10px] text-amber-700">
             No Git

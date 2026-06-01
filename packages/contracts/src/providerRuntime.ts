@@ -147,6 +147,7 @@ const ProviderRuntimeEventType = Schema.Literals([
   "thread.state.changed",
   "thread.metadata.updated",
   "thread.token-usage.updated",
+  "thread.thinking-tokens.updated",
   "compaction.recommended",
   "thread.realtime.started",
   "thread.realtime.item-added",
@@ -198,6 +199,7 @@ const ThreadStartedType = Schema.Literal("thread.started");
 const ThreadStateChangedType = Schema.Literal("thread.state.changed");
 const ThreadMetadataUpdatedType = Schema.Literal("thread.metadata.updated");
 const ThreadTokenUsageUpdatedType = Schema.Literal("thread.token-usage.updated");
+const ThreadThinkingTokensUpdatedType = Schema.Literal("thread.thinking-tokens.updated");
 const CompactionRecommendedType = Schema.Literal("compaction.recommended");
 const ThreadRealtimeStartedType = Schema.Literal("thread.realtime.started");
 const ThreadRealtimeItemAddedType = Schema.Literal("thread.realtime.item-added");
@@ -302,6 +304,12 @@ const ThreadTokenUsageUpdatedPayload = Schema.Struct({
   modelContextWindowTokens: Schema.optional(NonNegativeInt),
 });
 export type ThreadTokenUsageUpdatedPayload = typeof ThreadTokenUsageUpdatedPayload.Type;
+
+const ThreadThinkingTokensUpdatedPayload = Schema.Struct({
+  estimatedTokens: NonNegativeInt,
+  estimatedTokensDelta: Schema.optional(Schema.Int),
+});
+export type ThreadThinkingTokensUpdatedPayload = typeof ThreadThinkingTokensUpdatedPayload.Type;
 
 const CompactionRecommendedPayload = Schema.Struct({
   estimatedTokens: NonNegativeInt,
@@ -656,6 +664,14 @@ const ProviderRuntimeThreadTokenUsageUpdatedEvent = Schema.Struct({
 export type ProviderRuntimeThreadTokenUsageUpdatedEvent =
   typeof ProviderRuntimeThreadTokenUsageUpdatedEvent.Type;
 
+const ProviderRuntimeThreadThinkingTokensUpdatedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ThreadThinkingTokensUpdatedType,
+  payload: ThreadThinkingTokensUpdatedPayload,
+});
+export type ProviderRuntimeThreadThinkingTokensUpdatedEvent =
+  typeof ProviderRuntimeThreadThinkingTokensUpdatedEvent.Type;
+
 const ProviderRuntimeCompactionRecommendedEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: CompactionRecommendedType,
@@ -958,6 +974,7 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeThreadStateChangedEvent,
   ProviderRuntimeThreadMetadataUpdatedEvent,
   ProviderRuntimeThreadTokenUsageUpdatedEvent,
+  ProviderRuntimeThreadThinkingTokensUpdatedEvent,
   ProviderRuntimeCompactionRecommendedEvent,
   ProviderRuntimeThreadRealtimeStartedEvent,
   ProviderRuntimeThreadRealtimeItemAddedEvent,

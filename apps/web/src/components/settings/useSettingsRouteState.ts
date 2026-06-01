@@ -99,7 +99,7 @@ export function useSettingsRouteState() {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { settings, defaults, updateSettings } = useAppSettings();
   const projects = useStore((state) => state.projects);
-  const syncServerReadModel = useStore((state) => state.syncServerReadModel);
+  const syncStartupSnapshot = useStore((state) => state.syncStartupSnapshot);
   const notificationPermission = useThreadStatusNotificationPermissionState();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
@@ -305,9 +305,9 @@ export function useSettingsRouteState() {
   );
 
   const refreshSnapshot = useCallback(async () => {
-    const snapshot = await ensureNativeApi().orchestration.getSnapshot();
-    syncServerReadModel(snapshot);
-  }, [syncServerReadModel]);
+    const { snapshot } = await ensureNativeApi().orchestration.getStartupSnapshot();
+    syncStartupSnapshot(snapshot);
+  }, [syncStartupSnapshot]);
 
   const submitMemoryCreate = useCallback(async () => {
     if (!selectedProject) {
