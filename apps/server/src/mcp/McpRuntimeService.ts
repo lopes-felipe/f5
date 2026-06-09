@@ -40,7 +40,10 @@ import { toClaudeProviderStartOptions } from "../provider/claudeProviderOptions.
 import { toCodexProviderStartOptions } from "../provider/codexProviderOptions.ts";
 import { buildCodexCliEnvOverrides, runCodexCliCommand } from "../provider/providerCli.ts";
 import { ProviderService } from "../provider/Services/ProviderService.ts";
-import { translateMcpForCodex } from "@t3tools/shared/mcpTranslation";
+import {
+  readCodexMcpOAuthCallbackPort,
+  translateMcpForCodex,
+} from "@t3tools/shared/mcpTranslation";
 
 const LOGIN_TIMEOUT_MS = 5 * 60_000;
 const LOGIN_STATUS_RETENTION_MS = 10 * 60_000;
@@ -316,7 +319,12 @@ function mapClaudeServerStatus(
 }
 
 function supportsCodexOauthLogin(server: McpServerDefinition): boolean {
-  return server.type === "http" || typeof server.oauthResource === "string";
+  return (
+    server.type === "http" ||
+    typeof server.oauthClientId === "string" ||
+    typeof server.oauthCallbackPort === "number" ||
+    typeof server.oauthResource === "string"
+  );
 }
 
 function isWindowsShellSafePath(value: string): boolean {
@@ -364,6 +372,21 @@ export class McpRuntimeServiceError extends Schema.TaggedErrorClass<McpRuntimeSe
     message: Schema.String,
   },
 ) {}
+
+function readCodexMcpOAuthCallbackPortOrError(
+  servers: Parameters<typeof readCodexMcpOAuthCallbackPort>[0],
+): Effect.Effect<number | undefined, McpRuntimeServiceError> {
+  return Effect.try({
+    try: () => readCodexMcpOAuthCallbackPort(servers),
+    catch: (cause) =>
+      new McpRuntimeServiceError({
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "Invalid Codex MCP OAuth callback port configuration.",
+      }),
+  });
+}
 
 export interface McpRuntimeServiceShape {
   readonly getProviderStatus: (
@@ -628,12 +651,16 @@ const makeMcpRuntimeService = Effect.gen(function* () {
 
       const providerOptions = readProviderOptions(input);
       const translatedServers = translateMcpForCodex(effectiveConfig.servers) ?? {};
+      const oauthCallbackPort = yield* readCodexMcpOAuthCallbackPortOrError(
+        effectiveConfig.servers,
+      );
       const client = yield* codexControlClientRegistry
         .getAdminClient({
           projectId: input.projectId,
           ...(providerOptions ? { providerOptions } : {}),
           mcpEffectiveConfigVersion: effectiveConfig.effectiveVersion,
           mcpServers: translatedServers,
+          ...(oauthCallbackPort ? { mcpOAuthCallbackPort: oauthCallbackPort } : {}),
         })
         .pipe(
           Effect.mapError(
@@ -778,6 +805,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
         return yield* windowsValidationError;
       }
       const translatedServers = translateMcpForCodex(stored.servers) ?? {};
+      const oauthCallbackPort = yield* readCodexMcpOAuthCallbackPortOrError(stored.servers);
       const execute = runCodexCliCommand(
         [
           "mcp",
@@ -791,6 +819,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           ...(binaryPath ? { binaryPath } : {}),
           ...(homePath ? { envOverrides: buildCodexCliEnvOverrides({ homePath }) } : {}),
           mcpServers: translatedServers,
+          ...(oauthCallbackPort ? { mcpOAuthCallbackPort: oauthCallbackPort } : {}),
         },
       ).pipe(
         Effect.timeoutOption(LOGIN_TIMEOUT_MS),

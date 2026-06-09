@@ -48,6 +48,15 @@ function normalizeMcpServerDefinition(
     ...(normalizeOptionalString(server.bearerTokenEnvVar)
       ? { bearerTokenEnvVar: normalizeOptionalString(server.bearerTokenEnvVar)! }
       : {}),
+    ...(normalizeOptionalString(server.oauthClientId)
+      ? { oauthClientId: normalizeOptionalString(server.oauthClientId)! }
+      : {}),
+    ...(typeof server.oauthCallbackPort === "number" &&
+    Number.isInteger(server.oauthCallbackPort) &&
+    server.oauthCallbackPort > 0 &&
+    server.oauthCallbackPort <= 65535
+      ? { oauthCallbackPort: server.oauthCallbackPort }
+      : {}),
     ...(typeof server.supportsParallelToolCalls === "boolean"
       ? { supportsParallelToolCalls: server.supportsParallelToolCalls }
       : {}),

@@ -106,6 +106,8 @@ describe("ProjectMcpConfigService", () => {
               headers: {
                 Authorization: "Bearer project-token",
               },
+              oauthClientId: "client-1",
+              oauthCallbackPort: 3118,
             },
           },
         });
@@ -163,6 +165,8 @@ describe("ProjectMcpConfigService", () => {
         headers: {
           Authorization: "Bearer project-token",
         },
+        oauthClientId: "client-1",
+        oauthCallbackPort: 3118,
       },
     });
 
@@ -177,6 +181,52 @@ describe("ProjectMcpConfigService", () => {
     expect(codex.servers.disabled).toBeUndefined();
     expect(codex.servers.overridden?.type).toBe("stdio");
     expect(codex.servers.projectOnly?.type).toBe("http");
+    expect(codex.servers.projectOnly).toMatchObject({
+      oauth: {
+        client_id: "client-1",
+      },
+    });
+    expect(codex.oauthCallbackPort).toBe(3118);
+  });
+
+  it("fails Codex server reads when enabled OAuth callback ports conflict", async () => {
+    const projectId = ProjectId.makeUnsafe("project-mcp-conflicting-oauth-ports");
+    const { layer } = makeRepositoryLayer();
+
+    await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        yield* service.replaceProjectConfig({
+          projectId,
+          servers: {
+            slack: {
+              type: "http",
+              url: "https://mcp.slack.com/mcp",
+              oauthCallbackPort: 3118,
+            },
+            observability: {
+              type: "http",
+              url: "https://observability.example.test/mcp",
+              oauthCallbackPort: 4118,
+            },
+          },
+        });
+      }),
+      layer,
+    );
+
+    await expect(
+      runServiceEffect(
+        Effect.gen(function* () {
+          const service = yield* ProjectMcpConfigService;
+          return yield* service.readCodexServers(projectId);
+        }),
+        layer,
+      ),
+    ).rejects.toMatchObject({
+      code: "validation",
+      message: expect.stringContaining("must be the same for all enabled servers"),
+    });
   });
 
   it("keeps the effective version stable when only fully overridden common config changes", async () => {

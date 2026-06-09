@@ -60,6 +60,8 @@ type ServerDraft = {
   readonly enabledTools: string;
   readonly disabledTools: string;
   readonly scopes: string;
+  readonly oauthClientId: string;
+  readonly oauthCallbackPort: string;
   readonly oauthResource: string;
 };
 
@@ -85,6 +87,8 @@ function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
     enabledTools: "",
     disabledTools: "",
     scopes: "",
+    oauthClientId: "",
+    oauthCallbackPort: "",
     oauthResource: "",
   };
 }
@@ -214,6 +218,8 @@ function hasAdvancedFields(server: McpProjectServersConfig[string]): boolean {
     server.enabledTools?.length ||
     server.disabledTools?.length ||
     server.scopes?.length ||
+    server.oauthClientId ||
+    server.oauthCallbackPort !== undefined ||
     server.oauthResource,
   );
 }
@@ -237,6 +243,9 @@ function draftFromServer(name: string, server: McpProjectServersConfig[string]):
     enabledTools: formatStringArray(server.enabledTools),
     disabledTools: formatStringArray(server.disabledTools),
     scopes: formatStringArray(server.scopes),
+    oauthClientId: server.oauthClientId ?? "",
+    oauthCallbackPort:
+      server.oauthCallbackPort !== undefined ? String(server.oauthCallbackPort) : "",
     oauthResource: server.oauthResource ?? "",
   };
 }
@@ -256,11 +265,21 @@ function decodeDraftServer(draft: ServerDraft): {
   const disabledTools = parseStringArrayInput(draft.disabledTools);
   const scopes = parseStringArrayInput(draft.scopes);
   const bearerTokenEnvVar = trimToUndefined(draft.bearerTokenEnvVar);
+  const oauthClientId = trimToUndefined(draft.oauthClientId);
+  const oauthCallbackPort = parseOptionalIntegerInput(
+    draft.oauthCallbackPort,
+    "OAuth callback port",
+  );
   const oauthResource = trimToUndefined(draft.oauthResource);
+  if (oauthCallbackPort !== undefined && (oauthCallbackPort < 1 || oauthCallbackPort > 65535)) {
+    throw new Error("OAuth callback port must be between 1 and 65535.");
+  }
 
   const advanced = {
     enabled: draft.enabled,
     ...(bearerTokenEnvVar ? { bearerTokenEnvVar } : {}),
+    ...(oauthClientId ? { oauthClientId } : {}),
+    ...(oauthCallbackPort !== undefined ? { oauthCallbackPort } : {}),
     ...(draft.supportsParallelToolCalls ? { supportsParallelToolCalls: true } : {}),
     ...(startupTimeoutSec !== undefined ? { startupTimeoutSec } : {}),
     ...(toolTimeoutSec !== undefined ? { toolTimeoutSec } : {}),
@@ -337,6 +356,25 @@ function readImportedStringRecord(value: unknown): Record<string, string> | unde
   return Object.keys(parsed).length > 0 ? parsed : undefined;
 }
 
+function readImportedOauthConfig(value: unknown): {
+  readonly clientId?: string;
+  readonly callbackPort?: number;
+} {
+  if (!isRecord(value)) {
+    return {};
+  }
+  const clientId =
+    readImportedString(value.clientId) ??
+    readImportedString(value.client_id) ??
+    readImportedString(value.CLIENT_ID);
+  const callbackPort =
+    readImportedInteger(value.callbackPort) ?? readImportedInteger(value.callback_port);
+  return {
+    ...(clientId ? { clientId } : {}),
+    ...(callbackPort !== undefined ? { callbackPort } : {}),
+  };
+}
+
 function decodeImportedServer(value: unknown): McpProjectServersConfig[string] | null {
   if (!isRecord(value)) {
     return null;
@@ -384,6 +422,18 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
         };
 
   try {
+    const oauthConfig = {
+      ...readImportedOauthConfig(value.auth),
+      ...readImportedOauthConfig(value.oauth),
+    };
+    const oauthClientId =
+      readImportedString(value.oauthClientId) ??
+      readImportedString(value.oauth_client_id) ??
+      oauthConfig.clientId;
+    const oauthCallbackPort =
+      readImportedInteger(value.oauthCallbackPort) ??
+      readImportedInteger(value.oauth_callback_port) ??
+      oauthConfig.callbackPort;
     return Schema.decodeUnknownSync(McpServerDefinition)({
       ...candidate,
       ...(readImportedBoolean(value.enabled) !== undefined
@@ -439,6 +489,8 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
       ...(readImportedStringArray(value.scopes)
         ? { scopes: readImportedStringArray(value.scopes) }
         : {}),
+      ...(oauthClientId ? { oauthClientId } : {}),
+      ...(oauthCallbackPort !== undefined ? { oauthCallbackPort } : {}),
       ...((readImportedString(value.oauthResource) ?? readImportedString(value.oauth_resource))
         ? {
             oauthResource:
@@ -449,6 +501,32 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
   } catch {
     return null;
   }
+}
+
+function canUseTopLevelOauthCallbackPort(value: Record<string, unknown>): boolean {
+  const rawType =
+    readImportedString(value.type) ??
+    readImportedString(value.transport) ??
+    readImportedString(value.transportType);
+  return (
+    value.oauth !== undefined ||
+    value.auth !== undefined ||
+    value.oauthClientId !== undefined ||
+    value.oauth_client_id !== undefined ||
+    value.oauthResource !== undefined ||
+    value.oauth_resource !== undefined ||
+    rawType === "http" ||
+    (!rawType && readImportedString(value.url) !== undefined)
+  );
+}
+
+function hasImportedServerOauthCallbackPort(value: Record<string, unknown>): boolean {
+  return (
+    readImportedInteger(value.oauthCallbackPort) !== undefined ||
+    readImportedInteger(value.oauth_callback_port) !== undefined ||
+    readImportedOauthConfig(value.auth).callbackPort !== undefined ||
+    readImportedOauthConfig(value.oauth).callbackPort !== undefined
+  );
 }
 
 function stripTomlComment(line: string): string {
@@ -529,7 +607,9 @@ function parseTomlValue(value: string): unknown {
 
 function parseCodexTomlServers(text: string): McpProjectServersConfig {
   const parsed: Record<string, Record<string, unknown>> = {};
-  let currentSection: { serverName: string; kind: "root" | "env" | "headers" } | null = null;
+  let currentSection: { serverName: string; kind: "root" | "env" | "headers" | "oauth" } | null =
+    null;
+  let topLevelOauthCallbackPort: number | undefined;
 
   for (const rawLine of text.split(/\r?\n/u)) {
     const line = stripTomlComment(rawLine).trim();
@@ -541,20 +621,20 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
     if (sectionMatch) {
       const rawSection = sectionMatch[1]?.trim();
       const serverMatch = rawSection
-        ? /^mcp_servers\.(?:"([^"]+)"|'([^']+)'|([^.]+))(?:\.(env|headers))?$/u.exec(rawSection)
+        ? /^mcp_servers\.(?:"([^"]+)"|'([^']+)'|([^.]+))(?:\.(env|headers|oauth))?$/u.exec(
+            rawSection,
+          )
         : null;
       currentSection = serverMatch
         ? {
             serverName:
               serverMatch[1]?.trim() || serverMatch[2]?.trim() || serverMatch[3]?.trim() || "",
             kind:
-              serverMatch[4] === "env" || serverMatch[4] === "headers" ? serverMatch[4] : "root",
+              serverMatch[4] === "env" || serverMatch[4] === "headers" || serverMatch[4] === "oauth"
+                ? serverMatch[4]
+                : "root",
           }
         : null;
-      continue;
-    }
-
-    if (!currentSection) {
       continue;
     }
 
@@ -569,6 +649,16 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
       continue;
     }
 
+    if (!currentSection) {
+      if (key === "mcp_oauth_callback_port") {
+        const parsedValue = parseTomlValue(rawValue);
+        if (typeof parsedValue === "number") {
+          topLevelOauthCallbackPort = parsedValue;
+        }
+      }
+      continue;
+    }
+
     const server = (parsed[currentSection.serverName] ??= {});
     if (currentSection.kind === "root") {
       server[key] = parseTomlValue(rawValue);
@@ -577,7 +667,8 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
 
     const nestedKey = currentSection.kind;
     const nested = isRecord(server[nestedKey]) ? server[nestedKey] : {};
-    nested[key] = String(parseTomlValue(rawValue) ?? "");
+    const parsedValue = parseTomlValue(rawValue);
+    nested[key] = currentSection.kind === "oauth" ? parsedValue : String(parsedValue ?? "");
     server[nestedKey] = nested;
   }
 
@@ -585,7 +676,15 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
     Object.fromEntries(
       Object.entries(parsed)
         .map(([name, value]) => {
-          const decoded = decodeImportedServer(value);
+          const shouldApplyTopLevelOauthCallbackPort = canUseTopLevelOauthCallbackPort(value);
+          const decoded = decodeImportedServer({
+            ...value,
+            ...(topLevelOauthCallbackPort !== undefined &&
+            shouldApplyTopLevelOauthCallbackPort &&
+            !hasImportedServerOauthCallbackPort(value)
+              ? { oauthCallbackPort: topLevelOauthCallbackPort }
+              : {}),
+          });
           return decoded ? ([name, decoded] as const) : null;
         })
         .filter(
@@ -622,7 +721,7 @@ function parseJsonServers(text: string): McpProjectServersConfig {
   );
 }
 
-function parseImportedServers(text: string): McpProjectServersConfig {
+export function parseImportedServers(text: string): McpProjectServersConfig {
   const trimmed = text.trim();
   if (!trimmed) {
     return {};
@@ -751,7 +850,10 @@ function McpServerRow(props: {
 
   const isCodexProvider = props.selectedProvider === "codex";
   const supportsCodexOauthLogin =
-    props.server.type === "http" || typeof props.server.oauthResource === "string";
+    props.server.type === "http" ||
+    typeof props.server.oauthClientId === "string" ||
+    typeof props.server.oauthCallbackPort === "number" ||
+    typeof props.server.oauthResource === "string";
   const loginModeHint = loginStatusQuery.data?.mode ?? (supportsCodexOauthLogin ? "oauth" : "cli");
   const shouldShowLoginAction =
     isCodexProvider &&
@@ -1597,6 +1699,37 @@ export function McpServersSettings(props: {
                             }))
                           }
                           placeholder="MCP_AUTH_TOKEN"
+                        />
+                      </label>
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-foreground">OAuth client ID</span>
+                        <Input
+                          value={draft.oauthClientId}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              oauthClientId: event.target.value,
+                            }))
+                          }
+                          placeholder="client_id"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1">
+                        <span className="text-xs font-medium text-foreground">
+                          OAuth callback port
+                        </span>
+                        <Input
+                          value={draft.oauthCallbackPort}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              oauthCallbackPort: event.target.value,
+                            }))
+                          }
+                          placeholder="3118"
                         />
                       </label>
                       <label className="space-y-1">

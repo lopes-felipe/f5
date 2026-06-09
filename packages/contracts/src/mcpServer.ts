@@ -1,11 +1,12 @@
 import { Schema } from "effect";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas";
+import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 
 export const McpServerTransportType = Schema.Literals(["stdio", "sse", "http"]);
 export type McpServerTransportType = typeof McpServerTransportType.Type;
 
 const McpStringRecord = Schema.Record(TrimmedNonEmptyString, Schema.String);
 const McpStringArray = Schema.Array(TrimmedNonEmptyString);
+const McpPort = PositiveInt.check(Schema.isLessThanOrEqualTo(65535));
 const UnsupportedMcpField = Schema.optional(Schema.Undefined);
 
 const McpCommonServerFields = {
@@ -17,6 +18,8 @@ const McpCommonServerFields = {
   enabledTools: Schema.optional(McpStringArray),
   disabledTools: Schema.optional(McpStringArray),
   scopes: Schema.optional(McpStringArray),
+  oauthClientId: Schema.optional(TrimmedNonEmptyString),
+  oauthCallbackPort: Schema.optional(McpPort),
   oauthResource: Schema.optional(TrimmedNonEmptyString),
 };
 
@@ -79,6 +82,11 @@ const CodexMcpServerCommonFields = {
   enabled_tools: Schema.optional(McpStringArray),
   disabled_tools: Schema.optional(McpStringArray),
   scopes: Schema.optional(McpStringArray),
+  oauth: Schema.optional(
+    Schema.Struct({
+      client_id: TrimmedNonEmptyString,
+    }),
+  ),
   oauth_resource: Schema.optional(TrimmedNonEmptyString),
 };
 

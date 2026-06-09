@@ -17,6 +17,7 @@ export interface ProviderCliCommandOptions {
   readonly binaryPath?: string | undefined;
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
   readonly mcpServers?: Record<string, CodexMcpServerEntry> | null | undefined;
+  readonly mcpOAuthCallbackPort?: number | null | undefined;
 }
 
 export interface ClaudeCliCommandOptions {
@@ -50,6 +51,7 @@ export function runProviderCliCommand(
       binary === "codex"
         ? prependCodexCliTelemetryDisabledConfig(args, {
             mcpServers: options?.mcpServers ?? null,
+            mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
           })
         : [...args];
     const command = ChildProcess.make(resolvedBinary, [...commandArgs], {

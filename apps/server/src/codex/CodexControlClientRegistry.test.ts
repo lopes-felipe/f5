@@ -8,6 +8,7 @@ import {
   CodexControlClientRegistry,
   CodexControlClientRegistryLive,
   CodexControlClientRegistryError,
+  readCodexControlEnvironmentConfig,
 } from "./CodexControlClientRegistry.ts";
 
 function makeServerConfigStub(): ServerConfigShape {
@@ -128,6 +129,23 @@ describe("CodexControlClientRegistry", () => {
     expect(result.second).toBe(result.first);
     expect(result.differentProject).not.toBe(result.first);
     expect(result.differentVersion).not.toBe(result.first);
+  });
+
+  it("includes MCP OAuth callback port in the Codex control environment", () => {
+    expect(
+      readCodexControlEnvironmentConfig(
+        {
+          projectId: ProjectId.makeUnsafe("project-registry-env"),
+          mcpServers: {},
+          mcpOAuthCallbackPort: 3118,
+        },
+        "/tmp/repo",
+      ),
+    ).toEqual({
+      cwd: "/tmp/repo",
+      mcpServers: {},
+      mcpOAuthCallbackPort: 3118,
+    });
   });
 
   it("limits OAuth leases per project/env/server while allowing different projects", async () => {

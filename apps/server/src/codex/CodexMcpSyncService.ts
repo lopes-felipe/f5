@@ -35,6 +35,9 @@ const makeCodexMcpSyncService = Effect.gen(function* () {
               ...(providerOptions ? { providerOptions } : {}),
               mcpEffectiveConfigVersion: stored.effectiveVersion,
               mcpServers: stored.servers,
+              ...(stored.oauthCallbackPort
+                ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
+                : {}),
             })
             .pipe(
               Effect.map(

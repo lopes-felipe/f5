@@ -43,6 +43,7 @@ export interface CodexControlEnvironmentConfig {
   readonly homePath?: string;
   readonly cwd: string;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
+  readonly mcpOAuthCallbackPort?: number;
 }
 
 export interface CodexControlCapabilities {
@@ -226,6 +227,9 @@ export class CodexControlClient extends EventEmitter<{
       binaryPath,
       prependCodexCliTelemetryDisabledConfig(["app-server"], {
         mcpServers: environment.mcpServers ?? {},
+        ...(environment.mcpOAuthCallbackPort
+          ? { mcpOAuthCallbackPort: environment.mcpOAuthCallbackPort }
+          : {}),
       }),
       {
         cwd: environment.cwd,

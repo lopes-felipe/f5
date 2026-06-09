@@ -39,6 +39,7 @@ describe("CodexMcpSyncService", () => {
                 command: "npx",
               },
             },
+            oauthCallbackPort: 3118,
           }),
       }),
       Layer.succeed(CodexControlClientRegistry, {
@@ -94,6 +95,7 @@ describe("CodexMcpSyncService", () => {
             command: "npx",
           },
         },
+        mcpOAuthCallbackPort: 3118,
       },
     ]);
   });

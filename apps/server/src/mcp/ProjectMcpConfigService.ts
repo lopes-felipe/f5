@@ -9,7 +9,10 @@ import {
   ProjectId,
 } from "@t3tools/contracts";
 import { computeEffectiveMcpConfigVersion, mergeMcpServerLayers } from "@t3tools/shared/mcpConfig";
-import { translateMcpForCodex } from "@t3tools/shared/mcpTranslation";
+import {
+  readCodexMcpOAuthCallbackPort,
+  translateMcpForCodex,
+} from "@t3tools/shared/mcpTranslation";
 import { Effect, Layer, Option, Schema, ServiceMap } from "effect";
 
 import {
@@ -49,6 +52,22 @@ export class ProjectMcpConfigServiceError extends Schema.TaggedErrorClass<Projec
   },
 ) {}
 
+function readCodexMcpOAuthCallbackPortOrError(
+  servers: McpProjectServersConfig,
+): Effect.Effect<number | undefined, ProjectMcpConfigServiceError> {
+  return Effect.try({
+    try: () => readCodexMcpOAuthCallbackPort(servers),
+    catch: (cause) =>
+      new ProjectMcpConfigServiceError({
+        code: "validation",
+        message:
+          cause instanceof Error
+            ? cause.message
+            : "Invalid Codex MCP OAuth callback port configuration.",
+      }),
+  });
+}
+
 export interface ProjectMcpConfigServiceShape {
   readonly readCommonStoredConfig: () => Effect.Effect<
     StoredCommonMcpConfig,
@@ -81,6 +100,7 @@ export interface ProjectMcpConfigServiceShape {
       readonly projectId: ProjectId;
       readonly effectiveVersion: string;
       readonly servers: Record<string, CodexMcpServerEntry>;
+      readonly oauthCallbackPort?: number;
     },
     ProjectMcpConfigServiceError
   >;
@@ -247,11 +267,16 @@ const makeProjectMcpConfigService = Effect.gen(function* () {
 
   const readCodexServers: ProjectMcpConfigServiceShape["readCodexServers"] = (projectId) =>
     readEffectiveStoredConfig(projectId).pipe(
-      Effect.map((stored) => ({
-        projectId,
-        effectiveVersion: stored.effectiveVersion,
-        servers: translateMcpForCodex(stored.servers) ?? {},
-      })),
+      Effect.flatMap((stored) =>
+        readCodexMcpOAuthCallbackPortOrError(stored.servers).pipe(
+          Effect.map((oauthCallbackPort) => ({
+            projectId,
+            effectiveVersion: stored.effectiveVersion,
+            servers: translateMcpForCodex(stored.servers) ?? {},
+            ...(oauthCallbackPort ? { oauthCallbackPort } : {}),
+          })),
+        ),
+      ),
     );
 
   return {

@@ -20,7 +20,10 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { translateMcpForCodex } from "@t3tools/shared/mcpTranslation";
+import {
+  readCodexMcpOAuthCallbackPort,
+  translateMcpForCodex,
+} from "@t3tools/shared/mcpTranslation";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { Effect, FileSystem, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
 
@@ -1571,51 +1574,71 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       }
 
-      const managerInput: CodexAppServerStartSessionInput = {
-        threadId: input.threadId,
-        provider: "codex",
-        ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-        ...(input.projectTitle !== undefined ? { projectTitle: input.projectTitle } : {}),
-        ...(input.threadTitle !== undefined ? { threadTitle: input.threadTitle } : {}),
-        ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
-        ...(input.projectMemories !== undefined ? { projectMemories: input.projectMemories } : {}),
-        ...(input.priorWorkSummary !== undefined
-          ? { priorWorkSummary: input.priorWorkSummary }
-          : {}),
-        ...(input.preservedTranscriptBefore !== undefined
-          ? { preservedTranscriptBefore: input.preservedTranscriptBefore }
-          : {}),
-        ...(input.preservedTranscriptAfter !== undefined
-          ? { preservedTranscriptAfter: input.preservedTranscriptAfter }
-          : {}),
-        ...(input.restoredRecentFileRefs !== undefined
-          ? { restoredRecentFileRefs: input.restoredRecentFileRefs }
-          : {}),
-        ...(input.restoredActivePlan !== undefined
-          ? { restoredActivePlan: input.restoredActivePlan }
-          : {}),
-        ...(input.restoredTasks !== undefined ? { restoredTasks: input.restoredTasks } : {}),
-        ...(input.sessionNotes !== undefined ? { sessionNotes: input.sessionNotes } : {}),
-        ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-        ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
-        runtimeMode: input.runtimeMode,
-        ...(input.model !== undefined ? { model: input.model } : {}),
-        ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
-        ...(input.providerOptions?.mcpServers
-          ? { mcpServers: translateMcpForCodex(input.providerOptions.mcpServers) ?? {} }
-          : {}),
-      };
+      return Effect.gen(function* () {
+        const providerMcpServers = input.providerOptions?.mcpServers;
+        const mcpOAuthCallbackPort = providerMcpServers
+          ? yield* Effect.try({
+              try: () => readCodexMcpOAuthCallbackPort(providerMcpServers),
+              catch: (cause) =>
+                new ProviderAdapterValidationError({
+                  provider: PROVIDER,
+                  operation: "startSession",
+                  issue: toMessage(cause, "Invalid Codex MCP OAuth callback port configuration."),
+                  cause,
+                }),
+            })
+          : undefined;
+        const managerInput: CodexAppServerStartSessionInput = {
+          threadId: input.threadId,
+          provider: "codex",
+          ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+          ...(input.projectTitle !== undefined ? { projectTitle: input.projectTitle } : {}),
+          ...(input.threadTitle !== undefined ? { threadTitle: input.threadTitle } : {}),
+          ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
+          ...(input.projectMemories !== undefined
+            ? { projectMemories: input.projectMemories }
+            : {}),
+          ...(input.priorWorkSummary !== undefined
+            ? { priorWorkSummary: input.priorWorkSummary }
+            : {}),
+          ...(input.preservedTranscriptBefore !== undefined
+            ? { preservedTranscriptBefore: input.preservedTranscriptBefore }
+            : {}),
+          ...(input.preservedTranscriptAfter !== undefined
+            ? { preservedTranscriptAfter: input.preservedTranscriptAfter }
+            : {}),
+          ...(input.restoredRecentFileRefs !== undefined
+            ? { restoredRecentFileRefs: input.restoredRecentFileRefs }
+            : {}),
+          ...(input.restoredActivePlan !== undefined
+            ? { restoredActivePlan: input.restoredActivePlan }
+            : {}),
+          ...(input.restoredTasks !== undefined ? { restoredTasks: input.restoredTasks } : {}),
+          ...(input.sessionNotes !== undefined ? { sessionNotes: input.sessionNotes } : {}),
+          ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+          ...(input.providerOptions !== undefined
+            ? { providerOptions: input.providerOptions }
+            : {}),
+          runtimeMode: input.runtimeMode,
+          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+          ...(providerMcpServers
+            ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
+            : {}),
+          ...(mcpOAuthCallbackPort ? { mcpOAuthCallbackPort } : {}),
+        };
 
-      return Effect.tryPromise({
-        try: () => manager.startSession(managerInput),
-        catch: (cause) =>
-          new ProviderAdapterProcessError({
-            provider: PROVIDER,
-            threadId: input.threadId,
-            detail: toMessage(cause, "Failed to start Codex adapter session."),
-            cause,
-          }),
-      }).pipe(Effect.map((session) => session));
+        return yield* Effect.tryPromise({
+          try: () => manager.startSession(managerInput),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId: input.threadId,
+              detail: toMessage(cause, "Failed to start Codex adapter session."),
+              cause,
+            }),
+        });
+      });
     };
 
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>

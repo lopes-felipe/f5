@@ -864,6 +864,7 @@ const make = Effect.gen(function* () {
     readonly messageId: string;
     readonly titleSourceText: string;
     readonly titleGenerationModel?: string;
+    readonly titleGenerationModelSelection?: ModelSelection;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
   }) {
     const readModel = yield* orchestrationEngine.getReadModel();
@@ -903,6 +904,7 @@ const make = Effect.gen(function* () {
       titleSourceText: input.titleSourceText,
       attachments,
       titleGenerationModel: input.titleGenerationModel,
+      titleGenerationModelSelection: input.titleGenerationModelSelection,
       defaultTitle: DEFAULT_NEW_THREAD_TITLE,
       textGeneration,
       logPrefix: "provider command reactor",
@@ -968,6 +970,9 @@ const make = Effect.gen(function* () {
         event.payload.titleSourceText !== undefined ? event.payload.titleSourceText : message.text,
       ...(event.payload.titleGenerationModel !== undefined
         ? { titleGenerationModel: event.payload.titleGenerationModel }
+        : {}),
+      ...(event.payload.titleGenerationModelSelection !== undefined
+        ? { titleGenerationModelSelection: event.payload.titleGenerationModelSelection }
         : {}),
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     }).pipe(

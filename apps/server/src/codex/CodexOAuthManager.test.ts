@@ -16,6 +16,7 @@ import type { CodexControlClient } from "./CodexControlClient.ts";
 import {
   CodexControlClientRegistry,
   CodexControlClientRegistryError,
+  type CodexOauthClientAccessInput,
 } from "./CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./CodexMcpSyncService.ts";
@@ -86,7 +87,7 @@ function makeProviderServiceStub(input?: {
   };
 }
 
-const makeProjectMcpConfigServiceStub = () =>
+const makeProjectMcpConfigServiceStub = (input?: { readonly oauthCallbackPort?: number }) =>
   Layer.succeed(ProjectMcpConfigService, {
     readCommonStoredConfig: () => Effect.die(new Error("unused in CodexOAuthManager tests")),
     readProjectStoredConfig: (_projectId: ProjectId) =>
@@ -104,6 +105,7 @@ const makeProjectMcpConfigServiceStub = () =>
         projectId,
         effectiveVersion: "mcp-version-1",
         servers: {},
+        ...(input?.oauthCallbackPort ? { oauthCallbackPort: input.oauthCallbackPort } : {}),
       }),
   });
 
@@ -244,6 +246,45 @@ describe("CodexOAuthManager", () => {
       const pending = await startLoginPromise;
       expect(pending.status).toBe("pending");
       expect(client.startOAuthLogin).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("passes the stored OAuth callback port into the Codex OAuth control client", async () => {
+    const client = new FakeOauthClient();
+    let capturedInput: CodexOauthClientAccessInput | undefined;
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub({ oauthCallbackPort: 3118 }),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(true),
+        acquireOauthClient: (input) =>
+          Effect.sync(() => {
+            capturedInput = input;
+            return {
+              client: client as unknown as CodexControlClient,
+              release: Effect.void,
+            };
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      const pending = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      expect(pending.status).toBe("pending");
+      expect(capturedInput?.mcpOAuthCallbackPort).toBe(3118);
     });
   });
 

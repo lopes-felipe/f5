@@ -12,6 +12,27 @@ import {
 
 type McpServerEntry = readonly [string, McpServerDefinition];
 
+export class CodexMcpOAuthCallbackPortConflictError extends Error {
+  readonly ports: ReadonlyArray<{
+    readonly serverName: string;
+    readonly port: number;
+  }>;
+
+  constructor(
+    ports: ReadonlyArray<{
+      readonly serverName: string;
+      readonly port: number;
+    }>,
+  ) {
+    const formattedPorts = ports.map(({ serverName, port }) => `${serverName}:${port}`).join(", ");
+    super(
+      `Codex MCP OAuth callback port must be the same for all enabled servers because Codex accepts a single process-level mcp_oauth_callback_port. Found conflicting ports: ${formattedPorts}.`,
+    );
+    this.name = "CodexMcpOAuthCallbackPortConflictError";
+    this.ports = ports;
+  }
+}
+
 function normalizeMcpEntryName(value: string): string | undefined {
   const normalized = normalizeOptionalString(value);
   if (!normalized || normalized.length > 128) {
@@ -34,6 +55,8 @@ function normalizeCommonEntry(entry: McpServerDefinition): {
   readonly enabledTools?: string[];
   readonly disabledTools?: string[];
   readonly scopes?: string[];
+  readonly oauthClientId?: string;
+  readonly oauthCallbackPort?: number;
   readonly oauthResource?: string;
 } {
   return {
@@ -69,6 +92,15 @@ function normalizeCommonEntry(entry: McpServerDefinition): {
       : {}),
     ...(normalizeOptionalStringArray(entry.scopes)
       ? { scopes: normalizeOptionalStringArray(entry.scopes)! }
+      : {}),
+    ...(normalizeOptionalString(entry.oauthClientId)
+      ? { oauthClientId: normalizeOptionalString(entry.oauthClientId)! }
+      : {}),
+    ...(typeof entry.oauthCallbackPort === "number" &&
+    Number.isInteger(entry.oauthCallbackPort) &&
+    entry.oauthCallbackPort > 0 &&
+    entry.oauthCallbackPort <= 65535
+      ? { oauthCallbackPort: entry.oauthCallbackPort }
       : {}),
     ...(normalizeOptionalString(entry.oauthResource)
       ? { oauthResource: normalizeOptionalString(entry.oauthResource)! }
@@ -153,6 +185,13 @@ export function translateMcpForCodex(
       ...(normalized.enabledTools ? { enabled_tools: normalized.enabledTools } : {}),
       ...(normalized.disabledTools ? { disabled_tools: normalized.disabledTools } : {}),
       ...(normalized.scopes ? { scopes: normalized.scopes } : {}),
+      ...(normalized.oauthClientId
+        ? {
+            oauth: {
+              client_id: normalized.oauthClientId,
+            },
+          }
+        : {}),
       ...(normalized.oauthResource ? { oauth_resource: normalized.oauthResource } : {}),
     };
 
@@ -183,4 +222,23 @@ export function translateMcpForCodex(
   }
 
   return Object.keys(translated).length > 0 ? translated : undefined;
+}
+
+export function readCodexMcpOAuthCallbackPort(
+  servers: McpProjectServersConfig | null | undefined,
+): number | undefined {
+  const ports: Array<{ readonly serverName: string; readonly port: number }> = [];
+  for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+    const normalized = normalizeCommonEntry(definition);
+    if (normalized.oauthCallbackPort !== undefined) {
+      ports.push({ serverName, port: normalized.oauthCallbackPort });
+    }
+  }
+
+  const uniquePorts = new Set(ports.map(({ port }) => port));
+  if (uniquePorts.size > 1) {
+    throw new CodexMcpOAuthCallbackPortConflictError(ports);
+  }
+
+  return ports[0]?.port;
 }

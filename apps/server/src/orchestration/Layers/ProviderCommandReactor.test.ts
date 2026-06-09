@@ -6,11 +6,13 @@ import type { ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   CommandId,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   EventId,
   MessageId,
+  ProviderInstanceId,
   ProjectId,
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   ThreadId,
@@ -57,6 +59,7 @@ import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeLocalFileTracer } from "../../observability/LocalFileTracer.ts";
+import { dispatchBootstrapTurnStart } from "../../wsServer/bootstrapTurnStart.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId =>
@@ -141,6 +144,7 @@ describe("ProviderCommandReactor", () => {
     readonly stateDir?: string;
     readonly threadTitle?: string;
     readonly threadModel?: string;
+    readonly createThread?: boolean;
     readonly tracePath?: string;
   }) {
     const now = new Date().toISOString();
@@ -509,21 +513,23 @@ describe("ProviderCommandReactor", () => {
         createdAt: now,
       }),
     );
-    await Effect.runPromise(
-      engine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.makeUnsafe("cmd-thread-create"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        projectId: asProjectId("project-1"),
-        title: input?.threadTitle ?? "Thread",
-        model: input?.threadModel ?? "gpt-5-codex",
-        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "approval-required",
-        branch: null,
-        worktreePath: null,
-        createdAt: now,
-      }),
-    );
+    if (input?.createThread !== false) {
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("cmd-thread-create"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          projectId: asProjectId("project-1"),
+          title: input?.threadTitle ?? "Thread",
+          model: input?.threadModel ?? "gpt-5-codex",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        }),
+      );
+    }
 
     return {
       engine,
@@ -1828,6 +1834,10 @@ describe("ProviderCommandReactor", () => {
           attachments: [],
         },
         titleGenerationModel: "custom/title-model",
+        titleGenerationModelSelection: {
+          instanceId: ProviderInstanceId.make("codex_personal"),
+          model: "custom/title-model",
+        },
         titleSourceText: "Raw first prompt",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
@@ -1840,6 +1850,10 @@ describe("ProviderCommandReactor", () => {
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
       message: "Raw first prompt",
       model: "custom/title-model",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex_personal"),
+        model: "custom/title-model",
+      },
     });
 
     let readModel = await Effect.runPromise(harness.engine.getReadModel());
@@ -1859,6 +1873,76 @@ describe("ProviderCommandReactor", () => {
     readModel = await Effect.runPromise(harness.engine.getReadModel());
     thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     expect(thread?.title).toBe("Fix sidebar layout");
+  });
+
+  it("generates a first-thread title after draft-thread bootstrap", async () => {
+    const harness = await createHarness({ createThread: false });
+    const now = new Date().toISOString();
+    harness.generateThreadTitle.mockImplementationOnce(() =>
+      Effect.succeed({ title: "Bootstrap thread title" }),
+    );
+
+    await Effect.runPromise(
+      dispatchBootstrapTurnStart({
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("cmd-turn-start-title-bootstrap"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId("user-message-title-bootstrap"),
+            role: "user",
+            text: "bootstrap message text",
+            attachments: [],
+          },
+          titleGenerationModel: "custom/title-model",
+          titleGenerationModelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "custom/title-model",
+          },
+          titleSourceText: "Bootstrap raw prompt",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          bootstrap: {
+            createThread: {
+              projectId: asProjectId("project-1"),
+              title: DEFAULT_NEW_THREAD_TITLE,
+              model: "gpt-5-codex",
+              runtimeMode: "approval-required",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              branch: null,
+              worktreePath: null,
+              createdAt: now,
+            },
+          },
+          createdAt: now,
+        },
+        orchestrationEngine: harness.engine,
+        git: {
+          createWorktree: () => Effect.die("unexpected worktree creation"),
+          removeWorktree: () => Effect.die("unexpected worktree removal"),
+        },
+        projectSetupScriptRunner: {
+          runForThread: () => Effect.die("unexpected setup script"),
+        },
+      }),
+    );
+
+    await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
+    expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+      message: "Bootstrap raw prompt",
+      model: "custom/title-model",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "custom/title-model",
+      },
+    });
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
+      return thread?.title === "Bootstrap thread title";
+    });
   });
 
   it("uses the default title-generation model when the turn omits one", async () => {
@@ -1892,7 +1976,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("retries thread title generation with the default model when spark is unsupported", async () => {
+  it("retries thread title generation with the fallback text-generation model when ChatGPT rejects the title model", async () => {
     const harness = await createHarness({ threadTitle: DEFAULT_NEW_THREAD_TITLE });
     const now = new Date().toISOString();
     harness.generateThreadTitle
@@ -1901,7 +1985,7 @@ describe("ProviderCommandReactor", () => {
           new TextGenerationError({
             operation: "generateThreadTitle",
             detail:
-              "Codex CLI command failed: The 'gpt-5.3-codex-spark' model is not supported when using Codex with a ChatGPT account.",
+              "Codex CLI command failed: The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
           }),
         ),
       )
@@ -1910,15 +1994,15 @@ describe("ProviderCommandReactor", () => {
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe("cmd-turn-start-title-spark-retry"),
+        commandId: CommandId.makeUnsafe("cmd-turn-start-title-chatgpt-retry"),
         threadId: ThreadId.makeUnsafe("thread-1"),
         message: {
-          messageId: asMessageId("user-message-title-spark-retry"),
+          messageId: asMessageId("user-message-title-chatgpt-retry"),
           role: "user",
           text: "provider message text",
           attachments: [],
         },
-        titleGenerationModel: "gpt-5.3-codex-spark",
+        titleGenerationModel: "gpt-5.3-codex",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
@@ -1927,11 +2011,11 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 2);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5.3-codex",
       message: "provider message text",
     });
     expect(harness.generateThreadTitle.mock.calls[1]?.[0]).toMatchObject({
-      model: DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex,
+      model: DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex,
       message: "provider message text",
     });
 

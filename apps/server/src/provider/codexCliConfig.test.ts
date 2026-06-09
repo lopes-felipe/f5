@@ -12,16 +12,21 @@ describe("buildCodexCliMcpConfigArgs", () => {
 
   it("serializes inline MCP server overrides", () => {
     expect(
-      buildCodexCliMcpConfigArgs({
-        filesystem: {
-          type: "stdio",
-          command: "npx",
-          args: ["@modelcontextprotocol/server-filesystem", "/repo"],
+      buildCodexCliMcpConfigArgs(
+        {
+          filesystem: {
+            type: "stdio",
+            command: "npx",
+            args: ["@modelcontextprotocol/server-filesystem", "/repo"],
+          },
         },
-      }),
+        { mcpOAuthCallbackPort: 3118 },
+      ),
     ).toEqual([
       "-c",
       'mcp_servers={"filesystem"={"type"="stdio","command"="npx","args"=["@modelcontextprotocol/server-filesystem","/repo"]}}',
+      "-c",
+      "mcp_oauth_callback_port=3118",
     ]);
   });
 

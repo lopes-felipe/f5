@@ -41,6 +41,28 @@ describe("normalizeProviderStartOptions (claudeAgent launchArgs)", () => {
   });
 });
 
+describe("normalizeProviderStartOptions (MCP OAuth fields)", () => {
+  it("preserves static OAuth client fields for MCP servers", () => {
+    const normalized = normalizeProviderStartOptions("codex", {
+      mcpServers: {
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthClientId: "  client-1  ",
+          oauthCallbackPort: 3118,
+        },
+      },
+    });
+
+    expect(normalized?.mcpServers?.slack).toMatchObject({
+      type: "http",
+      url: "https://mcp.slack.com/mcp",
+      oauthClientId: "client-1",
+      oauthCallbackPort: 3118,
+    });
+  });
+});
+
 describe("getProviderEnvironmentKey includes launchArgs", () => {
   it("distinguishes bindings whose launchArgs differ", () => {
     const withoutArgs = getProviderEnvironmentKey("claudeAgent", undefined);

@@ -62,6 +62,7 @@ function makeFailedStatus(
 interface PendingOAuthMetadata {
   readonly providerOptions: ProviderStartOptions | undefined;
   readonly mcpEffectiveConfigVersion: string | null | undefined;
+  readonly mcpOAuthCallbackPort: number | undefined;
   readonly client: CodexControlClient;
   readonly release: Effect.Effect<void>;
   readonly cleanupNotificationListener: () => void;
@@ -267,6 +268,9 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         ...(metadata?.mcpEffectiveConfigVersion !== undefined
           ? { mcpEffectiveConfigVersion: metadata.mcpEffectiveConfigVersion }
           : {}),
+        ...(metadata?.mcpOAuthCallbackPort
+          ? { mcpOAuthCallbackPort: metadata.mcpOAuthCallbackPort }
+          : {}),
       });
       if (hasLease) {
         return existing;
@@ -320,6 +324,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             ...(providerOptions ? { providerOptions } : {}),
             mcpEffectiveConfigVersion: stored.effectiveVersion,
             mcpServers: stored.servers,
+            ...(stored.oauthCallbackPort ? { mcpOAuthCallbackPort: stored.oauthCallbackPort } : {}),
           })
           .pipe(
             Effect.tapError((error) =>
@@ -348,6 +353,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         const pendingMetadata: PendingOAuthMetadata = {
           providerOptions,
           mcpEffectiveConfigVersion: stored.effectiveVersion,
+          mcpOAuthCallbackPort: stored.oauthCallbackPort,
           client: lease.client,
           release: lease.release,
           cleanupNotificationListener: () => {

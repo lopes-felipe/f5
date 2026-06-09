@@ -1,14 +1,15 @@
 import {
   type ChatAttachment,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  type ModelSelection,
 } from "@t3tools/contracts";
 import { Cause, Effect } from "effect";
 
 import type { TextGenerationShape } from "./git/Services/TextGeneration.ts";
 
 export const THREAD_TITLE_MAX_CHARS = 80;
-export const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
 
 export function trimToMaxChars(value: string, maxChars: number): string {
   if (value.length <= maxChars) {
@@ -69,10 +70,10 @@ export function buildFallbackThreadTitle(input: {
   });
 }
 
-export function isUnsupportedCodexSparkModelError(reason: string): boolean {
+export function isUnsupportedCodexChatGptModelError(reason: string): boolean {
   const normalized = reason.toLowerCase();
   return (
-    normalized.includes(CODEX_SPARK_MODEL) &&
+    normalized.includes("model") &&
     normalized.includes("not supported") &&
     normalized.includes("chatgpt account")
   );
@@ -83,6 +84,7 @@ export const resolveBestEffortGeneratedTitle = (input: {
   readonly titleSourceText: string;
   readonly attachments: ReadonlyArray<ChatAttachment>;
   readonly titleGenerationModel?: string | undefined;
+  readonly titleGenerationModelSelection?: ModelSelection | undefined;
   readonly defaultTitle: string;
   readonly textGeneration: TextGenerationShape;
   readonly logPrefix: string;
@@ -104,33 +106,43 @@ export const resolveBestEffortGeneratedTitle = (input: {
     }
 
     const cwd = input.cwd;
+    const requestedModelSelection = input.titleGenerationModelSelection;
     const requestedModel =
-      input.titleGenerationModel ?? DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex;
+      requestedModelSelection?.model ??
+      input.titleGenerationModel ??
+      DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex;
     const generateTitle = (model: string) =>
       input.textGeneration.generateThreadTitle({
         cwd,
         message: input.titleSourceText,
         ...(input.attachments.length > 0 ? { attachments: input.attachments } : {}),
         model,
+        ...(requestedModelSelection
+          ? {
+              modelSelection:
+                requestedModelSelection.model === model
+                  ? requestedModelSelection
+                  : { ...requestedModelSelection, model },
+            }
+          : {}),
       });
 
     let generatedResult = yield* Effect.exit(generateTitle(requestedModel));
 
-    if (generatedResult._tag === "Failure" && requestedModel === CODEX_SPARK_MODEL) {
+    const fallbackModel = DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex;
+    if (generatedResult._tag === "Failure" && requestedModel !== fallbackModel) {
       const reason = Cause.pretty(generatedResult.cause);
-      if (isUnsupportedCodexSparkModelError(reason)) {
+      if (isUnsupportedCodexChatGptModelError(reason)) {
         yield* Effect.logInfo(
-          `${input.logPrefix} retrying title generation with default model after unsupported spark model`,
+          `${input.logPrefix} retrying title generation with fallback model after unsupported ChatGPT Codex model`,
           {
             ...input.logContext,
             cwd: input.cwd,
             requestedModel,
-            fallbackModel: DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex,
+            fallbackModel,
           },
         );
-        generatedResult = yield* Effect.exit(
-          generateTitle(DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex),
-        );
+        generatedResult = yield* Effect.exit(generateTitle(fallbackModel));
       }
     }
 

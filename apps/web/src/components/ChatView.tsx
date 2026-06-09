@@ -1044,6 +1044,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const selectedProvider: ProviderKind =
     lockedProvider ?? selectedProviderByThreadId ?? inferredThreadProvider ?? "codex";
   const selectedThreadTitleModel = resolveThreadTitleModel(settings);
+  const selectedThreadTitleModelSelection = useMemo(
+    () =>
+      createModelSelection(
+        defaultInstanceIdForDriver(ProviderDriverKind.make("codex")),
+        selectedThreadTitleModel,
+      ),
+    [selectedThreadTitleModel],
+  );
   const draftModelOptions = composerDraft.modelOptions;
   const selectedProviderDriver = ProviderDriverKind.make(selectedProvider);
   const selectedProviderInstanceId = useMemo(() => {
@@ -3980,6 +3988,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         model: selectedModel || undefined,
         modelSelection: selectedModelSelectionForDispatch,
         titleGenerationModel: selectedThreadTitleModel,
+        titleGenerationModelSelection: selectedThreadTitleModelSelection,
         titleSourceText,
         ...(selectedModelOptionsForDispatch
           ? { modelOptions: selectedModelOptionsForDispatch }
@@ -4289,6 +4298,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           model: selectedModel || undefined,
           modelSelection: selectedModelSelectionForDispatch,
           titleGenerationModel: selectedThreadTitleModel,
+          titleGenerationModelSelection: selectedThreadTitleModelSelection,
           titleSourceText: trimmed,
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
@@ -4374,6 +4384,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       selectedModel,
       selectedModelSelectionForDispatch,
       selectedThreadTitleModel,
+      selectedThreadTitleModelSelection,
       selectedModelOptionsForDispatch,
       providerOptionsForDispatch,
       selectedProvider,
@@ -4454,6 +4465,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           model: selectedModel || undefined,
           modelSelection: selectedModelSelectionForDispatch,
           titleGenerationModel: selectedThreadTitleModel,
+          titleGenerationModelSelection: selectedThreadTitleModelSelection,
           titleSourceText: outgoingImplementationPrompt,
           ...(selectedModelOptionsForDispatch
             ? { modelOptions: selectedModelOptionsForDispatch }
@@ -4512,6 +4524,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     selectedModel,
     selectedModelSelectionForDispatch,
     selectedThreadTitleModel,
+    selectedThreadTitleModelSelection,
     selectedModelOptionsForDispatch,
     providerOptionsForDispatch,
     selectedProvider,

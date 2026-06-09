@@ -31,19 +31,36 @@ function encodeTomlInlineValue(value: unknown): string {
 
 export function buildCodexCliMcpConfigArgs(
   servers: Record<string, CodexMcpServerEntry> | null | undefined,
+  options?: {
+    readonly mcpOAuthCallbackPort?: number | null;
+  },
 ): ReadonlyArray<string> {
-  return ["-c", `mcp_servers=${encodeTomlInlineValue(servers ?? {})}`];
+  const callbackPort = options?.mcpOAuthCallbackPort;
+  return [
+    "-c",
+    `mcp_servers=${encodeTomlInlineValue(servers ?? {})}`,
+    ...(typeof callbackPort === "number" &&
+    Number.isInteger(callbackPort) &&
+    callbackPort > 0 &&
+    callbackPort <= 65535
+      ? ["-c", `mcp_oauth_callback_port=${callbackPort}`]
+      : []),
+  ];
 }
 
 export function prependCodexCliTelemetryDisabledConfig(
   args: ReadonlyArray<string>,
   options?: {
     readonly mcpServers?: Record<string, CodexMcpServerEntry> | null;
+    readonly mcpOAuthCallbackPort?: number | null;
   },
 ): ReadonlyArray<string> {
   return [
     ...CODEX_TELEMETRY_DISABLED_CONFIG_ARGS,
-    ...buildCodexCliMcpConfigArgs(options?.mcpServers),
+    ...buildCodexCliMcpConfigArgs(
+      options?.mcpServers,
+      options?.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: options.mcpOAuthCallbackPort } : {},
+    ),
     ...args,
   ];
 }

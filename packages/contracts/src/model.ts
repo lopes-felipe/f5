@@ -201,13 +201,14 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
 
 export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
 
+export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini" as const;
+
 export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
-  codex: "gpt-5.3-codex",
+  codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,
   claudeAgent: "claude-sonnet-4-6",
   cursor: "composer-2",
   opencode: "openai/gpt-5",
 } as const satisfies Record<ProviderKind, ModelSlug>;
-export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini" as const;
 
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,

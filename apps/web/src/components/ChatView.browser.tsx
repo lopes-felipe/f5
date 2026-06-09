@@ -3,6 +3,7 @@ import "../index.css";
 
 import {
   CommandId,
+  DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
@@ -2687,6 +2688,8 @@ describe("ChatView timeline (full app)", () => {
           const dispatchCommand = dispatchRequests[0]?.command as
             | {
                 type?: unknown;
+                titleGenerationModel?: unknown;
+                titleGenerationModelSelection?: Record<string, unknown>;
                 bootstrap?: {
                   createThread?: Record<string, unknown>;
                   prepareWorktree?: Record<string, unknown>;
@@ -2695,6 +2698,13 @@ describe("ChatView timeline (full app)", () => {
               }
             | undefined;
           expect(dispatchCommand?.type).toBe("thread.turn.start");
+          expect(dispatchCommand?.titleGenerationModel).toBe(
+            DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex,
+          );
+          expect(dispatchCommand?.titleGenerationModelSelection).toMatchObject({
+            instanceId: "codex",
+            model: DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex,
+          });
 
           const bootstrap = dispatchCommand?.bootstrap;
           expect(bootstrap?.createThread).toMatchObject({
