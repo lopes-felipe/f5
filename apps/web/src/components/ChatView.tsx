@@ -38,7 +38,6 @@ import {
   getDefaultModel,
   inferProviderForModel,
   isClaudeUltrathinkPrompt,
-  normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeModelSlug,
   supportsClaudeUltrathinkKeyword,
@@ -1206,20 +1205,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
     selectedProvider === "claudeAgent" &&
     supportsClaudeUltrathinkKeyword(selectedModel) &&
     isClaudeUltrathinkPrompt(prompt);
+  const showClaudeTraitsControls = useMemo(
+    () =>
+      selectedProvider === "claudeAgent" &&
+      supportsClaudeTraitsControls({
+        model: selectedModel,
+        models: selectedProviderModels,
+        modelOptions: selectedProviderModelOptions,
+        prompt,
+      }),
+    [prompt, selectedModel, selectedProvider, selectedProviderModelOptions, selectedProviderModels],
+  );
   const selectedModelOptionsForDispatch = useMemo(() => {
     if (selectedProvider === "codex") {
       const codexOptions = normalizeCodexModelOptions(draftModelOptions?.codex);
       return codexOptions ? { codex: codexOptions } : undefined;
     }
-    if (selectedProvider === "claudeAgent") {
-      const claudeOptions = normalizeClaudeModelOptions(
-        selectedModel,
-        draftModelOptions?.claudeAgent,
-      );
-      return claudeOptions ? { claudeAgent: claudeOptions } : undefined;
-    }
     return genericModelOptionsForDispatch;
-  }, [draftModelOptions, genericModelOptionsForDispatch, selectedModel, selectedProvider]);
+  }, [draftModelOptions?.codex, genericModelOptionsForDispatch, selectedProvider]);
   const selectedModelSelectionForDispatch = useMemo(
     () =>
       createModelSelection(
@@ -5503,11 +5506,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               traitsMenuContent={
                                 selectedProvider === "codex" ? (
                                   <CodexTraitsMenuContent threadId={threadId} />
-                                ) : selectedProvider === "claudeAgent" &&
-                                  supportsClaudeTraitsControls(selectedModel) ? (
+                                ) : showClaudeTraitsControls ? (
                                   <ClaudeTraitsMenuContent
                                     threadId={threadId}
                                     model={selectedModel}
+                                    models={selectedProviderModels}
+                                    modelOptions={selectedProviderModelOptions}
+                                    prompt={prompt}
                                     onPromptChange={setPromptFromTraits}
                                   />
                                 ) : (
@@ -5529,8 +5534,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   />
                                   <CodexTraitsPicker threadId={threadId} />
                                 </>
-                              ) : selectedProvider === "claudeAgent" &&
-                                supportsClaudeTraitsControls(selectedModel) ? (
+                              ) : showClaudeTraitsControls ? (
                                 <>
                                   <Separator
                                     orientation="vertical"
@@ -5539,6 +5543,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   <ClaudeTraitsPicker
                                     threadId={threadId}
                                     model={selectedModel}
+                                    models={selectedProviderModels}
+                                    modelOptions={selectedProviderModelOptions}
+                                    prompt={prompt}
                                     onPromptChange={setPromptFromTraits}
                                   />
                                 </>

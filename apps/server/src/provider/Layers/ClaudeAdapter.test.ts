@@ -13,10 +13,12 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   ApprovalRequestId,
+  ProviderInstanceId,
   ProviderItemId,
   ProviderRuntimeEvent,
   ThreadId,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Random, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
@@ -835,6 +837,150 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("forwards Claude Fable 5 default max effort into query options", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.effort, "max");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses Claude Code 1M model suffix on session start", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 3).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-fable-5[1m]");
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const configured = runtimeEvents.find(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.configured" }> =>
+          event.type === "session.configured",
+      );
+      assert.equal(configured?.payload.config.model, "claude-fable-5");
+      assert.equal(configured?.payload.config.context_window, "1m");
+      assert.equal(configured?.payload.config.modelContextWindowTokens, 1_000_000);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("uses the plain Claude model id for explicit 200k context window", () => {
+    const harness = makeHarness();
+    harness.query.setSupportedModelsResult([
+      {
+        value: "claude-fable-5",
+        capabilities: {
+          max_input_tokens: 1_000_000,
+        },
+      },
+    ]);
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 3).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-fable-5");
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const configured = runtimeEvents.find(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.configured" }> =>
+          event.type === "session.configured",
+      );
+      assert.equal(configured?.payload.config.context_window, "200k");
+      assert.equal(configured?.payload.config.modelContextWindowTokens, 200_000);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("defaults context-window capable Claude sessions to 200k", () => {
+    const harness = makeHarness();
+    harness.query.setSupportedModelsResult([
+      {
+        value: "claude-fable-5",
+        capabilities: {
+          max_input_tokens: 1_000_000,
+        },
+      },
+    ]);
+
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 3).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.model, "claude-fable-5");
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      const configured = runtimeEvents.find(
+        (event): event is Extract<ProviderRuntimeEvent, { type: "session.configured" }> =>
+          event.type === "session.configured",
+      );
+      assert.equal(configured?.payload.config.context_window, "200k");
+      assert.equal(configured?.payload.config.modelContextWindowTokens, 200_000);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("forwards xhigh effort for Claude Opus 4.7", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -890,6 +1036,7 @@ describe("ClaudeAdapterLive", () => {
           threadTitle: "Phase 1 port",
           turnCount: 2,
           model: "claude-opus-4-6",
+          effort: "high",
           runtimeMode: "full-access",
           currentDate,
         }),
@@ -938,7 +1085,7 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     harness.query.setSupportedModelsResult([
       {
-        value: "claude-opus-4-7",
+        value: "claude-opus-4-5",
         capabilities: {
           max_input_tokens: 1_234_567,
         },
@@ -956,7 +1103,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-5",
       });
 
       const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
@@ -995,7 +1142,7 @@ describe("ClaudeAdapterLive", () => {
           JSON.stringify({
             data: [
               {
-                id: "claude-opus-4-7",
+                id: "claude-opus-4-5",
                 max_input_tokens: 1_111_000,
               },
             ],
@@ -1020,7 +1167,7 @@ describe("ClaudeAdapterLive", () => {
             threadId: THREAD_ID,
             provider: "claudeAgent",
             runtimeMode: "full-access",
-            model: "claude-opus-4-7",
+            model: "claude-opus-4-5",
           });
 
           const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
@@ -4037,7 +4184,7 @@ describe("ClaudeAdapterLive", () => {
     const harness = makeHarness();
     harness.query.setSupportedModelsResult([
       {
-        value: "claude-opus-4-7",
+        value: "claude-opus-4-5",
         capabilities: {
           max_input_tokens: 1_234_567,
         },
@@ -4051,7 +4198,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
-        model: "claude-opus-4-7",
+        model: "claude-opus-4-5",
       });
       yield* Stream.take(adapter.streamEvents, 4).pipe(Stream.runDrain);
 
@@ -4526,6 +4673,199 @@ describe("ClaudeAdapterLive", () => {
       });
 
       assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("sets Claude Code 1M model id on follow-up turns", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5[1m]"]);
+      const configured = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(configured._tag, "Some");
+      if (configured._tag === "Some" && configured.value.type === "session.configured") {
+        assert.equal(configured.value.payload.config.context_window, "1m");
+        assert.equal(configured.value.payload.config.modelContextWindowTokens, 1_000_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("preserves 1M context on model-only follow-up turns", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        model: "claude-fable-5",
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, []);
+      const nextEvent = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(nextEvent._tag, "Some");
+      if (nextEvent._tag === "Some") {
+        assert.notEqual(nextEvent.value.type, "session.configured");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("honors follow-up model selections for non-default Claude instances", () => {
+    const harness = makeHarness();
+    const instanceId = ProviderInstanceId.make("claude_work");
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        providerInstanceId: instanceId,
+        model: "claude-fable-5",
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(instanceId, "claude-fable-5", [
+          { id: "contextWindow", value: "1m" },
+        ]),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5[1m]"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("does not apply 1M suffix to models without context-window support", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        model: "claude-haiku-4-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-haiku-4-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, ["claude-haiku-4-5"]);
+      const configured = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(configured._tag, "Some");
+      if (configured._tag === "Some" && configured.value.type === "session.configured") {
+        assert.equal(configured.value.payload.config.context_window, undefined);
+        assert.equal(configured.value.payload.config.modelContextWindowTokens, 200_000);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("resets Claude Code model id to plain base model for follow-up 200k selection", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "1m" }],
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        model: "claude-fable-5",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-fable-5",
+          [{ id: "contextWindow", value: "200k" }],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5"]);
+      const configured = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(configured._tag, "Some");
+      if (configured._tag === "Some" && configured.value.type === "session.configured") {
+        assert.equal(configured.value.payload.config.context_window, "200k");
+        assert.equal(configured.value.payload.config.modelContextWindowTokens, 200_000);
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

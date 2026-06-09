@@ -24,6 +24,7 @@ import {
   normalizeProviderModelOptions,
   providerSelectionsToModelOptions,
 } from "./providerModelOptions";
+import { recordModelSelection, useModelPreferencesStore } from "./modelPreferencesStore";
 import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
@@ -1348,7 +1349,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { draftsByThreadId: nextDraftsByThreadId };
         });
       },
-      setProviderModelOptions: (target, provider, nextProviderOptions) => {
+      setProviderModelOptions: (target, provider, nextProviderOptions, options) => {
         const threadId = typeof target === "string" ? target : target.threadId;
         if (threadId.length === 0) {
           return;
@@ -1362,6 +1363,23 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           nextProviderOptions,
         );
         get().setModelOptions(threadId, legacyOptions);
+        if (options?.persistSticky) {
+          const draft = get().draftsByThreadId[threadId];
+          const currentModel =
+            (typeof options.model === "string" && options.model.length > 0
+              ? options.model
+              : null) ??
+            draft?.model ??
+            useModelPreferencesStore.getState().lastModelByProvider[normalizedProvider] ??
+            null;
+          if (currentModel) {
+            recordModelSelection(normalizedProvider, currentModel, legacyOptions);
+          } else {
+            useModelPreferencesStore
+              .getState()
+              .setLastModelOptions(normalizedProvider, legacyOptions);
+          }
+        }
       },
       setRuntimeMode: (threadId, runtimeMode) => {
         if (threadId.length === 0) {

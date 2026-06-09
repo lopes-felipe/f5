@@ -35,6 +35,13 @@ describe("parseClaudeLaunchArgs", () => {
     });
   });
 
+  it("parses Claude Fable 5 model and effort flags", () => {
+    expect(parseClaudeLaunchArgs("--model claude-fable-5 --effort max")).toEqual({
+      ok: true,
+      args: { model: "claude-fable-5", effort: "max" },
+    });
+  });
+
   it("preserves quoted values that contain spaces", () => {
     expect(parseClaudeLaunchArgs('--custom "hello world"')).toEqual({
       ok: true,

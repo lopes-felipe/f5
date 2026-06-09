@@ -2,20 +2,25 @@ import { describe, expect, it } from "vitest";
 import { DEFAULT_MODEL_BY_PROVIDER, MODEL_OPTIONS_BY_PROVIDER } from "@t3tools/contracts";
 
 import {
+  claudeModelOptionsToProviderOptionSelections,
   DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS,
   estimateContextTokensAfterMessageUpdate,
   estimateModelContextWindowTokens,
   estimateMessageContextCharacters,
+  getClaudeContextWindowTokens,
   getDefaultModel,
   getEffectiveClaudeCodeEffort,
   getDefaultReasoningEffort,
   getModelOptions,
   getReasoningEffortOptions,
+  normalizeClaudeModelOptions,
+  normalizeClaudeContextWindow,
   normalizeModelSlug,
   roughTokenEstimateFromCharacters,
   resolveSelectableModel,
   resolveModelSlug,
   supportsClaudeAdaptiveReasoning,
+  supportsClaudeContextWindow,
   supportsClaudeFastMode,
   supportsClaudeMaxEffort,
   supportsClaudeThinkingToggle,
@@ -27,6 +32,9 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("5.5")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
+    expect(normalizeModelSlug("fable", "claudeAgent")).toBe("claude-fable-5");
+    expect(normalizeModelSlug("fable-5", "claudeAgent")).toBe("claude-fable-5");
+    expect(normalizeModelSlug("claude-fable", "claudeAgent")).toBe("claude-fable-5");
     expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("claude-opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
@@ -45,6 +53,11 @@ describe("normalizeModelSlug", () => {
   it("preserves non-aliased model slugs", () => {
     expect(normalizeModelSlug("gpt-5.2")).toBe("gpt-5.2");
     expect(normalizeModelSlug("gpt-5.2-codex")).toBe("gpt-5.2-codex");
+  });
+
+  it("strips Claude Code context-window suffixes from Claude model slugs", () => {
+    expect(normalizeModelSlug("claude-fable-5[1m]", "claudeAgent")).toBe("claude-fable-5");
+    expect(normalizeModelSlug("claude-fable-5[200k]", "claudeAgent")).toBe("claude-fable-5");
   });
 
   it("does not leak prototype properties as aliases", () => {
@@ -74,10 +87,11 @@ describe("resolveModelSlug", () => {
     expect(getModelOptions()).toEqual(MODEL_OPTIONS_BY_PROVIDER.codex);
   });
 
-  it("makes Claude Opus 4.8 the Claude default while exposing prior Opus releases", () => {
+  it("makes Claude Fable 5 the Claude default while exposing prior Opus releases", () => {
     expect(getDefaultModel("claudeAgent")).toBe(DEFAULT_MODEL_BY_PROVIDER.claudeAgent);
-    expect(DEFAULT_MODEL_BY_PROVIDER.claudeAgent).toBe("claude-opus-4-8");
+    expect(DEFAULT_MODEL_BY_PROVIDER.claudeAgent).toBe("claude-fable-5");
     expect(getModelOptions("claudeAgent").map((option) => option.slug)).toEqual([
+      "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "claude-opus-4-6",
@@ -120,6 +134,17 @@ describe("resolveSelectableModel", () => {
 describe("getReasoningEffortOptions", () => {
   it("returns codex reasoning options for codex", () => {
     expect(getReasoningEffortOptions("codex")).toEqual(["xhigh", "high", "medium", "low"]);
+  });
+
+  it("exposes full Claude Fable effort controls", () => {
+    expect(getReasoningEffortOptions("claudeAgent", "claude-fable-5")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultrathink",
+    ]);
   });
 
   it("keeps Opus 4.6 effort support without exposing xhigh", () => {
@@ -166,6 +191,15 @@ describe("getReasoningEffortOptions", () => {
 });
 
 describe("Claude capability predicates", () => {
+  it("enables Claude Fable 5 effort capabilities while keeping fast mode and thinking off", () => {
+    expect(supportsClaudeFastMode("claude-fable-5")).toBe(false);
+    expect(supportsClaudeContextWindow("claude-fable-5")).toBe(true);
+    expect(supportsClaudeMaxEffort("claude-fable-5")).toBe(true);
+    expect(supportsClaudeAdaptiveReasoning("claude-fable-5")).toBe(true);
+    expect(supportsClaudeThinkingToggle("claude-fable-5")).toBe(false);
+    expect(supportsClaudeUltrathinkKeyword("claude-fable-5")).toBe(true);
+  });
+
   it("enables Claude Opus 4.7 effort capabilities while keeping fast mode off", () => {
     expect(supportsClaudeFastMode("claude-opus-4-7")).toBe(false);
     expect(supportsClaudeMaxEffort("claude-opus-4-7")).toBe(true);
@@ -192,6 +226,7 @@ describe("Claude capability predicates", () => {
 
   it("retains documented Claude Opus 4.5 capabilities", () => {
     expect(supportsClaudeFastMode("claude-opus-4-5")).toBe(true);
+    expect(supportsClaudeContextWindow("claude-opus-4-5")).toBe(false);
     expect(supportsClaudeMaxEffort("claude-opus-4-5")).toBe(true);
     expect(supportsClaudeAdaptiveReasoning("claude-opus-4-5")).toBe(true);
     expect(supportsClaudeThinkingToggle("claude-opus-4-5")).toBe(false);
@@ -205,6 +240,7 @@ describe("getDefaultReasoningEffort", () => {
   });
 
   it("uses model-aware Claude defaults", () => {
+    expect(getDefaultReasoningEffort("claudeAgent", "claude-fable-5")).toBe("max");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-8")).toBe("xhigh");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-7")).toBe("xhigh");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-6")).toBe("high");
@@ -226,6 +262,7 @@ describe("estimateModelContextWindowTokens", () => {
     expect(estimateModelContextWindowTokens("gpt-5.5")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4-mini")).toBe(400_000);
+    expect(estimateModelContextWindowTokens("claude-fable-5")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-8")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-7")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-5")).toBe(1_000_000);
@@ -243,6 +280,59 @@ describe("estimateModelContextWindowTokens", () => {
     expect(estimateModelContextWindowTokens("gpt-5.3", "codex")).toBe(400_000);
     expect(estimateModelContextWindowTokens("opus", "claudeAgent")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("sonnet", "claudeAgent")).toBe(1_000_000);
+    expect(estimateModelContextWindowTokens("claude-fable-5[1m]", "claudeAgent")).toBe(1_000_000);
+  });
+});
+
+describe("Claude context window options", () => {
+  it("normalizes supported Claude context-window values", () => {
+    expect(normalizeClaudeContextWindow("200k")).toBe("200k");
+    expect(normalizeClaudeContextWindow(" 1M ")).toBe("1m");
+    expect(normalizeClaudeContextWindow("2m")).toBeUndefined();
+  });
+
+  it("maps Claude context windows to token windows", () => {
+    expect(getClaudeContextWindowTokens("200k")).toBe(200_000);
+    expect(getClaudeContextWindowTokens("1m")).toBe(1_000_000);
+  });
+
+  it("preserves explicit context windows when normalizing Claude options", () => {
+    expect(
+      normalizeClaudeModelOptions("claude-fable-5", {
+        effort: "max",
+        contextWindow: "200k",
+      }),
+    ).toEqual({ contextWindow: "200k" });
+    expect(
+      normalizeClaudeModelOptions("claude-fable-5", {
+        contextWindow: "1m",
+      }),
+    ).toEqual({ contextWindow: "1m" });
+    expect(
+      normalizeClaudeModelOptions("claude-haiku-4-5", {
+        contextWindow: "1m",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("converts Claude model options to provider option selections", () => {
+    expect(
+      claudeModelOptionsToProviderOptionSelections({
+        effort: "max",
+        contextWindow: "1m",
+      }),
+    ).toEqual([
+      { id: "effort", value: "max" },
+      { id: "contextWindow", value: "1m" },
+    ]);
+    expect(
+      claudeModelOptionsToProviderOptionSelections(
+        {
+          contextWindow: "1m",
+        },
+        "claude-haiku-4-5",
+      ),
+    ).toBeUndefined();
   });
 });
 

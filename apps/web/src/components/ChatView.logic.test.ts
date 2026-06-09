@@ -170,6 +170,31 @@ describe("resolveComposerPickerModel", () => {
       }),
     ).toBe("claude-opus-4-7");
   });
+
+  it("falls back to an available server default when Claude Fable 5 is gated out", () => {
+    const providers = [
+      provider({
+        provider: "claudeAgent",
+        models: [
+          { slug: "claude-opus-4-8", name: "Claude Opus 4.8" },
+          { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
+        ],
+      }),
+    ];
+    const pickerOptions = providers[0]!.models.map((model) => ({
+      slug: model.slug,
+      name: model.name,
+    }));
+
+    expect(
+      resolveComposerPickerModel({
+        provider: "claudeAgent",
+        rawModel: "claude-fable-5",
+        pickerOptions,
+        providers,
+      }),
+    ).toBe("claude-opus-4-8");
+  });
 });
 
 describe("buildSlashComposerMenuItems", () => {

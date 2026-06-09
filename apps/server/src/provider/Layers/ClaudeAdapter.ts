@@ -24,8 +24,11 @@ import {
   type CanonicalRequestType,
   EventId,
   type ClaudeCodeEffort,
+  type ModelSelection,
   type ProviderApprovalDecision,
+  ProviderInstanceId,
   ProviderItemId,
+  type ProviderModelOptions,
   type ProviderRequestKind,
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
@@ -43,9 +46,17 @@ import {
 } from "@t3tools/contracts";
 import {
   applyClaudePromptEffortPrefix,
+  claudeModelOptionsToProviderOptionSelections,
+  createModelSelection,
+  getDefaultReasoningEffort,
+  getClaudeContextWindowTokens,
   getEffectiveClaudeCodeEffort,
+  getProviderOptionBooleanSelectionValue,
+  getProviderOptionStringSelectionValue,
   getReasoningEffortOptions,
+  normalizeClaudeContextWindow,
   resolveReasoningEffortForProvider,
+  supportsClaudeContextWindow,
   supportsClaudeFastMode,
   supportsClaudeThinkingToggle,
   supportsClaudeUltrathinkKeyword,
@@ -106,6 +117,7 @@ import type {
 import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.ts";
 import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { resolveClaudeApiModelId } from "./ClaudeProvider.ts";
 
 const PROVIDER = "claudeAgent" as const;
 const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
@@ -115,6 +127,7 @@ type ClaudeToolResultStreamKind = Extract<
   "command_output" | "file_change_output"
 >;
 type ClaudeSdkEffort = Exclude<ClaudeCodeEffort, "ultrathink">;
+type ClaudeContextWindow = "200k" | "1m";
 
 type PromptQueueItem =
   | {
@@ -226,6 +239,7 @@ interface ClaudeTaskUpdatedMessage {
 
 interface ClaudeSessionContext {
   session: ProviderSession;
+  readonly providerInstanceId: ProviderInstanceId;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
@@ -745,10 +759,99 @@ function getClaudeSessionModel(context: ClaudeSessionContext): string | undefine
   );
 }
 
+function getConfiguredClaudeContextWindow(
+  config: Record<string, unknown>,
+): ClaudeContextWindow | undefined {
+  const value = config.context_window;
+  return normalizeClaudeContextWindow(typeof value === "string" ? value : undefined);
+}
+
 function emittedModelContextWindowTokens(context: ClaudeSessionContext): number | undefined {
   return getClaudeSessionModel(context) === undefined
     ? undefined
     : context.modelContextWindowTokens;
+}
+
+function getClaudeModelSelectionForInstance(input: {
+  readonly modelSelection?: ModelSelection | undefined;
+  readonly providerInstanceId?: ProviderInstanceId | undefined;
+}): ModelSelection | undefined {
+  if (!input.modelSelection) {
+    return undefined;
+  }
+  const boundInstanceId = input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER);
+  return input.modelSelection.instanceId === boundInstanceId ? input.modelSelection : undefined;
+}
+
+function resolveClaudeRuntimeModelSelection(input: {
+  readonly providerInstanceId?: ProviderInstanceId | undefined;
+  readonly model?: string | undefined;
+  readonly modelOptions?: ProviderModelOptions | undefined;
+  readonly modelSelection?: ModelSelection | undefined;
+  readonly fallbackModel?: string | undefined;
+  readonly fallbackContextWindow?: ClaudeContextWindow | undefined;
+}): {
+  readonly baseModel?: string;
+  readonly apiModel?: string;
+  readonly options?: NonNullable<ModelSelection["options"]>;
+  readonly contextWindow?: ClaudeContextWindow;
+  readonly contextWindowTokens?: number;
+} {
+  const providerInstanceId = input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER);
+  const matchingModelSelection = getClaudeModelSelectionForInstance({
+    modelSelection: input.modelSelection,
+    providerInstanceId,
+  });
+  const baseModel = matchingModelSelection?.model ?? input.model ?? input.fallbackModel;
+  if (!baseModel) {
+    return {};
+  }
+
+  const options =
+    matchingModelSelection?.options ??
+    claudeModelOptionsToProviderOptionSelections(input.modelOptions?.claudeAgent, baseModel);
+  const supportsContextWindow = supportsClaudeContextWindow(baseModel);
+  const selectedContextWindow = supportsContextWindow
+    ? normalizeClaudeContextWindow(getProviderOptionStringSelectionValue(options, "contextWindow"))
+    : undefined;
+  const contextWindow = normalizeClaudeContextWindow(
+    selectedContextWindow ??
+      (supportsContextWindow ? (input.fallbackContextWindow ?? "200k") : undefined),
+  );
+  const contextWindowTokens = contextWindow
+    ? getClaudeContextWindowTokens(contextWindow)
+    : undefined;
+  const effectiveOptions = [
+    ...(options?.filter((option) => option.id !== "contextWindow") ?? []),
+    ...(contextWindow ? [{ id: "contextWindow", value: contextWindow } as const] : []),
+  ];
+  const selection = createModelSelection(
+    providerInstanceId,
+    baseModel,
+    effectiveOptions.length > 0 ? effectiveOptions : undefined,
+  );
+  return {
+    baseModel,
+    apiModel: resolveClaudeApiModelId(selection),
+    ...(effectiveOptions.length > 0 ? { options: effectiveOptions } : {}),
+    ...(contextWindow ? { contextWindow } : {}),
+    ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
+  };
+}
+
+function withClaudeRuntimeSelectionConfig(
+  config: Record<string, unknown>,
+  selection: {
+    readonly baseModel?: string;
+    readonly contextWindow?: ClaudeContextWindow;
+  },
+): Record<string, unknown> {
+  const { context_window: _discardedContextWindow, ...rest } = config;
+  return {
+    ...rest,
+    ...(selection.baseModel ? { model: selection.baseModel } : {}),
+    ...(selection.contextWindow ? { context_window: selection.contextWindow } : {}),
+  };
 }
 
 async function lookupClaudeReportedModelContextWindowTokens(
@@ -1554,6 +1657,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       Effect.gen(function* () {
         const requestedModel = getClaudeSessionModel(context);
         if (!requestedModel) {
+          return;
+        }
+        if (getConfiguredClaudeContextWindow(context.configuredBase)) {
           return;
         }
 
@@ -4023,21 +4129,37 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
           );
 
+        const runtimeModelSelection = resolveClaudeRuntimeModelSelection({
+          providerInstanceId: input.providerInstanceId,
+          model: input.model,
+          modelOptions: input.modelOptions,
+          modelSelection: input.modelSelection,
+        });
+        const selectedModel = runtimeModelSelection.baseModel ?? input.model;
         const requestedEffort = resolveReasoningEffortForProvider(
           "claudeAgent",
-          input.modelOptions?.claudeAgent?.effort ?? null,
+          getProviderOptionStringSelectionValue(runtimeModelSelection.options, "effort") ?? null,
         );
-        const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", input.model);
+        const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", selectedModel);
+        const defaultEffort = requestedEffort
+          ? null
+          : getDefaultReasoningEffort("claudeAgent", selectedModel);
         const effort =
           requestedEffort && supportedEffortOptions.includes(requestedEffort)
             ? requestedEffort
-            : null;
+            : defaultEffort && supportedEffortOptions.includes(defaultEffort)
+              ? defaultEffort
+              : null;
         const fastMode =
-          input.modelOptions?.claudeAgent?.fastMode === true && supportsClaudeFastMode(input.model);
+          getProviderOptionBooleanSelectionValue(runtimeModelSelection.options, "fastMode") ===
+            true && supportsClaudeFastMode(selectedModel);
+        const thinkingSelection = getProviderOptionBooleanSelectionValue(
+          runtimeModelSelection.options,
+          "thinking",
+        );
         const thinking =
-          typeof input.modelOptions?.claudeAgent?.thinking === "boolean" &&
-          supportsClaudeThinkingToggle(input.model)
-            ? input.modelOptions.claudeAgent.thinking
+          typeof thinkingSelection === "boolean" && supportsClaudeThinkingToggle(selectedModel)
+            ? thinkingSelection
             : undefined;
         const effectiveEffort = getEffectiveClaudeCodeEffort(effort);
         const permissionMode =
@@ -4049,9 +4171,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(fastMode ? { fastMode: true } : {}),
         };
         const configuredBase = {
-          ...(input.model ? { model: input.model } : {}),
+          ...(selectedModel ? { model: selectedModel } : {}),
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
+          ...(runtimeModelSelection.contextWindow
+            ? { context_window: runtimeModelSelection.contextWindow }
+            : {}),
           ...(permissionMode ? { permissionMode } : {}),
           ...(providerOptions?.maxThinkingTokens !== undefined
             ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
@@ -4087,7 +4212,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ...(input.cwd ? { cwd: input.cwd } : {}),
                 runtimeMode: input.runtimeMode,
                 currentDate: new Date().toISOString().slice(0, 10),
-                ...(input.model ? { model: input.model } : {}),
+                ...(selectedModel ? { model: selectedModel } : {}),
                 ...(effectiveEffort ? { effort: effectiveEffort } : {}),
               })
             : undefined;
@@ -4104,7 +4229,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const queryOptions: ClaudeQueryOptionsWithAppend = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
-          ...(input.model ? { model: input.model } : {}),
+          ...(runtimeModelSelection.apiModel ? { model: runtimeModelSelection.apiModel } : {}),
           pathToClaudeCodeExecutable: providerOptions?.binaryPath ?? "claude",
           settingSources: [...CLAUDE_SETTING_SOURCES],
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
@@ -4163,7 +4288,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           status: "ready",
           runtimeMode: input.runtimeMode,
           ...(input.cwd ? { cwd: input.cwd } : {}),
-          ...(input.model ? { model: input.model } : {}),
+          ...(selectedModel ? { model: selectedModel } : {}),
           ...(threadId ? { threadId } : {}),
           resumeCursor: {
             ...(threadId ? { threadId } : {}),
@@ -4179,6 +4304,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const context: ClaudeSessionContext = {
           session,
+          providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
           promptQueue,
           query: queryRuntime,
           streamFiber: undefined,
@@ -4202,7 +4328,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             resumeState?.baseContextChars ?? Math.max(0, appendInstructionText?.length ?? 0),
           approximateConversationChars: resumeState?.approximateConversationChars ?? 0,
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,
-          modelContextWindowTokens: estimateModelContextWindowTokens(input.model, "claudeAgent"),
+          modelContextWindowTokens:
+            runtimeModelSelection.contextWindowTokens ??
+            estimateModelContextWindowTokens(selectedModel, "claudeAgent"),
           stopped: false,
         };
         yield* Ref.set(contextRef, context);
@@ -4277,24 +4405,49 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* completeTurn(context, "completed");
         }
 
-        if (input.model) {
-          yield* Effect.tryPromise({
-            try: () => context.query.setModel(input.model),
-            catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
+        if (input.model || input.modelSelection || input.modelOptions) {
+          const runtimeModelSelection = resolveClaudeRuntimeModelSelection({
+            providerInstanceId: context.providerInstanceId,
+            model: input.model,
+            modelOptions: input.modelOptions,
+            modelSelection: input.modelSelection,
+            fallbackModel: context.session.model,
+            fallbackContextWindow: getConfiguredClaudeContextWindow(context.configuredBase),
           });
-          context.session = {
-            ...context.session,
-            model: input.model,
-          };
-          context.configuredBase = {
-            ...context.configuredBase,
-            model: input.model,
-          };
-          context.modelContextWindowTokens = estimateModelContextWindowTokens(
-            input.model,
-            "claudeAgent",
-          );
-          Effect.runFork(refreshModelContextWindowTokens(context));
+          if (runtimeModelSelection.apiModel && runtimeModelSelection.baseModel) {
+            const previousModel = getClaudeSessionModel(context);
+            const previousContextWindow = getConfiguredClaudeContextWindow(context.configuredBase);
+            const shouldSetModel =
+              runtimeModelSelection.baseModel !== previousModel ||
+              runtimeModelSelection.contextWindow !== previousContextWindow;
+            if (shouldSetModel) {
+              yield* Effect.tryPromise({
+                try: () => context.query.setModel(runtimeModelSelection.apiModel),
+                catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
+              });
+            }
+            context.session = {
+              ...context.session,
+              model: runtimeModelSelection.baseModel,
+            };
+            context.configuredBase = withClaudeRuntimeSelectionConfig(
+              context.configuredBase,
+              runtimeModelSelection,
+            );
+            context.modelContextWindowTokens =
+              runtimeModelSelection.contextWindowTokens ??
+              estimateModelContextWindowTokens(runtimeModelSelection.baseModel, "claudeAgent");
+            if (
+              shouldSetModel &&
+              (runtimeModelSelection.contextWindow !== undefined ||
+                previousContextWindow !== undefined)
+            ) {
+              yield* emitSessionConfigured(context, context.configuredBase);
+            }
+            if (runtimeModelSelection.contextWindow === undefined) {
+              Effect.runFork(refreshModelContextWindowTokens(context));
+            }
+          }
         }
 
         // Apply interaction mode by switching the SDK's permission mode.

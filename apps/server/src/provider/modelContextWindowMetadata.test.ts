@@ -43,6 +43,12 @@ describe("modelContextWindowMetadata", () => {
   it("builds a claude model catalog from supported-model metadata", () => {
     const catalog = readClaudeModelContextWindowCatalog([
       {
+        value: "claude-fable-5",
+        capabilities: {
+          max_input_tokens: 1_000_000,
+        },
+      },
+      {
         value: "claude-opus-4-7",
         capabilities: {
           max_input_tokens: 1_000_000,
@@ -56,6 +62,13 @@ describe("modelContextWindowMetadata", () => {
       },
     ]);
 
+    expect(
+      lookupModelContextWindowTokens({
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        catalog,
+      }),
+    ).toBe(1_000_000);
     expect(
       lookupModelContextWindowTokens({
         provider: "claudeAgent",
@@ -83,6 +96,10 @@ describe("modelContextWindowMetadata", () => {
           JSON.stringify({
             data: [
               {
+                id: "claude-fable-5",
+                max_input_tokens: 1_000_000,
+              },
+              {
                 id: "claude-opus-4-7",
                 max_input_tokens: 1_000_000,
               },
@@ -106,6 +123,13 @@ describe("modelContextWindowMetadata", () => {
     expect(
       lookupModelContextWindowTokens({
         provider: "claudeAgent",
+        model: "claude-fable-5",
+        catalog,
+      }),
+    ).toBe(1_000_000);
+    expect(
+      lookupModelContextWindowTokens({
+        provider: "claudeAgent",
         model: "claude-opus-4-7",
         catalog,
       }),
@@ -123,7 +147,7 @@ describe("modelContextWindowMetadata", () => {
     expect(
       resolveModelContextWindowTokens({
         provider: "claudeAgent",
-        model: "claude-opus-4-7",
+        model: "claude-fable-5",
       }),
     ).toBe(1_000_000);
   });

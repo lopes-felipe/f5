@@ -201,6 +201,27 @@ describe("modelPreferencesStore", () => {
     });
   });
 
+  it("round-trips explicit Fable 5 effort and context selections", () => {
+    const store = useModelPreferencesStore.getState();
+    store.setLastModel("claudeAgent", "claude-fable-5");
+    store.setLastModelOptions("claudeAgent", {
+      claudeAgent: { effort: "max", contextWindow: "1m" },
+    });
+
+    const persistApi = getPersistApi();
+    const persistedState = persistApi.getOptions().partialize(useModelPreferencesStore.getState());
+    const mergedState = persistApi
+      .getOptions()
+      .merge(persistedState, useModelPreferencesStore.getInitialState());
+
+    expect(mergedState.lastModelByProvider).toEqual({
+      claudeAgent: "claude-fable-5",
+    });
+    expect(mergedState.lastModelOptions).toEqual({
+      claudeAgent: { effort: "max", contextWindow: "1m" },
+    });
+  });
+
   it("round-trips Cursor runtime settings", () => {
     const store = useModelPreferencesStore.getState();
     store.setLastModel("cursor", "composer-2");

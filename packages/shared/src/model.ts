@@ -29,6 +29,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
   opencode: new Set(MODEL_OPTIONS_BY_PROVIDER.opencode.map((option) => option.slug)),
 };
 
+const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
 const CLAUDE_OPUS_4_8_MODEL = "claude-opus-4-8";
 const CLAUDE_OPUS_4_7_MODEL = "claude-opus-4-7";
 const CLAUDE_OPUS_4_6_MODEL = "claude-opus-4-6";
@@ -36,6 +37,12 @@ const CLAUDE_OPUS_4_5_MODEL = "claude-opus-4-5";
 const CLAUDE_SONNET_4_6_MODEL = "claude-sonnet-4-6";
 const CLAUDE_HAIKU_4_5_MODEL = "claude-haiku-4-5";
 export const DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS = 200_000;
+export const CLAUDE_CONTEXT_WINDOW_OPTIONS = ["200k", "1m"] as const;
+export type ClaudeContextWindow = (typeof CLAUDE_CONTEXT_WINDOW_OPTIONS)[number];
+const CLAUDE_CONTEXT_WINDOW_TOKENS: Record<ClaudeContextWindow, number> = {
+  "200k": 200_000,
+  "1m": 1_000_000,
+};
 
 interface ClaudeModelMetadata {
   readonly contextWindowTokens: number;
@@ -43,24 +50,34 @@ interface ClaudeModelMetadata {
   readonly defaultEffort?: Exclude<ClaudeCodeEffort, "ultrathink">;
   readonly supportsFastMode?: boolean;
   readonly supportsThinkingToggle?: boolean;
+  readonly supportsContextWindow?: boolean;
 }
 
 const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
+  [CLAUDE_FABLE_5_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
+    defaultEffort: "max",
+    supportsContextWindow: true,
+  },
   [CLAUDE_OPUS_4_8_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
     defaultEffort: "xhigh",
+    supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_7_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
     defaultEffort: "xhigh",
+    supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_6_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "max", "ultrathink"],
     defaultEffort: "high",
     supportsFastMode: true,
+    supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_5_MODEL]: {
     contextWindowTokens: 1_000_000,
@@ -72,6 +89,7 @@ const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "ultrathink"],
     defaultEffort: "high",
+    supportsContextWindow: true,
   },
   [CLAUDE_HAIKU_4_5_MODEL]: {
     contextWindowTokens: 200_000,
@@ -191,6 +209,47 @@ export function cursorModelOptionsToProviderOptionSelections(
   }
   if (typeof options.contextWindow === "string" && options.contextWindow.trim().length > 0) {
     selections.push({ id: "contextWindow", value: options.contextWindow.trim() });
+  }
+  return selections.length > 0 ? selections : undefined;
+}
+
+export function normalizeClaudeContextWindow(
+  value: string | null | undefined,
+): ClaudeContextWindow | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "200k" || normalized === "1m" ? normalized : undefined;
+}
+
+export function getClaudeContextWindowTokens(
+  contextWindow: string | null | undefined,
+): number | undefined {
+  const normalized = normalizeClaudeContextWindow(contextWindow);
+  return normalized ? CLAUDE_CONTEXT_WINDOW_TOKENS[normalized] : undefined;
+}
+
+export function claudeModelOptionsToProviderOptionSelections(
+  options: ClaudeModelOptions | null | undefined,
+  model?: string | null | undefined,
+): ReadonlyArray<ProviderOptionSelection> | undefined {
+  if (!options) {
+    return undefined;
+  }
+  const selections: ProviderOptionSelection[] = [];
+  if (options.effort) {
+    selections.push({ id: "effort", value: options.effort });
+  }
+  if (typeof options.thinking === "boolean") {
+    selections.push({ id: "thinking", value: options.thinking });
+  }
+  if (typeof options.fastMode === "boolean") {
+    selections.push({ id: "fastMode", value: options.fastMode });
+  }
+  const contextWindow =
+    model === undefined || supportsClaudeContextWindow(model)
+      ? normalizeClaudeContextWindow(options.contextWindow)
+      : undefined;
+  if (contextWindow) {
+    selections.push({ id: "contextWindow", value: contextWindow });
   }
   return selections.length > 0 ? selections : undefined;
 }
@@ -351,8 +410,16 @@ export function supportsClaudeThinkingToggle(model: string | null | undefined): 
   return getClaudeModelMetadata(model)?.supportsThinkingToggle === true;
 }
 
+export function supportsClaudeContextWindow(model: string | null | undefined): boolean {
+  return getClaudeModelMetadata(model)?.supportsContextWindow === true;
+}
+
 export function isClaudeUltrathinkPrompt(text: string | null | undefined): boolean {
   return typeof text === "string" && /\bultrathink\b/i.test(text);
+}
+
+function stripClaudeContextWindowSuffix(model: string): string {
+  return model.replace(/\[(?:1m|200k)\]$/i, "");
 }
 
 export function normalizeModelSlug(
@@ -369,11 +436,11 @@ export function normalizeModelSlug(
   }
 
   const builtInProvider = toBuiltInProviderKind(provider);
+  const slug =
+    builtInProvider === "claudeAgent" ? stripClaudeContextWindowSuffix(trimmed) : trimmed;
   const aliases = MODEL_SLUG_ALIASES_BY_PROVIDER[builtInProvider] as Record<string, ModelSlug>;
-  const aliased = Object.prototype.hasOwnProperty.call(aliases, trimmed)
-    ? aliases[trimmed]
-    : undefined;
-  return typeof aliased === "string" ? aliased : (trimmed as ModelSlug);
+  const aliased = Object.prototype.hasOwnProperty.call(aliases, slug) ? aliases[slug] : undefined;
+  return typeof aliased === "string" ? aliased : (slug as ModelSlug);
 }
 
 export function resolveModelSlug(
@@ -578,10 +645,14 @@ export function normalizeClaudeModelOptions(
     supportsClaudeThinkingToggle(model) && modelOptions?.thinking === false ? false : undefined;
   const fastMode =
     supportsClaudeFastMode(model) && modelOptions?.fastMode === true ? true : undefined;
+  const contextWindow = supportsClaudeContextWindow(model)
+    ? normalizeClaudeContextWindow(modelOptions?.contextWindow)
+    : undefined;
   const nextOptions: ClaudeModelOptions = {
     ...(thinking === false ? { thinking: false } : {}),
     ...(effort ? { effort } : {}),
     ...(fastMode ? { fastMode: true } : {}),
+    ...(contextWindow ? { contextWindow } : {}),
   };
   return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }

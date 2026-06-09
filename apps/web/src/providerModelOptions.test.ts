@@ -62,4 +62,32 @@ describe("providerModelOptions", () => {
       { id: "contextWindow", value: "272k" },
     ]);
   });
+
+  it("converts Claude option selections with context window to modelOptions", () => {
+    expect(
+      providerSelectionsToModelOptions("claudeAgent", [
+        { id: "effort", value: "max" },
+        { id: "contextWindow", value: "200k" },
+      ]),
+    ).toEqual({
+      claudeAgent: {
+        effort: "max",
+        contextWindow: "200k",
+      },
+    });
+  });
+
+  it("converts Claude modelOptions with context window back to selections", () => {
+    expect(
+      providerModelOptionsToSelections("claudeAgent", {
+        claudeAgent: {
+          effort: "max",
+          contextWindow: "1m",
+        },
+      }),
+    ).toEqual([
+      { id: "effort", value: "max" },
+      { id: "contextWindow", value: "1m" },
+    ]);
+  });
 });

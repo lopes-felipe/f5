@@ -250,6 +250,72 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
     ),
   );
 
+  it.effect("forwards Claude Fable 5 effort and 1M context window", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Document Fable support",
+            body: "Body",
+          },
+        }),
+        argsMustContain: "--model claude-fable-5[1m] --effort max",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/claude-fable",
+            commitSummary: "Add Fable",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-fable-5", [
+                { id: "effort", value: "max" },
+                { id: "contextWindow", value: "1m" },
+              ]),
+            },
+          });
+
+          expect(generated.title).toBe("Document Fable support");
+        }),
+    ),
+  );
+
+  it.effect("omits Claude Fable 5 CLI effort for prompt-injected ultrathink", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({
+          structured_output: {
+            title: "Document ultrathink prompt",
+            body: "Body",
+          },
+        }),
+        argsMustContain: "--model claude-fable-5",
+        argsMustNotContain: "--effort",
+      },
+      (textGeneration) =>
+        Effect.gen(function* () {
+          const generated = yield* textGeneration.generatePrContent({
+            cwd: process.cwd(),
+            baseBranch: "main",
+            headBranch: "feature/claude-fable",
+            commitSummary: "Add Fable",
+            diffSummary: "1 file changed",
+            diffPatch: "diff --git a/README.md b/README.md",
+            modelSelection: {
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-fable-5", [
+                { id: "effort", value: "ultrathink" },
+              ]),
+            },
+          });
+
+          expect(generated.title).toBe("Document ultrathink prompt");
+        }),
+    ),
+  );
+
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(
       {

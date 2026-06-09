@@ -6,7 +6,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
-- Add Claude Opus 4.8 to the Claude provider model list (now the default Claude model).
+- Claude Fable 5 support (requires Claude Code v2.1.170+).
+- Add Claude Opus 4.8 to the Claude provider model list.
 - `NOTICE.md`, `ARCHITECTURE.md` (root stub), `SECURITY.md`, `CODE_OF_CONDUCT.md`, and `THIRD_PARTY_LICENSES.md` at the repository root.
 - `docs/provider-prerequisites.md` covering both Codex and Claude Code install/auth.
 - Documentation index at `docs/README.md`.

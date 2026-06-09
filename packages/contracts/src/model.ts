@@ -170,6 +170,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "gpt-5.2", name: "GPT-5.2" },
   ],
   claudeAgent: [
+    { slug: "claude-fable-5", name: "Claude Fable 5" },
     { slug: "claude-opus-4-8", name: "Claude Opus 4.8" },
     { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
     { slug: "claude-opus-4-6", name: "Claude Opus 4.6" },
@@ -194,7 +195,7 @@ export type ModelSlug = BuiltInModelSlug | (string & {});
 
 export const DEFAULT_MODEL_BY_PROVIDER = {
   codex: "gpt-5.5",
-  claudeAgent: "claude-opus-4-8",
+  claudeAgent: "claude-fable-5",
   cursor: "auto",
   opencode: "openai/gpt-5",
 } as const satisfies Record<ProviderKind, ModelSlug>;
@@ -227,6 +228,9 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
   claudeAgent: {
+    fable: "claude-fable-5",
+    "fable-5": "claude-fable-5",
+    "claude-fable": "claude-fable-5",
     opus: "claude-opus-4-8",
     "opus-4.8": "claude-opus-4-8",
     "claude-opus-4.8": "claude-opus-4-8",
