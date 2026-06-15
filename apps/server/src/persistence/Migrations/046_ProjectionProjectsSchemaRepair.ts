@@ -1,6 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+/**
+ * Repairs databases that advanced past migration 041 while projection_projects
+ * was missing columns required by startup snapshot queries.
+ */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 

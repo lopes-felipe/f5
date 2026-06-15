@@ -283,8 +283,8 @@ layer("033_ProjectMcpConfigScopes", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 45,
-          name: "ProjectionThreadsModelSchemaRepair",
+          migrationId: 46,
+          name: "ProjectionProjectsSchemaRepair",
         },
       ]);
     }),
