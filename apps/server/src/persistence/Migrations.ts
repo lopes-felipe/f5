@@ -58,6 +58,8 @@ import Migration0043 from "./Migrations/043_ProjectMcpConfigsSchemaRepair.ts";
 import Migration0044 from "./Migrations/044_ProjectionThreadCommandExecutionsSchemaRepair.ts";
 import Migration0045 from "./Migrations/045_ProjectionThreadsModelSchemaRepair.ts";
 import Migration0046 from "./Migrations/046_ProjectionProjectsSchemaRepair.ts";
+import Migration0047 from "./Migrations/047_ProjectionReadModelStartupTablesRepair.ts";
+import Migration0048 from "./Migrations/048_ProjectionCoreSchemaRepair.ts";
 import { Effect } from "effect";
 
 /**
@@ -117,6 +119,8 @@ const loader = Migrator.fromRecord({
   "44_ProjectionThreadCommandExecutionsSchemaRepair": Migration0044,
   "45_ProjectionThreadsModelSchemaRepair": Migration0045,
   "46_ProjectionProjectsSchemaRepair": Migration0046,
+  "47_ProjectionReadModelStartupTablesRepair": Migration0047,
+  "48_ProjectionCoreSchemaRepair": Migration0048,
 });
 
 /**

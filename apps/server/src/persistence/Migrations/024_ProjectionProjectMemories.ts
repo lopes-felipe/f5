@@ -4,19 +4,9 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
-  const existing = yield* sql<{ readonly name: string }>`
-    SELECT name
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name = 'projection_project_memories'
-  `;
-
-  if (existing.length > 0) {
-    return;
-  }
-
+  // Hardened in place for fresh/replayed DBs; 047 repairs DBs that already applied 024.
   yield* sql`
-    CREATE TABLE projection_project_memories (
+    CREATE TABLE IF NOT EXISTS projection_project_memories (
       memory_id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL,
       scope TEXT NOT NULL,
@@ -32,7 +22,7 @@ export default Effect.gen(function* () {
   `;
 
   yield* sql`
-    CREATE INDEX projection_project_memories_project_id_idx
+    CREATE INDEX IF NOT EXISTS projection_project_memories_project_id_idx
     ON projection_project_memories (project_id, deleted_at, updated_at DESC)
   `;
 });

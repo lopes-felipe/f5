@@ -242,8 +242,8 @@ layer("040_ProjectionThreadsModelSelection", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 46,
-          name: "ProjectionProjectsSchemaRepair",
+          migrationId: 48,
+          name: "ProjectionCoreSchemaRepair",
         },
       ]);
     }),
