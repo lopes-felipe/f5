@@ -464,6 +464,33 @@ function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
   return Cause.pretty(cause);
 }
 
+const MAX_ROUTE_CAUSE_MESSAGE_LENGTH = 1000;
+
+function compactRouteCauseMessage(value: string): string {
+  const compacted = value.replace(/\s+/g, " ").trim();
+  if (compacted.length <= MAX_ROUTE_CAUSE_MESSAGE_LENGTH) {
+    return compacted;
+  }
+  return `${compacted.slice(0, MAX_ROUTE_CAUSE_MESSAGE_LENGTH - 3)}...`;
+}
+
+function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string {
+  const baseMessage = `Orchestration runtime unavailable: ${error.operation}`;
+  if (error.cause === undefined) {
+    return baseMessage;
+  }
+
+  const causeMessage = Cause.isCause(error.cause)
+    ? Cause.pretty(error.cause)
+    : error.cause instanceof Error
+      ? (error.cause.stack ?? error.cause.message)
+      : String(error.cause);
+  const compactedCauseMessage = compactRouteCauseMessage(causeMessage);
+  return compactedCauseMessage.length > 0
+    ? `${baseMessage}: ${compactedCauseMessage}`
+    : baseMessage;
+}
+
 interface OrchestrationRuntimeServices {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly providerCommandReactor: ProviderCommandReactorShape;
@@ -1088,7 +1115,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             cause,
           }),
         ).pipe(Effect.orDie);
-        yield* Effect.logError("failed to start orchestration runtime", { cause });
+        yield* Effect.logError("failed to start orchestration runtime", {
+          causePretty: Cause.pretty(cause),
+          cause,
+        });
       }),
     ),
   );
@@ -1174,7 +1204,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.mapError(
       (error) =>
         new RouteRequestError({
-          message: `Orchestration runtime unavailable: ${error.operation}`,
+          message: formatServerLifecycleRouteFailure(error),
         }),
     ),
     Effect.timeoutOrElse({

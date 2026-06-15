@@ -1314,7 +1314,7 @@ export const ProjectCreatedPayload = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   workspaceRoot: TrimmedNonEmptyString,
-  defaultModel: Schema.NullOr(TrimmedNonEmptyString),
+  defaultModel: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
     Schema.withDecodingDefault(() => null),
   ),

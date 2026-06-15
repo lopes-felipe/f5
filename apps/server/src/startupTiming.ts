@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Cause, Effect } from "effect";
 
 const isTestRuntime = () => process.env.NODE_ENV === "test" || process.env.VITEST === "true";
 
@@ -25,6 +25,7 @@ export function withStartupPhaseTiming<A, E, R>(
         Effect.logWarning("startup phase failed", {
           phase,
           durationMs: Date.now() - startedAtMs,
+          causePretty: Cause.pretty(cause),
           cause,
         }),
       ),
