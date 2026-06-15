@@ -1,6 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+/**
+ * Repairs databases that advanced past migration 034 while missing the
+ * projection_thread_command_executions table introduced by migration 018.
+ */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
