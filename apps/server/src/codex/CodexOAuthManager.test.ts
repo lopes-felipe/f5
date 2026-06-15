@@ -87,7 +87,10 @@ function makeProviderServiceStub(input?: {
   };
 }
 
-const makeProjectMcpConfigServiceStub = (input?: { readonly oauthCallbackPort?: number }) =>
+const makeProjectMcpConfigServiceStub = (input?: {
+  readonly oauthCallbackPort?: number;
+  readonly oauthCallbackUrl?: string;
+}) =>
   Layer.succeed(ProjectMcpConfigService, {
     readCommonStoredConfig: () => Effect.die(new Error("unused in CodexOAuthManager tests")),
     readProjectStoredConfig: (_projectId: ProjectId) =>
@@ -106,6 +109,7 @@ const makeProjectMcpConfigServiceStub = (input?: { readonly oauthCallbackPort?: 
         effectiveVersion: "mcp-version-1",
         servers: {},
         ...(input?.oauthCallbackPort ? { oauthCallbackPort: input.oauthCallbackPort } : {}),
+        ...(input?.oauthCallbackUrl ? { oauthCallbackUrl: input.oauthCallbackUrl } : {}),
       }),
   });
 
@@ -249,13 +253,16 @@ describe("CodexOAuthManager", () => {
     });
   });
 
-  it("passes the stored OAuth callback port into the Codex OAuth control client", async () => {
+  it("passes stored OAuth callback settings into the Codex OAuth control client", async () => {
     const client = new FakeOauthClient();
     let capturedInput: CodexOauthClientAccessInput | undefined;
 
     const dependencies = Layer.mergeAll(
       Layer.succeed(ProviderService, makeProviderServiceStub()),
-      makeProjectMcpConfigServiceStub({ oauthCallbackPort: 3118 }),
+      makeProjectMcpConfigServiceStub({
+        oauthCallbackPort: 3118,
+        oauthCallbackUrl: "https://callback.example.test/callback",
+      }),
       Layer.succeed(CodexMcpEventBus, {
         publishStatusUpdated: () => Effect.void,
         streamStatusUpdates: Stream.empty,
@@ -285,6 +292,165 @@ describe("CodexOAuthManager", () => {
 
       expect(pending.status).toBe("pending");
       expect(capturedInput?.mcpOAuthCallbackPort).toBe(3118);
+      expect(capturedInput?.mcpOAuthCallbackUrl).toBe("https://callback.example.test/callback");
+    });
+  });
+
+  it("marks pending OAuth login failed when the control client exits", async () => {
+    const client = new FakeOauthClient();
+    const release = vi.fn();
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(true),
+        acquireOauthClient: (_input) =>
+          Effect.succeed({
+            client: client as unknown as CodexControlClient,
+            release: Effect.sync(release),
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      const pending = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      expect(pending.status).toBe("pending");
+      client.emit("closed", new Error("control exited"));
+
+      await vi.waitFor(async () => {
+        const status = await runtime.runPromise(
+          Effect.gen(function* () {
+            const manager = yield* CodexOAuthManager;
+            return yield* manager.getStatus(request);
+          }),
+        );
+        expect(status).toMatchObject({
+          status: "failed",
+          error: "Codex OAuth: control exited",
+        });
+      });
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("ignores control client exits after OAuth completion is already processed", async () => {
+    const client = new FakeOauthClient();
+    const release = vi.fn();
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub(),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(true),
+        acquireOauthClient: (_input) =>
+          Effect.succeed({
+            client: client as unknown as CodexControlClient,
+            release: Effect.sync(release),
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      const pending = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      expect(pending.status).toBe("pending");
+      client.emit("notification", {
+        method: "mcpServer/oauthLogin/completed",
+        params: {
+          name: request.serverName,
+          success: true,
+        },
+      });
+
+      await vi.waitFor(async () => {
+        const status = await runtime.runPromise(
+          Effect.gen(function* () {
+            const manager = yield* CodexOAuthManager;
+            return yield* manager.getStatus(request);
+          }),
+        );
+        expect(status.status).toBe("completed");
+      });
+
+      client.emit("closed", new Error("late close"));
+
+      const statusAfterClose = await runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.getStatus(request);
+        }),
+      );
+      expect(statusAfterClose.status).toBe("completed");
+      expect(release).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("does not return pending when the control client exits while callback preflight is running", async () => {
+    const client = new FakeOauthClient();
+    const release = vi.fn();
+
+    const dependencies = Layer.mergeAll(
+      Layer.succeed(ProviderService, makeProviderServiceStub()),
+      makeProjectMcpConfigServiceStub({ oauthCallbackPort: 9 }),
+      Layer.succeed(CodexMcpEventBus, {
+        publishStatusUpdated: () => Effect.void,
+        streamStatusUpdates: Stream.empty,
+      }),
+      Layer.succeed(CodexControlClientRegistry, {
+        getAdminClient: (_input) => Effect.die(new Error("unused in CodexOAuthManager tests")),
+        hasOauthLease: (_input) => Effect.succeed(true),
+        acquireOauthClient: (_input) =>
+          Effect.succeed({
+            client: client as unknown as CodexControlClient,
+            release: Effect.sync(release),
+          }),
+      }),
+    );
+    const layer = CodexOAuthManagerLive.pipe(Layer.provide(dependencies));
+
+    await withManagerRuntime(layer, async (runtime) => {
+      const startPromise = runtime.runPromise(
+        Effect.gen(function* () {
+          const manager = yield* CodexOAuthManager;
+          return yield* manager.startLogin(request);
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(client.startOAuthLogin).toHaveBeenCalledTimes(1);
+      });
+      client.emit("closed", new Error("control exited during preflight"));
+
+      const result = await startPromise;
+      expect(result).toMatchObject({
+        status: "failed",
+        error: "Codex OAuth: control exited during preflight",
+      });
+      expect(release).toHaveBeenCalledTimes(1);
     });
   });
 

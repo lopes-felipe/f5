@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   CodexMcpOAuthCallbackPortConflictError,
+  CodexMcpOAuthCallbackUrlConflictError,
+  readCodexMcpOAuthCallbackConfig,
   readCodexMcpOAuthCallbackPort,
+  readCodexMcpOAuthCallbackUrl,
   translateMcpForClaudeAgent,
   translateMcpForCodex,
 } from "./mcpTranslation";
@@ -48,6 +51,7 @@ describe("mcpTranslation", () => {
           scopes: ["repo:read"],
           oauthClientId: "client-1",
           oauthCallbackPort: 3118,
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
           oauthResource: "example",
         },
       }),
@@ -93,6 +97,45 @@ describe("mcpTranslation", () => {
     ).toBe(3118);
   });
 
+  it("reads the shared enabled Codex OAuth callback URL", () => {
+    expect(
+      readCodexMcpOAuthCallbackUrl({
+        disabled: {
+          type: "http",
+          enabled: false,
+          url: "https://disabled.example.test/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:1234/callback",
+        },
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+        alsoSlack: {
+          type: "http",
+          url: "https://mcp2.slack.com/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+      }),
+    ).toBe("http://127.0.0.1:3118/callback");
+  });
+
+  it("reads combined Codex OAuth callback config", () => {
+    expect(
+      readCodexMcpOAuthCallbackConfig({
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthCallbackPort: 3118,
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+      }),
+    ).toEqual({
+      port: 3118,
+      url: "http://127.0.0.1:3118/callback",
+    });
+  });
+
   it("rejects conflicting enabled Codex OAuth callback ports", () => {
     expect(() =>
       readCodexMcpOAuthCallbackPort({
@@ -108,6 +151,61 @@ describe("mcpTranslation", () => {
         },
       }),
     ).toThrow(CodexMcpOAuthCallbackPortConflictError);
+  });
+
+  it("does not reject URL conflicts when reading only the callback port", () => {
+    expect(
+      readCodexMcpOAuthCallbackPort({
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthCallbackPort: 3118,
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+        observability: {
+          type: "http",
+          url: "https://observability.example.test/mcp",
+          oauthCallbackPort: 3118,
+          oauthCallbackUrl: "http://127.0.0.1:4118/callback",
+        },
+      }),
+    ).toBe(3118);
+  });
+
+  it("rejects conflicting enabled Codex OAuth callback URLs", () => {
+    expect(() =>
+      readCodexMcpOAuthCallbackUrl({
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+        observability: {
+          type: "http",
+          url: "https://observability.example.test/mcp",
+          oauthCallbackUrl: "http://127.0.0.1:4118/callback",
+        },
+      }),
+    ).toThrow(CodexMcpOAuthCallbackUrlConflictError);
+  });
+
+  it("does not reject port conflicts when reading only the callback URL", () => {
+    expect(
+      readCodexMcpOAuthCallbackUrl({
+        slack: {
+          type: "http",
+          url: "https://mcp.slack.com/mcp",
+          oauthCallbackPort: 3118,
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+        observability: {
+          type: "http",
+          url: "https://observability.example.test/mcp",
+          oauthCallbackPort: 4118,
+          oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
+      }),
+    ).toBe("http://127.0.0.1:3118/callback");
   });
 
   it("returns undefined when no enabled valid servers remain", () => {

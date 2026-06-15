@@ -38,6 +38,7 @@ const makeCodexMcpSyncService = Effect.gen(function* () {
               ...(stored.oauthCallbackPort
                 ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
                 : {}),
+              ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
             })
             .pipe(
               Effect.map(

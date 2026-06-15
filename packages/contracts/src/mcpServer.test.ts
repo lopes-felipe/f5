@@ -15,6 +15,7 @@ describe("McpServerDefinition", () => {
       startupTimeoutSec: 30,
       oauthClientId: "client-1",
       oauthCallbackPort: 3118,
+      oauthCallbackUrl: "http://127.0.0.1:3118/callback",
     });
 
     expect(parsed.type).toBe("stdio");
@@ -22,6 +23,7 @@ describe("McpServerDefinition", () => {
     expect(parsed.enabledTools).toEqual(["read_file"]);
     expect(parsed.oauthClientId).toBe("client-1");
     expect(parsed.oauthCallbackPort).toBe(3118);
+    expect(parsed.oauthCallbackUrl).toBe("http://127.0.0.1:3118/callback");
   });
 
   it("rejects stdio servers with remote-only fields", () => {
@@ -58,6 +60,32 @@ describe("McpServerDefinition", () => {
         type: "http",
         url: "https://example.test/mcp",
         oauthCallbackPort: 65536,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects invalid OAuth callback URLs", () => {
+    expect(() =>
+      decodeMcpServerDefinition({
+        type: "http",
+        url: "https://example.test/mcp",
+        oauthCallbackUrl: "not-a-url",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      decodeMcpServerDefinition({
+        type: "http",
+        url: "https://example.test/mcp",
+        oauthCallbackUrl: "ftp://127.0.0.1/callback",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      decodeMcpServerDefinition({
+        type: "http",
+        url: "https://example.test/mcp",
+        oauthCallbackUrl: "http://[unterminated",
       }),
     ).toThrow();
   });

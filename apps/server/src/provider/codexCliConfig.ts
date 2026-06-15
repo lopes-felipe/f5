@@ -33,9 +33,11 @@ export function buildCodexCliMcpConfigArgs(
   servers: Record<string, CodexMcpServerEntry> | null | undefined,
   options?: {
     readonly mcpOAuthCallbackPort?: number | null;
+    readonly mcpOAuthCallbackUrl?: string | null;
   },
 ): ReadonlyArray<string> {
   const callbackPort = options?.mcpOAuthCallbackPort;
+  const callbackUrl = options?.mcpOAuthCallbackUrl?.trim();
   return [
     "-c",
     `mcp_servers=${encodeTomlInlineValue(servers ?? {})}`,
@@ -45,6 +47,7 @@ export function buildCodexCliMcpConfigArgs(
     callbackPort <= 65535
       ? ["-c", `mcp_oauth_callback_port=${callbackPort}`]
       : []),
+    ...(callbackUrl ? ["-c", `mcp_oauth_callback_url=${encodeTomlInlineValue(callbackUrl)}`] : []),
   ];
 }
 
@@ -53,13 +56,23 @@ export function prependCodexCliTelemetryDisabledConfig(
   options?: {
     readonly mcpServers?: Record<string, CodexMcpServerEntry> | null;
     readonly mcpOAuthCallbackPort?: number | null;
+    readonly mcpOAuthCallbackUrl?: string | null;
   },
 ): ReadonlyArray<string> {
   return [
     ...CODEX_TELEMETRY_DISABLED_CONFIG_ARGS,
     ...buildCodexCliMcpConfigArgs(
       options?.mcpServers,
-      options?.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: options.mcpOAuthCallbackPort } : {},
+      options?.mcpOAuthCallbackPort || options?.mcpOAuthCallbackUrl
+        ? {
+            ...(options.mcpOAuthCallbackPort
+              ? { mcpOAuthCallbackPort: options.mcpOAuthCallbackPort }
+              : {}),
+            ...(options.mcpOAuthCallbackUrl
+              ? { mcpOAuthCallbackUrl: options.mcpOAuthCallbackUrl }
+              : {}),
+          }
+        : {},
     ),
     ...args,
   ];

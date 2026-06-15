@@ -50,6 +50,7 @@ describe("normalizeProviderStartOptions (MCP OAuth fields)", () => {
           url: "https://mcp.slack.com/mcp",
           oauthClientId: "  client-1  ",
           oauthCallbackPort: 3118,
+          oauthCallbackUrl: "  http://127.0.0.1:3118/callback  ",
         },
       },
     });
@@ -59,6 +60,7 @@ describe("normalizeProviderStartOptions (MCP OAuth fields)", () => {
       url: "https://mcp.slack.com/mcp",
       oauthClientId: "client-1",
       oauthCallbackPort: 3118,
+      oauthCallbackUrl: "http://127.0.0.1:3118/callback",
     });
   });
 });

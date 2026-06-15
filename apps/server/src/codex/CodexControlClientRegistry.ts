@@ -22,6 +22,7 @@ export interface CodexControlClientAccessInput {
   readonly mcpEffectiveConfigVersion?: string | null;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
   readonly mcpOAuthCallbackPort?: number;
+  readonly mcpOAuthCallbackUrl?: string;
 }
 
 export interface CodexOauthClientAccessInput extends CodexControlClientAccessInput {
@@ -63,6 +64,7 @@ export function readCodexControlEnvironmentConfig(
     ...(environmentOptions.homePath ? { homePath: environmentOptions.homePath } : {}),
     mcpServers: input.mcpServers ?? {},
     ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
+    ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
   };
 }
 
@@ -73,11 +75,11 @@ export function readCodexControlEnvironmentKey(input: {
 }
 
 export function readCodexControlPoolKey(input: CodexControlClientAccessInput): string {
-  return `${input.projectId}\u0000${readCodexControlEnvironmentKey(input)}\u0000${input.mcpEffectiveConfigVersion ?? ""}\u0000${input.mcpOAuthCallbackPort ?? ""}`;
+  return `${input.projectId}\u0000${readCodexControlEnvironmentKey(input)}\u0000${input.mcpEffectiveConfigVersion ?? ""}\u0000${input.mcpOAuthCallbackPort ?? ""}\u0000${input.mcpOAuthCallbackUrl ?? ""}`;
 }
 
 function readOauthLeaseKey(input: CodexOauthClientAccessInput): string {
-  return `${input.projectId}\u0000${readCodexControlEnvironmentKey(input)}\u0000${input.serverName}\u0000${input.mcpOAuthCallbackPort ?? ""}`;
+  return `${input.projectId}\u0000${readCodexControlEnvironmentKey(input)}\u0000${input.serverName}\u0000${input.mcpOAuthCallbackPort ?? ""}\u0000${input.mcpOAuthCallbackUrl ?? ""}`;
 }
 
 export interface CodexControlClientRegistryShape {

@@ -40,6 +40,7 @@ describe("CodexMcpSyncService", () => {
               },
             },
             oauthCallbackPort: 3118,
+            oauthCallbackUrl: "http://127.0.0.1:3118/callback",
           }),
       }),
       Layer.succeed(CodexControlClientRegistry, {
@@ -96,6 +97,7 @@ describe("CodexMcpSyncService", () => {
           },
         },
         mcpOAuthCallbackPort: 3118,
+        mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
       },
     ]);
   });

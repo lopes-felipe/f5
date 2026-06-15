@@ -20,13 +20,18 @@ describe("buildCodexCliMcpConfigArgs", () => {
             args: ["@modelcontextprotocol/server-filesystem", "/repo"],
           },
         },
-        { mcpOAuthCallbackPort: 3118 },
+        {
+          mcpOAuthCallbackPort: 3118,
+          mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
+        },
       ),
     ).toEqual([
       "-c",
       'mcp_servers={"filesystem"={"type"="stdio","command"="npx","args"=["@modelcontextprotocol/server-filesystem","/repo"]}}',
       "-c",
       "mcp_oauth_callback_port=3118",
+      "-c",
+      'mcp_oauth_callback_url="http://127.0.0.1:3118/callback"',
     ]);
   });
 
@@ -44,6 +49,22 @@ describe("buildCodexCliMcpConfigArgs", () => {
     ).toEqual([
       "-c",
       'mcp_servers={"danger = key, } \\"quoted\\""={"type"="http","url"="https://mcp.example.test","headers"={"X Danger.Key \\"quoted\\""="Bearer secret"}}}',
+    ]);
+  });
+
+  it("escapes callback URLs with TOML-significant characters", () => {
+    expect(
+      buildCodexCliMcpConfigArgs(
+        {},
+        {
+          mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback?next=%2Fmcp%2Fdone&state=a=b",
+        },
+      ),
+    ).toEqual([
+      "-c",
+      "mcp_servers={}",
+      "-c",
+      'mcp_oauth_callback_url="http://127.0.0.1:3118/callback?next=%2Fmcp%2Fdone&state=a=b"',
     ]);
   });
 });

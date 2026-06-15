@@ -18,6 +18,7 @@ export interface ProviderCliCommandOptions {
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
   readonly mcpServers?: Record<string, CodexMcpServerEntry> | null | undefined;
   readonly mcpOAuthCallbackPort?: number | null | undefined;
+  readonly mcpOAuthCallbackUrl?: string | null | undefined;
 }
 
 export interface ClaudeCliCommandOptions {
@@ -52,6 +53,7 @@ export function runProviderCliCommand(
         ? prependCodexCliTelemetryDisabledConfig(args, {
             mcpServers: options?.mcpServers ?? null,
             mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
+            mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
           })
         : [...args];
     const command = ChildProcess.make(resolvedBinary, [...commandArgs], {

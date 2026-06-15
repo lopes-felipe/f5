@@ -62,6 +62,7 @@ type ServerDraft = {
   readonly scopes: string;
   readonly oauthClientId: string;
   readonly oauthCallbackPort: string;
+  readonly oauthCallbackUrl: string;
   readonly oauthResource: string;
 };
 
@@ -89,6 +90,7 @@ function createEmptyDraft(type: TransportType = "stdio"): ServerDraft {
     scopes: "",
     oauthClientId: "",
     oauthCallbackPort: "",
+    oauthCallbackUrl: "",
     oauthResource: "",
   };
 }
@@ -209,6 +211,23 @@ function parseOptionalIntegerInput(value: string, label: string): number | undef
   return Number.parseInt(trimmed, 10);
 }
 
+function parseOptionalHttpUrlInput(value: string, label: string): string | undefined {
+  const trimmed = trimToUndefined(value);
+  if (!trimmed) {
+    return undefined;
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${label} must be a valid HTTP or HTTPS URL.`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${label} must use http:// or https://.`);
+  }
+  return trimmed;
+}
+
 function hasAdvancedFields(server: McpProjectServersConfig[string]): boolean {
   return Boolean(
     server.bearerTokenEnvVar ||
@@ -220,8 +239,54 @@ function hasAdvancedFields(server: McpProjectServersConfig[string]): boolean {
     server.scopes?.length ||
     server.oauthClientId ||
     server.oauthCallbackPort !== undefined ||
+    server.oauthCallbackUrl ||
     server.oauthResource,
   );
+}
+
+function formatCodexCallbackSummary(
+  servers: McpProjectServersConfig,
+  serverName: string,
+  server: McpProjectServersConfig[string],
+): string | null {
+  const callbackEntries = Object.entries(servers).filter(
+    ([, entry]) =>
+      entry.enabled !== false &&
+      (entry.oauthCallbackPort !== undefined || trimToUndefined(entry.oauthCallbackUrl)),
+  );
+  if (callbackEntries.length === 0) {
+    return null;
+  }
+
+  const ports = [
+    ...new Set(
+      callbackEntries
+        .map(([, entry]) => entry.oauthCallbackPort)
+        .filter((port): port is number => port !== undefined),
+    ),
+  ];
+  const urls = [
+    ...new Set(
+      callbackEntries
+        .map(([, entry]) => trimToUndefined(entry.oauthCallbackUrl))
+        .filter((url): url is string => url !== undefined),
+    ),
+  ];
+  const parts = [
+    ...(ports.length > 0 ? [`port ${ports.join(", ")}`] : []),
+    ...(urls.length > 0 ? [`URL ${urls.join(", ")}`] : []),
+  ];
+  if (parts.length === 0) {
+    return null;
+  }
+
+  const currentDefinesCallback =
+    server.oauthCallbackPort !== undefined ||
+    trimToUndefined(server.oauthCallbackUrl) !== undefined;
+  const sourceNames = callbackEntries.map(([name]) => name).join(", ");
+  return currentDefinesCallback
+    ? `Codex OAuth callback: ${parts.join("; ")}.`
+    : `Codex OAuth callback: ${parts.join("; ")} inherited from ${sourceNames} for ${serverName}.`;
 }
 
 function draftFromServer(name: string, server: McpProjectServersConfig[string]): ServerDraft {
@@ -246,6 +311,7 @@ function draftFromServer(name: string, server: McpProjectServersConfig[string]):
     oauthClientId: server.oauthClientId ?? "",
     oauthCallbackPort:
       server.oauthCallbackPort !== undefined ? String(server.oauthCallbackPort) : "",
+    oauthCallbackUrl: server.oauthCallbackUrl ?? "",
     oauthResource: server.oauthResource ?? "",
   };
 }
@@ -270,6 +336,7 @@ function decodeDraftServer(draft: ServerDraft): {
     draft.oauthCallbackPort,
     "OAuth callback port",
   );
+  const oauthCallbackUrl = parseOptionalHttpUrlInput(draft.oauthCallbackUrl, "OAuth callback URL");
   const oauthResource = trimToUndefined(draft.oauthResource);
   if (oauthCallbackPort !== undefined && (oauthCallbackPort < 1 || oauthCallbackPort > 65535)) {
     throw new Error("OAuth callback port must be between 1 and 65535.");
@@ -280,6 +347,7 @@ function decodeDraftServer(draft: ServerDraft): {
     ...(bearerTokenEnvVar ? { bearerTokenEnvVar } : {}),
     ...(oauthClientId ? { oauthClientId } : {}),
     ...(oauthCallbackPort !== undefined ? { oauthCallbackPort } : {}),
+    ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
     ...(draft.supportsParallelToolCalls ? { supportsParallelToolCalls: true } : {}),
     ...(startupTimeoutSec !== undefined ? { startupTimeoutSec } : {}),
     ...(toolTimeoutSec !== undefined ? { toolTimeoutSec } : {}),
@@ -359,6 +427,7 @@ function readImportedStringRecord(value: unknown): Record<string, string> | unde
 function readImportedOauthConfig(value: unknown): {
   readonly clientId?: string;
   readonly callbackPort?: number;
+  readonly callbackUrl?: string;
 } {
   if (!isRecord(value)) {
     return {};
@@ -369,9 +438,12 @@ function readImportedOauthConfig(value: unknown): {
     readImportedString(value.CLIENT_ID);
   const callbackPort =
     readImportedInteger(value.callbackPort) ?? readImportedInteger(value.callback_port);
+  const callbackUrl =
+    readImportedString(value.callbackUrl) ?? readImportedString(value.callback_url);
   return {
     ...(clientId ? { clientId } : {}),
     ...(callbackPort !== undefined ? { callbackPort } : {}),
+    ...(callbackUrl ? { callbackUrl } : {}),
   };
 }
 
@@ -434,6 +506,10 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
       readImportedInteger(value.oauthCallbackPort) ??
       readImportedInteger(value.oauth_callback_port) ??
       oauthConfig.callbackPort;
+    const oauthCallbackUrl =
+      readImportedString(value.oauthCallbackUrl) ??
+      readImportedString(value.oauth_callback_url) ??
+      oauthConfig.callbackUrl;
     return Schema.decodeUnknownSync(McpServerDefinition)({
       ...candidate,
       ...(readImportedBoolean(value.enabled) !== undefined
@@ -491,6 +567,7 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
         : {}),
       ...(oauthClientId ? { oauthClientId } : {}),
       ...(oauthCallbackPort !== undefined ? { oauthCallbackPort } : {}),
+      ...(oauthCallbackUrl ? { oauthCallbackUrl } : {}),
       ...((readImportedString(value.oauthResource) ?? readImportedString(value.oauth_resource))
         ? {
             oauthResource:
@@ -503,7 +580,7 @@ function decodeImportedServer(value: unknown): McpProjectServersConfig[string] |
   }
 }
 
-function canUseTopLevelOauthCallbackPort(value: Record<string, unknown>): boolean {
+function canUseTopLevelOauthCallback(value: Record<string, unknown>): boolean {
   const rawType =
     readImportedString(value.type) ??
     readImportedString(value.transport) ??
@@ -513,6 +590,8 @@ function canUseTopLevelOauthCallbackPort(value: Record<string, unknown>): boolea
     value.auth !== undefined ||
     value.oauthClientId !== undefined ||
     value.oauth_client_id !== undefined ||
+    value.oauthCallbackUrl !== undefined ||
+    value.oauth_callback_url !== undefined ||
     value.oauthResource !== undefined ||
     value.oauth_resource !== undefined ||
     rawType === "http" ||
@@ -526,6 +605,15 @@ function hasImportedServerOauthCallbackPort(value: Record<string, unknown>): boo
     readImportedInteger(value.oauth_callback_port) !== undefined ||
     readImportedOauthConfig(value.auth).callbackPort !== undefined ||
     readImportedOauthConfig(value.oauth).callbackPort !== undefined
+  );
+}
+
+function hasImportedServerOauthCallbackUrl(value: Record<string, unknown>): boolean {
+  return (
+    readImportedString(value.oauthCallbackUrl) !== undefined ||
+    readImportedString(value.oauth_callback_url) !== undefined ||
+    readImportedOauthConfig(value.auth).callbackUrl !== undefined ||
+    readImportedOauthConfig(value.oauth).callbackUrl !== undefined
   );
 }
 
@@ -610,6 +698,7 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
   let currentSection: { serverName: string; kind: "root" | "env" | "headers" | "oauth" } | null =
     null;
   let topLevelOauthCallbackPort: number | undefined;
+  let topLevelOauthCallbackUrl: string | undefined;
 
   for (const rawLine of text.split(/\r?\n/u)) {
     const line = stripTomlComment(rawLine).trim();
@@ -656,6 +745,12 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
           topLevelOauthCallbackPort = parsedValue;
         }
       }
+      if (key === "mcp_oauth_callback_url") {
+        const parsedValue = parseTomlValue(rawValue);
+        if (typeof parsedValue === "string" && parsedValue.trim().length > 0) {
+          topLevelOauthCallbackUrl = parsedValue.trim();
+        }
+      }
       continue;
     }
 
@@ -676,13 +771,18 @@ function parseCodexTomlServers(text: string): McpProjectServersConfig {
     Object.fromEntries(
       Object.entries(parsed)
         .map(([name, value]) => {
-          const shouldApplyTopLevelOauthCallbackPort = canUseTopLevelOauthCallbackPort(value);
+          const shouldApplyTopLevelOauthCallback = canUseTopLevelOauthCallback(value);
           const decoded = decodeImportedServer({
             ...value,
             ...(topLevelOauthCallbackPort !== undefined &&
-            shouldApplyTopLevelOauthCallbackPort &&
+            shouldApplyTopLevelOauthCallback &&
             !hasImportedServerOauthCallbackPort(value)
               ? { oauthCallbackPort: topLevelOauthCallbackPort }
+              : {}),
+            ...(topLevelOauthCallbackUrl &&
+            shouldApplyTopLevelOauthCallback &&
+            !hasImportedServerOauthCallbackUrl(value)
+              ? { oauthCallbackUrl: topLevelOauthCallbackUrl }
               : {}),
           });
           return decoded ? ([name, decoded] as const) : null;
@@ -824,6 +924,7 @@ function McpServerRow(props: {
   readonly server: McpProjectServersConfig[string];
   readonly providerStatus: McpProviderStatusResult | undefined;
   readonly serverStatus: McpServerStatusEntry | undefined;
+  readonly codexCallbackSummary: string | null;
   readonly isOverridden: boolean;
   readonly overrideTargetEnabled: boolean | undefined;
   readonly onToggleEnabled: (checked: boolean) => void;
@@ -853,6 +954,7 @@ function McpServerRow(props: {
     props.server.type === "http" ||
     typeof props.server.oauthClientId === "string" ||
     typeof props.server.oauthCallbackPort === "number" ||
+    typeof props.server.oauthCallbackUrl === "string" ||
     typeof props.server.oauthResource === "string";
   const loginModeHint = loginStatusQuery.data?.mode ?? (supportsCodexOauthLogin ? "oauth" : "cli");
   const shouldShowLoginAction =
@@ -898,10 +1000,12 @@ function McpServerRow(props: {
             if (result.authorizationUrl) {
               await ensureNativeApi().shell.openExternal(result.authorizationUrl);
             }
-            await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
           })
           .catch((error) => {
             setLoginError(readErrorMessage(error, "Failed to start MCP login."));
+          })
+          .finally(() => {
+            void queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
           });
       }}
     >
@@ -972,6 +1076,9 @@ function McpServerRow(props: {
       ) : null}
       {props.serverStatus?.message ? (
         <p className="text-xs text-muted-foreground">{props.serverStatus.message}</p>
+      ) : null}
+      {props.codexCallbackSummary ? (
+        <p className="text-xs text-muted-foreground">{props.codexCallbackSummary}</p>
       ) : null}
       {props.isOverridden ? (
         <p className="text-xs text-muted-foreground">
@@ -1080,6 +1187,17 @@ export function McpServersSettings(props: {
     selectedProject && effectiveConfigQuery.data
       ? formatMcpServersAsJson(effectiveConfigQuery.data.servers)
       : "";
+  const codexCallbackSummaryServers = effectiveConfigQuery.data?.servers ?? activeServers;
+  const codexCallbackSummaryByName = useMemo(
+    () =>
+      new Map(
+        orderedServers.map(([name, server]) => [
+          name,
+          formatCodexCallbackSummary(codexCallbackSummaryServers, name, server),
+        ]),
+      ),
+    [codexCallbackSummaryServers, orderedServers],
+  );
   const serverStatusByName = useMemo(
     () =>
       new Map((serverStatusesQuery.data?.statuses ?? []).map((status) => [status.name, status])),
@@ -1479,6 +1597,11 @@ export function McpServersSettings(props: {
                       server={server}
                       providerStatus={providerStatusQuery.data}
                       serverStatus={serverStatusByName.get(name)}
+                      codexCallbackSummary={
+                        selectedProvider === "codex"
+                          ? (codexCallbackSummaryByName.get(name) ?? null)
+                          : null
+                      }
                       isOverridden={selectedScope === "common" && overriddenServerNames.has(name)}
                       overrideTargetEnabled={overriddenServersByName.get(name)?.enabled !== false}
                       onToggleEnabled={(checked) => {
@@ -1733,6 +1856,24 @@ export function McpServersSettings(props: {
                         />
                       </label>
                       <label className="space-y-1">
+                        <span className="text-xs font-medium text-foreground">
+                          OAuth callback URL
+                        </span>
+                        <Input
+                          value={draft.oauthCallbackUrl}
+                          onChange={(event) =>
+                            setDraft((current) => ({
+                              ...current,
+                              oauthCallbackUrl: event.target.value,
+                            }))
+                          }
+                          placeholder="http://127.0.0.1:3118/callback"
+                        />
+                      </label>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="space-y-1">
                         <span className="text-xs font-medium text-foreground">OAuth resource</span>
                         <Input
                           value={draft.oauthResource}
@@ -1745,9 +1886,6 @@ export function McpServersSettings(props: {
                           placeholder="https://example.com"
                         />
                       </label>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2">
                       <label className="space-y-1">
                         <span className="text-xs font-medium text-foreground">
                           Startup timeout (sec)

@@ -57,6 +57,9 @@ function normalizeMcpServerDefinition(
     server.oauthCallbackPort <= 65535
       ? { oauthCallbackPort: server.oauthCallbackPort }
       : {}),
+    ...(normalizeOptionalString(server.oauthCallbackUrl)
+      ? { oauthCallbackUrl: normalizeOptionalString(server.oauthCallbackUrl)! }
+      : {}),
     ...(typeof server.supportsParallelToolCalls === "boolean"
       ? { supportsParallelToolCalls: server.supportsParallelToolCalls }
       : {}),

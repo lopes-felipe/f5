@@ -7,6 +7,16 @@ export type McpServerTransportType = typeof McpServerTransportType.Type;
 const McpStringRecord = Schema.Record(TrimmedNonEmptyString, Schema.String);
 const McpStringArray = Schema.Array(TrimmedNonEmptyString);
 const McpPort = PositiveInt.check(Schema.isLessThanOrEqualTo(65535));
+const McpHttpUrl = TrimmedNonEmptyString.check(
+  Schema.makeFilter((value: string) => {
+    try {
+      const url = new URL(value);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch {
+      return false;
+    }
+  }),
+);
 const UnsupportedMcpField = Schema.optional(Schema.Undefined);
 
 const McpCommonServerFields = {
@@ -20,6 +30,7 @@ const McpCommonServerFields = {
   scopes: Schema.optional(McpStringArray),
   oauthClientId: Schema.optional(TrimmedNonEmptyString),
   oauthCallbackPort: Schema.optional(McpPort),
+  oauthCallbackUrl: Schema.optional(McpHttpUrl),
   oauthResource: Schema.optional(TrimmedNonEmptyString),
 };
 

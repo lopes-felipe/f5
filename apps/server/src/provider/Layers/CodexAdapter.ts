@@ -21,7 +21,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import {
-  readCodexMcpOAuthCallbackPort,
+  readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
@@ -1576,18 +1576,18 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
       return Effect.gen(function* () {
         const providerMcpServers = input.providerOptions?.mcpServers;
-        const mcpOAuthCallbackPort = providerMcpServers
+        const mcpOAuthCallbackConfig = providerMcpServers
           ? yield* Effect.try({
-              try: () => readCodexMcpOAuthCallbackPort(providerMcpServers),
+              try: () => readCodexMcpOAuthCallbackConfig(providerMcpServers),
               catch: (cause) =>
                 new ProviderAdapterValidationError({
                   provider: PROVIDER,
                   operation: "startSession",
-                  issue: toMessage(cause, "Invalid Codex MCP OAuth callback port configuration."),
+                  issue: toMessage(cause, "Invalid Codex MCP OAuth callback configuration."),
                   cause,
                 }),
             })
-          : undefined;
+          : {};
         const managerInput: CodexAppServerStartSessionInput = {
           threadId: input.threadId,
           provider: "codex",
@@ -1625,7 +1625,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
-          ...(mcpOAuthCallbackPort ? { mcpOAuthCallbackPort } : {}),
+          ...(mcpOAuthCallbackConfig.port
+            ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
+            : {}),
+          ...(mcpOAuthCallbackConfig.url
+            ? { mcpOAuthCallbackUrl: mcpOAuthCallbackConfig.url }
+            : {}),
         };
 
         return yield* Effect.tryPromise({

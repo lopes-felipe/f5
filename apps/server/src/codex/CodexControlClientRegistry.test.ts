@@ -138,6 +138,7 @@ describe("CodexControlClientRegistry", () => {
           projectId: ProjectId.makeUnsafe("project-registry-env"),
           mcpServers: {},
           mcpOAuthCallbackPort: 3118,
+          mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
         },
         "/tmp/repo",
       ),
@@ -145,6 +146,7 @@ describe("CodexControlClientRegistry", () => {
       cwd: "/tmp/repo",
       mcpServers: {},
       mcpOAuthCallbackPort: 3118,
+      mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
     });
   });
 

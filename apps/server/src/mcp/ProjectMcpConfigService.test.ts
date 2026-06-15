@@ -108,6 +108,7 @@ describe("ProjectMcpConfigService", () => {
               },
               oauthClientId: "client-1",
               oauthCallbackPort: 3118,
+              oauthCallbackUrl: "http://127.0.0.1:3118/callback",
             },
           },
         });
@@ -167,6 +168,7 @@ describe("ProjectMcpConfigService", () => {
         },
         oauthClientId: "client-1",
         oauthCallbackPort: 3118,
+        oauthCallbackUrl: "http://127.0.0.1:3118/callback",
       },
     });
 
@@ -187,6 +189,7 @@ describe("ProjectMcpConfigService", () => {
       },
     });
     expect(codex.oauthCallbackPort).toBe(3118);
+    expect(codex.oauthCallbackUrl).toBe("http://127.0.0.1:3118/callback");
   });
 
   it("fails Codex server reads when enabled OAuth callback ports conflict", async () => {
@@ -208,6 +211,46 @@ describe("ProjectMcpConfigService", () => {
               type: "http",
               url: "https://observability.example.test/mcp",
               oauthCallbackPort: 4118,
+            },
+          },
+        });
+      }),
+      layer,
+    );
+
+    await expect(
+      runServiceEffect(
+        Effect.gen(function* () {
+          const service = yield* ProjectMcpConfigService;
+          return yield* service.readCodexServers(projectId);
+        }),
+        layer,
+      ),
+    ).rejects.toMatchObject({
+      code: "validation",
+      message: expect.stringContaining("must be the same for all enabled servers"),
+    });
+  });
+
+  it("fails Codex server reads when enabled OAuth callback URLs conflict", async () => {
+    const projectId = ProjectId.makeUnsafe("project-mcp-conflicting-oauth-urls");
+    const { layer } = makeRepositoryLayer();
+
+    await runServiceEffect(
+      Effect.gen(function* () {
+        const service = yield* ProjectMcpConfigService;
+        yield* service.replaceProjectConfig({
+          projectId,
+          servers: {
+            slack: {
+              type: "http",
+              url: "https://mcp.slack.com/mcp",
+              oauthCallbackUrl: "http://127.0.0.1:3118/callback",
+            },
+            observability: {
+              type: "http",
+              url: "https://observability.example.test/mcp",
+              oauthCallbackUrl: "http://127.0.0.1:4118/callback",
             },
           },
         });

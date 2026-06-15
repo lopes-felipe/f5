@@ -388,4 +388,74 @@ describe("McpServersSettings", () => {
       await screen.unmount();
     }
   });
+
+  it("shows OAuth startup failures without opening the browser", async () => {
+    const mocks = createNativeApiMock();
+    const observabilityServer = {
+      type: "http" as const,
+      url: "https://observability.example.test/v1/mcp",
+    };
+
+    mocks.getProjectConfig.mockResolvedValue({
+      ...projectConfig,
+      servers: {
+        ...projectConfig.servers,
+        Observability: observabilityServer,
+      },
+    });
+    mocks.getEffectiveConfig.mockResolvedValue({
+      ...effectiveConfig,
+      servers: {
+        ...effectiveConfig.servers,
+        Observability: observabilityServer,
+      },
+    });
+    mocks.getServerStatuses.mockResolvedValue({
+      provider: "codex",
+      projectId: PROJECT_ID,
+      support: "supported",
+      configVersion: "effective-v1",
+      statuses: [
+        {
+          name: "Observability",
+          state: "failed",
+          authStatus: "authenticated",
+          toolCount: 0,
+          resourceCount: 0,
+          resourceTemplateCount: 0,
+        },
+      ],
+    });
+    mocks.getLoginStatus.mockImplementation(async ({ provider, projectId, serverName }) => ({
+      target: serverName ? ("server" as const) : ("provider" as const),
+      mode: serverName === "Observability" ? ("oauth" as const) : ("cli" as const),
+      provider,
+      projectId,
+      ...(serverName ? { serverName } : {}),
+      status: "idle" as const,
+    }));
+    mocks.startLogin.mockRejectedValue(
+      new Error("OAuth callback listener is not reachable at http://127.0.0.1:3118/callback."),
+    );
+
+    const { screen, queryClient } = await renderSettings();
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain("Observability");
+      });
+
+      await page.getByRole("button", { name: "Connect" }).click();
+
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain(
+          "OAuth callback listener is not reachable at http://127.0.0.1:3118/callback.",
+        );
+      });
+      expect(mocks.openExternal).not.toHaveBeenCalled();
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
 });

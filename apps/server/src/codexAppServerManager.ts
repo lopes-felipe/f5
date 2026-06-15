@@ -180,6 +180,7 @@ export interface CodexAppServerStartSessionInput {
   readonly serviceTier?: string;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
   readonly mcpOAuthCallbackPort?: number;
+  readonly mcpOAuthCallbackUrl?: string;
   readonly resumeCursor?: unknown;
   readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
   readonly runtimeMode: RuntimeMode;
@@ -652,6 +653,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           ...(input.mcpOAuthCallbackPort
             ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort }
             : {}),
+          ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
         }),
         {
           cwd: resolvedCwd,

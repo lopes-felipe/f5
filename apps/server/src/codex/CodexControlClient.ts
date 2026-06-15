@@ -44,6 +44,7 @@ export interface CodexControlEnvironmentConfig {
   readonly cwd: string;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
   readonly mcpOAuthCallbackPort?: number;
+  readonly mcpOAuthCallbackUrl?: string;
 }
 
 export interface CodexControlCapabilities {
@@ -181,6 +182,7 @@ export function isMethodNotFoundError(error: unknown): boolean {
 
 export class CodexControlClient extends EventEmitter<{
   notification: [CodexControlNotification];
+  closed: [Error];
 }> {
   capabilities: CodexControlCapabilities;
 
@@ -229,6 +231,9 @@ export class CodexControlClient extends EventEmitter<{
         mcpServers: environment.mcpServers ?? {},
         ...(environment.mcpOAuthCallbackPort
           ? { mcpOAuthCallbackPort: environment.mcpOAuthCallbackPort }
+          : {}),
+        ...(environment.mcpOAuthCallbackUrl
+          ? { mcpOAuthCallbackUrl: environment.mcpOAuthCallbackUrl }
           : {}),
       }),
       {
@@ -314,6 +319,7 @@ export class CodexControlClient extends EventEmitter<{
       this.pending.clear();
       this.output.close();
       this.writer.close(cause);
+      this.emit("closed", cause);
     };
 
     this.child.once("error", (error) => {

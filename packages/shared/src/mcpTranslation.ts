@@ -33,6 +33,32 @@ export class CodexMcpOAuthCallbackPortConflictError extends Error {
   }
 }
 
+export class CodexMcpOAuthCallbackUrlConflictError extends Error {
+  readonly urls: ReadonlyArray<{
+    readonly serverName: string;
+    readonly url: string;
+  }>;
+
+  constructor(
+    urls: ReadonlyArray<{
+      readonly serverName: string;
+      readonly url: string;
+    }>,
+  ) {
+    const formattedUrls = urls.map(({ serverName, url }) => `${serverName}:${url}`).join(", ");
+    super(
+      `Codex MCP OAuth callback URL must be the same for all enabled servers because Codex accepts a single process-level mcp_oauth_callback_url. Found conflicting URLs: ${formattedUrls}.`,
+    );
+    this.name = "CodexMcpOAuthCallbackUrlConflictError";
+    this.urls = urls;
+  }
+}
+
+export interface CodexMcpOAuthCallbackConfig {
+  readonly port?: number;
+  readonly url?: string;
+}
+
 function normalizeMcpEntryName(value: string): string | undefined {
   const normalized = normalizeOptionalString(value);
   if (!normalized || normalized.length > 128) {
@@ -57,6 +83,7 @@ function normalizeCommonEntry(entry: McpServerDefinition): {
   readonly scopes?: string[];
   readonly oauthClientId?: string;
   readonly oauthCallbackPort?: number;
+  readonly oauthCallbackUrl?: string;
   readonly oauthResource?: string;
 } {
   return {
@@ -101,6 +128,9 @@ function normalizeCommonEntry(entry: McpServerDefinition): {
     entry.oauthCallbackPort > 0 &&
     entry.oauthCallbackPort <= 65535
       ? { oauthCallbackPort: entry.oauthCallbackPort }
+      : {}),
+    ...(normalizeOptionalString(entry.oauthCallbackUrl)
+      ? { oauthCallbackUrl: normalizeOptionalString(entry.oauthCallbackUrl)! }
       : {}),
     ...(normalizeOptionalString(entry.oauthResource)
       ? { oauthResource: normalizeOptionalString(entry.oauthResource)! }
@@ -227,6 +257,28 @@ export function translateMcpForCodex(
 export function readCodexMcpOAuthCallbackPort(
   servers: McpProjectServersConfig | null | undefined,
 ): number | undefined {
+  const ports = readCodexMcpOAuthCallbackPorts(servers);
+  const uniquePorts = new Set(ports.map(({ port }) => port));
+  if (uniquePorts.size > 1) {
+    throw new CodexMcpOAuthCallbackPortConflictError(ports);
+  }
+  return ports[0]?.port;
+}
+
+export function readCodexMcpOAuthCallbackUrl(
+  servers: McpProjectServersConfig | null | undefined,
+): string | undefined {
+  const urls = readCodexMcpOAuthCallbackUrls(servers);
+  const uniqueUrls = new Set(urls.map(({ url }) => url));
+  if (uniqueUrls.size > 1) {
+    throw new CodexMcpOAuthCallbackUrlConflictError(urls);
+  }
+  return urls[0]?.url;
+}
+
+function readCodexMcpOAuthCallbackPorts(
+  servers: McpProjectServersConfig | null | undefined,
+): Array<{ readonly serverName: string; readonly port: number }> {
   const ports: Array<{ readonly serverName: string; readonly port: number }> = [];
   for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
     const normalized = normalizeCommonEntry(definition);
@@ -234,11 +286,39 @@ export function readCodexMcpOAuthCallbackPort(
       ports.push({ serverName, port: normalized.oauthCallbackPort });
     }
   }
+  return ports;
+}
 
+function readCodexMcpOAuthCallbackUrls(
+  servers: McpProjectServersConfig | null | undefined,
+): Array<{ readonly serverName: string; readonly url: string }> {
+  const urls: Array<{ readonly serverName: string; readonly url: string }> = [];
+  for (const [serverName, definition] of Object.entries(filterEnabledMcpServers(servers))) {
+    const normalized = normalizeCommonEntry(definition);
+    if (normalized.oauthCallbackUrl !== undefined) {
+      urls.push({ serverName, url: normalized.oauthCallbackUrl });
+    }
+  }
+  return urls;
+}
+
+export function readCodexMcpOAuthCallbackConfig(
+  servers: McpProjectServersConfig | null | undefined,
+): CodexMcpOAuthCallbackConfig {
+  const ports = readCodexMcpOAuthCallbackPorts(servers);
   const uniquePorts = new Set(ports.map(({ port }) => port));
   if (uniquePorts.size > 1) {
     throw new CodexMcpOAuthCallbackPortConflictError(ports);
   }
 
-  return ports[0]?.port;
+  const urls = readCodexMcpOAuthCallbackUrls(servers);
+  const uniqueUrls = new Set(urls.map(({ url }) => url));
+  if (uniqueUrls.size > 1) {
+    throw new CodexMcpOAuthCallbackUrlConflictError(urls);
+  }
+
+  return {
+    ...(ports[0]?.port !== undefined ? { port: ports[0].port } : {}),
+    ...(urls[0]?.url !== undefined ? { url: urls[0].url } : {}),
+  };
 }

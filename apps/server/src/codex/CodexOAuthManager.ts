@@ -16,6 +16,10 @@ import type { CodexControlClient } from "./CodexControlClient.ts";
 import { CodexControlClientRegistry } from "./CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./CodexMcpEventBus.ts";
 import {
+  preflightCodexOAuthCallback,
+  validateCodexOAuthCallbackConfig,
+} from "./CodexOAuthCallbackPreflight.ts";
+import {
   codexServerNamesMatch,
   codexServerStatusCanReconcileCompletedOauthLogin,
   findCodexServerStatusByName,
@@ -63,9 +67,10 @@ interface PendingOAuthMetadata {
   readonly providerOptions: ProviderStartOptions | undefined;
   readonly mcpEffectiveConfigVersion: string | null | undefined;
   readonly mcpOAuthCallbackPort: number | undefined;
+  readonly mcpOAuthCallbackUrl: string | undefined;
   readonly client: CodexControlClient;
   readonly release: Effect.Effect<void>;
-  readonly cleanupNotificationListener: () => void;
+  readonly cleanupListeners: () => void;
   nextReconcileAtMs: number;
   reconcileInFlight: boolean;
 }
@@ -160,10 +165,11 @@ const makeCodexOAuthManager = Effect.gen(function* () {
     Effect.gen(function* () {
       const key = statusKeyFor(input);
       if (pendingMetadataByKey.get(key) !== metadata) {
+        metadata.cleanupListeners();
         return statusByKey.get(key) ?? makeIdleStatus(input);
       }
 
-      metadata.cleanupNotificationListener();
+      metadata.cleanupListeners();
       const existingStatus = statusByKey.get(key);
       const nextStatus: McpOauthLoginStatusResult = {
         projectId: input.projectId,
@@ -271,6 +277,9 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         ...(metadata?.mcpOAuthCallbackPort
           ? { mcpOAuthCallbackPort: metadata.mcpOAuthCallbackPort }
           : {}),
+        ...(metadata?.mcpOAuthCallbackUrl
+          ? { mcpOAuthCallbackUrl: metadata.mcpOAuthCallbackUrl }
+          : {}),
       });
       if (hasLease) {
         return existing;
@@ -281,7 +290,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         error: "OAuth login timed out before completion.",
         ...(existing.authorizationUrl ? { authorizationUrl: existing.authorizationUrl } : {}),
       });
-      metadata?.cleanupNotificationListener();
+      metadata?.cleanupListeners();
       statusByKey.set(key, expiredStatus);
       pendingMetadataByKey.delete(key);
       return expiredStatus;
@@ -309,6 +318,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         );
 
         const startedAt = nowIso();
+        const key = statusKeyFor(input);
         const pendingStatus: McpOauthLoginStatusResult = {
           projectId: input.projectId,
           serverName: input.serverName,
@@ -325,6 +335,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
             mcpEffectiveConfigVersion: stored.effectiveVersion,
             mcpServers: stored.servers,
             ...(stored.oauthCallbackPort ? { mcpOAuthCallbackPort: stored.oauthCallbackPort } : {}),
+            ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
           })
           .pipe(
             Effect.tapError((error) =>
@@ -336,7 +347,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
                     error: error.message,
                   }),
                 );
-                pendingMetadataByKey.delete(statusKeyFor(input));
+                pendingMetadataByKey.delete(key);
               }),
             ),
             Effect.mapError(
@@ -350,15 +361,20 @@ const makeCodexOAuthManager = Effect.gen(function* () {
         let notificationListener:
           | ((input: { readonly method: string; readonly params?: unknown }) => void)
           | undefined;
+        let closedListener: ((error: Error) => void) | undefined;
         const pendingMetadata: PendingOAuthMetadata = {
           providerOptions,
           mcpEffectiveConfigVersion: stored.effectiveVersion,
           mcpOAuthCallbackPort: stored.oauthCallbackPort,
+          mcpOAuthCallbackUrl: stored.oauthCallbackUrl,
           client: lease.client,
           release: lease.release,
-          cleanupNotificationListener: () => {
+          cleanupListeners: () => {
             if (notificationListener) {
               lease.client.off("notification", notificationListener);
+            }
+            if (closedListener) {
+              lease.client.off("closed", closedListener);
             }
           },
           nextReconcileAtMs: 0,
@@ -407,18 +423,49 @@ const makeCodexOAuthManager = Effect.gen(function* () {
 
         lease.client.on("notification", notificationListener);
 
+        closedListener = (error: Error) => {
+          runBackgroundTask(
+            finalizePendingStatus(input, pendingMetadata, {
+              success: false,
+              error:
+                error.message.trim().length > 0
+                  ? `Codex OAuth: ${error.message}`
+                  : "Codex OAuth control client exited before login completed.",
+            }).pipe(Effect.asVoid),
+          );
+        };
+        lease.client.on("closed", closedListener);
+
         return yield* Effect.tryPromise({
-          try: () =>
-            lease.client.startOAuthLogin({
+          try: async () => {
+            validateCodexOAuthCallbackConfig({
+              ...(stored.oauthCallbackPort
+                ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
+                : {}),
+              ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
+            });
+            const loginResult = await lease.client.startOAuthLogin({
               name: input.serverName,
               timeoutSecs: CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC,
-            }),
+            });
+            await preflightCodexOAuthCallback({
+              authorizationUrl: loginResult.authorizationUrl,
+              ...(stored.oauthCallbackPort
+                ? { mcpOAuthCallbackPort: stored.oauthCallbackPort }
+                : {}),
+              ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
+            });
+            return loginResult;
+          },
           catch: (cause) =>
             new CodexOAuthManagerError({
               message: cause instanceof Error ? cause.message : "Failed to start MCP OAuth login.",
             }),
         }).pipe(
           Effect.map((loginResult) => {
+            if (pendingMetadataByKey.get(key) !== pendingMetadata) {
+              return statusByKey.get(key) ?? makeIdleStatus(input);
+            }
             const nextStatus: McpOauthLoginStatusResult = {
               projectId: input.projectId,
               serverName: input.serverName,
@@ -431,13 +478,16 @@ const makeCodexOAuthManager = Effect.gen(function* () {
           }),
           Effect.catch((error) =>
             Effect.gen(function* () {
-              lease.client.off("notification", notificationListener);
+              pendingMetadata.cleanupListeners();
+              if (pendingMetadataByKey.get(key) !== pendingMetadata) {
+                return statusByKey.get(key) ?? makeIdleStatus(input);
+              }
               const nextStatus = makeFailedStatus(input, {
                 startedAt,
                 error: error instanceof Error ? error.message : "Failed to start MCP OAuth login.",
               });
               setStatus(input, nextStatus);
-              pendingMetadataByKey.delete(statusKeyFor(input));
+              pendingMetadataByKey.delete(key);
               yield* lease.release;
               return yield* new CodexOAuthManagerError({
                 message:
