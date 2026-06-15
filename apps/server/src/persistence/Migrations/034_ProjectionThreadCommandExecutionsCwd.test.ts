@@ -275,8 +275,8 @@ layer("034_ProjectionThreadCommandExecutionsCwd", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 44,
-          name: "ProjectionThreadCommandExecutionsSchemaRepair",
+          migrationId: 45,
+          name: "ProjectionThreadsModelSchemaRepair",
         },
       ]);
     }),

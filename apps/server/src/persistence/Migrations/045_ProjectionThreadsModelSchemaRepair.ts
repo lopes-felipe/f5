@@ -1,8 +1,23 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+/**
+ * Repairs databases that advanced past migration 040 while still using an
+ * older projection_threads shape without model or model_selection_json.
+ */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+
+  const tables = yield* sql<{ readonly name: string }>`
+    SELECT name
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'projection_threads'
+  `;
+
+  if (tables.length === 0) {
+    return;
+  }
 
   const columns = yield* sql<{ readonly name: string }>`
     SELECT name
