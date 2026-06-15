@@ -1,6 +1,10 @@
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
+/**
+ * Repairs databases that already advanced past migration 033 before it was
+ * hardened against missing or partially migrated project_mcp_configs tables.
+ */
 export default Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
