@@ -52,6 +52,7 @@ import { useRecoveryStateStore } from "../recoveryStateStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
+import { createPlanningWorkflow } from "../test/workflowFixtures";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -602,6 +603,61 @@ function createPlanFollowUpSnapshot(): OrchestrationReadModel {
           })
         : thread,
     ),
+  };
+}
+
+function createWorkflowImplementation(
+  overrides: Partial<
+    NonNullable<OrchestrationReadModel["planningWorkflows"][number]["implementation"]>
+  > = {},
+): NonNullable<OrchestrationReadModel["planningWorkflows"][number]["implementation"]> {
+  return {
+    implementationSlot: { provider: "codex", model: "gpt-5" },
+    threadId: "workflow-implementation-thread" as ThreadId,
+    implementationTurnId: null,
+    revisionTurnId: null,
+    codeReviewEnabled: true,
+    codeReviews: [],
+    status: "implementing",
+    error: null,
+    retryCount: 0,
+    lastRetryAt: null,
+    updatedAt: isoAt(1_011),
+    ...overrides,
+  };
+}
+
+function createMergeWorkflowPlanFollowUpSnapshot(options?: {
+  approvedPlanId?: string | null;
+  implementation?: OrchestrationReadModel["planningWorkflows"][number]["implementation"];
+}): OrchestrationReadModel {
+  const snapshot = createPlanFollowUpSnapshot();
+  return {
+    ...snapshot,
+    planningWorkflows: [
+      createPlanningWorkflow({
+        projectId: PROJECT_ID,
+        now: NOW_ISO,
+        title: "Merge workflow",
+        branchA: {
+          status: "revised",
+          planTurnId: TurnId.makeUnsafe("branch-a-plan-turn"),
+        },
+        branchB: {
+          status: "revised",
+          planTurnId: TurnId.makeUnsafe("branch-b-plan-turn"),
+        },
+        merge: {
+          threadId: THREAD_ID,
+          outputFilePath: "plans/merge-workflow-merged.md",
+          turnId: TurnId.makeUnsafe("turn-plan-follow-up"),
+          approvedPlanId: options?.approvedPlanId ?? "plan-browser-test",
+          status: "manual_review",
+          updatedAt: isoAt(1_010),
+        },
+        implementation: options?.implementation ?? null,
+      }),
+    ],
   };
 }
 
@@ -1450,6 +1506,12 @@ function getDispatchCommandRequests(
     }
     return (request.command as { type?: unknown } | undefined)?.type === type;
   }) as Array<WsRequestEnvelope["body"] & { command?: unknown }>;
+}
+
+function getStartImplementationRequests(): WsRequestEnvelope["body"][] {
+  return wsRequests.filter(
+    (request) => request._tag === ORCHESTRATION_WS_METHODS.startImplementation,
+  );
 }
 
 async function waitForButtonByText(text: string): Promise<HTMLButtonElement> {
@@ -3968,6 +4030,219 @@ describe("ChatView timeline (full app)", () => {
           ).toBe("plan");
         },
         { timeout: 12_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows one workflow Implement button in a manual-review merge chat", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot(),
+    });
+
+    try {
+      await waitForButtonByText("Implement");
+
+      const implementButtons = Array.from(document.querySelectorAll("button")).filter(
+        (button) => button.textContent?.trim() === "Implement",
+      );
+      expect(implementButtons).toHaveLength(1);
+      expect(document.querySelector('button[aria-label="Implementation actions"]')).toBeNull();
+      expect(document.body.textContent).not.toContain("Implement in a new thread");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the workflow Implement button visible while approvedPlanId catches up", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot({
+        approvedPlanId: "stale-approved-plan",
+      }),
+    });
+
+    try {
+      await waitForButtonByText("Implement");
+
+      const implementButtons = Array.from(document.querySelectorAll("button")).filter(
+        (button) => button.textContent?.trim() === "Implement",
+      );
+      expect(implementButtons).toHaveLength(1);
+      expect(document.querySelector('button[aria-label="Implementation actions"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the workflow implementation dialog from merge chat without dispatching a turn", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot(),
+    });
+
+    try {
+      const implementButton = await waitForButtonByText("Implement");
+      wsRequests.length = 0;
+
+      implementButton.click();
+
+      await waitForButtonByText("Start implementation");
+      expect(getDispatchCommandRequests("thread.create")).toHaveLength(0);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(getStartImplementationRequests()).toHaveLength(0);
+
+      await page.getByRole("button", { name: "Start implementation" }).click();
+
+      await vi.waitFor(
+        () => {
+          expect(getStartImplementationRequests()).toHaveLength(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      expect(getDispatchCommandRequests("thread.create")).toHaveLength(0);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("closes an open workflow implementation dialog when implementation starts elsewhere", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot(),
+    });
+
+    try {
+      const implementButton = await waitForButtonByText("Implement");
+      implementButton.click();
+
+      await waitForButtonByText("Start implementation");
+
+      const nextSnapshot = createMergeWorkflowPlanFollowUpSnapshot({
+        implementation: createWorkflowImplementation(),
+      });
+      fixture.snapshot = nextSnapshot;
+      useStore.getState().syncServerReadModel(nextSnapshot);
+      await waitForLayout();
+
+      await vi.waitFor(
+        () => {
+          expect(document.body.textContent).not.toContain("Start implementation");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens the workflow implementation dialog from Enter on an empty merge-chat composer", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot(),
+    });
+
+    try {
+      await waitForButtonByText("Implement");
+      wsRequests.length = 0;
+
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await waitForButtonByText("Start implementation");
+      expect(getDispatchCommandRequests("thread.create")).toHaveLength(0);
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(getStartImplementationRequests()).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps merge-chat Refine as a plan-mode turn", async () => {
+    const sentText = "Tighten the retry handling in the merged plan.";
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot(),
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
+      const refineButton = await waitForButtonByText("Refine");
+      wsRequests.length = 0;
+
+      refineButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      const dispatchCommand = getDispatchCommandRequests("thread.turn.start")[0]?.command as
+        | { interactionMode?: unknown; message?: { text?: unknown } }
+        | undefined;
+      expect(dispatchCommand?.interactionMode).toBe("plan");
+      expect(dispatchCommand?.message?.text).toBe(sentText);
+      expect(getStartImplementationRequests()).toHaveLength(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("hides the merge-chat Implement button once workflow implementation exists", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createMergeWorkflowPlanFollowUpSnapshot({
+        implementation: createWorkflowImplementation(),
+      }),
+    });
+
+    try {
+      await waitForComposerShell();
+      await waitForLayout();
+
+      const implementButton = Array.from(document.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Implement",
+      );
+      expect(implementButton).toBeUndefined();
+      expect(document.querySelector('button[aria-label="Implementation actions"]')).toBeNull();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the ordinary plan-mode split Implement and detached new-thread action", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createPlanFollowUpSnapshot(),
+    });
+
+    try {
+      await waitForButtonByText("Implement");
+
+      const implementationActions = document.querySelector<HTMLButtonElement>(
+        'button[aria-label="Implementation actions"]',
+      );
+      expect(implementationActions).not.toBeNull();
+      implementationActions?.click();
+
+      await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+            (element) => element.textContent?.trim() === "Implement in a new thread",
+          ) ?? null,
+        "Ordinary plan-mode chat should keep the detached implementation menu item.",
       );
     } finally {
       await mounted.cleanup();

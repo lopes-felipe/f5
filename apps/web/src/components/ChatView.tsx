@@ -48,7 +48,16 @@ import {
 } from "@t3tools/shared/orchestrationActivityPayload";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useNavigate, useSearch } from "@tanstack/react-router";
@@ -151,7 +160,7 @@ import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings"
 import PlanSidebar from "./PlanSidebar";
 import { RightPanelSheet } from "./RightPanelSheet";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
-import { workflowContainsThread } from "./workflow/workflowUtils";
+import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
 import {
   BotIcon,
@@ -287,6 +296,12 @@ const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnsw
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+
+const WorkflowImplementDialog = lazy(() =>
+  import("./workflow/WorkflowImplementDialog").then((module) => ({
+    default: module.WorkflowImplementDialog,
+  })),
+);
 
 type NativeApiClient = NonNullable<ReturnType<typeof readNativeApi>>;
 type PendingTurnDispatch = PendingTurnDispatchState;
@@ -662,6 +677,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const previousThreadTaskCountRef = useRef(0);
   const tasksPanelManuallyCollapsedRef = useRef(false);
   const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
+  const [workflowImplementDialogOpen, setWorkflowImplementDialogOpen] = useState(false);
   const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
@@ -894,6 +910,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ? resolvePlanningWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id)
       : resolveCodeReviewWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id);
   }, [activeThread, activeWorkflow]);
+  const planningMergeWorkflow =
+    activeWorkflow?.type === "planning" &&
+    activeThread != null &&
+    activeWorkflow.workflow.merge.threadId === activeThread.id
+      ? activeWorkflow.workflow
+      : null;
 
   useEffect(() => {
     if (!workflowThreadSlot) {
@@ -1600,6 +1622,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
       activeLatestTurn?.turnId ?? null,
     );
   }, [activeLatestTurn?.turnId, activeThread?.proposedPlans, latestTurnSettled]);
+  // The server re-validates the latest merge-thread plan in startImplementation,
+  // so keep the affordance visible while the approvedPlanId upsert catches up.
+  const canImplementMergeFromChat =
+    planningMergeWorkflow != null &&
+    canStartImplementation(planningMergeWorkflow) &&
+    activeProposedPlan != null;
   const activePlan = useMemo(
     () =>
       deriveActivePlanState(threadActivities, activeLatestTurn?.turnId ?? undefined, {
@@ -3763,6 +3791,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
         draftText: trimmed,
         planMarkdown: activeProposedPlan.planMarkdown,
       });
+      if (planningMergeWorkflow != null && followUp.interactionMode === "default") {
+        if (canImplementMergeFromChat) {
+          setWorkflowImplementDialogOpen(true);
+        }
+        return;
+      }
       await onSubmitPlanFollowUp({
         text: followUp.text,
         interactionMode: followUp.interactionMode,
@@ -4401,6 +4435,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
 
   const onImplementPlanInNewThread = useCallback(async () => {
+    if (planningMergeWorkflow != null) {
+      if (canImplementMergeFromChat) {
+        setWorkflowImplementDialogOpen(true);
+      }
+      return;
+    }
+
     const api = readNativeApi();
     if (
       !api ||
@@ -4519,10 +4560,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
     activeProject,
     activeProposedPlan,
     activeThread,
+    canImplementMergeFromChat,
     hasPendingTurnDispatch,
     isConnecting,
     isServerThread,
     navigate,
+    planningMergeWorkflow,
     runtimeMode,
     selectedModel,
     selectedModelSelectionForDispatch,
@@ -5714,39 +5757,56 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                   {isConnecting || isSendBusy ? "Sending..." : "Refine"}
                                 </Button>
                               ) : (
-                                <div className="flex items-center">
-                                  <Button
-                                    type="submit"
-                                    size="sm"
-                                    className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
-                                    disabled={isPendingTurnDispatchBlocked || isConnecting}
-                                  >
-                                    {isConnecting || isSendBusy ? "Sending..." : "Implement"}
-                                  </Button>
-                                  <Menu>
-                                    <MenuTrigger
-                                      render={
-                                        <Button
-                                          size="sm"
-                                          variant="default"
-                                          className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
-                                          aria-label="Implementation actions"
-                                          disabled={isPendingTurnDispatchBlocked || isConnecting}
-                                        />
-                                      }
-                                    >
-                                      <ChevronDownIcon className="size-3.5" />
-                                    </MenuTrigger>
-                                    <MenuPopup align="end" side="top">
-                                      <MenuItem
-                                        disabled={isPendingTurnDispatchBlocked || isConnecting}
-                                        onClick={() => void onImplementPlanInNewThread()}
+                                <>
+                                  {planningMergeWorkflow != null ? (
+                                    canImplementMergeFromChat ? (
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        className="h-9 rounded-full px-4 sm:h-8"
+                                        onClick={() => setWorkflowImplementDialogOpen(true)}
                                       >
-                                        Implement in a new thread
-                                      </MenuItem>
-                                    </MenuPopup>
-                                  </Menu>
-                                </div>
+                                        Implement
+                                      </Button>
+                                    ) : null
+                                  ) : (
+                                    <div className="flex items-center">
+                                      <Button
+                                        type="submit"
+                                        size="sm"
+                                        className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
+                                        disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                      >
+                                        {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+                                      </Button>
+                                      <Menu>
+                                        <MenuTrigger
+                                          render={
+                                            <Button
+                                              size="sm"
+                                              variant="default"
+                                              className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
+                                              aria-label="Implementation actions"
+                                              disabled={
+                                                isPendingTurnDispatchBlocked || isConnecting
+                                              }
+                                            />
+                                          }
+                                        >
+                                          <ChevronDownIcon className="size-3.5" />
+                                        </MenuTrigger>
+                                        <MenuPopup align="end" side="top">
+                                          <MenuItem
+                                            disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                            onClick={() => void onImplementPlanInNewThread()}
+                                          >
+                                            Implement in a new thread
+                                          </MenuItem>
+                                        </MenuPopup>
+                                      </Menu>
+                                    </div>
+                                  )}
+                                </>
                               )
                             ) : (
                               <button
@@ -5898,6 +5958,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
               onClose={closePlanSidebar}
             />
           </RightPanelSheet>
+        ) : null}
+
+        {planningMergeWorkflow != null ? (
+          <Suspense fallback={null}>
+            <WorkflowImplementDialog
+              open={workflowImplementDialogOpen && canStartImplementation(planningMergeWorkflow)}
+              workflow={planningMergeWorkflow}
+              onOpenChange={setWorkflowImplementDialogOpen}
+            />
+          </Suspense>
         ) : null}
 
         {expandedImage && expandedImageItem && (

@@ -769,6 +769,28 @@ function markMergeReadyForManualReview(
   };
 }
 
+function repinManualReviewApprovedPlan(
+  workflow: PlanningWorkflow,
+  input: {
+    readonly proposedPlanId: typeof OrchestrationProposedPlanId.Type;
+    readonly turnId: string | null;
+    readonly updatedAt: string;
+  },
+): PlanningWorkflow {
+  return {
+    ...workflow,
+    merge: {
+      ...workflow.merge,
+      // In manual review, refinements replace the approved merged plan, so this
+      // turn id follows the turn that produced the currently approved plan.
+      turnId: input.turnId ?? workflow.merge.turnId,
+      approvedPlanId: input.proposedPlanId,
+      updatedAt: input.updatedAt,
+    },
+    updatedAt: input.updatedAt,
+  };
+}
+
 function markImplementationDone(
   workflow: PlanningWorkflow,
   turnId: string | null,
@@ -1092,6 +1114,68 @@ function resolveApprovedMergedPlan(
     }
   }
   return mergeThread.proposedPlans.at(-1) ?? null;
+}
+
+function latestUnimplementedMergedPlan(mergeThread: {
+  readonly proposedPlans: ReadonlyArray<{
+    readonly id: typeof OrchestrationProposedPlanId.Type;
+    readonly turnId: TurnId | null;
+    readonly planMarkdown: string;
+    readonly implementedAt: string | null;
+    readonly updatedAt: string;
+  }>;
+}) {
+  for (let index = mergeThread.proposedPlans.length - 1; index >= 0; index -= 1) {
+    const plan = mergeThread.proposedPlans[index];
+    if (plan && plan.implementedAt === null) {
+      return plan;
+    }
+  }
+  return null;
+}
+
+function resolveMergedPlanForImplementation(
+  workflow: PlanningWorkflow,
+  mergeThread: {
+    readonly proposedPlans: ReadonlyArray<{
+      readonly id: typeof OrchestrationProposedPlanId.Type;
+      readonly turnId: TurnId | null;
+      readonly planMarkdown: string;
+      readonly implementedAt: string | null;
+      readonly updatedAt: string;
+    }>;
+  },
+  updatedAt: string,
+): {
+  readonly workflow: PlanningWorkflow;
+  readonly mergedPlan: {
+    readonly id: typeof OrchestrationProposedPlanId.Type;
+    readonly planMarkdown: string;
+  } | null;
+  readonly repinned: boolean;
+} {
+  const latestPlan = latestUnimplementedMergedPlan(mergeThread);
+  if (
+    latestPlan &&
+    latestPlan.id !== workflow.merge.approvedPlanId &&
+    Date.parse(latestPlan.updatedAt) > Date.parse(workflow.merge.updatedAt)
+  ) {
+    return {
+      workflow: repinManualReviewApprovedPlan(workflow, {
+        proposedPlanId: latestPlan.id,
+        turnId: latestPlan.turnId,
+        updatedAt,
+      }),
+      mergedPlan: latestPlan,
+      repinned: true,
+    };
+  }
+
+  return {
+    workflow,
+    mergedPlan: resolveApprovedMergedPlan(workflow, mergeThread),
+    repinned: false,
+  };
 }
 
 export const makeWorkflowService = Effect.gen(function* () {
@@ -2287,6 +2371,20 @@ export const makeWorkflowService = Effect.gen(function* () {
             lifecycleSnapshot,
             event.occurredAt,
           );
+          if (
+            nextWorkflow.merge.threadId === event.payload.threadId &&
+            nextWorkflow.merge.status === "manual_review" &&
+            nextWorkflow.implementation === null &&
+            event.payload.proposedPlan.implementedAt === null
+          ) {
+            yield* upsertWorkflow(
+              repinManualReviewApprovedPlan(nextWorkflow, {
+                proposedPlanId: event.payload.proposedPlan.id,
+                turnId: event.payload.proposedPlan.turnId,
+                updatedAt: event.occurredAt,
+              }),
+            );
+          }
           return;
         }
 
@@ -2999,15 +3097,24 @@ export const makeWorkflowService = Effect.gen(function* () {
         return yield* Effect.fail(new Error("Merge thread not found."));
       }
 
-      const mergedPlan = resolveApprovedMergedPlan(workflow, mergeThread);
+      const now = new Date().toISOString();
+      const {
+        workflow: implementationWorkflow,
+        mergedPlan,
+        repinned,
+      } = resolveMergedPlanForImplementation(workflow, mergeThread, now);
       if (!mergedPlan?.planMarkdown) {
         return yield* Effect.fail(new Error("Merged plan not found."));
+      }
+      if (repinned) {
+        yield* upsertWorkflow(implementationWorkflow);
       }
 
       const envMode = input.envMode ?? "local";
       const workspaceRoot =
         snapshot.projects.find(
-          (project) => project.id === workflow.projectId && project.deletedAt === null,
+          (project) =>
+            project.id === implementationWorkflow.projectId && project.deletedAt === null,
         )?.workspaceRoot ?? null;
 
       let branch: string | null = null;
@@ -3045,7 +3152,6 @@ export const makeWorkflowService = Effect.gen(function* () {
         worktreePath = createdWorktree.worktree.path;
       }
 
-      const now = new Date().toISOString();
       const implementationThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
       const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
       const codeReviewEnabled = input.codeReviewEnabled ?? true;
@@ -3054,7 +3160,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         type: "thread.create",
         commandId: CommandId.makeUnsafe(crypto.randomUUID()),
         threadId: implementationThreadId,
-        projectId: workflow.projectId,
+        projectId: implementationWorkflow.projectId,
         title: "Implementation",
         model: input.model,
         runtimeMode,
@@ -3078,7 +3184,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           messageId: MessageId.makeUnsafe(crypto.randomUUID()),
           role: "user",
           text: buildImplementationPrompt({
-            workflow,
+            workflow: implementationWorkflow,
             mergedPlanMarkdown: mergedPlan.planMarkdown,
             provider: input.provider,
           }),
@@ -3087,7 +3193,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         provider: input.provider,
         model: input.model,
         ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
-        titleSourceText: workflow.title,
+        titleSourceText: implementationWorkflow.title,
         runtimeMode,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         sourceProposedPlan: {
@@ -3098,7 +3204,7 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
 
       yield* upsertWorkflow({
-        ...workflow,
+        ...implementationWorkflow,
         implementation: {
           implementationSlot: {
             provider: input.provider,

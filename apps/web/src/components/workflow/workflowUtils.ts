@@ -9,6 +9,10 @@ export function workflowContainsThread(workflow: PlanningWorkflow, threadId: Thr
   return threadIdsForWorkflow(workflow).includes(threadId);
 }
 
+export function canStartImplementation(workflow: PlanningWorkflow): boolean {
+  return workflow.merge.status === "manual_review" && workflow.implementation == null;
+}
+
 export function workflowThreadDisplayTitle(
   workflow: PlanningWorkflow,
   threadTitle: string,

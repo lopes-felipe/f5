@@ -119,6 +119,25 @@ function makeWorkflow(overrides: Partial<PlanningWorkflow> = {}): PlanningWorkfl
   };
 }
 
+function makeImplementation(
+  overrides: Partial<NonNullable<PlanningWorkflow["implementation"]>> = {},
+): NonNullable<PlanningWorkflow["implementation"]> {
+  return {
+    implementationSlot: { provider: "codex", model: "gpt-5-codex" },
+    threadId: ThreadId.makeUnsafe("implementation-thread"),
+    implementationTurnId: null,
+    revisionTurnId: null,
+    codeReviewEnabled: true,
+    codeReviews: [],
+    status: "implementing",
+    error: null,
+    retryCount: 0,
+    lastRetryAt: null,
+    updatedAt: NOW,
+    ...overrides,
+  };
+}
+
 function makeReadModel(input: {
   workflow?: PlanningWorkflow;
   threads?: OrchestrationReadModel["threads"];
@@ -1065,6 +1084,71 @@ describe("WorkflowService", () => {
     );
     expect(turnStart?.message.text).toContain("prefer `rg` and `rg --files`");
     expect(turnStart?.interactionMode).toBe("default");
+    expect(workflowUpsert?.workflow.implementation?.status).toBe("implementing");
+  });
+
+  it("starts implementation from a newer unimplemented merge plan when approval re-pin is pending", async () => {
+    const refinedAt = "2026-03-26T12:05:00.000Z";
+    const workflow = makeWorkflow({
+      merge: {
+        ...makeWorkflow().merge,
+        approvedPlanId: "approved-plan",
+        updatedAt: NOW,
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("merge-thread"),
+            proposedPlans: [
+              {
+                id: "approved-plan",
+                turnId: TurnId.makeUnsafe("merge-turn-approved"),
+                planMarkdown: "# Approved plan",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+              {
+                id: "refined-plan",
+                turnId: TurnId.makeUnsafe("merge-turn-refined"),
+                planMarkdown: "# Refined plan",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: refinedAt,
+                updatedAt: refinedAt,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.service.startImplementation({
+        workflowId: workflow.id,
+        provider: "codex",
+        model: "gpt-5-codex",
+      }),
+    );
+
+    const turnStart = harness.dispatched.find(
+      (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+        command.type === "thread.turn.start",
+    );
+    const workflowUpsert = lastWorkflowUpsert(harness.dispatched);
+
+    expect(turnStart?.sourceProposedPlan).toEqual({
+      threadId: "merge-thread",
+      planId: "refined-plan",
+    });
+    expect(turnStart?.message.text).toContain("# Refined plan");
+    expect(turnStart?.message.text).not.toContain("# Approved plan");
+    expect(workflowUpsert?.workflow.merge.approvedPlanId).toBe("refined-plan");
+    expect(workflowUpsert?.workflow.merge.turnId).toBe("merge-turn-refined");
     expect(workflowUpsert?.workflow.implementation?.status).toBe("implementing");
   });
 
@@ -3969,6 +4053,193 @@ describe("WorkflowService", () => {
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.merge.approvedPlanId).toBe(
       "merged-plan",
     );
+  });
+
+  it("re-pins the approved merged plan when the manual-review merge chat is refined", async () => {
+    const refineTurnId = TurnId.makeUnsafe("merge-refine-turn");
+    const refinedAt = "2026-03-26T12:05:00.000Z";
+    const workflow = makeWorkflow({
+      merge: {
+        ...makeWorkflow().merge,
+        turnId: "old-merge-turn",
+        approvedPlanId: "old-plan",
+        status: "manual_review",
+      },
+      implementation: null,
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("merge-thread"),
+            interactionMode: "plan",
+            latestTurn: {
+              turnId: refineTurnId,
+              state: "completed",
+              requestedAt: refinedAt,
+              startedAt: refinedAt,
+              completedAt: refinedAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-refine"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("merge-thread"),
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: refinedAt,
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("old-plan"),
+                turnId: TurnId.makeUnsafe("old-merge-turn"),
+                planMarkdown: "# Old merged plan",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent(
+        "thread.proposed-plan-upserted",
+        {
+          threadId: ThreadId.makeUnsafe("merge-thread"),
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.makeUnsafe("refined-plan"),
+            turnId: refineTurnId,
+            planMarkdown: "# Refined merged plan",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: refinedAt,
+            updatedAt: refinedAt,
+          },
+        },
+        refinedAt,
+      ),
+    );
+
+    await waitFor(
+      () =>
+        lastWorkflowUpsert(harness!.dispatched)?.workflow.merge.approvedPlanId === "refined-plan",
+    );
+
+    const workflowUpsert = lastWorkflowUpsert(harness.dispatched);
+    expect(workflowUpsert?.workflow.merge.turnId).toBe(refineTurnId);
+    expect(workflowUpsert?.workflow.merge.updatedAt).toBe(refinedAt);
+    expect(workflowUpsert?.workflow.updatedAt).toBe(refinedAt);
+  });
+
+  it("does not re-pin manual-review merge plans after implementation has started", async () => {
+    const refineTurnId = TurnId.makeUnsafe("merge-refine-turn");
+    const workflow = makeWorkflow({
+      merge: {
+        ...makeWorkflow().merge,
+        approvedPlanId: "old-plan",
+        status: "manual_review",
+      },
+      implementation: makeImplementation(),
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("merge-thread"),
+            interactionMode: "plan",
+          }),
+          makeThread({
+            id: ThreadId.makeUnsafe("implementation-thread"),
+            session: {
+              threadId: ThreadId.makeUnsafe("implementation-thread"),
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.makeUnsafe("implementation-turn"),
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.proposed-plan-upserted", {
+        threadId: ThreadId.makeUnsafe("merge-thread"),
+        proposedPlan: {
+          id: OrchestrationProposedPlanId.makeUnsafe("refined-plan"),
+          turnId: refineTurnId,
+          planMarkdown: "# Refined merged plan",
+          implementedAt: null,
+          implementationThreadId: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(lastWorkflowUpsert(harness.dispatched)).toBeNull();
+    expect(harness.getSnapshot().planningWorkflows[0]?.merge.approvedPlanId).toBe("old-plan");
+  });
+
+  it("does not re-pin manual-review merge plans from implemented source-plan upserts", async () => {
+    const implementedAt = "2026-03-26T12:06:00.000Z";
+    const workflow = makeWorkflow({
+      merge: {
+        ...makeWorkflow().merge,
+        approvedPlanId: "old-plan",
+        status: "manual_review",
+      },
+      implementation: null,
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("merge-thread"),
+            interactionMode: "plan",
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent(
+        "thread.proposed-plan-upserted",
+        {
+          threadId: ThreadId.makeUnsafe("merge-thread"),
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.makeUnsafe("implemented-plan"),
+            turnId: TurnId.makeUnsafe("merge-turn"),
+            planMarkdown: "# Implemented merged plan",
+            implementedAt,
+            implementationThreadId: ThreadId.makeUnsafe("implementation-thread"),
+            createdAt: NOW,
+            updatedAt: implementedAt,
+          },
+        },
+        implementedAt,
+      ),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(lastWorkflowUpsert(harness.dispatched)).toBeNull();
+    expect(harness.getSnapshot().planningWorkflows[0]?.merge.approvedPlanId).toBe("old-plan");
   });
 
   it("synthesizes a revised plan from reasoning-only author output and starts merge", async () => {

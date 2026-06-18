@@ -6,7 +6,7 @@ import ChatMarkdown from "../ChatMarkdown";
 import { Button } from "../ui/button";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import { WorkflowImplementDialog } from "./WorkflowImplementDialog";
-import { resolveApprovedMergedPlanMarkdown } from "./workflowUtils";
+import { canStartImplementation, resolveApprovedMergedPlanMarkdown } from "./workflowUtils";
 import { deriveTimelinePhases } from "./workflowSidebarTimeline";
 
 function statusLabel(workflow: {
@@ -87,8 +87,7 @@ export function WorkflowView(props: { workflowId: string }) {
     ? threads.find((thread) => thread.id === workflow.merge.threadId)
     : null;
   const mergedPlan = resolveApprovedMergedPlanMarkdown(workflow, mergeThread);
-  const canStartImplementation =
-    workflow.merge.status === "manual_review" && !workflow.implementation;
+  const implementationStartable = canStartImplementation(workflow);
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
   const timelinePhases = deriveTimelinePhases(workflow);
   const formattedCost =
@@ -111,7 +110,7 @@ export function WorkflowView(props: { workflowId: string }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            {canStartImplementation ? (
+            {implementationStartable ? (
               <Button onClick={() => setImplementDialogOpen(true)}>Implement</Button>
             ) : null}
             <Button variant="outline" onClick={() => void navigate({ to: "/" })}>
@@ -155,7 +154,7 @@ export function WorkflowView(props: { workflowId: string }) {
         </main>
       </div>
       <WorkflowImplementDialog
-        open={implementDialogOpen}
+        open={implementDialogOpen && implementationStartable}
         workflow={workflow}
         onOpenChange={setImplementDialogOpen}
       />

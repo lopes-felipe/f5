@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   ModelSlug,
   PlanningWorkflow,
@@ -177,6 +177,7 @@ export function WorkflowImplementDialog(props: {
     () => getCustomModelOptionsByProvider(settings),
     [settings],
   );
+  const wasOpenRef = useRef(false);
 
   const project = useStore(
     (store) => store.projects.find((entry) => entry.id === props.workflow.projectId) ?? null,
@@ -184,19 +185,19 @@ export function WorkflowImplementDialog(props: {
   const projectCwd = project?.cwd ?? null;
 
   useEffect(() => {
-    if (!props.open) {
-      return;
+    if (props.open && !wasOpenRef.current) {
+      const defaults = resolveImplementationDefaults(props.workflow);
+      setProvider(defaults.provider);
+      setModel(defaults.model);
+      setModelOptions(defaults.modelOptions);
+      setRequireApproval(false);
+      setCodeReviewEnabled(true);
+      setEnvMode("local");
+      setBaseBranch(null);
+      setSubmitting(false);
+      setError(null);
     }
-    const defaults = resolveImplementationDefaults(props.workflow);
-    setProvider(defaults.provider);
-    setModel(defaults.model);
-    setModelOptions(defaults.modelOptions);
-    setRequireApproval(false);
-    setCodeReviewEnabled(true);
-    setEnvMode("local");
-    setBaseBranch(null);
-    setSubmitting(false);
-    setError(null);
+    wasOpenRef.current = props.open;
   }, [props.open, props.workflow]);
 
   const resolveWorkflowModelSelection = (

@@ -232,6 +232,54 @@ describe("WorkflowImplementDialog", () => {
     }
   });
 
+  it("does not reset selections when the open workflow prop identity changes", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const workflow = makeWorkflow();
+    const queryClient = makeQueryClient();
+    const screen = await render(
+      <QueryClientProvider client={queryClient}>
+        <WorkflowImplementDialog open workflow={workflow} onOpenChange={() => {}} />
+      </QueryClientProvider>,
+      { container: host },
+    );
+
+    try {
+      await page.getByRole("button", { name: "New worktree" }).click();
+
+      await vi.waitFor(() => {
+        const newWorktreeButton = Array.from(
+          document.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((element) => element.textContent?.trim() === "New worktree");
+        expect(newWorktreeButton?.getAttribute("aria-pressed")).toBe("true");
+      });
+
+      await screen.rerender(
+        <QueryClientProvider client={queryClient}>
+          <WorkflowImplementDialog
+            open
+            workflow={{
+              ...workflow,
+              totalCostUsd: 0.25,
+              updatedAt: "2026-04-17T00:01:00.000Z",
+            }}
+            onOpenChange={() => {}}
+          />
+        </QueryClientProvider>,
+      );
+
+      await vi.waitFor(() => {
+        const newWorktreeButton = Array.from(
+          document.querySelectorAll<HTMLButtonElement>("button"),
+        ).find((element) => element.textContent?.trim() === "New worktree");
+        expect(newWorktreeButton?.getAttribute("aria-pressed")).toBe("true");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("submits envMode=worktree with the selected base branch", async () => {
     const host = document.createElement("div");
     document.body.append(host);

@@ -5,7 +5,6 @@ import {
   ORCHESTRATION_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
-  PlanningWorkflowId,
   type ProjectId,
   type ServerConfig,
   type ThreadId,
@@ -28,6 +27,10 @@ import { getRouter } from "../router";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
+import {
+  createPlanningWorkflow as createPlanningWorkflowFixture,
+  type CreatePlanningWorkflowOptions,
+} from "../test/workflowFixtures";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
   THREAD_SIDEBAR_MAX_WIDTH_PX,
@@ -236,68 +239,14 @@ function createEmptySnapshot(): OrchestrationReadModel {
   };
 }
 
-function createPlanningWorkflow(overrides?: {
-  id?: string;
-  title?: string;
-  branchAThreadId?: ThreadId;
-  branchBThreadId?: ThreadId;
-  archivedAt?: string | null;
-}): OrchestrationReadModel["planningWorkflows"][number] {
-  const branchAThreadId = overrides?.branchAThreadId ?? ("workflow-branch-a" as ThreadId);
-  const branchBThreadId = overrides?.branchBThreadId ?? ("workflow-branch-b" as ThreadId);
-  return {
-    id: PlanningWorkflowId.makeUnsafe(overrides?.id ?? "workflow-1"),
+function createPlanningWorkflow(
+  overrides: Omit<CreatePlanningWorkflowOptions, "projectId" | "now"> = {},
+): OrchestrationReadModel["planningWorkflows"][number] {
+  return createPlanningWorkflowFixture({
     projectId: PROJECT_ID,
-    title: overrides?.title ?? "Workflow status test",
-    slug: "workflow-status-test",
-    requirementPrompt: "Implement workflow status pills.",
-    plansDirectory: "plans",
-    selfReviewEnabled: true,
-    branchA: {
-      branchId: "a",
-      authorSlot: { provider: "codex", model: "gpt-5" },
-      authorThreadId: branchAThreadId,
-      planFilePath: null,
-      planTurnId: null,
-      revisionTurnId: null,
-      reviews: [],
-      status: "authoring",
-      error: null,
-      retryCount: 0,
-      lastRetryAt: null,
-      updatedAt: NOW_ISO,
-    },
-    branchB: {
-      branchId: "b",
-      authorSlot: { provider: "codex", model: "gpt-5" },
-      authorThreadId: branchBThreadId,
-      planFilePath: null,
-      planTurnId: null,
-      revisionTurnId: null,
-      reviews: [],
-      status: "pending",
-      error: null,
-      retryCount: 0,
-      lastRetryAt: null,
-      updatedAt: NOW_ISO,
-    },
-    merge: {
-      mergeSlot: { provider: "codex", model: "gpt-5" },
-      threadId: null,
-      outputFilePath: null,
-      turnId: null,
-      approvedPlanId: null,
-      status: "not_started",
-      error: null,
-      updatedAt: NOW_ISO,
-    },
-    implementation: null,
-    totalCostUsd: 0,
-    createdAt: NOW_ISO,
-    updatedAt: NOW_ISO,
-    archivedAt: overrides?.archivedAt ?? null,
-    deletedAt: null,
-  };
+    now: NOW_ISO,
+    ...overrides,
+  });
 }
 
 function buildFixture(snapshot: OrchestrationReadModel = createSnapshot()): TestFixture {

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { PlanningWorkflowId, ProjectId, ThreadId, type PlanningWorkflow } from "@t3tools/contracts";
 
 import {
+  canStartImplementation,
   resolveApprovedMergedPlanMarkdown,
   threadIdsForWorkflow,
   workflowThreadDisplayTitle,
@@ -148,5 +149,27 @@ describe("workflowUtils", () => {
     };
 
     expect(resolveApprovedMergedPlanMarkdown(workflow, mergeThread)).toBe("# Approved");
+  });
+
+  it("allows starting implementation only after manual review and before implementation exists", () => {
+    expect(
+      canStartImplementation({
+        ...makeWorkflow(),
+        implementation: null,
+      }),
+    ).toBe(true);
+
+    expect(canStartImplementation(makeWorkflow())).toBe(false);
+
+    expect(
+      canStartImplementation({
+        ...makeWorkflow(),
+        merge: {
+          ...makeWorkflow().merge,
+          status: "in_progress",
+        },
+        implementation: null,
+      }),
+    ).toBe(false);
   });
 });
