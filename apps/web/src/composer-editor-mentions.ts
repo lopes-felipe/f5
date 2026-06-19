@@ -11,13 +11,55 @@ export type ComposerPromptSegment =
   | {
       type: "mention";
       path: string;
+      raw: string;
     }
   | {
       type: "terminal-context";
       context: TerminalContextDraft | null;
     };
 
-const MENTION_TOKEN_REGEX = /(^|\s)@([^\s@]+)(?=\s)/g;
+const MENTION_TOKEN_REGEX = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s@"]+))(?=\s)/g;
+const SIMPLE_MENTION_PATH_REGEX = /^[^\s@"\\]+$/;
+
+type MentionTokenMatch = {
+  path: string;
+  raw: string;
+  start: number;
+  end: number;
+};
+
+export function serializeComposerMentionPath(path: string): string {
+  if (SIMPLE_MENTION_PATH_REGEX.test(path)) {
+    return path;
+  }
+  return `"${path.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}"`;
+}
+
+function unescapeQuotedMentionPath(path: string): string {
+  return path.replace(/\\(.)/g, "$1");
+}
+
+function collectMentionTokenMatches(text: string): MentionTokenMatch[] {
+  const matches: MentionTokenMatch[] = [];
+
+  for (const match of text.matchAll(MENTION_TOKEN_REGEX)) {
+    const fullMatch = match[0];
+    const prefix = match[1] ?? "";
+    const quotedPath = match[2];
+    const unquotedPath = match[3];
+    const path =
+      quotedPath !== undefined ? unescapeQuotedMentionPath(quotedPath) : (unquotedPath ?? "");
+    const matchIndex = match.index ?? 0;
+    const start = matchIndex + prefix.length;
+    const end = start + fullMatch.length - prefix.length;
+    const raw = text.slice(start, end);
+    if (path.length > 0) {
+      matches.push({ path, raw, start, end });
+    }
+  }
+
+  return matches;
+}
 
 /**
  * Composer surround-selection pairs. Keys are the opening character that a
@@ -42,8 +84,8 @@ export const COMPOSER_SURROUND_PAIRS: Readonly<Record<string, readonly [string, 
  * Returns `true` if the prompt range `[start, end)` overlaps or abuts any
  * inline-token position (mention or terminal-context placeholder). Offsets
  * are expressed in the prompt's text-content space (the same space returned
- * by `$getRoot().getTextContent()`), where mentions occupy their literal
- * `@path` length and terminal-context nodes occupy a single placeholder
+ * by `$getRoot().getTextContent()`), where mentions occupy their serialized
+ * literal token length and terminal-context nodes occupy a single placeholder
  * character.
  *
  * The composer's inline-token cursor math (getAbsoluteOffsetForPoint,
@@ -63,16 +105,8 @@ export function doesSelectionTouchInlineToken(
       : [selectionEnd, selectionStart];
   if (start === end) return false;
 
-  // `MENTION_TOKEN_REGEX` already has the `g` flag and `matchAll` resets the
-  // regex's `lastIndex` internally for each call, so we can iterate it
-  // directly instead of cloning.
-  for (const match of prompt.matchAll(MENTION_TOKEN_REGEX)) {
-    const prefix = match[1] ?? "";
-    const fullMatch = match[0];
-    const matchIndex = match.index ?? 0;
-    const mentionStart = matchIndex + prefix.length;
-    const mentionEnd = mentionStart + fullMatch.length - prefix.length;
-    if (rangesTouch(start, end, mentionStart, mentionEnd)) return true;
+  for (const match of collectMentionTokenMatches(prompt)) {
+    if (rangesTouch(start, end, match.start, match.end)) return true;
   }
 
   for (let index = 0; index < prompt.length; index += 1) {
@@ -108,23 +142,15 @@ function splitPromptTextIntoComposerSegments(text: string): ComposerPromptSegmen
   }
 
   let cursor = 0;
-  for (const match of text.matchAll(MENTION_TOKEN_REGEX)) {
-    const fullMatch = match[0];
-    const prefix = match[1] ?? "";
-    const path = match[2] ?? "";
-    const matchIndex = match.index ?? 0;
-    const mentionStart = matchIndex + prefix.length;
-    const mentionEnd = mentionStart + fullMatch.length - prefix.length;
+  for (const match of collectMentionTokenMatches(text)) {
+    const mentionStart = match.start;
+    const mentionEnd = match.end;
 
     if (mentionStart > cursor) {
       pushTextSegment(segments, text.slice(cursor, mentionStart));
     }
 
-    if (path.length > 0) {
-      segments.push({ type: "mention", path });
-    } else {
-      pushTextSegment(segments, text.slice(mentionStart, mentionEnd));
-    }
+    segments.push({ type: "mention", path: match.path, raw: match.raw });
 
     cursor = mentionEnd;
   }

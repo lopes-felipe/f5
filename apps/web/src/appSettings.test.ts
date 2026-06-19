@@ -121,8 +121,8 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).openFileLinksInPanel).toBe(true);
   });
 
-  it("defaults task sidebar auto-open to true", () => {
-    expect(parsePersistedAppSettings(null).tasksPanelAutoOpen).toBe(true);
+  it("defaults task sidebar auto-open to false", () => {
+    expect(parsePersistedAppSettings(null).tasksPanelAutoOpen).toBe(false);
   });
 
   it("defaults favorite models to an empty list", () => {
@@ -241,7 +241,7 @@ describe("parsePersistedAppSettings", () => {
     expect(parsed.showProviderRuntimeMetadata).toBe(false);
     expect(parsed.onboardingLiteStatus).toBe("eligible");
     expect(parsed.openFileLinksInPanel).toBe(true);
-    expect(parsed.tasksPanelAutoOpen).toBe(true);
+    expect(parsed.tasksPanelAutoOpen).toBe(false);
     expect(parsed.codexThreadTitleModel).toBe(DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex);
   });
 

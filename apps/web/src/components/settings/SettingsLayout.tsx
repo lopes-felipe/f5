@@ -1,6 +1,7 @@
 import { isElectron } from "../../env";
 import { SidebarInset } from "../ui/sidebar";
 import { AboutSettings } from "./categories/AboutSettings";
+import { ArchiveSettings } from "./categories/ArchiveSettings";
 import { DisplaySettings } from "./categories/DisplaySettings";
 import { GeneralSettings } from "./categories/GeneralSettings";
 import { IntegrationsSettings } from "./categories/IntegrationsSettings";
@@ -39,6 +40,8 @@ function CategoryContent({
       return <IntegrationsSettings />;
     case "projects":
       return <ProjectsSettings />;
+    case "archive":
+      return <ArchiveSettings />;
     case "storage":
       return active ? <StorageSettings /> : null;
     case "about":

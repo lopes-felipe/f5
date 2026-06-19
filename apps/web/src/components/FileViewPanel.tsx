@@ -11,6 +11,7 @@ import { resolveDiffThemeName } from "../lib/diffRendering";
 import { looksLikeAbsoluteFilePath } from "../lib/normalizeFilePathForDiff";
 import { fileContentQueryOptions } from "../lib/providerReactQuery";
 import { readNativeApi } from "../nativeApi";
+import { type RightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { useStore } from "../store";
 import { resolvePathLinkTarget } from "../terminal-links";
 import { DiffPanelShell, DiffPanelLoadingState, type DiffPanelMode } from "./DiffPanelShell";
@@ -19,6 +20,8 @@ import { DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel";
 
 interface FileViewPanelProps {
   mode: DiffPanelMode;
+  surface?: Extract<RightPanelSurface, { kind: "file" }> | undefined;
+  onClose?: (() => void) | undefined;
 }
 
 function fileNameFromPath(filePath: string): string {
@@ -57,7 +60,7 @@ export function resolveEditorTarget(input: {
     : pathWithPosition;
 }
 
-export default function FileViewPanel({ mode }: FileViewPanelProps) {
+export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const viewerRef = useRef<HTMLDivElement>(null);
@@ -75,10 +78,10 @@ export default function FileViewPanel({ mode }: FileViewPanelProps) {
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
   const workspaceRoot = activeThread?.worktreePath ?? activeProject?.cwd;
-  const filePath = fileSearch.fileViewPath;
-  const fileLine = fileSearch.fileLine;
-  const fileEndLine = fileSearch.fileEndLine;
-  const fileColumn = fileSearch.fileColumn;
+  const filePath = surface?.relativePath ?? fileSearch.fileViewPath;
+  const fileLine = surface?.line ?? fileSearch.fileLine;
+  const fileEndLine = surface?.endLine ?? fileSearch.fileEndLine;
+  const fileColumn = surface?.column ?? fileSearch.fileColumn;
   const canDisplayFileInPanel =
     typeof filePath === "string" && !looksLikeAbsoluteFilePath(filePath);
   const positionBadge = useMemo(
@@ -140,15 +143,25 @@ export default function FileViewPanel({ mode }: FileViewPanelProps) {
   }, [fileColumn, fileLine, filePath, workspaceRoot]);
 
   const closeFileView = useCallback(() => {
+    if (onClose) {
+      onClose();
+      return;
+    }
     if (!routeThreadId) {
       return;
+    }
+    if (filePath) {
+      useRightPanelStore.getState().closeSurface(routeThreadId, `file:${filePath}`);
     }
     void navigate({
       to: "/$threadId",
       params: { threadId: routeThreadId },
-      search: (previous) => clearFileViewSearchParams(previous),
+      search: (previous) => {
+        const parsed = parseDiffRouteSearch(previous);
+        return parsed.fileViewPath === filePath ? clearFileViewSearchParams(previous) : previous;
+      },
     });
-  }, [navigate, routeThreadId]);
+  }, [filePath, navigate, onClose, routeThreadId]);
 
   const header = (
     <div className="flex min-w-0 flex-1 items-center justify-between gap-2 [-webkit-app-region:no-drag]">

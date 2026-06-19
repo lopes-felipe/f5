@@ -38,6 +38,54 @@ function tokenStartForCursor(text: string, cursor: number): number {
   return index + 1;
 }
 
+function unescapeQuotedMentionQuery(query: string): string {
+  return query.replace(/\\(.)/g, "$1");
+}
+
+function hasUnescapedQuote(text: string): boolean {
+  let escaping = false;
+  for (const char of text) {
+    if (escaping) {
+      escaping = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (char === '"') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function quotedMentionTriggerForCursor(
+  text: string,
+  lineStart: number,
+  cursor: number,
+): ComposerTrigger | null {
+  for (let index = cursor - 1; index >= lineStart; index -= 1) {
+    if (text[index] !== "@") continue;
+    if (index > lineStart && !isWhitespace(text[index - 1] ?? "")) continue;
+    if (text[index + 1] !== '"') continue;
+
+    const quotedQuery = text.slice(index + 2, cursor);
+    if (hasUnescapedQuote(quotedQuery)) {
+      return null;
+    }
+
+    return {
+      kind: "path",
+      query: unescapeQuotedMentionQuery(quotedQuery),
+      rangeStart: index,
+      rangeEnd: cursor,
+    };
+  }
+
+  return null;
+}
+
 export function expandCollapsedComposerCursor(text: string, cursorInput: number): number {
   const collapsedCursor = clampCursor(text, cursorInput);
   const segments = splitPromptIntoComposerSegments(text);
@@ -50,7 +98,7 @@ export function expandCollapsedComposerCursor(text: string, cursorInput: number)
 
   for (const segment of segments) {
     if (segment.type === "mention") {
-      const expandedLength = segment.path.length + 1;
+      const expandedLength = segment.raw.length;
       if (remaining <= 1) {
         return expandedCursor + (remaining === 0 ? 0 : expandedLength);
       }
@@ -122,7 +170,7 @@ export function collapseExpandedComposerCursor(text: string, cursorInput: number
 
   for (const segment of segments) {
     if (segment.type === "mention") {
-      const expandedLength = segment.path.length + 1;
+      const expandedLength = segment.raw.length;
       if (remaining === 0) {
         return collapsedCursor;
       }
@@ -199,6 +247,11 @@ export function detectComposerTrigger(text: string, cursorInput: number): Compos
         rangeEnd: cursor,
       };
     }
+  }
+
+  const quotedMentionTrigger = quotedMentionTriggerForCursor(text, lineStart, cursor);
+  if (quotedMentionTrigger) {
+    return quotedMentionTrigger;
   }
 
   const tokenStart = tokenStartForCursor(text, cursor);

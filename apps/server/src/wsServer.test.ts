@@ -1272,6 +1272,9 @@ describe("WebSocket Server", () => {
       const codeReviewWorkflowServiceModule = await vi.importActual<
         typeof import("./orchestration/Services/CodeReviewWorkflowService.ts")
       >("./orchestration/Services/CodeReviewWorkflowService.ts");
+      const investigationWorkflowServiceModule = await vi.importActual<
+        typeof import("./orchestration/Services/InvestigationWorkflowService.ts")
+      >("./orchestration/Services/InvestigationWorkflowService.ts");
       const projectSetupScriptRunnerModule = await vi.importActual<
         typeof import("./project/Services/ProjectSetupScriptRunner.ts")
       >("./project/Services/ProjectSetupScriptRunner.ts");
@@ -1303,6 +1306,7 @@ describe("WebSocket Server", () => {
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
         Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
+        Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
       );
@@ -1429,6 +1433,9 @@ describe("WebSocket Server", () => {
       const codeReviewWorkflowServiceModule = await vi.importActual<
         typeof import("./orchestration/Services/CodeReviewWorkflowService.ts")
       >("./orchestration/Services/CodeReviewWorkflowService.ts");
+      const investigationWorkflowServiceModule = await vi.importActual<
+        typeof import("./orchestration/Services/InvestigationWorkflowService.ts")
+      >("./orchestration/Services/InvestigationWorkflowService.ts");
       const projectSetupScriptRunnerModule = await vi.importActual<
         typeof import("./project/Services/ProjectSetupScriptRunner.ts")
       >("./project/Services/ProjectSetupScriptRunner.ts");
@@ -1521,6 +1528,7 @@ describe("WebSocket Server", () => {
         } as any),
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
         Layer.succeed(codeReviewWorkflowServiceModule.CodeReviewWorkflowService, {} as any),
+        Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
       );

@@ -58,6 +58,7 @@ import {
 import {
   COMPOSER_SURROUND_PAIRS,
   doesSelectionTouchInlineToken,
+  serializeComposerMentionPath,
   splitPromptIntoComposerSegments,
 } from "~/composer-editor-mentions";
 import {
@@ -75,6 +76,10 @@ import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTermin
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
+
+function isKeyboardEventComposing(event: KeyboardEvent, compositionFallback: boolean): boolean {
+  return compositionFallback || event.isComposing || event.keyCode === 229;
+}
 
 type SerializedComposerMentionNode = Spread<
   {
@@ -176,7 +181,7 @@ class ComposerMentionNode extends DecoratorNode<ReactElement> {
   }
 
   override getTextContent(): string {
-    return `@${this.__path}`;
+    return `@${serializeComposerMentionPath(this.__path)}`;
   }
 
   override isInline(): true {
@@ -661,6 +666,7 @@ function ComposerCommandKeyPlugin(props: {
   ) => boolean;
 }) {
   const [editor] = useLexicalComposerContext();
+  const isComposingRef = useRef(false);
 
   useEffect(() => {
     const handleCommand = (
@@ -670,6 +676,12 @@ function ComposerCommandKeyPlugin(props: {
       if (!props.onCommandKeyDown || !event) {
         return false;
       }
+
+      if (key === "Enter" && isKeyboardEventComposing(event, isComposingRef.current)) {
+        event.stopPropagation();
+        return true;
+      }
+
       const handled = props.onCommandKeyDown(key, event);
       if (handled) {
         event.preventDefault();
@@ -677,6 +689,23 @@ function ComposerCommandKeyPlugin(props: {
       }
       return handled;
     };
+
+    const handleCompositionStart = () => {
+      isComposingRef.current = true;
+    };
+    const handleCompositionEnd = () => {
+      isComposingRef.current = false;
+    };
+    const unregisterCompositionListeners = editor.registerRootListener((nextRoot, prevRoot) => {
+      if (prevRoot) {
+        prevRoot.removeEventListener("compositionstart", handleCompositionStart);
+        prevRoot.removeEventListener("compositionend", handleCompositionEnd);
+      }
+      if (nextRoot) {
+        nextRoot.addEventListener("compositionstart", handleCompositionStart);
+        nextRoot.addEventListener("compositionend", handleCompositionEnd);
+      }
+    });
 
     const unregisterArrowDown = editor.registerCommand(
       KEY_ARROW_DOWN_COMMAND,
@@ -704,6 +733,7 @@ function ComposerCommandKeyPlugin(props: {
       unregisterArrowUp();
       unregisterEnter();
       unregisterTab();
+      unregisterCompositionListeners();
     };
   }, [editor, props]);
 

@@ -115,7 +115,11 @@ import {
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
-import { formatWorktreePathForDisplay, getOrphanedWorktreePathForThread } from "../worktreeCleanup";
+import {
+  deleteThreadWithCleanup,
+  setThreadArchived as setThreadArchivedAction,
+  setWorkflowArchived,
+} from "../archiveActions";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   reconcileFrozenOrder,
@@ -123,6 +127,8 @@ import {
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   resolveWorkflowThreadListExpanded,
+  isTrailingDoubleClick,
+  shouldStartThreadRowRenameOnDoubleClick,
   shouldClearThreadSelectionOnMouseDown,
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
@@ -711,6 +717,7 @@ function InlineTitleEditor({
         onCommitRef.current(value);
       }}
       onClick={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
     />
   );
 }
@@ -1025,39 +1032,12 @@ export default function Sidebar() {
       workflowTitle: string,
       workflowType: SidebarWorkflowEntry["type"],
     ) => {
-      const api = readNativeApi();
-      if (!api) {
-        toastManager.add({
-          type: "error",
-          title: "Workflow actions are unavailable.",
-        });
-        return;
-      }
-      const confirmed = await api.dialogs.confirm(`Archive workflow "${workflowTitle}"?`);
-      if (!confirmed) {
-        return;
-      }
-      try {
-        if (workflowType === "planning") {
-          await api.orchestration.archiveWorkflow({
-            workflowId: workflowId as PlanningWorkflowId,
-          });
-        } else if (workflowType === "codeReview") {
-          await api.orchestration.archiveCodeReviewWorkflow({
-            workflowId: workflowId as CodeReviewWorkflowId,
-          });
-        } else {
-          await api.orchestration.archiveInvestigationWorkflow({
-            workflowId: workflowId as InvestigationWorkflowId,
-          });
-        }
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Failed to archive workflow",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      }
+      await setWorkflowArchived({
+        workflowId,
+        workflowTitle,
+        workflowType,
+        archived: true,
+      });
     },
     [],
   );
@@ -1067,32 +1047,11 @@ export default function Sidebar() {
       workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
       workflowType: SidebarWorkflowEntry["type"],
     ) => {
-      const api = readNativeApi();
-      if (!api) {
-        return;
-      }
-
-      try {
-        if (workflowType === "planning") {
-          await api.orchestration.unarchiveWorkflow({
-            workflowId: workflowId as PlanningWorkflowId,
-          });
-        } else if (workflowType === "codeReview") {
-          await api.orchestration.unarchiveCodeReviewWorkflow({
-            workflowId: workflowId as CodeReviewWorkflowId,
-          });
-        } else {
-          await api.orchestration.unarchiveInvestigationWorkflow({
-            workflowId: workflowId as InvestigationWorkflowId,
-          });
-        }
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Failed to unarchive workflow",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      }
+      await setWorkflowArchived({
+        workflowId,
+        workflowType,
+        archived: false,
+      });
     },
     [],
   );
@@ -1199,6 +1158,10 @@ export default function Sidebar() {
 
   const cancelRename = useCallback(() => {
     setRenamingThreadId(null);
+  }, []);
+
+  const startThreadRename = useCallback((threadId: ThreadId) => {
+    setRenamingThreadId(threadId);
   }, []);
 
   const commitRename = useCallback(
@@ -1338,23 +1301,7 @@ export default function Sidebar() {
   );
 
   const setThreadArchived = useCallback(async (threadId: ThreadId, archived: boolean) => {
-    const api = readNativeApi();
-    if (!api) return;
-
-    try {
-      await api.orchestration.dispatchCommand({
-        type: archived ? "thread.archive" : "thread.unarchive",
-        commandId: newCommandId(),
-        threadId,
-        createdAt: new Date().toISOString(),
-      });
-    } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: archived ? "Failed to archive thread" : "Failed to unarchive thread",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      });
-    }
+    await setThreadArchivedAction({ threadId, archived });
   }, []);
 
   /**
@@ -1367,107 +1314,27 @@ export default function Sidebar() {
       threadId: ThreadId,
       opts: { deletedThreadIds?: ReadonlySet<ThreadId> } = {},
     ): Promise<void> => {
-      const api = readNativeApi();
-      if (!api) return;
-      const thread = threads.find((t) => t.id === threadId);
-      if (!thread) return;
-      const threadProject = projects.find((project) => project.id === thread.projectId);
-      // When bulk-deleting, exclude the other threads being deleted so
-      // getOrphanedWorktreePathForThread correctly detects that no surviving
-      // threads will reference this worktree.
-      const deletedIds = opts.deletedThreadIds;
-      const survivingThreads =
-        deletedIds && deletedIds.size > 0
-          ? threads.filter((t) => t.id === threadId || !deletedIds.has(t.id))
-          : threads;
-      const orphanedWorktreePath = getOrphanedWorktreePathForThread(survivingThreads, threadId);
-      const displayWorktreePath = orphanedWorktreePath
-        ? formatWorktreePathForDisplay(orphanedWorktreePath)
-        : null;
-      const canDeleteWorktree = orphanedWorktreePath !== null && threadProject !== undefined;
-      const shouldDeleteWorktree =
-        canDeleteWorktree &&
-        (await api.dialogs.confirm(
-          [
-            "This thread is the only one linked to this worktree:",
-            displayWorktreePath ?? orphanedWorktreePath,
-            "",
-            "Delete the worktree too?",
-          ].join("\n"),
-        ));
-
-      if (thread.session && thread.session.status !== "closed") {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.session.stop",
-            commandId: newCommandId(),
-            threadId,
-            createdAt: new Date().toISOString(),
-          })
-          .catch((error) => {
-            console.warn("Failed to stop the thread session before deletion", error);
-          });
-      }
-
-      try {
-        await api.terminal.close({ threadId, deleteHistory: true });
-      } catch {
-        // Terminal may already be closed
-      }
-
-      const allDeletedIds = deletedIds ?? new Set<ThreadId>();
-      const shouldNavigateToFallback = routeThreadId === threadId;
-      const fallbackThreadId =
-        sortThreadsByActivity(
-          threads.filter(
-            (entry) =>
-              entry.id !== threadId && !allDeletedIds.has(entry.id) && !isArchivedThread(entry),
-          ),
-        )[0]?.id ?? null;
-      await api.orchestration.dispatchCommand({
-        type: "thread.delete",
-        commandId: newCommandId(),
+      await deleteThreadWithCleanup({
         threadId,
-      });
-      clearComposerDraftForThread(threadId);
-      clearProjectDraftThreadById(thread.projectId, thread.id);
-      clearTerminalState(threadId);
-      if (shouldNavigateToFallback) {
-        if (fallbackThreadId) {
+        threads,
+        projects,
+        activeThreadId: routeThreadId,
+        deletedThreadIds: opts.deletedThreadIds,
+        clearComposerDraftForThread,
+        clearProjectDraftThreadById,
+        clearTerminalState,
+        navigateToThread: (fallbackThreadId) => {
           void navigate({
             to: "/$threadId",
             params: { threadId: fallbackThreadId },
             replace: true,
           });
-        } else {
+        },
+        navigateHome: () => {
           void navigate({ to: "/", replace: true });
-        }
-      }
-
-      if (!shouldDeleteWorktree || !orphanedWorktreePath || !threadProject) {
-        return;
-      }
-
-      try {
-        await removeWorktreeMutation.mutateAsync({
-          cwd: threadProject.cwd,
-          path: orphanedWorktreePath,
-          force: true,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error removing worktree.";
-        console.error("Failed to remove orphaned worktree after thread deletion", {
-          threadId,
-          projectCwd: threadProject.cwd,
-          worktreePath: orphanedWorktreePath,
-          error,
-        });
-        toastManager.add({
-          type: "error",
-          title: "Thread deleted, but worktree removal failed",
-          description: `Could not remove ${displayWorktreePath ?? orphanedWorktreePath}. ${message}`,
-        });
-      }
+        },
+        removeWorktree: (input) => removeWorktreeMutation.mutateAsync(input),
+      });
     },
     [
       clearComposerDraftForThread,
@@ -1580,7 +1447,7 @@ export default function Sidebar() {
       );
 
       if (clicked === "rename") {
-        setRenamingThreadId(threadId);
+        startThreadRename(threadId);
         return;
       }
 
@@ -1636,6 +1503,7 @@ export default function Sidebar() {
       markThreadUnread,
       projectCwdById,
       setThreadArchived,
+      startThreadRename,
       threads,
     ],
   );
@@ -1716,6 +1584,10 @@ export default function Sidebar() {
         return;
       }
 
+      if (isTrailingDoubleClick(event.detail)) {
+        return;
+      }
+
       // Plain click — clear selection, set anchor for future shift-clicks, and navigate
       if (selectedThreadIds.size > 0 || isDraft) {
         clearSelection();
@@ -1736,6 +1608,25 @@ export default function Sidebar() {
       setSelectionAnchor,
       toggleThreadSelection,
     ],
+  );
+
+  const handleThreadRowDoubleClick = useCallback(
+    (event: MouseEvent, thread: Thread, options?: { isDraft?: boolean }) => {
+      const shouldRename = shouldStartThreadRowRenameOnDoubleClick({
+        isDraft: options?.isDraft === true,
+        isRenaming: renamingThreadId === thread.id,
+        hasModifierKey: event.metaKey || event.ctrlKey || event.shiftKey || event.altKey,
+        target: event.target instanceof HTMLElement ? event.target : null,
+      });
+      if (!shouldRename) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      startThreadRename(thread.id);
+    },
+    [renamingThreadId, startThreadRename],
   );
 
   const handleProjectContextMenu = useCallback(
@@ -2838,6 +2729,7 @@ export default function Sidebar() {
                                       render={<div role="button" tabIndex={0} />}
                                       size="sm"
                                       isActive={isActive}
+                                      data-testid={`thread-row-${thread.id}`}
                                       className={resolveThreadRowClassName({
                                         isActive,
                                         isSelected,
@@ -2849,6 +2741,11 @@ export default function Sidebar() {
                                           orderedProjectThreadIds,
                                           { isDraft: isDraftThread },
                                         );
+                                      }}
+                                      onDoubleClick={(event) => {
+                                        handleThreadRowDoubleClick(event, thread, {
+                                          isDraft: isDraftThread,
+                                        });
                                       }}
                                       onKeyDown={(event) => {
                                         if (event.key !== "Enter" && event.key !== " ") return;
@@ -3129,6 +3026,7 @@ export default function Sidebar() {
                                         render={<div role="button" tabIndex={0} />}
                                         size="sm"
                                         isActive={isActive}
+                                        data-testid={`thread-row-${thread.id}`}
                                         className={`h-7 w-full translate-x-0 cursor-default justify-start px-2 text-left select-none hover:bg-accent hover:text-foreground focus-visible:ring-0 ${
                                           isSelected
                                             ? "bg-primary/15 text-foreground dark:bg-primary/10"
@@ -3142,6 +3040,9 @@ export default function Sidebar() {
                                             thread.id,
                                             orderedProjectThreadIds,
                                           );
+                                        }}
+                                        onDoubleClick={(event) => {
+                                          handleThreadRowDoubleClick(event, thread);
                                         }}
                                         onKeyDown={(event) => {
                                           if (event.key !== "Enter" && event.key !== " ") return;

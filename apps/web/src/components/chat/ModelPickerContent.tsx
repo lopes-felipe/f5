@@ -5,6 +5,7 @@ import {
   type ServerProvider,
 } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
+import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { SearchIcon } from "lucide-react";
 import { useAppSettings } from "../../appSettings";
@@ -15,7 +16,7 @@ import {
   shortcutLabelForCommand,
 } from "../../keybindings";
 import { cn } from "~/lib/utils";
-import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxList } from "../ui/combobox";
+import { Combobox, ComboboxEmpty, ComboboxInput, ComboboxListVirtualized } from "../ui/combobox";
 import { TooltipProvider } from "../ui/tooltip";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerSidebar } from "./ModelPickerSidebar";
@@ -74,7 +75,7 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightedModelKeyRef = useRef<string | null>(null);
-  const listRegionRef = useRef<HTMLDivElement>(null);
+  const modelListRef = useRef<LegendListRef | null>(null);
   const keybindings = props.keybindings ?? EMPTY_KEYBINDINGS;
   const [selectedProvider, setSelectedProvider] = useState<ProviderKind | "favorites">(() => {
     if (props.lockedProvider !== null) {
@@ -349,26 +350,6 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
     };
   }, [handleModelSelect, keybindings, modelJumpModelKeys, modelJumpShortcutContext]);
 
-  useLayoutEffect(() => {
-    const listRegion = listRegionRef.current;
-    if (!listRegion) {
-      return;
-    }
-    const frame = window.requestAnimationFrame(() => {
-      const viewport = listRegion.querySelector<HTMLElement>('[data-slot="scroll-area-viewport"]');
-      if (!viewport || viewport.scrollHeight <= viewport.clientHeight) {
-        return;
-      }
-      const originalScrollTop = viewport.scrollTop;
-      viewport.scrollTop = Math.min(
-        originalScrollTop + 1,
-        viewport.scrollHeight - viewport.clientHeight,
-      );
-      viewport.scrollTop = originalScrollTop;
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [filteredModelKeys]);
-
   return (
     <TooltipProvider delay={0}>
       <div
@@ -403,10 +384,17 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
           filteredItems={filteredModelKeys}
           filter={null}
           autoHighlight
+          virtualized
           open
           value={toModelKey(props.provider, props.model)}
-          onItemHighlighted={(modelKey) => {
+          onItemHighlighted={(modelKey, eventDetails) => {
             highlightedModelKeyRef.current = typeof modelKey === "string" ? modelKey : null;
+            if (eventDetails.reason === "keyboard" && eventDetails.index >= 0) {
+              modelListRef.current?.scrollIndexIntoView({
+                index: eventDetails.index,
+                animated: false,
+              });
+            }
           }}
           onValueChange={(modelKey) => {
             if (typeof modelKey !== "string") {
@@ -461,39 +449,46 @@ export const ModelPickerContent = memo(function ModelPickerContent(props: {
               />
             </div>
 
-            <div
-              ref={listRegionRef}
-              className="relative min-h-0 flex-1 before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40"
-            >
-              <ComboboxList className="model-picker-list size-full divide-y px-2 py-1">
-                {filteredModelKeys.map((modelKey, index) => {
-                  const model = filteredModelByKey.get(modelKey);
-                  if (!model) {
-                    return null;
-                  }
-                  const status = findProviderStatus(props.providers, model.providerKind);
-                  const disabledReason = providerDisabledReason(status);
-                  return (
-                    <ModelListRow
-                      key={modelKey}
-                      index={index}
-                      model={model}
-                      providerKind={model.providerKind}
-                      isFavorite={favoriteKeySet.has(modelKey)}
-                      isSelected={
-                        model.providerKind === props.provider && model.slug === props.model
-                      }
-                      showProvider={!isLocked}
-                      disabled={disabledReason !== null}
-                      disabledReason={disabledReason}
-                      preferShortName={!isLocked}
-                      useTriggerLabel={isLocked}
-                      jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
-                      onToggleFavorite={() => toggleFavorite(model.providerKind, model.slug)}
-                    />
-                  );
-                })}
-              </ComboboxList>
+            <div className="relative min-h-0 flex-1 overflow-hidden before:pointer-events-none before:absolute before:inset-0 before:bg-muted/40">
+              <ComboboxListVirtualized className="model-picker-list size-full p-0">
+                <LegendList<string>
+                  ref={modelListRef}
+                  data={filteredModelKeys}
+                  extraData={favoriteKeySet}
+                  keyExtractor={(modelKey) => modelKey}
+                  renderItem={({ item: modelKey, index }) => {
+                    const model = filteredModelByKey.get(modelKey);
+                    if (!model) {
+                      return null;
+                    }
+                    const status = findProviderStatus(props.providers, model.providerKind);
+                    const disabledReason = providerDisabledReason(status);
+                    return (
+                      <ModelListRow
+                        key={modelKey}
+                        index={index}
+                        model={model}
+                        providerKind={model.providerKind}
+                        isFavorite={favoriteKeySet.has(modelKey)}
+                        isSelected={
+                          model.providerKind === props.provider && model.slug === props.model
+                        }
+                        showProvider={!isLocked}
+                        disabled={disabledReason !== null}
+                        disabledReason={disabledReason}
+                        preferShortName={!isLocked}
+                        useTriggerLabel={isLocked}
+                        jumpLabel={modelJumpLabelByKey.get(modelKey) ?? null}
+                        onToggleFavorite={() => toggleFavorite(model.providerKind, model.slug)}
+                      />
+                    );
+                  }}
+                  estimatedItemSize={58}
+                  drawDistance={464}
+                  recycleItems
+                  className="size-full overflow-x-hidden px-2 py-1"
+                />
+              </ComboboxListVirtualized>
             </div>
             <ComboboxEmpty className="not-empty:py-6 empty:h-0 text-xs font-normal leading-snug">
               No models found

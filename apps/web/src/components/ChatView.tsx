@@ -60,17 +60,13 @@ import {
 } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue } from "@tanstack/react-pacer";
-import { useNavigate, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
-import {
-  clearDiffSearchParams,
-  clearFileViewSearchParams,
-  parseDiffRouteSearch,
-} from "../diffRouteSearch";
+import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import {
   clampCollapsedComposerCursor,
@@ -82,6 +78,7 @@ import {
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "../composer-logic";
+import { serializeComposerMentionPath } from "../composer-editor-mentions";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -141,7 +138,6 @@ import {
 } from "../types";
 import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
-import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
   fetchThreadFileChangesDelta,
@@ -158,8 +154,7 @@ import { recordModelSelection } from "../modelPreferencesStore";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import BranchToolbar from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
-import PlanSidebar from "./PlanSidebar";
-import { RightPanelSheet } from "./RightPanelSheet";
+import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
@@ -194,7 +189,6 @@ import {
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
-import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import { getClaudeProjectSettings, resolveThreadTitleModel, useAppSettings } from "../appSettings";
 import {
   type ComposerImageAttachment,
@@ -298,6 +292,10 @@ const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnsw
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 const SCRIPT_TERMINAL_ROWS = 30;
+
+function isComposerKeyboardEventComposing(event: KeyboardEvent): boolean {
+  return event.isComposing || event.keyCode === 229;
+}
 
 const WorkflowImplementDialog = lazy(() =>
   import("./workflow/WorkflowImplementDialog").then((module) => ({
@@ -603,10 +601,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
   const navigate = useNavigate();
-  const rawSearch = useSearch({
-    strict: false,
-    select: (params) => parseDiffRouteSearch(params),
-  });
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();
   const composerDraft = useComposerThreadDraft(threadId);
@@ -707,16 +701,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const previousTaskPanelThreadIdRef = useRef<ThreadId | null>(null);
   const previousThreadTaskCountRef = useRef(0);
   const tasksPanelManuallyCollapsedRef = useRef(false);
-  const [planSidebarOpen, setPlanSidebarOpen] = useState(false);
+  const planSidebarOpen = useRightPanelStore((store) => {
+    const state = selectThreadRightPanelState(store.byThreadId, threadId);
+    return state.isOpen && state.surfaces.some((surface) => surface.id === "plan");
+  });
   const [workflowImplementDialogOpen, setWorkflowImplementDialogOpen] = useState(false);
-  const shouldUsePlanSidebarSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const [isComposerFooterCompact, setIsComposerFooterCompact] = useState(false);
   const [isModelPickerOpen, setIsModelPickerOpen] = useState(false);
   // Tracks whether the user explicitly dismissed the sidebar for the active turn.
   const planSidebarDismissedForTurnRef = useRef<string | null>(null);
-  // When set, the thread-change reset effect will open the sidebar instead of closing it.
-  // Used by "Implement in a new thread" to carry the sidebar-open intent across navigation.
-  const planSidebarOpenOnNextThreadRef = useRef(false);
   const [nowTick, setNowTick] = useState(() => Date.now());
   const [terminalFocusRequestId, setTerminalFocusRequestId] = useState(0);
   const [composerHighlightedItemId, setComposerHighlightedItemId] = useState<string | null>(null);
@@ -936,7 +929,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const isServerThread = serverThread !== undefined;
   const isLocalDraftThread = !isServerThread && localDraftThread !== undefined;
   const canCheckoutPullRequestIntoThread = isLocalDraftThread;
-  const diffOpen = rawSearch.diff === "1";
+  const diffOpen = useRightPanelStore((store) => {
+    const state = selectThreadRightPanelState(store.byThreadId, threadId);
+    return state.isOpen && state.surfaces.some((surface) => surface.id === "diff");
+  });
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
@@ -2231,7 +2227,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         to: "/$threadId",
         params: { threadId },
         search: (previous) => {
-          const rest = clearDiffSearchParams(previous);
+          const rest = clearTurnDiffSearchParams(previous);
           return filePath
             ? { ...rest, diff: "1", diffFileChangeId: fileChangeId, diffFilePath: filePath }
             : { ...rest, diff: "1", diffFileChangeId: fileChangeId };
@@ -2285,13 +2281,18 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [keybindings],
   );
   const onToggleDiff = useCallback(() => {
+    if (diffOpen) {
+      useRightPanelStore.getState().closeSurface(threadId, "diff");
+    } else {
+      useRightPanelStore.getState().open(threadId, "diff");
+    }
     void navigate({
       to: "/$threadId",
       params: { threadId },
       replace: true,
       search: (previous) => {
-        const rest = clearDiffSearchParams(previous);
-        return diffOpen ? { ...rest, diff: undefined } : { ...rest, diff: "1" };
+        const rest = clearTurnDiffSearchParams(previous);
+        return diffOpen ? rest : { ...rest, diff: "1" };
       },
     });
   }, [diffOpen, navigate, threadId]);
@@ -2742,26 +2743,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
     );
   }, [handleRuntimeModeChange, runtimeMode]);
   const togglePlanSidebar = useCallback(() => {
-    setPlanSidebarOpen((open) => {
-      if (open) {
-        const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
-        if (turnKey) {
-          planSidebarDismissedForTurnRef.current = turnKey;
-        }
-      } else {
-        planSidebarDismissedForTurnRef.current = null;
+    if (planSidebarOpen) {
+      const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
+      if (turnKey) {
+        planSidebarDismissedForTurnRef.current = turnKey;
       }
-      return !open;
-    });
-  }, [activePlan?.turnId, activeProposedPlan?.turnId]);
-  const closePlanSidebar = useCallback(() => {
-    setPlanSidebarOpen(false);
-    const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
-    if (turnKey) {
-      planSidebarDismissedForTurnRef.current = turnKey;
+      useRightPanelStore.getState().closeSurface(threadId, "plan");
+      return;
     }
-  }, [activePlan?.turnId, activeProposedPlan?.turnId]);
-
+    planSidebarDismissedForTurnRef.current = null;
+    useRightPanelStore.getState().open(threadId, "plan");
+  }, [activePlan?.turnId, activeProposedPlan?.turnId, planSidebarOpen, threadId]);
   const persistThreadSettingsForNextTurn = useCallback(
     async (input: {
       threadId: ThreadId;
@@ -2850,23 +2842,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setExpandedWorkGroups({});
     setExpandedFileChangeDiffs({});
     setPullRequestDialogState(null);
-    const shouldOpenPlanSidebar =
-      planSidebarOpenOnNextThreadRef.current && tasksPanelAutoOpenRef.current;
-    if (planSidebarOpenOnNextThreadRef.current) {
-      planSidebarOpenOnNextThreadRef.current = false;
-    }
-    if (shouldOpenPlanSidebar) {
-      setPlanSidebarOpen(true);
-    } else {
-      setPlanSidebarOpen(false);
-    }
     planSidebarDismissedForTurnRef.current = null;
     // maintainScrollAtEnd + initialScrollAtEnd handle thread-switch pinning;
     // reset the pill-visibility state so we don't briefly flash stale state.
     isAtEndRef.current = true;
     showScrollDebouncer.current?.cancel();
     setShowScrollToBottom(false);
-  }, [activeThread?.id]);
+  }, [activeThread?.id, threadId]);
 
   useEffect(() => {
     if (!composerMenuOpen) {
@@ -4427,7 +4409,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         // step-tracking activities that the sidebar will display.
         if (nextInteractionMode === "default" && tasksPanelAutoOpen) {
           planSidebarDismissedForTurnRef.current = null;
-          setPlanSidebarOpen(true);
+          useRightPanelStore.getState().open(threadIdForSend, "plan");
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to send plan follow-up.";
@@ -4572,8 +4554,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
         if (startup.threadTailDetails) {
           syncThreadTailDetails(nextThreadId, startup.threadTailDetails);
         }
-        // Signal that the plan sidebar should open on the new thread.
-        planSidebarOpenOnNextThreadRef.current = tasksPanelAutoOpen;
+        if (tasksPanelAutoOpen) {
+          useRightPanelStore.getState().open(nextThreadId, "plan");
+        }
         return navigate({
           to: "/$threadId",
           params: { threadId: nextThreadId },
@@ -4842,7 +4825,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const { snapshot, trigger } = resolveActiveComposerTrigger();
       if (!trigger) return;
       if (item.type === "path") {
-        const replacement = `@${item.path} `;
+        const replacement = `@${serializeComposerMentionPath(item.path)} `;
         const replacementRangeEnd = extendReplacementRangeForTrailingSpace(
           snapshot.value,
           trigger.rangeEnd,
@@ -4993,6 +4976,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
       return true;
     }
 
+    if (key === "Enter" && isComposerKeyboardEventComposing(event)) {
+      return true;
+    }
+
     const { trigger } = resolveActiveComposerTrigger();
     const menuIsActive = composerMenuOpenRef.current || trigger !== null;
 
@@ -5037,7 +5024,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         to: "/$threadId",
         params: { threadId },
         search: (previous) => {
-          const rest = clearDiffSearchParams(previous);
+          const rest = clearTurnDiffSearchParams(previous);
           return filePath
             ? { ...rest, diff: "1", diffTurnId: turnId, diffFilePath: filePath }
             : { ...rest, diff: "1", diffTurnId: turnId };
@@ -5068,7 +5055,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
           to: "/$threadId",
           params: { threadId },
           search: (previous) => ({
-            ...clearDiffSearchParams(previous),
+            ...clearTurnDiffSearchParams(previous),
             diff: "1",
             diffFilePath: parsed.path,
             ...(turnId ? { diffTurnId: turnId } : {}),
@@ -5948,19 +5935,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
             ) : null}
           </div>
           {/* end chat column */}
-
-          {/* Plan sidebar */}
-          {planSidebarOpen && !shouldUsePlanSidebarSheet ? (
-            <PlanSidebar
-              activePlan={activePlan}
-              activeProposedPlan={activeProposedPlan}
-              markdownCwd={gitCwd ?? undefined}
-              workspaceRoot={activeProject?.cwd ?? undefined}
-              timestampFormat={timestampFormat}
-              mode="sidebar"
-              onClose={closePlanSidebar}
-            />
-          ) : null}
         </div>
         {/* end horizontal flex container */}
 
@@ -5992,20 +5966,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
             />
           );
         })()}
-
-        {shouldUsePlanSidebarSheet ? (
-          <RightPanelSheet open={planSidebarOpen} onClose={closePlanSidebar}>
-            <PlanSidebar
-              activePlan={activePlan}
-              activeProposedPlan={activeProposedPlan}
-              markdownCwd={gitCwd ?? undefined}
-              workspaceRoot={activeProject?.cwd ?? undefined}
-              timestampFormat={timestampFormat}
-              mode="sheet"
-              onClose={closePlanSidebar}
-            />
-          </RightPanelSheet>
-        ) : null}
 
         {planningMergeWorkflow != null ? (
           <Suspense fallback={null}>

@@ -28,7 +28,7 @@ import { cn } from "~/lib/utils";
 import { useAppSettings } from "../appSettings";
 import { readNativeApi } from "../nativeApi";
 import { resolvePathLinkTarget } from "../terminal-links";
-import { clearDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
+import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
 import { useTheme } from "../hooks/useTheme";
 import { buildPatchCacheKey } from "../lib/diffRendering";
 import { resolveDiffThemeName } from "../lib/diffRendering";
@@ -398,7 +398,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       to: "/$threadId",
       params: { threadId: activeThread.id },
       search: (previous) => {
-        const rest = clearDiffSearchParams(previous);
+        const rest = clearTurnDiffSearchParams(previous);
         return { ...rest, diff: "1", diffTurnId: turnId };
       },
     });
@@ -409,7 +409,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       to: "/$threadId",
       params: { threadId: activeThread.id },
       search: (previous) => {
-        const rest = clearDiffSearchParams(previous);
+        const rest = clearTurnDiffSearchParams(previous);
         return { ...rest, diff: "1" };
       },
     });

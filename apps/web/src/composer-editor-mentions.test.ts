@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   COMPOSER_SURROUND_PAIRS,
   doesSelectionTouchInlineToken,
+  serializeComposerMentionPath,
   splitPromptIntoComposerSegments,
 } from "./composer-editor-mentions";
 import { INLINE_TERMINAL_CONTEXT_PLACEHOLDER } from "./lib/terminalContext";
@@ -11,7 +12,7 @@ describe("splitPromptIntoComposerSegments", () => {
   it("splits mention tokens followed by whitespace into mention segments", () => {
     expect(splitPromptIntoComposerSegments("Inspect @AGENTS.md please")).toEqual([
       { type: "text", text: "Inspect " },
-      { type: "mention", path: "AGENTS.md" },
+      { type: "mention", path: "AGENTS.md", raw: "@AGENTS.md" },
       { type: "text", text: " please" },
     ]);
   });
@@ -25,8 +26,28 @@ describe("splitPromptIntoComposerSegments", () => {
   it("keeps newlines around mention tokens", () => {
     expect(splitPromptIntoComposerSegments("one\n@src/index.ts \ntwo")).toEqual([
       { type: "text", text: "one\n" },
-      { type: "mention", path: "src/index.ts" },
+      { type: "mention", path: "src/index.ts", raw: "@src/index.ts" },
       { type: "text", text: " \ntwo" },
+    ]);
+  });
+
+  it("splits quoted mention tokens containing whitespace", () => {
+    expect(splitPromptIntoComposerSegments('Inspect @"My File.md" please')).toEqual([
+      { type: "text", text: "Inspect " },
+      { type: "mention", path: "My File.md", raw: '@"My File.md"' },
+      { type: "text", text: " please" },
+    ]);
+  });
+
+  it("unescapes quoted mention token content and preserves the raw token", () => {
+    expect(splitPromptIntoComposerSegments('Inspect @"docs/My \\"File\\".md" please')).toEqual([
+      { type: "text", text: "Inspect " },
+      {
+        type: "mention",
+        path: 'docs/My "File".md',
+        raw: '@"docs/My \\"File\\".md"',
+      },
+      { type: "text", text: " please" },
     ]);
   });
 
@@ -38,9 +59,23 @@ describe("splitPromptIntoComposerSegments", () => {
     ).toEqual([
       { type: "text", text: "Inspect " },
       { type: "terminal-context", context: null },
-      { type: "mention", path: "AGENTS.md" },
+      { type: "mention", path: "AGENTS.md", raw: "@AGENTS.md" },
       { type: "text", text: " please" },
     ]);
+  });
+});
+
+describe("serializeComposerMentionPath", () => {
+  it("keeps simple mention paths unquoted", () => {
+    expect(serializeComposerMentionPath("src/index.ts")).toBe("src/index.ts");
+  });
+
+  it("quotes mention paths containing whitespace", () => {
+    expect(serializeComposerMentionPath("docs/My File.md")).toBe('"docs/My File.md"');
+  });
+
+  it("escapes quoted mention path content", () => {
+    expect(serializeComposerMentionPath('docs/My "File".md')).toBe('"docs/My \\"File\\".md"');
   });
 });
 
@@ -85,6 +120,17 @@ describe("doesSelectionTouchInlineToken", () => {
   it("detects a selection that abuts the end of a mention", () => {
     // Select " world" right after "@path" -> [11, 17), mention ends at 11
     expect(doesSelectionTouchInlineToken("hello @path world", 11, 17)).toBe(true);
+  });
+
+  it("detects selections that touch a quoted mention", () => {
+    expect(doesSelectionTouchInlineToken('hello @"My File.md" world', 6, 19)).toBe(true);
+    expect(
+      doesSelectionTouchInlineToken(
+        'hello @"My File.md" world',
+        'hello @"My File.md"'.length,
+        'hello @"My File.md" world'.length,
+      ),
+    ).toBe(true);
   });
 
   it("detects a selection that abuts the start of a mention", () => {

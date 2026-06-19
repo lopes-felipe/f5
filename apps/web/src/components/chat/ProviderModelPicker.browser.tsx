@@ -40,6 +40,7 @@ async function mountPicker(props?: {
   model?: ModelSlug;
   lockedProvider?: ProviderKind | null;
   providers?: ServerProvider[];
+  modelOptionsByProvider?: Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
 }) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -50,7 +51,7 @@ async function mountPicker(props?: {
       model={props?.model ?? "gpt-5.5"}
       lockedProvider={props?.lockedProvider ?? null}
       providers={props?.providers ?? READY_PROVIDERS}
-      modelOptionsByProvider={MODEL_OPTIONS_BY_PROVIDER}
+      modelOptionsByProvider={props?.modelOptionsByProvider ?? MODEL_OPTIONS_BY_PROVIDER}
       keybindings={[
         {
           command: "modelPicker.jump.1",
@@ -199,6 +200,59 @@ describe("ProviderModelPicker", () => {
           "claudeAgent",
           "claude-haiku-4-5",
         );
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keyboard navigation scrolls a long virtualized list to the bottom", async () => {
+    const longModelOptions = {
+      codex: Array.from({ length: 160 }, (_, index) => ({
+        slug: `codex-long-${index}`,
+        name: `Codex Long ${index}`,
+      })),
+      claudeAgent: [],
+      cursor: [],
+      opencode: [],
+    } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
+    const mounted = await mountPicker({
+      provider: "codex",
+      model: "codex-long-0",
+      modelOptionsByProvider: longModelOptions,
+    });
+
+    try {
+      await page.getByRole("button", { name: /Codex Long 0/ }).click();
+      const input = page.getByPlaceholder("Search models...");
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(input.element());
+      });
+
+      for (let index = 0; index < 160; index += 1) {
+        input.element().dispatchEvent(
+          new KeyboardEvent("keydown", {
+            key: "ArrowDown",
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      }
+
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("Codex Long 159");
+      });
+
+      input.element().dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(mounted.onProviderModelChange).toHaveBeenCalledWith("codex", "codex-long-159");
       });
     } finally {
       await mounted.cleanup();

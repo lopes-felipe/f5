@@ -103,6 +103,26 @@ export function clearDiffSearchParams<T extends Record<string, unknown>>(
   };
 }
 
+export function clearTurnDiffSearchParams<T extends Record<string, unknown>>(
+  params: T,
+): Omit<T, "diff" | "diffTurnId" | "diffFileChangeId" | "diffFilePath"> &
+  Pick<DiffRouteSearch, "diff" | "diffTurnId" | "diffFileChangeId" | "diffFilePath"> {
+  const {
+    diff: _diff,
+    diffTurnId: _diffTurnId,
+    diffFileChangeId: _diffFileChangeId,
+    diffFilePath: _diffFilePath,
+    ...rest
+  } = params;
+  return {
+    ...rest,
+    diff: undefined,
+    diffTurnId: undefined,
+    diffFileChangeId: undefined,
+    diffFilePath: undefined,
+  };
+}
+
 export function clearFileViewSearchParams<T extends Record<string, unknown>>(
   params: T,
 ): Omit<T, "fileViewPath" | "fileLine" | "fileEndLine" | "fileColumn"> &

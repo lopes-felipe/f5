@@ -1,10 +1,22 @@
-import { ThreadId } from "@t3tools/contracts";
+import { ThreadId, type OrchestrationThreadActivity, type TaskItem } from "@t3tools/contracts";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
-import { Suspense, lazy, useCallback, useEffect, useState } from "react";
+import {
+  Suspense,
+  lazy,
+  type CSSProperties,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+} from "react";
 
 import { useAppSettings } from "../appSettings";
 import ChatView from "../components/ChatView";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
+import PlanSidebar from "../components/PlanSidebar";
+import { RightPanelHost } from "../components/RightPanelHost";
+import { RightPanelSheet } from "../components/RightPanelSheet";
 import { StartupThreadRouteSkeleton } from "../components/StartupLoadingState";
 import {
   DiffPanelHeaderSkeleton,
@@ -13,19 +25,30 @@ import {
   type DiffPanelMode,
 } from "../components/DiffPanelShell";
 import { Button } from "../components/ui/button";
+import { toastManager } from "../components/ui/toast";
 import { useComposerDraftStore } from "../composerDraftStore";
 import {
-  clearDiffSearchParams,
   clearFileViewSearchParams,
+  clearTurnDiffSearchParams,
   type DiffRouteSearch,
   parseDiffRouteSearch,
 } from "../diffRouteSearch";
+import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
 import { useStartupReady } from "../lib/startupReady";
-import { useStore } from "../store";
-import { RightPanelSheet } from "../components/RightPanelSheet";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
+import {
+  selectThreadRightPanelState,
+  type RightPanelSurface,
+  useRightPanelStore,
+} from "../rightPanelStore";
+import {
+  deriveActivePlanState,
+  findLatestProposedPlan,
+  isLatestTurnSettled,
+} from "../session-logic";
+import { useStore } from "../store";
 import {
   Sidebar,
   SidebarInset,
@@ -36,10 +59,14 @@ import {
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const FileViewPanel = lazy(() => import("../components/FileViewPanel"));
-const DIFF_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_diff_sidebar_width";
-const DIFF_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
-const DIFF_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
+const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
+const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
+const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
 const COMPOSER_COMPACT_MIN_LEFT_CONTROLS_WIDTH_PX = 208;
+const EMPTY_ACTIVITIES: ReadonlyArray<OrchestrationThreadActivity> = [];
+const EMPTY_TASKS: ReadonlyArray<TaskItem> = [];
+type RightPanelRenderMode = Extract<DiffPanelMode, "sheet" | "sidebar">;
+type FileRightPanelSurface = Extract<RightPanelSurface, { kind: "file" }>;
 
 const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
   return (
@@ -59,34 +86,114 @@ const LazyDiffPanel = (props: { mode: DiffPanelMode }) => {
   );
 };
 
-const LazyFileViewPanel = (props: { mode: DiffPanelMode }) => {
+const LazyFileViewPanel = (props: {
+  mode: DiffPanelMode;
+  surface: FileRightPanelSurface;
+  onClose: () => void;
+}) => {
   return (
     <DiffWorkerPoolProvider>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
-        <FileViewPanel mode={props.mode} />
+        <FileViewPanel mode={props.mode} surface={props.surface} onClose={props.onClose} />
       </Suspense>
     </DiffWorkerPoolProvider>
   );
 };
 
-const DiffPanelInlineSidebar = (props: {
+function RightPanelUnavailableSurface(props: { title: string; description: string }) {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+      <div className="max-w-sm text-center">
+        <p className="text-sm font-medium text-foreground">{props.title}</p>
+        <p className="mt-2 text-sm text-muted-foreground">{props.description}</p>
+      </div>
+    </div>
+  );
+}
+
+function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
+  return [
+    threadId,
+    search.diff ?? "",
+    search.diffTurnId ?? "",
+    search.diffFileChangeId ?? "",
+    search.diffFilePath ?? "",
+    search.fileViewPath ?? "",
+    search.fileLine ?? "",
+    search.fileEndLine ?? "",
+    search.fileColumn ?? "",
+  ].join("\u0000");
+}
+
+function clearSearchParamsForSurface<T extends Record<string, unknown>>(
+  params: T,
+  surface: RightPanelSurface,
+): Record<string, unknown> {
+  const parsed = parseDiffRouteSearch(params);
+  if (surface.kind === "diff" && parsed.diff === "1") {
+    return clearTurnDiffSearchParams(params);
+  }
+  if (surface.kind === "file" && parsed.fileViewPath === surface.relativePath) {
+    return clearFileViewSearchParams(params);
+  }
+  return params;
+}
+
+function setSearchParamsForSurface<T extends Record<string, unknown>>(
+  params: T,
+  surface: RightPanelSurface,
+): Record<string, unknown> {
+  if (surface.kind === "diff") {
+    return {
+      ...clearFileViewSearchParams(params),
+      diff: "1",
+    };
+  }
+  if (surface.kind === "file") {
+    const withoutCurrentFile = clearFileViewSearchParams(params);
+    return {
+      ...withoutCurrentFile,
+      fileViewPath: surface.relativePath,
+      ...(surface.line ? { fileLine: surface.line } : {}),
+      ...(surface.endLine ? { fileEndLine: surface.endLine } : {}),
+      ...(surface.column ? { fileColumn: surface.column } : {}),
+    };
+  }
+  return params;
+}
+
+function getFallbackSurfaceAfterClose(
+  surfaces: ReadonlyArray<RightPanelSurface>,
+  activeSurfaceId: string | null,
+  closedSurfaceId: string,
+): RightPanelSurface | null {
+  const index = surfaces.findIndex((surface) => surface.id === closedSurfaceId);
+  if (index < 0) {
+    return null;
+  }
+  const remaining = surfaces.filter((surface) => surface.id !== closedSurfaceId);
+  if (activeSurfaceId !== closedSurfaceId) {
+    return remaining.find((surface) => surface.id === activeSurfaceId) ?? null;
+  }
+  return remaining[Math.min(index, remaining.length - 1)] ?? null;
+}
+
+const RightPanelInlineSidebar = (props: {
   open: boolean;
   onClose: () => void;
-  onOpenDiff: () => void;
-  renderDiffContent: boolean;
-  fileViewOpen: boolean;
-  hasOpenedFileView: boolean;
+  onOpenDefaultSurface: () => void;
+  children: ReactNode;
 }) => {
-  const { open, onClose, onOpenDiff, renderDiffContent, fileViewOpen, hasOpenedFileView } = props;
+  const { open, onClose, onOpenDefaultSurface } = props;
   const onOpenChange = useCallback(
     (open: boolean) => {
       if (open) {
-        onOpenDiff();
+        onOpenDefaultSurface();
         return;
       }
       onClose();
     },
-    [onClose, onOpenDiff],
+    [onClose, onOpenDefaultSurface],
   );
   const shouldAcceptInlineSidebarWidth = useCallback(
     ({ nextWidth, wrapper }: { nextWidth: number; wrapper: HTMLElement }) => {
@@ -140,30 +247,19 @@ const DiffPanelInlineSidebar = (props: {
       open={open}
       onOpenChange={onOpenChange}
       className="w-auto min-h-0 flex-none bg-transparent"
-      style={{ "--sidebar-width": DIFF_INLINE_DEFAULT_WIDTH } as React.CSSProperties}
+      style={{ "--sidebar-width": RIGHT_PANEL_INLINE_DEFAULT_WIDTH } as CSSProperties}
     >
       <Sidebar
         side="right"
         collapsible="offcanvas"
         className="border-l border-border bg-card text-foreground"
         resizable={{
-          minWidth: DIFF_INLINE_SIDEBAR_MIN_WIDTH,
+          minWidth: RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH,
           shouldAcceptWidth: shouldAcceptInlineSidebarWidth,
-          storageKey: DIFF_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
+          storageKey: RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY,
         }}
       >
-        <div
-          className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
-          style={{ display: fileViewOpen ? "none" : "flex" }}
-        >
-          {renderDiffContent ? <LazyDiffPanel mode="sidebar" /> : null}
-        </div>
-        <div
-          className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
-          style={{ display: fileViewOpen ? "flex" : "none" }}
-        >
-          {hasOpenedFileView ? <LazyFileViewPanel mode="sidebar" /> : null}
-        </div>
+        {props.children}
         <SidebarRail />
       </Sidebar>
     </SidebarProvider>
@@ -223,6 +319,9 @@ function ChatThreadRouteView() {
   const { settings } = useAppSettings();
   const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
   const threadExists = useStore((store) => store.threads.some((thread) => thread.id === threadId));
+  const activeProject = useStore((store) =>
+    thread?.projectId ? store.projects.find((project) => project.id === thread.projectId) : null,
+  );
   const draftThreadExists = useComposerDraftStore((store) =>
     Object.hasOwn(store.draftThreadsByThreadId, threadId),
   );
@@ -230,51 +329,92 @@ function ChatThreadRouteView() {
   const threadDetailQuery = useThreadDetail(thread ? threadId : null, {
     includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
   });
-  const diffOpen = search.diff === "1";
-  const fileViewOpen = !!search.fileViewPath;
-  const panelOpen = diffOpen || fileViewOpen;
-  const shouldUseDiffSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
-  // TanStack Router keeps active route components mounted across param-only navigations
-  // unless remountDeps are configured, so this stays warm across thread switches.
-  const [hasOpenedDiff, setHasOpenedDiff] = useState(diffOpen);
-  const [hasOpenedFileView, setHasOpenedFileView] = useState(fileViewOpen);
-  const closeDiffPanel = useCallback(() => {
-    void navigate({
-      to: "/$threadId",
-      params: { threadId },
-      search: (previous) => clearDiffSearchParams(previous),
-    });
-  }, [navigate, threadId]);
-  const closeFileViewPanel = useCallback(() => {
-    void navigate({
-      to: "/$threadId",
-      params: { threadId },
-      search: (previous) => clearFileViewSearchParams(previous),
-    });
-  }, [navigate, threadId]);
-  const closeActivePanel = fileViewOpen ? closeFileViewPanel : closeDiffPanel;
-  const openDiff = useCallback(() => {
-    void navigate({
-      to: "/$threadId",
-      params: { threadId },
-      search: (previous) => {
-        const rest = clearDiffSearchParams(previous);
-        return { ...rest, diff: "1" };
-      },
-    });
-  }, [navigate, threadId]);
+  const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
+  const rightPanelState = useRightPanelStore((store) =>
+    selectThreadRightPanelState(store.byThreadId, threadId),
+  );
+  const consumedDeepLinkKeyRef = useRef<string | null>(null);
+  const threadActivities = thread?.activities ?? EMPTY_ACTIVITIES;
+  const threadTasks = thread?.tasks ?? EMPTY_TASKS;
+  const latestTurn = thread?.latestTurn ?? null;
+  const latestTurnSettled = isLatestTurnSettled(latestTurn, thread?.session ?? null);
+  const activeProposedPlan = useMemo(() => {
+    if (!latestTurnSettled) {
+      return null;
+    }
+    return findLatestProposedPlan(thread?.proposedPlans ?? [], latestTurn?.turnId ?? null);
+  }, [latestTurn?.turnId, latestTurnSettled, thread?.proposedPlans]);
+  const activePlan = useMemo(
+    () =>
+      deriveActivePlanState(threadActivities, latestTurn?.turnId ?? undefined, {
+        tasks: threadTasks,
+        turnId: thread?.tasksTurnId ?? null,
+        updatedAt: thread?.tasksUpdatedAt ?? null,
+      }),
+    [
+      latestTurn?.turnId,
+      thread?.tasksTurnId,
+      thread?.tasksUpdatedAt,
+      threadActivities,
+      threadTasks,
+    ],
+  );
+  const markdownCwd = thread?.worktreePath ?? activeProject?.cwd ?? undefined;
+  const workspaceRoot = activeProject?.cwd ?? undefined;
+  const { copyToClipboard } = useCopyToClipboard<{ relativePath: string }>({
+    onCopy: ({ relativePath }) => {
+      toastManager.add({
+        type: "success",
+        title: "Path copied",
+        description: relativePath,
+      });
+    },
+    onError: (error) => {
+      toastManager.add({
+        type: "error",
+        title: "Could not copy path",
+        description: error.message,
+      });
+    },
+  });
 
   useEffect(() => {
-    if (diffOpen) {
-      setHasOpenedDiff(true);
+    const deepLinkKey = buildDeepLinkKey(threadId, search);
+    if (consumedDeepLinkKeyRef.current === deepLinkKey) {
+      return;
     }
-  }, [diffOpen]);
+    consumedDeepLinkKeyRef.current = deepLinkKey;
+    const rightPanelStore = useRightPanelStore.getState();
+    const currentState = selectThreadRightPanelState(rightPanelStore.byThreadId, threadId);
+    const activeSurface =
+      currentState.surfaces.find((surface) => surface.id === currentState.activeSurfaceId) ?? null;
 
-  useEffect(() => {
-    if (fileViewOpen) {
-      setHasOpenedFileView(true);
+    if (search.diff === "1") {
+      rightPanelStore.open(threadId, "diff");
+    } else if (currentState.surfaces.some((surface) => surface.kind === "diff")) {
+      rightPanelStore.closeSurface(threadId, "diff");
     }
-  }, [fileViewOpen]);
+    if (search.fileViewPath) {
+      rightPanelStore.openFile(threadId, {
+        relativePath: search.fileViewPath,
+        line: search.fileLine,
+        endLine: search.fileEndLine,
+        column: search.fileColumn,
+      });
+    } else if (activeSurface?.kind === "file") {
+      rightPanelStore.closeSurface(threadId, activeSurface.id);
+    }
+  }, [
+    search.diff,
+    search.diffFileChangeId,
+    search.diffFilePath,
+    search.diffTurnId,
+    search.fileColumn,
+    search.fileEndLine,
+    search.fileLine,
+    search.fileViewPath,
+    threadId,
+  ]);
 
   useEffect(() => {
     if (!startupReady) {
@@ -282,10 +422,248 @@ function ChatThreadRouteView() {
     }
 
     if (!routeThreadExists) {
+      useRightPanelStore.getState().removeThread(threadId);
       void navigate({ to: "/", replace: true });
       return;
     }
   }, [navigate, routeThreadExists, startupReady, threadId]);
+
+  const clearSearchParamsForSurfaces = useCallback(
+    (surfaces: ReadonlyArray<RightPanelSurface>) => {
+      if (surfaces.length === 0) {
+        return;
+      }
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+        replace: true,
+        search: (previous) => {
+          let next: Record<string, unknown> = previous;
+          for (const surface of surfaces) {
+            next = clearSearchParamsForSurface(next, surface);
+          }
+          return next;
+        },
+      });
+    },
+    [navigate, threadId],
+  );
+
+  const closeRightPanelSurface = useCallback(
+    (surface: RightPanelSurface) => {
+      const fallbackSurface = getFallbackSurfaceAfterClose(
+        rightPanelState.surfaces,
+        rightPanelState.activeSurfaceId,
+        surface.id,
+      );
+      useRightPanelStore.getState().closeSurface(threadId, surface.id);
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+        replace: true,
+        search: (previous) => {
+          const withoutClosedSurface = clearSearchParamsForSurface(previous, surface);
+          return fallbackSurface
+            ? setSearchParamsForSurface(withoutClosedSurface, fallbackSurface)
+            : withoutClosedSurface;
+        },
+      });
+    },
+    [navigate, rightPanelState.activeSurfaceId, rightPanelState.surfaces, threadId],
+  );
+
+  const closeActivePanel = useCallback(() => {
+    const activeSurface =
+      rightPanelState.surfaces.find((surface) => surface.id === rightPanelState.activeSurfaceId) ??
+      null;
+    if (!activeSurface) {
+      useRightPanelStore.getState().close(threadId);
+      return;
+    }
+    closeRightPanelSurface(activeSurface);
+  }, [closeRightPanelSurface, rightPanelState.activeSurfaceId, rightPanelState.surfaces, threadId]);
+
+  const openDiff = useCallback(() => {
+    useRightPanelStore.getState().open(threadId, "diff");
+    void navigate({
+      to: "/$threadId",
+      params: { threadId },
+      search: (previous) => ({
+        ...clearFileViewSearchParams(clearTurnDiffSearchParams(previous)),
+        diff: "1",
+      }),
+    });
+  }, [navigate, threadId]);
+
+  const openPlan = useCallback(() => {
+    useRightPanelStore.getState().open(threadId, "plan");
+  }, [threadId]);
+
+  const closeOtherSurfaces = useCallback(
+    (surface: RightPanelSurface) => {
+      const removed = rightPanelState.surfaces.filter((entry) => entry.id !== surface.id);
+      useRightPanelStore.getState().closeOtherSurfaces(threadId, surface.id);
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+        replace: true,
+        search: (previous) => {
+          let next: Record<string, unknown> = previous;
+          for (const removedSurface of removed) {
+            next = clearSearchParamsForSurface(next, removedSurface);
+          }
+          return setSearchParamsForSurface(next, surface);
+        },
+      });
+    },
+    [navigate, rightPanelState.surfaces, threadId],
+  );
+
+  const closeSurfacesToRight = useCallback(
+    (surface: RightPanelSurface) => {
+      const index = rightPanelState.surfaces.findIndex((entry) => entry.id === surface.id);
+      if (index < 0) {
+        return;
+      }
+      const removed = rightPanelState.surfaces.slice(index + 1);
+      const remaining = rightPanelState.surfaces.slice(0, index + 1);
+      const nextActiveSurface =
+        remaining.find((entry) => entry.id === rightPanelState.activeSurfaceId) ?? surface;
+      useRightPanelStore.getState().closeSurfacesToRight(threadId, surface.id);
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+        replace: true,
+        search: (previous) => {
+          let next: Record<string, unknown> = previous;
+          for (const removedSurface of removed) {
+            next = clearSearchParamsForSurface(next, removedSurface);
+          }
+          return setSearchParamsForSurface(next, nextActiveSurface);
+        },
+      });
+    },
+    [navigate, rightPanelState.activeSurfaceId, rightPanelState.surfaces, threadId],
+  );
+
+  const closeAllSurfaces = useCallback(() => {
+    const removed = rightPanelState.surfaces;
+    useRightPanelStore.getState().closeAllSurfaces(threadId);
+    clearSearchParamsForSurfaces(removed);
+  }, [clearSearchParamsForSurfaces, rightPanelState.surfaces, threadId]);
+
+  const closeRightPanelSheet = useCallback(() => {
+    useRightPanelStore.getState().closeAllSurfaces(threadId);
+    clearSearchParamsForSurfaces(rightPanelState.surfaces);
+  }, [clearSearchParamsForSurfaces, rightPanelState.surfaces, threadId]);
+
+  const activateRightPanelSurface = useCallback(
+    (surface: RightPanelSurface) => {
+      useRightPanelStore.getState().activateSurface(threadId, surface.id);
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+        replace: true,
+        search: (previous) => setSearchParamsForSurface(previous, surface),
+      });
+    },
+    [navigate, threadId],
+  );
+
+  const renderRightPanelSurface = useCallback(
+    (mode: RightPanelRenderMode, loadingOnly = false) =>
+      (surface: RightPanelSurface): ReactNode => {
+        switch (surface.kind) {
+          case "diff":
+            return loadingOnly ? (
+              <DiffLoadingFallback mode={mode} />
+            ) : (
+              <LazyDiffPanel mode={mode} />
+            );
+          case "file":
+            return loadingOnly ? (
+              <DiffLoadingFallback mode={mode} />
+            ) : (
+              <LazyFileViewPanel
+                mode={mode}
+                surface={surface}
+                onClose={() => closeRightPanelSurface(surface)}
+              />
+            );
+          case "plan":
+            return (
+              <PlanSidebar
+                activePlan={activePlan}
+                activeProposedPlan={activeProposedPlan}
+                markdownCwd={markdownCwd}
+                workspaceRoot={workspaceRoot}
+                timestampFormat={settings.timestampFormat}
+                mode="sheet"
+                onClose={() => closeRightPanelSurface(surface)}
+              />
+            );
+          case "files":
+            return (
+              <RightPanelUnavailableSurface
+                title="Files are not available yet"
+                description="Workspace browsing will attach to this panel surface in a later feature."
+              />
+            );
+          case "preview":
+            return (
+              <RightPanelUnavailableSurface
+                title="Preview is not available"
+                description="Browser preview support is not enabled in this build."
+              />
+            );
+        }
+      },
+    [
+      activePlan,
+      activeProposedPlan,
+      closeRightPanelSurface,
+      markdownCwd,
+      settings.timestampFormat,
+      workspaceRoot,
+    ],
+  );
+
+  const renderRightPanelHost = useCallback(
+    (mode: RightPanelRenderMode, loadingOnly = false) => (
+      <RightPanelHost
+        mode={mode}
+        state={rightPanelState}
+        renderSurface={renderRightPanelSurface(mode, loadingOnly)}
+        onActivate={activateRightPanelSurface}
+        onCloseSurface={closeRightPanelSurface}
+        onCloseOtherSurfaces={closeOtherSurfaces}
+        onCloseSurfacesToRight={closeSurfacesToRight}
+        onCloseAllSurfaces={closeAllSurfaces}
+        onCopyFilePath={(relativePath) => copyToClipboard(relativePath, { relativePath })}
+        onAddPreview={() => undefined}
+        onAddFiles={() => undefined}
+        onAddDiff={openDiff}
+        onAddPlan={openPlan}
+        previewAvailable={false}
+        filesAvailable={false}
+        diffAvailable={routeThreadExists}
+        planAvailable={routeThreadExists}
+      />
+    ),
+    [
+      closeAllSurfaces,
+      closeOtherSurfaces,
+      closeRightPanelSurface,
+      closeSurfacesToRight,
+      copyToClipboard,
+      activateRightPanelSurface,
+      openDiff,
+      openPlan,
+      renderRightPanelSurface,
+      rightPanelState,
+      routeThreadExists,
+    ],
+  );
 
   if (!startupReady) {
     return <StartupThreadRouteSkeleton />;
@@ -311,26 +689,14 @@ function ChatThreadRouteView() {
         retrying={threadDetailQuery.isFetching}
       />
     );
-    const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
-    if (shouldUseDiffSheet) {
+    if (shouldUseRightPanelSheet) {
       return (
         <>
           <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
             {detailView}
           </SidebarInset>
-          <RightPanelSheet open={panelOpen} onClose={closeActivePanel}>
-            <div
-              className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
-              style={{ display: fileViewOpen ? "none" : "flex" }}
-            >
-              {shouldRenderDiffContent ? <DiffLoadingFallback mode="sheet" /> : null}
-            </div>
-            <div
-              className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
-              style={{ display: fileViewOpen ? "flex" : "none" }}
-            >
-              {hasOpenedFileView ? <DiffLoadingFallback mode="sheet" /> : null}
-            </div>
+          <RightPanelSheet open={rightPanelState.isOpen} onClose={closeRightPanelSheet}>
+            {renderRightPanelHost("sheet", true)}
           </RightPanelSheet>
         </>
       );
@@ -340,33 +706,30 @@ function ChatThreadRouteView() {
         <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
           {detailView}
         </SidebarInset>
-        <DiffPanelInlineSidebar
-          open={panelOpen}
+        <RightPanelInlineSidebar
+          open={rightPanelState.isOpen}
           onClose={closeActivePanel}
-          onOpenDiff={openDiff}
-          renderDiffContent={shouldRenderDiffContent}
-          fileViewOpen={fileViewOpen}
-          hasOpenedFileView={hasOpenedFileView}
-        />
+          onOpenDefaultSurface={openDiff}
+        >
+          {renderRightPanelHost("sidebar", true)}
+        </RightPanelInlineSidebar>
       </>
     );
   }
-  const shouldRenderDiffContent = diffOpen || hasOpenedDiff;
 
-  if (!shouldUseDiffSheet) {
+  if (!shouldUseRightPanelSheet) {
     return (
       <>
-        <SidebarInset className="h-dvh  min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
+        <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
           <ChatView key={threadId} threadId={threadId} />
         </SidebarInset>
-        <DiffPanelInlineSidebar
-          open={panelOpen}
+        <RightPanelInlineSidebar
+          open={rightPanelState.isOpen}
           onClose={closeActivePanel}
-          onOpenDiff={openDiff}
-          renderDiffContent={shouldRenderDiffContent}
-          fileViewOpen={fileViewOpen}
-          hasOpenedFileView={hasOpenedFileView}
-        />
+          onOpenDefaultSurface={openDiff}
+        >
+          {renderRightPanelHost("sidebar")}
+        </RightPanelInlineSidebar>
       </>
     );
   }
@@ -376,19 +739,8 @@ function ChatThreadRouteView() {
       <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
         <ChatView key={threadId} threadId={threadId} />
       </SidebarInset>
-      <RightPanelSheet open={panelOpen} onClose={closeActivePanel}>
-        <div
-          className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
-          style={{ display: fileViewOpen ? "none" : "flex" }}
-        >
-          {shouldRenderDiffContent ? <LazyDiffPanel mode="sheet" /> : null}
-        </div>
-        <div
-          className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden"
-          style={{ display: fileViewOpen ? "flex" : "none" }}
-        >
-          {hasOpenedFileView ? <LazyFileViewPanel mode="sheet" /> : null}
-        </div>
+      <RightPanelSheet open={rightPanelState.isOpen} onClose={closeRightPanelSheet}>
+        {renderRightPanelHost("sheet")}
       </RightPanelSheet>
     </>
   );
@@ -400,6 +752,9 @@ export const Route = createFileRoute("/_chat/$threadId")({
     middlewares: [
       retainSearchParams<DiffRouteSearch>([
         "diff",
+        "diffTurnId",
+        "diffFileChangeId",
+        "diffFilePath",
         "fileViewPath",
         "fileLine",
         "fileEndLine",

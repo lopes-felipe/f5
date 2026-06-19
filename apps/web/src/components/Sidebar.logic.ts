@@ -15,6 +15,23 @@ export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null
   return !target.closest(THREAD_SELECTION_SAFE_SELECTOR);
 }
 
+export function isTrailingDoubleClick(detail: number): boolean {
+  return detail > 1;
+}
+
+export function shouldStartThreadRowRenameOnDoubleClick(input: {
+  isDraft: boolean;
+  isRenaming: boolean;
+  hasModifierKey: boolean;
+  target: HTMLElement | null;
+}): boolean {
+  if (input.isDraft || input.isRenaming || input.hasModifierKey) {
+    return false;
+  }
+
+  return !input.target?.closest("button, a, input, textarea, select");
+}
+
 export function resolveSidebarNewThreadEnvMode(input: {
   requestedEnvMode?: SidebarNewThreadEnvMode;
   defaultEnvMode: SidebarNewThreadEnvMode;

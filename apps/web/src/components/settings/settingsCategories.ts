@@ -5,6 +5,7 @@ export const SETTINGS_CATEGORIES = [
   "providers",
   "integrations",
   "projects",
+  "archive",
   "storage",
   "about",
 ] as const;
@@ -18,6 +19,7 @@ export const SETTINGS_CATEGORY_LABELS = {
   providers: "Providers & Models",
   integrations: "Integrations",
   projects: "Projects",
+  archive: "Archive",
   storage: "Storage",
   about: "About",
 } as const satisfies Record<SettingsCategory, string>;

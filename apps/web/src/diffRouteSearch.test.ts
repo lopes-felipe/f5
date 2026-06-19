@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   clearDiffSearchParams,
   clearFileViewSearchParams,
+  clearTurnDiffSearchParams,
   parseDiffRouteSearch,
 } from "./diffRouteSearch";
 
@@ -183,6 +184,30 @@ describe("parseDiffRouteSearch", () => {
       fileLine: undefined,
       fileEndLine: undefined,
       fileColumn: undefined,
+      preserveMe: "ok",
+    });
+  });
+
+  it("clears only diff search params while preserving file-view selection", () => {
+    expect(
+      clearTurnDiffSearchParams({
+        diff: "1",
+        diffTurnId: "turn-1",
+        diffFilePath: "src/diff.ts",
+        fileViewPath: "src/app.ts",
+        fileLine: 42,
+        fileEndLine: 48,
+        fileColumn: 7,
+        preserveMe: "ok",
+      }),
+    ).toEqual({
+      diff: undefined,
+      diffTurnId: undefined,
+      diffFilePath: undefined,
+      fileViewPath: "src/app.ts",
+      fileLine: 42,
+      fileEndLine: 48,
+      fileColumn: 7,
       preserveMe: "ok",
     });
   });

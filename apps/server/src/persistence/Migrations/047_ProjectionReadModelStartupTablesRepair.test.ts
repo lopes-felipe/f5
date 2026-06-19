@@ -458,8 +458,8 @@ layer("047_ProjectionReadModelStartupTablesRepair", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 48,
-          name: "ProjectionCoreSchemaRepair",
+          migrationId: 50,
+          name: "CopyDebugWorkflowsToInvestigationWorkflows",
         },
       ]);
     }),

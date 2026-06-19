@@ -4,11 +4,13 @@ import { describe, expect, it } from "vitest";
 import {
   buildRenderedProjectThreadIds,
   getVisibleSidebarThreadIds,
+  isTrailingDoubleClick,
   reconcileFrozenOrder,
   resolveSidebarNewThreadEnvMode,
   resolveThreadRowClassName,
   resolveWorkflowThreadListExpanded,
   resolveThreadStatusPill,
+  shouldStartThreadRowRenameOnDoubleClick,
   shouldClearThreadSelectionOnMouseDown,
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
@@ -54,6 +56,83 @@ describe("shouldClearThreadSelectionOnMouseDown", () => {
     } as unknown as HTMLElement;
 
     expect(shouldClearThreadSelectionOnMouseDown(unrelated)).toBe(true);
+  });
+});
+
+describe("isTrailingDoubleClick", () => {
+  it("treats a single click as a normal activation", () => {
+    expect(isTrailingDoubleClick(1)).toBe(false);
+  });
+
+  it("treats synthetic or keyboard activation as normal activation", () => {
+    expect(isTrailingDoubleClick(0)).toBe(false);
+  });
+
+  it("suppresses the trailing click dispatched by double-click", () => {
+    expect(isTrailingDoubleClick(2)).toBe(true);
+  });
+});
+
+describe("shouldStartThreadRowRenameOnDoubleClick", () => {
+  it("allows plain row-body double-clicks", () => {
+    const target = {
+      closest: () => null,
+    } as unknown as HTMLElement;
+
+    expect(
+      shouldStartThreadRowRenameOnDoubleClick({
+        isDraft: false,
+        isRenaming: false,
+        hasModifierKey: false,
+        target,
+      }),
+    ).toBe(true);
+  });
+
+  it("suppresses draft, existing rename, and modifier double-clicks", () => {
+    const target = {
+      closest: () => null,
+    } as unknown as HTMLElement;
+
+    expect(
+      shouldStartThreadRowRenameOnDoubleClick({
+        isDraft: true,
+        isRenaming: false,
+        hasModifierKey: false,
+        target,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStartThreadRowRenameOnDoubleClick({
+        isDraft: false,
+        isRenaming: true,
+        hasModifierKey: false,
+        target,
+      }),
+    ).toBe(false);
+    expect(
+      shouldStartThreadRowRenameOnDoubleClick({
+        isDraft: false,
+        isRenaming: false,
+        hasModifierKey: true,
+        target,
+      }),
+    ).toBe(false);
+  });
+
+  it("suppresses double-clicks from trailing row controls", () => {
+    const target = {
+      closest: (selector: string) => (selector.includes("button") ? ({} as Element) : null),
+    } as unknown as HTMLElement;
+
+    expect(
+      shouldStartThreadRowRenameOnDoubleClick({
+        isDraft: false,
+        isRenaming: false,
+        hasModifierKey: false,
+        target,
+      }),
+    ).toBe(false);
   });
 });
 

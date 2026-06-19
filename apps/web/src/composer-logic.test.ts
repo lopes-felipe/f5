@@ -114,6 +114,36 @@ describe("detectComposerTrigger", () => {
     expect(trigger?.kind).toBe("path");
     expect(trigger?.query).toBe("");
   });
+
+  it("detects quoted @path trigger while typing a path containing spaces", () => {
+    const text = 'Please inspect @"My File';
+    const trigger = detectComposerTrigger(text, text.length);
+
+    expect(trigger).toEqual({
+      kind: "path",
+      query: "My File",
+      rangeStart: "Please inspect ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("unescapes quoted @path trigger queries", () => {
+    const text = 'Please inspect @"docs/My \\"File';
+    const trigger = detectComposerTrigger(text, text.length);
+
+    expect(trigger).toMatchObject({
+      kind: "path",
+      query: 'docs/My "File',
+      rangeStart: "Please inspect ".length,
+      rangeEnd: text.length,
+    });
+  });
+
+  it("does not keep a path trigger after a quoted mention is closed", () => {
+    const text = 'Please inspect @"My File.md"';
+
+    expect(detectComposerTrigger(text, text.length)).toBeNull();
+  });
 });
 
 describe("replaceTextRange", () => {
@@ -141,6 +171,16 @@ describe("expandCollapsedComposerCursor", () => {
     );
   });
 
+  it("maps collapsed quoted mention cursor to expanded text cursor", () => {
+    const text = 'what is in @"My File.md" please';
+    const collapsedCursorAfterMention = "what is in ".length + 2;
+    const expandedCursorAfterMention = 'what is in @"My File.md" '.length;
+
+    expect(expandCollapsedComposerCursor(text, collapsedCursorAfterMention)).toBe(
+      expandedCursorAfterMention,
+    );
+  });
+
   it("allows path trigger detection to close after selecting a mention", () => {
     const text = "what's in my @AGENTS.md ";
     const collapsedCursorAfterMention = "what's in my ".length + 2;
@@ -159,6 +199,16 @@ describe("collapseExpandedComposerCursor", () => {
     const text = "what's in my @AGENTS.md fsfdas";
     const collapsedCursorAfterMention = "what's in my ".length + 2;
     const expandedCursorAfterMention = "what's in my @AGENTS.md ".length;
+
+    expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
+      collapsedCursorAfterMention,
+    );
+  });
+
+  it("maps expanded quoted mention cursor back to collapsed cursor", () => {
+    const text = 'what is in @"My File.md" please';
+    const collapsedCursorAfterMention = "what is in ".length + 2;
+    const expandedCursorAfterMention = 'what is in @"My File.md" '.length;
 
     expect(collapseExpandedComposerCursor(text, expandedCursorAfterMention)).toBe(
       collapsedCursorAfterMention,
