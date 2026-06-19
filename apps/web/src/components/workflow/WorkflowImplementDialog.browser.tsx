@@ -153,6 +153,7 @@ describe("WorkflowImplementDialog", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threadsHydrated: true,
     });
   });
@@ -166,6 +167,7 @@ describe("WorkflowImplementDialog", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threadsHydrated: false,
     });
   });

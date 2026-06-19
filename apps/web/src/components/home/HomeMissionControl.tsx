@@ -2,6 +2,7 @@ import type { ProjectId, ThreadId } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import {
   threadIdsForCodeReviewWorkflow,
+  threadIdsForInvestigationWorkflow,
   threadIdsForPlanningWorkflow,
 } from "@t3tools/shared/workflowThreads";
 import {
@@ -44,7 +45,13 @@ import { cn, isMacPlatform } from "../../lib/utils";
 import { togglePinned, usePinnedThreadIds } from "../../pinnedThreadsStore";
 import { useStore } from "../../store";
 import { resolveThreadStatusForThread, type ThreadStatus } from "../../threadStatus";
-import type { CodeReviewWorkflow, PlanningWorkflow, Project, Thread } from "../../types";
+import type {
+  CodeReviewWorkflow,
+  InvestigationWorkflow,
+  PlanningWorkflow,
+  Project,
+  Thread,
+} from "../../types";
 import { Button } from "../ui/button";
 import { HomeThreadRow } from "./HomeThreadRow";
 
@@ -75,6 +82,7 @@ interface MissionControlBuckets {
 function collectAllWorkflowThreadIds(
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Set<ThreadId> {
   const ids = new Set<ThreadId>();
   for (const workflow of planningWorkflows) {
@@ -84,6 +92,11 @@ function collectAllWorkflowThreadIds(
   }
   for (const workflow of codeReviewWorkflows) {
     for (const id of threadIdsForCodeReviewWorkflow(workflow)) {
+      ids.add(id);
+    }
+  }
+  for (const workflow of investigationWorkflows) {
+    for (const id of threadIdsForInvestigationWorkflow(workflow)) {
       ids.add(id);
     }
   }
@@ -386,6 +399,7 @@ export function HomeMissionControl() {
   const threads = useStore((state) => state.threads);
   const planningWorkflows = useStore((state) => state.planningWorkflows);
   const codeReviewWorkflows = useStore((state) => state.codeReviewWorkflows);
+  const investigationWorkflows = useStore((state) => state.investigationWorkflows);
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
   const pinnedThreadIds = usePinnedThreadIds();
 
@@ -417,10 +431,17 @@ export function HomeMissionControl() {
     // Workflow sub-threads (Branch A/B, Review A/B, Merge, etc.) are surfaced via their
     // parent workflow elsewhere. Hide them from the home page so Mission Control isn't
     // flooded by dozens of "Plan Ready" rows that belong to a handful of workflows.
-    const workflowThreadIds = collectAllWorkflowThreadIds(planningWorkflows, codeReviewWorkflows);
-    const visible = getVisibleThreads(threads, planningWorkflows, codeReviewWorkflows).filter(
-      (thread) => !workflowThreadIds.has(thread.id),
+    const workflowThreadIds = collectAllWorkflowThreadIds(
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
     );
+    const visible = getVisibleThreads(
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    ).filter((thread) => !workflowThreadIds.has(thread.id));
     const sorted = sortThreadsByActivity(visible);
     const statusByThreadId = new Map<ThreadId, ThreadStatus>();
     for (const thread of sorted) {
@@ -476,6 +497,7 @@ export function HomeMissionControl() {
       threads,
       planningWorkflows,
       codeReviewWorkflows,
+      investigationWorkflows,
     ).slice(0, QUICK_JUMP_PROJECT_LIMIT);
 
     return {
@@ -486,6 +508,7 @@ export function HomeMissionControl() {
         threads,
         planningWorkflows,
         codeReviewWorkflows,
+        investigationWorkflows,
       ),
       mostRecentThread: sorted[0] ?? null,
       quickJumpProjects: sortedProjects,
@@ -494,7 +517,7 @@ export function HomeMissionControl() {
       allProjectsInRecent: projectsInRecent,
       attentionReasonByThreadId: reasonByThreadId,
     };
-  }, [codeReviewWorkflows, planningWorkflows, projects, threads]);
+  }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, projects, threads]);
 
   // Partition Recent into pinned + rest so users see their pinned threads
   // above the main activity grouping. Pinned items are pulled out of the main

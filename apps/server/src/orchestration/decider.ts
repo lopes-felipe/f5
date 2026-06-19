@@ -492,6 +492,115 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "project.investigation-workflow.create":
+    case "project.debug-workflow.create": {
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (
+        command.investigatorA.provider === command.investigatorB.provider &&
+        command.investigatorA.model === command.investigatorB.model
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Investigation investigator models must be different.",
+        });
+      }
+      const existing = readModel.investigationWorkflows.find(
+        (entry) => entry.id === command.workflowId && entry.deletedAt === null,
+      );
+      if (existing) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Investigation workflow '${command.workflowId}' already exists.`,
+        });
+      }
+      const duplicateSlug = readModel.investigationWorkflows.find(
+        (entry) =>
+          entry.projectId === command.projectId &&
+          entry.slug === command.slug &&
+          entry.deletedAt === null,
+      );
+      if (duplicateSlug) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Investigation workflow slug '${command.slug}' already exists in project '${command.projectId}'.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "project.investigation-workflow-created",
+        payload: {
+          projectId: command.projectId,
+          workflow: {
+            id: command.workflowId,
+            projectId: command.projectId,
+            title: command.title,
+            slug: command.slug,
+            problemPrompt: command.problemPrompt,
+            branch: command.branch,
+            selfReviewEnabled: command.selfReviewEnabled,
+            investigatorA: {
+              label: `Investigator A (${command.investigatorA.provider}:${command.investigatorA.model})`,
+              slot: command.investigatorA,
+              investigationThreadId: command.investigationThreadIdA,
+              investigationStatus: "pending",
+              investigationTurnId: null,
+              investigationMessageId: null,
+              crossReviewThreadId: null,
+              crossReviewStatus: "not_started",
+              crossReviewTurnId: null,
+              crossReviewMessageId: null,
+              selfReviewThreadId: null,
+              selfReviewStatus: "not_started",
+              selfReviewTurnId: null,
+              selfReviewMessageId: null,
+              error: null,
+              updatedAt: command.createdAt,
+            },
+            investigatorB: {
+              label: `Investigator B (${command.investigatorB.provider}:${command.investigatorB.model})`,
+              slot: command.investigatorB,
+              investigationThreadId: command.investigationThreadIdB,
+              investigationStatus: "pending",
+              investigationTurnId: null,
+              investigationMessageId: null,
+              crossReviewThreadId: null,
+              crossReviewStatus: "not_started",
+              crossReviewTurnId: null,
+              crossReviewMessageId: null,
+              selfReviewThreadId: null,
+              selfReviewStatus: "not_started",
+              selfReviewTurnId: null,
+              selfReviewMessageId: null,
+              error: null,
+              updatedAt: command.createdAt,
+            },
+            synthesis: {
+              slot: command.synthesis,
+              threadId: null,
+              status: "not_started",
+              pinnedTurnId: null,
+              pinnedAssistantMessageId: null,
+              error: null,
+              updatedAt: command.createdAt,
+            },
+            createdAt: command.createdAt,
+            updatedAt: command.createdAt,
+            archivedAt: null,
+            deletedAt: null,
+          },
+        },
+      };
+    }
+
     case "thread.create": {
       yield* requireProject({
         readModel,
@@ -1390,6 +1499,66 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           commandId: command.commandId,
         }),
         type: "project.code-review-workflow-deleted",
+        payload: {
+          projectId: command.projectId,
+          workflowId: command.workflowId,
+          deletedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "project.investigation-workflow.upsert":
+    case "project.debug-workflow.upsert": {
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      if (command.workflow.id === undefined || command.workflow.projectId !== command.projectId) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Workflow project id must match the enclosing project aggregate.",
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt: command.updatedAt,
+          commandId: command.commandId,
+        }),
+        type: "project.investigation-workflow-upserted",
+        payload: {
+          projectId: command.projectId,
+          workflow: command.workflow,
+        },
+      };
+    }
+
+    case "project.investigation-workflow.delete":
+    case "project.debug-workflow.delete": {
+      yield* requireProject({
+        readModel,
+        command,
+        projectId: command.projectId,
+      });
+      const workflow = readModel.investigationWorkflows.find(
+        (entry) => entry.id === command.workflowId && entry.projectId === command.projectId,
+      );
+      if (!workflow || workflow.deletedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Investigation workflow '${command.workflowId}' does not exist.`,
+        });
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "project",
+          aggregateId: command.projectId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "project.investigation-workflow-deleted",
         payload: {
           projectId: command.projectId,
           workflowId: command.workflowId,

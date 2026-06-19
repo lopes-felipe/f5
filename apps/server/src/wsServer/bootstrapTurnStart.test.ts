@@ -106,6 +106,7 @@ function makeReadModel(input?: {
     threads: input?.includeThread === false ? [] : [thread],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     updatedAt: "2026-01-01T00:00:00.000Z",
   };
 }

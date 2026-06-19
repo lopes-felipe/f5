@@ -89,6 +89,7 @@ describe("__root draft cleanup helpers", () => {
       ],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [{ id: "thread-1" }, { id: "thread-2" }],
       updatedAt: "2026-04-22T12:00:00.000Z",
     } as never);

@@ -1,5 +1,6 @@
 import {
   EventId,
+  InvestigationWorkflowId,
   MessageId,
   ProjectId,
   ThreadId,
@@ -61,11 +62,73 @@ function makeThread(overrides: Partial<Thread> = {}): Thread {
   };
 }
 
+function makeInvestigationWorkflow(now = "2026-04-01T09:05:00.000Z") {
+  return {
+    id: InvestigationWorkflowId.makeUnsafe("investigation-workflow-1"),
+    projectId: ProjectId.makeUnsafe("project-1"),
+    title: "Investigation workflow",
+    slug: "investigation-workflow",
+    problemPrompt: "Investigate checkout timeouts",
+    branch: null,
+    selfReviewEnabled: false,
+    investigatorA: {
+      label: "Investigator A",
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      investigationThreadId: ThreadId.makeUnsafe("investigator-a"),
+      investigationStatus: "completed",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: null,
+      crossReviewStatus: "not_started",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: null,
+      selfReviewStatus: "not_started",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    investigatorB: {
+      label: "Investigator B",
+      slot: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+      investigationThreadId: ThreadId.makeUnsafe("investigator-b"),
+      investigationStatus: "completed",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: null,
+      crossReviewStatus: "not_started",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: null,
+      selfReviewStatus: "not_started",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    synthesis: {
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      threadId: null,
+      status: "not_started",
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    deletedAt: null,
+  } satisfies AppState["investigationWorkflows"][number];
+}
+
 function makeState(overrides: Partial<AppState> = {}): AppState {
   return {
     projects: [makeProject()],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads: [makeThread()],
     threadsHydrated: true,
     lastAppliedSequence: 0,
@@ -718,6 +781,22 @@ describe("applyDomainEvent", () => {
     ]);
     expect(withWorkflow.planningWorkflows.map((entry) => entry.id)).toEqual(["workflow-1"]);
     expect(afterDelete.planningWorkflows).toEqual([]);
+  });
+
+  it("applies legacy debug workflow events to investigation workflows", () => {
+    const workflow = makeInvestigationWorkflow();
+    const next = applyDomainEvent(
+      makeState(),
+      makeEvent(
+        "project.debug-workflow-upserted" as never,
+        {
+          projectId: ProjectId.makeUnsafe("project-1"),
+          workflow,
+        } as never,
+      ),
+    );
+
+    expect(next.investigationWorkflows).toEqual([workflow]);
   });
 
   it("applies revert by pruning reverted-turn data and clearing tasks", () => {

@@ -1485,6 +1485,7 @@ describe("WebSocket Server", () => {
         threads: [readModelThread],
         planningWorkflows: [],
         codeReviewWorkflows: [],
+        investigationWorkflows: [],
         updatedAt: "2026-01-01T00:00:01.000Z",
       };
 

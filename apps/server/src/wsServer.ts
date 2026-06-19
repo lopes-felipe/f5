@@ -72,6 +72,10 @@ import {
   type CodeReviewWorkflowServiceShape,
 } from "./orchestration/Services/CodeReviewWorkflowService";
 import {
+  InvestigationWorkflowService,
+  type InvestigationWorkflowServiceShape,
+} from "./orchestration/Services/InvestigationWorkflowService";
+import {
   WorkflowService,
   type WorkflowServiceShape,
 } from "./orchestration/Services/WorkflowService";
@@ -497,6 +501,7 @@ interface OrchestrationRuntimeServices {
   readonly providerSessionDirectory: ProviderSessionDirectoryShape;
   readonly workflowService: WorkflowServiceShape;
   readonly codeReviewWorkflowService: CodeReviewWorkflowServiceShape;
+  readonly investigationWorkflowService: InvestigationWorkflowServiceShape;
   readonly projectSetupScriptRunner: ProjectSetupScriptRunnerShape;
   readonly storageMaintenance: StorageMaintenanceShape;
 }
@@ -1065,6 +1070,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         CodeReviewWorkflowService,
       );
+      const investigationWorkflowService = ServiceMap.get(
+        orchestrationRuntimeServices,
+        InvestigationWorkflowService,
+      );
       const projectSetupScriptRunner = ServiceMap.get(
         orchestrationRuntimeServices,
         ProjectSetupScriptRunner,
@@ -1092,6 +1101,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         providerSessionDirectory,
         workflowService,
         codeReviewWorkflowService,
+        investigationWorkflowService,
         projectSetupScriptRunner,
         storageMaintenance,
       }).pipe(Effect.orDie);
@@ -1490,6 +1500,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return { workflowId };
       }
 
+      case ORCHESTRATION_WS_METHODS.createInvestigationWorkflow: {
+        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        const workflowId = yield* investigationWorkflowService.createWorkflow(body).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to create investigation workflow: ${String(cause)}`,
+              }),
+          ),
+        );
+        return { workflowId };
+      }
+
       case ORCHESTRATION_WS_METHODS.archiveCodeReviewWorkflow: {
         const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
@@ -1504,6 +1528,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case ORCHESTRATION_WS_METHODS.archiveInvestigationWorkflow: {
+        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        yield* investigationWorkflowService.archiveWorkflow(body.workflowId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to archive investigation workflow: ${String(cause)}`,
+              }),
+          ),
+        );
+        return undefined;
+      }
+
       case ORCHESTRATION_WS_METHODS.unarchiveCodeReviewWorkflow: {
         const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
@@ -1512,6 +1550,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             (cause) =>
               new RouteRequestError({
                 message: `Failed to unarchive code review workflow: ${String(cause)}`,
+              }),
+          ),
+        );
+        return undefined;
+      }
+
+      case ORCHESTRATION_WS_METHODS.unarchiveInvestigationWorkflow: {
+        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        yield* investigationWorkflowService.unarchiveWorkflow(body.workflowId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to unarchive investigation workflow: ${String(cause)}`,
               }),
           ),
         );
@@ -1546,6 +1598,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow: {
+        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        yield* investigationWorkflowService.deleteWorkflow(body.workflowId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to delete investigation workflow: ${String(cause)}`,
+              }),
+          ),
+        );
+        return undefined;
+      }
+
       case ORCHESTRATION_WS_METHODS.retryWorkflow: {
         const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
@@ -1568,6 +1634,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             (cause) =>
               new RouteRequestError({
                 message: `Failed to retry code review workflow: ${String(cause)}`,
+              }),
+          ),
+        );
+        return undefined;
+      }
+
+      case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {
+        const { investigationWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body);
+        yield* investigationWorkflowService.retryWorkflow(body).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({
+                message: `Failed to retry investigation workflow: ${String(cause)}`,
               }),
           ),
         );

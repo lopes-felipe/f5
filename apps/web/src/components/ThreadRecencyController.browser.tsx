@@ -208,6 +208,7 @@ function createSnapshot(
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads,
     updatedAt: NOW_ISO,
   };
@@ -752,6 +753,7 @@ describe("ThreadRecencyController", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threadsHydrated: false,
     });
   });

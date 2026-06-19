@@ -73,6 +73,7 @@ function createMinimalSnapshot(): OrchestrationReadModel {
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads: [
       {
         id: THREAD_ID,

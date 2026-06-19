@@ -2,11 +2,14 @@ import { Schema, Struct } from "effect";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
 import {
+  OrchestrationArchiveInvestigationWorkflowInput,
   OrchestrationArchiveCodeReviewWorkflowInput,
   OrchestrationArchiveWorkflowInput,
   ClientOrchestrationCommand,
+  OrchestrationCreateInvestigationWorkflowInput,
   OrchestrationCreateWorkflowInput,
   OrchestrationCreateCodeReviewWorkflowInput,
+  OrchestrationDeleteInvestigationWorkflowInput,
   OrchestrationDeleteWorkflowInput,
   OrchestrationDeleteCodeReviewWorkflowInput,
   OrchestrationEvent,
@@ -25,8 +28,10 @@ import {
   OrchestrationGetTurnDiffInput,
   OrchestrationReplayEventsInput,
   OrchestrationRetryWorkflowInput,
+  OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryCodeReviewWorkflowInput,
   OrchestrationStartImplementationInput,
+  OrchestrationUnarchiveInvestigationWorkflowInput,
   OrchestrationUnarchiveCodeReviewWorkflowInput,
   OrchestrationUnarchiveWorkflowInput,
 } from "./orchestration";
@@ -233,22 +238,42 @@ const WebSocketRequestBody = Schema.Union([
     OrchestrationCreateCodeReviewWorkflowInput,
   ),
   tagRequestBody(
+    ORCHESTRATION_WS_METHODS.createInvestigationWorkflow,
+    OrchestrationCreateInvestigationWorkflowInput,
+  ),
+  tagRequestBody(
     ORCHESTRATION_WS_METHODS.archiveCodeReviewWorkflow,
     OrchestrationArchiveCodeReviewWorkflowInput,
   ),
   tagRequestBody(
+    ORCHESTRATION_WS_METHODS.archiveInvestigationWorkflow,
+    OrchestrationArchiveInvestigationWorkflowInput,
+  ),
+  tagRequestBody(
     ORCHESTRATION_WS_METHODS.unarchiveCodeReviewWorkflow,
     OrchestrationUnarchiveCodeReviewWorkflowInput,
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.unarchiveInvestigationWorkflow,
+    OrchestrationUnarchiveInvestigationWorkflowInput,
   ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.deleteWorkflow, OrchestrationDeleteWorkflowInput),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow,
     OrchestrationDeleteCodeReviewWorkflowInput,
   ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow,
+    OrchestrationDeleteInvestigationWorkflowInput,
+  ),
   tagRequestBody(ORCHESTRATION_WS_METHODS.retryWorkflow, OrchestrationRetryWorkflowInput),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow,
     OrchestrationRetryCodeReviewWorkflowInput,
+  ),
+  tagRequestBody(
+    ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow,
+    OrchestrationRetryInvestigationWorkflowInput,
   ),
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.startImplementation,

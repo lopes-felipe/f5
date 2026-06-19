@@ -86,6 +86,7 @@ function seedProjects() {
     threads: [],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
   });
 }
 
@@ -110,6 +111,7 @@ function createNativeApiMock() {
         projects: [],
         planningWorkflows: [],
         codeReviewWorkflows: [],
+        investigationWorkflows: [],
         threads: [],
         updatedAt: NOW_ISO,
       })),
@@ -190,6 +192,7 @@ describe("useSettingsRouteState", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
     });
   });
 

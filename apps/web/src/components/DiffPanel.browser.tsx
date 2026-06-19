@@ -164,6 +164,7 @@ function seedStore() {
     lastAppliedSequence: 1,
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     detailEventBufferByThreadId: new Map(),
     changedFilesExpandedByThreadId: {},
   });
@@ -206,6 +207,7 @@ describe("DiffPanel", () => {
       lastAppliedSequence: 0,
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       detailEventBufferByThreadId: new Map(),
       changedFilesExpandedByThreadId: {},
     });

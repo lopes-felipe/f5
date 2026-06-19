@@ -2,6 +2,7 @@ import type {
   OrchestrationCommandExecutionCursor,
   OrchestrationCommandExecutionSummary,
   CodeReviewWorkflow as ContractCodeReviewWorkflow,
+  InvestigationWorkflow as ContractInvestigationWorkflow,
   OrchestrationLatestTurn,
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
@@ -38,6 +39,7 @@ export const MAX_TERMINALS_PER_GROUP = 4;
 export type ProjectScript = ContractProjectScript;
 export type PlanningWorkflow = ContractPlanningWorkflow;
 export type CodeReviewWorkflow = ContractCodeReviewWorkflow;
+export type InvestigationWorkflow = ContractInvestigationWorkflow;
 export type TaskItem = ContractTaskItem;
 export type ProjectMemory = ContractProjectMemory;
 export type ProjectSkill = ContractProjectSkill;

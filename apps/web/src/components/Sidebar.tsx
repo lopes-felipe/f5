@@ -32,12 +32,14 @@ import { CSS } from "@dnd-kit/utilities";
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   type CodeReviewWorkflow,
+  type InvestigationWorkflow,
   type DesktopUpdateState,
   type PlanningWorkflow,
   PlanningWorkflowId,
   ProjectId,
   ThreadId,
   type CodeReviewWorkflowId,
+  type InvestigationWorkflowId,
   type GitStatusResult,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
@@ -132,6 +134,7 @@ import { ThreadStatusPillBadge } from "./thread/ThreadStatusPillBadge";
 import { StartupSidebarSkeleton } from "./StartupLoadingState";
 import { WorkflowCreateDialog } from "./workflow/WorkflowCreateDialog";
 import { threadIdsForCodeReviewWorkflow } from "./workflow/codeReviewWorkflowUtils";
+import { threadIdsForInvestigationWorkflow } from "./workflow/investigationWorkflowUtils";
 import { threadIdsForWorkflow, workflowThreadDisplayTitle } from "./workflow/workflowUtils";
 import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
 import { Kbd } from "./ui/kbd";
@@ -161,6 +164,10 @@ type SidebarWorkflowEntry =
   | {
       type: "codeReview";
       workflow: CodeReviewWorkflow;
+    }
+  | {
+      type: "investigation";
+      workflow: InvestigationWorkflow;
     };
 
 type ArchivedSidebarItem =
@@ -177,7 +184,7 @@ type ArchivedSidebarItem =
       sortAt: string;
       createdAt: string;
       type: SidebarWorkflowEntry["type"];
-      workflow: PlanningWorkflow | CodeReviewWorkflow;
+      workflow: PlanningWorkflow | CodeReviewWorkflow | InvestigationWorkflow;
     };
 
 type SidebarProjectDraftThread = DraftThreadState & {
@@ -208,13 +215,24 @@ function buildProjectSidebarLists(input: {
   threads: ReadonlyArray<Thread>;
   planningWorkflows: ReadonlyArray<PlanningWorkflow>;
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>;
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>;
   draftThread: SidebarProjectDraftThread | null;
 }): ProjectSidebarLists {
-  const { project, threads, planningWorkflows, codeReviewWorkflows, draftThread } = input;
+  const {
+    project,
+    threads,
+    planningWorkflows,
+    codeReviewWorkflows,
+    investigationWorkflows,
+    draftThread,
+  } = input;
   const allProjectPlanningWorkflows = planningWorkflows.filter(
     (workflow) => workflow.projectId === project.id,
   );
   const allProjectCodeReviewWorkflows = codeReviewWorkflows.filter(
+    (workflow) => workflow.projectId === project.id,
+  );
+  const allProjectInvestigationWorkflows = investigationWorkflows.filter(
     (workflow) => workflow.projectId === project.id,
   );
   const {
@@ -225,6 +243,10 @@ function buildProjectSidebarLists(input: {
     activeWorkflows: activeProjectCodeReviewWorkflows,
     archivedWorkflows: archivedProjectCodeReviewWorkflows,
   } = partitionWorkflowsByArchive(allProjectCodeReviewWorkflows);
+  const {
+    activeWorkflows: activeProjectInvestigationWorkflows,
+    archivedWorkflows: archivedProjectInvestigationWorkflows,
+  } = partitionWorkflowsByArchive(allProjectInvestigationWorkflows);
   const projectWorkflows = sortWorkflowEntriesByActivity([
     ...activeProjectPlanningWorkflows.map((workflow) => ({
       workflow,
@@ -233,6 +255,10 @@ function buildProjectSidebarLists(input: {
     ...activeProjectCodeReviewWorkflows.map((workflow) => ({
       workflow,
       type: "codeReview" as const,
+    })),
+    ...activeProjectInvestigationWorkflows.map((workflow) => ({
+      workflow,
+      type: "investigation" as const,
     })),
   ]);
   const archivedProjectWorkflows = sortWorkflowEntriesByActivity([
@@ -244,6 +270,10 @@ function buildProjectSidebarLists(input: {
       workflow,
       type: "codeReview" as const,
     })),
+    ...archivedProjectInvestigationWorkflows.map((workflow) => ({
+      workflow,
+      type: "investigation" as const,
+    })),
   ]);
 
   const workflowThreadIds = new Set(
@@ -251,6 +281,11 @@ function buildProjectSidebarLists(input: {
   );
   for (const workflow of allProjectCodeReviewWorkflows) {
     for (const threadId of threadIdsForCodeReviewWorkflow(workflow)) {
+      workflowThreadIds.add(threadId);
+    }
+  }
+  for (const workflow of allProjectInvestigationWorkflows) {
+    for (const threadId of threadIdsForInvestigationWorkflow(workflow)) {
       workflowThreadIds.add(threadId);
     }
   }
@@ -263,9 +298,13 @@ function buildProjectSidebarLists(input: {
           if (thread.projectId !== project.id) {
             return false;
           }
-          return entry.type === "planning"
-            ? threadIdsForWorkflow(entry.workflow).includes(thread.id)
-            : threadIdsForCodeReviewWorkflow(entry.workflow).includes(thread.id);
+          if (entry.type === "planning") {
+            return threadIdsForWorkflow(entry.workflow).includes(thread.id);
+          }
+          if (entry.type === "codeReview") {
+            return threadIdsForCodeReviewWorkflow(entry.workflow).includes(thread.id);
+          }
+          return threadIdsForInvestigationWorkflow(entry.workflow).includes(thread.id);
         }),
       ),
     ]),
@@ -342,12 +381,42 @@ function sortArchivedSidebarItems(
 
 function isWorkflowRouteActive(
   pathname: string,
-  workflowId: PlanningWorkflowId | CodeReviewWorkflowId,
+  workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
   type: SidebarWorkflowEntry["type"],
 ): boolean {
-  return type === "planning"
-    ? pathname === `/workflow/${workflowId}` || pathname === `/_chat/workflow/${workflowId}`
-    : pathname === `/code-review/${workflowId}` || pathname === `/_chat/code-review/${workflowId}`;
+  if (type === "planning") {
+    return pathname === `/workflow/${workflowId}` || pathname === `/_chat/workflow/${workflowId}`;
+  }
+  if (type === "codeReview") {
+    return (
+      pathname === `/code-review/${workflowId}` || pathname === `/_chat/code-review/${workflowId}`
+    );
+  }
+  return (
+    pathname === `/investigation/${workflowId}` || pathname === `/_chat/investigation/${workflowId}`
+  );
+}
+
+function workflowRouteForType(type: SidebarWorkflowEntry["type"]) {
+  switch (type) {
+    case "planning":
+      return "/workflow/$workflowId" as const;
+    case "codeReview":
+      return "/code-review/$workflowId" as const;
+    case "investigation":
+      return "/investigation/$workflowId" as const;
+  }
+}
+
+function workflowTypeLabel(type: SidebarWorkflowEntry["type"]): string {
+  switch (type) {
+    case "planning":
+      return "Feature";
+    case "codeReview":
+      return "Review";
+    case "investigation":
+      return "Investigation";
+  }
 }
 
 function terminalStatusFromRunningIds(
@@ -673,6 +742,7 @@ export default function Sidebar() {
   const threads = useStore((store) => store.threads);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
+  const investigationWorkflows = useStore((store) => store.investigationWorkflows);
   const threadsHydrated = useStore((store) => store.threadsHydrated);
   const startupReady = useStartupReady();
   const markThreadUnread = useStore((store) => store.markThreadUnread);
@@ -755,8 +825,14 @@ export default function Sidebar() {
   const firstProjectId = projects[0]?.id ?? null;
   const mostRecentProjectId = useMemo(
     () =>
-      getMostRecentProject(projects, threads, planningWorkflows, codeReviewWorkflows)?.id ?? null,
-    [codeReviewWorkflows, planningWorkflows, projects, threads],
+      getMostRecentProject(
+        projects,
+        threads,
+        planningWorkflows,
+        codeReviewWorkflows,
+        investigationWorkflows,
+      )?.id ?? null,
+    [codeReviewWorkflows, investigationWorkflows, planningWorkflows, projects, threads],
   );
   const shouldBrowseForProjectImmediately = isElectron;
   const shouldShowProjectPathEntry = addingProject && !shouldBrowseForProjectImmediately;
@@ -841,6 +917,7 @@ export default function Sidebar() {
         threads,
         planningWorkflows,
         codeReviewWorkflows,
+        investigationWorkflows,
         draftThread: getDraftThreadByProjectId(project.id),
       });
 
@@ -859,7 +936,14 @@ export default function Sidebar() {
       activeThreadIdsByProjectId,
       archivedItemKeysByProjectId,
     };
-  }, [codeReviewWorkflows, getDraftThreadByProjectId, planningWorkflows, projects, threads]);
+  }, [
+    codeReviewWorkflows,
+    investigationWorkflows,
+    getDraftThreadByProjectId,
+    planningWorkflows,
+    projects,
+    threads,
+  ]);
 
   const openPrLink = useCallback((event: React.MouseEvent<HTMLElement>, prUrl: string) => {
     event.preventDefault();
@@ -904,6 +988,7 @@ export default function Sidebar() {
         threads,
         planningWorkflows,
         codeReviewWorkflows,
+        investigationWorkflows,
       );
       if (!latestThread) return;
 
@@ -912,7 +997,7 @@ export default function Sidebar() {
         params: { threadId: latestThread.id },
       });
     },
-    [codeReviewWorkflows, navigate, planningWorkflows, threads],
+    [codeReviewWorkflows, investigationWorkflows, navigate, planningWorkflows, threads],
   );
   const toggleWorkflowCollapsed = useCallback((workflowId: string, fallbackExpanded: boolean) => {
     setWorkflowExpandedById((current) =>
@@ -936,7 +1021,7 @@ export default function Sidebar() {
   }, []);
   const archiveWorkflow = useCallback(
     async (
-      workflowId: PlanningWorkflowId | CodeReviewWorkflowId,
+      workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
       workflowTitle: string,
       workflowType: SidebarWorkflowEntry["type"],
     ) => {
@@ -957,9 +1042,13 @@ export default function Sidebar() {
           await api.orchestration.archiveWorkflow({
             workflowId: workflowId as PlanningWorkflowId,
           });
-        } else {
+        } else if (workflowType === "codeReview") {
           await api.orchestration.archiveCodeReviewWorkflow({
             workflowId: workflowId as CodeReviewWorkflowId,
+          });
+        } else {
+          await api.orchestration.archiveInvestigationWorkflow({
+            workflowId: workflowId as InvestigationWorkflowId,
           });
         }
       } catch (error) {
@@ -975,7 +1064,7 @@ export default function Sidebar() {
 
   const unarchiveWorkflow = useCallback(
     async (
-      workflowId: PlanningWorkflowId | CodeReviewWorkflowId,
+      workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
       workflowType: SidebarWorkflowEntry["type"],
     ) => {
       const api = readNativeApi();
@@ -988,9 +1077,13 @@ export default function Sidebar() {
           await api.orchestration.unarchiveWorkflow({
             workflowId: workflowId as PlanningWorkflowId,
           });
-        } else {
+        } else if (workflowType === "codeReview") {
           await api.orchestration.unarchiveCodeReviewWorkflow({
             workflowId: workflowId as CodeReviewWorkflowId,
+          });
+        } else {
+          await api.orchestration.unarchiveInvestigationWorkflow({
+            workflowId: workflowId as InvestigationWorkflowId,
           });
         }
       } catch (error) {
@@ -2072,9 +2165,12 @@ export default function Sidebar() {
         ...codeReviewWorkflows
           .filter((workflow) => isArchivedWorkflow(workflow))
           .map((workflow) => workflow.projectId),
+        ...investigationWorkflows
+          .filter((workflow) => isArchivedWorkflow(workflow))
+          .map((workflow) => workflow.projectId),
       ]),
     );
-  }, [codeReviewWorkflows, planningWorkflows, threads, threadsHydrated]);
+  }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, threads, threadsHydrated]);
 
   const wordmark = (
     <div className="flex items-center gap-2">
@@ -2297,6 +2393,7 @@ export default function Sidebar() {
                     threads,
                     planningWorkflows,
                     codeReviewWorkflows,
+                    investigationWorkflows,
                     draftThread: persistedDraftThread,
                   });
                   const projectWorkflows = reconcileFrozenOrder({
@@ -2475,12 +2572,14 @@ export default function Sidebar() {
                           <CollapsibleContent keepMounted>
                             <SidebarMenuSub className="mx-1 my-0 w-full translate-x-0 gap-0.5 px-1.5 py-0">
                               {projectWorkflows.map(({ workflow, type }) => {
-                                const isWorkflowActive =
-                                  type === "planning"
-                                    ? pathname === `/workflow/${workflow.id}` ||
-                                      pathname === `/_chat/workflow/${workflow.id}`
-                                    : pathname === `/code-review/${workflow.id}` ||
-                                      pathname === `/_chat/code-review/${workflow.id}`;
+                                const workflowRoute = workflowRouteForType(type);
+                                const WorkflowIcon =
+                                  type === "investigation" ? SearchIcon : RocketIcon;
+                                const isWorkflowActive = isWorkflowRouteActive(
+                                  pathname,
+                                  workflow.id,
+                                  type,
+                                );
                                 const workflowThreads =
                                   workflowThreadsByWorkflowId.get(workflow.id) ?? [];
                                 const orderedWorkflowThreadIds = workflowThreads.map(
@@ -2510,10 +2609,7 @@ export default function Sidebar() {
                                       className="gap-2"
                                       onClick={() => {
                                         void navigate({
-                                          to:
-                                            type === "planning"
-                                              ? "/workflow/$workflowId"
-                                              : "/code-review/$workflowId",
+                                          to: workflowRoute,
                                           params: { workflowId: workflow.id },
                                         });
                                       }}
@@ -2541,9 +2637,9 @@ export default function Sidebar() {
                                           }`}
                                         />
                                       </button>
-                                      <RocketIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                                      <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground" />
                                       <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                                        {type === "planning" ? "Feature" : "Review"}
+                                        {workflowTypeLabel(type)}
                                       </span>
                                       <span className="truncate text-xs font-medium">
                                         {workflow.title}
@@ -2912,6 +3008,9 @@ export default function Sidebar() {
                               {!archivedSectionCollapsed &&
                                 visibleArchivedItems.map((item) => {
                                   if (item.kind === "workflow") {
+                                    const workflowRoute = workflowRouteForType(item.type);
+                                    const WorkflowIcon =
+                                      item.type === "investigation" ? SearchIcon : RocketIcon;
                                     const isActive = isWorkflowRouteActive(
                                       pathname,
                                       item.workflow.id,
@@ -2934,10 +3033,7 @@ export default function Sidebar() {
                                           }`}
                                           onClick={() => {
                                             void navigate({
-                                              to:
-                                                item.type === "planning"
-                                                  ? "/workflow/$workflowId"
-                                                  : "/code-review/$workflowId",
+                                              to: workflowRoute,
                                               params: { workflowId: item.workflow.id },
                                             });
                                           }}
@@ -2947,18 +3043,15 @@ export default function Sidebar() {
                                             }
                                             event.preventDefault();
                                             void navigate({
-                                              to:
-                                                item.type === "planning"
-                                                  ? "/workflow/$workflowId"
-                                                  : "/code-review/$workflowId",
+                                              to: workflowRoute,
                                               params: { workflowId: item.workflow.id },
                                             });
                                           }}
                                         >
                                           <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
-                                            <RocketIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                                            <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground" />
                                             <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
-                                              {item.type === "planning" ? "Feature" : "Review"}
+                                              {workflowTypeLabel(item.type)}
                                             </span>
                                             <span className="min-w-0 flex-1 truncate text-xs">
                                               {item.workflow.title}

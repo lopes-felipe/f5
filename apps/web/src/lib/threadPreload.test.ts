@@ -109,6 +109,7 @@ function seedStore(partial: Partial<AppState>): void {
     threads: [],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threadsHydrated: true,
     lastAppliedSequence: 0,
     detailEventBufferByThreadId: new Map(),
@@ -837,6 +838,7 @@ describe("preloadRecentThreadDetails", () => {
       threads,
       planningWorkflows: [planningWorkflow],
       codeReviewWorkflows: [] as CodeReviewWorkflow[],
+      investigationWorkflows: [],
     });
     const getThreadDetails = mockGetThreadDetails(async ({ threadId }) => makeDetails(threadId));
 
@@ -918,6 +920,7 @@ describe("preloadRecentThreadDetails", () => {
       threads,
       planningWorkflows: [planningWorkflow],
       codeReviewWorkflows: [] as CodeReviewWorkflow[],
+      investigationWorkflows: [],
     });
     const getThreadDetails = mockGetThreadDetails(async ({ threadId }) => makeDetails(threadId));
 

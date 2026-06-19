@@ -98,7 +98,7 @@ This runs the bundled WebSocket server and opens the web UI in your browser. The
 
 ### Download
 
-Work in-progress
+Work in progress
 
 ## Prerequisites
 

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { CodeReviewWorkflowService } from "../Services/CodeReviewWorkflowService.ts";
 import { CompactionService } from "../Services/CompactionService.ts";
+import { InvestigationWorkflowService } from "../Services/InvestigationWorkflowService.ts";
 import { ProjectSkillSyncService } from "../Services/ProjectSkillSyncService.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -106,6 +107,20 @@ describe("OrchestrationReactor", () => {
             workflowForThread: () => Effect.succeed(null),
           }),
         ),
+        Layer.provideMerge(
+          Layer.succeed(InvestigationWorkflowService, {
+            start: Effect.sync(() => {
+              started.push("investigation-workflow-service");
+            }),
+            drain: Effect.void,
+            createWorkflow: () => Effect.die("unsupported"),
+            archiveWorkflow: () => Effect.die("unsupported"),
+            unarchiveWorkflow: () => Effect.die("unsupported"),
+            deleteWorkflow: () => Effect.die("unsupported"),
+            retryWorkflow: () => Effect.die("unsupported"),
+            workflowForThread: () => Effect.succeed(null),
+          }),
+        ),
       ),
     );
 
@@ -122,6 +137,7 @@ describe("OrchestrationReactor", () => {
       "session-notes-service",
       "workflow-service",
       "code-review-workflow-service",
+      "investigation-workflow-service",
     ]);
 
     await Effect.runPromise(Scope.close(scope, Exit.void));

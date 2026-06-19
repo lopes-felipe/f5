@@ -106,6 +106,7 @@ function seedStores(input?: {
     threads: [...(input?.threads ?? [])],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threadsHydrated: input?.threadsHydrated ?? true,
   });
   useComposerDraftStore.setState({

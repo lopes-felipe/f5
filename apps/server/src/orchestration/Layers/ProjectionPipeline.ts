@@ -17,6 +17,7 @@ import { toPersistenceSqlError, type ProjectionRepositoryError } from "../../per
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { ProjectionPendingApprovalRepository } from "../../persistence/Services/ProjectionPendingApprovals.ts";
 import { ProjectionCodeReviewWorkflowRepository } from "../../persistence/Services/ProjectionCodeReviewWorkflows.ts";
+import { ProjectionInvestigationWorkflowRepository } from "../../persistence/Services/ProjectionInvestigationWorkflows.ts";
 import { ProjectionPlanningWorkflowRepository } from "../../persistence/Services/ProjectionPlanningWorkflows.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ProjectionProjectMemoryRepository } from "../../persistence/Services/ProjectionProjectMemories.ts";
@@ -42,6 +43,7 @@ import {
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../../persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProjectionCodeReviewWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionCodeReviewWorkflows.ts";
+import { ProjectionInvestigationWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionInvestigationWorkflows.ts";
 import { ProjectionPlanningWorkflowRepositoryLive } from "../../persistence/Layers/ProjectionPlanningWorkflows.ts";
 import { ProjectionProjectRepositoryLive } from "../../persistence/Layers/ProjectionProjects.ts";
 import { ProjectionProjectMemoryRepositoryLive } from "../../persistence/Layers/ProjectionProjectMemories.ts";
@@ -84,6 +86,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   pendingApprovals: "projection.pending-approvals",
   planningWorkflows: "projection.planning-workflows",
   codeReviewWorkflows: "projection.code-review-workflows",
+  investigationWorkflows: "projection.investigation-workflows",
 } as const;
 
 type ProjectorName =
@@ -506,6 +509,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   const projectionPendingApprovalRepository = yield* ProjectionPendingApprovalRepository;
   const projectionPlanningWorkflowRepository = yield* ProjectionPlanningWorkflowRepository;
   const projectionCodeReviewWorkflowRepository = yield* ProjectionCodeReviewWorkflowRepository;
+  const projectionInvestigationWorkflowRepository =
+    yield* ProjectionInvestigationWorkflowRepository;
 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -675,6 +680,32 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
 
         case "project.code-review-workflow-deleted":
           yield* projectionCodeReviewWorkflowRepository.deleteById({
+            workflowId: event.payload.workflowId,
+            deletedAt: event.payload.deletedAt,
+          });
+          return;
+
+        default:
+          return;
+      }
+    });
+
+  const applyInvestigationWorkflowsProjection: ProjectorDefinition["apply"] = (
+    event,
+    _attachmentSideEffects,
+  ) =>
+    Effect.gen(function* () {
+      switch (event.type) {
+        case "project.investigation-workflow-created":
+        case "project.investigation-workflow-upserted":
+        case "project.debug-workflow-created":
+        case "project.debug-workflow-upserted":
+          yield* projectionInvestigationWorkflowRepository.upsert(event.payload.workflow);
+          return;
+
+        case "project.investigation-workflow-deleted":
+        case "project.debug-workflow-deleted":
+          yield* projectionInvestigationWorkflowRepository.deleteById({
             workflowId: event.payload.workflowId,
             deletedAt: event.payload.deletedAt,
           });
@@ -1848,6 +1879,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       apply: applyCodeReviewWorkflowsProjection,
     },
     {
+      name: ORCHESTRATION_PROJECTOR_NAMES.investigationWorkflows,
+      apply: applyInvestigationWorkflowsProjection,
+    },
+    {
       name: ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
       apply: applyThreadMessagesProjection,
     },
@@ -1980,6 +2015,7 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
 ).pipe(
   Layer.provideMerge(NodeServices.layer),
   Layer.provideMerge(ProjectionCodeReviewWorkflowRepositoryLive),
+  Layer.provideMerge(ProjectionInvestigationWorkflowRepositoryLive),
   Layer.provideMerge(ProjectionPlanningWorkflowRepositoryLive),
   Layer.provideMerge(ProjectionProjectRepositoryLive),
   Layer.provideMerge(ProjectionProjectMemoryRepositoryLive),

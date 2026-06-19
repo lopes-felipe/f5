@@ -1,6 +1,7 @@
 import {
   ChatAttachment,
   CodeReviewWorkflow,
+  InvestigationWorkflow,
   IsoDateTime,
   MessageId,
   NonNegativeInt,
@@ -181,6 +182,11 @@ const ProjectionCodeReviewWorkflowDbRowSchema = Schema.Struct({
   projectId: CodeReviewWorkflow.fields.projectId,
   workflow: Schema.fromJsonString(CodeReviewWorkflow),
 });
+const ProjectionInvestigationWorkflowDbRowSchema = Schema.Struct({
+  workflowId: InvestigationWorkflow.fields.id,
+  projectId: InvestigationWorkflow.fields.projectId,
+  workflow: Schema.fromJsonString(InvestigationWorkflow),
+});
 
 const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.projects,
@@ -188,6 +194,7 @@ const REQUIRED_SNAPSHOT_PROJECTORS = [
   ORCHESTRATION_PROJECTOR_NAMES.projectSkills,
   ORCHESTRATION_PROJECTOR_NAMES.planningWorkflows,
   ORCHESTRATION_PROJECTOR_NAMES.codeReviewWorkflows,
+  ORCHESTRATION_PROJECTOR_NAMES.investigationWorkflows,
   ORCHESTRATION_PROJECTOR_NAMES.threads,
   ORCHESTRATION_PROJECTOR_NAMES.threadMessages,
   ORCHESTRATION_PROJECTOR_NAMES.threadProposedPlans,
@@ -224,8 +231,13 @@ function sortProjectsByVisibleThreadActivity(
   threads: ReadonlyArray<OrchestrationThread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): OrchestrationProject[] {
-  const hiddenWorkflowThreadIds = archivedWorkflowThreadIds(planningWorkflows, codeReviewWorkflows);
+  const hiddenWorkflowThreadIds = archivedWorkflowThreadIds(
+    planningWorkflows,
+    codeReviewWorkflows,
+    investigationWorkflows,
+  );
   const mostRecentThreadByProjectId = new Map<OrchestrationProject["id"], OrchestrationThread>();
 
   for (const thread of threads) {
@@ -1437,6 +1449,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       `,
   });
 
+  const listInvestigationWorkflowRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionInvestigationWorkflowDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          workflow_id AS "workflowId",
+          project_id AS "projectId",
+          workflow_json AS "workflow"
+        FROM projection_investigation_workflows
+        ORDER BY updated_at DESC, workflow_id DESC
+      `,
+  });
+
   // Read-model queries intentionally avoid long-lived SQL transactions and
   // eager fan-out because the desktop sqlite client serves requests through a
   // single-permit semaphore. Holding that permit for an entire snapshot, or
@@ -1525,6 +1551,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             toPersistenceSqlOrDecodeError(
               `ProjectionSnapshotQuery.${params.scope}:listCodeReviewWorkflows:query`,
               `ProjectionSnapshotQuery.${params.scope}:listCodeReviewWorkflows:decodeRows`,
+            ),
+          ),
+        ),
+      });
+      const investigationWorkflowRows = yield* withTimedLog({
+        kind: "query",
+        scope: params.scope,
+        name: "listInvestigationWorkflows",
+        effect: listInvestigationWorkflowRows(undefined).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              `ProjectionSnapshotQuery.${params.scope}:listInvestigationWorkflows:query`,
+              `ProjectionSnapshotQuery.${params.scope}:listInvestigationWorkflows:decodeRows`,
             ),
           ),
         ),
@@ -1780,6 +1819,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
       const planningWorkflows = planningWorkflowRows.map((row) => row.workflow);
       const codeReviewWorkflows = codeReviewWorkflowRows.map((row) => row.workflow);
+      const investigationWorkflows = investigationWorkflowRows.map((row) => row.workflow);
       const threads = threadRows.map((row) =>
         buildThreadSnapshot({
           row,
@@ -1812,6 +1852,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         threads,
         planningWorkflows,
         codeReviewWorkflows,
+        investigationWorkflows,
       );
 
       return yield* decodeReadModel({
@@ -1819,6 +1860,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         projects,
         planningWorkflows,
         codeReviewWorkflows,
+        investigationWorkflows,
         threads,
         updatedAt: updatedAt ?? new Date(0).toISOString(),
       }).pipe(

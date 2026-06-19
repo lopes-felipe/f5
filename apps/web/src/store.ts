@@ -15,6 +15,7 @@ import { create } from "zustand";
 import {
   type ChatMessage,
   type CodeReviewWorkflow,
+  type InvestigationWorkflow,
   type PlanningWorkflow,
   type Project,
   type Thread,
@@ -40,6 +41,7 @@ export interface AppState {
   threads: Thread[];
   planningWorkflows: PlanningWorkflow[];
   codeReviewWorkflows: CodeReviewWorkflow[];
+  investigationWorkflows: InvestigationWorkflow[];
   threadsHydrated: boolean;
   lastAppliedSequence: number;
   detailEventBufferByThreadId: Map<ThreadId, ThreadDetailEventBuffer>;
@@ -71,6 +73,7 @@ function createInitialState(): AppState {
     threads: [],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threadsHydrated: false,
     lastAppliedSequence: 0,
     detailEventBufferByThreadId: new Map(),
@@ -1129,6 +1132,9 @@ export function syncStartupSnapshot(state: AppState, readModel: OrchestrationRea
     codeReviewWorkflows: readModel.codeReviewWorkflows.filter(
       (workflow) => workflow.deletedAt === null,
     ),
+    investigationWorkflows: readModel.investigationWorkflows.filter(
+      (workflow) => workflow.deletedAt === null,
+    ),
     threads,
     threadsHydrated: true,
     lastAppliedSequence: Math.max(state.lastAppliedSequence, readModel.snapshotSequence),
@@ -1503,6 +1509,9 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
       (workflow) => workflow.deletedAt === null,
     ),
     codeReviewWorkflows: readModel.codeReviewWorkflows.filter(
+      (workflow) => workflow.deletedAt === null,
+    ),
+    investigationWorkflows: readModel.investigationWorkflows.filter(
       (workflow) => workflow.deletedAt === null,
     ),
     threads,

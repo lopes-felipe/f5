@@ -56,6 +56,7 @@ import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/Provid
 import { ProjectSkillSyncServiceLive } from "../src/orchestration/Layers/ProjectSkillSyncService.ts";
 import { SessionNotesServiceLive } from "../src/orchestration/Layers/SessionNotesService.ts";
 import { CodeReviewWorkflowServiceLive } from "../src/orchestration/Layers/CodeReviewWorkflowService.ts";
+import { InvestigationWorkflowServiceLive } from "../src/orchestration/Layers/InvestigationWorkflowService.ts";
 import { WorkflowServiceLive } from "../src/orchestration/Layers/WorkflowService.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
 import {
@@ -392,6 +393,11 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(textGenerationLayer),
     );
+    const investigationWorkflowServiceLayer = InvestigationWorkflowServiceLive.pipe(
+      Layer.provideMerge(runtimeServicesLayer),
+      Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
+      Layer.provideMerge(textGenerationLayer),
+    );
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
       Layer.provideMerge(runtimeIngestionLayer),
       Layer.provideMerge(providerCommandReactorLayer),
@@ -401,6 +407,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(sessionNotesServiceLayer),
       Layer.provideMerge(workflowServiceLayer),
       Layer.provideMerge(codeReviewWorkflowServiceLayer),
+      Layer.provideMerge(investigationWorkflowServiceLayer),
     );
     const layer = orchestrationReactorLayer.pipe(
       Layer.provide(persistenceLayer),

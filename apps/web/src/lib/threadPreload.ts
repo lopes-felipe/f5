@@ -347,9 +347,10 @@ export async function preloadRecentThreadDetails(
   const warmProfile = options?.warmProfile ?? DEFAULT_THREAD_WARM_PROFILE;
 
   const excluded = new Set<ThreadId>(options?.excludeThreadIds ?? []);
-  const { threads, planningWorkflows, codeReviewWorkflows } = useStore.getState();
+  const { threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows } =
+    useStore.getState();
   const candidates = sortThreadsByActivity(
-    getVisibleThreads(threads, planningWorkflows, codeReviewWorkflows),
+    getVisibleThreads(threads, planningWorkflows, codeReviewWorkflows, investigationWorkflows),
   )
     .filter((thread) => !thread.detailsLoaded && !excluded.has(thread.id))
     .slice(0, limit)

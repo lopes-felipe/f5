@@ -226,6 +226,7 @@ function createSnapshot(
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads,
     updatedAt: NOW_ISO,
   };

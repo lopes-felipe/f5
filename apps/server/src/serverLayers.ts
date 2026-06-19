@@ -27,6 +27,7 @@ import { ThreadFileChangeQueryLive } from "./orchestration/Layers/ThreadFileChan
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion";
 import { RuntimeReceiptBusLive } from "./orchestration/Layers/RuntimeReceiptBus";
 import { CodeReviewWorkflowServiceLive } from "./orchestration/Layers/CodeReviewWorkflowService";
+import { InvestigationWorkflowServiceLive } from "./orchestration/Layers/InvestigationWorkflowService";
 import { WorkflowServiceLive } from "./orchestration/Layers/WorkflowService";
 import { ProviderUnsupportedError } from "./provider/Errors";
 import { HarnessValidationLive } from "./provider/Layers/HarnessValidation";
@@ -285,6 +286,11 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(projectionSnapshotQueryLayer),
     Layer.provideMerge(textGenerationLayer),
   );
+  const investigationWorkflowServiceLayer = InvestigationWorkflowServiceLive.pipe(
+    Layer.provideMerge(orchestrationLayer),
+    Layer.provideMerge(projectionSnapshotQueryLayer),
+    Layer.provideMerge(textGenerationLayer),
+  );
   const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
   );
@@ -313,6 +319,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(sessionNotesServiceLayer),
     Layer.provideMerge(workflowServiceLayer),
     Layer.provideMerge(codeReviewWorkflowServiceLayer),
+    Layer.provideMerge(investigationWorkflowServiceLayer),
   );
   const providerSessionReaperLayer = ProviderSessionReaperLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
@@ -325,6 +332,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     orchestrationLayer,
     workflowServiceLayer,
     codeReviewWorkflowServiceLayer,
+    investigationWorkflowServiceLayer,
     orchestrationReactorLayer,
     providerSessionReaperLayer,
     projectSetupScriptRunnerLayer,

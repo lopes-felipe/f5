@@ -176,6 +176,7 @@ function seedProjects() {
     threads: [],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
   });
 }
 
@@ -320,6 +321,7 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
         projects: [],
         planningWorkflows: [],
         codeReviewWorkflows: [],
+        investigationWorkflows: [],
         threads: [],
         updatedAt: NOW_ISO,
       })),
@@ -366,6 +368,7 @@ describe("settings route", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
     });
   });
 

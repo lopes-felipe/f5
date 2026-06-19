@@ -45,6 +45,7 @@ function makeReadModel(withSetupScript: boolean): OrchestrationReadModel {
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads: [
       {
         id: ThreadId.makeUnsafe("thread-1"),

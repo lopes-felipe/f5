@@ -1,4 +1,4 @@
-import { GitPullRequestIcon, RocketIcon } from "lucide-react";
+import { GitPullRequestIcon, RocketIcon, SearchIcon } from "lucide-react";
 
 import { Skeleton } from "./ui/skeleton";
 import { SidebarInset, SidebarMenuSkeleton } from "./ui/sidebar";
@@ -95,11 +95,17 @@ export function StartupThreadRouteSkeleton() {
 export function StartupWorkflowRouteSkeleton({
   kind,
 }: {
-  readonly kind: "planning" | "code-review";
+  readonly kind: "planning" | "code-review" | "investigation";
 }) {
-  const Icon = kind === "planning" ? RocketIcon : GitPullRequestIcon;
-  const label = kind === "planning" ? "Loading planning workflow" : "Loading code review workflow";
-  const badgeWidth = kind === "planning" ? "w-16" : "w-20";
+  const Icon =
+    kind === "planning" ? RocketIcon : kind === "investigation" ? SearchIcon : GitPullRequestIcon;
+  const label =
+    kind === "planning"
+      ? "Loading planning workflow"
+      : kind === "investigation"
+        ? "Loading investigation workflow"
+        : "Loading code review workflow";
+  const badgeWidth = kind === "planning" ? "w-16" : kind === "investigation" ? "w-16" : "w-20";
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">

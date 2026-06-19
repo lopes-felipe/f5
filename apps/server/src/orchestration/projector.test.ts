@@ -38,6 +38,67 @@ function makeEvent(input: {
   } as OrchestrationEvent;
 }
 
+function makeInvestigationWorkflowPayload(now: string) {
+  return {
+    id: "investigation-workflow-1",
+    projectId: "project-1",
+    title: "Investigation workflow",
+    slug: "investigation-workflow",
+    problemPrompt: "Investigate checkout timeouts",
+    branch: null,
+    selfReviewEnabled: false,
+    investigatorA: {
+      label: "Investigator A",
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      investigationThreadId: "investigator-a",
+      investigationStatus: "completed",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: null,
+      crossReviewStatus: "not_started",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: null,
+      selfReviewStatus: "not_started",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    investigatorB: {
+      label: "Investigator B",
+      slot: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+      investigationThreadId: "investigator-b",
+      investigationStatus: "completed",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: null,
+      crossReviewStatus: "not_started",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: null,
+      selfReviewStatus: "not_started",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    synthesis: {
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      threadId: null,
+      status: "not_started",
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    deletedAt: null,
+  };
+}
+
 describe("orchestration projector", () => {
   it("applies thread.created events", async () => {
     const now = new Date().toISOString();
@@ -101,6 +162,32 @@ describe("orchestration projector", () => {
         session: null,
       },
     ]);
+  });
+
+  it("replays legacy debug workflow events into investigation workflows", async () => {
+    const now = new Date().toISOString();
+    const model = createEmptyReadModel(now);
+
+    const next = await Effect.runPromise(
+      projectEvent(
+        model,
+        makeEvent({
+          sequence: 1,
+          type: "project.debug-workflow-created",
+          aggregateKind: "project",
+          aggregateId: "project-1",
+          occurredAt: now,
+          commandId: "cmd-legacy-debug-workflow",
+          payload: {
+            projectId: "project-1",
+            workflow: makeInvestigationWorkflowPayload(now),
+          },
+        }),
+      ),
+    );
+
+    expect(next.investigationWorkflows).toHaveLength(1);
+    expect(next.investigationWorkflows[0]?.id).toBe("investigation-workflow-1");
   });
 
   it("preserves skill call metadata on user messages", async () => {

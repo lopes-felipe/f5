@@ -134,6 +134,7 @@ import {
   MAX_TERMINALS_PER_GROUP,
   type ChatMessage,
   type CodeReviewWorkflow,
+  type InvestigationWorkflow,
   type PlanningWorkflow,
   type TaskItem as ThreadTaskItem,
   type TurnDiffSummary,
@@ -162,6 +163,7 @@ import { RightPanelSheet } from "./RightPanelSheet";
 import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
+import { investigationWorkflowContainsThread } from "./workflow/investigationWorkflowUtils";
 import {
   BotIcon,
   ChevronDownIcon,
@@ -352,6 +354,34 @@ function resolveCodeReviewWorkflowThreadSlot(
   }
   if (workflow.consolidation.threadId === threadId) {
     return workflow.consolidation.slot;
+  }
+  return null;
+}
+
+function resolveInvestigationWorkflowThreadSlot(
+  workflow: InvestigationWorkflow,
+  threadId: ThreadId,
+): WorkflowModelSlot | null {
+  if (workflow.investigatorA.investigationThreadId === threadId) {
+    return workflow.investigatorA.slot;
+  }
+  if (workflow.investigatorB.investigationThreadId === threadId) {
+    return workflow.investigatorB.slot;
+  }
+  if (workflow.investigatorA.crossReviewThreadId === threadId) {
+    return workflow.investigatorA.slot;
+  }
+  if (workflow.investigatorB.crossReviewThreadId === threadId) {
+    return workflow.investigatorB.slot;
+  }
+  if (workflow.investigatorA.selfReviewThreadId === threadId) {
+    return workflow.investigatorA.slot;
+  }
+  if (workflow.investigatorB.selfReviewThreadId === threadId) {
+    return workflow.investigatorB.slot;
+  }
+  if (workflow.synthesis.threadId === threadId) {
+    return workflow.synthesis.slot;
   }
   return null;
 }
@@ -553,6 +583,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const projects = useStore((store) => store.projects);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
+  const investigationWorkflows = useStore((store) => store.investigationWorkflows);
   const markThreadVisited = useStore((store) => store.markThreadVisited);
   const syncStartupSnapshot = useStore((store) => store.syncStartupSnapshot);
   const syncThreadTailDetails = useStore((store) => store.syncThreadTailDetails);
@@ -887,8 +918,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
         type: "codeReview" as const,
       };
     }
+    const investigationWorkflow = investigationWorkflows.find((workflow) =>
+      investigationWorkflowContainsThread(workflow, activeThread.id),
+    );
+    if (investigationWorkflow) {
+      return {
+        workflow: investigationWorkflow,
+        type: "investigation" as const,
+      };
+    }
     return null;
-  }, [activeThread, codeReviewWorkflows, planningWorkflows]);
+  }, [activeThread, codeReviewWorkflows, investigationWorkflows, planningWorkflows]);
   const runtimeMode =
     composerDraft.runtimeMode ?? activeThread?.runtimeMode ?? DEFAULT_RUNTIME_MODE;
   const interactionMode =
@@ -906,9 +946,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
     if (!activeThread || !activeWorkflow) {
       return null;
     }
-    return activeWorkflow.type === "planning"
-      ? resolvePlanningWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id)
-      : resolveCodeReviewWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id);
+    switch (activeWorkflow.type) {
+      case "planning":
+        return resolvePlanningWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id);
+      case "codeReview":
+        return resolveCodeReviewWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id);
+      case "investigation":
+        return resolveInvestigationWorkflowThreadSlot(activeWorkflow.workflow, activeThread.id);
+    }
   }, [activeThread, activeWorkflow]);
   const planningMergeWorkflow =
     activeWorkflow?.type === "planning" &&
@@ -5121,7 +5166,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
                       to:
                         activeWorkflow.type === "planning"
                           ? "/workflow/$workflowId"
-                          : "/code-review/$workflowId",
+                          : activeWorkflow.type === "codeReview"
+                            ? "/code-review/$workflowId"
+                            : "/investigation/$workflowId",
                       params: { workflowId: activeWorkflow.workflow.id },
                     });
                   }

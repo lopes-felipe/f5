@@ -6,6 +6,7 @@ import { render } from "vitest-browser-react";
 import type {
   DesktopBridge,
   OrchestrationCreateCodeReviewWorkflowInput,
+  OrchestrationCreateInvestigationWorkflowInput,
   OrchestrationCreateWorkflowInput,
   ProjectId,
 } from "@t3tools/contracts";
@@ -24,6 +25,9 @@ const nativeApiMocks = vi.hoisted(() => ({
   createCodeReviewWorkflow: vi.fn<
     (input: OrchestrationCreateCodeReviewWorkflowInput) => Promise<{ workflowId: string }>
   >(async () => ({ workflowId: "workflow-2" })),
+  createInvestigationWorkflow: vi.fn<
+    (input: OrchestrationCreateInvestigationWorkflowInput) => Promise<{ workflowId: string }>
+  >(async () => ({ workflowId: "workflow-3" })),
 }));
 
 vi.mock("../../nativeApi", () => ({
@@ -31,9 +35,19 @@ vi.mock("../../nativeApi", () => ({
     orchestration: {
       createWorkflow: nativeApiMocks.createWorkflow,
       createCodeReviewWorkflow: nativeApiMocks.createCodeReviewWorkflow,
+      createInvestigationWorkflow: nativeApiMocks.createInvestigationWorkflow,
     },
   }),
 }));
+
+vi.mock("@tanstack/react-router", async () => {
+  const actual =
+    await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(async () => {}),
+  };
+});
 
 vi.mock("../../appSettings", async () => {
   const actual = await vi.importActual<typeof import("../../appSettings")>("../../appSettings");
@@ -191,6 +205,7 @@ describe("WorkflowCreateDialog", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threadsHydrated: true,
     });
     useModelPreferencesStore.setState({
@@ -206,11 +221,13 @@ describe("WorkflowCreateDialog", () => {
     Reflect.deleteProperty(window, "desktopBridge");
     nativeApiMocks.createWorkflow.mockClear();
     nativeApiMocks.createCodeReviewWorkflow.mockClear();
+    nativeApiMocks.createInvestigationWorkflow.mockClear();
     useStore.setState({
       projects: [],
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threadsHydrated: false,
     });
   });
@@ -543,6 +560,57 @@ describe("WorkflowCreateDialog", () => {
       });
       expect("title" in payload).toBe(false);
       expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-2");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("sends investigation workflow own-model review preference", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onWorkflowCreated = vi.fn();
+    const screen = await render(
+      <WorkflowCreateDialog
+        open
+        projectId={"project-1" as ProjectId}
+        onOpenChange={() => {}}
+        onWorkflowCreated={onWorkflowCreated}
+      />,
+      { container: host },
+    );
+
+    try {
+      await page.getByRole("button", { name: "Investigation" }).click();
+      await page
+        .getByPlaceholder(
+          "Describe the problem, symptoms, suspected regression, or evidence to investigate.",
+        )
+        .fill("Investigate checkout timeouts");
+      await page.getByText("Own-model review").click();
+
+      await vi.waitFor(() => {
+        expect(createWorkflowButton().disabled).toBe(false);
+      });
+      createWorkflowButton().click();
+
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createInvestigationWorkflow).toHaveBeenCalledTimes(1);
+      });
+
+      const firstCall = nativeApiMocks.createInvestigationWorkflow.mock.calls[0];
+      expect(firstCall).toBeDefined();
+      if (!firstCall) {
+        throw new Error("Expected investigation workflow request payload.");
+      }
+      const [payload] = firstCall;
+      expect(payload).toMatchObject({
+        projectId: "project-1",
+        problemPrompt: "Investigate checkout timeouts",
+        titleGenerationModel: "custom/thread-title-model",
+        selfReviewEnabled: true,
+      });
+      expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-3");
     } finally {
       await screen.unmount();
       host.remove();

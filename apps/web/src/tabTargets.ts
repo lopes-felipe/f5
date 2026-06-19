@@ -1,4 +1,9 @@
-import { CodeReviewWorkflowId, PlanningWorkflowId, ThreadId } from "@t3tools/contracts";
+import {
+  CodeReviewWorkflowId,
+  InvestigationWorkflowId,
+  PlanningWorkflowId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import {
   resolveSettingsCategoryFromSearch,
@@ -27,6 +32,11 @@ export type TabTarget =
       key: TabTargetKey;
       kind: "codeReviewWorkflow";
       workflowId: CodeReviewWorkflowId;
+    }
+  | {
+      key: TabTargetKey;
+      kind: "investigationWorkflow";
+      workflowId: InvestigationWorkflowId;
     };
 
 export interface TabRouteSnapshot {
@@ -50,6 +60,12 @@ export function planningWorkflowTabTargetKey(workflowId: PlanningWorkflowId): Ta
 
 export function codeReviewWorkflowTabTargetKey(workflowId: CodeReviewWorkflowId): TabTargetKey {
   return `codeReviewWorkflow:${workflowId}`;
+}
+
+export function investigationWorkflowTabTargetKey(
+  workflowId: InvestigationWorkflowId,
+): TabTargetKey {
+  return `investigationWorkflow:${workflowId}`;
 }
 
 export function parseTabTargetKey(key: TabTargetKey): TabTarget | null {
@@ -82,6 +98,23 @@ export function parseTabTargetKey(key: TabTargetKey): TabTarget | null {
       key,
       kind: "codeReviewWorkflow",
       workflowId: CodeReviewWorkflowId.makeUnsafe(key.slice("codeReviewWorkflow:".length)),
+    };
+  }
+
+  if (key.startsWith("investigationWorkflow:")) {
+    return {
+      key,
+      kind: "investigationWorkflow",
+      workflowId: InvestigationWorkflowId.makeUnsafe(key.slice("investigationWorkflow:".length)),
+    };
+  }
+
+  if (key.startsWith("debugWorkflow:")) {
+    const workflowId = InvestigationWorkflowId.makeUnsafe(key.slice("debugWorkflow:".length));
+    return {
+      key: investigationWorkflowTabTargetKey(workflowId),
+      kind: "investigationWorkflow",
+      workflowId,
     };
   }
 
@@ -122,6 +155,30 @@ export function resolveTabTargetFromRoute(route: TabRouteSnapshot | null): TabTa
       key: codeReviewWorkflowTabTargetKey(CodeReviewWorkflowId.makeUnsafe(workflowId)),
       kind: "codeReviewWorkflow",
       workflowId: CodeReviewWorkflowId.makeUnsafe(workflowId),
+    };
+  }
+
+  if (route.pathname.startsWith("/investigation/")) {
+    const workflowId = route.params.workflowId;
+    if (!workflowId) {
+      return null;
+    }
+    return {
+      key: investigationWorkflowTabTargetKey(InvestigationWorkflowId.makeUnsafe(workflowId)),
+      kind: "investigationWorkflow",
+      workflowId: InvestigationWorkflowId.makeUnsafe(workflowId),
+    };
+  }
+
+  if (route.pathname.startsWith("/debug/")) {
+    const workflowId = route.params.workflowId;
+    if (!workflowId) {
+      return null;
+    }
+    return {
+      key: investigationWorkflowTabTargetKey(InvestigationWorkflowId.makeUnsafe(workflowId)),
+      kind: "investigationWorkflow",
+      workflowId: InvestigationWorkflowId.makeUnsafe(workflowId),
     };
   }
 

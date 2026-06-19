@@ -70,6 +70,12 @@ function commandToAggregateRef(command: OrchestrationCommand): {
     case "project.code-review-workflow.create":
     case "project.code-review-workflow.delete":
     case "project.code-review-workflow.upsert":
+    case "project.investigation-workflow.create":
+    case "project.investigation-workflow.delete":
+    case "project.investigation-workflow.upsert":
+    case "project.debug-workflow.create":
+    case "project.debug-workflow.delete":
+    case "project.debug-workflow.upsert":
       return {
         aggregateKind: "project",
         aggregateId: command.projectId,

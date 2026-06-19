@@ -236,6 +236,7 @@ function OpenCommandPaletteDialog() {
   const threads = useStore((store) => store.threads);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
+  const investigationWorkflows = useStore((store) => store.investigationWorkflows);
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
@@ -356,6 +357,7 @@ function OpenCommandPaletteDialog() {
         threads,
         planningWorkflows,
         codeReviewWorkflows,
+        investigationWorkflows,
       );
       if (latestThread) {
         await navigate({
@@ -371,6 +373,7 @@ function OpenCommandPaletteDialog() {
     },
     [
       codeReviewWorkflows,
+      investigationWorkflows,
       handleNewThread,
       navigate,
       planningWorkflows,
@@ -528,7 +531,14 @@ function OpenCommandPaletteDialog() {
       actionItems.push({
         kind: "action",
         value: "action:new-workflow",
-        searchTerms: ["new workflow", "workflow", "planning", "code review", "feature"],
+        searchTerms: [
+          "new workflow",
+          "workflow",
+          "planning",
+          "code review",
+          "investigation",
+          "feature",
+        ],
         title: (
           <>
             New workflow in <span className="font-semibold">{workflowProjectTitle}</span>
@@ -623,6 +633,7 @@ function OpenCommandPaletteDialog() {
           threads,
           planningWorkflows,
           codeReviewWorkflows,
+          investigationWorkflows,
         );
         if (latestThread) {
           await navigate({
@@ -665,6 +676,7 @@ function OpenCommandPaletteDialog() {
       browsePlatform,
       codeReviewWorkflows,
       currentProjectCwd,
+      investigationWorkflows,
       handleNewThread,
       navigate,
       planningWorkflows,

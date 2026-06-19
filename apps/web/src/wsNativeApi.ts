@@ -361,16 +361,26 @@ export function createWsNativeApi(): NativeApi {
         transport.request(ORCHESTRATION_WS_METHODS.unarchiveWorkflow, input),
       createCodeReviewWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.createCodeReviewWorkflow, input),
+      createInvestigationWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.createInvestigationWorkflow, input),
       archiveCodeReviewWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.archiveCodeReviewWorkflow, input),
+      archiveInvestigationWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.archiveInvestigationWorkflow, input),
       unarchiveCodeReviewWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.unarchiveCodeReviewWorkflow, input),
+      unarchiveInvestigationWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.unarchiveInvestigationWorkflow, input),
       deleteWorkflow: (input) => transport.request(ORCHESTRATION_WS_METHODS.deleteWorkflow, input),
       deleteCodeReviewWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow, input),
+      deleteInvestigationWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow, input),
       retryWorkflow: (input) => transport.request(ORCHESTRATION_WS_METHODS.retryWorkflow, input),
       retryCodeReviewWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow, input),
+      retryInvestigationWorkflow: (input) =>
+        transport.request(ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow, input),
       startImplementation: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.startImplementation, input),
       onDomainEvent: (callback) =>

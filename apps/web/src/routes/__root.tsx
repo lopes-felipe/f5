@@ -205,6 +205,10 @@ function resolveVisibleThreadDetailId(input: {
     id: string;
     consolidation: { threadId: ThreadId | null };
   }>;
+  investigationWorkflows: ReadonlyArray<{
+    id: string;
+    synthesis: { threadId: ThreadId | null };
+  }>;
 }): ThreadId | null {
   if (input.routeMatch?.routeId === "/_chat/$threadId") {
     const threadId = input.routeMatch.params.threadId;
@@ -224,16 +228,69 @@ function resolveVisibleThreadDetailId(input: {
     );
   }
 
+  if (
+    input.routeMatch?.routeId === "/_chat/investigation/$workflowId" ||
+    input.routeMatch?.routeId === "/_chat/debug/$workflowId"
+  ) {
+    const workflowId = input.routeMatch.params.workflowId;
+    if (!workflowId) {
+      return input.fallbackThreadId ?? null;
+    }
+    return (
+      input.investigationWorkflows.find((workflow) => workflow.id === workflowId)?.synthesis
+        .threadId ??
+      input.fallbackThreadId ??
+      null
+    );
+  }
+
   return input.fallbackThreadId ?? null;
 }
 
 function resolveStartupDetailThreadId(input: {
   routeMatch: VisibleRouteMatch;
   fallbackThreadId?: ThreadId | null;
+  codeReviewWorkflows: ReadonlyArray<{
+    id: string;
+    consolidation: { threadId: ThreadId | null };
+  }>;
+  investigationWorkflows: ReadonlyArray<{
+    id: string;
+    synthesis: { threadId: ThreadId | null };
+  }>;
 }): ThreadId | null {
   if (input.routeMatch?.routeId === "/_chat/$threadId") {
     const threadId = input.routeMatch.params.threadId;
     return threadId ? ThreadId.makeUnsafe(threadId) : (input.fallbackThreadId ?? null);
+  }
+
+  if (input.routeMatch?.routeId === "/_chat/code-review/$workflowId") {
+    const workflowId = input.routeMatch.params.workflowId;
+    if (!workflowId) {
+      return input.fallbackThreadId ?? null;
+    }
+    return (
+      input.codeReviewWorkflows.find((workflow) => workflow.id === workflowId)?.consolidation
+        .threadId ??
+      input.fallbackThreadId ??
+      null
+    );
+  }
+
+  if (
+    input.routeMatch?.routeId === "/_chat/investigation/$workflowId" ||
+    input.routeMatch?.routeId === "/_chat/debug/$workflowId"
+  ) {
+    const workflowId = input.routeMatch.params.workflowId;
+    if (!workflowId) {
+      return input.fallbackThreadId ?? null;
+    }
+    return (
+      input.investigationWorkflows.find((workflow) => workflow.id === workflowId)?.synthesis
+        .threadId ??
+      input.fallbackThreadId ??
+      null
+    );
   }
 
   if (input.routeMatch === null || input.routeMatch.routeId === "/_chat/") {
@@ -743,6 +800,7 @@ function EventRouter() {
         routeMatch: visibleRouteMatchRef.current,
         ...(fallbackThreadId !== undefined ? { fallbackThreadId } : {}),
         codeReviewWorkflows: useStore.getState().codeReviewWorkflows,
+        investigationWorkflows: useStore.getState().investigationWorkflows,
       });
 
     const warmVisibleThreadBundle = async (options?: {
@@ -794,6 +852,8 @@ function EventRouter() {
       const startupDetailThreadId = resolveStartupDetailThreadId({
         routeMatch: visibleRouteMatchRef.current,
         fallbackThreadId: pendingBootstrapThreadId,
+        codeReviewWorkflows: useStore.getState().codeReviewWorkflows,
+        investigationWorkflows: useStore.getState().investigationWorkflows,
       });
       const startupResult = await api.orchestration.getStartupSnapshot(
         startupDetailThreadId ? { detailThreadId: startupDetailThreadId } : undefined,
@@ -815,6 +875,12 @@ function EventRouter() {
           .map((workflow) => ({
             id: workflow.id,
             consolidation: { threadId: workflow.consolidation.threadId },
+          })),
+        investigationWorkflows: snapshot.investigationWorkflows
+          .filter((workflow) => workflow.deletedAt === null)
+          .map((workflow) => ({
+            id: workflow.id,
+            synthesis: { threadId: workflow.synthesis.threadId },
           })),
       });
       if (pendingWelcomeRecovery !== null) {

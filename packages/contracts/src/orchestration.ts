@@ -1,5 +1,6 @@
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
+import { InvestigationWorkflow, InvestigationWorkflowId } from "./investigationWorkflow";
 import { McpProjectServersConfig } from "./mcpServer";
 import { ProviderModelOptions, ProviderOptionSelections } from "./model";
 import { PlanningWorkflow, PlanningWorkflowId, WorkflowModelSlot } from "./planningWorkflow";
@@ -49,6 +50,11 @@ export const ORCHESTRATION_WS_METHODS = {
   unarchiveCodeReviewWorkflow: "orchestration.unarchiveCodeReviewWorkflow",
   deleteCodeReviewWorkflow: "orchestration.deleteCodeReviewWorkflow",
   retryCodeReviewWorkflow: "orchestration.retryCodeReviewWorkflow",
+  createInvestigationWorkflow: "orchestration.createInvestigationWorkflow",
+  archiveInvestigationWorkflow: "orchestration.archiveInvestigationWorkflow",
+  unarchiveInvestigationWorkflow: "orchestration.unarchiveInvestigationWorkflow",
+  deleteInvestigationWorkflow: "orchestration.deleteInvestigationWorkflow",
+  retryInvestigationWorkflow: "orchestration.retryInvestigationWorkflow",
   startImplementation: "orchestration.startImplementation",
 } as const;
 
@@ -716,6 +722,9 @@ export const OrchestrationReadModel = Schema.Struct({
   threads: Schema.Array(OrchestrationThread),
   planningWorkflows: Schema.Array(PlanningWorkflow).pipe(Schema.withDecodingDefault(() => [])),
   codeReviewWorkflows: Schema.Array(CodeReviewWorkflow).pipe(Schema.withDecodingDefault(() => [])),
+  investigationWorkflows: Schema.Array(InvestigationWorkflow).pipe(
+    Schema.withDecodingDefault(() => []),
+  ),
   updatedAt: IsoDateTime,
 });
 export type OrchestrationReadModel = typeof OrchestrationReadModel.Type;
@@ -845,6 +854,40 @@ const ProjectCodeReviewWorkflowDeleteCommand = Schema.Struct({
   type: Schema.Literal("project.code-review-workflow.delete"),
   commandId: CommandId,
   workflowId: CodeReviewWorkflowId,
+  projectId: ProjectId,
+  createdAt: IsoDateTime,
+});
+
+const ProjectInvestigationWorkflowCreateCommand = Schema.Struct({
+  type: Schema.Literals(["project.investigation-workflow.create", "project.debug-workflow.create"]),
+  commandId: CommandId,
+  workflowId: InvestigationWorkflowId,
+  projectId: ProjectId,
+  title: TrimmedNonEmptyString,
+  slug: TrimmedNonEmptyString,
+  problemPrompt: TrimmedNonEmptyString,
+  branch: Schema.NullOr(TrimmedNonEmptyString),
+  selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  investigatorA: WorkflowModelSlot,
+  investigatorB: WorkflowModelSlot,
+  synthesis: WorkflowModelSlot,
+  investigationThreadIdA: ThreadId,
+  investigationThreadIdB: ThreadId,
+  createdAt: IsoDateTime,
+});
+
+const ProjectInvestigationWorkflowUpsertCommand = Schema.Struct({
+  type: Schema.Literals(["project.investigation-workflow.upsert", "project.debug-workflow.upsert"]),
+  commandId: CommandId,
+  projectId: ProjectId,
+  workflow: InvestigationWorkflow,
+  updatedAt: IsoDateTime,
+});
+
+const ProjectInvestigationWorkflowDeleteCommand = Schema.Struct({
+  type: Schema.Literals(["project.investigation-workflow.delete", "project.debug-workflow.delete"]),
+  commandId: CommandId,
+  workflowId: InvestigationWorkflowId,
   projectId: ProjectId,
   createdAt: IsoDateTime,
 });
@@ -1241,6 +1284,9 @@ const InternalOrchestrationCommand = Schema.Union([
   ProjectCodeReviewWorkflowCreateCommand,
   ProjectCodeReviewWorkflowUpsertCommand,
   ProjectCodeReviewWorkflowDeleteCommand,
+  ProjectInvestigationWorkflowCreateCommand,
+  ProjectInvestigationWorkflowUpsertCommand,
+  ProjectInvestigationWorkflowDeleteCommand,
   ThreadSessionSetCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
@@ -1277,6 +1323,12 @@ export const OrchestrationEventType = Schema.Literals([
   "project.code-review-workflow-created",
   "project.code-review-workflow-upserted",
   "project.code-review-workflow-deleted",
+  "project.investigation-workflow-created",
+  "project.investigation-workflow-upserted",
+  "project.investigation-workflow-deleted",
+  "project.debug-workflow-created",
+  "project.debug-workflow-upserted",
+  "project.debug-workflow-deleted",
   "thread.created",
   "thread.deleted",
   "thread.archived",
@@ -1389,6 +1441,22 @@ export const ProjectCodeReviewWorkflowUpsertedPayload = Schema.Struct({
 export const ProjectCodeReviewWorkflowDeletedPayload = Schema.Struct({
   projectId: ProjectId,
   workflowId: CodeReviewWorkflowId,
+  deletedAt: IsoDateTime,
+});
+
+export const ProjectInvestigationWorkflowCreatedPayload = Schema.Struct({
+  projectId: ProjectId,
+  workflow: InvestigationWorkflow,
+});
+
+export const ProjectInvestigationWorkflowUpsertedPayload = Schema.Struct({
+  projectId: ProjectId,
+  workflow: InvestigationWorkflow,
+});
+
+export const ProjectInvestigationWorkflowDeletedPayload = Schema.Struct({
+  projectId: ProjectId,
+  workflowId: InvestigationWorkflowId,
   deletedAt: IsoDateTime,
 });
 
@@ -1677,6 +1745,30 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("project.code-review-workflow-deleted"),
     payload: ProjectCodeReviewWorkflowDeletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literals([
+      "project.investigation-workflow-created",
+      "project.debug-workflow-created",
+    ]),
+    payload: ProjectInvestigationWorkflowCreatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literals([
+      "project.investigation-workflow-upserted",
+      "project.debug-workflow-upserted",
+    ]),
+    payload: ProjectInvestigationWorkflowUpsertedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literals([
+      "project.investigation-workflow-deleted",
+      "project.debug-workflow-deleted",
+    ]),
+    payload: ProjectInvestigationWorkflowDeletedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,
@@ -2132,6 +2224,26 @@ export const OrchestrationCreateCodeReviewWorkflowResult = Schema.Struct({
 export type OrchestrationCreateCodeReviewWorkflowResult =
   typeof OrchestrationCreateCodeReviewWorkflowResult.Type;
 
+export const OrchestrationCreateInvestigationWorkflowInput = Schema.Struct({
+  projectId: ProjectId,
+  title: Schema.optional(TrimmedNonEmptyString),
+  problemPrompt: TrimmedNonEmptyString,
+  titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
+  branch: Schema.optional(TrimmedNonEmptyString),
+  selfReviewEnabled: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),
+  investigatorA: WorkflowModelSlot,
+  investigatorB: WorkflowModelSlot,
+  synthesis: WorkflowModelSlot,
+});
+export type OrchestrationCreateInvestigationWorkflowInput =
+  typeof OrchestrationCreateInvestigationWorkflowInput.Type;
+
+export const OrchestrationCreateInvestigationWorkflowResult = Schema.Struct({
+  workflowId: InvestigationWorkflowId,
+});
+export type OrchestrationCreateInvestigationWorkflowResult =
+  typeof OrchestrationCreateInvestigationWorkflowResult.Type;
+
 export const OrchestrationDeleteWorkflowInput = Schema.Struct({
   workflowId: PlanningWorkflowId,
 });
@@ -2159,6 +2271,22 @@ export const OrchestrationUnarchiveCodeReviewWorkflowInput =
 export type OrchestrationUnarchiveCodeReviewWorkflowInput =
   typeof OrchestrationUnarchiveCodeReviewWorkflowInput.Type;
 
+export const OrchestrationDeleteInvestigationWorkflowInput = Schema.Struct({
+  workflowId: InvestigationWorkflowId,
+});
+export type OrchestrationDeleteInvestigationWorkflowInput =
+  typeof OrchestrationDeleteInvestigationWorkflowInput.Type;
+
+export const OrchestrationArchiveInvestigationWorkflowInput =
+  OrchestrationDeleteInvestigationWorkflowInput;
+export type OrchestrationArchiveInvestigationWorkflowInput =
+  typeof OrchestrationArchiveInvestigationWorkflowInput.Type;
+
+export const OrchestrationUnarchiveInvestigationWorkflowInput =
+  OrchestrationDeleteInvestigationWorkflowInput;
+export type OrchestrationUnarchiveInvestigationWorkflowInput =
+  typeof OrchestrationUnarchiveInvestigationWorkflowInput.Type;
+
 export const OrchestrationRetryWorkflowInput = Schema.Struct({
   workflowId: PlanningWorkflowId,
 });
@@ -2172,6 +2300,15 @@ export const OrchestrationRetryCodeReviewWorkflowInput = Schema.Struct({
 });
 export type OrchestrationRetryCodeReviewWorkflowInput =
   typeof OrchestrationRetryCodeReviewWorkflowInput.Type;
+
+export const OrchestrationRetryInvestigationWorkflowInput = Schema.Struct({
+  workflowId: InvestigationWorkflowId,
+  scope: Schema.optional(
+    Schema.Literals(["failed", "crossReview", "selfReview", "synthesis"]),
+  ).pipe(Schema.withDecodingDefault(() => "failed" as const)),
+});
+export type OrchestrationRetryInvestigationWorkflowInput =
+  typeof OrchestrationRetryInvestigationWorkflowInput.Type;
 
 export const OrchestrationStartImplementationInput = Schema.Struct({
   workflowId: PlanningWorkflowId,
@@ -2257,12 +2394,24 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationCreateCodeReviewWorkflowInput,
     output: OrchestrationCreateCodeReviewWorkflowResult,
   },
+  createInvestigationWorkflow: {
+    input: OrchestrationCreateInvestigationWorkflowInput,
+    output: OrchestrationCreateInvestigationWorkflowResult,
+  },
   archiveCodeReviewWorkflow: {
     input: OrchestrationArchiveCodeReviewWorkflowInput,
     output: Schema.Void,
   },
+  archiveInvestigationWorkflow: {
+    input: OrchestrationArchiveInvestigationWorkflowInput,
+    output: Schema.Void,
+  },
   unarchiveCodeReviewWorkflow: {
     input: OrchestrationUnarchiveCodeReviewWorkflowInput,
+    output: Schema.Void,
+  },
+  unarchiveInvestigationWorkflow: {
+    input: OrchestrationUnarchiveInvestigationWorkflowInput,
     output: Schema.Void,
   },
   deleteWorkflow: {
@@ -2273,12 +2422,20 @@ export const OrchestrationRpcSchemas = {
     input: OrchestrationDeleteCodeReviewWorkflowInput,
     output: Schema.Void,
   },
+  deleteInvestigationWorkflow: {
+    input: OrchestrationDeleteInvestigationWorkflowInput,
+    output: Schema.Void,
+  },
   retryWorkflow: {
     input: OrchestrationRetryWorkflowInput,
     output: Schema.Void,
   },
   retryCodeReviewWorkflow: {
     input: OrchestrationRetryCodeReviewWorkflowInput,
+    output: Schema.Void,
+  },
+  retryInvestigationWorkflow: {
+    input: OrchestrationRetryInvestigationWorkflowInput,
     output: Schema.Void,
   },
   startImplementation: {

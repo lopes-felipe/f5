@@ -17,6 +17,7 @@ import { isArchivedThread } from "../lib/threadOrdering";
 import { useStore } from "../store";
 import {
   codeReviewWorkflowTabTargetKey,
+  investigationWorkflowTabTargetKey,
   parseTabTargetKey,
   planningWorkflowTabTargetKey,
   resolveTabTargetFromRoute,
@@ -89,6 +90,8 @@ function fallbackTitleForTarget(target: TabTarget | null): string {
       return "Feature workflow";
     case "codeReviewWorkflow":
       return "Code review workflow";
+    case "investigationWorkflow":
+      return "Investigation workflow";
   }
 }
 
@@ -119,6 +122,7 @@ export default function ThreadRecencyController() {
   const threads = useStore((store) => store.threads);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
+  const investigationWorkflows = useStore((store) => store.investigationWorkflows);
   const draftThreadsByThreadId = useComposerDraftStore((store) => store.draftThreadsByThreadId);
   const { data: keybindings = EMPTY_KEYBINDINGS } = useQuery({
     ...serverConfigQueryOptions(),
@@ -143,6 +147,9 @@ export default function ThreadRecencyController() {
     const codeReviewTargetKeys = codeReviewWorkflows.map((workflow) =>
       codeReviewWorkflowTabTargetKey(workflow.id),
     );
+    const debugTargetKeys = investigationWorkflows.map((workflow) =>
+      investigationWorkflowTabTargetKey(workflow.id),
+    );
 
     return [
       ...threadTargetKeys,
@@ -150,8 +157,15 @@ export default function ThreadRecencyController() {
       settingsTabTargetKey(),
       ...workflowTargetKeys,
       ...codeReviewTargetKeys,
+      ...debugTargetKeys,
     ];
-  }, [codeReviewWorkflows, draftThreadsByThreadId, planningWorkflows, threads]);
+  }, [
+    codeReviewWorkflows,
+    investigationWorkflows,
+    draftThreadsByThreadId,
+    planningWorkflows,
+    threads,
+  ]);
 
   const eligibleTargetKeySet = useMemo(() => new Set(eligibleTargetKeys), [eligibleTargetKeys]);
   const recencyStateRef = useRef(recencyState);
@@ -207,6 +221,12 @@ export default function ThreadRecencyController() {
         case "codeReviewWorkflow":
           void navigate({
             to: "/code-review/$workflowId",
+            params: { workflowId: target.workflowId },
+          });
+          return;
+        case "investigationWorkflow":
+          void navigate({
+            to: "/investigation/$workflowId",
             params: { workflowId: target.workflowId },
           });
       }
@@ -442,6 +462,9 @@ export default function ThreadRecencyController() {
     const codeReviewWorkflowMap = new Map(
       codeReviewWorkflows.map((workflow) => [workflow.id, workflow] as const),
     );
+    const investigationWorkflowMap = new Map(
+      investigationWorkflows.map((workflow) => [workflow.id, workflow] as const),
+    );
     const showProject = projects.length > 1;
 
     return recencyState.activeCycle.order.map((targetKey) => {
@@ -509,6 +532,22 @@ export default function ThreadRecencyController() {
         };
       }
 
+      if (target?.kind === "investigationWorkflow") {
+        const workflow = investigationWorkflowMap.get(target.workflowId);
+        const projectName =
+          showProject && workflow ? (projectMap.get(workflow.projectId)?.name ?? null) : null;
+
+        return {
+          id: targetKey,
+          title: workflow?.title ?? fallbackTitleForTarget(target),
+          subtitle: projectName,
+          badgeLabel: "Investigation",
+          threadStatusPill: null,
+          isDraft: false,
+          isStale,
+        };
+      }
+
       return {
         id: targetKey,
         title: fallbackTitleForTarget(target),
@@ -521,6 +560,7 @@ export default function ThreadRecencyController() {
     });
   }, [
     codeReviewWorkflows,
+    investigationWorkflows,
     draftThreadsByThreadId,
     eligibleTargetKeySet,
     lastVisitedSettingsCategory,

@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vitest";
 import {
   CodeReviewWorkflowId,
+  InvestigationWorkflowId,
   PlanningWorkflowId,
   ProjectId,
   ThreadId,
   type CodeReviewWorkflow,
+  type InvestigationWorkflow,
   type PlanningWorkflow,
 } from "@t3tools/contracts";
 
 import {
   archivedWorkflowThreadIds,
   threadIdsForCodeReviewWorkflow,
+  threadIdsForInvestigationWorkflow,
   threadIdsForPlanningWorkflow,
 } from "./workflowThreads";
 
@@ -154,6 +157,71 @@ function makeCodeReviewWorkflow(
   };
 }
 
+function makeInvestigationWorkflow(
+  overrides: Partial<InvestigationWorkflow> = {},
+  now = "2026-04-05T10:00:00.000Z",
+): InvestigationWorkflow {
+  return {
+    id: InvestigationWorkflowId.makeUnsafe("workflow-4"),
+    projectId: ProjectId.makeUnsafe("project-1"),
+    title: "Investigation",
+    slug: "investigation",
+    problemPrompt: "Investigate the incident",
+    branch: null,
+    selfReviewEnabled: true,
+    investigatorA: {
+      label: "Investigator A",
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      investigationThreadId: ThreadId.makeUnsafe("investigator-a"),
+      investigationStatus: "completed",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: ThreadId.makeUnsafe("cross-review-a"),
+      crossReviewStatus: "completed",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: ThreadId.makeUnsafe("self-review-a"),
+      selfReviewStatus: "completed",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    investigatorB: {
+      label: "Investigator B",
+      slot: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+      investigationThreadId: ThreadId.makeUnsafe("investigator-b"),
+      investigationStatus: "completed",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: ThreadId.makeUnsafe("cross-review-b"),
+      crossReviewStatus: "completed",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: ThreadId.makeUnsafe("self-review-b"),
+      selfReviewStatus: "completed",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    synthesis: {
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      threadId: ThreadId.makeUnsafe("synthesis"),
+      status: "running",
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    deletedAt: null,
+    ...overrides,
+  };
+}
+
 describe("workflowThreads", () => {
   it("collects all planning workflow thread ids", () => {
     expect(threadIdsForPlanningWorkflow(makePlanningWorkflow())).toEqual([
@@ -174,10 +242,25 @@ describe("workflowThreads", () => {
     ]);
   });
 
+  it("collects all investigation workflow thread ids", () => {
+    expect(threadIdsForInvestigationWorkflow(makeInvestigationWorkflow())).toEqual([
+      "investigator-a",
+      "investigator-b",
+      "cross-review-a",
+      "cross-review-b",
+      "self-review-a",
+      "self-review-b",
+      "synthesis",
+    ]);
+  });
+
   it("collects thread ids owned by archived workflows", () => {
     const planningWorkflow = makePlanningWorkflow({ archivedAt: "2026-04-05T11:00:00.000Z" });
     const archivedCodeReview = makeCodeReviewWorkflow({
       archivedAt: "2026-04-05T11:30:00.000Z",
+    });
+    const archivedInvestigationWorkflow = makeInvestigationWorkflow({
+      archivedAt: "2026-04-05T12:00:00.000Z",
     });
     const activeCodeReview = makeCodeReviewWorkflow({
       id: CodeReviewWorkflowId.makeUnsafe("workflow-3"),
@@ -196,7 +279,11 @@ describe("workflowThreads", () => {
     });
 
     expect(
-      archivedWorkflowThreadIds([planningWorkflow], [archivedCodeReview, activeCodeReview]),
+      archivedWorkflowThreadIds(
+        [planningWorkflow],
+        [archivedCodeReview, activeCodeReview],
+        [archivedInvestigationWorkflow],
+      ),
     ).toEqual(
       new Set([
         "author-a",
@@ -208,6 +295,13 @@ describe("workflowThreads", () => {
         "reviewer-a",
         "reviewer-b",
         "consolidation",
+        "investigator-a",
+        "investigator-b",
+        "cross-review-a",
+        "cross-review-b",
+        "self-review-a",
+        "self-review-b",
+        "synthesis",
       ]),
     );
   });

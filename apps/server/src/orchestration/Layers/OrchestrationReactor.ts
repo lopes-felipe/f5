@@ -7,6 +7,7 @@ import {
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
 import { CodeReviewWorkflowService } from "../Services/CodeReviewWorkflowService.ts";
 import { CompactionService } from "../Services/CompactionService.ts";
+import { InvestigationWorkflowService } from "../Services/InvestigationWorkflowService.ts";
 import { ProjectSkillSyncService } from "../Services/ProjectSkillSyncService.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
@@ -22,6 +23,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const sessionNotesService = yield* SessionNotesService;
   const workflowService = yield* WorkflowService;
   const codeReviewWorkflowService = yield* CodeReviewWorkflowService;
+  const investigationWorkflowService = yield* InvestigationWorkflowService;
 
   const start: OrchestrationReactorShape["start"] = Effect.gen(function* () {
     yield* providerRuntimeIngestion.start;
@@ -32,6 +34,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* sessionNotesService.start;
     yield* workflowService.start;
     yield* codeReviewWorkflowService.start;
+    yield* investigationWorkflowService.start;
   });
 
   return {

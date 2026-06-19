@@ -228,11 +228,9 @@ describe("threadOrdering", () => {
       }),
     ];
 
-    expect(sortProjectsByActivity(projects, threads, [], []).map((project) => project.id)).toEqual([
-      "project-3",
-      "project-2",
-      "project-1",
-    ]);
+    expect(
+      sortProjectsByActivity(projects, threads, [], [], []).map((project) => project.id),
+    ).toEqual(["project-3", "project-2", "project-1"]);
   });
 
   it("ignores archived threads for most recent thread selection", () => {
@@ -250,7 +248,7 @@ describe("threadOrdering", () => {
     });
 
     expect(
-      getMostRecentThreadForProject(projectId, [activeThread, archivedThread], [], [])?.id,
+      getMostRecentThreadForProject(projectId, [activeThread, archivedThread], [], [], [])?.id,
     ).toBe(activeThread.id);
   });
 
@@ -276,6 +274,7 @@ describe("threadOrdering", () => {
         projectId,
         [visibleThread, hiddenThread],
         [archivedWorkflow],
+        [],
         [],
       ),
     )?.toMatchObject({ id: visibleThread.id });
@@ -304,6 +303,7 @@ describe("threadOrdering", () => {
         [visibleThread, hiddenThread],
         [],
         [archivedWorkflow],
+        [],
       ),
     )?.toMatchObject({ id: visibleThread.id });
   });
@@ -337,7 +337,7 @@ describe("threadOrdering", () => {
     });
 
     expect(
-      getMostRecentProject(projects, [visibleThread, hiddenThread], [archivedWorkflow], [])?.id,
+      getMostRecentProject(projects, [visibleThread, hiddenThread], [archivedWorkflow], [], [])?.id,
     ).toBe("project-2");
   });
 });

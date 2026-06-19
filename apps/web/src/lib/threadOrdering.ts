@@ -1,6 +1,12 @@
 import { archivedWorkflowThreadIds } from "@t3tools/shared/workflowThreads";
 
-import type { CodeReviewWorkflow, PlanningWorkflow, Project, Thread } from "../types";
+import type {
+  CodeReviewWorkflow,
+  InvestigationWorkflow,
+  PlanningWorkflow,
+  Project,
+  Thread,
+} from "../types";
 
 function compareIsoDescending(left: string, right: string): number {
   return right.localeCompare(left);
@@ -44,8 +50,13 @@ export function getVisibleThreads(
   threads: ReadonlyArray<Thread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Thread[] {
-  const hiddenWorkflowThreadIds = archivedWorkflowThreadIds(planningWorkflows, codeReviewWorkflows);
+  const hiddenWorkflowThreadIds = archivedWorkflowThreadIds(
+    planningWorkflows,
+    codeReviewWorkflows,
+    investigationWorkflows,
+  );
   return threads.filter(
     (thread) => !isArchivedThread(thread) && !hiddenWorkflowThreadIds.has(thread.id),
   );
@@ -55,9 +66,15 @@ function buildMostRecentThreadByProjectId(
   threads: ReadonlyArray<Thread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Map<Project["id"], Thread> {
   const mostRecentThreadByProjectId = new Map<Project["id"], Thread>();
-  for (const thread of getVisibleThreads(threads, planningWorkflows, codeReviewWorkflows)) {
+  for (const thread of getVisibleThreads(
+    threads,
+    planningWorkflows,
+    codeReviewWorkflows,
+    investigationWorkflows,
+  )) {
     const current = mostRecentThreadByProjectId.get(thread.projectId);
     if (!current || compareThreadsByActivity(thread, current) < 0) {
       mostRecentThreadByProjectId.set(thread.projectId, thread);
@@ -71,11 +88,15 @@ export function getMostRecentThreadForProject(
   threads: ReadonlyArray<Thread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Thread | null {
   return (
-    buildMostRecentThreadByProjectId(threads, planningWorkflows, codeReviewWorkflows).get(
-      projectId,
-    ) ?? null
+    buildMostRecentThreadByProjectId(
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    ).get(projectId) ?? null
   );
 }
 
@@ -85,13 +106,24 @@ export function compareProjectsByActivity(
   threads: ReadonlyArray<Thread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): number {
   const leftLastInteractionAt =
-    getMostRecentThreadForProject(left.id, threads, planningWorkflows, codeReviewWorkflows)
-      ?.lastInteractionAt ?? left.createdAt;
+    getMostRecentThreadForProject(
+      left.id,
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    )?.lastInteractionAt ?? left.createdAt;
   const rightLastInteractionAt =
-    getMostRecentThreadForProject(right.id, threads, planningWorkflows, codeReviewWorkflows)
-      ?.lastInteractionAt ?? right.createdAt;
+    getMostRecentThreadForProject(
+      right.id,
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    )?.lastInteractionAt ?? right.createdAt;
 
   return (
     compareIsoDescending(leftLastInteractionAt, rightLastInteractionAt) ||
@@ -105,11 +137,13 @@ export function sortProjectsByActivity(
   threads: ReadonlyArray<Thread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Project[] {
   const mostRecentThreadByProjectId = buildMostRecentThreadByProjectId(
     threads,
     planningWorkflows,
     codeReviewWorkflows,
+    investigationWorkflows,
   );
   return projects.toSorted((left, right) => {
     const leftLastInteractionAt =
@@ -130,8 +164,15 @@ export function getMostRecentProject(
   threads: ReadonlyArray<Thread>,
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Project | null {
   return (
-    sortProjectsByActivity(projects, threads, planningWorkflows, codeReviewWorkflows)[0] ?? null
+    sortProjectsByActivity(
+      projects,
+      threads,
+      planningWorkflows,
+      codeReviewWorkflows,
+      investigationWorkflows,
+    )[0] ?? null
   );
 }

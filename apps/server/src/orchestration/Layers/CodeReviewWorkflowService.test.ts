@@ -126,6 +126,7 @@ function makeReadModel(input: {
     ],
     planningWorkflows: [],
     codeReviewWorkflows: input.workflow ? [input.workflow] : [],
+    investigationWorkflows: [],
     threads: input.threads ?? [],
   };
 }

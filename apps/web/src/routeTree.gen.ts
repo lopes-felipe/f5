@@ -14,6 +14,8 @@ import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatThreadIdRouteImport } from './routes/_chat.$threadId'
 import { Route as ChatWorkflowWorkflowIdRouteImport } from './routes/_chat.workflow.$workflowId'
+import { Route as ChatInvestigationWorkflowIdRouteImport } from './routes/_chat.investigation.$workflowId'
+import { Route as ChatDebugWorkflowIdRouteImport } from './routes/_chat.debug.$workflowId'
 import { Route as ChatCodeReviewWorkflowIdRouteImport } from './routes/_chat.code-review.$workflowId'
 
 const ChatRoute = ChatRouteImport.update({
@@ -40,6 +42,17 @@ const ChatWorkflowWorkflowIdRoute = ChatWorkflowWorkflowIdRouteImport.update({
   path: '/workflow/$workflowId',
   getParentRoute: () => ChatRoute,
 } as any)
+const ChatInvestigationWorkflowIdRoute =
+  ChatInvestigationWorkflowIdRouteImport.update({
+    id: '/investigation/$workflowId',
+    path: '/investigation/$workflowId',
+    getParentRoute: () => ChatRoute,
+  } as any)
+const ChatDebugWorkflowIdRoute = ChatDebugWorkflowIdRouteImport.update({
+  id: '/debug/$workflowId',
+  path: '/debug/$workflowId',
+  getParentRoute: () => ChatRoute,
+} as any)
 const ChatCodeReviewWorkflowIdRoute =
   ChatCodeReviewWorkflowIdRouteImport.update({
     id: '/code-review/$workflowId',
@@ -52,6 +65,8 @@ export interface FileRoutesByFullPath {
   '/$threadId': typeof ChatThreadIdRoute
   '/settings': typeof ChatSettingsRoute
   '/code-review/$workflowId': typeof ChatCodeReviewWorkflowIdRoute
+  '/debug/$workflowId': typeof ChatDebugWorkflowIdRoute
+  '/investigation/$workflowId': typeof ChatInvestigationWorkflowIdRoute
   '/workflow/$workflowId': typeof ChatWorkflowWorkflowIdRoute
 }
 export interface FileRoutesByTo {
@@ -59,6 +74,8 @@ export interface FileRoutesByTo {
   '/settings': typeof ChatSettingsRoute
   '/': typeof ChatIndexRoute
   '/code-review/$workflowId': typeof ChatCodeReviewWorkflowIdRoute
+  '/debug/$workflowId': typeof ChatDebugWorkflowIdRoute
+  '/investigation/$workflowId': typeof ChatInvestigationWorkflowIdRoute
   '/workflow/$workflowId': typeof ChatWorkflowWorkflowIdRoute
 }
 export interface FileRoutesById {
@@ -68,6 +85,8 @@ export interface FileRoutesById {
   '/_chat/settings': typeof ChatSettingsRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/code-review/$workflowId': typeof ChatCodeReviewWorkflowIdRoute
+  '/_chat/debug/$workflowId': typeof ChatDebugWorkflowIdRoute
+  '/_chat/investigation/$workflowId': typeof ChatInvestigationWorkflowIdRoute
   '/_chat/workflow/$workflowId': typeof ChatWorkflowWorkflowIdRoute
 }
 export interface FileRouteTypes {
@@ -77,6 +96,8 @@ export interface FileRouteTypes {
     | '/$threadId'
     | '/settings'
     | '/code-review/$workflowId'
+    | '/debug/$workflowId'
+    | '/investigation/$workflowId'
     | '/workflow/$workflowId'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -84,6 +105,8 @@ export interface FileRouteTypes {
     | '/settings'
     | '/'
     | '/code-review/$workflowId'
+    | '/debug/$workflowId'
+    | '/investigation/$workflowId'
     | '/workflow/$workflowId'
   id:
     | '__root__'
@@ -92,6 +115,8 @@ export interface FileRouteTypes {
     | '/_chat/settings'
     | '/_chat/'
     | '/_chat/code-review/$workflowId'
+    | '/_chat/debug/$workflowId'
+    | '/_chat/investigation/$workflowId'
     | '/_chat/workflow/$workflowId'
   fileRoutesById: FileRoutesById
 }
@@ -136,6 +161,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatWorkflowWorkflowIdRouteImport
       parentRoute: typeof ChatRoute
     }
+    '/_chat/investigation/$workflowId': {
+      id: '/_chat/investigation/$workflowId'
+      path: '/investigation/$workflowId'
+      fullPath: '/investigation/$workflowId'
+      preLoaderRoute: typeof ChatInvestigationWorkflowIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/debug/$workflowId': {
+      id: '/_chat/debug/$workflowId'
+      path: '/debug/$workflowId'
+      fullPath: '/debug/$workflowId'
+      preLoaderRoute: typeof ChatDebugWorkflowIdRouteImport
+      parentRoute: typeof ChatRoute
+    }
     '/_chat/code-review/$workflowId': {
       id: '/_chat/code-review/$workflowId'
       path: '/code-review/$workflowId'
@@ -151,6 +190,8 @@ interface ChatRouteChildren {
   ChatSettingsRoute: typeof ChatSettingsRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatCodeReviewWorkflowIdRoute: typeof ChatCodeReviewWorkflowIdRoute
+  ChatDebugWorkflowIdRoute: typeof ChatDebugWorkflowIdRoute
+  ChatInvestigationWorkflowIdRoute: typeof ChatInvestigationWorkflowIdRoute
   ChatWorkflowWorkflowIdRoute: typeof ChatWorkflowWorkflowIdRoute
 }
 
@@ -159,6 +200,8 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatSettingsRoute: ChatSettingsRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatCodeReviewWorkflowIdRoute: ChatCodeReviewWorkflowIdRoute,
+  ChatDebugWorkflowIdRoute: ChatDebugWorkflowIdRoute,
+  ChatInvestigationWorkflowIdRoute: ChatInvestigationWorkflowIdRoute,
   ChatWorkflowWorkflowIdRoute: ChatWorkflowWorkflowIdRoute,
 }
 

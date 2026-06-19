@@ -31,7 +31,14 @@ import {
 import { sanitizeThreadErrorMessage } from "./transportError";
 import { compareCommandExecutions } from "./lib/commandExecutions";
 import type { AppState } from "./store";
-import type { ChatMessage, CodeReviewWorkflow, Project, Thread, TurnDiffSummary } from "./types";
+import type {
+  ChatMessage,
+  CodeReviewWorkflow,
+  InvestigationWorkflow,
+  Project,
+  Thread,
+  TurnDiffSummary,
+} from "./types";
 
 function updateThread(
   threads: Thread[],
@@ -161,6 +168,23 @@ function upsertCodeReviewWorkflow(
   workflows: CodeReviewWorkflow[],
   workflow: CodeReviewWorkflow,
 ): CodeReviewWorkflow[] {
+  const existingIndex = workflows.findIndex((entry) => entry.id === workflow.id);
+  if (existingIndex < 0) {
+    return [...workflows, workflow];
+  }
+  const existing = workflows[existingIndex];
+  if (existing && areUnknownEqual(existing, workflow)) {
+    return workflows;
+  }
+  const nextWorkflows = [...workflows];
+  nextWorkflows[existingIndex] = workflow;
+  return nextWorkflows;
+}
+
+function upsertInvestigationWorkflow(
+  workflows: InvestigationWorkflow[],
+  workflow: InvestigationWorkflow,
+): InvestigationWorkflow[] {
   const existingIndex = workflows.findIndex((entry) => entry.id === workflow.id);
   if (existingIndex < 0) {
     return [...workflows, workflow];
@@ -690,6 +714,30 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       return codeReviewWorkflows === state.codeReviewWorkflows
         ? state
         : { ...state, codeReviewWorkflows };
+    }
+
+    case "project.investigation-workflow-created":
+    case "project.investigation-workflow-upserted":
+    case "project.debug-workflow-created":
+    case "project.debug-workflow-upserted": {
+      const investigationWorkflows = upsertInvestigationWorkflow(
+        state.investigationWorkflows,
+        event.payload.workflow,
+      );
+      return investigationWorkflows === state.investigationWorkflows
+        ? state
+        : { ...state, investigationWorkflows };
+    }
+
+    case "project.investigation-workflow-deleted":
+    case "project.debug-workflow-deleted": {
+      const investigationWorkflows = removeById(
+        state.investigationWorkflows,
+        event.payload.workflowId,
+      );
+      return investigationWorkflows === state.investigationWorkflows
+        ? state
+        : { ...state, investigationWorkflows };
     }
 
     case "thread.created": {

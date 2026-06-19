@@ -1,5 +1,6 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
+  InvestigationWorkflowId,
   EventId,
   MessageId,
   ProjectId,
@@ -111,6 +112,7 @@ function makeState(thread: Thread): AppState {
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads: [thread],
     threadsHydrated: true,
     lastAppliedSequence: 0,
@@ -170,6 +172,7 @@ function makeReadModel(thread: OrchestrationReadModel["threads"][number]): Orche
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads: [thread],
   };
 }
@@ -187,6 +190,71 @@ function makeReadModelProject(
     deletedAt: null,
     scripts: [],
     memories: [],
+    ...overrides,
+  };
+}
+
+function makeReadModelInvestigationWorkflow(
+  overrides: Partial<OrchestrationReadModel["investigationWorkflows"][number]> = {},
+): OrchestrationReadModel["investigationWorkflows"][number] {
+  const now = "2026-02-27T00:00:00.000Z";
+  return {
+    id: InvestigationWorkflowId.makeUnsafe("investigation-workflow-1"),
+    projectId: ProjectId.makeUnsafe("project-1"),
+    title: "Investigation workflow",
+    slug: "investigation-workflow",
+    problemPrompt: "Investigate the issue",
+    branch: null,
+    selfReviewEnabled: false,
+    investigatorA: {
+      label: "Investigator A",
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      investigationThreadId: ThreadId.makeUnsafe("investigator-a"),
+      investigationStatus: "running",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: null,
+      crossReviewStatus: "not_started",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: null,
+      selfReviewStatus: "not_started",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    investigatorB: {
+      label: "Investigator B",
+      slot: { provider: "claudeAgent", model: "claude-sonnet-4-6" },
+      investigationThreadId: ThreadId.makeUnsafe("investigator-b"),
+      investigationStatus: "running",
+      investigationTurnId: null,
+      investigationMessageId: null,
+      crossReviewThreadId: null,
+      crossReviewStatus: "not_started",
+      crossReviewTurnId: null,
+      crossReviewMessageId: null,
+      selfReviewThreadId: null,
+      selfReviewStatus: "not_started",
+      selfReviewTurnId: null,
+      selfReviewMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    synthesis: {
+      slot: { provider: "codex", model: "gpt-5-codex" },
+      threadId: null,
+      status: "not_started",
+      pinnedTurnId: null,
+      pinnedAssistantMessageId: null,
+      error: null,
+      updatedAt: now,
+    },
+    createdAt: now,
+    updatedAt: now,
+    archivedAt: null,
+    deletedAt: null,
     ...overrides,
   };
 }
@@ -400,6 +468,7 @@ describe("store pure functions", () => {
       ],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [],
       threadsHydrated: true,
       lastAppliedSequence: 0,
@@ -443,6 +512,7 @@ describe("store pure functions", () => {
       ],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [],
       threadsHydrated: true,
       lastAppliedSequence: 0,
@@ -462,6 +532,24 @@ describe("store pure functions", () => {
 });
 
 describe("store read model sync", () => {
+  it("syncs active investigation workflows from full read model snapshots", () => {
+    const initialState = makeState(makeThread());
+    const activeInvestigationWorkflow = makeReadModelInvestigationWorkflow();
+    const deletedInvestigationWorkflow = makeReadModelInvestigationWorkflow({
+      id: InvestigationWorkflowId.makeUnsafe("investigation-workflow-deleted"),
+      slug: "investigation-workflow-deleted",
+      deletedAt: "2026-02-27T00:10:00.000Z",
+    });
+    const readModel = {
+      ...makeReadModel(makeReadModelThread({})),
+      investigationWorkflows: [activeInvestigationWorkflow, deletedInvestigationWorkflow],
+    };
+
+    const next = syncServerReadModel(initialState, readModel);
+
+    expect(next.investigationWorkflows).toEqual([activeInvestigationWorkflow]);
+  });
+
   it("falls back to the codex default for unsupported provider models without an active session", () => {
     const initialState = makeState(makeThread());
     const readModel = makeReadModel(
@@ -480,6 +568,7 @@ describe("store read model sync", () => {
       projects: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [],
       threadsHydrated: false,
       lastAppliedSequence: 0,
@@ -573,6 +662,7 @@ describe("store read model sync", () => {
       ],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [],
       threadsHydrated: true,
       lastAppliedSequence: 0,
@@ -601,6 +691,7 @@ describe("store read model sync", () => {
       ],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [],
     };
 
@@ -1698,6 +1789,7 @@ describe("store read model sync", () => {
       projects: makeState(makeThread()).projects,
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [],
       threadsHydrated: true,
       lastAppliedSequence: 0,

@@ -89,14 +89,18 @@ import type {
   StorageUsageReport,
 } from "./storage";
 import type {
+  OrchestrationArchiveInvestigationWorkflowInput,
   OrchestrationArchiveCodeReviewWorkflowInput,
   OrchestrationArchiveWorkflowInput,
   ClientOrchestrationCommand,
   OrchestrationCreateCodeReviewWorkflowInput,
   OrchestrationCreateCodeReviewWorkflowResult,
+  OrchestrationCreateInvestigationWorkflowInput,
+  OrchestrationCreateInvestigationWorkflowResult,
   OrchestrationCreateWorkflowInput,
   OrchestrationCreateWorkflowResult,
   OrchestrationDeleteCodeReviewWorkflowInput,
+  OrchestrationDeleteInvestigationWorkflowInput,
   OrchestrationDeleteWorkflowInput,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetFullThreadDiffResult,
@@ -121,8 +125,10 @@ import type {
   OrchestrationEvent,
   OrchestrationReadModel,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
   OrchestrationStartImplementationInput,
+  OrchestrationUnarchiveInvestigationWorkflowInput,
   OrchestrationUnarchiveCodeReviewWorkflowInput,
   OrchestrationUnarchiveWorkflowInput,
 } from "./orchestration";
@@ -332,16 +338,31 @@ export interface NativeApi {
     createCodeReviewWorkflow: (
       input: OrchestrationCreateCodeReviewWorkflowInput,
     ) => Promise<OrchestrationCreateCodeReviewWorkflowResult>;
+    createInvestigationWorkflow: (
+      input: OrchestrationCreateInvestigationWorkflowInput,
+    ) => Promise<OrchestrationCreateInvestigationWorkflowResult>;
     archiveCodeReviewWorkflow: (
       input: OrchestrationArchiveCodeReviewWorkflowInput,
+    ) => Promise<void>;
+    archiveInvestigationWorkflow: (
+      input: OrchestrationArchiveInvestigationWorkflowInput,
     ) => Promise<void>;
     unarchiveCodeReviewWorkflow: (
       input: OrchestrationUnarchiveCodeReviewWorkflowInput,
     ) => Promise<void>;
+    unarchiveInvestigationWorkflow: (
+      input: OrchestrationUnarchiveInvestigationWorkflowInput,
+    ) => Promise<void>;
     deleteWorkflow: (input: OrchestrationDeleteWorkflowInput) => Promise<void>;
     deleteCodeReviewWorkflow: (input: OrchestrationDeleteCodeReviewWorkflowInput) => Promise<void>;
+    deleteInvestigationWorkflow: (
+      input: OrchestrationDeleteInvestigationWorkflowInput,
+    ) => Promise<void>;
     retryWorkflow: (input: OrchestrationRetryWorkflowInput) => Promise<void>;
     retryCodeReviewWorkflow: (input: OrchestrationRetryCodeReviewWorkflowInput) => Promise<void>;
+    retryInvestigationWorkflow: (
+      input: OrchestrationRetryInvestigationWorkflowInput,
+    ) => Promise<void>;
     startImplementation: (input: OrchestrationStartImplementationInput) => Promise<void>;
     onDomainEvent: (callback: (event: OrchestrationEvent) => void) => () => void;
   };

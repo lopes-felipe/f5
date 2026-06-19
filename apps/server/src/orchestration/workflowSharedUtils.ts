@@ -229,10 +229,13 @@ export interface AssistantFeedback {
  * feedback alongside a `source` tag so callers can observe whether reasoning was the sole
  * source of the feedback (useful for logging / telemetry).
  */
-function formatAssistantFeedback(message: {
-  readonly text: string;
-  readonly reasoningText?: string | undefined;
-}): AssistantFeedback | null {
+function formatAssistantFeedback(
+  message: {
+    readonly text: string;
+    readonly reasoningText?: string | undefined;
+  },
+  combinedReasoningHeading = "Reviewer reasoning",
+): AssistantFeedback | null {
   const text = message.text.trim();
   const reasoning = (message.reasoningText ?? "").trim();
   if (text.length === 0 && reasoning.length === 0) {
@@ -245,7 +248,7 @@ function formatAssistantFeedback(message: {
     return { text, source: "text-only" };
   }
   return {
-    text: `${text}\n\n## Reviewer reasoning\n\n${reasoning}`,
+    text: `${text}\n\n## ${combinedReasoningHeading}\n\n${reasoning}`,
     source: "combined",
   };
 }
@@ -264,7 +267,11 @@ export function latestAssistantFeedback(
     }>;
   },
   preferredAssistantMessageId?: string | null,
+  options?: {
+    readonly combinedReasoningHeading?: string;
+  },
 ): AssistantFeedback | null {
+  const combinedReasoningHeading = options?.combinedReasoningHeading ?? "Reviewer reasoning";
   const resolvedPreferredAssistantMessageId =
     preferredAssistantMessageId ?? thread.latestTurn?.assistantMessageId ?? null;
   if (resolvedPreferredAssistantMessageId) {
@@ -272,7 +279,7 @@ export function latestAssistantFeedback(
       (message) => message.id === resolvedPreferredAssistantMessageId,
     );
     if (preferred && preferred.role === "assistant") {
-      const formatted = formatAssistantFeedback(preferred);
+      const formatted = formatAssistantFeedback(preferred, combinedReasoningHeading);
       if (formatted !== null) {
         return formatted;
       }
@@ -283,11 +290,22 @@ export function latestAssistantFeedback(
     if (message.role !== "assistant" || message.streaming) {
       continue;
     }
-    const formatted = formatAssistantFeedback(message);
+    const formatted = formatAssistantFeedback(message, combinedReasoningHeading);
     if (formatted !== null) {
       return formatted;
     }
   }
 
   return null;
+}
+
+export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000): string {
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const marker = "\n\n[... upstream report truncated; middle omitted ...]\n\n";
+  const remaining = Math.max(0, maxChars - marker.length);
+  const headLength = Math.ceil(remaining * 0.6);
+  const tailLength = Math.floor(remaining * 0.4);
+  return `${text.slice(0, headLength)}${marker}${text.slice(text.length - tailLength)}`;
 }

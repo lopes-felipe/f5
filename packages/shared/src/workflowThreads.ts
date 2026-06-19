@@ -1,4 +1,9 @@
-import type { CodeReviewWorkflow, PlanningWorkflow, ThreadId } from "@t3tools/contracts";
+import type {
+  CodeReviewWorkflow,
+  InvestigationWorkflow,
+  PlanningWorkflow,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { isArchivedWorkflow } from "./workflowArchive";
 
@@ -26,9 +31,22 @@ export function threadIdsForCodeReviewWorkflow(workflow: CodeReviewWorkflow): Th
   ]);
 }
 
+export function threadIdsForInvestigationWorkflow(workflow: InvestigationWorkflow): ThreadId[] {
+  return compactThreadIds([
+    workflow.investigatorA.investigationThreadId,
+    workflow.investigatorB.investigationThreadId,
+    workflow.investigatorA.crossReviewThreadId,
+    workflow.investigatorB.crossReviewThreadId,
+    workflow.investigatorA.selfReviewThreadId,
+    workflow.investigatorB.selfReviewThreadId,
+    workflow.synthesis.threadId,
+  ]);
+}
+
 export function archivedWorkflowThreadIds(
   planningWorkflows: ReadonlyArray<PlanningWorkflow>,
   codeReviewWorkflows: ReadonlyArray<CodeReviewWorkflow>,
+  investigationWorkflows: ReadonlyArray<InvestigationWorkflow>,
 ): Set<ThreadId> {
   const threadIds = new Set<ThreadId>();
 
@@ -46,6 +64,15 @@ export function archivedWorkflowThreadIds(
       continue;
     }
     for (const threadId of threadIdsForCodeReviewWorkflow(workflow)) {
+      threadIds.add(threadId);
+    }
+  }
+
+  for (const workflow of investigationWorkflows) {
+    if (!isArchivedWorkflow(workflow)) {
+      continue;
+    }
+    for (const threadId of threadIdsForInvestigationWorkflow(workflow)) {
       threadIds.add(threadId);
     }
   }

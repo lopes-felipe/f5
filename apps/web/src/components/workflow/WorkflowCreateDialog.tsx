@@ -13,6 +13,7 @@ import type {
   ProviderKind,
   ProviderModelOptions,
 } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
 import {
   getDefaultModel,
   getDefaultReasoningEffort,
@@ -375,6 +376,7 @@ export function ProviderFields(props: {
 }
 
 export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
+  const navigate = useNavigate();
   const { settings } = useAppSettings();
   const { resolvedTheme } = useTheme();
   const project = useStore(
@@ -383,7 +385,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const initialBranchADefaults = getWorkflowSlotDefaults("branchA", "codex");
   const initialBranchBDefaults = getWorkflowSlotDefaults("branchB", "claudeAgent");
   const initialMergeDefaults = getWorkflowSlotDefaults("merge", "codex");
-  const [workflowType, setWorkflowType] = useState<"planning" | "codeReview">("planning");
+  const [workflowType, setWorkflowType] = useState<"planning" | "codeReview" | "investigation">(
+    "planning",
+  );
   const [requirementPrompt, setRequirementPrompt] = useState("");
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
   const [reviewBranch, setReviewBranch] = useState("");
@@ -408,6 +412,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     initialMergeDefaults.modelOptions,
   );
   const [selfReviewEnabled, setSelfReviewEnabled] = useState(true);
+  const [investigationSelfReviewEnabled, setInvestigationSelfReviewEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOverPrompt, setIsDragOverPrompt] = useState(false);
@@ -434,7 +439,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const mergeSelection = resolveWorkflowModelSelection(mergeProvider, mergeModel);
   const titleGenerationModel = resolveThreadTitleModel(settings);
   const workspaceRoots = [project?.cwd];
-  const canSubmit = requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0;
+  const sameInvestigationInvestigatorModel =
+    workflowType === "investigation" &&
+    branchAProvider === branchBProvider &&
+    branchASelection === branchBSelection;
+  const canSubmit =
+    (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
+    !sameInvestigationInvestigatorModel;
 
   const focusPromptEditor = () => {
     promptTextareaRef.current?.focus();
@@ -460,6 +471,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setMergeModel(mergeDefaults.model);
     setMergeModelOptions(mergeDefaults.modelOptions);
     setSelfReviewEnabled(true);
+    setInvestigationSelfReviewEnabled(false);
     setError(null);
     setIsDragOverPrompt(false);
     dragDepthRef.current = 0;
@@ -647,7 +659,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
-      } else {
+      } else if (workflowType === "codeReview") {
         const result = await api.orchestration.createCodeReviewWorkflow({
           projectId: props.projectId,
           reviewPrompt: promptForSubmission,
@@ -702,6 +714,71 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
+      } else {
+        if (sameInvestigationInvestigatorModel) {
+          setError("Choose two different investigator models for Investigation workflows.");
+          setSubmitting(false);
+          return;
+        }
+        const result = await api.orchestration.createInvestigationWorkflow({
+          projectId: props.projectId,
+          problemPrompt: promptForSubmission,
+          titleGenerationModel,
+          ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
+          selfReviewEnabled: investigationSelfReviewEnabled,
+          investigatorA: {
+            provider: branchAProvider,
+            model: branchASelection,
+            ...(normalizeWorkflowSlotModelOptions(
+              branchAProvider,
+              branchASelection,
+              branchAModelOptions,
+            )
+              ? {
+                  modelOptions: normalizeWorkflowSlotModelOptions(
+                    branchAProvider,
+                    branchASelection,
+                    branchAModelOptions,
+                  ),
+                }
+              : {}),
+          },
+          investigatorB: {
+            provider: branchBProvider,
+            model: branchBSelection,
+            ...(normalizeWorkflowSlotModelOptions(
+              branchBProvider,
+              branchBSelection,
+              branchBModelOptions,
+            )
+              ? {
+                  modelOptions: normalizeWorkflowSlotModelOptions(
+                    branchBProvider,
+                    branchBSelection,
+                    branchBModelOptions,
+                  ),
+                }
+              : {}),
+          },
+          synthesis: {
+            provider: mergeProvider,
+            model: mergeSelection,
+            ...(normalizeWorkflowSlotModelOptions(mergeProvider, mergeSelection, mergeModelOptions)
+              ? {
+                  modelOptions: normalizeWorkflowSlotModelOptions(
+                    mergeProvider,
+                    mergeSelection,
+                    mergeModelOptions,
+                  ),
+                }
+              : {}),
+          },
+        });
+        props.onWorkflowCreated?.(result.workflowId);
+        await navigate({
+          to: "/investigation/$workflowId",
+          params: { workflowId: result.workflowId },
+        });
       }
       reset();
       props.onOpenChange(false);
@@ -717,12 +794,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
-            Create either a feature workflow or a standalone code review workflow. The title will be
+            Create a feature workflow, code review, or root-cause investigation. The title will be
             generated from your prompt.
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
-          <div className="grid grid-cols-2 gap-2 rounded-md border border-input bg-background p-1">
+          <div className="grid grid-cols-3 gap-2 rounded-md border border-input bg-background p-1">
             <button
               type="button"
               className={`rounded-sm px-3 py-2 text-sm ${
@@ -745,10 +822,25 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             >
               Code Review
             </button>
+            <button
+              type="button"
+              className={`rounded-sm px-3 py-2 text-sm ${
+                workflowType === "investigation"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground"
+              }`}
+              onClick={() => setWorkflowType("investigation")}
+            >
+              Investigation
+            </button>
           </div>
           <div className="space-y-2">
             <label className="block text-sm font-medium text-foreground">
-              {workflowType === "planning" ? "Requirement" : "Review instructions"}
+              {workflowType === "planning"
+                ? "Requirement"
+                : workflowType === "investigation"
+                  ? "Problem to investigate"
+                  : "Review instructions"}
             </label>
             <div
               className={`space-y-3 rounded-md border bg-background px-3 py-2 ${
@@ -802,13 +894,21 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
                 placeholder={
                   workflowType === "planning"
                     ? "Describe the feature or requirement to plan."
-                    : "Describe what the reviewers should inspect and how they should review it."
+                    : workflowType === "investigation"
+                      ? "Describe the problem, symptoms, suspected regression, or evidence to investigate."
+                      : "Describe what the reviewers should inspect and how they should review it."
                 }
               />
             </div>
           </div>
           <ProviderFields
-            label={workflowType === "planning" ? "Author A" : "Reviewer A"}
+            label={
+              workflowType === "planning"
+                ? "Author A"
+                : workflowType === "investigation"
+                  ? "Investigator A"
+                  : "Reviewer A"
+            }
             provider={branchAProvider}
             model={branchASelection}
             modelOptions={branchAModelOptions}
@@ -830,7 +930,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             }}
           />
           <ProviderFields
-            label={workflowType === "planning" ? "Author B" : "Reviewer B"}
+            label={
+              workflowType === "planning"
+                ? "Author B"
+                : workflowType === "investigation"
+                  ? "Investigator B"
+                  : "Reviewer B"
+            }
             provider={branchBProvider}
             model={branchBSelection}
             modelOptions={branchBModelOptions}
@@ -852,7 +958,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             }}
           />
           <ProviderFields
-            label={workflowType === "planning" ? "Merge" : "Consolidation"}
+            label={
+              workflowType === "planning"
+                ? "Merge"
+                : workflowType === "investigation"
+                  ? "Synthesis"
+                  : "Consolidation"
+            }
             provider={mergeProvider}
             model={mergeSelection}
             modelOptions={mergeModelOptions}
@@ -902,18 +1014,47 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               </div>
             </>
           ) : (
-            <div className="space-y-2">
-              <label className="block text-sm font-medium text-foreground">
-                Compare against branch
-              </label>
-              <input
-                className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
-                value={reviewBranch}
-                onChange={(event) => setReviewBranch(event.target.value)}
-                placeholder="main"
-              />
-            </div>
+            <>
+              <div className="space-y-2">
+                <label className="block text-sm font-medium text-foreground">
+                  {workflowType === "investigation"
+                    ? "Compare against branch (optional)"
+                    : "Compare against branch"}
+                </label>
+                <input
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={reviewBranch}
+                  onChange={(event) => setReviewBranch(event.target.value)}
+                  placeholder="main"
+                />
+              </div>
+              {workflowType === "investigation" ? (
+                <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
+                  <label className="flex items-start gap-3">
+                    <Checkbox
+                      checked={investigationSelfReviewEnabled}
+                      onCheckedChange={(checked) =>
+                        setInvestigationSelfReviewEnabled(checked === true)
+                      }
+                    />
+                    <span className="space-y-1">
+                      <span className="block text-sm font-medium text-foreground">
+                        Own-model review
+                      </span>
+                      <span className="block text-sm text-muted-foreground">
+                        After investigation, each model audits its own RCA in a separate clean chat.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              ) : null}
+            </>
           )}
+          {sameInvestigationInvestigatorModel ? (
+            <p className="text-sm text-red-500">
+              Investigation workflows require two different investigator models.
+            </p>
+          ) : null}
           <p className="text-sm text-muted-foreground">
             Workflow titles are generated automatically using the thread title model.
           </p>

@@ -390,6 +390,7 @@ function createSnapshotForTargetUser(options: {
     ],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     threads: [
       {
         id: THREAD_ID,
@@ -1832,6 +1833,7 @@ describe("ChatView timeline (full app)", () => {
       threads: [],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threadsHydrated: false,
       // Prevent cross-test leakage: a previous test's snapshot bumps
       // `lastAppliedSequence` and may leave buffered detail events on this
@@ -4272,6 +4274,7 @@ describe("ChatView timeline (full app)", () => {
       ],
       planningWorkflows: [],
       codeReviewWorkflows: [],
+      investigationWorkflows: [],
       threads: [
         {
           id: THREAD_ID,

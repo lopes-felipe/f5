@@ -15,6 +15,7 @@ export * from "./mcp";
 export * from "./mcpServer";
 export * from "./planningWorkflow";
 export * from "./codeReviewWorkflow";
+export * from "./investigationWorkflow";
 export * from "./editor";
 export * from "./project";
 export * from "./filesystem";

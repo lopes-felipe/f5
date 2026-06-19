@@ -504,6 +504,7 @@ it.layer(testLayer)("server CLI command", (it) => {
           projects: [{} as OrchestrationReadModel["projects"][number]],
           planningWorkflows: [],
           codeReviewWorkflows: [],
+          investigationWorkflows: [],
           threads: [
             {} as OrchestrationReadModel["threads"][number],
             {} as OrchestrationReadModel["threads"][number],

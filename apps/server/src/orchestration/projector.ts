@@ -1,6 +1,7 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
 import {
   CodeReviewWorkflow,
+  InvestigationWorkflow,
   isKnownProviderKind,
   PlanningWorkflow,
   OrchestrationCheckpointSummary,
@@ -31,6 +32,9 @@ import {
   ProjectCodeReviewWorkflowCreatedPayload,
   ProjectCodeReviewWorkflowDeletedPayload,
   ProjectCodeReviewWorkflowUpsertedPayload,
+  ProjectInvestigationWorkflowCreatedPayload,
+  ProjectInvestigationWorkflowDeletedPayload,
+  ProjectInvestigationWorkflowUpsertedPayload,
   ProjectMetaUpdatedPayload,
   ThreadActivityAppendedPayload,
   ThreadArchivedPayload,
@@ -224,6 +228,7 @@ export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
     threads: [],
     planningWorkflows: [],
     codeReviewWorkflows: [],
+    investigationWorkflows: [],
     updatedAt: nowIso,
   };
 }
@@ -522,6 +527,81 @@ export function projectEvent(
         Effect.map((payload) => ({
           ...nextBase,
           codeReviewWorkflows: nextBase.codeReviewWorkflows.map((workflow) =>
+            workflow.id === payload.workflowId
+              ? {
+                  ...workflow,
+                  deletedAt: payload.deletedAt,
+                  updatedAt: payload.deletedAt,
+                }
+              : workflow,
+          ),
+        })),
+      );
+
+    case "project.investigation-workflow-created":
+    case "project.debug-workflow-created":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ProjectInvestigationWorkflowCreatedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const workflow = yield* decodeForEvent(
+          InvestigationWorkflow,
+          payload.workflow,
+          event.type,
+          "workflow",
+        );
+        const existing = nextBase.investigationWorkflows.find((entry) => entry.id === workflow.id);
+        return {
+          ...nextBase,
+          investigationWorkflows: existing
+            ? nextBase.investigationWorkflows.map((entry) =>
+                entry.id === workflow.id ? workflow : entry,
+              )
+            : [...nextBase.investigationWorkflows, workflow],
+        };
+      });
+
+    case "project.investigation-workflow-upserted":
+    case "project.debug-workflow-upserted":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ProjectInvestigationWorkflowUpsertedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const workflow = yield* decodeForEvent(
+          InvestigationWorkflow,
+          payload.workflow,
+          event.type,
+          "workflow",
+        );
+        return {
+          ...nextBase,
+          investigationWorkflows: nextBase.investigationWorkflows.some(
+            (entry) => entry.id === workflow.id,
+          )
+            ? nextBase.investigationWorkflows.map((entry) =>
+                entry.id === workflow.id ? workflow : entry,
+              )
+            : [...nextBase.investigationWorkflows, workflow],
+        };
+      });
+
+    case "project.investigation-workflow-deleted":
+    case "project.debug-workflow-deleted":
+      return decodeForEvent(
+        ProjectInvestigationWorkflowDeletedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          investigationWorkflows: nextBase.investigationWorkflows.map((workflow) =>
             workflow.id === payload.workflowId
               ? {
                   ...workflow,
