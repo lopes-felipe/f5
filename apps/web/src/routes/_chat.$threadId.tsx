@@ -58,6 +58,7 @@ import {
 } from "~/components/ui/sidebar";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const FileBrowserPanel = lazy(() => import("../components/FileBrowserPanel"));
 const FileViewPanel = lazy(() => import("../components/FileViewPanel"));
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
@@ -97,6 +98,22 @@ const LazyFileViewPanel = (props: {
         <FileViewPanel mode={props.mode} surface={props.surface} onClose={props.onClose} />
       </Suspense>
     </DiffWorkerPoolProvider>
+  );
+};
+
+const LazyFileBrowserPanel = (props: {
+  cwd: string | null;
+  projectName: string;
+  onOpenFile: (relativePath: string) => void;
+}) => {
+  return (
+    <Suspense fallback={<DiffPanelLoadingState label="Loading workspace files..." />}>
+      <FileBrowserPanel
+        cwd={props.cwd}
+        projectName={props.projectName}
+        onOpenFile={props.onOpenFile}
+      />
+    </Suspense>
   );
 };
 
@@ -361,6 +378,8 @@ function ChatThreadRouteView() {
   );
   const markdownCwd = thread?.worktreePath ?? activeProject?.cwd ?? undefined;
   const workspaceRoot = activeProject?.cwd ?? undefined;
+  const workspaceBrowserRoot = thread?.worktreePath ?? activeProject?.cwd ?? null;
+  const workspaceBrowserName = activeProject?.name ?? "Workspace";
   const { copyToClipboard } = useCopyToClipboard<{ relativePath: string }>({
     onCopy: ({ relativePath }) => {
       toastManager.add({
@@ -499,6 +518,28 @@ function ChatThreadRouteView() {
     useRightPanelStore.getState().open(threadId, "plan");
   }, [threadId]);
 
+  const openFiles = useCallback(() => {
+    useRightPanelStore.getState().open(threadId, "files");
+  }, [threadId]);
+
+  const openWorkspaceFile = useCallback(
+    (relativePath: string) => {
+      const surface: FileRightPanelSurface = {
+        id: `file:${relativePath}`,
+        kind: "file",
+        relativePath,
+      };
+      useRightPanelStore.getState().openFile(threadId, { relativePath });
+      void navigate({
+        to: "/$threadId",
+        params: { threadId },
+        replace: true,
+        search: (previous) => setSearchParamsForSurface(previous, surface),
+      });
+    },
+    [navigate, threadId],
+  );
+
   const closeOtherSurfaces = useCallback(
     (surface: RightPanelSurface) => {
       const removed = rightPanelState.surfaces.filter((entry) => entry.id !== surface.id);
@@ -604,9 +645,10 @@ function ChatThreadRouteView() {
             );
           case "files":
             return (
-              <RightPanelUnavailableSurface
-                title="Files are not available yet"
-                description="Workspace browsing will attach to this panel surface in a later feature."
+              <LazyFileBrowserPanel
+                cwd={workspaceBrowserRoot}
+                projectName={workspaceBrowserName}
+                onOpenFile={openWorkspaceFile}
               />
             );
           case "preview":
@@ -623,7 +665,10 @@ function ChatThreadRouteView() {
       activeProposedPlan,
       closeRightPanelSurface,
       markdownCwd,
+      openWorkspaceFile,
       settings.timestampFormat,
+      workspaceBrowserName,
+      workspaceBrowserRoot,
       workspaceRoot,
     ],
   );
@@ -641,11 +686,11 @@ function ChatThreadRouteView() {
         onCloseAllSurfaces={closeAllSurfaces}
         onCopyFilePath={(relativePath) => copyToClipboard(relativePath, { relativePath })}
         onAddPreview={() => undefined}
-        onAddFiles={() => undefined}
+        onAddFiles={openFiles}
         onAddDiff={openDiff}
         onAddPlan={openPlan}
         previewAvailable={false}
-        filesAvailable={false}
+        filesAvailable={routeThreadExists && !!workspaceBrowserRoot}
         diffAvailable={routeThreadExists}
         planAvailable={routeThreadExists}
       />
@@ -658,10 +703,12 @@ function ChatThreadRouteView() {
       copyToClipboard,
       activateRightPanelSurface,
       openDiff,
+      openFiles,
       openPlan,
       renderRightPanelSurface,
       rightPanelState,
       routeThreadExists,
+      workspaceBrowserRoot,
     ],
   );
 

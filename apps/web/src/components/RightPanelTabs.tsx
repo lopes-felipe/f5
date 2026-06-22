@@ -29,7 +29,7 @@ type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-r
 
 const SURFACE_DISABLED_REASONS = {
   preview: "Preview is not available in this build.",
-  files: "Workspace file browser is not available yet.",
+  files: "Workspace files are available after opening a project thread.",
   diff: "Diff is available after opening a thread.",
   plan: "Plan is available after opening a thread.",
 } as const satisfies Record<AddableSurface, string>;

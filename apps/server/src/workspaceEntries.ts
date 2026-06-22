@@ -9,6 +9,8 @@ import {
   type FilesystemBrowseInput,
   type FilesystemBrowseResult,
   ProjectEntry,
+  ProjectListEntriesInput,
+  ProjectListEntriesResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
 } from "@t3tools/contracts";
@@ -19,8 +21,12 @@ const workspaceEntriesLogger = createLogger("workspaceEntries");
 const WORKSPACE_CACHE_TTL_MS = 15_000;
 const WORKSPACE_CACHE_MAX_KEYS = 4;
 const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
+const WORKSPACE_LIST_ENTRIES_DEFAULT_LIMIT = 5_000;
 const WORKSPACE_SCAN_READDIR_CONCURRENCY = 32;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
+const WORKSPACE_FFF_SEARCH_PAGE_SIZE_MULTIPLIER = 4;
+const WORKSPACE_FFF_CACHE_IDLE_TTL_MS = 15 * 60_000;
+const WORKSPACE_FFF_CACHE_MAX_KEYS = 4;
 const IGNORED_DIRECTORY_NAMES = new Set([
   ".git",
   ".convex",
@@ -52,6 +58,53 @@ interface RankedWorkspaceEntry {
 const workspaceIndexCache = new Map<string, WorkspaceIndex>();
 const inFlightWorkspaceIndexBuilds = new Map<string, Promise<WorkspaceIndex>>();
 
+type FffItemType = "file" | "directory";
+
+interface FffMixedItem {
+  type: FffItemType;
+  item: {
+    relativePath: string;
+  };
+}
+
+interface FffMixedSearchResult {
+  items: FffMixedItem[];
+  totalMatched: number;
+}
+
+type FffResult<T> = { ok: true; value: T } | { ok: false; error: string };
+
+interface FffFileFinder {
+  mixedSearch: (query: string, options: { pageSize: number }) => FffResult<FffMixedSearchResult>;
+  isScanning: () => boolean;
+  destroy: () => void;
+}
+
+interface FffModule {
+  FileFinder: {
+    create: (options: {
+      basePath: string;
+      disableMmapCache: boolean;
+      disableContentIndexing: boolean;
+      aiMode: boolean;
+      enableFsRootScanning: boolean;
+      enableHomeDirScanning: boolean;
+    }) => FffResult<FffFileFinder>;
+  };
+}
+
+interface WorkspaceFffIndex {
+  finder: FffFileFinder;
+  lastAccessedAt: number;
+}
+
+let fffModuleLoadFailed = false;
+let fffModulePromise: Promise<FffModule | null> | null = null;
+let fffModuleLoader: () => Promise<FffModule> = () =>
+  import("@ff-labs/fff-node") as Promise<FffModule>;
+
+const workspaceFffIndexCache = new Map<string, Promise<WorkspaceFffIndex>>();
+
 function toPosixPath(input: string): string {
   return input.split(path.sep).join("/");
 }
@@ -79,6 +132,115 @@ function toSearchableWorkspaceEntry(entry: ProjectEntry): SearchableWorkspaceEnt
     normalizedPath,
     normalizedName: basenameOf(normalizedPath),
   };
+}
+
+function trimTrailingDirectorySeparator(input: string): string {
+  return input.endsWith("/") ? input.slice(0, -1) : input;
+}
+
+function mapFffItemToProjectEntry(item: FffMixedItem): ProjectEntry | null {
+  const normalizedPath = trimTrailingDirectorySeparator(toPosixPath(item.item.relativePath));
+  if (!normalizedPath) {
+    return null;
+  }
+  return {
+    path: normalizedPath,
+    kind: item.type,
+    parentPath: parentPathOf(normalizedPath),
+  };
+}
+
+async function loadFffModule(): Promise<FffModule | null> {
+  if (!fffModulePromise) {
+    fffModulePromise = fffModuleLoader().catch((cause) => {
+      if (!fffModuleLoadFailed) {
+        fffModuleLoadFailed = true;
+        workspaceEntriesLogger.warn("Workspace typo-tolerant search is unavailable", {
+          cause: cause instanceof Error ? cause.message : String(cause),
+        });
+      }
+      return null;
+    });
+  }
+  return fffModulePromise;
+}
+
+async function createWorkspaceFffIndex(cwd: string): Promise<WorkspaceFffIndex> {
+  const fffModule = await loadFffModule();
+  if (!fffModule) {
+    throw new Error("Workspace typo-tolerant search module is unavailable.");
+  }
+
+  const created = fffModule.FileFinder.create({
+    basePath: cwd,
+    disableMmapCache: true,
+    disableContentIndexing: true,
+    aiMode: false,
+    enableFsRootScanning: false,
+    enableHomeDirScanning: false,
+  });
+  if (!created.ok) {
+    throw new Error(created.error);
+  }
+
+  return {
+    finder: created.value,
+    lastAccessedAt: Date.now(),
+  };
+}
+
+function destroyWorkspaceFffIndex(cwd: string): void {
+  const cached = workspaceFffIndexCache.get(cwd);
+  if (!cached) {
+    return;
+  }
+  workspaceFffIndexCache.delete(cwd);
+  void cached.then(
+    (index) => {
+      index.finder.destroy();
+    },
+    () => undefined,
+  );
+}
+
+function pruneWorkspaceFffIndexCache(): void {
+  const now = Date.now();
+  for (const [cwd, cached] of workspaceFffIndexCache) {
+    void cached.then(
+      (index) => {
+        if (now - index.lastAccessedAt > WORKSPACE_FFF_CACHE_IDLE_TTL_MS) {
+          destroyWorkspaceFffIndex(cwd);
+        }
+      },
+      () => {
+        workspaceFffIndexCache.delete(cwd);
+      },
+    );
+  }
+
+  while (workspaceFffIndexCache.size > WORKSPACE_FFF_CACHE_MAX_KEYS) {
+    const oldestKey = workspaceFffIndexCache.keys().next().value;
+    if (!oldestKey) break;
+    destroyWorkspaceFffIndex(oldestKey);
+  }
+}
+
+async function getWorkspaceFffIndex(cwd: string): Promise<WorkspaceFffIndex> {
+  pruneWorkspaceFffIndexCache();
+
+  const cached = workspaceFffIndexCache.get(cwd);
+  if (cached) {
+    const index = await cached;
+    index.lastAccessedAt = Date.now();
+    return index;
+  }
+
+  const next = createWorkspaceFffIndex(cwd).catch((cause) => {
+    workspaceFffIndexCache.delete(cwd);
+    throw cause;
+  });
+  workspaceFffIndexCache.set(cwd, next);
+  return next;
 }
 
 function normalizeQuery(input: string): string {
@@ -541,17 +703,33 @@ async function getWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
   return nextPromise;
 }
 
-export function clearWorkspaceIndexCache(cwd: string): void {
+export function clearWorkspaceIndexCache(
+  cwd: string,
+  options: { destroySearchIndex?: boolean } = {},
+): void {
   workspaceIndexCache.delete(cwd);
   inFlightWorkspaceIndexBuilds.delete(cwd);
+  if (options.destroySearchIndex ?? true) {
+    destroyWorkspaceFffIndex(cwd);
+  }
 }
 
-export async function searchWorkspaceEntries(
-  input: ProjectSearchEntriesInput,
-): Promise<ProjectSearchEntriesResult> {
-  const index = await getWorkspaceIndex(input.cwd);
-  const normalizedQuery = normalizeQuery(input.query);
-  const limit = Math.max(0, Math.floor(input.limit));
+export function setWorkspaceFffModuleLoaderForTests(
+  loader: (() => Promise<FffModule>) | null,
+): void {
+  fffModuleLoader = loader ?? (() => import("@ff-labs/fff-node") as Promise<FffModule>);
+  fffModulePromise = null;
+  fffModuleLoadFailed = false;
+  for (const cwd of workspaceFffIndexCache.keys()) {
+    destroyWorkspaceFffIndex(cwd);
+  }
+}
+
+function rankWorkspaceEntriesFromIndex(
+  index: WorkspaceIndex,
+  normalizedQuery: string,
+  limit: number,
+): ProjectSearchEntriesResult {
   const rankedEntries: RankedWorkspaceEntry[] = [];
   let matchedEntryCount = 0;
 
@@ -568,6 +746,125 @@ export async function searchWorkspaceEntries(
   return {
     entries: rankedEntries.map((candidate) => candidate.entry),
     truncated: index.truncated || matchedEntryCount > limit,
+  };
+}
+
+async function searchWorkspaceEntriesWithFff(params: {
+  cwd: string;
+  index: WorkspaceIndex;
+  normalizedQuery: string;
+  limit: number;
+  existingPaths: ReadonlySet<string>;
+}): Promise<ProjectSearchEntriesResult | null> {
+  if (!params.normalizedQuery || params.limit <= 0) {
+    return null;
+  }
+
+  const entryByPath = new Map(params.index.entries.map((entry) => [entry.path, entry]));
+  const pageSize = Math.min(
+    WORKSPACE_INDEX_MAX_ENTRIES,
+    Math.max(params.limit + 1, params.limit * WORKSPACE_FFF_SEARCH_PAGE_SIZE_MULTIPLIER),
+  );
+
+  try {
+    const fffIndex = await getWorkspaceFffIndex(params.cwd);
+    if (fffIndex.finder.isScanning()) {
+      return null;
+    }
+    const result = fffIndex.finder.mixedSearch(params.normalizedQuery, { pageSize });
+    if (!result.ok) {
+      workspaceEntriesLogger.warn("Workspace typo-tolerant search failed", {
+        cwd: params.cwd,
+        reason: result.error,
+      });
+      return null;
+    }
+
+    const entries: ProjectEntry[] = [];
+    const seenPaths = new Set<string>(params.existingPaths);
+    for (const item of result.value.items) {
+      const fffEntry = mapFffItemToProjectEntry(item);
+      if (!fffEntry || seenPaths.has(fffEntry.path)) {
+        continue;
+      }
+
+      const indexedEntry = entryByPath.get(fffEntry.path);
+      if (!indexedEntry || indexedEntry.kind !== fffEntry.kind) {
+        continue;
+      }
+
+      seenPaths.add(indexedEntry.path);
+      entries.push(indexedEntry);
+      if (entries.length >= params.limit) {
+        break;
+      }
+    }
+
+    return {
+      entries,
+      truncated: params.index.truncated || result.value.totalMatched > pageSize,
+    };
+  } catch (cause) {
+    workspaceEntriesLogger.warn("Workspace typo-tolerant search unavailable for workspace", {
+      cwd: params.cwd,
+      cause: cause instanceof Error ? cause.message : String(cause),
+    });
+    return null;
+  }
+}
+
+export async function listWorkspaceEntries(
+  input: ProjectListEntriesInput,
+): Promise<ProjectListEntriesResult> {
+  const index = await getWorkspaceIndex(input.cwd);
+  const limit = input.limit ?? WORKSPACE_LIST_ENTRIES_DEFAULT_LIMIT;
+  const sortedEntries = index.entries
+    .map(
+      (entry): ProjectEntry => ({
+        path: entry.path,
+        kind: entry.kind,
+        ...(entry.parentPath ? { parentPath: entry.parentPath } : {}),
+      }),
+    )
+    .toSorted((left, right) => {
+      if (left.kind !== right.kind) {
+        return left.kind === "directory" ? -1 : 1;
+      }
+      return left.path.localeCompare(right.path);
+    });
+
+  return {
+    entries: sortedEntries.slice(0, limit),
+    truncated: index.truncated || sortedEntries.length > limit,
+    totalEntries: sortedEntries.length,
+  };
+}
+
+export async function searchWorkspaceEntries(
+  input: ProjectSearchEntriesInput,
+): Promise<ProjectSearchEntriesResult> {
+  const index = await getWorkspaceIndex(input.cwd);
+  const normalizedQuery = normalizeQuery(input.query);
+  const limit = Math.max(0, Math.floor(input.limit));
+  const rankedResult = rankWorkspaceEntriesFromIndex(index, normalizedQuery, limit);
+  if (!normalizedQuery || rankedResult.entries.length > 0) {
+    return rankedResult;
+  }
+
+  const fffResult = await searchWorkspaceEntriesWithFff({
+    cwd: input.cwd,
+    index,
+    normalizedQuery,
+    limit,
+    existingPaths: new Set(),
+  });
+  if (!fffResult || fffResult.entries.length === 0) {
+    return rankedResult;
+  }
+
+  return {
+    entries: [...rankedResult.entries, ...fffResult.entries].slice(0, limit),
+    truncated: rankedResult.truncated || fffResult.truncated,
   };
 }
 

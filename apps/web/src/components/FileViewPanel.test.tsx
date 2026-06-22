@@ -31,6 +31,7 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (input: unknown) => useQueryMock(input),
+  useQueryClient: () => ({ setQueryData: vi.fn() }),
   queryOptions: (input: unknown) => input,
 }));
 
@@ -233,5 +234,24 @@ describe("FileViewPanel", () => {
         column: 7,
       }),
     ).toBe("/repo/project/src/app.ts:42:7");
+  });
+
+  it("keeps newer local edits when an older saved snapshot reaches the cache", async () => {
+    const { reconcileDraftContents } = await import("./FileViewPanel");
+
+    expect(
+      reconcileDraftContents({
+        currentDraft: "saved snapshot\nnew unsaved line\n",
+        incomingContents: "saved snapshot\n",
+        editing: true,
+      }),
+    ).toBe("saved snapshot\nnew unsaved line\n");
+    expect(
+      reconcileDraftContents({
+        currentDraft: "stale draft",
+        incomingContents: "reloaded contents",
+        editing: false,
+      }),
+    ).toBe("reloaded contents");
   });
 });

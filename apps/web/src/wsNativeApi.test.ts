@@ -340,7 +340,11 @@ describe("wsNativeApi", () => {
   });
 
   it("forwards workspace file writes to the websocket project method", async () => {
-    requestMock.mockResolvedValue({ relativePath: "plan.md" });
+    requestMock.mockResolvedValue({
+      relativePath: "plan.md",
+      byteLength: 7,
+      contentSha256: "a".repeat(64),
+    });
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
@@ -357,8 +361,28 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("forwards workspace entry listing to the websocket project method", async () => {
+    requestMock.mockResolvedValue({ entries: [], truncated: false, totalEntries: 0 });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    await api.projects.listEntries({
+      cwd: "/tmp/project",
+    });
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsListEntries, {
+      cwd: "/tmp/project",
+    });
+  });
+
   it("forwards workspace file reads to the websocket project method", async () => {
-    requestMock.mockResolvedValue({ relativePath: "plan.md", contents: "# Plan\n" });
+    requestMock.mockResolvedValue({
+      relativePath: "plan.md",
+      contents: "# Plan\n",
+      byteLength: 7,
+      truncated: false,
+      contentSha256: "a".repeat(64),
+    });
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();

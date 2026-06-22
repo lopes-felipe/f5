@@ -7,7 +7,8 @@
  * @module Server
  */
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import fsPromises from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
 import Mime from "@effect/platform-node/Mime";
@@ -58,7 +59,12 @@ import { createLogger } from "./logger";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { Keybindings } from "./keybindings";
-import { browseWorkspaceEntries, searchWorkspaceEntries } from "./workspaceEntries";
+import {
+  browseWorkspaceEntries,
+  clearWorkspaceIndexCache,
+  listWorkspaceEntries,
+  searchWorkspaceEntries,
+} from "./workspaceEntries";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -223,11 +229,24 @@ function toPosixRelativePath(input: string): string {
   return input.replaceAll("\\", "/");
 }
 
-function resolveWorkspaceWritePath(params: {
+function isRelativePathOutsideRoot(relativePath: string, path: Path.Path): boolean {
+  return (
+    relativePath.length === 0 ||
+    relativePath === "." ||
+    relativePath.startsWith("../") ||
+    relativePath === ".." ||
+    path.isAbsolute(relativePath)
+  );
+}
+
+function validateWorkspaceRelativeTarget(params: {
   workspaceRoot: string;
   relativePath: string;
   path: Path.Path;
-}): Effect.Effect<{ absolutePath: string; relativePath: string }, RouteRequestError> {
+}): Effect.Effect<
+  { requestedAbsolutePath: string; relativePath: string; workspaceAbsolutePath: string },
+  RouteRequestError
+> {
   const normalizedInputPath = params.relativePath.trim();
   if (params.path.isAbsolute(normalizedInputPath)) {
     return Effect.fail(
@@ -237,17 +256,12 @@ function resolveWorkspaceWritePath(params: {
     );
   }
 
-  const absolutePath = params.path.resolve(params.workspaceRoot, normalizedInputPath);
+  const workspaceAbsolutePath = params.path.resolve(params.workspaceRoot);
+  const requestedAbsolutePath = params.path.resolve(workspaceAbsolutePath, normalizedInputPath);
   const relativeToRoot = toPosixRelativePath(
-    params.path.relative(params.workspaceRoot, absolutePath),
+    params.path.relative(workspaceAbsolutePath, requestedAbsolutePath),
   );
-  if (
-    relativeToRoot.length === 0 ||
-    relativeToRoot === "." ||
-    relativeToRoot.startsWith("../") ||
-    relativeToRoot === ".." ||
-    params.path.isAbsolute(relativeToRoot)
-  ) {
+  if (isRelativePathOutsideRoot(relativeToRoot, params.path)) {
     return Effect.fail(
       new RouteRequestError({
         message: "Workspace file path must stay within the project root.",
@@ -256,8 +270,106 @@ function resolveWorkspaceWritePath(params: {
   }
 
   return Effect.succeed({
-    absolutePath,
+    requestedAbsolutePath,
     relativePath: relativeToRoot,
+    workspaceAbsolutePath,
+  });
+}
+
+function ensureRealPathInsideWorkspace(params: {
+  workspaceRootRealPath: string;
+  targetRealPath: string;
+  path: Path.Path;
+  allowWorkspaceRoot?: boolean;
+}): Effect.Effect<void, RouteRequestError> {
+  const realRelativeToRoot = toPosixRelativePath(
+    params.path.relative(params.workspaceRootRealPath, params.targetRealPath),
+  );
+  if (
+    isRelativePathOutsideRoot(realRelativeToRoot, params.path) &&
+    !(params.allowWorkspaceRoot && (realRelativeToRoot === "." || realRelativeToRoot.length === 0))
+  ) {
+    return Effect.fail(
+      new RouteRequestError({
+        message: "Workspace file path must stay within the project root.",
+      }),
+    );
+  }
+  return Effect.void;
+}
+
+export function resolveWorkspaceWritePath(params: {
+  workspaceRoot: string;
+  relativePath: string;
+  path: Path.Path;
+  fileSystem: FileSystem.FileSystem;
+}): Effect.Effect<{ absolutePath: string; relativePath: string }, RouteRequestError> {
+  return Effect.gen(function* () {
+    const target = yield* validateWorkspaceRelativeTarget(params);
+    const workspaceRootRealPath = yield* params.fileSystem
+      .realPath(target.workspaceAbsolutePath)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new RouteRequestError({
+              message: `Failed to resolve workspace path: ${String(cause)}`,
+            }),
+        ),
+      );
+    const targetRealPathResult = yield* Effect.exit(
+      params.fileSystem.realPath(target.requestedAbsolutePath),
+    );
+    if (Exit.isSuccess(targetRealPathResult)) {
+      yield* ensureRealPathInsideWorkspace({
+        workspaceRootRealPath,
+        targetRealPath: targetRealPathResult.value,
+        path: params.path,
+      });
+      return {
+        absolutePath: targetRealPathResult.value,
+        relativePath: target.relativePath,
+      };
+    }
+
+    let currentParentPath = params.path.dirname(target.requestedAbsolutePath);
+    while (true) {
+      const parentRelativeToWorkspace = toPosixRelativePath(
+        params.path.relative(target.workspaceAbsolutePath, currentParentPath),
+      );
+      if (
+        isRelativePathOutsideRoot(parentRelativeToWorkspace, params.path) &&
+        parentRelativeToWorkspace !== "." &&
+        parentRelativeToWorkspace.length !== 0
+      ) {
+        return yield* new RouteRequestError({
+          message: "Workspace file path must stay within the project root.",
+        });
+      }
+
+      const parentRealPathResult = yield* Effect.exit(
+        params.fileSystem.realPath(currentParentPath),
+      );
+      if (Exit.isSuccess(parentRealPathResult)) {
+        yield* ensureRealPathInsideWorkspace({
+          workspaceRootRealPath,
+          targetRealPath: parentRealPathResult.value,
+          path: params.path,
+          allowWorkspaceRoot: true,
+        });
+        return {
+          absolutePath: target.requestedAbsolutePath,
+          relativePath: target.relativePath,
+        };
+      }
+
+      const nextParentPath = params.path.dirname(currentParentPath);
+      if (nextParentPath === currentParentPath) {
+        return yield* new RouteRequestError({
+          message: `Failed to resolve workspace path: ${String(parentRealPathResult.cause)}`,
+        });
+      }
+      currentParentPath = nextParentPath;
+    }
   });
 }
 
@@ -267,70 +379,60 @@ export function resolveWorkspaceReadPath(params: {
   path: Path.Path;
   fileSystem: FileSystem.FileSystem;
 }): Effect.Effect<{ absolutePath: string; relativePath: string }, RouteRequestError> {
-  const normalizedInputPath = params.relativePath.trim();
-  if (params.path.isAbsolute(normalizedInputPath)) {
-    return Effect.fail(
-      new RouteRequestError({
-        message: "Workspace file path must be relative to the project root.",
-      }),
-    );
-  }
-
-  const requestedAbsolutePath = params.path.resolve(params.workspaceRoot, normalizedInputPath);
-  const relativeToRoot = toPosixRelativePath(
-    params.path.relative(params.workspaceRoot, requestedAbsolutePath),
-  );
-  if (
-    relativeToRoot.length === 0 ||
-    relativeToRoot === "." ||
-    relativeToRoot.startsWith("../") ||
-    relativeToRoot === ".." ||
-    params.path.isAbsolute(relativeToRoot)
-  ) {
-    return Effect.fail(
-      new RouteRequestError({
-        message: "Workspace file path must stay within the project root.",
-      }),
-    );
-  }
-
   return Effect.gen(function* () {
-    const workspaceRootRealPath = yield* params.fileSystem.realPath(params.workspaceRoot).pipe(
-      Effect.mapError(
-        (cause) =>
-          new RouteRequestError({
-            message: `Failed to resolve workspace path: ${String(cause)}`,
-          }),
-      ),
-    );
+    const target = yield* validateWorkspaceRelativeTarget(params);
+    const workspaceRootRealPath = yield* params.fileSystem
+      .realPath(target.workspaceAbsolutePath)
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new RouteRequestError({
+              message: `Failed to resolve workspace path: ${String(cause)}`,
+            }),
+        ),
+      );
     const targetRealPathResult = yield* Effect.exit(
-      params.fileSystem.realPath(requestedAbsolutePath),
+      params.fileSystem.realPath(target.requestedAbsolutePath),
     );
     if (Exit.isSuccess(targetRealPathResult)) {
-      const realRelativeToRoot = toPosixRelativePath(
-        params.path.relative(workspaceRootRealPath, targetRealPathResult.value),
-      );
-      if (
-        realRelativeToRoot.length === 0 ||
-        realRelativeToRoot === "." ||
-        realRelativeToRoot.startsWith("../") ||
-        realRelativeToRoot === ".." ||
-        params.path.isAbsolute(realRelativeToRoot)
-      ) {
-        return yield* new RouteRequestError({
-          message: "Workspace file path must stay within the project root.",
-        });
-      }
+      yield* ensureRealPathInsideWorkspace({
+        workspaceRootRealPath,
+        targetRealPath: targetRealPathResult.value,
+        path: params.path,
+      });
       return {
         absolutePath: targetRealPathResult.value,
-        relativePath: relativeToRoot,
+        relativePath: target.relativePath,
       };
     }
 
     return {
-      absolutePath: requestedAbsolutePath,
-      relativePath: relativeToRoot,
+      absolutePath: target.requestedAbsolutePath,
+      relativePath: target.relativePath,
     };
+  });
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function readFilePrefix(
+  absolutePath: string,
+  byteLimit: number,
+): Effect.Effect<Uint8Array, RouteRequestError> {
+  return Effect.tryPromise({
+    try: async () => {
+      const handle = await fsPromises.open(absolutePath, "r");
+      try {
+        const buffer = Buffer.allocUnsafe(byteLimit);
+        const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
+        return buffer.subarray(0, bytesRead);
+      } finally {
+        await handle.close();
+      }
+    },
+    catch: (cause) => new RouteRequestError({ message: `Failed to read file: ${String(cause)}` }),
   });
 }
 
@@ -1679,6 +1781,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.projectsListEntries: {
+        const body = stripRequestTag(request.body);
+        return yield* Effect.tryPromise({
+          try: () => listWorkspaceEntries(body),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to list workspace entries: ${String(cause)}`,
+            }),
+        });
+      }
+
       case WS_METHODS.projectsSearchEntries: {
         const body = stripRequestTag(request.body);
         return yield* Effect.tryPromise({
@@ -1708,7 +1821,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           workspaceRoot: body.cwd,
           relativePath: body.relativePath,
           path,
+          fileSystem,
         });
+        const targetStatResult = yield* Effect.exit(fileSystem.stat(target.absolutePath));
+        if (body.expectedContentSha256) {
+          if (
+            Exit.isFailure(targetStatResult) ||
+            targetStatResult.value.type === "Directory" ||
+            Number(targetStatResult.value.size) > PROJECT_READ_FILE_MAX_SIZE
+          ) {
+            return yield* new RouteRequestError({
+              message: `Workspace file changed before save: ${target.relativePath}. Reload file before saving.`,
+            });
+          }
+          const existingBytes = yield* fileSystem.readFile(target.absolutePath).pipe(
+            Effect.mapError(
+              () =>
+                new RouteRequestError({
+                  message: `Workspace file changed before save: ${target.relativePath}. Reload file before saving.`,
+                }),
+            ),
+          );
+          const existingHash = sha256Hex(existingBytes);
+          if (existingHash !== body.expectedContentSha256) {
+            return yield* new RouteRequestError({
+              message: `Workspace file changed before save: ${target.relativePath}. Reload file before saving.`,
+            });
+          }
+        }
         yield* fileSystem
           .makeDirectory(path.dirname(target.absolutePath), { recursive: true })
           .pipe(
@@ -1727,7 +1867,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
-        return { relativePath: target.relativePath };
+        clearWorkspaceIndexCache(body.cwd, {
+          destroySearchIndex:
+            Exit.isFailure(targetStatResult) || targetStatResult.value.type !== "File",
+        });
+        const writtenBytes = Buffer.from(body.contents, "utf8");
+        return {
+          relativePath: target.relativePath,
+          byteLength: writtenBytes.byteLength,
+          contentSha256: sha256Hex(writtenBytes),
+        };
       }
 
       case WS_METHODS.projectsReadFile: {
@@ -1750,19 +1899,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             message: `Path is a directory: ${target.relativePath}`,
           });
         }
-        if (stat.size > PROJECT_READ_FILE_MAX_SIZE) {
-          return yield* new RouteRequestError({
-            message: `File too large (${Math.round(Number(stat.size) / 1024)}KB). Maximum is 2MB.`,
-          });
-        }
-        const rawBytes = yield* fileSystem
-          .readFile(target.absolutePath)
-          .pipe(
-            Effect.mapError(
-              (cause) =>
-                new RouteRequestError({ message: `Failed to read file: ${String(cause)}` }),
-            ),
-          );
+        const byteLength = Number(stat.size);
+        const truncated = byteLength > PROJECT_READ_FILE_MAX_SIZE;
+        const rawBytes = truncated
+          ? yield* readFilePrefix(target.absolutePath, PROJECT_READ_FILE_MAX_SIZE)
+          : yield* fileSystem
+              .readFile(target.absolutePath)
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new RouteRequestError({ message: `Failed to read file: ${String(cause)}` }),
+                ),
+              );
         const probe = new Uint8Array(rawBytes).subarray(0, 8192);
         if (probe.includes(0)) {
           return yield* new RouteRequestError({
@@ -1770,13 +1918,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           });
         }
         const contents = yield* Effect.try({
-          try: () => new TextDecoder("utf-8", { fatal: true }).decode(rawBytes),
+          try: () => new TextDecoder("utf-8", { fatal: !truncated }).decode(rawBytes),
           catch: () =>
             new RouteRequestError({
               message: `Binary file cannot be displayed: ${target.relativePath}`,
             }),
         });
-        return { relativePath: target.relativePath, contents };
+        return {
+          relativePath: target.relativePath,
+          contents,
+          byteLength,
+          truncated,
+          ...(truncated ? {} : { contentSha256: sha256Hex(rawBytes) }),
+        };
       }
 
       case WS_METHODS.shellOpenInEditor: {

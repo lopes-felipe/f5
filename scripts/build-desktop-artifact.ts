@@ -19,6 +19,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
 const BuildArch = Schema.Literals(["arm64", "x64", "universal"]);
+export const DESKTOP_ASAR_UNPACK = ["node_modules/@ff-labs/fff-bin-*/**/*"] as const;
 
 const RepoRoot = Effect.service(Path.Path).pipe(
   Effect.flatMap((path) => path.fromFileUrl(new URL("..", import.meta.url))),
@@ -417,6 +418,38 @@ function resolveDesktopRuntimeDependencies(
   return resolveCatalogDependencies(runtimeDependencies, catalog, "apps/desktop");
 }
 
+function resolveFffBinaryDependencies(
+  platform: typeof BuildPlatform.Type,
+  arch: typeof BuildArch.Type,
+  version: unknown,
+): Record<string, unknown> {
+  if (typeof version !== "string" || version.length === 0) {
+    return {};
+  }
+
+  const architectures = arch === "universal" ? (["arm64", "x64"] as const) : ([arch] as const);
+  if (platform === "mac") {
+    return Object.fromEntries(
+      architectures.map((architecture) => [`@ff-labs/fff-bin-darwin-${architecture}`, version]),
+    );
+  }
+
+  if (platform === "win") {
+    return Object.fromEntries(
+      architectures.map((architecture) => [`@ff-labs/fff-bin-win32-${architecture}`, version]),
+    );
+  }
+
+  return Object.fromEntries(
+    architectures.flatMap((architecture) =>
+      (["gnu", "musl"] as const).map((libc) => [
+        `@ff-labs/fff-bin-linux-${architecture}-${libc}`,
+        version,
+      ]),
+    ),
+  );
+}
+
 function resolveGitHubPublishConfig():
   | {
       readonly provider: "github";
@@ -452,6 +485,7 @@ const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     appId: "com.t3tools.t3code",
     productName,
     artifactName: "T3-Code-${version}-${arch}.${ext}",
+    asarUnpack: DESKTOP_ASAR_UNPACK,
     directories: {
       buildResources: "apps/desktop/resources",
     },
@@ -634,6 +668,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
     ),
     dependencies: {
       ...resolvedServerDependencies,
+      ...resolveFffBinaryDependencies(
+        options.platform,
+        options.arch,
+        serverPackageJson.dependencies["@ff-labs/fff-node"],
+      ),
       ...resolvedDesktopRuntimeDependencies,
     },
     devDependencies: {

@@ -1,4 +1,5 @@
 import * as Http from "node:http";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -722,6 +723,10 @@ describe("WebSocket Server", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
     tempDirs.push(dir);
     return dir;
+  }
+
+  function sha256Hex(input: string | Uint8Array): string {
+    return createHash("sha256").update(input).digest("hex");
   }
 
   async function createTestServer(
@@ -2639,6 +2644,38 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("supports projects.listEntries", async () => {
+    const workspace = makeTempDir("t3code-ws-workspace-list-entries-");
+    fs.mkdirSync(path.join(workspace, "src", "components"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, "src", "components", "Composer.tsx"), "export {};");
+    fs.writeFileSync(path.join(workspace, "README.md"), "# test", "utf8");
+    fs.mkdirSync(path.join(workspace, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, ".git", "HEAD"), "ref: refs/heads/main\n", "utf8");
+
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.projectsListEntries, {
+      cwd: workspace,
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({
+      entries: expect.arrayContaining([
+        expect.objectContaining({ path: "src", kind: "directory" }),
+        expect.objectContaining({ path: "src/components", kind: "directory" }),
+        expect.objectContaining({ path: "src/components/Composer.tsx", kind: "file" }),
+        expect.objectContaining({ path: "README.md", kind: "file" }),
+      ]),
+      truncated: false,
+      totalEntries: 4,
+    });
+  });
+
   it("supports projects.writeFile within the workspace root", async () => {
     const workspace = makeTempDir("t3code-ws-write-file-");
 
@@ -2658,9 +2695,65 @@ describe("WebSocket Server", () => {
     expect(response.error).toBeUndefined();
     expect(response.result).toEqual({
       relativePath: "plans/effect-rpc.md",
+      byteLength: Buffer.byteLength("# Plan\n\n- step 1\n"),
+      contentSha256: sha256Hex("# Plan\n\n- step 1\n"),
     });
     expect(fs.readFileSync(path.join(workspace, "plans", "effect-rpc.md"), "utf8")).toBe(
       "# Plan\n\n- step 1\n",
+    );
+  });
+
+  it("rejects stale projects.writeFile precondition hashes", async () => {
+    const workspace = makeTempDir("t3code-ws-write-file-conflict-");
+    fs.mkdirSync(path.join(workspace, "plans"), { recursive: true });
+    fs.writeFileSync(path.join(workspace, "plans", "effect-rpc.md"), "original\n", "utf8");
+
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.projectsWriteFile, {
+      cwd: workspace,
+      relativePath: "plans/effect-rpc.md",
+      contents: "next\n",
+      expectedContentSha256: sha256Hex("stale\n"),
+    });
+
+    expect(response.result).toBeUndefined();
+    expect(response.error?.message).toContain("Workspace file changed before save");
+    expect(fs.readFileSync(path.join(workspace, "plans", "effect-rpc.md"), "utf8")).toBe(
+      "original\n",
+    );
+  });
+
+  it("rejects projects.writeFile precondition hashes for oversized files without reading them", async () => {
+    const workspace = makeTempDir("t3code-ws-write-file-large-precondition-");
+    fs.writeFileSync(
+      path.join(workspace, "large.txt"),
+      Buffer.alloc(PROJECT_READ_FILE_MAX_SIZE + 1, "a"),
+    );
+
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.projectsWriteFile, {
+      cwd: workspace,
+      relativePath: "large.txt",
+      contents: "next\n",
+      expectedContentSha256: sha256Hex("stale\n"),
+    });
+
+    expect(response.result).toBeUndefined();
+    expect(response.error?.message).toContain("Workspace file changed before save");
+    expect(fs.statSync(path.join(workspace, "large.txt")).size).toBe(
+      PROJECT_READ_FILE_MAX_SIZE + 1,
     );
   });
 
@@ -2685,6 +2778,31 @@ describe("WebSocket Server", () => {
       "Workspace file path must stay within the project root.",
     );
     expect(fs.existsSync(path.join(workspace, "..", "escape.md"))).toBe(false);
+  });
+
+  it("rejects symlink escapes for projects.writeFile", async () => {
+    const workspace = makeTempDir("t3code-ws-write-file-symlink-");
+    const outside = makeTempDir("t3code-ws-write-file-outside-");
+    fs.symlinkSync(outside, path.join(workspace, "outside-link"));
+
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.projectsWriteFile, {
+      cwd: workspace,
+      relativePath: "outside-link/escape.md",
+      contents: "# no\n",
+    });
+
+    expect(response.result).toBeUndefined();
+    expect(response.error?.message).toContain(
+      "Workspace file path must stay within the project root.",
+    );
+    expect(fs.existsSync(path.join(outside, "escape.md"))).toBe(false);
   });
 
   it("supports projects.readFile within the workspace root", async () => {
@@ -2712,6 +2830,9 @@ describe("WebSocket Server", () => {
     expect(response.result).toEqual({
       relativePath: "plans/effect-rpc.md",
       contents: "# Plan\n\n- step 1\n",
+      byteLength: Buffer.byteLength("# Plan\n\n- step 1\n"),
+      truncated: false,
+      contentSha256: sha256Hex("# Plan\n\n- step 1\n"),
     });
   });
 
@@ -2785,7 +2906,7 @@ describe("WebSocket Server", () => {
     );
   });
 
-  it("rejects oversized files for projects.readFile", async () => {
+  it("returns a truncated preview for oversized text files in projects.readFile", async () => {
     const workspace = makeTempDir("t3code-ws-read-file-large-");
     fs.writeFileSync(
       path.join(workspace, "large.txt"),
@@ -2804,9 +2925,13 @@ describe("WebSocket Server", () => {
       relativePath: "large.txt",
     });
 
-    expect(response.result).toBeUndefined();
-    expect(response.error?.message).toContain("File too large");
-    expect(response.error?.message).toContain("Maximum is 2MB.");
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({
+      relativePath: "large.txt",
+      contents: "a".repeat(PROJECT_READ_FILE_MAX_SIZE),
+      byteLength: PROJECT_READ_FILE_MAX_SIZE + 1,
+      truncated: true,
+    });
   });
 
   it("returns not found errors for missing projects.readFile targets", async () => {
