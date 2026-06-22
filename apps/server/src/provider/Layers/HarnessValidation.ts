@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 
 import type {
   CursorSettings,
+  GrokSettings,
   OpenCodeSettings,
   ProviderKind,
   ProviderStartOptions,
@@ -38,6 +39,7 @@ import {
   type ProviderPreflightStatus,
 } from "./ProviderHealth.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
+import { checkGrokProviderStatus } from "./GrokProvider.ts";
 import { parseCursorAboutOutput } from "./CursorProvider.ts";
 import { OpenCodeRuntime } from "../opencodeRuntime.ts";
 import { isCommandMissingCause as isProviderSnapshotCommandMissingCause } from "../providerSnapshot.ts";
@@ -51,6 +53,7 @@ const HARNESS_VALIDATION_ORDER = [
   "codex",
   "cursor",
   "opencode",
+  "grok",
 ] as const satisfies ReadonlyArray<ProviderKind>;
 const HARNESS_VALIDATION_THREAD_PREFIX = "harness-validation:";
 const HARNESS_VALIDATION_BUSY_MESSAGE = "Harness validation is already in progress.";
@@ -76,7 +79,10 @@ function selectProviderOptions(
   if (provider === "cursor") {
     return providerOptions?.cursor ? { cursor: providerOptions.cursor } : undefined;
   }
-  return providerOptions?.opencode ? { opencode: providerOptions.opencode } : undefined;
+  if (provider === "opencode") {
+    return providerOptions?.opencode ? { opencode: providerOptions.opencode } : undefined;
+  }
+  return providerOptions?.grok ? { grok: providerOptions.grok } : undefined;
 }
 
 function connectivityTimeoutMessage(provider: ProviderKind): string {
@@ -89,6 +95,8 @@ function connectivityTimeoutMessage(provider: ProviderKind): string {
       return "Cursor one-off prompt query timed out.";
     case "opencode":
       return "OpenCode one-off prompt query timed out.";
+    case "grok":
+      return "Grok one-off prompt query timed out.";
   }
 }
 
@@ -199,6 +207,17 @@ function openCodeSettingsForValidation(
   };
 }
 
+function grokSettingsForValidation(
+  settings: ServerSettings,
+  providerOptions?: ProviderStartOptions,
+): GrokSettings {
+  const overrides = providerOptions?.grok;
+  return {
+    ...settings.providers.grok,
+    ...(overrides?.binaryPath ? { binaryPath: overrides.binaryPath } : {}),
+  };
+}
+
 function providerDisabledPreflight(provider: ProviderKind, checkedAt = new Date().toISOString()) {
   return {
     provider,
@@ -221,6 +240,8 @@ function providerDisplayName(provider: ProviderKind): string {
       return "Cursor";
     case "opencode":
       return "OpenCode";
+    case "grok":
+      return "Grok";
   }
 }
 
@@ -437,6 +458,17 @@ export const HarnessValidationLive = Layer.effect(
           ).pipe(Effect.provideService(OpenCodeRuntime, openCodeRuntime));
           return Effect.map(snapshot, (providerSnapshot) =>
             providerSnapshotToPreflightStatus("opencode", providerSnapshot),
+          );
+        }
+        case "grok": {
+          const snapshot = checkGrokProviderStatus(
+            grokSettingsForValidation(params.settings, params.providerOptions),
+            process.env,
+          ).pipe(
+            Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+          );
+          return Effect.map(snapshot, (providerSnapshot) =>
+            providerSnapshotToPreflightStatus("grok", providerSnapshot),
           );
         }
       }

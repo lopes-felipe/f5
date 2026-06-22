@@ -53,6 +53,7 @@ export const ProviderModelOptions = Schema.Struct({
   claudeAgent: Schema.optional(ClaudeModelOptions),
   cursor: Schema.optional(CursorModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
+  grok: Schema.optional(Schema.Struct({})),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -187,6 +188,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "claude-opus-4-5", name: "Claude Opus 4.5" },
   ],
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
+  grok: [{ slug: "grok-build", name: "Grok Build" }],
 } as const satisfies Record<ProviderKind, readonly ModelOption[]>;
 export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 
@@ -198,6 +200,7 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
   claudeAgent: "claude-fable-5",
   cursor: "auto",
   opencode: "openai/gpt-5",
+  grok: "grok-build",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
@@ -209,6 +212,7 @@ export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
   claudeAgent: "claude-sonnet-4-6",
   cursor: "composer-2",
   opencode: "openai/gpt-5",
+  grok: "grok-build",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
@@ -216,6 +220,7 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
   claudeAgent: "claude-haiku-4-5",
   cursor: "composer-2",
   opencode: "openai/gpt-5",
+  grok: "grok-build",
 } as const satisfies Record<ProviderKind, ModelSlug>;
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
@@ -263,6 +268,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "opus-4.5": "claude-opus-4-5",
   },
   opencode: {},
+  grok: {},
 } as const satisfies Record<ProviderKind, Record<string, ModelSlug>>;
 
 export const PROVIDER_DISPLAY_NAMES = {
@@ -270,6 +276,7 @@ export const PROVIDER_DISPLAY_NAMES = {
   claudeAgent: "Claude",
   cursor: "Cursor",
   opencode: "OpenCode",
+  grok: "Grok",
 } as const satisfies Record<ProviderKind, string>;
 
 export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
@@ -277,6 +284,7 @@ export const REASONING_EFFORT_OPTIONS_BY_PROVIDER = {
   claudeAgent: CLAUDE_CODE_EFFORT_OPTIONS,
   cursor: CURSOR_REASONING_OPTIONS,
   opencode: [],
+  grok: [],
 } as const satisfies Record<ProviderKind, readonly ProviderReasoningEffort[]>;
 
 export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
@@ -284,4 +292,5 @@ export const DEFAULT_REASONING_EFFORT_BY_PROVIDER = {
   claudeAgent: "high",
   cursor: "high",
   opencode: "high",
+  grok: "high",
 } as const satisfies Record<ProviderKind, ProviderReasoningEffort>;

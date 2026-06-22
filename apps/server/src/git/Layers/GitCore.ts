@@ -1,7 +1,7 @@
 import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
 
 import { defaultF5BaseDir } from "@t3tools/shared/appStatePaths";
-import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Path } from "effect";
+import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Path, Ref } from "effect";
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
 import { GitCommandError } from "../Errors.ts";
@@ -18,7 +18,14 @@ const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
 const STATUS_UPSTREAM_REFRESH_FAILURE_RETRY_INTERVAL = Duration.seconds(5);
 const STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY = 2_048;
+const STATUS_UPSTREAM_REFRESH_GENERATION_CAPACITY = STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY;
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
+const BACKGROUND_GIT_FETCH_ENV = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "echo",
+  SSH_ASKPASS: "echo",
+  GCM_INTERACTIVE: "never",
+} satisfies NodeJS.ProcessEnv;
 
 class StatusUpstreamRefreshCacheKey extends Data.Class<{
   cwd: string;
@@ -32,6 +39,7 @@ interface ExecuteGitOptions {
   timeoutMs?: number | undefined;
   allowNonZeroExit?: boolean | undefined;
   fallbackErrorMessage?: string | undefined;
+  env?: NodeJS.ProcessEnv | undefined;
 }
 
 function parseBranchAb(value: string): { ahead: number; behind: number } {
@@ -229,6 +237,7 @@ const makeGitCore = Effect.gen(function* () {
         operation,
         cwd,
         args,
+        ...(options.env ? { env: options.env } : {}),
         allowNonZeroExit: true,
         ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
       })
@@ -383,6 +392,7 @@ const makeGitCore = Effect.gen(function* () {
   const fetchUpstreamRefForStatus = (
     cwd: string,
     upstream: { upstreamRef: string; remoteName: string; upstreamBranch: string },
+    env: NodeJS.ProcessEnv,
   ): Effect.Effect<void, GitCommandError> => {
     const refspec = `+refs/heads/${upstream.upstreamBranch}:refs/remotes/${upstream.upstreamRef}`;
     return executeGit(
@@ -392,25 +402,59 @@ const makeGitCore = Effect.gen(function* () {
       {
         allowNonZeroExit: true,
         timeoutMs: Duration.toMillis(STATUS_UPSTREAM_REFRESH_TIMEOUT),
+        env,
       },
     ).pipe(Effect.asVoid);
   };
+
+  const statusUpstreamRefreshGenerationRef = yield* Ref.make(new Map<string, number>());
+  const statusUpstreamRefreshGenerationKey = (key: StatusUpstreamRefreshCacheKey) =>
+    `${key.cwd}\0${key.commonDir}`;
+  const startStatusRefreshGeneration = (key: StatusUpstreamRefreshCacheKey) =>
+    Ref.modify(statusUpstreamRefreshGenerationRef, (current) => {
+      const generationKey = statusUpstreamRefreshGenerationKey(key);
+      const nextGeneration = (current.get(generationKey) ?? 0) + 1;
+      const next = new Map(current);
+      next.delete(generationKey);
+      next.set(generationKey, nextGeneration);
+      while (next.size > STATUS_UPSTREAM_REFRESH_GENERATION_CAPACITY) {
+        const oldestKey = next.keys().next().value;
+        if (!oldestKey) break;
+        next.delete(oldestKey);
+      }
+      return [nextGeneration, next] as const;
+    });
+  const isLatestStatusRefreshGeneration = (
+    key: StatusUpstreamRefreshCacheKey,
+    generation: number,
+  ) =>
+    Ref.get(statusUpstreamRefreshGenerationRef).pipe(
+      Effect.map((current) => current.get(statusUpstreamRefreshGenerationKey(key)) === generation),
+    );
 
   const statusUpstreamRefreshCache = yield* Cache.makeWith({
     capacity: STATUS_UPSTREAM_REFRESH_CACHE_CAPACITY,
     lookup: (cacheKey: StatusUpstreamRefreshCacheKey) =>
       Effect.gen(function* () {
-        yield* fetchUpstreamRefForStatus(cacheKey.cwd, {
-          upstreamRef: cacheKey.upstreamRef,
-          remoteName: cacheKey.remoteName,
-          upstreamBranch: cacheKey.upstreamBranch,
-        });
-        return true as const;
+        const generation = yield* startStatusRefreshGeneration(cacheKey);
+        yield* fetchUpstreamRefForStatus(
+          cacheKey.cwd,
+          {
+            upstreamRef: cacheKey.upstreamRef,
+            remoteName: cacheKey.remoteName,
+            upstreamBranch: cacheKey.upstreamBranch,
+          },
+          {
+            ...process.env,
+            ...BACKGROUND_GIT_FETCH_ENV,
+          },
+        );
+        return yield* isLatestStatusRefreshGeneration(cacheKey, generation);
       }),
     // Keep successful refreshes warm and briefly cool down refresh failures so repeated
     // status checks in the same action do not pay the full upstream timeout each time.
     timeToLive: (exit) =>
-      Exit.isSuccess(exit)
+      Exit.isSuccess(exit) && exit.value
         ? STATUS_UPSTREAM_REFRESH_INTERVAL
         : STATUS_UPSTREAM_REFRESH_FAILURE_RETRY_INTERVAL,
   });
@@ -801,6 +845,7 @@ const makeGitCore = Effect.gen(function* () {
         aheadCount: details.aheadCount,
         behindCount: details.behindCount,
         pr: null,
+        changeRequest: null,
       })),
     );
 

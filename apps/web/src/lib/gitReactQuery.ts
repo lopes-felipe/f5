@@ -3,7 +3,7 @@ import { mutationOptions, queryOptions, type QueryClient } from "@tanstack/react
 import { ensureNativeApi } from "../nativeApi";
 
 const GIT_STATUS_STALE_TIME_MS = 5_000;
-const GIT_STATUS_REFETCH_INTERVAL_MS = 15_000;
+const GIT_STATUS_REFETCH_INTERVAL_MS = 60_000;
 const GIT_BRANCHES_STALE_TIME_MS = 15_000;
 const GIT_BRANCHES_REFETCH_INTERVAL_MS = 60_000;
 

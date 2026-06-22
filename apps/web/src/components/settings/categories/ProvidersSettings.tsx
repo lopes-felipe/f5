@@ -59,6 +59,13 @@ const MODEL_PROVIDER_SETTINGS: Array<{
     placeholder: "your-claude-model-slug",
     example: "claude-sonnet-5-0",
   },
+  {
+    provider: "grok",
+    title: "Grok",
+    description: "Save additional Grok model slugs for the picker.",
+    placeholder: "your-grok-model-slug",
+    example: "grok-build-beta",
+  },
 ] as const;
 
 const CODEX_OVERRIDE_KEYS = ["codexBinaryPath", "codexHomePath"] as const;
@@ -68,6 +75,7 @@ const BUILT_IN_PROVIDER_DRIVERS = [
   ProviderDriverKind.make("claudeAgent"),
   ProviderDriverKind.make("cursor"),
   ProviderDriverKind.make("opencode"),
+  ProviderDriverKind.make("grok"),
 ] as const;
 
 function withoutProviderInstanceKey<V>(
@@ -642,17 +650,18 @@ export function ProvidersSettings() {
             const customModels = getCustomModelsForProvider(settings, provider);
             const customModelInput = customModelInputByProvider[provider];
             const customModelError = customModelErrorByProvider[provider] ?? null;
-            const threadTitleModelOptions = getAppModelOptions(
-              provider,
-              customModels,
-              settings.codexThreadTitleModel,
-            );
-            const effectiveThreadTitleModel = resolveAuxiliaryAppModelSelection(
-              provider,
-              customModels,
-              settings.codexThreadTitleModel,
-              DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER[provider],
-            );
+            const supportsThreadTitleModel = provider === "codex";
+            const threadTitleModelOptions = supportsThreadTitleModel
+              ? getAppModelOptions(provider, customModels, settings.codexThreadTitleModel)
+              : [];
+            const effectiveThreadTitleModel = supportsThreadTitleModel
+              ? resolveAuxiliaryAppModelSelection(
+                  provider,
+                  customModels,
+                  settings.codexThreadTitleModel,
+                  DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER[provider],
+                )
+              : null;
 
             return (
               <div key={provider} className="rounded-xl border border-border bg-background/50 p-4">
@@ -664,35 +673,42 @@ export function ProvidersSettings() {
                 </div>
 
                 <div className="space-y-4">
-                  <label className="block space-y-1">
-                    <span className="text-xs font-medium text-foreground">Thread title model</span>
-                    <Input
-                      list={`thread-title-model-options-${provider}`}
-                      value={settings.codexThreadTitleModel}
-                      onChange={(event) =>
-                        updateSettings({
-                          codexThreadTitleModel: event.target.value,
-                        })
-                      }
-                      placeholder={DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER[provider]}
-                      spellCheck={false}
-                    />
-                    <datalist id={`thread-title-model-options-${provider}`}>
-                      {threadTitleModelOptions.map((option) => (
-                        <option key={`${provider}:thread-title:${option.slug}`} value={option.slug}>
-                          {option.name}
-                        </option>
-                      ))}
-                    </datalist>
-                    <span className="text-xs text-muted-foreground">
-                      Used for async first-thread title generation. Enter any model slug or pick a
-                      saved suggestion. Invalid or removed saved slugs fall back to{" "}
-                      <code>{DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER[provider]}</code>.
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      Effective model: <code>{effectiveThreadTitleModel}</code>
-                    </span>
-                  </label>
+                  {supportsThreadTitleModel ? (
+                    <label className="block space-y-1">
+                      <span className="text-xs font-medium text-foreground">
+                        Thread title model
+                      </span>
+                      <Input
+                        list={`thread-title-model-options-${provider}`}
+                        value={settings.codexThreadTitleModel}
+                        onChange={(event) =>
+                          updateSettings({
+                            codexThreadTitleModel: event.target.value,
+                          })
+                        }
+                        placeholder={DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER[provider]}
+                        spellCheck={false}
+                      />
+                      <datalist id={`thread-title-model-options-${provider}`}>
+                        {threadTitleModelOptions.map((option) => (
+                          <option
+                            key={`${provider}:thread-title:${option.slug}`}
+                            value={option.slug}
+                          >
+                            {option.name}
+                          </option>
+                        ))}
+                      </datalist>
+                      <span className="text-xs text-muted-foreground">
+                        Used for async first-thread title generation. Enter any model slug or pick a
+                        saved suggestion. Invalid or removed saved slugs fall back to{" "}
+                        <code>{DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER[provider]}</code>.
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        Effective model: <code>{effectiveThreadTitleModel}</code>
+                      </span>
+                    </label>
+                  ) : null}
 
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
                     <label

@@ -600,6 +600,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         headBranch: "feature/status-open-pr",
         state: "open",
       });
+      expect(status.changeRequest).toMatchObject({
+        id: "13",
+        displayNumber: "13",
+        title: "Existing PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/13",
+        baseRefName: "main",
+        headRefName: "feature/status-open-pr",
+        state: "open",
+        provider: {
+          kind: "unknown",
+          remoteName: "origin",
+        },
+      });
     }),
   );
 
@@ -609,6 +622,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       Effect.gen(function* () {
         const repoDir = yield* makeTempDir("t3code-git-manager-");
         yield* initRepo(repoDir);
+        yield* runGit(repoDir, [
+          "remote",
+          "add",
+          "origin",
+          "git@github.com:pingdotgg/codething-mvp.git",
+        ]);
         const forkDir = yield* createBareRemote();
         yield* runGit(repoDir, ["remote", "add", "fork-seed", forkDir]);
         yield* runGit(repoDir, ["checkout", "-b", "statemachine"]);
@@ -655,8 +674,19 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
           state: "open",
         });
         expect(ghCalls).toContain(
-          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt",
+          "pr list --head jasonLaster:statemachine --state all --limit 20 --json number,title,url,baseRefName,headRefName,state,mergedAt,updatedAt,isCrossRepository,headRepository,headRepositoryOwner",
         );
+        expect(status.changeRequest).toMatchObject({
+          id: "488",
+          isCrossRepository: true,
+          headRepository: "jasonLaster/codething-mvp",
+          baseRepository: "pingdotgg/codething-mvp",
+          provider: {
+            kind: "github",
+            owner: "pingdotgg",
+            repository: "codething-mvp",
+          },
+        });
       }),
     180_000,
   );
@@ -696,6 +726,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         headBranch: "feature/status-merged-pr",
         state: "merged",
       });
+      expect(status.changeRequest?.state).toBe("merged");
     }),
   );
 
@@ -765,6 +796,7 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         headBranch: "feature/status-closed-pr",
         state: "closed",
       });
+      expect(status.changeRequest?.state).toBe("closed");
     }),
   );
 
@@ -1534,6 +1566,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");
       yield* initRepo(repoDir);
+      yield* runGit(repoDir, [
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+      ]);
 
       const { manager, ghCalls } = yield* makeManager({
         ghScenario: {
@@ -1561,7 +1599,77 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         headBranch: "feature/resolve-pr",
         state: "open",
       });
+      expect(result.changeRequest).toEqual({
+        provider: {
+          kind: "github",
+          remoteName: "origin",
+          host: "github.com",
+          owner: "pingdotgg",
+          repository: "codething-mvp",
+          webUrl: "https://github.com/pingdotgg/codething-mvp",
+        },
+        id: "42",
+        displayNumber: "42",
+        title: "Resolve PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+        baseRefName: "main",
+        headRefName: "feature/resolve-pr",
+        state: "open",
+        updatedAt: null,
+        isCrossRepository: false,
+        baseRepository: "pingdotgg/codething-mvp",
+      });
       expect(ghCalls.some((call) => call.startsWith("pr view 42 "))).toBe(true);
+    }),
+  );
+
+  it.effect("preserves cross-repo metadata when resolving pull requests", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      yield* runGit(repoDir, [
+        "remote",
+        "add",
+        "origin",
+        "git@github.com:pingdotgg/codething-mvp.git",
+      ]);
+
+      const { manager } = yield* makeManager({
+        ghScenario: {
+          pullRequest: {
+            number: 488,
+            title: "Resolve fork PR",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/488",
+            baseRefName: "main",
+            headRefName: "statemachine",
+            state: "merged",
+            isCrossRepository: true,
+            headRepositoryNameWithOwner: "jasonLaster/codething-mvp",
+            headRepositoryOwnerLogin: "jasonLaster",
+          },
+        },
+      });
+
+      const result = yield* resolvePullRequest(manager, {
+        cwd: repoDir,
+        reference: "#488",
+      });
+
+      expect(result.pullRequest).toEqual({
+        number: 488,
+        title: "Resolve fork PR",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/488",
+        baseBranch: "main",
+        headBranch: "statemachine",
+        state: "merged",
+      });
+      expect(result.changeRequest).toMatchObject({
+        id: "488",
+        state: "merged",
+        isCrossRepository: true,
+        headRepository: "jasonLaster/codething-mvp",
+        baseRepository: "pingdotgg/codething-mvp",
+      });
     }),
   );
 

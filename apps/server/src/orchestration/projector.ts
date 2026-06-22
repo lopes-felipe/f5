@@ -1,4 +1,5 @@
 import type { OrchestrationEvent, OrchestrationReadModel, ThreadId } from "@t3tools/contracts";
+import type { ProviderKind } from "@t3tools/contracts";
 import {
   CodeReviewWorkflow,
   InvestigationWorkflow,
@@ -98,7 +99,7 @@ function totalMessageCharacters(messages: ReadonlyArray<OrchestrationMessage>): 
 
 function threadProviderName(
   thread: Pick<OrchestrationThread, "session"> | null | undefined,
-): "codex" | "claudeAgent" | "cursor" | "opencode" | undefined {
+): ProviderKind | undefined {
   const providerName = thread?.session?.providerName;
   return isKnownProviderKind(providerName) ? providerName : undefined;
 }

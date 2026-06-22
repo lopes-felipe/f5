@@ -74,7 +74,8 @@ export function toLegacyProvider(providerName: string | null): ProviderKind {
     providerName === "codex" ||
     providerName === "claudeAgent" ||
     providerName === "cursor" ||
-    providerName === "opencode"
+    providerName === "opencode" ||
+    providerName === "grok"
   ) {
     return providerName;
   }
@@ -89,7 +90,8 @@ export function inferProviderForThreadModel(input: {
     input.sessionProviderName === "codex" ||
     input.sessionProviderName === "claudeAgent" ||
     input.sessionProviderName === "cursor" ||
-    input.sessionProviderName === "opencode"
+    input.sessionProviderName === "opencode" ||
+    input.sessionProviderName === "grok"
   ) {
     return input.sessionProviderName;
   }

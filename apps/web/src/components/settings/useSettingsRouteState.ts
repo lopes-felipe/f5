@@ -66,6 +66,8 @@ export function getCustomModelsForProvider(
   switch (provider) {
     case "claudeAgent":
       return settings.customClaudeModels;
+    case "grok":
+      return settings.customGrokModels;
     case "codex":
     default:
       return settings.customCodexModels;
@@ -79,6 +81,8 @@ export function getDefaultCustomModelsForProvider(
   switch (provider) {
     case "claudeAgent":
       return defaults.customClaudeModels;
+    case "grok":
+      return defaults.customGrokModels;
     case "codex":
     default:
       return defaults.customCodexModels;
@@ -89,6 +93,8 @@ export function patchCustomModels(provider: ProviderKind, models: string[]) {
   switch (provider) {
     case "claudeAgent":
       return { customClaudeModels: models };
+    case "grok":
+      return { customGrokModels: models };
     case "codex":
     default:
       return { customCodexModels: models };
@@ -113,6 +119,7 @@ export function useSettingsRouteState() {
     claudeAgent: "",
     cursor: "",
     opencode: "",
+    grok: "",
   });
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>

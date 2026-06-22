@@ -211,6 +211,7 @@ export function getProviderSessionRestartOptions(
       return normalized;
     case "cursor":
     case "opencode":
+    case "grok":
       return normalized;
   }
 }
@@ -334,6 +335,24 @@ export function normalizeProviderStartOptions(
           : {}),
       };
     }
+    case "grok": {
+      const binaryPath = normalizeOptionalString(providerOptions?.grok?.binaryPath);
+
+      if (!binaryPath && !hasMcpServers) {
+        return undefined;
+      }
+
+      return {
+        ...(hasMcpServers ? { mcpServers: normalizedMcpServers } : {}),
+        ...(binaryPath
+          ? {
+              grok: {
+                binaryPath,
+              },
+            }
+          : {}),
+      };
+    }
   }
 }
 
@@ -374,5 +393,7 @@ export function getProviderEnvironmentKey(
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;
     case "opencode":
       return `opencode|binary:${normalized?.opencode?.binaryPath ?? ""}|serverUrl:${normalized?.opencode?.serverUrl ?? ""}|serverPassword:${normalized?.opencode?.serverPassword ? "__set__" : ""}`;
+    case "grok":
+      return `grok|binary:${normalized?.grok?.binaryPath ?? ""}`;
   }
 }

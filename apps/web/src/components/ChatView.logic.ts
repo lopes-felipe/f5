@@ -453,7 +453,7 @@ export function cloneComposerImageForRetry(
   }
 }
 
-const PICKER_PROVIDERS = ["codex", "claudeAgent", "cursor", "opencode"] as const;
+const PICKER_PROVIDERS = ["codex", "claudeAgent", "cursor", "opencode", "grok"] as const;
 
 type ModelPickerOptionWithCustomFlag = ModelPickerModelOption & {
   readonly isCustom?: boolean;
@@ -501,6 +501,7 @@ function getProviderCustomModelsForPicker(
   settings: {
     readonly customCodexModels: readonly string[];
     readonly customClaudeModels: readonly string[];
+    readonly customGrokModels: readonly string[];
   },
   serverSettings: Pick<ServerSettings, "providers" | "providerInstances"> | null | undefined,
   provider: ProviderKind,
@@ -510,7 +511,9 @@ function getProviderCustomModelsForPicker(
       ? settings.customCodexModels
       : provider === "claudeAgent"
         ? settings.customClaudeModels
-        : [];
+        : provider === "grok"
+          ? settings.customGrokModels
+          : [];
   const serverCustomModels = getServerCustomModelsForProvider(serverSettings, provider);
   return [...appCustomModels, ...serverCustomModels];
 }
@@ -570,6 +573,7 @@ export function getCustomModelOptionsByProvider(
   settings: {
     customCodexModels: readonly string[];
     customClaudeModels: readonly string[];
+    customGrokModels: readonly string[];
     providerModelPreferences?: Readonly<
       Record<
         string,

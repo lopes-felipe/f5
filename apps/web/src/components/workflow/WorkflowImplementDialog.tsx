@@ -49,6 +49,8 @@ function getSingleProviderModelOptions(
       return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
     case "opencode":
       return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
+    case "grok":
+      return undefined;
   }
 }
 
@@ -75,11 +77,14 @@ function BaseBranchPicker(props: {
   const { settings } = useAppSettings();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
 
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: props.cwd,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
 

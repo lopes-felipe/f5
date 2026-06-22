@@ -1909,11 +1909,13 @@ describe("PROVIDER_OPTIONS", () => {
     const claude = PROVIDER_OPTIONS.find((option) => option.value === "claudeAgent");
     const cursor = PROVIDER_OPTIONS.find((option) => option.value === "cursor");
     const opencode = PROVIDER_OPTIONS.find((option) => option.value === "opencode");
+    const grok = PROVIDER_OPTIONS.find((option) => option.value === "grok");
     expect(PROVIDER_OPTIONS).toEqual([
       { value: "codex", label: "Codex", available: true },
       { value: "claudeAgent", label: "Claude", available: true },
       { value: "cursor", label: "Cursor", available: true },
       { value: "opencode", label: "OpenCode", available: true },
+      { value: "grok", label: "Grok", available: true },
     ]);
     expect(claude).toEqual({
       value: "claudeAgent",
@@ -1928,6 +1930,11 @@ describe("PROVIDER_OPTIONS", () => {
     expect(opencode).toEqual({
       value: "opencode",
       label: "OpenCode",
+      available: true,
+    });
+    expect(grok).toEqual({
+      value: "grok",
+      label: "Grok",
       available: true,
     });
   });

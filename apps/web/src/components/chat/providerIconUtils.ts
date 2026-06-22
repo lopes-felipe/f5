@@ -4,7 +4,7 @@ import {
   type ProviderKind,
   type ServerProvider,
 } from "@t3tools/contracts";
-import { ClaudeAI, CursorIcon, Gemini, Icon, OpenAI, OpenCodeIcon } from "../Icons";
+import { ClaudeAI, CursorIcon, Gemini, GrokIcon, Icon, OpenAI, OpenCodeIcon } from "../Icons";
 import { PROVIDER_OPTIONS, type ProviderPickerKind } from "../../session-logic";
 
 export type ModelEsque = {
@@ -20,6 +20,7 @@ export const PROVIDER_LABEL_BY_PROVIDER: Record<ProviderKind, string> = {
   claudeAgent: "Claude",
   cursor: "Cursor",
   opencode: "OpenCode",
+  grok: "Grok",
 };
 
 export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
@@ -27,6 +28,7 @@ export const PROVIDER_ICON_BY_PROVIDER: Partial<Record<string, Icon>> = {
   [ProviderDriverKind.make("claudeAgent")]: ClaudeAI,
   [ProviderDriverKind.make("cursor")]: CursorIcon,
   [ProviderDriverKind.make("opencode")]: OpenCodeIcon,
+  [ProviderDriverKind.make("grok")]: GrokIcon,
 };
 
 export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
@@ -34,6 +36,7 @@ export const PROVIDER_ICON_BY_PICKER_KIND: Record<ProviderPickerKind, Icon> = {
   claudeAgent: ClaudeAI,
   cursor: CursorIcon,
   opencode: OpenCodeIcon,
+  grok: GrokIcon,
 };
 
 export const COMING_SOON_PROVIDER_OPTIONS = [
@@ -52,7 +55,13 @@ export const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailablePro
 export const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter((option) => !option.available);
 
 export function providerIconClassName(provider: ProviderKind | ProviderPickerKind): string {
-  return provider === "claudeAgent" ? "text-[#d97757]" : "text-muted-foreground/75";
+  if (provider === "claudeAgent") {
+    return "text-[#d97757]";
+  }
+  if (provider === "grok") {
+    return "text-foreground/80";
+  }
+  return "text-muted-foreground/75";
 }
 
 export function findProviderStatus(

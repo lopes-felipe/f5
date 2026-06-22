@@ -66,11 +66,16 @@ const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MIN = 1;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MAX = 15;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT = 6;
+export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT = 60;
+export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MIN = 0;
+export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN = 5;
+export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX = 3600;
 const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>> = {
   codex: new Set(getModelOptions("codex").map((option) => option.slug)),
   claudeAgent: new Set(getModelOptions("claudeAgent").map((option) => option.slug)),
   cursor: new Set(getModelOptions("cursor").map((option) => option.slug)),
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
+  grok: new Set(getModelOptions("grok").map((option) => option.slug)),
 };
 
 type PersistedAppSettingsValue = Record<string, unknown> & {
@@ -80,6 +85,8 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly favoriteModels?: unknown;
   readonly favorites?: unknown;
   readonly providerModelPreferences?: unknown;
+  readonly enableGitStatusAutoRefresh?: unknown;
+  readonly gitStatusAutoRefreshIntervalSeconds?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -118,11 +125,52 @@ const SidebarThreadPreviewCountSchema = Schema.Union([Schema.Number, Schema.Stri
   Schema.withDecodingDefault(() => SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT),
 );
 
+const GitStatusAutoRefreshIntervalSecondsSchema = Schema.Union([
+  Schema.Number,
+  Schema.String,
+  Schema.Boolean,
+]).pipe(
+  Schema.decodeTo(
+    Schema.Number,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => {
+        return Effect.succeed(normalizeGitStatusAutoRefreshIntervalSeconds(value));
+      },
+      encode: (value) => Effect.succeed(value),
+    }),
+  ),
+  Schema.withConstructorDefault(() =>
+    Option.some(GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT),
+  ),
+  Schema.withDecodingDefault(() => GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT),
+);
+
 function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibility {
   if (value === "hidden" || value === "summarized" || value === "full") {
     return value;
   }
   return DEFAULT_RUNTIME_WARNING_VISIBILITY;
+}
+
+function normalizeGitStatusAutoRefreshIntervalSeconds(value: unknown): number {
+  if (typeof value === "boolean") {
+    return value ? GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT : 0;
+  }
+
+  const numberValue = typeof value === "string" ? Number(value) : value;
+  if (typeof numberValue !== "number" || !Number.isFinite(numberValue)) {
+    return GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT;
+  }
+
+  const rounded = Math.round(numberValue);
+  if (rounded <= GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MIN) {
+    return 0;
+  }
+
+  return Math.max(
+    GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
+    Math.min(GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX, rounded),
+  );
 }
 
 function normalizeOnboardingLiteStatus(value: unknown): OnboardingLiteStatus {
@@ -158,9 +206,11 @@ export const AppSettingsSchema = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
+  // Legacy persisted flag. The interval is the source of truth; normalizeAppSettings derives this.
   enableGitStatusAutoRefresh: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
+  gitStatusAutoRefreshIntervalSeconds: GitStatusAutoRefreshIntervalSecondsSchema,
   enableThreadStatusNotifications: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
@@ -237,6 +287,9 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some([])),
   ),
   customClaudeModels: Schema.Array(Schema.String).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+  ),
+  customGrokModels: Schema.Array(Schema.String).pipe(
     Schema.withConstructorDefault(() => Option.some([])),
   ),
   claudeProjectSettings: Schema.Record(Schema.String, ClaudeProjectSettingsSchema).pipe(
@@ -349,7 +402,11 @@ function normalizeClaudeProjectSettingsRecord(
 }
 
 function normalizeFavoriteProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+  return value === "codex" ||
+    value === "claudeAgent" ||
+    value === "cursor" ||
+    value === "opencode" ||
+    value === "grok"
     ? value
     : null;
 }
@@ -392,11 +449,17 @@ export function normalizeFavoriteModels(value: unknown): FavoriteModel[] {
 }
 
 function normalizeAppSettings(settings: AppSettings): AppSettings {
+  const gitStatusAutoRefreshIntervalSeconds = normalizeGitStatusAutoRefreshIntervalSeconds(
+    settings.gitStatusAutoRefreshIntervalSeconds,
+  );
   return {
     ...settings,
+    gitStatusAutoRefreshIntervalSeconds,
+    enableGitStatusAutoRefresh: gitStatusAutoRefreshIntervalSeconds > 0,
     favoriteModels: normalizeFavoriteModels(settings.favoriteModels),
     customCodexModels: normalizeCustomModelSlugs(settings.customCodexModels, "codex"),
     customClaudeModels: normalizeCustomModelSlugs(settings.customClaudeModels, "claudeAgent"),
+    customGrokModels: normalizeCustomModelSlugs(settings.customGrokModels, "grok"),
     claudeProjectSettings: normalizeClaudeProjectSettingsRecord(settings.claudeProjectSettings),
   };
 }
@@ -425,6 +488,10 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
+        gitStatusAutoRefreshIntervalSeconds:
+          migrated.gitStatusAutoRefreshIntervalSeconds ??
+          migrated.enableGitStatusAutoRefresh ??
+          DEFAULT_APP_SETTINGS.gitStatusAutoRefreshIntervalSeconds,
       }),
     );
   } catch {

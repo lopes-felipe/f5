@@ -317,6 +317,8 @@ function getSingleProviderModelOptions(
       return modelOptions?.cursor ? { cursor: modelOptions.cursor } : undefined;
     case "opencode":
       return modelOptions?.opencode ? { opencode: modelOptions.opencode } : undefined;
+    case "grok":
+      return undefined;
   }
 }
 

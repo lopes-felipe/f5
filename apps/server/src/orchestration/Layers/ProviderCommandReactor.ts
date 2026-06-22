@@ -99,6 +99,7 @@ function providerFromSessionName(value: string | null | undefined): ProviderKind
     case "claudeAgent":
     case "cursor":
     case "opencode":
+    case "grok":
       return value;
     default:
       return undefined;

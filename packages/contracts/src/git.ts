@@ -1,6 +1,7 @@
 import { Option, Schema } from "effect";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "./model";
+import { ChangeRequest } from "./sourceControl";
 
 const TrimmedNonEmptyStringSchema = TrimmedNonEmptyString;
 
@@ -165,6 +166,7 @@ export const GitStatusResult = Schema.Struct({
   aheadCount: NonNegativeInt,
   behindCount: NonNegativeInt,
   pr: Schema.NullOr(GitStatusPr),
+  changeRequest: Schema.optionalKey(Schema.NullOr(ChangeRequest)),
 });
 export type GitStatusResult = typeof GitStatusResult.Type;
 
@@ -182,11 +184,13 @@ export type GitCreateWorktreeResult = typeof GitCreateWorktreeResult.Type;
 
 export const GitResolvePullRequestResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,
+  changeRequest: Schema.optional(ChangeRequest),
 });
 export type GitResolvePullRequestResult = typeof GitResolvePullRequestResult.Type;
 
 export const GitPreparePullRequestThreadResult = Schema.Struct({
   pullRequest: GitResolvedPullRequest,
+  changeRequest: Schema.optional(ChangeRequest),
   branch: TrimmedNonEmptyStringSchema,
   worktreePath: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
 });

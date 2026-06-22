@@ -55,6 +55,7 @@ vi.mock("../../appSettings", async () => {
     ...actual.parsePersistedAppSettings(null),
     customCodexModels: [],
     customClaudeModels: [],
+    customGrokModels: [],
   };
   return {
     ...actual,

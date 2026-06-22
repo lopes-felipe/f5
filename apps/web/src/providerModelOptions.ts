@@ -49,6 +49,7 @@ export function normalizeProviderModelOptions(
   const claudeCandidate = readRecordField(candidate, "claudeAgent");
   const cursorCandidate = readRecordField(candidate, "cursor");
   const openCodeCandidate = readRecordField(candidate, "opencode");
+  const grokCandidate = readRecordField(candidate, "grok");
 
   const codexReasoningEffort: CodexReasoningEffort | undefined =
     codexCandidate?.reasoningEffort === "low" ||
@@ -129,7 +130,9 @@ export function normalizeProviderModelOptions(
         }
       : undefined;
 
-  if (!codex && !claude && !cursor && !opencode) {
+  const grok = grokCandidate ? {} : undefined;
+
+  if (!codex && !claude && !cursor && !opencode && !grok) {
     return null;
   }
   return {
@@ -137,6 +140,7 @@ export function normalizeProviderModelOptions(
     ...(claude ? { claudeAgent: claude } : {}),
     ...(cursor ? { cursor } : {}),
     ...(opencode ? { opencode } : {}),
+    ...(grok ? { grok } : {}),
   };
 }
 
@@ -191,6 +195,8 @@ export function providerSelectionsToModelOptions(
           ...(stringValue("agent") ? { agent: stringValue("agent") } : {}),
         },
       });
+    case "grok":
+      return null;
   }
 }
 
@@ -246,6 +252,8 @@ export function providerModelOptionsToSelections(
       pushString("agent", openCodeOptions.agent);
       break;
     }
+    case "grok":
+      break;
   }
 
   return selections.length > 0 ? selections : undefined;

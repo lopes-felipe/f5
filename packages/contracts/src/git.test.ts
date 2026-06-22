@@ -50,9 +50,64 @@ describe("GitResolvePullRequestResult", () => {
         headBranch: "feature/pr-threads",
         state: "open",
       },
+      changeRequest: {
+        provider: {
+          kind: "github",
+          remoteName: "origin",
+          host: "github.com",
+          owner: "pingdotgg",
+          repository: "codething-mvp",
+          webUrl: "https://github.com/pingdotgg/codething-mvp",
+        },
+        id: "42",
+        displayNumber: "42",
+        title: "PR threads",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+        baseRefName: "main",
+        headRefName: "feature/pr-threads",
+        state: "open",
+        updatedAt: null,
+        isCrossRepository: false,
+      },
     });
 
     expect(parsed.pullRequest.number).toBe(42);
     expect(parsed.pullRequest.headBranch).toBe("feature/pr-threads");
+    expect(parsed.changeRequest?.provider.kind).toBe("github");
+    expect(parsed.changeRequest?.headRefName).toBe("feature/pr-threads");
+  });
+
+  it("accepts empty display titles on change requests", () => {
+    const parsed = decodeResolvePullRequestResult({
+      pullRequest: {
+        number: 42,
+        title: "PR threads",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+        baseBranch: "main",
+        headBranch: "feature/pr-threads",
+        state: "open",
+      },
+      changeRequest: {
+        provider: {
+          kind: "github",
+          remoteName: "origin",
+          host: "github.com",
+          owner: "pingdotgg",
+          repository: "codething-mvp",
+          webUrl: "https://github.com/pingdotgg/codething-mvp",
+        },
+        id: "42",
+        displayNumber: "42",
+        title: "",
+        url: "https://github.com/pingdotgg/codething-mvp/pull/42",
+        baseRefName: "main",
+        headRefName: "feature/pr-threads",
+        state: "open",
+        updatedAt: null,
+        isCrossRepository: false,
+      },
+    });
+
+    expect(parsed.changeRequest?.title).toBe("");
   });
 });

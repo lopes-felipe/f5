@@ -74,6 +74,7 @@ describe("getCustomModelOptionsByProvider", () => {
       {
         customCodexModels: [],
         customClaudeModels: [],
+        customGrokModels: [],
         providerModelPreferences: {},
       },
       [
@@ -99,6 +100,7 @@ describe("getCustomModelOptionsByProvider", () => {
     const options = getCustomModelOptionsByProvider({
       customCodexModels: [],
       customClaudeModels: [],
+      customGrokModels: [],
       providerModelPreferences: {},
     });
 
@@ -117,6 +119,7 @@ describe("getCustomModelOptionsByProvider", () => {
       {
         customCodexModels: [],
         customClaudeModels: [],
+        customGrokModels: [],
         providerModelPreferences: {},
       },
       [

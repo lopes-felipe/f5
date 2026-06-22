@@ -9,6 +9,8 @@ import {
   DISPLAY_PROFILE_KEYS,
   DISPLAY_PROFILE_NAMES,
   DISPLAY_PROFILE_PRESETS,
+  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
+  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
   displayProfilePatchFor,
   getDisplayProfile,
   getClaudeProjectSettings,
@@ -41,7 +43,11 @@ function toggledProfileValue(
 
 describe("parsePersistedAppSettings", () => {
   it("defaults git status auto-refresh to true", () => {
-    expect(parsePersistedAppSettings(null).enableGitStatusAutoRefresh).toBe(true);
+    const parsed = parsePersistedAppSettings(null);
+    expect(parsed.enableGitStatusAutoRefresh).toBe(true);
+    expect(parsed.gitStatusAutoRefreshIntervalSeconds).toBe(
+      GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
+    );
   });
 
   it("defaults thread status notifications to true", () => {
@@ -229,6 +235,9 @@ describe("parsePersistedAppSettings", () => {
     );
 
     expect(parsed.enableGitStatusAutoRefresh).toBe(true);
+    expect(parsed.gitStatusAutoRefreshIntervalSeconds).toBe(
+      GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
+    );
     expect(parsed.enableThreadStatusNotifications).toBe(true);
     expect(parsed.expandWorkflowThreadsByDefault).toBe(false);
     expect(parsed.showAgentCommandTranscripts).toBe(true);
@@ -243,6 +252,51 @@ describe("parsePersistedAppSettings", () => {
     expect(parsed.openFileLinksInPanel).toBe(true);
     expect(parsed.tasksPanelAutoOpen).toBe(false);
     expect(parsed.codexThreadTitleModel).toBe(DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex);
+  });
+
+  it("migrates the legacy git status auto-refresh boolean to the interval setting", () => {
+    const disabled = parsePersistedAppSettings(
+      JSON.stringify({
+        enableGitStatusAutoRefresh: false,
+      }),
+    );
+    expect(disabled.enableGitStatusAutoRefresh).toBe(false);
+    expect(disabled.gitStatusAutoRefreshIntervalSeconds).toBe(0);
+
+    const enabled = parsePersistedAppSettings(
+      JSON.stringify({
+        enableGitStatusAutoRefresh: true,
+      }),
+    );
+    expect(enabled.enableGitStatusAutoRefresh).toBe(true);
+    expect(enabled.gitStatusAutoRefreshIntervalSeconds).toBe(
+      GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
+    );
+  });
+
+  it("lets the numeric git status auto-refresh interval override the legacy boolean", () => {
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        enableGitStatusAutoRefresh: false,
+        gitStatusAutoRefreshIntervalSeconds: "120",
+      }),
+    );
+
+    expect(parsed.enableGitStatusAutoRefresh).toBe(true);
+    expect(parsed.gitStatusAutoRefreshIntervalSeconds).toBe(120);
+  });
+
+  it("clamps enabled git status auto-refresh intervals to the enabled floor", () => {
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        gitStatusAutoRefreshIntervalSeconds: "1",
+      }),
+    );
+
+    expect(parsed.enableGitStatusAutoRefresh).toBe(true);
+    expect(parsed.gitStatusAutoRefreshIntervalSeconds).toBe(
+      GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
+    );
   });
 
   it("falls back to eligible when persisted onboarding lite status is invalid", () => {

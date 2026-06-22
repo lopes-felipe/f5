@@ -460,3 +460,16 @@ export const OpenCodeIcon: Icon = (props) => (
     </defs>
   </svg>
 );
+
+export const GrokIcon: Icon = (props) => (
+  <svg {...props} viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <path d="M7 7L25 25M25 7L7 25" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
+    <path
+      d="M20.5 4.5H27.5V11.5"
+      stroke="currentColor"
+      strokeWidth="3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);

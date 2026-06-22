@@ -92,17 +92,21 @@ export function BranchToolbarBranchSelector({
   const [isBranchMenuOpen, setIsBranchMenuOpen] = useState(false);
   const [branchQuery, setBranchQuery] = useState("");
   const deferredBranchQuery = useDeferredValue(branchQuery);
+  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
 
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: branchCwd,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const branchStatusQuery = useQuery(
     gitStatusQueryOptions({
       cwd: branchCwd,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const branches = useMemo(

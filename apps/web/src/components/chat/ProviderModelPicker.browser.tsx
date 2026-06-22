@@ -19,6 +19,7 @@ const READY_PROVIDERS: ServerProvider[] = [
   createTestServerProvider("claudeAgent", { checkedAt: NOW_ISO }),
   createTestServerProvider("cursor", { checkedAt: NOW_ISO }),
   createTestServerProvider("opencode", { checkedAt: NOW_ISO }),
+  createTestServerProvider("grok", { checkedAt: NOW_ISO }),
 ];
 
 const MODEL_OPTIONS_BY_PROVIDER = {
@@ -33,6 +34,7 @@ const MODEL_OPTIONS_BY_PROVIDER = {
   ],
   cursor: [{ slug: "auto", name: "Auto" }],
   opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
+  grok: [{ slug: "grok-build", name: "Grok Build" }],
 } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
 
 async function mountPicker(props?: {
@@ -215,6 +217,7 @@ describe("ProviderModelPicker", () => {
       claudeAgent: [],
       cursor: [],
       opencode: [],
+      grok: [],
     } satisfies Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>>;
     const mounted = await mountPicker({
       provider: "codex",

@@ -68,6 +68,10 @@
       "types": "./src/providerInput.ts",
       "import": "./src/providerInput.ts"
     },
+    "./sourceControl": {
+      "types": "./src/sourceControl.ts",
+      "import": "./src/sourceControl.ts"
+    },
     "./cliArgs": {
       "types": "./src/cliArgs.ts",
       "import": "./src/cliArgs.ts"

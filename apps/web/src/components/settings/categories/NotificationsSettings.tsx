@@ -1,10 +1,19 @@
-import { buildAppSettingsPatch } from "../../../appSettings";
+import {
+  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
+  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
+  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX,
+  buildAppSettingsPatch,
+} from "../../../appSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { Button } from "../../ui/button";
+import { Input } from "../../ui/input";
 import { Switch } from "../../ui/switch";
 
 const NOTIFICATION_KEYS = ["enableThreadStatusNotifications"] as const;
-const GIT_REFRESH_KEYS = ["enableGitStatusAutoRefresh"] as const;
+const GIT_REFRESH_KEYS = [
+  "enableGitStatusAutoRefresh",
+  "gitStatusAutoRefreshIntervalSeconds",
+] as const;
 
 export function NotificationsSettings() {
   const {
@@ -16,6 +25,7 @@ export function NotificationsSettings() {
     isRequestingNotificationPermission,
     requestNotificationPermission,
   } = useSettingsRouteContext();
+  const gitAutoRefreshEnabled = settings.enableGitStatusAutoRefresh;
 
   return (
     <>
@@ -105,27 +115,55 @@ export function NotificationsSettings() {
           </p>
         </div>
 
-        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+        <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2">
           <div>
             <p className="text-sm font-medium text-foreground">Auto-refresh git status</p>
             <p className="text-xs text-muted-foreground">
-              {settings.enableGitStatusAutoRefresh
-                ? "Keeps git status and PR state refreshed automatically."
+              {gitAutoRefreshEnabled
+                ? `Keeps git status and PR state refreshed every ${settings.gitStatusAutoRefreshIntervalSeconds} seconds.`
                 : "Stops background refreshes, but git status still loads when opened and after explicit git actions."}
             </p>
           </div>
-          <Switch
-            checked={settings.enableGitStatusAutoRefresh}
-            onCheckedChange={(checked) =>
-              updateSettings({
-                enableGitStatusAutoRefresh: Boolean(checked),
-              })
-            }
-            aria-label="Auto-refresh git status"
-          />
+          <div className="flex shrink-0 items-center gap-3">
+            <Input
+              className="h-8 w-20"
+              type="number"
+              min={GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN}
+              max={GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX}
+              step={5}
+              value={settings.gitStatusAutoRefreshIntervalSeconds}
+              disabled={!gitAutoRefreshEnabled}
+              onChange={(event) => {
+                const value = Math.max(
+                  GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
+                  Math.min(
+                    GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX,
+                    Math.round(Number(event.currentTarget.value) || 0),
+                  ),
+                );
+                updateSettings({
+                  gitStatusAutoRefreshIntervalSeconds: value,
+                });
+              }}
+              aria-label="Git auto-refresh interval in seconds"
+            />
+            <Switch
+              checked={gitAutoRefreshEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({
+                  gitStatusAutoRefreshIntervalSeconds: checked
+                    ? GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT
+                    : 0,
+                })
+              }
+              aria-label="Auto-refresh git status"
+            />
+          </div>
         </div>
 
-        {settings.enableGitStatusAutoRefresh !== defaults.enableGitStatusAutoRefresh ? (
+        {settings.enableGitStatusAutoRefresh !== defaults.enableGitStatusAutoRefresh ||
+        settings.gitStatusAutoRefreshIntervalSeconds !==
+          defaults.gitStatusAutoRefreshIntervalSeconds ? (
           <div className="mt-3 flex justify-end">
             <Button
               size="xs"

@@ -886,9 +886,9 @@ export default function Sidebar() {
     queries: threadGitStatusCwds.map((cwd) => ({
       ...gitStatusQueryOptions({
         cwd,
-        autoRefresh: appSettings.enableGitStatusAutoRefresh,
+        autoRefresh: appSettings.gitStatusAutoRefreshIntervalSeconds > 0,
         staleTimeMs: 30_000,
-        refetchIntervalMs: 60_000,
+        refetchIntervalMs: appSettings.gitStatusAutoRefreshIntervalSeconds * 1000,
       }),
     })),
   });

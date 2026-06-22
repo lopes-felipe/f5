@@ -150,12 +150,17 @@ const OpenCodeProviderStartOptions = Schema.Struct({
   serverPassword: Schema.optional(TrimmedNonEmptyString),
 });
 
+const GrokProviderStartOptions = Schema.Struct({
+  binaryPath: Schema.optional(TrimmedNonEmptyString),
+});
+
 export const ProviderStartOptions = Schema.Struct({
   mcpServers: Schema.optional(McpProjectServersConfig),
   codex: Schema.optional(CodexProviderStartOptions),
   claudeAgent: Schema.optional(ClaudeProviderStartOptions),
   cursor: Schema.optional(CursorProviderStartOptions),
   opencode: Schema.optional(OpenCodeProviderStartOptions),
+  grok: Schema.optional(GrokProviderStartOptions),
 });
 export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);

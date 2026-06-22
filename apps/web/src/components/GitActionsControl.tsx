@@ -219,18 +219,22 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
       data: threadToastData,
     });
   }, [threadToastData]);
+  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
 
   const { data: gitStatus = null, error: gitStatusError } = useQuery(
     gitStatusQueryOptions({
       cwd: gitCwd,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
 
   const { data: branchList = null } = useQuery(
     gitBranchesQueryOptions({
       cwd: gitCwd,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   // Default to true while loading so we don't flash init controls.

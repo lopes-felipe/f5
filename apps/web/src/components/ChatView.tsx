@@ -2104,10 +2104,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
     (debouncerState) => ({ isPending: debouncerState.isPending }),
   );
   const effectivePathQuery = pathTriggerQuery.length > 0 ? debouncedPathQuery : "";
+  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
   const branchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: gitCwd,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const workspaceEntriesQuery = useQuery(

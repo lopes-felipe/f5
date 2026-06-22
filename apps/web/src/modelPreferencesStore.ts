@@ -28,6 +28,7 @@ export interface RecentModelSelection {
     | ClaudeModelOptions
     | CursorModelOptions
     | OpenCodeModelOptions
+    | NonNullable<ProviderModelOptions["grok"]>
     | null;
 }
 
@@ -95,7 +96,11 @@ function getModelPreferencesStorage() {
 }
 
 function normalizeProviderKind(value: unknown): ProviderKind | null {
-  return value === "codex" || value === "claudeAgent" || value === "cursor" || value === "opencode"
+  return value === "codex" ||
+    value === "claudeAgent" ||
+    value === "cursor" ||
+    value === "opencode" ||
+    value === "grok"
     ? value
     : null;
 }
@@ -134,6 +139,11 @@ function normalizePersistedModelMap(value: unknown): ModelPreferencesState["last
   const openCodeModel = normalizePersistedModel(candidate.opencode);
   if (openCodeModel) {
     next.opencode = openCodeModel;
+  }
+
+  const grokModel = normalizePersistedModel(candidate.grok);
+  if (grokModel) {
+    next.grok = grokModel;
   }
 
   return next;

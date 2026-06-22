@@ -102,7 +102,7 @@ describe("gitStatusQueryOptions", () => {
   it("keeps background refresh behavior enabled by default", () => {
     const options = gitStatusQueryOptions({ cwd: "/repo/a", autoRefresh: true });
 
-    expect(options.refetchInterval).toBe(15_000);
+    expect(options.refetchInterval).toBe(60_000);
     expect(options.refetchOnWindowFocus).toBe("always");
     expect(options.refetchOnReconnect).toBe("always");
   });

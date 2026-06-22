@@ -190,10 +190,13 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
   const activeCwd = activeThread?.worktreePath ?? activeProject?.cwd;
+  const gitAutoRefreshIntervalMs = settings.gitStatusAutoRefreshIntervalSeconds * 1000;
+  const gitAutoRefreshEnabled = settings.gitStatusAutoRefreshIntervalSeconds > 0;
   const gitBranchesQuery = useQuery(
     gitBranchesQueryOptions({
       cwd: activeCwd ?? null,
-      autoRefresh: settings.enableGitStatusAutoRefresh,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const isGitRepo = gitBranchesQuery.data?.isRepo ?? true;

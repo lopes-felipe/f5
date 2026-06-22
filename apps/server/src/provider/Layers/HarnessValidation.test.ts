@@ -220,6 +220,7 @@ async function runValidationEffect<A, E>(
     providers: {
       cursor: { enabled: false },
       opencode: { enabled: false },
+      grok: { enabled: false },
     },
   },
 ) {
@@ -259,6 +260,7 @@ describe("HarnessValidationLive", () => {
           ["codex", "unsupportedVersion"],
           ["cursor", "preflight"],
           ["opencode", "preflight"],
+          ["grok", "preflight"],
         ]);
         expect(claudeRunOneOffPrompt).not.toHaveBeenCalled();
         expect(codexRunOneOffPrompt).not.toHaveBeenCalled();
@@ -411,7 +413,11 @@ describe("HarnessValidationLive", () => {
         codex: makeAdapter("codex", codexRunOneOffPrompt),
         claudeAgent: makeAdapter("claudeAgent", claudeRunOneOffPrompt),
       },
-      {},
+      {
+        providers: {
+          grok: { enabled: false },
+        },
+      },
     );
 
     expect(results.map((result) => result.provider)).toEqual([
@@ -419,8 +425,15 @@ describe("HarnessValidationLive", () => {
       "codex",
       "cursor",
       "opencode",
+      "grok",
     ]);
-    expect(results.map((result) => result.status)).toEqual(["ready", "ready", "ready", "ready"]);
+    expect(results.map((result) => result.status)).toEqual([
+      "ready",
+      "ready",
+      "ready",
+      "ready",
+      "error",
+    ]);
     expect(results.find((result) => result.provider === "cursor")).toMatchObject({
       authStatus: "authenticated",
       version: "2026.04.08-test",
@@ -428,6 +441,9 @@ describe("HarnessValidationLive", () => {
     expect(results.find((result) => result.provider === "opencode")).toMatchObject({
       authStatus: "authenticated",
       version: "1.14.19",
+    });
+    expect(results.find((result) => result.provider === "grok")).toMatchObject({
+      failureKind: "preflight",
     });
     expect(codexRunOneOffPrompt).toHaveBeenCalledTimes(1);
     expect(claudeRunOneOffPrompt).toHaveBeenCalledTimes(1);
@@ -489,6 +505,7 @@ describe("HarnessValidationLive", () => {
           "codex",
           "cursor",
           "opencode",
+          "grok",
         ]);
       }),
       {
