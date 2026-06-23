@@ -23,7 +23,7 @@ export interface ThreadRightPanelState {
   surfaces: RightPanelSurface[];
 }
 
-interface OpenFileSurfaceInput {
+export interface OpenFileSurfaceInput {
   relativePath: string;
   line?: number | undefined;
   endLine?: number | undefined;
@@ -33,7 +33,7 @@ interface OpenFileSurfaceInput {
 interface RightPanelStoreState {
   byThreadId: Record<string, ThreadRightPanelState>;
   open: (threadId: ThreadId, kind: Exclude<RightPanelSurfaceKind, "file">) => void;
-  openFile: (threadId: ThreadId, input: OpenFileSurfaceInput) => void;
+  openFile: (threadId: ThreadId, input: OpenFileSurfaceInput) => RightPanelSurface;
   activateSurface: (threadId: ThreadId, surfaceId: string) => void;
   closeSurface: (threadId: ThreadId, surfaceId: string) => void;
   closeOtherSurfaces: (threadId: ThreadId, surfaceId: string) => void;
@@ -66,7 +66,7 @@ function singletonSurface(kind: Exclude<RightPanelSurfaceKind, "file">): RightPa
   }
 }
 
-function fileSurface(input: OpenFileSurfaceInput): RightPanelSurface {
+export function createFileRightPanelSurface(input: OpenFileSurfaceInput): RightPanelSurface {
   return {
     id: `file:${input.relativePath}`,
     kind: "file",
@@ -129,12 +129,15 @@ export const useRightPanelStore = create<RightPanelStoreState>()((set) => ({
         upsertSurface(current, singletonSurface(kind)),
       ),
     })),
-  openFile: (threadId, input) =>
+  openFile: (threadId, input) => {
+    const surface = createFileRightPanelSurface(input);
     set((state) => ({
       byThreadId: updateThread(state.byThreadId, threadId, (current) =>
-        upsertSurface(current, fileSurface(input)),
+        upsertSurface(current, surface),
       ),
-    })),
+    }));
+    return surface;
+  },
   activateSurface: (threadId, surfaceId) =>
     set((state) => ({
       byThreadId: updateThread(state.byThreadId, threadId, (current) =>

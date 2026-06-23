@@ -39,6 +39,11 @@ import { useThreadDetail } from "../lib/orchestrationReactQuery";
 import { useStartupReady } from "../lib/startupReady";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
 import {
+  clearSearchParamsForSurface,
+  openFileRightPanelSurface,
+  setSearchParamsForSurface,
+} from "../rightPanelNavigation";
+import {
   selectThreadRightPanelState,
   type RightPanelSurface,
   useRightPanelStore,
@@ -104,6 +109,7 @@ const LazyFileViewPanel = (props: {
 const LazyFileBrowserPanel = (props: {
   cwd: string | null;
   projectName: string;
+  entryLimit: number;
   onOpenFile: (relativePath: string) => void;
 }) => {
   return (
@@ -111,6 +117,7 @@ const LazyFileBrowserPanel = (props: {
       <FileBrowserPanel
         cwd={props.cwd}
         projectName={props.projectName}
+        entryLimit={props.entryLimit}
         onOpenFile={props.onOpenFile}
       />
     </Suspense>
@@ -140,43 +147,6 @@ function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
     search.fileEndLine ?? "",
     search.fileColumn ?? "",
   ].join("\u0000");
-}
-
-function clearSearchParamsForSurface<T extends Record<string, unknown>>(
-  params: T,
-  surface: RightPanelSurface,
-): Record<string, unknown> {
-  const parsed = parseDiffRouteSearch(params);
-  if (surface.kind === "diff" && parsed.diff === "1") {
-    return clearTurnDiffSearchParams(params);
-  }
-  if (surface.kind === "file" && parsed.fileViewPath === surface.relativePath) {
-    return clearFileViewSearchParams(params);
-  }
-  return params;
-}
-
-function setSearchParamsForSurface<T extends Record<string, unknown>>(
-  params: T,
-  surface: RightPanelSurface,
-): Record<string, unknown> {
-  if (surface.kind === "diff") {
-    return {
-      ...clearFileViewSearchParams(params),
-      diff: "1",
-    };
-  }
-  if (surface.kind === "file") {
-    const withoutCurrentFile = clearFileViewSearchParams(params);
-    return {
-      ...withoutCurrentFile,
-      fileViewPath: surface.relativePath,
-      ...(surface.line ? { fileLine: surface.line } : {}),
-      ...(surface.endLine ? { fileEndLine: surface.endLine } : {}),
-      ...(surface.column ? { fileColumn: surface.column } : {}),
-    };
-  }
-  return params;
 }
 
 function getFallbackSurfaceAfterClose(
@@ -524,12 +494,7 @@ function ChatThreadRouteView() {
 
   const openWorkspaceFile = useCallback(
     (relativePath: string) => {
-      const surface: FileRightPanelSurface = {
-        id: `file:${relativePath}`,
-        kind: "file",
-        relativePath,
-      };
-      useRightPanelStore.getState().openFile(threadId, { relativePath });
+      const surface = openFileRightPanelSurface(threadId, { relativePath });
       void navigate({
         to: "/$threadId",
         params: { threadId },
@@ -648,6 +613,7 @@ function ChatThreadRouteView() {
               <LazyFileBrowserPanel
                 cwd={workspaceBrowserRoot}
                 projectName={workspaceBrowserName}
+                entryLimit={settings.workspaceFileTreeEntryLimit}
                 onOpenFile={openWorkspaceFile}
               />
             );

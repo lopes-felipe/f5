@@ -11,6 +11,9 @@ import {
   DISPLAY_PROFILE_PRESETS,
   GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT,
   GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN,
   displayProfilePatchFor,
   getDisplayProfile,
   getClaudeProjectSettings,
@@ -125,6 +128,31 @@ describe("parsePersistedAppSettings", () => {
 
   it("defaults file-link panel navigation to true", () => {
     expect(parsePersistedAppSettings(null).openFileLinksInPanel).toBe(true);
+  });
+
+  it("defaults the workspace file tree entry limit", () => {
+    expect(parsePersistedAppSettings(null).workspaceFileTreeEntryLimit).toBe(
+      WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT,
+    );
+  });
+
+  it("clamps persisted workspace file tree entry limits", () => {
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ workspaceFileTreeEntryLimit: 99 }))
+        .workspaceFileTreeEntryLimit,
+    ).toBe(WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ workspaceFileTreeEntryLimit: 999_999 }))
+        .workspaceFileTreeEntryLimit,
+    ).toBe(WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ workspaceFileTreeEntryLimit: "10000" }))
+        .workspaceFileTreeEntryLimit,
+    ).toBe(10_000);
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ workspaceFileTreeEntryLimit: "nope" }))
+        .workspaceFileTreeEntryLimit,
+    ).toBe(WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT);
   });
 
   it("defaults task sidebar auto-open to false", () => {

@@ -1,4 +1,5 @@
 import type { ProjectEntry } from "@t3tools/contracts";
+import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ChevronDownIcon,
@@ -8,9 +9,14 @@ import {
   RefreshCwIcon,
   SearchIcon,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 
-import { projectListEntriesQueryOptions, projectQueryKeys } from "../lib/projectReactQuery";
+import {
+  projectListEntriesQueryOptions,
+  projectQueryKeys,
+  projectSearchEntriesQueryOptions,
+} from "../lib/projectReactQuery";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -19,6 +25,7 @@ import { ScrollArea } from "./ui/scroll-area";
 interface FileBrowserPanelProps {
   cwd: string | null;
   projectName: string;
+  entryLimit: number;
   onOpenFile: (relativePath: string) => void;
 }
 
@@ -33,6 +40,8 @@ interface VisibleTreeRow {
 }
 
 const MAX_RENDERED_TREE_ROWS = 1_500;
+const SEARCH_ENTRIES_LIMIT = 100;
+const SEARCH_INPUT_DEBOUNCE_MS = 180;
 
 function basenameOf(input: string): string {
   const separatorIndex = input.lastIndexOf("/");
@@ -42,6 +51,17 @@ function basenameOf(input: string): string {
 function parentPathOf(input: string): string | undefined {
   const separatorIndex = input.lastIndexOf("/");
   return separatorIndex === -1 ? undefined : input.slice(0, separatorIndex);
+}
+
+function ancestorDirectoryPathsOf(entry: ProjectEntry): string[] {
+  const paths: string[] = [];
+  let currentPath =
+    entry.kind === "directory" ? entry.path : (entry.parentPath ?? parentPathOf(entry.path));
+  while (currentPath) {
+    paths.push(currentPath);
+    currentPath = parentPathOf(currentPath);
+  }
+  return paths.reverse();
 }
 
 function compareEntries(left: ProjectEntry, right: ProjectEntry): number {
@@ -120,20 +140,56 @@ function flattenVisibleRows(params: {
   return rows;
 }
 
-export default function FileBrowserPanel({ cwd, projectName, onOpenFile }: FileBrowserPanelProps) {
+export function resolveSearchEntryForEnter(
+  entries: readonly ProjectEntry[],
+  highlightedIndex: number,
+): ProjectEntry | null {
+  const highlightedEntry = highlightedIndex >= 0 ? entries[highlightedIndex] : undefined;
+  return highlightedEntry ?? entries.find((entry) => entry.kind === "file") ?? null;
+}
+
+export default function FileBrowserPanel({
+  cwd,
+  projectName,
+  entryLimit,
+  onOpenFile,
+}: FileBrowserPanelProps) {
   const queryClient = useQueryClient();
   const [searchQuery, setSearchQuery] = useState("");
+  const [highlightedSearchIndex, setHighlightedSearchIndex] = useState(-1);
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
-  const entriesQuery = useQuery(projectListEntriesQueryOptions({ cwd }));
+  const treeRowsRef = useRef<HTMLDivElement>(null);
+  const pendingRevealPathRef = useRef<string | null>(null);
+  const entriesQuery = useQuery(projectListEntriesQueryOptions({ cwd, limit: entryLimit }));
+  const trimmedSearchQuery = searchQuery.trim();
+  const searchMode = trimmedSearchQuery.length > 0;
+  const [debouncedSearchQuery, searchDebouncer] = useDebouncedValue(
+    trimmedSearchQuery,
+    { wait: SEARCH_INPUT_DEBOUNCE_MS },
+    (debouncerState) => ({ isPending: debouncerState.isPending }),
+  );
+  const activeSearchQuery = searchMode ? debouncedSearchQuery : "";
+  const searchEntriesQuery = useQuery(
+    projectSearchEntriesQueryOptions({
+      cwd,
+      query: activeSearchQuery,
+      enabled: searchMode && activeSearchQuery.length > 0,
+      limit: SEARCH_ENTRIES_LIMIT,
+    }),
+  );
   const entries = entriesQuery.data?.entries ?? [];
   const tree = useMemo(() => buildTree(entries), [entries]);
-  const normalizedQuery = searchQuery.trim().toLowerCase();
   const visibleRows = useMemo(
-    () => flattenVisibleRows({ nodes: tree, expandedPaths, normalizedQuery }),
-    [expandedPaths, normalizedQuery, tree],
+    () => flattenVisibleRows({ nodes: tree, expandedPaths, normalizedQuery: "" }),
+    [expandedPaths, tree],
   );
   const renderedRows = visibleRows.slice(0, MAX_RENDERED_TREE_ROWS);
   const hiddenVisibleRowCount = visibleRows.length - renderedRows.length;
+  const searchResultsMatchInput = searchMode && activeSearchQuery === trimmedSearchQuery;
+  const searchEntries = searchResultsMatchInput ? (searchEntriesQuery.data?.entries ?? []) : [];
+  const searchErrorVisible = searchResultsMatchInput && searchEntriesQuery.isError;
+  const searchLoading =
+    searchMode && (searchDebouncer.state.isPending || searchEntriesQuery.isFetching);
   const fileCount = useMemo(
     () => entries.reduce((count, entry) => count + (entry.kind === "file" ? 1 : 0), 0),
     [entries],
@@ -157,6 +213,38 @@ export default function FileBrowserPanel({ cwd, projectName, onOpenFile }: FileB
     });
   }, [entries]);
 
+  useEffect(() => {
+    if (!searchMode) {
+      setHighlightedSearchIndex(-1);
+    }
+  }, [searchMode]);
+
+  useEffect(() => {
+    setHighlightedSearchIndex((current) => (current >= searchEntries.length ? -1 : current));
+  }, [searchEntries.length]);
+
+  useEffect(() => {
+    if (searchMode || !pendingRevealPathRef.current) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const targetPath = pendingRevealPathRef.current;
+      if (!targetPath) {
+        return;
+      }
+      const target = Array.from(
+        treeRowsRef.current?.querySelectorAll<HTMLElement>("[data-file-browser-path]") ?? [],
+      ).find((element) => element.dataset.fileBrowserPath === targetPath);
+      target?.scrollIntoView({ block: "nearest" });
+      pendingRevealPathRef.current = null;
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [renderedRows, searchMode]);
+
   const toggleDirectory = useCallback((path: string) => {
     setExpandedPaths((current) => {
       const next = new Set(current);
@@ -169,10 +257,97 @@ export default function FileBrowserPanel({ cwd, projectName, onOpenFile }: FileB
     });
   }, []);
 
+  const revealDirectory = useCallback((entry: ProjectEntry) => {
+    const pathsToExpand = ancestorDirectoryPathsOf(entry);
+    setExpandedPaths((current) => {
+      const next = new Set(current);
+      for (const path of pathsToExpand) {
+        next.add(path);
+      }
+      return next;
+    });
+    pendingRevealPathRef.current = entry.path;
+    setSearchQuery("");
+    setHighlightedSearchIndex(-1);
+  }, []);
+
+  const handleSearchEntryAction = useCallback(
+    (entry: ProjectEntry) => {
+      if (entry.kind === "file") {
+        onOpenFile(entry.path);
+        return;
+      }
+      revealDirectory(entry);
+    },
+    [onOpenFile, revealDirectory],
+  );
+
+  const moveHighlightedSearchResult = useCallback(
+    (direction: 1 | -1) => {
+      if (searchEntries.length === 0) {
+        setHighlightedSearchIndex(-1);
+        return;
+      }
+      setHighlightedSearchIndex((current) => {
+        if (current === -1) {
+          return direction === 1 ? 0 : searchEntries.length - 1;
+        }
+        return (current + direction + searchEntries.length) % searchEntries.length;
+      });
+    },
+    [searchEntries.length],
+  );
+
+  const handleSearchInputKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLInputElement>) => {
+      if (!searchMode) {
+        return;
+      }
+
+      if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveHighlightedSearchResult(1);
+        return;
+      }
+
+      if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveHighlightedSearchResult(-1);
+        return;
+      }
+
+      if (event.key === "Enter") {
+        const targetEntry = resolveSearchEntryForEnter(searchEntries, highlightedSearchIndex);
+        if (targetEntry) {
+          event.preventDefault();
+          handleSearchEntryAction(targetEntry);
+        }
+        return;
+      }
+
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setSearchQuery("");
+        setHighlightedSearchIndex(-1);
+      }
+    },
+    [
+      handleSearchEntryAction,
+      highlightedSearchIndex,
+      moveHighlightedSearchResult,
+      searchEntries,
+      searchMode,
+    ],
+  );
+
   const refreshEntries = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: projectQueryKeys.listEntries(cwd) });
-    void entriesQuery.refetch();
-  }, [cwd, entriesQuery, queryClient]);
+    void queryClient.invalidateQueries({ queryKey: projectQueryKeys.listEntries(cwd, entryLimit) });
+    if (activeSearchQuery.length > 0) {
+      void queryClient.invalidateQueries({
+        queryKey: projectQueryKeys.searchEntries(cwd, activeSearchQuery, SEARCH_ENTRIES_LIMIT),
+      });
+    }
+  }, [activeSearchQuery, cwd, entryLimit, queryClient]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -208,33 +383,91 @@ export default function FileBrowserPanel({ cwd, projectName, onOpenFile }: FileB
             nativeInput
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.currentTarget.value)}
+            onKeyDown={handleSearchInputKeyDown}
             placeholder="Search files"
             className="rounded-md [&_[data-slot=input]]:pl-8"
           />
         </div>
       </div>
 
-      {entriesQuery.isError ? (
+      {!searchMode && entriesQuery.isError ? (
         <div className="p-3 text-xs leading-relaxed text-destructive">
           {entriesQuery.error instanceof Error
             ? entriesQuery.error.message
             : "Failed to load workspace files."}
         </div>
+      ) : searchMode ? (
+        <ScrollArea className="min-h-0 flex-1" scrollFade>
+          <div className="py-1">
+            {searchErrorVisible ? (
+              <div className="px-3 py-2 text-xs leading-relaxed text-destructive">
+                {searchEntriesQuery.error instanceof Error
+                  ? searchEntriesQuery.error.message
+                  : "Failed to search workspace files."}
+              </div>
+            ) : null}
+            {searchLoading ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground/70">Searching...</div>
+            ) : null}
+            {!searchErrorVisible && !searchLoading && searchEntries.length === 0 ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground/70">No matching files.</div>
+            ) : null}
+            {searchEntries.map((entry, index) => {
+              const isDirectory = entry.kind === "directory";
+              const label = basenameOf(entry.path);
+              const showPath = entry.path !== label;
+              const highlighted = index === highlightedSearchIndex;
+              return (
+                <button
+                  key={`${entry.kind}:${entry.path}`}
+                  type="button"
+                  className={cn(
+                    "flex min-h-9 w-full min-w-0 items-center gap-2 px-2 text-left text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                    highlighted && "bg-accent text-foreground",
+                  )}
+                  aria-selected={highlighted}
+                  onMouseEnter={() => setHighlightedSearchIndex(index)}
+                  onClick={() => handleSearchEntryAction(entry)}
+                >
+                  {isDirectory ? (
+                    <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/80" />
+                  ) : (
+                    <FileIcon className="size-3.5 shrink-0 text-muted-foreground/80" />
+                  )}
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-foreground">{label}</span>
+                    {showPath ? (
+                      <span className="block truncate text-[10px] leading-3 text-muted-foreground/75">
+                        {entry.path}
+                      </span>
+                    ) : null}
+                  </span>
+                </button>
+              );
+            })}
+            {searchResultsMatchInput && searchEntriesQuery.data?.truncated ? (
+              <div className="px-3 py-2 text-xs text-muted-foreground/70">
+                More matches available. Refine your search.
+              </div>
+            ) : null}
+          </div>
+        </ScrollArea>
       ) : visibleRows.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
-          {normalizedQuery ? "No matching files." : "No workspace files found."}
+          No workspace files found.
         </div>
       ) : (
         <ScrollArea className="min-h-0 flex-1" scrollFade>
-          <div className="py-1">
+          <div className="py-1" ref={treeRowsRef}>
             {renderedRows.map(({ node, depth }) => {
               const isDirectory = node.entry.kind === "directory";
-              const expanded = expandedPaths.has(node.entry.path) || normalizedQuery.length > 0;
+              const expanded = expandedPaths.has(node.entry.path);
               const label = basenameOf(node.entry.path);
               return (
                 <button
                   key={node.entry.path}
                   type="button"
+                  data-file-browser-path={node.entry.path}
                   className="flex h-7 w-full min-w-0 items-center gap-1.5 px-2 text-left text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                   style={{ paddingLeft: 8 + depth * 14 }}
                   onClick={() => {

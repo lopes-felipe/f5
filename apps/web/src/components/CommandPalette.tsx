@@ -4,8 +4,10 @@ import {
   DEFAULT_MODEL_BY_PROVIDER,
   type FilesystemBrowseResult,
   type ProjectId,
+  type ProjectEntry,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
+import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
@@ -13,6 +15,7 @@ import {
   ArrowLeftIcon,
   ArrowUpIcon,
   CornerLeftUpIcon,
+  FileIcon,
   FolderIcon,
   FolderPlusIcon,
   MessageSquareIcon,
@@ -52,14 +55,19 @@ import {
   resolveProjectPathForDispatch,
 } from "../lib/projectPaths";
 import { cn, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
-import { filesystemBrowseQueryOptions } from "../lib/projectReactQuery";
+import {
+  filesystemBrowseQueryOptions,
+  projectSearchEntriesQueryOptions,
+} from "../lib/projectReactQuery";
 import { resolveShortcutCommand } from "../keybindings";
+import { openFileRightPanelSurface, setSearchParamsForSurface } from "../rightPanelNavigation";
 import { useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
 import {
   ADDON_ICON_CLASS,
   buildBrowseGroups,
+  buildFileSearchActionItems,
   buildProjectActionItems,
   buildRootGroups,
   buildThreadActionItems,
@@ -109,7 +117,10 @@ function getServerHttpOrigin(): string {
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
+const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
+const FILE_SEARCH_DEBOUNCE_MS = 180;
+const FILE_SEARCH_LIMIT = 100;
 
 function getLocalFileManagerName(platform: string): string {
   if (isMacPlatform(platform)) {
@@ -231,7 +242,7 @@ function OpenCommandPaletteDialog() {
   const queryClient = useQueryClient();
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const { settings } = useAppSettings();
-  const { activeDraftThread, activeThread, handleNewThread } = useHandleNewThread();
+  const { activeDraftThread, activeThread, handleNewThread, routeThreadId } = useHandleNewThread();
   const projects = useStore((store) => store.projects);
   const threads = useStore((store) => store.threads);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
@@ -278,8 +289,34 @@ function OpenCommandPaletteDialog() {
   const currentProjectCwd = currentProjectId
     ? (projectCwdById.get(currentProjectId) ?? null)
     : null;
+  const activeWorkspaceCwd =
+    activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? currentProjectCwd;
   const relativePathNeedsActiveProject =
     isExplicitRelativeProjectPath(query.trim()) && currentProjectCwd === null;
+  const trimmedQuery = query.trim();
+  const canSearchFiles =
+    currentView === null &&
+    !isBrowsing &&
+    routeThreadId !== null &&
+    activeWorkspaceCwd !== null &&
+    trimmedQuery.length > 0 &&
+    !trimmedQuery.startsWith(">");
+  const [debouncedFileSearchQuery] = useDebouncedValue(trimmedQuery, {
+    wait: FILE_SEARCH_DEBOUNCE_MS,
+  });
+  const activeFileSearchQuery = canSearchFiles ? debouncedFileSearchQuery : "";
+  const fileSearchQuery = useQuery(
+    projectSearchEntriesQueryOptions({
+      cwd: activeWorkspaceCwd,
+      query: activeFileSearchQuery,
+      enabled: canSearchFiles && activeFileSearchQuery.length > 0,
+      limit: FILE_SEARCH_LIMIT,
+    }),
+  );
+  const fileSearchResultsMatchInput = canSearchFiles && activeFileSearchQuery === trimmedQuery;
+  const fileSearchEntries = fileSearchResultsMatchInput
+    ? (fileSearchQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES)
+    : EMPTY_PROJECT_ENTRIES;
   // Normally we strip the leaf segment from the query before hitting the server
   // so that many keystrokes in the same directory share a cache entry and the
   // client does the incremental filtering. But the server only returns
@@ -437,6 +474,32 @@ function OpenCommandPaletteDialog() {
     [activeThreadId, navigate, projectTitleById, sortedActiveThreads],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
+
+  const openFileFromSearch = useCallback(
+    async (relativePath: string) => {
+      if (!routeThreadId) {
+        return;
+      }
+      const surface = openFileRightPanelSurface(routeThreadId, { relativePath });
+      await navigate({
+        to: "/$threadId",
+        params: { threadId: routeThreadId },
+        replace: true,
+        search: (previous) => setSearchParamsForSurface(previous, surface),
+      });
+    },
+    [navigate, routeThreadId],
+  );
+
+  const fileSearchItems = useMemo(
+    () =>
+      buildFileSearchActionItems({
+        entries: fileSearchEntries,
+        icon: <FileIcon className={ITEM_ICON_CLASS} />,
+        runFile: openFileFromSearch,
+      }),
+    [fileSearchEntries, openFileFromSearch],
+  );
 
   function pushPaletteView(view: CommandPaletteView): void {
     setViewStack((previousViews) => [
@@ -596,6 +659,7 @@ function OpenCommandPaletteDialog() {
     activeGroups,
     query: deferredQuery,
     isInSubmenu: currentView !== null,
+    fileSearchItems,
     projectSearchItems: projectSearchItems,
     threadSearchItems: allThreadItems,
   });

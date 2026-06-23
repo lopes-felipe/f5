@@ -9,6 +9,7 @@ import {
   type FilesystemBrowseInput,
   type FilesystemBrowseResult,
   ProjectEntry,
+  PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
   ProjectSearchEntriesInput,
@@ -20,8 +21,7 @@ const workspaceEntriesLogger = createLogger("workspaceEntries");
 
 const WORKSPACE_CACHE_TTL_MS = 15_000;
 const WORKSPACE_CACHE_MAX_KEYS = 4;
-const WORKSPACE_INDEX_MAX_ENTRIES = 25_000;
-const WORKSPACE_LIST_ENTRIES_DEFAULT_LIMIT = 5_000;
+const WORKSPACE_SEARCH_INDEX_MAX_ENTRIES = 25_000;
 const WORKSPACE_SCAN_READDIR_CONCURRENCY = 32;
 const GIT_CHECK_IGNORE_MAX_STDIN_BYTES = 256 * 1024;
 const WORKSPACE_FFF_SEARCH_PAGE_SIZE_MULTIPLIER = 4;
@@ -41,6 +41,7 @@ const IGNORED_DIRECTORY_NAMES = new Set([
 
 interface WorkspaceIndex {
   scannedAt: number;
+  maxEntries: number;
   entries: SearchableWorkspaceEntry[];
   truncated: boolean;
 }
@@ -107,6 +108,18 @@ const workspaceFffIndexCache = new Map<string, Promise<WorkspaceFffIndex>>();
 
 function toPosixPath(input: string): string {
   return input.split(path.sep).join("/");
+}
+
+function workspaceIndexBuildKey(cwd: string, maxEntries: number): string {
+  return `${cwd}\u0000${maxEntries}`;
+}
+
+function clearInFlightWorkspaceIndexBuilds(cwd: string): void {
+  for (const key of inFlightWorkspaceIndexBuilds.keys()) {
+    if (key.startsWith(`${cwd}\u0000`)) {
+      inFlightWorkspaceIndexBuilds.delete(key);
+    }
+  }
 }
 
 function parentPathOf(input: string): string | undefined {
@@ -504,7 +517,10 @@ async function filterGitIgnoredPaths(cwd: string, relativePaths: string[]): Prom
   return relativePaths.filter((relativePath) => !ignoredPaths.has(relativePath));
 }
 
-async function buildWorkspaceIndexFromGit(cwd: string): Promise<WorkspaceIndex | null> {
+async function buildWorkspaceIndexFromGit(
+  cwd: string,
+  maxEntries: number,
+): Promise<WorkspaceIndex | null> {
   if (!(await isInsideGitWorkTree(cwd))) {
     return null;
   }
@@ -565,13 +581,14 @@ async function buildWorkspaceIndexFromGit(cwd: string): Promise<WorkspaceIndex |
   const entries = [...directoryEntries, ...fileEntries];
   return {
     scannedAt: Date.now(),
-    entries: entries.slice(0, WORKSPACE_INDEX_MAX_ENTRIES),
-    truncated: Boolean(listedFiles.stdoutTruncated) || entries.length > WORKSPACE_INDEX_MAX_ENTRIES,
+    maxEntries,
+    entries: entries.slice(0, maxEntries),
+    truncated: Boolean(listedFiles.stdoutTruncated) || entries.length > maxEntries,
   };
 }
 
-async function buildWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
-  const gitIndexed = await buildWorkspaceIndexFromGit(cwd);
+async function buildWorkspaceIndex(cwd: string, maxEntries: number): Promise<WorkspaceIndex> {
+  const gitIndexed = await buildWorkspaceIndexFromGit(cwd, maxEntries);
   if (gitIndexed) {
     return gitIndexed;
   }
@@ -656,7 +673,7 @@ async function buildWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
           pendingDirectories.push(candidate.relativePath);
         }
 
-        if (entries.length >= WORKSPACE_INDEX_MAX_ENTRIES) {
+        if (entries.length >= maxEntries) {
           truncated = true;
           break;
         }
@@ -670,25 +687,34 @@ async function buildWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
 
   return {
     scannedAt: Date.now(),
+    maxEntries,
     entries,
     truncated,
   };
 }
 
-async function getWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
+async function getWorkspaceIndex(cwd: string, maxEntries: number): Promise<WorkspaceIndex> {
   const cached = workspaceIndexCache.get(cwd);
-  if (cached && Date.now() - cached.scannedAt < WORKSPACE_CACHE_TTL_MS) {
+  if (
+    cached &&
+    Date.now() - cached.scannedAt < WORKSPACE_CACHE_TTL_MS &&
+    (!cached.truncated || cached.maxEntries >= maxEntries)
+  ) {
     return cached;
   }
 
-  const inFlight = inFlightWorkspaceIndexBuilds.get(cwd);
+  const buildKey = workspaceIndexBuildKey(cwd, maxEntries);
+  const inFlight = inFlightWorkspaceIndexBuilds.get(buildKey);
   if (inFlight) {
     return inFlight;
   }
 
-  const nextPromise = buildWorkspaceIndex(cwd)
+  const nextPromise = buildWorkspaceIndex(cwd, maxEntries)
     .then((next) => {
-      workspaceIndexCache.set(cwd, next);
+      const current = workspaceIndexCache.get(cwd);
+      if (!current || current.maxEntries <= next.maxEntries || !next.truncated) {
+        workspaceIndexCache.set(cwd, next);
+      }
       while (workspaceIndexCache.size > WORKSPACE_CACHE_MAX_KEYS) {
         const oldestKey = workspaceIndexCache.keys().next().value;
         if (!oldestKey) break;
@@ -697,9 +723,9 @@ async function getWorkspaceIndex(cwd: string): Promise<WorkspaceIndex> {
       return next;
     })
     .finally(() => {
-      inFlightWorkspaceIndexBuilds.delete(cwd);
+      inFlightWorkspaceIndexBuilds.delete(buildKey);
     });
-  inFlightWorkspaceIndexBuilds.set(cwd, nextPromise);
+  inFlightWorkspaceIndexBuilds.set(buildKey, nextPromise);
   return nextPromise;
 }
 
@@ -708,7 +734,7 @@ export function clearWorkspaceIndexCache(
   options: { destroySearchIndex?: boolean } = {},
 ): void {
   workspaceIndexCache.delete(cwd);
-  inFlightWorkspaceIndexBuilds.delete(cwd);
+  clearInFlightWorkspaceIndexBuilds(cwd);
   if (options.destroySearchIndex ?? true) {
     destroyWorkspaceFffIndex(cwd);
   }
@@ -762,7 +788,7 @@ async function searchWorkspaceEntriesWithFff(params: {
 
   const entryByPath = new Map(params.index.entries.map((entry) => [entry.path, entry]));
   const pageSize = Math.min(
-    WORKSPACE_INDEX_MAX_ENTRIES,
+    params.index.maxEntries,
     Math.max(params.limit + 1, params.limit * WORKSPACE_FFF_SEARCH_PAGE_SIZE_MULTIPLIER),
   );
 
@@ -816,8 +842,11 @@ async function searchWorkspaceEntriesWithFff(params: {
 export async function listWorkspaceEntries(
   input: ProjectListEntriesInput,
 ): Promise<ProjectListEntriesResult> {
-  const index = await getWorkspaceIndex(input.cwd);
-  const limit = input.limit ?? WORKSPACE_LIST_ENTRIES_DEFAULT_LIMIT;
+  const limit = input.limit ?? PROJECT_LIST_ENTRIES_DEFAULT_LIMIT;
+  const index = await getWorkspaceIndex(
+    input.cwd,
+    Math.max(PROJECT_LIST_ENTRIES_DEFAULT_LIMIT, limit),
+  );
   const sortedEntries = index.entries
     .map(
       (entry): ProjectEntry => ({
@@ -843,7 +872,7 @@ export async function listWorkspaceEntries(
 export async function searchWorkspaceEntries(
   input: ProjectSearchEntriesInput,
 ): Promise<ProjectSearchEntriesResult> {
-  const index = await getWorkspaceIndex(input.cwd);
+  const index = await getWorkspaceIndex(input.cwd, WORKSPACE_SEARCH_INDEX_MAX_ENTRIES);
   const normalizedQuery = normalizeQuery(input.query);
   const limit = Math.max(0, Math.floor(input.limit));
   const rankedResult = rankWorkspaceEntriesFromIndex(index, normalizedQuery, limit);

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ProjectId, ThreadId } from "@t3tools/contracts";
 import type { Thread } from "../types";
 import {
+  buildFileSearchActionItems,
   buildThreadActionItems,
   filterCommandPaletteGroups,
   type CommandPaletteGroup,
@@ -165,5 +166,57 @@ describe("buildThreadActionItems", () => {
     });
 
     expect(items.map((item) => item.value)).toEqual(["thread:thread-active"]);
+  });
+});
+
+describe("buildFileSearchActionItems", () => {
+  it("builds file actions, skips directories, and preserves backend order", async () => {
+    const runFile = vi.fn(async (_relativePath: string) => undefined);
+
+    const items = buildFileSearchActionItems({
+      entries: [
+        { path: "apps/web/src/components/CommandPalette.tsx", kind: "file" },
+        { path: "apps/web/src/components", kind: "directory" },
+        { path: "README.md", kind: "file" },
+      ],
+      icon: null,
+      runFile,
+    });
+
+    expect(items.map((item) => item.value)).toEqual([
+      "file:apps/web/src/components/CommandPalette.tsx",
+      "file:README.md",
+    ]);
+    expect(items[0]?.title).toBe("CommandPalette.tsx");
+    expect(items[0]?.description).toBe("apps/web/src/components");
+    expect(items[1]?.title).toBe("README.md");
+    expect(items[1]?.description).toBeUndefined();
+
+    await items[0]?.run();
+
+    expect(runFile).toHaveBeenCalledWith("apps/web/src/components/CommandPalette.tsx");
+  });
+
+  it("keeps backend-ranked file items even when the query is a typo", () => {
+    const fileItems = buildFileSearchActionItems({
+      entries: [{ path: "apps/web/src/components/CommandPalette.tsx", kind: "file" }],
+      icon: null,
+      runFile: async (_relativePath) => undefined,
+    });
+
+    const groups = filterCommandPaletteGroups({
+      activeGroups: [],
+      query: "cmmand palete",
+      isInSubmenu: false,
+      fileSearchItems: fileItems,
+      projectSearchItems: [],
+      threadSearchItems: [],
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.value).toBe("files-search");
+    expect(groups[0]?.items.map((item) => item.value)).toEqual([
+      "file:apps/web/src/components/CommandPalette.tsx",
+    ]);
   });
 });

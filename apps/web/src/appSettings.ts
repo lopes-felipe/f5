@@ -2,6 +2,8 @@ import { useCallback } from "react";
 import { Effect, Option, Schema, SchemaTransformation } from "effect";
 import {
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  PROJECT_LIST_ENTRIES_DEFAULT_LIMIT,
+  PROJECT_LIST_ENTRIES_MAX_LIMIT,
   ProviderInstanceId,
   ProviderKind as ProviderKindSchema,
   TrimmedNonEmptyString,
@@ -66,6 +68,12 @@ const DEFAULT_RUNTIME_WARNING_VISIBILITY: RuntimeWarningVisibility = "summarized
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MIN = 1;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_MAX = 15;
 export const SIDEBAR_THREAD_PREVIEW_COUNT_DEFAULT = 6;
+export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN = 5_000;
+export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT = PROJECT_LIST_ENTRIES_DEFAULT_LIMIT;
+export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX = PROJECT_LIST_ENTRIES_MAX_LIMIT;
+export const WORKSPACE_FILE_TREE_ENTRY_LIMIT_OPTIONS = [
+  5_000, 10_000, 25_000, 50_000, 100_000,
+] as const;
 export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT = 60;
 export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MIN = 0;
 export const GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN = 5;
@@ -87,6 +95,7 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly providerModelPreferences?: unknown;
   readonly enableGitStatusAutoRefresh?: unknown;
   readonly gitStatusAutoRefreshIntervalSeconds?: unknown;
+  readonly workspaceFileTreeEntryLimit?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -145,6 +154,20 @@ const GitStatusAutoRefreshIntervalSecondsSchema = Schema.Union([
   Schema.withDecodingDefault(() => GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_DEFAULT),
 );
 
+const WorkspaceFileTreeEntryLimitSchema = Schema.Union([Schema.Number, Schema.String]).pipe(
+  Schema.decodeTo(
+    Schema.Number,
+    SchemaTransformation.transformOrFail({
+      decode: (value) => {
+        return Effect.succeed(normalizeWorkspaceFileTreeEntryLimit(value));
+      },
+      encode: (value) => Effect.succeed(value),
+    }),
+  ),
+  Schema.withConstructorDefault(() => Option.some(WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT)),
+  Schema.withDecodingDefault(() => WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT),
+);
+
 function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibility {
   if (value === "hidden" || value === "summarized" || value === "full") {
     return value;
@@ -170,6 +193,18 @@ function normalizeGitStatusAutoRefreshIntervalSeconds(value: unknown): number {
   return Math.max(
     GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_ENABLED_MIN,
     Math.min(GIT_STATUS_AUTO_REFRESH_INTERVAL_SECONDS_MAX, rounded),
+  );
+}
+
+function normalizeWorkspaceFileTreeEntryLimit(value: unknown): number {
+  const numberValue = typeof value === "string" ? Number(value) : value;
+  if (typeof numberValue !== "number" || !Number.isFinite(numberValue)) {
+    return WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT;
+  }
+
+  return Math.max(
+    WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN,
+    Math.min(WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX, Math.round(numberValue)),
   );
 }
 
@@ -250,6 +285,7 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(() => "eligible" as const),
   ),
   openFileLinksInPanel: Schema.Boolean.pipe(Schema.withConstructorDefault(() => Option.some(true))),
+  workspaceFileTreeEntryLimit: WorkspaceFileTreeEntryLimitSchema,
   timestampFormat: Schema.Literals(["locale", "12-hour", "24-hour"]).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_TIMESTAMP_FORMAT)),
   ),
@@ -461,6 +497,9 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customClaudeModels: normalizeCustomModelSlugs(settings.customClaudeModels, "claudeAgent"),
     customGrokModels: normalizeCustomModelSlugs(settings.customGrokModels, "grok"),
     claudeProjectSettings: normalizeClaudeProjectSettingsRecord(settings.claudeProjectSettings),
+    workspaceFileTreeEntryLimit: normalizeWorkspaceFileTreeEntryLimit(
+      settings.workspaceFileTreeEntryLimit,
+    ),
   };
 }
 

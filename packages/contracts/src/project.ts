@@ -1,8 +1,9 @@
 import { Schema } from "effect";
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 
-const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
-const PROJECT_LIST_ENTRIES_MAX_LIMIT = 5_000;
+export const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
+export const PROJECT_LIST_ENTRIES_DEFAULT_LIMIT = 5_000;
+export const PROJECT_LIST_ENTRIES_MAX_LIMIT = 100_000;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
 const PROJECT_READ_FILE_PATH_MAX_LENGTH = 512;
 const Sha256HexString = TrimmedNonEmptyString.check(Schema.isPattern(/^[0-9a-f]{64}$/));

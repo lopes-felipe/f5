@@ -8,7 +8,8 @@ import { ensureNativeApi } from "~/nativeApi";
 
 export const projectQueryKeys = {
   all: ["projects"] as const,
-  listEntries: (cwd: string | null) => ["projects", "list-entries", cwd] as const,
+  listEntries: (cwd: string | null, limit: number | undefined) =>
+    ["projects", "list-entries", cwd, limit ?? null] as const,
   searchEntries: (cwd: string | null, query: string, limit: number) =>
     ["projects", "search-entries", cwd, query, limit] as const,
   filesystemBrowse: (partialPath: string, cwd: string | null) =>
@@ -31,16 +32,20 @@ const EMPTY_SEARCH_ENTRIES_RESULT: ProjectSearchEntriesResult = {
 export function projectListEntriesQueryOptions(input: {
   cwd: string | null;
   enabled?: boolean;
+  limit?: number;
   staleTime?: number;
 }) {
   return queryOptions({
-    queryKey: projectQueryKeys.listEntries(input.cwd),
+    queryKey: projectQueryKeys.listEntries(input.cwd, input.limit),
     queryFn: async () => {
       const api = ensureNativeApi();
       if (!input.cwd) {
         throw new Error("Workspace entries are unavailable.");
       }
-      return api.projects.listEntries({ cwd: input.cwd });
+      return api.projects.listEntries({
+        cwd: input.cwd,
+        ...(input.limit ? { limit: input.limit } : {}),
+      });
     },
     enabled: (input.enabled ?? true) && input.cwd !== null,
     staleTime: input.staleTime ?? DEFAULT_LIST_ENTRIES_STALE_TIME,

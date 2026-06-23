@@ -22,6 +22,7 @@ export default mergeConfig(
         "src/components/ThreadStatusNotificationController.browser.tsx",
         "src/components/KeybindingsToast.browser.tsx",
         "src/components/DiffPanel.browser.tsx",
+        "src/components/FileBrowserPanel.browser.tsx",
         "src/components/WebSocketConnectionSurface.browser.tsx",
         "src/components/settings/DisplayProfileSelector.browser.tsx",
         "src/components/settings/KeybindingEditor.browser.tsx",

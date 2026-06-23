@@ -1,4 +1,8 @@
-import { type KeybindingCommand, type FilesystemBrowseEntry } from "@t3tools/contracts";
+import {
+  type FilesystemBrowseEntry,
+  type KeybindingCommand,
+  type ProjectEntry,
+} from "@t3tools/contracts";
 import { type ReactNode } from "react";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { compareThreadsByActivity } from "../lib/threadOrdering";
@@ -147,6 +151,43 @@ export function buildThreadActionItems(input: {
   });
 }
 
+function basenameOfPath(input: string): string {
+  const separatorIndex = input.lastIndexOf("/");
+  return separatorIndex === -1 ? input : input.slice(separatorIndex + 1);
+}
+
+function parentPathOf(input: string): string | undefined {
+  const separatorIndex = input.lastIndexOf("/");
+  return separatorIndex === -1 ? undefined : input.slice(0, separatorIndex);
+}
+
+export function buildFileSearchActionItems(input: {
+  entries: ReadonlyArray<ProjectEntry>;
+  icon: ReactNode;
+  runFile: (relativePath: string) => Promise<void>;
+}): CommandPaletteActionItem[] {
+  return input.entries.flatMap((entry) => {
+    if (entry.kind !== "file") {
+      return [];
+    }
+    const basename = basenameOfPath(entry.path);
+    const parentPath = entry.parentPath ?? parentPathOf(entry.path);
+    return [
+      {
+        kind: "action",
+        value: `file:${entry.path}`,
+        searchTerms: [entry.path, basename],
+        title: basename,
+        ...(parentPath ? { description: parentPath } : {}),
+        icon: input.icon,
+        run: async () => {
+          await input.runFile(entry.path);
+        },
+      },
+    ];
+  });
+}
+
 function rankSearchFieldMatch(field: string, normalizedQuery: string): number {
   const normalizedField = normalizeSearchText(field);
   if (normalizedField.length === 0 || !normalizedField.includes(normalizedQuery)) {
@@ -184,6 +225,7 @@ export function filterCommandPaletteGroups(input: {
   activeGroups: ReadonlyArray<CommandPaletteGroup>;
   query: string;
   isInSubmenu: boolean;
+  fileSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
   projectSearchItems: ReadonlyArray<CommandPaletteActionItem>;
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
@@ -223,7 +265,7 @@ export function filterCommandPaletteGroups(input: {
     }
   }
 
-  return searchableGroups.flatMap((group) => {
+  const filteredGroups = searchableGroups.flatMap((group) => {
     const items = group.items
       .map((item, index) => {
         const haystack = normalizeSearchText(item.searchTerms.join(" "));
@@ -250,6 +292,25 @@ export function filterCommandPaletteGroups(input: {
 
     return [{ value: group.value, label: group.label, items }];
   });
+
+  if (!input.isInSubmenu && !isActionsFilter && input.fileSearchItems?.length) {
+    const filesGroup: CommandPaletteGroup = {
+      value: "files-search",
+      label: "Files",
+      items: input.fileSearchItems,
+    };
+    const actionsIndex = filteredGroups.findIndex((group) => group.value === "actions");
+    if (actionsIndex >= 0) {
+      return [
+        ...filteredGroups.slice(0, actionsIndex + 1),
+        filesGroup,
+        ...filteredGroups.slice(actionsIndex + 1),
+      ];
+    }
+    return [filesGroup, ...filteredGroups];
+  }
+
+  return filteredGroups;
 }
 
 export function buildBrowseGroups(input: {
@@ -325,7 +386,7 @@ export function buildRootGroups(input: {
 export function getCommandPaletteInputPlaceholder(mode: CommandPaletteMode): string {
   switch (mode) {
     case "root":
-      return "Search commands, projects, and threads...";
+      return "Search commands, files, projects, and threads...";
     case "root-browse":
       return "Enter project path (e.g. ~/projects/my-app)";
     case "submenu":

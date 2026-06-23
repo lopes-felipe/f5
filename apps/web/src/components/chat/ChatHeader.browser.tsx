@@ -45,6 +45,8 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     availableEditors: [],
     terminalAvailable: false,
     terminalOpen: false,
+    workspaceFilesAvailable: false,
+    filesOpen: false,
     terminalToggleShortcutLabel: null,
     diffToggleShortcutLabel: null,
     gitCwd: null,
@@ -54,6 +56,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     onUpdateProjectScript: async () => {},
     onDeleteProjectScript: async () => {},
     onToggleTerminal: () => {},
+    onToggleFiles: () => {},
     onToggleDiff: () => {},
     ...overrides,
   };
@@ -102,6 +105,24 @@ describe("ChatHeader", () => {
         expect(document.body.textContent).toContain("Thinking: ~12,500 tokens");
         expect(document.body.textContent).toContain("not billed output tokens");
       });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("renders a workspace files toggle when file browsing is available", async () => {
+    const onToggleFiles = vi.fn();
+    const screen = await renderHeader({
+      activeProjectName: "Project",
+      workspaceFilesAvailable: true,
+      onToggleFiles,
+    });
+
+    try {
+      const filesToggle = page.getByRole("button", { name: "Toggle workspace files" });
+      await expect.element(filesToggle).toBeEnabled();
+      await filesToggle.click();
+      expect(onToggleFiles).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
     }

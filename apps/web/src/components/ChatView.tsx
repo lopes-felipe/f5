@@ -933,6 +933,10 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const state = selectThreadRightPanelState(store.byThreadId, threadId);
     return state.isOpen && state.surfaces.some((surface) => surface.id === "diff");
   });
+  const filesOpen = useRightPanelStore((store) => {
+    const state = selectThreadRightPanelState(store.byThreadId, threadId);
+    return state.isOpen && state.surfaces.some((surface) => surface.id === "files");
+  });
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
@@ -2299,6 +2303,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
       },
     });
   }, [diffOpen, navigate, threadId]);
+  const onToggleFiles = useCallback(() => {
+    if (filesOpen) {
+      useRightPanelStore.getState().closeSurface(threadId, "files");
+      return;
+    }
+    useRightPanelStore.getState().open(threadId, "files");
+  }, [filesOpen, threadId]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -5174,6 +5185,8 @@ export default function ChatView({ threadId }: ChatViewProps) {
             availableEditors={availableEditors}
             terminalAvailable={activeProject != null}
             terminalOpen={terminalState.terminalOpen}
+            workspaceFilesAvailable={workspaceRoot !== undefined}
+            filesOpen={filesOpen}
             terminalToggleShortcutLabel={terminalToggleShortcutLabel}
             diffToggleShortcutLabel={diffPanelShortcutLabel}
             gitCwd={gitCwd}
@@ -5185,6 +5198,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
             onUpdateProjectScript={updateProjectScript}
             onDeleteProjectScript={deleteProjectScript}
             onToggleTerminal={toggleTerminalVisibility}
+            onToggleFiles={onToggleFiles}
             onToggleDiff={onToggleDiff}
           />
         </header>

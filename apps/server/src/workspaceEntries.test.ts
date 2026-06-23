@@ -5,6 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
+import { PROJECT_LIST_ENTRIES_DEFAULT_LIMIT } from "@t3tools/contracts";
 
 import {
   listWorkspaceEntries,
@@ -92,6 +93,23 @@ describe("searchWorkspaceEntries", () => {
     assert.lengthOf(result.entries, 2);
     assert.isTrue(result.truncated);
     assert.equal(result.totalEntries, 4);
+  });
+
+  it("rebuilds a truncated cached index for a later higher list limit", async () => {
+    const cwd = makeTempDir("t3code-workspace-list-entries-limit-rebuild-");
+    const fileCount = PROJECT_LIST_ENTRIES_DEFAULT_LIMIT + 10;
+    for (let index = 0; index < fileCount; index += 1) {
+      writeFile(cwd, `file-${String(index).padStart(5, "0")}.ts`);
+    }
+
+    const defaultResult = await listWorkspaceEntries({ cwd });
+    assert.lengthOf(defaultResult.entries, PROJECT_LIST_ENTRIES_DEFAULT_LIMIT);
+    assert.isTrue(defaultResult.truncated);
+
+    const expandedResult = await listWorkspaceEntries({ cwd, limit: fileCount + 1 });
+    assert.lengthOf(expandedResult.entries, fileCount);
+    assert.isFalse(expandedResult.truncated);
+    assert.equal(expandedResult.totalEntries, fileCount);
   });
 
   it("filters and ranks entries by query", async () => {

@@ -3,6 +3,9 @@ import {
   RUNTIME_WARNING_VISIBILITY_OPTIONS,
   SIDEBAR_THREAD_PREVIEW_COUNT_MAX,
   SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN,
+  WORKSPACE_FILE_TREE_ENTRY_LIMIT_OPTIONS,
   type AppSettings,
   buildAppSettingsPatch,
   parsePersistedAppSettings,
@@ -13,7 +16,11 @@ import { Button } from "../../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 
-const RESPONSE_AUXILIARY_KEYS = ["enableAssistantStreaming", "openFileLinksInPanel"] as const;
+const RESPONSE_AUXILIARY_KEYS = [
+  "enableAssistantStreaming",
+  "openFileLinksInPanel",
+  "workspaceFileTreeEntryLimit",
+] as const;
 const SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15] as const;
 const RUNTIME_WARNING_VISIBILITY_LABELS = {
   hidden: "Hidden",
@@ -83,6 +90,40 @@ export function DisplaySettings() {
             }
             aria-label="Open file links in code panel"
           />
+        </div>
+
+        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">File tree entry limit</p>
+            <p className="text-xs text-muted-foreground">
+              Maximum entries loaded for the Files panel tree. Search still uses backend ranking.
+            </p>
+          </div>
+          <Select
+            value={String(settings.workspaceFileTreeEntryLimit)}
+            onValueChange={(value) => {
+              if (value === null) return;
+              const next = Number.parseInt(value, 10);
+              if (
+                Number.isFinite(next) &&
+                next >= WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN &&
+                next <= WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX
+              ) {
+                updateSettings({ workspaceFileTreeEntryLimit: next });
+              }
+            }}
+          >
+            <SelectTrigger className="w-28" aria-label="File tree entry limit">
+              <SelectValue>{settings.workspaceFileTreeEntryLimit.toLocaleString()}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup align="end">
+              {WORKSPACE_FILE_TREE_ENTRY_LIMIT_OPTIONS.map((option) => (
+                <SelectItem key={option} value={String(option)}>
+                  {option.toLocaleString()}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
         </div>
 
         <DisplayProfileSelector settings={settings} updateSettings={updateSettings}>
