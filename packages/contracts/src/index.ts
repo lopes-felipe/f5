@@ -11,6 +11,7 @@ export * from "./server";
 export * from "./settings";
 export * from "./git";
 export * from "./sourceControl";
+export * from "./preview";
 export * from "./orchestration";
 export * from "./mcp";
 export * from "./mcpServer";

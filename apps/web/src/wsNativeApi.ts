@@ -4,6 +4,8 @@ import {
   type McpStatusUpdatedPayload,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type DiscoveredLocalServerList,
+  type PreviewEvent,
   type ContextMenuItem,
   type NativeApi,
   type ServerProviderAdvisoriesUpdatedPayload,
@@ -27,6 +29,8 @@ const providerAdvisoriesUpdatedListeners = new Set<
 >();
 const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => void>();
 const gitStatusInvalidatedListeners = new Set<(payload: GitStatusInvalidatedPayload) => void>();
+const previewEventListeners = new Set<(payload: PreviewEvent) => void>();
+const previewLocalServersUpdatedListeners = new Set<(payload: DiscoveredLocalServerList) => void>();
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
@@ -152,6 +156,26 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
+  transport.subscribe(WS_CHANNELS.previewEvent, (message) => {
+    const payload = message.data;
+    for (const listener of previewEventListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(WS_CHANNELS.previewLocalServersUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of previewLocalServersUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
   transport.subscribe(WS_CHANNELS.mcpStatusUpdated, (message) => {
     const payload = message.data;
     for (const listener of mcpStatusUpdatedListeners) {
@@ -205,6 +229,28 @@ export function createWsNativeApi(): NativeApi {
       close: (input) => transport.request(WS_METHODS.terminalClose, input),
       onEvent: (callback) =>
         transport.subscribe(WS_CHANNELS.terminalEvent, (message) => callback(message.data)),
+    },
+    preview: {
+      open: (input) => transport.request(WS_METHODS.previewOpen, input),
+      navigate: (input) => transport.request(WS_METHODS.previewNavigate, input),
+      reportStatus: (input) => transport.request(WS_METHODS.previewReportStatus, input),
+      refresh: (input) => transport.request(WS_METHODS.previewRefresh, input),
+      close: (input) => transport.request(WS_METHODS.previewClose, input),
+      list: (input) => transport.request(WS_METHODS.previewList, input),
+      listLocalServers: (input = {}) =>
+        transport.request(WS_METHODS.previewListLocalServers, input),
+      onEvent: (callback) => {
+        previewEventListeners.add(callback);
+        return () => {
+          previewEventListeners.delete(callback);
+        };
+      },
+      onLocalServersUpdated: (callback) => {
+        previewLocalServersUpdatedListeners.add(callback);
+        return () => {
+          previewLocalServersUpdatedListeners.delete(callback);
+        };
+      },
     },
     projects: {
       listEntries: (input) => transport.request(WS_METHODS.projectsListEntries, input),

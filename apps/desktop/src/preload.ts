@@ -11,6 +11,19 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+const PREVIEW_GET_CONFIG_CHANNEL = "desktop-preview:get-config";
+const PREVIEW_CREATE_TAB_CHANNEL = "desktop-preview:create-tab";
+const PREVIEW_CLOSE_TAB_CHANNEL = "desktop-preview:close-tab";
+const PREVIEW_REGISTER_WEBVIEW_CHANNEL = "desktop-preview:register-webview";
+const PREVIEW_NAVIGATE_CHANNEL = "desktop-preview:navigate";
+const PREVIEW_GO_BACK_CHANNEL = "desktop-preview:go-back";
+const PREVIEW_GO_FORWARD_CHANNEL = "desktop-preview:go-forward";
+const PREVIEW_REFRESH_CHANNEL = "desktop-preview:refresh";
+const PREVIEW_HARD_RELOAD_CHANNEL = "desktop-preview:hard-reload";
+const PREVIEW_OPEN_DEVTOOLS_CHANNEL = "desktop-preview:open-devtools";
+const PREVIEW_PICK_ELEMENT_CHANNEL = "desktop-preview:pick-element";
+const PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL = "desktop-preview:cancel-pick-element";
+const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
 
 contextBridge.exposeInMainWorld("desktopBridge", {
@@ -48,5 +61,35 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     return () => {
       ipcRenderer.removeListener(UPDATE_STATE_CHANNEL, wrappedListener);
     };
+  },
+  preview: {
+    getPreviewConfig: () => ipcRenderer.invoke(PREVIEW_GET_CONFIG_CHANNEL),
+    createTab: (tabId) => ipcRenderer.invoke(PREVIEW_CREATE_TAB_CHANNEL, tabId),
+    closeTab: (tabId) => ipcRenderer.invoke(PREVIEW_CLOSE_TAB_CHANNEL, tabId),
+    registerWebview: (tabId, webContentsId) =>
+      ipcRenderer.invoke(PREVIEW_REGISTER_WEBVIEW_CHANNEL, tabId, webContentsId),
+    navigate: (tabId, url) => ipcRenderer.invoke(PREVIEW_NAVIGATE_CHANNEL, tabId, url),
+    goBack: (tabId) => ipcRenderer.invoke(PREVIEW_GO_BACK_CHANNEL, tabId),
+    goForward: (tabId) => ipcRenderer.invoke(PREVIEW_GO_FORWARD_CHANNEL, tabId),
+    refresh: (tabId) => ipcRenderer.invoke(PREVIEW_REFRESH_CHANNEL, tabId),
+    hardReload: (tabId) => ipcRenderer.invoke(PREVIEW_HARD_RELOAD_CHANNEL, tabId),
+    openDevTools: (tabId) => ipcRenderer.invoke(PREVIEW_OPEN_DEVTOOLS_CHANNEL, tabId),
+    pickElement: (tabId) => ipcRenderer.invoke(PREVIEW_PICK_ELEMENT_CHANNEL, tabId),
+    cancelPickElement: (tabId) => ipcRenderer.invoke(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, tabId),
+    onStateChange: (listener) => {
+      const wrappedListener = (
+        _event: Electron.IpcRendererEvent,
+        tabId: unknown,
+        state: unknown,
+      ) => {
+        if (typeof tabId !== "string" || typeof state !== "object" || state === null) return;
+        listener(tabId, state as Parameters<typeof listener>[1]);
+      };
+
+      ipcRenderer.on(PREVIEW_STATE_CHANNEL, wrappedListener);
+      return () => {
+        ipcRenderer.removeListener(PREVIEW_STATE_CHANNEL, wrappedListener);
+      };
+    },
   },
 } satisfies DesktopBridge);

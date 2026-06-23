@@ -82,6 +82,20 @@ import type {
   TerminalWriteInput,
 } from "./terminal";
 import type {
+  DiscoveredLocalServerList,
+  PreviewAnnotationPayload,
+  PreviewCloseInput,
+  PreviewEvent,
+  PreviewListInput,
+  PreviewListResult,
+  PreviewListLocalServersInput,
+  PreviewNavigateInput,
+  PreviewOpenInput,
+  PreviewRefreshInput,
+  PreviewReportStatusInput,
+  PreviewSessionSnapshot,
+} from "./preview";
+import type {
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
   StorageCleanupRequest,
@@ -155,6 +169,33 @@ export type DesktopUpdateStatus =
 export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
 
+export type DesktopPreviewNavStatus =
+  | { kind: "Idle" }
+  | { kind: "Loading"; url: string; title: string }
+  | { kind: "Success"; url: string; title: string }
+  | {
+      kind: "LoadFailed";
+      url: string;
+      title: string;
+      code: number;
+      description: string;
+    };
+
+export interface DesktopPreviewTabState {
+  tabId: string;
+  webContentsId: number | null;
+  navStatus: DesktopPreviewNavStatus;
+  canGoBack: boolean;
+  canGoForward: boolean;
+  zoomFactor: number;
+  updatedAt: string;
+}
+
+export interface DesktopPreviewWebviewConfig {
+  partition: string;
+  webPreferences: string;
+}
+
 export interface DesktopRuntimeInfo {
   hostArch: DesktopRuntimeArch;
   appArch: DesktopRuntimeArch;
@@ -200,6 +241,23 @@ export interface DesktopBridge {
   downloadUpdate: () => Promise<DesktopUpdateActionResult>;
   installUpdate: () => Promise<DesktopUpdateActionResult>;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
+  preview?: DesktopPreviewBridge;
+}
+
+export interface DesktopPreviewBridge {
+  getPreviewConfig: () => Promise<DesktopPreviewWebviewConfig>;
+  createTab: (tabId: string) => Promise<void>;
+  closeTab: (tabId: string) => Promise<void>;
+  registerWebview: (tabId: string, webContentsId: number) => Promise<void>;
+  navigate: (tabId: string, url: string) => Promise<void>;
+  goBack: (tabId: string) => Promise<void>;
+  goForward: (tabId: string) => Promise<void>;
+  refresh: (tabId: string) => Promise<void>;
+  hardReload: (tabId: string) => Promise<void>;
+  openDevTools: (tabId: string) => Promise<void>;
+  pickElement: (tabId: string) => Promise<PreviewAnnotationPayload | null>;
+  cancelPickElement: (tabId: string) => Promise<void>;
+  onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
 }
 
 export interface NativeApi {
@@ -215,6 +273,17 @@ export interface NativeApi {
     restart: (input: TerminalRestartInput) => Promise<TerminalSessionSnapshot>;
     close: (input: TerminalCloseInput) => Promise<void>;
     onEvent: (callback: (event: TerminalEvent) => void) => () => void;
+  };
+  preview: {
+    open: (input: PreviewOpenInput) => Promise<PreviewSessionSnapshot>;
+    navigate: (input: PreviewNavigateInput) => Promise<PreviewSessionSnapshot>;
+    reportStatus: (input: PreviewReportStatusInput) => Promise<void>;
+    refresh: (input: PreviewRefreshInput) => Promise<void>;
+    close: (input: PreviewCloseInput) => Promise<void>;
+    list: (input: PreviewListInput) => Promise<PreviewListResult>;
+    listLocalServers: (input?: PreviewListLocalServersInput) => Promise<DiscoveredLocalServerList>;
+    onEvent: (callback: (event: PreviewEvent) => void) => () => void;
+    onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;
   };
   projects: {
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;

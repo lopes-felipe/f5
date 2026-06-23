@@ -65,6 +65,7 @@ import {
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const FileBrowserPanel = lazy(() => import("../components/FileBrowserPanel"));
 const FileViewPanel = lazy(() => import("../components/FileViewPanel"));
+const PreviewPanel = lazy(() => import("../components/PreviewPanel"));
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
@@ -124,16 +125,13 @@ const LazyFileBrowserPanel = (props: {
   );
 };
 
-function RightPanelUnavailableSurface(props: { title: string; description: string }) {
+const LazyPreviewPanel = (props: { threadId: ThreadId; onClose: () => void }) => {
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-      <div className="max-w-sm text-center">
-        <p className="text-sm font-medium text-foreground">{props.title}</p>
-        <p className="mt-2 text-sm text-muted-foreground">{props.description}</p>
-      </div>
-    </div>
+    <Suspense fallback={<DiffPanelLoadingState label="Loading preview..." />}>
+      <PreviewPanel threadId={props.threadId} onClose={props.onClose} />
+    </Suspense>
   );
-}
+};
 
 function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
   return [
@@ -350,6 +348,7 @@ function ChatThreadRouteView() {
   const workspaceRoot = activeProject?.cwd ?? undefined;
   const workspaceBrowserRoot = thread?.worktreePath ?? activeProject?.cwd ?? null;
   const workspaceBrowserName = activeProject?.name ?? "Workspace";
+  const previewAvailable = typeof window !== "undefined" && Boolean(window.desktopBridge?.preview);
   const { copyToClipboard } = useCopyToClipboard<{ relativePath: string }>({
     onCopy: ({ relativePath }) => {
       toastManager.add({
@@ -492,6 +491,10 @@ function ChatThreadRouteView() {
     useRightPanelStore.getState().open(threadId, "files");
   }, [threadId]);
 
+  const openPreview = useCallback(() => {
+    useRightPanelStore.getState().open(threadId, "preview");
+  }, [threadId]);
+
   const openWorkspaceFile = useCallback(
     (relativePath: string) => {
       const surface = openFileRightPanelSurface(threadId, { relativePath });
@@ -618,10 +621,12 @@ function ChatThreadRouteView() {
               />
             );
           case "preview":
-            return (
-              <RightPanelUnavailableSurface
-                title="Preview is not available"
-                description="Browser preview support is not enabled in this build."
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading preview..." />
+            ) : (
+              <LazyPreviewPanel
+                threadId={threadId}
+                onClose={() => closeRightPanelSurface(surface)}
               />
             );
         }
@@ -633,6 +638,7 @@ function ChatThreadRouteView() {
       markdownCwd,
       openWorkspaceFile,
       settings.timestampFormat,
+      threadId,
       workspaceBrowserName,
       workspaceBrowserRoot,
       workspaceRoot,
@@ -651,11 +657,11 @@ function ChatThreadRouteView() {
         onCloseSurfacesToRight={closeSurfacesToRight}
         onCloseAllSurfaces={closeAllSurfaces}
         onCopyFilePath={(relativePath) => copyToClipboard(relativePath, { relativePath })}
-        onAddPreview={() => undefined}
+        onAddPreview={openPreview}
         onAddFiles={openFiles}
         onAddDiff={openDiff}
         onAddPlan={openPlan}
-        previewAvailable={false}
+        previewAvailable={previewAvailable}
         filesAvailable={routeThreadExists && !!workspaceBrowserRoot}
         diffAvailable={routeThreadExists}
         planAvailable={routeThreadExists}
@@ -671,6 +677,8 @@ function ChatThreadRouteView() {
       openDiff,
       openFiles,
       openPlan,
+      openPreview,
+      previewAvailable,
       renderRightPanelSurface,
       rightPanelState,
       routeThreadExists,

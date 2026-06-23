@@ -145,6 +145,8 @@ import { toCodexProviderStartOptions } from "./provider/codexProviderOptions.ts"
 import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReconciliation.ts";
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
+import { makePreviewManager } from "./preview/Manager.ts";
+import { scanLocalServers } from "./preview/PortScanner.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -450,6 +452,9 @@ function deriveRpcGroup(method: string): string {
   if (method.startsWith("terminal.")) {
     return "terminal";
   }
+  if (method.startsWith("preview.")) {
+    return "preview";
+  }
   if (method.startsWith("server.")) {
     return "server";
   }
@@ -723,6 +728,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     clients,
     logOutgoingPush,
   });
+  const previewManager = makePreviewManager();
   yield* readiness.markPushBusReady;
   yield* keybindingsManager.start.pipe(
     Effect.mapError(
@@ -1337,6 +1343,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event)),
   );
   yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribeTerminalEvents()));
+  const unsubscribePreviewEvents = previewManager.subscribe(
+    (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.previewEvent, event)),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribePreviewEvents()));
   yield* readiness.markTerminalSubscriptionsReady;
 
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
@@ -2074,6 +2084,84 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.terminalClose: {
         const body = stripRequestTag(request.body);
         return yield* terminalManager.close(body);
+      }
+
+      case WS_METHODS.previewOpen: {
+        const body = stripRequestTag(request.body);
+        return yield* previewManager.open(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.previewNavigate: {
+        const body = stripRequestTag(request.body);
+        return yield* previewManager.navigate(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.previewReportStatus: {
+        const body = stripRequestTag(request.body);
+        return yield* previewManager.reportStatus(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.previewRefresh: {
+        const body = stripRequestTag(request.body);
+        return yield* previewManager.refresh(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.previewClose: {
+        const body = stripRequestTag(request.body);
+        return yield* previewManager.close(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: error.message,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.previewList: {
+        const body = stripRequestTag(request.body);
+        return yield* previewManager.list(body);
+      }
+
+      case WS_METHODS.previewListLocalServers: {
+        const servers = yield* Effect.tryPromise({
+          try: () => scanLocalServers(),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to discover local servers: ${String(cause)}`,
+            }),
+        });
+        const result = { servers, scannedAt: new Date().toISOString() };
+        yield* pushBus.publishClient(ws, WS_CHANNELS.previewLocalServersUpdated, result);
+        return result;
       }
 
       case WS_METHODS.serverGetConfig:

@@ -83,6 +83,17 @@ import {
   ProjectSearchEntriesInput,
   ProjectWriteFileInput,
 } from "./project";
+import {
+  DiscoveredLocalServerList,
+  PreviewCloseInput,
+  PreviewEvent,
+  PreviewListInput,
+  PreviewListLocalServersInput,
+  PreviewNavigateInput,
+  PreviewOpenInput,
+  PreviewRefreshInput,
+  PreviewReportStatusInput,
+} from "./preview";
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import {
@@ -142,6 +153,15 @@ export const WS_METHODS = {
   terminalRestart: "terminal.restart",
   terminalClose: "terminal.close",
 
+  // Preview methods
+  previewOpen: "preview.open",
+  previewNavigate: "preview.navigate",
+  previewReportStatus: "preview.reportStatus",
+  previewRefresh: "preview.refresh",
+  previewClose: "preview.close",
+  previewList: "preview.list",
+  previewListLocalServers: "preview.listLocalServers",
+
   // Server meta
   serverGetConfig: "server.getConfig",
   serverUpdateSettings: "server.updateSettings",
@@ -180,6 +200,8 @@ export const WS_CHANNELS = {
   gitActionProgress: "git.actionProgress",
   gitStatusInvalidated: "git.status.invalidate",
   terminalEvent: "terminal.event",
+  previewEvent: "preview.event",
+  previewLocalServersUpdated: "preview.localServersUpdated",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
@@ -319,6 +341,15 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.terminalRestart, TerminalRestartInput),
   tagRequestBody(WS_METHODS.terminalClose, TerminalCloseInput),
 
+  // Preview methods
+  tagRequestBody(WS_METHODS.previewOpen, PreviewOpenInput),
+  tagRequestBody(WS_METHODS.previewNavigate, PreviewNavigateInput),
+  tagRequestBody(WS_METHODS.previewReportStatus, PreviewReportStatusInput),
+  tagRequestBody(WS_METHODS.previewRefresh, PreviewRefreshInput),
+  tagRequestBody(WS_METHODS.previewClose, PreviewCloseInput),
+  tagRequestBody(WS_METHODS.previewList, PreviewListInput),
+  tagRequestBody(WS_METHODS.previewListLocalServers, PreviewListLocalServersInput),
+
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
@@ -383,6 +414,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.gitActionProgress]: typeof GitActionProgressEvent.Type;
   readonly [WS_CHANNELS.gitStatusInvalidated]: typeof GitStatusInvalidatedPayload.Type;
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
+  readonly [WS_CHANNELS.previewEvent]: PreviewEvent;
+  readonly [WS_CHANNELS.previewLocalServersUpdated]: DiscoveredLocalServerList;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
@@ -421,6 +454,11 @@ export const WsPushGitStatusInvalidated = makeWsPushSchema(
   GitStatusInvalidatedPayload,
 );
 export const WsPushTerminalEvent = makeWsPushSchema(WS_CHANNELS.terminalEvent, TerminalEvent);
+export const WsPushPreviewEvent = makeWsPushSchema(WS_CHANNELS.previewEvent, PreviewEvent);
+export const WsPushPreviewLocalServersUpdated = makeWsPushSchema(
+  WS_CHANNELS.previewLocalServersUpdated,
+  DiscoveredLocalServerList,
+);
 export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
   McpStatusUpdatedPayload,
@@ -445,6 +483,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.providerAdvisoriesUpdated,
   WS_CHANNELS.terminalEvent,
+  WS_CHANNELS.previewEvent,
+  WS_CHANNELS.previewLocalServersUpdated,
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
@@ -459,6 +499,8 @@ export const WsPush = Schema.Union([
   WsPushGitActionProgress,
   WsPushGitStatusInvalidated,
   WsPushTerminalEvent,
+  WsPushPreviewEvent,
+  WsPushPreviewLocalServersUpdated,
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,

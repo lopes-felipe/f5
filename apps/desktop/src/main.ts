@@ -14,19 +14,25 @@ import {
   nativeTheme,
   protocol,
   shell,
+  session as electronSession,
+  webContents as electronWebContents,
 } from "electron";
 import type { MenuItemConstructorOptions } from "electron";
 import * as Effect from "effect/Effect";
 import type {
+  DesktopPreviewTabState,
   DesktopTheme,
   DesktopUpdateActionResult,
   DesktopUpdateState,
+  PreviewAnnotationPayload,
+  PreviewAnnotationRect,
 } from "@t3tools/contracts";
 import { autoUpdater } from "electron-updater";
 
 import type { ContextMenuItem } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
+import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { buildDesktopBackendEnv, resolveDesktopStateDirConfig } from "./backendEnv";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
@@ -57,6 +63,19 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
+const PREVIEW_GET_CONFIG_CHANNEL = "desktop-preview:get-config";
+const PREVIEW_CREATE_TAB_CHANNEL = "desktop-preview:create-tab";
+const PREVIEW_CLOSE_TAB_CHANNEL = "desktop-preview:close-tab";
+const PREVIEW_REGISTER_WEBVIEW_CHANNEL = "desktop-preview:register-webview";
+const PREVIEW_NAVIGATE_CHANNEL = "desktop-preview:navigate";
+const PREVIEW_GO_BACK_CHANNEL = "desktop-preview:go-back";
+const PREVIEW_GO_FORWARD_CHANNEL = "desktop-preview:go-forward";
+const PREVIEW_REFRESH_CHANNEL = "desktop-preview:refresh";
+const PREVIEW_HARD_RELOAD_CHANNEL = "desktop-preview:hard-reload";
+const PREVIEW_OPEN_DEVTOOLS_CHANNEL = "desktop-preview:open-devtools";
+const PREVIEW_PICK_ELEMENT_CHANNEL = "desktop-preview:pick-element";
+const PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL = "desktop-preview:cancel-pick-element";
+const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
@@ -76,6 +95,11 @@ const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DESKTOP_UPDATE_CHANNEL = "latest";
 const DESKTOP_UPDATE_ALLOW_PRERELEASE = false;
+const PREVIEW_WEBVIEW_PARTITION = "persist:f5-preview";
+const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeIntegration=false";
+const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
+const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
+const PREVIEW_CAPTURE_MAX_PIXELS = 2_000_000;
 
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
@@ -94,6 +118,14 @@ let backendLogSink: RotatingFileSink | null = null;
 let restoreStdIoCapture: (() => void) | null = null;
 
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
+interface PreviewTabEntry {
+  webContentsId: number | null;
+  zoomFactor: number;
+  removeListeners: Array<() => void>;
+}
+
+const previewTabs = new Map<string, PreviewTabEntry>();
+
 const desktopRuntimeInfo = resolveDesktopRuntimeInfo({
   platform: process.platform,
   processArch: process.arch,
@@ -153,12 +185,479 @@ function getSafeExternalUrl(rawUrl: unknown): string | null {
   return parsedUrl.toString();
 }
 
+function getSafePreviewUrl(rawUrl: unknown): string | null {
+  if (typeof rawUrl !== "string" || rawUrl.length === 0) {
+    return null;
+  }
+
+  try {
+    return normalizePreviewUrl(rawUrl);
+  } catch {
+    return null;
+  }
+}
+
 function getSafeTheme(rawTheme: unknown): DesktopTheme | null {
   if (rawTheme === "light" || rawTheme === "dark" || rawTheme === "system") {
     return rawTheme;
   }
 
   return null;
+}
+
+function lookupPreviewTabEntry(tabId: unknown): PreviewTabEntry | null {
+  if (typeof tabId !== "string" || tabId.trim().length === 0) {
+    return null;
+  }
+  return previewTabs.get(tabId) ?? null;
+}
+
+function ensurePreviewTabEntry(tabId: unknown): PreviewTabEntry | null {
+  if (typeof tabId !== "string" || tabId.trim().length === 0) {
+    return null;
+  }
+  let entry = lookupPreviewTabEntry(tabId);
+  if (!entry) {
+    entry = {
+      webContentsId: null,
+      zoomFactor: PREVIEW_DEFAULT_ZOOM_FACTOR,
+      removeListeners: [],
+    };
+    previewTabs.set(tabId, entry);
+  }
+  return entry;
+}
+
+function getPreviewWebContents(tabId: unknown): Electron.WebContents | null {
+  const entry = lookupPreviewTabEntry(tabId);
+  if (!entry?.webContentsId) {
+    return null;
+  }
+  const guest = electronWebContents.fromId(entry.webContentsId);
+  if (!guest || guest.isDestroyed() || !isPreviewGuestWebContents(guest)) {
+    return null;
+  }
+  return guest;
+}
+
+function previewStateFromWebContents(
+  tabId: string,
+  guest: Electron.WebContents | null,
+): DesktopPreviewTabState {
+  const entry = lookupPreviewTabEntry(tabId);
+  const url = guest && !guest.isDestroyed() ? guest.getURL() : "";
+  const title = guest && !guest.isDestroyed() ? guest.getTitle() : "";
+  const isLoading = guest && !guest.isDestroyed() ? guest.isLoadingMainFrame() : false;
+  return {
+    tabId,
+    webContentsId: guest && !guest.isDestroyed() ? guest.id : null,
+    navStatus:
+      url.length === 0 || url === "about:blank"
+        ? { kind: "Idle" }
+        : isLoading
+          ? { kind: "Loading", url, title }
+          : { kind: "Success", url, title },
+    canGoBack: guest && !guest.isDestroyed() ? guest.canGoBack() : false,
+    canGoForward: guest && !guest.isDestroyed() ? guest.canGoForward() : false,
+    zoomFactor: entry?.zoomFactor ?? PREVIEW_DEFAULT_ZOOM_FACTOR,
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function isPreviewGuestWebContents(guest: Electron.WebContents): boolean {
+  if (guest.isDestroyed() || guest.getType() !== "webview") {
+    return false;
+  }
+  if (guest.session !== electronSession.fromPartition(PREVIEW_WEBVIEW_PARTITION)) {
+    return false;
+  }
+  const hostWebContents = guest.hostWebContents;
+  return Boolean(mainWindow && hostWebContents === mainWindow.webContents);
+}
+
+function emitPreviewState(tabId: string): void {
+  const guest = getPreviewWebContents(tabId);
+  const state = previewStateFromWebContents(tabId, guest);
+  mainWindow?.webContents.send(PREVIEW_STATE_CHANNEL, tabId, state);
+}
+
+function registerPreviewWebContents(tabId: string, webContentsId: number): boolean {
+  const guest = electronWebContents.fromId(webContentsId);
+  if (!guest || guest.isDestroyed() || !isPreviewGuestWebContents(guest)) {
+    return false;
+  }
+  const entry = ensurePreviewTabEntry(tabId);
+  if (!entry) {
+    return false;
+  }
+  if (entry.webContentsId === webContentsId) {
+    emitPreviewState(tabId);
+    return true;
+  }
+  for (const removeListener of entry.removeListeners) {
+    removeListener();
+  }
+  entry.removeListeners = [];
+  entry.webContentsId = webContentsId;
+  entry.zoomFactor = guest.getZoomFactor();
+  guest.setWindowOpenHandler(({ url }) => {
+    const externalUrl = getSafeExternalUrl(url);
+    if (externalUrl) {
+      void shell.openExternal(externalUrl);
+    }
+    return { action: "deny" };
+  });
+
+  const onState = () => emitPreviewState(tabId);
+  const onWillNavigate = (event: Electron.Event, url: string) => {
+    const previewUrl = getSafePreviewUrl(url);
+    if (previewUrl) {
+      return;
+    }
+    const externalUrl = getSafeExternalUrl(url);
+    if (externalUrl) {
+      void shell.openExternal(externalUrl);
+    }
+    event.preventDefault();
+  };
+  const onDestroyed = () => {
+    const current = previewTabs.get(tabId);
+    if (current?.webContentsId === webContentsId) {
+      current.webContentsId = null;
+      emitPreviewState(tabId);
+    }
+  };
+
+  guest.on("did-start-loading", onState);
+  guest.on("did-stop-loading", onState);
+  guest.on("did-navigate", onState);
+  guest.on("did-navigate-in-page", onState);
+  guest.on("page-title-updated", onState);
+  guest.on("will-navigate", onWillNavigate);
+  guest.on("destroyed", onDestroyed);
+  entry.removeListeners.push(
+    () => guest.off("did-start-loading", onState),
+    () => guest.off("did-stop-loading", onState),
+    () => guest.off("did-navigate", onState),
+    () => guest.off("did-navigate-in-page", onState),
+    () => guest.off("page-title-updated", onState),
+    () => guest.off("will-navigate", onWillNavigate),
+    () => guest.off("destroyed", onDestroyed),
+  );
+  emitPreviewState(tabId);
+  return true;
+}
+
+function closePreviewTab(tabId: string): void {
+  const entry = previewTabs.get(tabId);
+  if (!entry) {
+    return;
+  }
+  for (const removeListener of entry.removeListeners) {
+    removeListener();
+  }
+  const guest = getPreviewWebContents(tabId);
+  if (guest && !guest.isDestroyed()) {
+    guest.close();
+  }
+  previewTabs.delete(tabId);
+  mainWindow?.webContents.send(
+    PREVIEW_STATE_CHANNEL,
+    tabId,
+    previewStateFromWebContents(tabId, null),
+  );
+}
+
+function buildPreviewPickScript(): string {
+  return String.raw`
+(() => {
+  if (window.__f5PreviewPickCancel) {
+    window.__f5PreviewPickCancel();
+  }
+
+  const selectorFor = (element) => {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+    if (element.id) return "#" + CSS.escape(element.id);
+    const parts = [];
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE && current !== document.documentElement) {
+      let part = current.localName;
+      if (!part) break;
+      const parent = current.parentElement;
+      if (parent) {
+        const siblings = Array.from(parent.children).filter((child) => child.localName === current.localName);
+        if (siblings.length > 1) {
+          part += ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")";
+        }
+      }
+      parts.unshift(part);
+      current = parent;
+    }
+    return parts.length > 0 ? parts.join(" > ") : null;
+  };
+
+  const previewText = (value, limit) => String(value || "").replace(/\s+/g, " ").trim().slice(0, limit);
+
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;border:2px solid #2563eb;background:rgba(37,99,235,.12);box-shadow:0 0 0 99999px rgba(15,23,42,.18);border-radius:4px;display:none;";
+    const label = document.createElement("div");
+    label.style.cssText = "position:fixed;z-index:2147483647;pointer-events:none;background:#2563eb;color:white;font:12px system-ui,sans-serif;padding:3px 6px;border-radius:4px;display:none;max-width:320px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;";
+    document.documentElement.append(overlay, label);
+
+    const cleanup = () => {
+      window.__f5PreviewPickCancel = undefined;
+      window.removeEventListener("mousemove", onMove, true);
+      window.removeEventListener("click", onClick, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      overlay.remove();
+      label.remove();
+    };
+
+    const finish = (value) => {
+      cleanup();
+      resolve(value);
+    };
+
+    const update = (target) => {
+      if (!target || target === document.documentElement || target === document.body) {
+        overlay.style.display = "none";
+        label.style.display = "none";
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      overlay.style.display = "block";
+      overlay.style.left = rect.left + "px";
+      overlay.style.top = rect.top + "px";
+      overlay.style.width = rect.width + "px";
+      overlay.style.height = rect.height + "px";
+      label.style.display = "block";
+      label.textContent = target.localName + (target.id ? "#" + target.id : "");
+      label.style.left = Math.max(8, Math.min(window.innerWidth - 120, rect.left)) + "px";
+      label.style.top = Math.max(8, rect.top - 28) + "px";
+    };
+
+    function onMove(event) {
+      update(event.target);
+    }
+
+    function onClick(event) {
+      event.preventDefault();
+      event.stopPropagation();
+      const target = event.target;
+      if (!target || target.nodeType !== Node.ELEMENT_NODE) {
+        finish(null);
+        return;
+      }
+      const rect = target.getBoundingClientRect();
+      const pageUrl = location.href;
+      const pageTitle = document.title || null;
+      finish({
+        pageUrl,
+        pageTitle,
+        viewport: {
+          width: Math.max(1, Math.floor(window.innerWidth || 1)),
+          height: Math.max(1, Math.floor(window.innerHeight || 1))
+        },
+        rect: {
+          x: Math.max(0, Math.floor(rect.x)),
+          y: Math.max(0, Math.floor(rect.y)),
+          width: Math.max(1, Math.ceil(rect.width)),
+          height: Math.max(1, Math.ceil(rect.height))
+        },
+        element: {
+          pageUrl,
+          pageTitle,
+          tagName: target.localName || "",
+          selector: selectorFor(target),
+          htmlPreview: previewText(target.outerHTML, 1600),
+          textPreview: previewText(target.innerText || target.textContent, 500),
+          pickedAt: new Date().toISOString()
+        }
+      });
+    }
+
+    function onKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(null);
+      }
+    }
+
+    window.__f5PreviewPickCancel = () => finish(null);
+    window.addEventListener("mousemove", onMove, true);
+    window.addEventListener("click", onClick, true);
+    window.addEventListener("keydown", onKeyDown, true);
+  });
+})()
+`;
+}
+
+function normalizePickRect(value: unknown): PreviewAnnotationRect | null {
+  if (!value || typeof value !== "object") return null;
+  const rect = value as Record<string, unknown>;
+  const x = rect.x;
+  const y = rect.y;
+  const width = rect.width;
+  const height = rect.height;
+  if (
+    typeof x !== "number" ||
+    typeof y !== "number" ||
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return {
+    x: Math.max(0, Math.floor(x)),
+    y: Math.max(0, Math.floor(y)),
+    width: Math.max(1, Math.ceil(width)),
+    height: Math.max(1, Math.ceil(height)),
+  };
+}
+
+interface PreviewPickViewport {
+  readonly width: number;
+  readonly height: number;
+}
+
+function normalizePickViewport(value: unknown): PreviewPickViewport | null {
+  if (!value || typeof value !== "object") return null;
+  const viewport = value as Record<string, unknown>;
+  const width = viewport.width;
+  const height = viewport.height;
+  if (
+    typeof width !== "number" ||
+    typeof height !== "number" ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+    return null;
+  }
+  return {
+    width: Math.max(1, Math.floor(width)),
+    height: Math.max(1, Math.floor(height)),
+  };
+}
+
+function clampPreviewCaptureRect(
+  rect: PreviewAnnotationRect,
+  viewport: PreviewPickViewport,
+): PreviewAnnotationRect | null {
+  const left = Math.max(0, Math.min(viewport.width, Math.floor(rect.x)));
+  const top = Math.max(0, Math.min(viewport.height, Math.floor(rect.y)));
+  const right = Math.max(left, Math.min(viewport.width, Math.ceil(rect.x + rect.width)));
+  const bottom = Math.max(top, Math.min(viewport.height, Math.ceil(rect.y + rect.height)));
+  let width = right - left;
+  let height = bottom - top;
+  if (width <= 0 || height <= 0) {
+    return null;
+  }
+  if (width > PREVIEW_CAPTURE_MAX_EDGE_PX) {
+    width = PREVIEW_CAPTURE_MAX_EDGE_PX;
+  }
+  if (height > PREVIEW_CAPTURE_MAX_EDGE_PX) {
+    height = PREVIEW_CAPTURE_MAX_EDGE_PX;
+  }
+  const pixels = width * height;
+  if (pixels > PREVIEW_CAPTURE_MAX_PIXELS) {
+    const scale = Math.sqrt(PREVIEW_CAPTURE_MAX_PIXELS / pixels);
+    width = Math.max(1, Math.floor(width * scale));
+    height = Math.max(1, Math.floor(height * scale));
+  }
+  return { x: left, y: top, width, height };
+}
+
+async function capturePreviewAnnotationScreenshot(
+  guest: Electron.WebContents,
+  rect: PreviewAnnotationRect,
+): Promise<PreviewAnnotationPayload["screenshot"]> {
+  const image = await guest.capturePage(rect);
+  const size = image.getSize();
+  return {
+    dataUrl: image.toDataURL(),
+    width: size.width,
+    height: size.height,
+    cropRect: rect,
+  };
+}
+
+function isPickedElementResult(value: unknown): value is {
+  readonly pageUrl: string;
+  readonly pageTitle: string | null;
+  readonly rect: PreviewAnnotationRect;
+  readonly viewport: PreviewPickViewport;
+  readonly element: PreviewAnnotationPayload["elements"][number]["element"];
+} {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.pageUrl !== "string") return false;
+  if (typeof candidate.pageTitle !== "string" && candidate.pageTitle !== null) return false;
+  if (normalizePickRect(candidate.rect) === null) return false;
+  if (normalizePickViewport(candidate.viewport) === null) return false;
+  const element = candidate.element;
+  if (!element || typeof element !== "object") return false;
+  const elementRecord = element as Record<string, unknown>;
+  return (
+    typeof elementRecord.pageUrl === "string" &&
+    (typeof elementRecord.pageTitle === "string" || elementRecord.pageTitle === null) &&
+    typeof elementRecord.tagName === "string" &&
+    (typeof elementRecord.selector === "string" || elementRecord.selector === null) &&
+    typeof elementRecord.htmlPreview === "string" &&
+    typeof elementRecord.textPreview === "string" &&
+    typeof elementRecord.pickedAt === "string"
+  );
+}
+
+async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPayload | null> {
+  const guest = getPreviewWebContents(tabId);
+  if (!guest) {
+    throw new Error("Preview webview is not attached.");
+  }
+  const rawResult = await guest.executeJavaScript(buildPreviewPickScript(), true);
+  if (!isPickedElementResult(rawResult)) {
+    return null;
+  }
+  const rect = normalizePickRect(rawResult.rect);
+  const viewport = normalizePickViewport(rawResult.viewport);
+  if (!rect || !viewport) {
+    return null;
+  }
+  const captureRect = clampPreviewCaptureRect(rect, viewport);
+  let screenshot: PreviewAnnotationPayload["screenshot"] = null;
+  if (captureRect) {
+    try {
+      screenshot = await capturePreviewAnnotationScreenshot(guest, captureRect);
+    } catch {
+      screenshot = null;
+    }
+  }
+  const createdAt = new Date().toISOString();
+  return {
+    id: `preview-annotation-${Crypto.randomUUID()}`,
+    pageUrl: rawResult.pageUrl,
+    pageTitle: rawResult.pageTitle,
+    comment: "",
+    elements: [
+      {
+        id: `element-${Crypto.randomUUID()}`,
+        element: rawResult.element,
+        rect,
+      },
+    ],
+    screenshot,
+    createdAt,
+  };
 }
 
 function writeDesktopStreamChunk(
@@ -1210,6 +1709,92 @@ function registerIpcHandlers(): void {
       state: updateState,
     } satisfies DesktopUpdateActionResult;
   });
+
+  ipcMain.removeHandler(PREVIEW_GET_CONFIG_CHANNEL);
+  ipcMain.handle(PREVIEW_GET_CONFIG_CHANNEL, async () => ({
+    partition: PREVIEW_WEBVIEW_PARTITION,
+    webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
+  }));
+
+  ipcMain.removeHandler(PREVIEW_CREATE_TAB_CHANNEL);
+  ipcMain.handle(PREVIEW_CREATE_TAB_CHANNEL, async (_event, tabId: unknown) => {
+    return ensurePreviewTabEntry(tabId) !== null;
+  });
+
+  ipcMain.removeHandler(PREVIEW_CLOSE_TAB_CHANNEL);
+  ipcMain.handle(PREVIEW_CLOSE_TAB_CHANNEL, async (_event, tabId: unknown) => {
+    if (typeof tabId !== "string") return;
+    closePreviewTab(tabId);
+  });
+
+  ipcMain.removeHandler(PREVIEW_REGISTER_WEBVIEW_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_REGISTER_WEBVIEW_CHANNEL,
+    async (_event, tabId: unknown, webContentsId: unknown) => {
+      if (
+        typeof tabId !== "string" ||
+        tabId.trim().length === 0 ||
+        typeof webContentsId !== "number" ||
+        !Number.isInteger(webContentsId) ||
+        webContentsId <= 0
+      ) {
+        return false;
+      }
+      return registerPreviewWebContents(tabId, webContentsId);
+    },
+  );
+
+  ipcMain.removeHandler(PREVIEW_NAVIGATE_CHANNEL);
+  ipcMain.handle(PREVIEW_NAVIGATE_CHANNEL, async (_event, tabId: unknown, rawUrl: unknown) => {
+    const guest = getPreviewWebContents(tabId);
+    const url = getSafePreviewUrl(rawUrl);
+    if (!guest || !url) {
+      throw new Error("Preview navigation target is invalid.");
+    }
+    await guest.loadURL(url);
+  });
+
+  ipcMain.removeHandler(PREVIEW_GO_BACK_CHANNEL);
+  ipcMain.handle(PREVIEW_GO_BACK_CHANNEL, async (_event, tabId: unknown) => {
+    const guest = getPreviewWebContents(tabId);
+    if (guest?.canGoBack()) guest.goBack();
+  });
+
+  ipcMain.removeHandler(PREVIEW_GO_FORWARD_CHANNEL);
+  ipcMain.handle(PREVIEW_GO_FORWARD_CHANNEL, async (_event, tabId: unknown) => {
+    const guest = getPreviewWebContents(tabId);
+    if (guest?.canGoForward()) guest.goForward();
+  });
+
+  ipcMain.removeHandler(PREVIEW_REFRESH_CHANNEL);
+  ipcMain.handle(PREVIEW_REFRESH_CHANNEL, async (_event, tabId: unknown) => {
+    getPreviewWebContents(tabId)?.reload();
+  });
+
+  ipcMain.removeHandler(PREVIEW_HARD_RELOAD_CHANNEL);
+  ipcMain.handle(PREVIEW_HARD_RELOAD_CHANNEL, async (_event, tabId: unknown) => {
+    getPreviewWebContents(tabId)?.reloadIgnoringCache();
+  });
+
+  ipcMain.removeHandler(PREVIEW_OPEN_DEVTOOLS_CHANNEL);
+  ipcMain.handle(PREVIEW_OPEN_DEVTOOLS_CHANNEL, async (_event, tabId: unknown) => {
+    getPreviewWebContents(tabId)?.openDevTools({ mode: "detach" });
+  });
+
+  ipcMain.removeHandler(PREVIEW_PICK_ELEMENT_CHANNEL);
+  ipcMain.handle(PREVIEW_PICK_ELEMENT_CHANNEL, async (_event, tabId: unknown) => {
+    if (typeof tabId !== "string" || tabId.trim().length === 0) {
+      throw new Error("Preview tab id is invalid.");
+    }
+    return pickPreviewElement(tabId);
+  });
+
+  ipcMain.removeHandler(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL);
+  ipcMain.handle(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, async (_event, tabId: unknown) => {
+    const guest = getPreviewWebContents(tabId);
+    if (!guest) return;
+    await guest.executeJavaScript("window.__f5PreviewPickCancel?.()", true).catch(() => null);
+  });
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {
@@ -1236,7 +1821,29 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      webviewTag: true,
     },
+  });
+
+  window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    const partition = typeof params.partition === "string" ? params.partition : "";
+    if (partition !== PREVIEW_WEBVIEW_PARTITION) {
+      event.preventDefault();
+      return;
+    }
+    const src = typeof params.src === "string" ? params.src : "";
+    if (
+      params.allowpopups === "true" ||
+      (src.length > 0 && src !== "about:blank" && !getSafePreviewUrl(src))
+    ) {
+      event.preventDefault();
+      return;
+    }
+    webPreferences.sandbox = true;
+    webPreferences.nodeIntegration = false;
+    webPreferences.nodeIntegrationInSubFrames = false;
+    webPreferences.contextIsolation = true;
+    delete webPreferences.preload;
   });
 
   window.webContents.on("context-menu", (event, params) => {

@@ -89,6 +89,66 @@ it.effect("accepts server.validateHarnesses requests without provider options", 
   }),
 );
 
+it.effect("accepts preview session requests", () =>
+  Effect.gen(function* () {
+    const open = yield* decodeWebSocketRequest({
+      id: "req-preview-open",
+      body: {
+        _tag: WS_METHODS.previewOpen,
+        threadId: "thread-preview",
+        url: "localhost:5173",
+      },
+    });
+    assert.strictEqual(open.body._tag, WS_METHODS.previewOpen);
+
+    const report = yield* decodeWebSocketRequest({
+      id: "req-preview-report",
+      body: {
+        _tag: WS_METHODS.previewReportStatus,
+        threadId: "thread-preview",
+        tabId: "tab_1",
+        navStatus: {
+          _tag: "Success",
+          url: "http://localhost:5173/",
+          title: "Dev",
+        },
+        canGoBack: false,
+        canGoForward: false,
+      },
+    });
+    assert.strictEqual(report.body._tag, WS_METHODS.previewReportStatus);
+  }),
+);
+
+it.effect("accepts preview push events", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWsResponse({
+      type: "push",
+      sequence: 1,
+      channel: WS_CHANNELS.previewEvent,
+      data: {
+        type: "opened",
+        threadId: "thread-preview",
+        tabId: "tab_1",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        snapshot: {
+          threadId: "thread-preview",
+          tabId: "tab_1",
+          navStatus: { _tag: "Idle" },
+          canGoBack: false,
+          canGoForward: false,
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+    });
+    assert.ok("type" in parsed);
+    if ("type" in parsed) {
+      assert.strictEqual(parsed.type, "push");
+      assert.strictEqual(parsed.channel, WS_CHANNELS.previewEvent);
+    }
+  }),
+);
+
 it.effect("accepts exact keybinding mutation requests", () =>
   Effect.gen(function* () {
     const add = yield* decodeWebSocketRequest({
