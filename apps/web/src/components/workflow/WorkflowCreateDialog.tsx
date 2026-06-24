@@ -1131,17 +1131,25 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           {error ? <p className="text-sm text-red-500">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
-          {primaryActionShortcutLabel ? (
-            <span className="mr-auto hidden items-center gap-1 text-muted-foreground text-xs sm:flex">
-              <Kbd>{primaryActionShortcutLabel}</Kbd>
-              <span>to start</span>
-            </span>
-          ) : null}
           <Button variant="outline" onClick={() => props.onOpenChange(false)}>
             Cancel
           </Button>
           <Button onClick={() => void onSubmit()} disabled={submitting || !canSubmit}>
-            {submitting ? "Starting..." : "Start workflow"}
+            {submitting ? (
+              "Starting..."
+            ) : (
+              <>
+                <span>Start workflow</span>
+                {primaryActionShortcutLabel ? (
+                  <Kbd
+                    aria-hidden="true"
+                    className="hidden bg-primary-foreground/15 text-primary-foreground/80 sm:inline-flex"
+                  >
+                    {primaryActionShortcutLabel}
+                  </Kbd>
+                ) : null}
+              </>
+            )}
           </Button>
         </DialogFooter>
       </DialogPopup>

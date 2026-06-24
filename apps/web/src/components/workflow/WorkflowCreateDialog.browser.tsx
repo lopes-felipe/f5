@@ -219,8 +219,8 @@ async function seedModelPreferences(state: {
 }
 
 function createWorkflowButton(): HTMLButtonElement {
-  const button = Array.from(document.querySelectorAll("button")).find(
-    (element) => element.textContent?.trim() === "Start workflow",
+  const button = Array.from(document.querySelectorAll("button")).find((element) =>
+    element.textContent?.trim().startsWith("Start workflow"),
   );
   if (!(button instanceof HTMLButtonElement)) {
     throw new Error("Start workflow button not found.");
@@ -633,7 +633,7 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
-  it("shows the configured dialog primary shortcut hint", async () => {
+  it("shows the configured dialog primary shortcut hint inside the start button", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const screen = await renderWithQueryClient(
@@ -645,11 +645,13 @@ describe("WorkflowCreateDialog", () => {
     );
 
     try {
-      const footer = document.querySelector('[data-slot="dialog-footer"]');
-      expect(footer?.textContent ?? "").toContain(
+      const startButton = page.getByRole("button", { name: "Start workflow" }).element();
+      expect(startButton.querySelector('[data-slot="kbd"]')?.textContent ?? "").toBe(
         isMacPlatform(navigator.platform) ? "⇧⌘R" : "Ctrl+Shift+R",
       );
-      expect(footer?.textContent ?? "").toContain("to start");
+      expect(
+        document.querySelector('[data-slot="dialog-footer"]')?.textContent ?? "",
+      ).not.toContain("to start");
     } finally {
       await screen.unmount();
       host.remove();
