@@ -8,8 +8,8 @@ import { prHubAdvisoriesQueryOptions, prHubSnapshotQueryOptions } from "../../li
 import { ensureNativeApi } from "../../nativeApi";
 import { onPrHubAdvisoriesUpdated, onPrHubUpdated } from "../../wsNativeApi";
 import { Button } from "../ui/button";
-import { Badge } from "../ui/badge";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { TooltipProvider } from "../ui/tooltip";
 import { PullRequestRow } from "./PullRequestRow";
 
 type PrHubFilter =
@@ -290,38 +290,48 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
         </div>
       </header>
 
-      {banner ? (
-        <div className="border-b border-warning/30 bg-warning/8 px-5 py-2 text-xs text-warning-foreground">
-          {banner}
-          {bannerDetail ? ` ${bannerDetail}` : ""}
-        </div>
-      ) : null}
-      {snapshot?.cappedBuckets?.length ? (
-        <div className="border-b border-info/30 bg-info/8 px-5 py-2 text-xs text-info-foreground">
-          GitHub capped: {snapshot.cappedBuckets.join(", ")}.
+      {banner || snapshot?.cappedBuckets?.length ? (
+        <div className="shrink-0 space-y-0.5 border-b border-warning/30 bg-warning/8 px-5 py-2 text-xs text-warning-foreground">
+          {banner ? (
+            <p>
+              {banner}
+              {bannerDetail ? ` ${bannerDetail}` : ""}
+            </p>
+          ) : null}
+          {snapshot?.cappedBuckets?.length ? (
+            <p className="text-muted-foreground">
+              GitHub capped results for: {snapshot.cappedBuckets.join(", ")}.
+            </p>
+          ) : null}
         </div>
       ) : null}
 
-      <div className="flex shrink-0 gap-2 overflow-x-auto border-b border-border px-5 py-3">
-        {(Object.keys(FILTER_LABELS) as PrHubFilter[]).map((key) => (
-          <button
-            key={key}
-            type="button"
-            className={`inline-flex h-8 shrink-0 items-center gap-2 rounded-md border px-2.5 text-xs ${
-              filter === key
-                ? "border-primary bg-primary text-primary-foreground"
-                : "border-border bg-background text-muted-foreground hover:bg-accent hover:text-foreground"
-            }`}
-            onClick={() => setFilter(key)}
-          >
-            {FILTER_LABELS[key]}
-            {counts[key] > 0 ? (
-              <Badge size="sm" variant={filter === key ? "secondary" : "outline"}>
-                {counts[key]}
-              </Badge>
-            ) : null}
-          </button>
-        ))}
+      <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-4 py-2">
+        {(Object.keys(FILTER_LABELS) as PrHubFilter[]).map((key) => {
+          const isActive = filter === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={isActive}
+              className={`inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-xs font-medium transition-colors ${
+                isActive
+                  ? "bg-secondary text-secondary-foreground"
+                  : "text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              }`}
+              onClick={() => setFilter(key)}
+            >
+              {FILTER_LABELS[key]}
+              {counts[key] > 0 ? (
+                <span
+                  className={`tabular-nums ${isActive ? "text-secondary-foreground" : "text-muted-foreground/72"}`}
+                >
+                  {counts[key]}
+                </span>
+              ) : null}
+            </button>
+          );
+        })}
       </div>
 
       <main className="min-h-0 flex-1 overflow-auto">
@@ -345,23 +355,27 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
             </EmptyHeader>
           </Empty>
         ) : (
-          <div className="min-w-[760px]">
-            {visiblePullRequests.map((pr) => (
-              <PullRequestRow
-                key={pr.key}
-                pr={pr}
-                advisory={advisoriesByKey.get(pr.key)}
-                isAnalyzingAdvisory={
-                  analyzingKeys.has(pr.key) ||
-                  advisoriesByKey.get(pr.key)?.status === "queued" ||
-                  advisoriesByKey.get(pr.key)?.status === "running"
-                }
-                onAnalyzeAdvisory={() => void analyzeKeys([pr.key])}
-                isFocused={pr.key === focusedPrKey}
-                {...(pr.key === focusedPrKey ? { rowRef: focusedRowRef } : {})}
-              />
-            ))}
-          </div>
+          // PrMetaStrip relies on this provider for its tooltips. If those rows
+          // are ever reused outside this view, wrap them in their own provider.
+          <TooltipProvider delay={0}>
+            <div>
+              {visiblePullRequests.map((pr) => (
+                <PullRequestRow
+                  key={pr.key}
+                  pr={pr}
+                  advisory={advisoriesByKey.get(pr.key)}
+                  isAnalyzingAdvisory={
+                    analyzingKeys.has(pr.key) ||
+                    advisoriesByKey.get(pr.key)?.status === "queued" ||
+                    advisoriesByKey.get(pr.key)?.status === "running"
+                  }
+                  onAnalyzeAdvisory={() => void analyzeKeys([pr.key])}
+                  isFocused={pr.key === focusedPrKey}
+                  {...(pr.key === focusedPrKey ? { rowRef: focusedRowRef } : {})}
+                />
+              ))}
+            </div>
+          </TooltipProvider>
         )}
       </main>
     </div>

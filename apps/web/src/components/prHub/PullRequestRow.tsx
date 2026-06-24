@@ -1,30 +1,14 @@
 import { useMemo, useState, type Ref } from "react";
-import {
-  ArchiveIcon,
-  ChevronDownIcon,
-  CheckIcon,
-  GitMergeIcon,
-  GithubIcon,
-  GitPullRequestIcon,
-  MessageSquareIcon,
-  PauseIcon,
-  RefreshCwIcon,
-  SendIcon,
-  SparklesIcon,
-  XIcon,
-} from "lucide-react";
+import { GitPullRequestIcon } from "lucide-react";
 import type {
   PrHubAdvisory,
-  PrHubAdvisoryRecommendation,
   PrHubLocalCheckoutCandidate,
   TrackedPullRequest,
 } from "@t3tools/contracts";
 
-import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { cn } from "../../lib/utils";
 import { ensureNativeApi } from "../../nativeApi";
 import { toastManager } from "../ui/toast";
-import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -38,6 +22,10 @@ import {
 } from "../ui/dialog";
 import { Select, SelectButton, SelectItem, SelectPopup } from "../ui/select";
 import { Textarea } from "../ui/textarea";
+import { attentionAccentClass, defaultSnoozeUntil, openExternalHttps } from "./prHubPresentation";
+import { PrAdvisoryInline } from "./PrAdvisoryInline";
+import { PrMetaStrip } from "./PrMetaStrip";
+import { PrRowActions } from "./PrRowActions";
 
 type PendingAction =
   | "approve"
@@ -48,111 +36,6 @@ type PendingAction =
   | "reRequestReview"
   | "snooze"
   | null;
-
-function attentionVariant(pr: TrackedPullRequest): React.ComponentProps<typeof Badge>["variant"] {
-  if (pr.attentionState === "ready_to_merge") return "success";
-  if (pr.attentionBucket === "needs_you") return "warning";
-  if (pr.attentionBucket === "waiting_on_others") return "info";
-  if (pr.state !== "open") return "secondary";
-  return "outline";
-}
-
-function checkLabel(checkRollup: TrackedPullRequest["checkRollup"]): string {
-  switch (checkRollup) {
-    case "success":
-      return "CI passed";
-    case "failure":
-      return "CI failed";
-    case "error":
-      return "CI error";
-    case "pending":
-      return "CI pending";
-    case "none":
-      return "No CI";
-  }
-}
-
-function advisoryRecommendationLabel(recommendation: PrHubAdvisoryRecommendation): string {
-  switch (recommendation) {
-    case "fix_ci":
-      return "Fix CI";
-    case "wait_for_ci":
-      return "Wait for CI";
-    case "resolve_conflicts":
-      return "Resolve conflicts";
-    case "address_review_feedback":
-      return "Address feedback";
-    case "clarify_feedback":
-      return "Clarify feedback";
-    case "wait_for_reviewers":
-      return "Wait for reviewers";
-    case "re_request_review":
-      return "Re-request review";
-    case "ready_to_merge":
-      return "Ready to merge";
-    case "review_requested":
-      return "Review requested";
-    case "no_action":
-      return "No action";
-  }
-}
-
-function advisoryVariant(advisory: PrHubAdvisory): React.ComponentProps<typeof Badge>["variant"] {
-  if (advisory.status === "failed") return "error";
-  if (advisory.status === "stale") return "warning";
-  if (advisory.status === "queued" || advisory.status === "running") return "info";
-  switch (advisory.recommendation) {
-    case "fix_ci":
-    case "resolve_conflicts":
-    case "address_review_feedback":
-      return "warning";
-    case "ready_to_merge":
-      return "success";
-    case "wait_for_ci":
-    case "wait_for_reviewers":
-    case "review_requested":
-    case "re_request_review":
-    case "clarify_feedback":
-      return "info";
-    case "no_action":
-      return "secondary";
-  }
-}
-
-function advisoryStatusLabel(advisory: PrHubAdvisory): string | null {
-  if (advisory.status === "queued") return "Queued";
-  if (advisory.status === "running") return "Running";
-  if (advisory.status === "stale") return "Stale";
-  if (advisory.degraded) return "Degraded";
-  if (advisory.truncated) return "Truncated";
-  return null;
-}
-
-function defaultSnoozeUntil(): string {
-  return new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
-}
-
-function safeHttpsUrl(input: string): string | null {
-  try {
-    const url = new URL(input);
-    return url.protocol === "https:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
-async function openExternalHttps(input: string, label: string): Promise<void> {
-  const safeUrl = safeHttpsUrl(input);
-  if (!safeUrl) {
-    toastManager.add({
-      type: "error",
-      title: "Could not open link",
-      description: `Invalid ${label} URL.`,
-    });
-    return;
-  }
-  await ensureNativeApi().shell.openExternal(safeUrl);
-}
 
 export function PullRequestRow({
   pr,
@@ -176,24 +59,17 @@ export function PullRequestRow({
   const [snoozeUntil, setSnoozeUntil] = useState(defaultSnoozeUntil);
   const [isRunning, setIsRunning] = useState(false);
   const [isIgnoring, setIsIgnoring] = useState(false);
-  const [isAdvisoryExpanded, setIsAdvisoryExpanded] = useState(false);
   const [candidatePicker, setCandidatePicker] = useState<PrHubLocalCheckoutCandidate[] | null>(
     null,
   );
   const isAuthor = pr.roles.includes("author");
   const isOpen = pr.state === "open";
   const isIgnored = pr.ignoredAt !== null;
-  const canReview =
-    isOpen &&
-    !isIgnored &&
-    !isAuthor &&
-    (pr.attentionState === "review_requested" || pr.attentionState === "re_review_requested");
-  const canMerge = isOpen && !isIgnored && isAuthor && pr.attentionState === "ready_to_merge";
-  const canMarkReady = isOpen && !isIgnored && isAuthor && pr.attentionState === "draft";
   const isSnoozed =
     pr.snoozedUntil !== null &&
     Number.isFinite(new Date(pr.snoozedUntil).getTime()) &&
     new Date(pr.snoozedUntil).getTime() > Date.now();
+
   const dialogTitle = useMemo(() => {
     switch (pendingAction) {
       case "approve":
@@ -326,185 +202,57 @@ export function PullRequestRow({
     <div
       ref={rowRef}
       className={cn(
-        "grid min-w-0 grid-cols-[1fr_auto] gap-3 border-b border-border px-4 py-3 last:border-b-0",
+        "relative flex min-w-0 gap-3 border-b border-border py-2.5 pe-4 ps-5 last:border-b-0 hover:bg-accent/24",
         isFocused && "bg-primary/8 ring-1 ring-inset ring-primary/35",
       )}
     >
-      <div className="min-w-0">
-        <div className="flex min-w-0 items-center gap-2">
-          <GitPullRequestIcon className="size-4 shrink-0 text-muted-foreground" />
-          <span className="shrink-0 font-mono text-xs text-muted-foreground">
-            {pr.repository.nameWithOwner}#{pr.number}
-          </span>
-          <span className="min-w-0 truncate text-sm font-medium text-foreground">{pr.title}</span>
-        </div>
-        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-          <Badge variant={attentionVariant(pr)}>{pr.nextAction}</Badge>
-          <Badge variant="outline">{checkLabel(pr.checkRollup)}</Badge>
-          <span>{pr.author ? `by ${pr.author}` : "unknown author"}</span>
-          <span>{formatRelativeTimeLabel(pr.updatedAt)}</span>
-          <span>
-            +{pr.additions}/-{pr.deletions}
-          </span>
-          <span>{pr.changedFiles} files</span>
-          <span>{pr.unresolvedThreadCount} unresolved</span>
-          <span>{pr.commentsCount} comments</span>
-          {isSnoozed ? <Badge variant="secondary">Snoozed</Badge> : null}
-          {isIgnored ? <Badge variant="secondary">Ignored</Badge> : null}
-        </div>
-      </div>
-      <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-        {canReview ? (
-          <>
-            <Button size="xs" variant="outline" onClick={() => setPendingAction("approve")}>
-              <CheckIcon /> Approve
-            </Button>
-            <Button size="xs" variant="outline" onClick={() => setPendingAction("comment")}>
-              <MessageSquareIcon /> Comment
-            </Button>
-            <Button size="xs" variant="outline" onClick={() => setPendingAction("requestChanges")}>
-              <XIcon /> Changes
-            </Button>
-          </>
-        ) : null}
-        {canMerge ? (
-          <Button size="xs" variant="outline" onClick={() => setPendingAction("merge")}>
-            <GitMergeIcon /> Merge
-          </Button>
-        ) : null}
-        {canMarkReady ? (
-          <Button size="xs" variant="outline" onClick={() => setPendingAction("markReady")}>
-            <SendIcon /> Ready
-          </Button>
-        ) : null}
-        {isOpen &&
-        !isIgnored &&
-        isAuthor &&
-        pr.attentionState === "awaiting_review" &&
-        pr.reviewRequestReviewers.length > 0 ? (
-          <Button
-            size="xs"
-            variant="outline"
-            onClick={() => {
+      <span
+        aria-hidden="true"
+        className={cn("absolute inset-y-2 start-1.5 w-0.5 rounded-full", attentionAccentClass(pr))}
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <div className="flex min-w-0 items-start gap-2">
+          <GitPullRequestIcon className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+          <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+            <span className="shrink-0 font-mono text-xs text-muted-foreground">
+              {pr.repository.nameWithOwner}#{pr.number}
+            </span>
+            <span className="min-w-0 flex-1 truncate text-sm font-medium text-foreground">
+              {pr.title}
+            </span>
+          </div>
+          <PrRowActions
+            pr={pr}
+            isAuthor={isAuthor}
+            isOpen={isOpen}
+            isIgnored={isIgnored}
+            isSnoozed={isSnoozed}
+            isIgnoring={isIgnoring}
+            isAnalyzingAdvisory={isAnalyzingAdvisory}
+            onApprove={() => setPendingAction("approve")}
+            onComment={() => setPendingAction("comment")}
+            onRequestChanges={() => setPendingAction("requestChanges")}
+            onMerge={() => setPendingAction("merge")}
+            onMarkReady={() => setPendingAction("markReady")}
+            onReRequest={() => {
               setReviewers(pr.reviewRequestReviewers.join(", "));
               setPendingAction("reRequestReview");
             }}
-          >
-            <RefreshCwIcon /> Re-request
-          </Button>
-        ) : null}
-        {isOpen && !isIgnored ? (
-          isSnoozed ? (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                void ensureNativeApi().prHub.unsnooze({ key: pr.key });
-              }}
-            >
-              Unsnooze
-            </Button>
-          ) : (
-            <Button size="xs" variant="outline" onClick={() => setPendingAction("snooze")}>
-              <PauseIcon /> Snooze
-            </Button>
-          )
-        ) : null}
-        {isOpen && !isIgnored ? (
-          <Button size="xs" variant="outline" disabled={isIgnoring} onClick={handleIgnore}>
-            <ArchiveIcon /> {isIgnoring ? "Ignoring..." : "Ignore"}
-          </Button>
-        ) : null}
-        {isOpen && !isIgnored && onAnalyzeAdvisory ? (
-          <Button
-            size="xs"
-            variant="outline"
-            disabled={isAnalyzingAdvisory}
-            onClick={onAnalyzeAdvisory}
-          >
-            <SparklesIcon className={isAnalyzingAdvisory ? "animate-pulse" : ""} />
-            {isAnalyzingAdvisory ? "Suggesting..." : "Suggest"}
-          </Button>
-        ) : null}
-        <Button size="xs" variant="outline" onClick={handleOpenInF5}>
-          Open in F5
-        </Button>
-        <Button
-          size="xs"
-          variant="outline"
-          onClick={() => {
-            void openExternalHttps(pr.url, "pull request");
-          }}
-        >
-          <GithubIcon /> GitHub
-        </Button>
-      </div>
-      {advisory ? (
-        <div className="col-span-2 rounded-md border border-border bg-muted/24 px-3 py-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
-            <Badge variant={advisoryVariant(advisory)}>
-              {advisoryRecommendationLabel(advisory.recommendation)}
-            </Badge>
-            {advisoryStatusLabel(advisory) ? (
-              <Badge variant="outline">{advisoryStatusLabel(advisory)}</Badge>
-            ) : null}
-            {advisory.confidence > 0 ? (
-              <span className="text-muted-foreground">{advisory.confidence}% confidence</span>
-            ) : null}
-            <span className="min-w-0 flex-1 text-foreground">{advisory.summary}</span>
-            {advisory.findings.length > 0 || advisory.blockers.length > 0 ? (
-              <button
-                type="button"
-                className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-                onClick={() => setIsAdvisoryExpanded((value) => !value)}
-              >
-                Details
-                <ChevronDownIcon
-                  className={cn("size-3 transition-transform", isAdvisoryExpanded && "rotate-180")}
-                />
-              </button>
-            ) : null}
-          </div>
-          {isAdvisoryExpanded ? (
-            <div className="mt-2 space-y-2 text-xs text-muted-foreground">
-              {advisory.blockers.length > 0 ? (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span>Blockers</span>
-                  {advisory.blockers.map((blocker) => (
-                    <Badge key={blocker} variant="outline" size="sm">
-                      {blocker}
-                    </Badge>
-                  ))}
-                </div>
-              ) : null}
-              {advisory.findings.length > 0 ? (
-                <div className="space-y-1">
-                  {advisory.findings.slice(0, 6).map((finding) => {
-                    const safeUrl = safeHttpsUrl(finding.url);
-                    return (
-                      <a
-                        key={finding.id}
-                        href={safeUrl ?? "#"}
-                        className="block rounded-sm px-2 py-1 hover:bg-accent hover:text-foreground"
-                        onClick={(event) => {
-                          event.preventDefault();
-                          void openExternalHttps(finding.url, "finding");
-                        }}
-                      >
-                        <span className="font-medium text-foreground">
-                          {finding.validity.replaceAll("_", " ")}
-                        </span>
-                        {finding.author ? ` by ${finding.author}` : ""}: {finding.summary}
-                      </a>
-                    );
-                  })}
-                </div>
-              ) : null}
-              {advisory.errorMessage ? <div>{advisory.errorMessage}</div> : null}
-            </div>
-          ) : null}
+            onSnooze={() => setPendingAction("snooze")}
+            onUnsnooze={() => {
+              void ensureNativeApi().prHub.unsnooze({ key: pr.key });
+            }}
+            onIgnore={handleIgnore}
+            {...(onAnalyzeAdvisory ? { onAnalyzeAdvisory } : {})}
+            onOpenInF5={() => void handleOpenInF5()}
+            onOpenGitHub={() => void openExternalHttps(pr.url, "pull request")}
+          />
         </div>
-      ) : null}
+
+        <PrMetaStrip pr={pr} isSnoozed={isSnoozed} isIgnored={isIgnored} />
+
+        {advisory ? <PrAdvisoryInline advisory={advisory} /> : null}
+      </div>
 
       <Dialog
         open={pendingAction !== null}

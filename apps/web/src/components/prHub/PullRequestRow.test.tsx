@@ -88,9 +88,26 @@ describe("PullRequestRow advisory UI", () => {
     );
 
     expect(markup).toContain("Fix CI");
-    expect(markup).toContain("90% confidence");
+    expect(markup).toContain("90%");
     expect(markup).toContain("Fix failing CI before requesting more review.");
     expect(markup).toContain("Details");
-    expect(markup).toContain("Suggest");
+    // Secondary actions (Suggest, Comment, Ignore, …) now live in the overflow
+    // menu, which is portalled and closed by default, so it is absent from the
+    // static markup. Assert the always-rendered overflow trigger instead.
+    expect(markup).toContain('aria-label="More actions"');
+  });
+
+  it("renders the contextual primary action inline", () => {
+    const pr: TrackedPullRequest = {
+      ...makePr(),
+      roles: ["review_requested"],
+      attentionState: "review_requested",
+      attentionBucket: "needs_you",
+    };
+    const markup = renderToStaticMarkup(<PullRequestRow pr={pr} />);
+
+    // A requested reviewer sees Approve as the inline primary action.
+    expect(markup).toContain("Approve");
+    expect(markup).toContain('aria-label="More actions"');
   });
 });
