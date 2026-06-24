@@ -2,6 +2,17 @@ import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type DiscoveredLocalServer,
+  type PreviewAutomationClickInput,
+  type PreviewAutomationEvaluateInput,
+  type PreviewAutomationNavigateInput,
+  type PreviewAutomationOpenInput,
+  type PreviewAutomationPressInput,
+  type PreviewAutomationRequest,
+  type PreviewAutomationResponse,
+  type PreviewAutomationScrollInput,
+  type PreviewAutomationStatus,
+  type PreviewAutomationTypeInput,
+  type PreviewAutomationWaitForInput,
   type PreviewAnnotationPayload,
   type PreviewEvent,
   type PreviewNavStatus,
@@ -43,6 +54,8 @@ interface PreviewPanelProps {
   threadId: ThreadId;
   onClose: () => void;
 }
+
+const PREVIEW_AUTOMATION_ATTACHMENT_POLL_INTERVAL_MS = 100;
 
 function navStatusUrl(navStatus: PreviewNavStatus): string {
   return navStatus._tag === "Idle" ? "" : navStatus.url;
@@ -174,6 +187,98 @@ function localServerLabel(server: DiscoveredLocalServer): string {
   return server.processName ? `${server.processName} :${server.port}` : `localhost:${server.port}`;
 }
 
+function previewAutomationStatusUnavailable(): PreviewAutomationStatus {
+  return {
+    available: false,
+    visible: false,
+    tabId: null,
+    url: null,
+    title: null,
+    loading: false,
+  };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function previewAutomationErrorResponse(
+  requestId: string,
+  cause: unknown,
+): PreviewAutomationResponse {
+  const message = cause instanceof Error ? cause.message : String(cause);
+  const tagged =
+    cause && typeof cause === "object" && "_tag" in cause && typeof cause._tag === "string"
+      ? (cause as { _tag: string; detail?: unknown })
+      : null;
+  return {
+    requestId,
+    ok: false,
+    error: {
+      _tag: tagged?._tag ?? "PreviewAutomationExecutionError",
+      message,
+      ...(tagged?.detail !== undefined ? { detail: tagged.detail } : {}),
+    },
+  };
+}
+
+function makePreviewAutomationError(
+  _tag: string,
+  message: string,
+  detail?: unknown,
+): Error & {
+  _tag: string;
+  detail?: unknown;
+} {
+  const error = new Error(message) as Error & { _tag: string; detail?: unknown };
+  error._tag = _tag;
+  if (detail !== undefined) {
+    error.detail = detail;
+  }
+  return error;
+}
+
+function withPreviewAutomationTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  return new Promise<T>((resolve, reject) => {
+    timeout = setTimeout(() => {
+      reject(makePreviewAutomationError("PreviewAutomationTimeoutError", message));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        if (timeout) clearTimeout(timeout);
+        resolve(value);
+      },
+      (cause) => {
+        if (timeout) clearTimeout(timeout);
+        reject(cause);
+      },
+    );
+  });
+}
+
+function resolveAutomationNavigateUrl(input: PreviewAutomationNavigateInput): string {
+  if (input.url) return input.url;
+  const target = input.target;
+  if (!target) {
+    throw makePreviewAutomationError(
+      "PreviewAutomationExecutionError",
+      "Preview navigation target is missing.",
+    );
+  }
+  if (target.kind === "url") {
+    return target.url;
+  }
+  const protocol = target.protocol ?? "http";
+  const targetPath = target.path && target.path.length > 0 ? target.path : "/";
+  const normalizedPath = targetPath.startsWith("/") ? targetPath : `/${targetPath}`;
+  return `${protocol}://127.0.0.1:${target.port}${normalizedPath}`;
+}
+
 function PreviewUnavailable(props: { onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -202,6 +307,7 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
   const desktopPreview = window.desktopBridge?.preview;
   const api = useMemo(() => ensureNativeApi(), []);
   const webviewRef = useRef<PreviewWebviewElement | null>(null);
+  const automationClientIdRef = useRef(`preview-${randomUUID()}`);
   const lastStatusReportKeyRef = useRef<string | null>(null);
   const [sessions, setSessions] = useState<PreviewSessionSnapshot[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -222,6 +328,29 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
   const loading = activeSession?.navStatus._tag === "Loading";
   const canGoBack = activeSession?.canGoBack ?? false;
   const canGoForward = activeSession?.canGoForward ?? false;
+  const previewAutomation = desktopPreview?.automation;
+
+  useEffect(() => {
+    if (!desktopPreview) return;
+    const clientId = automationClientIdRef.current;
+    return () => {
+      void api.preview.automation.clearOwner({ clientId }).catch(() => undefined);
+    };
+  }, [api, desktopPreview]);
+
+  useEffect(() => {
+    if (!desktopPreview) return;
+    void api.preview.automation
+      .reportOwner({
+        clientId: automationClientIdRef.current,
+        threadId,
+        tabId: activeSession?.tabId ?? null,
+        visible: true,
+        supportsAutomation: Boolean(previewAutomation),
+        focusedAt: new Date().toISOString(),
+      })
+      .catch(() => undefined);
+  }, [activeSession?.tabId, api, desktopPreview, previewAutomation, threadId]);
 
   const refreshLocalServers = useCallback(async () => {
     setLocalServersLoading(true);
@@ -404,6 +533,209 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
     },
     [activeSession, api, desktopPreview, threadId],
   );
+
+  const runAutomationRequest = useCallback(
+    async (request: PreviewAutomationRequest): Promise<unknown> => {
+      if (!desktopPreview || !previewAutomation) {
+        throw makePreviewAutomationError(
+          "PreviewAutomationUnsupportedClientError",
+          "Preview automation is only available in the Electron desktop app.",
+        );
+      }
+
+      const statusForTab = (tabId: string | null | undefined) =>
+        tabId
+          ? previewAutomation.status(tabId)
+          : Promise.resolve(previewAutomationStatusUnavailable());
+      const waitForAttachedTab = async (tabId: string): Promise<PreviewAutomationStatus> => {
+        const deadline = Date.now() + request.timeoutMs;
+        let lastStatus: PreviewAutomationStatus | null = null;
+        while (Date.now() < deadline) {
+          try {
+            const status = await previewAutomation.status(tabId);
+            lastStatus = status;
+            if (status.available) {
+              return status;
+            }
+          } catch {
+            lastStatus = null;
+          }
+          await delay(PREVIEW_AUTOMATION_ATTACHMENT_POLL_INTERVAL_MS);
+        }
+        throw makePreviewAutomationError(
+          "PreviewAutomationTimeoutError",
+          lastStatus?.tabId
+            ? `Preview webview was not attached after ${request.timeoutMs}ms.`
+            : `Preview tab was not attached after ${request.timeoutMs}ms.`,
+        );
+      };
+      const requireTabId = (): string => {
+        const tabId = request.tabId ?? activeSession?.tabId;
+        if (!tabId) {
+          throw makePreviewAutomationError(
+            "PreviewAutomationTabNotFoundError",
+            "The preview does not have an active tab.",
+          );
+        }
+        return tabId;
+      };
+
+      switch (request.operation) {
+        case "status":
+          return statusForTab(request.tabId ?? activeSession?.tabId);
+
+        case "open": {
+          const input = request.input as PreviewAutomationOpenInput;
+          let session = activeSession;
+          let createdSession = false;
+          if (!session || input.reuseExistingTab === false) {
+            const openedSession = await api.preview.open({
+              threadId,
+              ...(input.url ? { url: input.url } : {}),
+            });
+            session = openedSession;
+            createdSession = true;
+            await desktopPreview.createTab(openedSession.tabId);
+            setSessions((current) =>
+              applyPreviewEvent(current, {
+                type: "opened",
+                threadId,
+                tabId: openedSession.tabId,
+                createdAt: openedSession.updatedAt,
+                snapshot: openedSession,
+              }),
+            );
+            setActiveTabId(openedSession.tabId);
+          }
+          if (!session) {
+            throw makePreviewAutomationError(
+              "PreviewAutomationTabNotFoundError",
+              "The preview does not have an active tab.",
+            );
+          }
+
+          if (input.url) {
+            const snapshot = await api.preview.navigate({
+              threadId,
+              tabId: session.tabId,
+              url: input.url,
+            });
+            setSessions((current) =>
+              applyPreviewEvent(current, {
+                type: "navigated",
+                threadId,
+                tabId: snapshot.tabId,
+                createdAt: snapshot.updatedAt,
+                snapshot,
+              }),
+            );
+            const normalizedUrl = navStatusUrl(snapshot.navStatus);
+            if (normalizedUrl && !createdSession) {
+              await desktopPreview.navigate(session.tabId, normalizedUrl);
+            }
+          } else {
+            const sessionUrl = navStatusUrl(session.navStatus);
+            if (sessionUrl && !createdSession) {
+              await desktopPreview.navigate(session.tabId, sessionUrl);
+            }
+          }
+
+          return createdSession ? waitForAttachedTab(session.tabId) : statusForTab(session.tabId);
+        }
+
+        case "navigate": {
+          const tabId = requireTabId();
+          const input = request.input as PreviewAutomationNavigateInput;
+          const url = resolveAutomationNavigateUrl(input);
+          const snapshot = await api.preview.navigate({ threadId, tabId, url });
+          setSessions((current) =>
+            applyPreviewEvent(current, {
+              type: "navigated",
+              threadId,
+              tabId: snapshot.tabId,
+              createdAt: snapshot.updatedAt,
+              snapshot,
+            }),
+          );
+          const normalizedUrl = navStatusUrl(snapshot.navStatus);
+          if (normalizedUrl) {
+            await desktopPreview.navigate(tabId, normalizedUrl);
+          }
+          return statusForTab(tabId);
+        }
+
+        case "snapshot":
+          return previewAutomation.snapshot(requireTabId());
+        case "click":
+          await previewAutomation.click(
+            requireTabId(),
+            request.input as PreviewAutomationClickInput,
+          );
+          return null;
+        case "type":
+          await previewAutomation.type(requireTabId(), request.input as PreviewAutomationTypeInput);
+          return null;
+        case "press":
+          await previewAutomation.press(
+            requireTabId(),
+            request.input as PreviewAutomationPressInput,
+          );
+          return null;
+        case "scroll":
+          await previewAutomation.scroll(
+            requireTabId(),
+            request.input as PreviewAutomationScrollInput,
+          );
+          return null;
+        case "evaluate": {
+          try {
+            return await withPreviewAutomationTimeout(
+              previewAutomation.evaluate(
+                requireTabId(),
+                request.input as PreviewAutomationEvaluateInput,
+              ),
+              request.timeoutMs,
+              `Preview evaluation timed out after ${request.timeoutMs}ms.`,
+            );
+          } catch (cause) {
+            const message = cause instanceof Error ? cause.message : String(cause);
+            if (/Preview evaluation timed out after \d+ms\./.test(message)) {
+              throw makePreviewAutomationError("PreviewAutomationTimeoutError", message);
+            }
+            throw cause;
+          }
+        }
+        case "waitFor":
+          await previewAutomation.waitFor(
+            requireTabId(),
+            request.input as PreviewAutomationWaitForInput,
+          );
+          return null;
+      }
+    },
+    [activeSession, api, desktopPreview, previewAutomation, threadId],
+  );
+
+  useEffect(() => {
+    if (!desktopPreview) return;
+    return api.preview.automation.onRequest((request) => {
+      if (request.threadId !== threadId) return;
+      void (async () => {
+        try {
+          const result = await runAutomationRequest(request);
+          await api.preview.automation.respond({
+            requestId: request.requestId,
+            ok: true,
+            ...(result !== undefined ? { result } : {}),
+          });
+        } catch (cause) {
+          await api.preview.automation.respond(
+            previewAutomationErrorResponse(request.requestId, cause),
+          );
+        }
+      })();
+    });
+  }, [api, desktopPreview, runAutomationRequest, threadId]);
 
   const closePreview = useCallback(async () => {
     if (activeSession) {

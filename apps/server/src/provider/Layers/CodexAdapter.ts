@@ -43,6 +43,10 @@ import {
 } from "../../codexAppServerManager.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import type {
+  PreviewMcpHttpServerShape,
+  PreviewMcpSessionConfig,
+} from "../../mcp/PreviewMcpHttpServer.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "codex" as const;
@@ -52,6 +56,7 @@ export interface CodexAdapterLiveOptions {
   readonly makeManager?: (services?: ServiceMap.ServiceMap<never>) => CodexAppServerManager;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
+  readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
 }
 
 function toMessage(cause: unknown, fallback: string): string {
@@ -1562,6 +1567,15 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           }
         }),
     );
+    const previewMcpSessions = new Map<ThreadId, PreviewMcpSessionConfig>();
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        for (const session of previewMcpSessions.values()) {
+          session.dispose();
+        }
+        previewMcpSessions.clear();
+      }),
+    );
 
     const startSession: CodexAdapterShape["startSession"] = (input) => {
       if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -1574,8 +1588,32 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         );
       }
 
+      let previewMcpSession: PreviewMcpSessionConfig | undefined;
+      const disposePreviewMcpSession = () => {
+        previewMcpSession?.dispose();
+        previewMcpSessions.delete(input.threadId);
+      };
+
       return Effect.gen(function* () {
-        const providerMcpServers = input.providerOptions?.mcpServers;
+        const baseProviderMcpServers = input.providerOptions?.mcpServers;
+        previewMcpSessions.get(input.threadId)?.dispose();
+        previewMcpSessions.delete(input.threadId);
+        previewMcpSession =
+          serverConfig.mode === "desktop"
+            ? options?.previewMcpHttpServer?.createSessionConfig({
+                threadId: input.threadId,
+                ...(input.providerInstanceId
+                  ? { providerInstanceId: input.providerInstanceId }
+                  : {}),
+                existingServerNames: new Set(Object.keys(baseProviderMcpServers ?? {})),
+              })
+            : undefined;
+        const providerMcpServers = previewMcpSession
+          ? {
+              ...baseProviderMcpServers,
+              [previewMcpSession.serverName]: previewMcpSession.serverDefinition,
+            }
+          : baseProviderMcpServers;
         const mcpOAuthCallbackConfig = providerMcpServers
           ? yield* Effect.try({
               try: () => readCodexMcpOAuthCallbackConfig(providerMcpServers),
@@ -1625,6 +1663,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
+          ...(previewMcpSession ? { mcpEnvironment: previewMcpSession.env } : {}),
           ...(mcpOAuthCallbackConfig.port
             ? { mcpOAuthCallbackPort: mcpOAuthCallbackConfig.port }
             : {}),
@@ -1642,8 +1681,16 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               detail: toMessage(cause, "Failed to start Codex adapter session."),
               cause,
             }),
-        });
-      });
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (previewMcpSession) {
+                previewMcpSessions.set(input.threadId, previewMcpSession);
+              }
+            }),
+          ),
+        );
+      }).pipe(Effect.tapError(() => Effect.sync(disposePreviewMcpSession)));
     };
 
     const sendTurn: CodexAdapterShape["sendTurn"] = (input) =>
@@ -1796,6 +1843,8 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const stopSession: CodexAdapterShape["stopSession"] = (threadId) =>
       Effect.sync(() => {
+        previewMcpSessions.get(threadId)?.dispose();
+        previewMcpSessions.delete(threadId);
         manager.stopSession(threadId);
       });
 
@@ -1813,6 +1862,10 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
 
     const stopAll: CodexAdapterShape["stopAll"] = () =>
       Effect.sync(() => {
+        for (const session of previewMcpSessions.values()) {
+          session.dispose();
+        }
+        previewMcpSessions.clear();
         manager.stopAll();
       });
 

@@ -96,6 +96,20 @@ import type {
   PreviewSessionSnapshot,
 } from "./preview";
 import type {
+  PreviewAutomationClickInput,
+  PreviewAutomationClearOwnerInput,
+  PreviewAutomationEvaluateInput,
+  PreviewAutomationOwner,
+  PreviewAutomationPressInput,
+  PreviewAutomationRequest,
+  PreviewAutomationResponse,
+  PreviewAutomationScrollInput,
+  PreviewAutomationSnapshot,
+  PreviewAutomationStatus,
+  PreviewAutomationTypeInput,
+  PreviewAutomationWaitForInput,
+} from "./previewAutomation";
+import type {
   StorageCancelCleanupRequest,
   StorageCleanupProgressPayload,
   StorageCleanupRequest,
@@ -257,6 +271,16 @@ export interface DesktopPreviewBridge {
   openDevTools: (tabId: string) => Promise<void>;
   pickElement: (tabId: string) => Promise<PreviewAnnotationPayload | null>;
   cancelPickElement: (tabId: string) => Promise<void>;
+  automation?: {
+    status: (tabId: string) => Promise<PreviewAutomationStatus>;
+    snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
+    click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
+    type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
+    press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;
+    scroll: (tabId: string, input: PreviewAutomationScrollInput) => Promise<void>;
+    evaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => Promise<unknown>;
+    waitFor: (tabId: string, input: PreviewAutomationWaitForInput) => Promise<void>;
+  };
   onStateChange: (listener: (tabId: string, state: DesktopPreviewTabState) => void) => () => void;
 }
 
@@ -282,6 +306,12 @@ export interface NativeApi {
     close: (input: PreviewCloseInput) => Promise<void>;
     list: (input: PreviewListInput) => Promise<PreviewListResult>;
     listLocalServers: (input?: PreviewListLocalServersInput) => Promise<DiscoveredLocalServerList>;
+    automation: {
+      respond: (response: PreviewAutomationResponse) => Promise<void>;
+      reportOwner: (owner: PreviewAutomationOwner) => Promise<void>;
+      clearOwner: (input: PreviewAutomationClearOwnerInput) => Promise<void>;
+      onRequest: (callback: (request: PreviewAutomationRequest) => void) => () => void;
+    };
     onEvent: (callback: (event: PreviewEvent) => void) => () => void;
     onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;
   };

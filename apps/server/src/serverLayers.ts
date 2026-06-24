@@ -53,6 +53,15 @@ import { ProjectMcpConfigServiceLive } from "./mcp/ProjectMcpConfigService";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./mcp/McpRuntimeService";
 import { McpRuntimeDiagnosticsLive } from "./mcp/McpRuntimeDiagnostics";
+import {
+  PreviewAutomationBroker,
+  PreviewAutomationBrokerLive,
+} from "./mcp/PreviewAutomationBroker";
+import {
+  PreviewMcpHttpServer,
+  PreviewMcpHttpServerError,
+  PreviewMcpHttpServerLive,
+} from "./mcp/PreviewMcpHttpServer";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
@@ -106,13 +115,18 @@ export function makeServerProviderLayer(): Layer.Layer<
   | CodexOAuthManager
   | McpRuntimeService
   | ProjectMcpConfigService
+  | PreviewAutomationBroker
+  | PreviewMcpHttpServer
   | ProviderRegistry
   | ProviderUpdateAdvisor
   | ProviderAdvisoryProjection
   | ProviderInstanceRegistry
   | ProviderAdapterRegistry
   | ServerSettingsService,
-  ProviderUnsupportedError | PlatformError.PlatformError | SecretStoreError,
+  | ProviderUnsupportedError
+  | PlatformError.PlatformError
+  | PreviewMcpHttpServerError
+  | SecretStoreError,
   | SqlClient.SqlClient
   | ServerConfig
   | FileSystem.FileSystem
@@ -141,10 +155,15 @@ export function makeServerProviderLayer(): Layer.Layer<
       canonical: canonicalEventLogger,
     });
     const serverSettingsLayer = ServerSettingsLive;
+    const previewAutomationBrokerLayer = PreviewAutomationBrokerLive;
+    const previewMcpHttpServerLayer = PreviewMcpHttpServerLive.pipe(
+      Layer.provide(previewAutomationBrokerLayer),
+    );
     const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe(
       Layer.provide(serverSettingsLayer),
       Layer.provide(providerEventLoggersLayer),
       Layer.provide(OpenCodeRuntimeLive),
+      Layer.provide(previewMcpHttpServerLayer),
     );
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(providerInstanceRegistryLayer),
@@ -208,6 +227,8 @@ export function makeServerProviderLayer(): Layer.Layer<
       codexOAuthManagerLayer,
       mcpRuntimeServiceLayer,
       projectMcpConfigServiceLayer,
+      previewAutomationBrokerLayer,
+      previewMcpHttpServerLayer,
     );
   }).pipe(Layer.unwrap);
 }

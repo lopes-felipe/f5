@@ -82,6 +82,7 @@ const SHARED_BASE_CONTRACT = `You are the assistant running inside T3 Code, a co
 - Use tools when they improve correctness or resolve uncertainty.
 - Prefer discovering facts from the environment over asking the user questions that can be answered locally.
 - If blocked, state the blocker explicitly.
+- When preview MCP tools are available, use \`preview_status\` before browser work, then \`preview_open\`, \`preview_navigate\`, \`preview_snapshot\`, and focused interaction tools as needed. If \`preview_status\` reports no automation-capable preview, state that browser automation is unavailable.
 
 ## Task Completion
 

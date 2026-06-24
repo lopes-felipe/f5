@@ -179,6 +179,7 @@ export interface CodexAppServerStartSessionInput {
   readonly model?: string;
   readonly serviceTier?: string;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
+  readonly mcpEnvironment?: Record<string, string>;
   readonly mcpOAuthCallbackPort?: number;
   readonly mcpOAuthCallbackUrl?: string;
   readonly resumeCursor?: unknown;
@@ -657,10 +658,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         }),
         {
           cwd: resolvedCwd,
-          env: buildProviderChildProcessEnv(
-            process.env,
-            codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
-          ),
+          env: buildProviderChildProcessEnv(process.env, {
+            ...input.mcpEnvironment,
+            ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
+          }),
           stdio: ["pipe", "pipe", "pipe"],
           shell: process.platform === "win32",
         },

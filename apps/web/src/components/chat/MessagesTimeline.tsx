@@ -269,6 +269,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         continue;
       }
 
+      const showCompletionDivider =
+        timelineEntry.message.role === "assistant" &&
+        completionDividerBeforeEntryId === timelineEntry.id;
+
       nextRows.push({
         kind: "message",
         id: timelineEntry.id,
@@ -276,9 +280,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         message: timelineEntry.message,
         durationStart:
           durationStartByMessageId.get(timelineEntry.message.id) ?? timelineEntry.message.createdAt,
-        showCompletionDivider:
-          timelineEntry.message.role === "assistant" &&
-          completionDividerBeforeEntryId === timelineEntry.id,
+        showCompletionDivider,
+        completionSummary: showCompletionDivider ? completionSummary : null,
       });
     }
 
@@ -294,6 +297,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [
     timelineEntries,
     completionDividerBeforeEntryId,
+    completionSummary,
     isWorking,
     activeTurnStartedAt,
     settings.expandMcpToolCalls,
@@ -460,19 +464,13 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       markdownCwd,
       allDirectoriesExpanded,
       nowIso,
-      completionDividerBeforeEntryId,
-      completionSummary,
-      activeTurnStartedAt,
       revertTurnCountByUserMessageId,
       turnDiffSummaryByAssistantMessageId,
       turnDiffSummaryByTurnId,
     ],
     [
-      activeTurnStartedAt,
       allDirectoriesExpanded,
       chatDiffContext,
-      completionDividerBeforeEntryId,
-      completionSummary,
       expandedCommandExecutions,
       expandedWorkGroups,
       isRevertingCheckpoint,
@@ -501,6 +499,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row.id,
                 row.createdAt,
                 row.showCompletionDivider ? "divider" : "no-divider",
+                row.completionSummary ?? "",
                 row.message.streaming ? "streaming" : "stable",
                 row.message.text.length,
                 row.message.reasoningText?.length ?? 0,
@@ -761,7 +760,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 <div className="my-3 flex items-center gap-3">
                   <span className="h-px flex-1 bg-border" />
                   <span className="rounded-full border border-border bg-background px-2.5 py-1 text-[10px] uppercase tracking-[0.14em] text-muted-foreground/80">
-                    {completionSummary ? `Response • ${completionSummary}` : "Response"}
+                    {row.completionSummary ? `Response • ${row.completionSummary}` : "Response"}
                   </span>
                   <span className="h-px flex-1 bg-border" />
                 </div>
@@ -1039,6 +1038,7 @@ type TimelineRow =
       message: TimelineMessage;
       durationStart: string;
       showCompletionDivider: boolean;
+      completionSummary: string | null;
     }
   | {
       kind: "proposed-plan";

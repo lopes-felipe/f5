@@ -9,6 +9,7 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeCodexTextGeneration } from "../../git/Layers/CodexTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
+import { PreviewMcpHttpServer } from "../../mcp/PreviewMcpHttpServer.ts";
 import {
   checkCodexProviderPreflight,
   type ProviderPreflightStatus,
@@ -32,6 +33,7 @@ export type CodexDriverEnv =
   | FileSystem.FileSystem
   | Path.Path
   | ProviderEventLoggers
+  | PreviewMcpHttpServer
   | ServerConfig;
 
 const codexModels = (settings: CodexSettings): ServerProvider["models"] => {
@@ -119,6 +121,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const eventLoggers = yield* ProviderEventLoggers;
+      const previewMcpHttpServer = yield* PreviewMcpHttpServer;
       const homeLayout = yield* resolveCodexHomeLayout(config);
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -150,7 +153,9 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       >;
 
       const adapter = yield* makeCodexAdapter(
-        eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : undefined,
+        eventLoggers.native
+          ? { nativeEventLogger: eventLoggers.native, previewMcpHttpServer }
+          : { previewMcpHttpServer },
       );
       const textGeneration = yield* makeCodexTextGeneration;
       const checkProvider = checkCodexProviderPreflight({

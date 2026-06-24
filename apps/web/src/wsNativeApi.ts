@@ -4,6 +4,7 @@ import {
   type McpStatusUpdatedPayload,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  type PreviewAutomationRequest,
   type DiscoveredLocalServerList,
   type PreviewEvent,
   type ContextMenuItem,
@@ -31,6 +32,7 @@ const gitActionProgressListeners = new Set<(payload: GitActionProgressEvent) => 
 const gitStatusInvalidatedListeners = new Set<(payload: GitStatusInvalidatedPayload) => void>();
 const previewEventListeners = new Set<(payload: PreviewEvent) => void>();
 const previewLocalServersUpdatedListeners = new Set<(payload: DiscoveredLocalServerList) => void>();
+const previewAutomationRequestListeners = new Set<(payload: PreviewAutomationRequest) => void>();
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
@@ -176,6 +178,16 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
+  transport.subscribe(WS_CHANNELS.previewAutomationRequest, (message) => {
+    const payload = message.data;
+    for (const listener of previewAutomationRequestListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
   transport.subscribe(WS_CHANNELS.mcpStatusUpdated, (message) => {
     const payload = message.data;
     for (const listener of mcpStatusUpdatedListeners) {
@@ -239,6 +251,17 @@ export function createWsNativeApi(): NativeApi {
       list: (input) => transport.request(WS_METHODS.previewList, input),
       listLocalServers: (input = {}) =>
         transport.request(WS_METHODS.previewListLocalServers, input),
+      automation: {
+        respond: (response) => transport.request(WS_METHODS.previewAutomationRespond, response),
+        reportOwner: (owner) => transport.request(WS_METHODS.previewAutomationReportOwner, owner),
+        clearOwner: (input) => transport.request(WS_METHODS.previewAutomationClearOwner, input),
+        onRequest: (callback) => {
+          previewAutomationRequestListeners.add(callback);
+          return () => {
+            previewAutomationRequestListeners.delete(callback);
+          };
+        },
+      },
       onEvent: (callback) => {
         previewEventListeners.add(callback);
         return () => {

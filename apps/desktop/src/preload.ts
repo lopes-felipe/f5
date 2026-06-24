@@ -23,6 +23,14 @@ const PREVIEW_HARD_RELOAD_CHANNEL = "desktop-preview:hard-reload";
 const PREVIEW_OPEN_DEVTOOLS_CHANNEL = "desktop-preview:open-devtools";
 const PREVIEW_PICK_ELEMENT_CHANNEL = "desktop-preview:pick-element";
 const PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL = "desktop-preview:cancel-pick-element";
+const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop-preview:automation-status";
+const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop-preview:automation-snapshot";
+const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop-preview:automation-click";
+const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop-preview:automation-type";
+const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop-preview:automation-press";
+const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop-preview:automation-scroll";
+const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop-preview:automation-evaluate";
+const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
 
@@ -76,6 +84,18 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     openDevTools: (tabId) => ipcRenderer.invoke(PREVIEW_OPEN_DEVTOOLS_CHANNEL, tabId),
     pickElement: (tabId) => ipcRenderer.invoke(PREVIEW_PICK_ELEMENT_CHANNEL, tabId),
     cancelPickElement: (tabId) => ipcRenderer.invoke(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, tabId),
+    automation: {
+      status: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_STATUS_CHANNEL, tabId),
+      snapshot: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, tabId),
+      click: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_CLICK_CHANNEL, tabId, input),
+      type: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_TYPE_CHANNEL, tabId, input),
+      press: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_PRESS_CHANNEL, tabId, input),
+      scroll: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_SCROLL_CHANNEL, tabId, input),
+      evaluate: (tabId, input) =>
+        ipcRenderer.invoke(PREVIEW_AUTOMATION_EVALUATE_CHANNEL, tabId, input),
+      waitFor: (tabId, input) =>
+        ipcRenderer.invoke(PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL, tabId, input),
+    },
     onStateChange: (listener) => {
       const wrappedListener = (
         _event: Electron.IpcRendererEvent,

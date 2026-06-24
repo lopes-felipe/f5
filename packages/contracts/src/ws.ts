@@ -94,6 +94,12 @@ import {
   PreviewRefreshInput,
   PreviewReportStatusInput,
 } from "./preview";
+import {
+  PreviewAutomationClearOwnerInput,
+  PreviewAutomationOwner,
+  PreviewAutomationRequest,
+  PreviewAutomationResponse,
+} from "./previewAutomation";
 import { FilesystemBrowseInput } from "./filesystem";
 import { OpenInEditorInput } from "./editor";
 import {
@@ -161,6 +167,9 @@ export const WS_METHODS = {
   previewClose: "preview.close",
   previewList: "preview.list",
   previewListLocalServers: "preview.listLocalServers",
+  previewAutomationRespond: "preview.automation.respond",
+  previewAutomationReportOwner: "preview.automation.reportOwner",
+  previewAutomationClearOwner: "preview.automation.clearOwner",
 
   // Server meta
   serverGetConfig: "server.getConfig",
@@ -202,6 +211,7 @@ export const WS_CHANNELS = {
   terminalEvent: "terminal.event",
   previewEvent: "preview.event",
   previewLocalServersUpdated: "preview.localServersUpdated",
+  previewAutomationRequest: "preview.automation.request",
   serverWelcome: "server.welcome",
   serverConfigUpdated: "server.configUpdated",
   providerAdvisoriesUpdated: "provider.advisoriesUpdated",
@@ -349,6 +359,9 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.previewClose, PreviewCloseInput),
   tagRequestBody(WS_METHODS.previewList, PreviewListInput),
   tagRequestBody(WS_METHODS.previewListLocalServers, PreviewListLocalServersInput),
+  tagRequestBody(WS_METHODS.previewAutomationRespond, PreviewAutomationResponse),
+  tagRequestBody(WS_METHODS.previewAutomationReportOwner, PreviewAutomationOwner),
+  tagRequestBody(WS_METHODS.previewAutomationClearOwner, PreviewAutomationClearOwnerInput),
 
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
@@ -416,6 +429,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.terminalEvent]: typeof TerminalEvent.Type;
   readonly [WS_CHANNELS.previewEvent]: PreviewEvent;
   readonly [WS_CHANNELS.previewLocalServersUpdated]: DiscoveredLocalServerList;
+  readonly [WS_CHANNELS.previewAutomationRequest]: typeof PreviewAutomationRequest.Type;
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
@@ -459,6 +473,10 @@ export const WsPushPreviewLocalServersUpdated = makeWsPushSchema(
   WS_CHANNELS.previewLocalServersUpdated,
   DiscoveredLocalServerList,
 );
+export const WsPushPreviewAutomationRequest = makeWsPushSchema(
+  WS_CHANNELS.previewAutomationRequest,
+  PreviewAutomationRequest,
+);
 export const WsPushMcpStatusUpdated = makeWsPushSchema(
   WS_CHANNELS.mcpStatusUpdated,
   McpStatusUpdatedPayload,
@@ -485,6 +503,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.terminalEvent,
   WS_CHANNELS.previewEvent,
   WS_CHANNELS.previewLocalServersUpdated,
+  WS_CHANNELS.previewAutomationRequest,
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
@@ -501,6 +520,7 @@ export const WsPush = Schema.Union([
   WsPushTerminalEvent,
   WsPushPreviewEvent,
   WsPushPreviewLocalServersUpdated,
+  WsPushPreviewAutomationRequest,
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,

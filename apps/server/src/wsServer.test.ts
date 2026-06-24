@@ -92,6 +92,10 @@ import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
 import { McpRuntimeService } from "./mcp/McpRuntimeService.ts";
+import {
+  makePreviewAutomationBroker,
+  PreviewAutomationBroker,
+} from "./mcp/PreviewAutomationBroker.ts";
 
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const asProviderItemId = (value: string): ProviderItemId => ProviderItemId.makeUnsafe(value);
@@ -772,6 +776,10 @@ describe("WebSocket Server", () => {
       options.harnessValidation ?? defaultHarnessValidationService,
     );
     const openLayer = Layer.succeed(Open, options.open ?? defaultOpenService);
+    const previewAutomationBrokerLayer = Layer.succeed(
+      PreviewAutomationBroker,
+      makePreviewAutomationBroker(),
+    );
     const serverConfigLayer = Layer.succeed(ServerConfig, {
       mode: "web",
       port: 0,
@@ -822,6 +830,7 @@ describe("WebSocket Server", () => {
       Layer.provideMerge(harnessValidationLayer),
       Layer.provideMerge(openLayer),
       Layer.provideMerge(serverConfigLayer),
+      Layer.provideMerge(previewAutomationBrokerLayer),
       Layer.provideMerge(AnalyticsService.layerTest),
       Layer.provideMerge(NodeServices.layer),
     );

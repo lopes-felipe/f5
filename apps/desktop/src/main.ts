@@ -24,6 +24,14 @@ import type {
   DesktopTheme,
   DesktopUpdateActionResult,
   DesktopUpdateState,
+  PreviewAutomationClickInput,
+  PreviewAutomationEvaluateInput,
+  PreviewAutomationPressInput,
+  PreviewAutomationScrollInput,
+  PreviewAutomationSnapshot,
+  PreviewAutomationStatus,
+  PreviewAutomationTypeInput,
+  PreviewAutomationWaitForInput,
   PreviewAnnotationPayload,
   PreviewAnnotationRect,
 } from "@t3tools/contracts";
@@ -75,6 +83,14 @@ const PREVIEW_HARD_RELOAD_CHANNEL = "desktop-preview:hard-reload";
 const PREVIEW_OPEN_DEVTOOLS_CHANNEL = "desktop-preview:open-devtools";
 const PREVIEW_PICK_ELEMENT_CHANNEL = "desktop-preview:pick-element";
 const PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL = "desktop-preview:cancel-pick-element";
+const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop-preview:automation-status";
+const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop-preview:automation-snapshot";
+const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop-preview:automation-click";
+const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop-preview:automation-type";
+const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop-preview:automation-press";
+const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop-preview:automation-scroll";
+const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop-preview:automation-evaluate";
+const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
@@ -100,6 +116,43 @@ const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeInte
 const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
 const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
 const PREVIEW_CAPTURE_MAX_PIXELS = 2_000_000;
+const PREVIEW_AUTOMATION_MAX_TEXT_LENGTH = 20_000;
+const PREVIEW_AUTOMATION_MAX_ELEMENTS = 80;
+const PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES = 64_000;
+const PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS = 15_000;
+const PREVIEW_AUTOMATION_WAIT_INTERVAL_MS = 100;
+const PREVIEW_AUTOMATION_PRINTABLE_KEY_PATTERN = /^[A-Za-z0-9]$/;
+const PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS: ReadonlySet<string> = new Set([
+  "`",
+  "-",
+  "=",
+  "[",
+  "]",
+  "\\",
+  ";",
+  "'",
+  ",",
+  ".",
+  "/",
+]);
+const PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS: ReadonlySet<string> = new Set([
+  "Backspace",
+  "Tab",
+  "Enter",
+  "Escape",
+  "ArrowUp",
+  "ArrowDown",
+  "ArrowLeft",
+  "ArrowRight",
+  "Delete",
+  "Home",
+  "End",
+  "PageUp",
+  "PageDown",
+  "Space",
+  "Insert",
+  ...Array.from({ length: 24 }, (_, index) => `F${index + 1}`),
+]);
 
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
@@ -658,6 +711,410 @@ async function pickPreviewElement(tabId: string): Promise<PreviewAnnotationPaylo
     screenshot,
     createdAt,
   };
+}
+
+function requirePreviewWebContents(tabId: unknown): Electron.WebContents {
+  const guest = getPreviewWebContents(tabId);
+  if (!guest) {
+    throw new Error("Preview webview is not attached.");
+  }
+  return guest;
+}
+
+function previewAutomationStatus(tabId: string): PreviewAutomationStatus {
+  const guest = getPreviewWebContents(tabId);
+  if (!guest) {
+    const entry = lookupPreviewTabEntry(tabId);
+    return {
+      available: false,
+      visible: false,
+      tabId: entry ? tabId : null,
+      url: null,
+      title: null,
+      loading: false,
+    };
+  }
+  return {
+    available: true,
+    visible: true,
+    tabId,
+    url: guest.getURL() || null,
+    title: guest.getTitle() || null,
+    loading: guest.isLoading(),
+  };
+}
+
+function automationSelectorResolverScript(input: {
+  readonly selector?: string | undefined;
+  readonly locator?: string | undefined;
+}): string {
+  return String.raw`
+const targetFromSelectorOrLocator = () => {
+  const selector = ${JSON.stringify(input.selector ?? null)};
+  const locator = ${JSON.stringify(input.locator ?? null)};
+  const visible = (element) => {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  };
+  if (selector) return document.querySelector(selector);
+  if (!locator) return document.activeElement;
+  if (locator.startsWith("text=")) {
+    const text = locator.slice("text=".length).replace(/^["']|["']$/g, "");
+    return Array.from(document.querySelectorAll("body *")).find((element) => visible(element) && (element.innerText || element.textContent || "").includes(text)) || null;
+  }
+  const roleMatch = /^role=([a-zA-Z0-9_-]+)(?:\[name=(["'])(.*?)\2\])?$/.exec(locator);
+  if (roleMatch) {
+    const role = roleMatch[1].toLowerCase();
+    const expectedName = roleMatch[3] || "";
+    const implicitSelector = role === "button"
+      ? "button,input[type='button'],input[type='submit'],input[type='reset']"
+      : role === "link"
+        ? "a[href]"
+        : role === "textbox"
+          ? "input:not([type]),input[type='text'],input[type='search'],input[type='email'],input[type='url'],textarea,[contenteditable='true']"
+          : "";
+    const explicitRoleSelector = "[role=" + JSON.stringify(role) + "]";
+    const candidates = Array.from(document.querySelectorAll([explicitRoleSelector, implicitSelector].filter(Boolean).join(",")));
+    return candidates.find((element) => {
+      if (!visible(element)) return false;
+      if (!expectedName) return true;
+      const name = element.getAttribute("aria-label") || element.getAttribute("name") || element.innerText || element.textContent || element.value || "";
+      return String(name).includes(expectedName);
+    }) || null;
+  }
+  try {
+    return document.querySelector(locator);
+  } catch {
+    return null;
+  }
+};
+`;
+}
+
+async function executePreviewJavaScript<T>(
+  guest: Electron.WebContents,
+  script: string,
+): Promise<T> {
+  return (await guest.executeJavaScript(script, true)) as T;
+}
+
+function waitPreviewAutomationPoll(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, PREVIEW_AUTOMATION_WAIT_INTERVAL_MS));
+}
+
+function buildPreviewAutomationSnapshotScript(): string {
+  return String.raw`
+(() => {
+  const selectorFor = (element) => {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return "";
+    if (element.id) return "#" + CSS.escape(element.id);
+    for (const attribute of ["data-testid", "name", "aria-label"]) {
+      const value = element.getAttribute(attribute);
+      if (value) return element.tagName.toLowerCase() + "[" + attribute + "=" + JSON.stringify(value) + "]";
+    }
+    const parts = [];
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 8) {
+      const parent = current.parentElement;
+      const siblings = parent
+        ? Array.from(parent.children).filter((child) => child.tagName === current.tagName)
+        : [];
+      const base = current.tagName.toLowerCase();
+      parts.unshift(siblings.length > 1 ? base + ":nth-of-type(" + (siblings.indexOf(current) + 1) + ")" : base);
+      current = parent;
+    }
+    return parts.join(" > ");
+  };
+  const visible = (element) => {
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  };
+  const elements = Array.from(document.querySelectorAll("a[href],button,input,textarea,select,[role],[tabindex],[contenteditable='true']"))
+    .filter(visible)
+    .slice(0, ${PREVIEW_AUTOMATION_MAX_ELEMENTS})
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        tag: element.tagName.toLowerCase(),
+        role: element.getAttribute("role"),
+        name: element.getAttribute("aria-label") || element.getAttribute("name") || element.innerText || element.textContent || element.value || "",
+        selector: selectorFor(element),
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height
+      };
+    });
+  return {
+    url: location.href,
+    title: document.title,
+    loading: document.readyState !== "complete",
+    visibleText: (document.body?.innerText || "").slice(0, ${PREVIEW_AUTOMATION_MAX_TEXT_LENGTH}),
+    interactiveElements: elements,
+    accessibilityTree: null,
+    consoleEntries: [],
+    networkEntries: [],
+    actionTimeline: []
+  };
+})()
+`;
+}
+
+async function previewAutomationSnapshot(tabId: string): Promise<PreviewAutomationSnapshot> {
+  const guest = requirePreviewWebContents(tabId);
+  const page = await executePreviewJavaScript<Omit<PreviewAutomationSnapshot, "screenshot">>(
+    guest,
+    buildPreviewAutomationSnapshotScript(),
+  );
+  const viewport = normalizePickViewport(
+    await executePreviewJavaScript<unknown>(
+      guest,
+      "(() => ({ width: window.innerWidth, height: window.innerHeight }))()",
+    ),
+  );
+  const rect = viewport
+    ? clampPreviewCaptureRect(
+        { x: 0, y: 0, width: viewport.width, height: viewport.height },
+        viewport,
+      )
+    : null;
+  const image = await guest.capturePage(rect ?? undefined);
+  const size = image.getSize();
+  return {
+    ...page,
+    screenshot: {
+      mimeType: "image/png",
+      data: image.toPNG().toString("base64"),
+      width: size.width,
+      height: size.height,
+    },
+  };
+}
+
+async function resolveAutomationClickPoint(
+  guest: Electron.WebContents,
+  input: PreviewAutomationClickInput,
+): Promise<{ x: number; y: number }> {
+  if (typeof input.x === "number" && typeof input.y === "number") {
+    return { x: input.x, y: input.y };
+  }
+  const timeoutMs = input.timeoutMs ?? 15_000;
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const result = await executePreviewJavaScript<
+      { ok: true; x: number; y: number } | { ok: false; message: string }
+    >(
+      guest,
+      `(() => {
+        ${automationSelectorResolverScript(input)}
+        const element = targetFromSelectorOrLocator();
+        if (!element) return { ok: false, message: "No element matched the requested preview target." };
+        element.scrollIntoView({ block: "center", inline: "center" });
+        const rect = element.getBoundingClientRect();
+        return { ok: true, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      })()`,
+    );
+    if (result.ok) {
+      return { x: result.x, y: result.y };
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(result.message);
+    }
+    await waitPreviewAutomationPoll();
+  }
+}
+
+async function previewAutomationClick(
+  tabId: string,
+  input: PreviewAutomationClickInput,
+): Promise<void> {
+  const guest = requirePreviewWebContents(tabId);
+  const point = await resolveAutomationClickPoint(guest, input);
+  guest.sendInputEvent({ type: "mouseMove", x: Math.round(point.x), y: Math.round(point.y) });
+  guest.sendInputEvent({
+    type: "mouseDown",
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    button: "left",
+    clickCount: 1,
+  });
+  guest.sendInputEvent({
+    type: "mouseUp",
+    x: Math.round(point.x),
+    y: Math.round(point.y),
+    button: "left",
+    clickCount: 1,
+  });
+}
+
+async function previewAutomationType(
+  tabId: string,
+  input: PreviewAutomationTypeInput,
+): Promise<void> {
+  const guest = requirePreviewWebContents(tabId);
+  const timeoutMs = input.timeoutMs ?? 15_000;
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const focused = await executePreviewJavaScript<boolean>(
+      guest,
+      `(() => {
+        ${automationSelectorResolverScript(input)}
+        const element = targetFromSelectorOrLocator();
+        if (!element) return false;
+        window.__f5PreviewAutomationTypeTarget = element;
+        element.focus();
+        if (${input.clear === true ? "true" : "false"}) {
+          if ("value" in element) element.value = "";
+          else if (element.isContentEditable) element.textContent = "";
+          element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
+        }
+        return true;
+      })()`,
+    );
+    if (focused) {
+      break;
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("No element matched the requested preview target.");
+    }
+    await waitPreviewAutomationPoll();
+  }
+  await guest.insertText(input.text);
+  await executePreviewJavaScript(
+    guest,
+    `(() => {
+      const storedTarget = window.__f5PreviewAutomationTypeTarget;
+      delete window.__f5PreviewAutomationTypeTarget;
+      const element = storedTarget?.isConnected ? storedTarget : document.activeElement;
+      element?.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: ${JSON.stringify(input.text)} }));
+      element?.dispatchEvent(new Event("change", { bubbles: true }));
+    })()`,
+  );
+}
+
+function electronModifiers(
+  modifiers: PreviewAutomationPressInput["modifiers"],
+): NonNullable<Electron.InputEvent["modifiers"]> {
+  return (modifiers ?? []).map((modifier) => {
+    switch (modifier) {
+      case "Alt":
+        return "alt";
+      case "Control":
+        return "control";
+      case "Meta":
+        return "meta";
+      case "Shift":
+        return "shift";
+      default: {
+        const exhaustive: never = modifier;
+        throw new Error(`Unsupported preview automation modifier: ${String(exhaustive)}`);
+      }
+    }
+  });
+}
+
+function previewAutomationKeyCode(key: string): string {
+  const normalized = key.trim();
+  if (
+    PREVIEW_AUTOMATION_PRINTABLE_KEY_PATTERN.test(normalized) ||
+    PREVIEW_AUTOMATION_SUPPORTED_PUNCTUATION_KEYS.has(normalized) ||
+    PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS.has(normalized)
+  ) {
+    return normalized;
+  }
+  throw new Error(`Unsupported preview automation key: ${key}`);
+}
+
+async function previewAutomationPress(
+  tabId: string,
+  input: PreviewAutomationPressInput,
+): Promise<void> {
+  const guest = requirePreviewWebContents(tabId);
+  const modifiers = electronModifiers(input.modifiers);
+  const keyCode = previewAutomationKeyCode(input.key);
+  guest.sendInputEvent({ type: "keyDown", keyCode, modifiers });
+  guest.sendInputEvent({ type: "keyUp", keyCode, modifiers });
+}
+
+async function previewAutomationScroll(
+  tabId: string,
+  input: PreviewAutomationScrollInput,
+): Promise<void> {
+  const guest = requirePreviewWebContents(tabId);
+  const result = await executePreviewJavaScript<boolean>(
+    guest,
+    `(() => {
+      ${automationSelectorResolverScript(input)}
+      const target = ${input.selector || input.locator ? "targetFromSelectorOrLocator()" : "window"};
+      if (!target) return false;
+      target.scrollBy({ left: ${input.deltaX ?? 0}, top: ${input.deltaY ?? 0}, behavior: "instant" });
+      return true;
+    })()`,
+  );
+  if (!result) {
+    throw new Error("No element matched the requested preview target.");
+  }
+}
+
+async function previewAutomationEvaluate(
+  tabId: string,
+  input: PreviewAutomationEvaluateInput,
+): Promise<unknown> {
+  const guest = requirePreviewWebContents(tabId);
+  const timeoutMs = input.timeoutMs ?? PREVIEW_AUTOMATION_EVALUATE_DEFAULT_TIMEOUT_MS;
+  const result = await executePreviewJavaScript(
+    guest,
+    `(() => {
+      const expression = ${JSON.stringify(input.expression)};
+      const awaitPromise = ${input.awaitPromise === false ? "false" : "true"};
+      const timeoutMs = ${JSON.stringify(timeoutMs)};
+      let timeoutId;
+      const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(
+          () => reject(new Error("Preview evaluation timed out after " + timeoutMs + "ms.")),
+          timeoutMs
+        );
+      });
+      const evaluate = async () => {
+        const value = (0, eval)(expression);
+        return awaitPromise ? await value : value;
+      };
+      return Promise.race([evaluate(), timeout]).finally(() => clearTimeout(timeoutId));
+    })()`,
+  );
+  const serialized = JSON.stringify(result);
+  if (
+    serialized &&
+    Buffer.byteLength(serialized, "utf8") > PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES
+  ) {
+    throw new Error(`Evaluation result exceeds ${PREVIEW_AUTOMATION_MAX_EVALUATION_BYTES} bytes.`);
+  }
+  return result;
+}
+
+async function previewAutomationWaitFor(
+  tabId: string,
+  input: PreviewAutomationWaitForInput,
+): Promise<void> {
+  const guest = requirePreviewWebContents(tabId);
+  const deadline = Date.now() + (input.timeoutMs ?? 15_000);
+  const checkScript = `(() => {
+    ${automationSelectorResolverScript(input)}
+    const selectorMatched = ${input.selector || input.locator ? "targetFromSelectorOrLocator() !== null" : "true"};
+    const textMatched = ${input.text ? `(document.body?.innerText || "").includes(${JSON.stringify(input.text)})` : "true"};
+    const urlMatched = ${input.urlIncludes ? `location.href.includes(${JSON.stringify(input.urlIncludes)})` : "true"};
+    return selectorMatched && textMatched && urlMatched;
+  })()`;
+  while (Date.now() < deadline) {
+    if (await executePreviewJavaScript<boolean>(guest, checkScript)) {
+      return;
+    }
+    await waitPreviewAutomationPoll();
+  }
+  throw new Error(`Preview wait timed out after ${input.timeoutMs ?? 15_000}ms.`);
 }
 
 function writeDesktopStreamChunk(
@@ -1795,6 +2252,88 @@ function registerIpcHandlers(): void {
     if (!guest) return;
     await guest.executeJavaScript("window.__f5PreviewPickCancel?.()", true).catch(() => null);
   });
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_STATUS_CHANNEL);
+  ipcMain.handle(PREVIEW_AUTOMATION_STATUS_CHANNEL, async (_event, tabId: unknown) => {
+    if (typeof tabId !== "string" || tabId.trim().length === 0) {
+      throw new Error("Preview tab id is invalid.");
+    }
+    return previewAutomationStatus(tabId);
+  });
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL);
+  ipcMain.handle(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, async (_event, tabId: unknown) => {
+    if (typeof tabId !== "string" || tabId.trim().length === 0) {
+      throw new Error("Preview tab id is invalid.");
+    }
+    return previewAutomationSnapshot(tabId);
+  });
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_CLICK_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_AUTOMATION_CLICK_CHANNEL,
+    async (_event, tabId: unknown, input: unknown) => {
+      if (typeof tabId !== "string" || tabId.trim().length === 0) {
+        throw new Error("Preview tab id is invalid.");
+      }
+      await previewAutomationClick(tabId, input as PreviewAutomationClickInput);
+    },
+  );
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_TYPE_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_AUTOMATION_TYPE_CHANNEL,
+    async (_event, tabId: unknown, input: unknown) => {
+      if (typeof tabId !== "string" || tabId.trim().length === 0) {
+        throw new Error("Preview tab id is invalid.");
+      }
+      await previewAutomationType(tabId, input as PreviewAutomationTypeInput);
+    },
+  );
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_PRESS_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_AUTOMATION_PRESS_CHANNEL,
+    async (_event, tabId: unknown, input: unknown) => {
+      if (typeof tabId !== "string" || tabId.trim().length === 0) {
+        throw new Error("Preview tab id is invalid.");
+      }
+      await previewAutomationPress(tabId, input as PreviewAutomationPressInput);
+    },
+  );
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_SCROLL_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_AUTOMATION_SCROLL_CHANNEL,
+    async (_event, tabId: unknown, input: unknown) => {
+      if (typeof tabId !== "string" || tabId.trim().length === 0) {
+        throw new Error("Preview tab id is invalid.");
+      }
+      await previewAutomationScroll(tabId, input as PreviewAutomationScrollInput);
+    },
+  );
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_EVALUATE_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_AUTOMATION_EVALUATE_CHANNEL,
+    async (_event, tabId: unknown, input: unknown) => {
+      if (typeof tabId !== "string" || tabId.trim().length === 0) {
+        throw new Error("Preview tab id is invalid.");
+      }
+      return previewAutomationEvaluate(tabId, input as PreviewAutomationEvaluateInput);
+    },
+  );
+
+  ipcMain.removeHandler(PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL);
+  ipcMain.handle(
+    PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL,
+    async (_event, tabId: unknown, input: unknown) => {
+      if (typeof tabId !== "string" || tabId.trim().length === 0) {
+        throw new Error("Preview tab id is invalid.");
+      }
+      await previewAutomationWaitFor(tabId, input as PreviewAutomationWaitForInput);
+    },
+  );
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {

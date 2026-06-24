@@ -36,13 +36,35 @@ import {
 import { Effect, Layer } from "effect";
 
 import { ServerConfig } from "../../config.ts";
-import { ClaudeDriver } from "../Drivers/ClaudeDriver.ts";
-import { CodexDriver } from "../Drivers/CodexDriver.ts";
-import { CursorDriver } from "../Drivers/CursorDriver.ts";
-import { OpenCodeDriver } from "../Drivers/OpenCodeDriver.ts";
+import { ClaudeDriver, type ClaudeDriverEnv } from "../Drivers/ClaudeDriver.ts";
+import { CodexDriver, type CodexDriverEnv } from "../Drivers/CodexDriver.ts";
+import { CursorDriver, type CursorDriverEnv } from "../Drivers/CursorDriver.ts";
+import { OpenCodeDriver, type OpenCodeDriverEnv } from "../Drivers/OpenCodeDriver.ts";
+import {
+  PreviewMcpHttpServer,
+  type PreviewMcpHttpServerShape,
+} from "../../mcp/PreviewMcpHttpServer.ts";
 import { OpenCodeRuntimeLive } from "../opencodeRuntime.ts";
 import { NoOpProviderEventLoggers, ProviderEventLoggers } from "./ProviderEventLoggers.ts";
 import { makeProviderInstanceRegistry } from "./ProviderInstanceRegistryLive.ts";
+import type { AnyProviderDriver } from "../ProviderDriver.ts";
+
+type AllDriversEnv = ClaudeDriverEnv | CodexDriverEnv | CursorDriverEnv | OpenCodeDriverEnv;
+
+const NoOpPreviewMcpHttpServer = {
+  getUrl: () => "http://127.0.0.1:9/mcp/preview",
+  createSessionConfig: () => ({
+    serverName: "__test_preview",
+    serverDefinition: {
+      type: "http",
+      url: "http://127.0.0.1:9/mcp/preview",
+      enabled: false,
+      bearerTokenEnvVar: "F5_TEST_PREVIEW_MCP_TOKEN",
+    },
+    env: { F5_TEST_PREVIEW_MCP_TOKEN: "test" },
+    dispose: () => {},
+  }),
+} satisfies PreviewMcpHttpServerShape;
 
 const makeCodexConfig = (overrides: Partial<CodexSettings>): CodexSettings => ({
   enabled: false,
@@ -90,6 +112,7 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
   }).pipe(
     Layer.provideMerge(NodeServices.layer),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    Layer.provideMerge(Layer.succeed(PreviewMcpHttpServer, NoOpPreviewMcpHttpServer)),
   );
 
   it.live("boots two independent codex instances from a ProviderInstanceConfigMap", () =>
@@ -226,6 +249,7 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
   }).pipe(
     Layer.provideMerge(infraLayer),
     Layer.provideMerge(Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers)),
+    Layer.provideMerge(Layer.succeed(PreviewMcpHttpServer, NoOpPreviewMcpHttpServer)),
   );
 
   it.live("boots one instance of every shipped driver from a single config map", () =>
@@ -270,8 +294,10 @@ describe("ProviderInstanceRegistryLive — all drivers slice", () => {
         },
       };
 
-      const { registry } = yield* makeProviderInstanceRegistry({
-        drivers: [CodexDriver, ClaudeDriver, CursorDriver, OpenCodeDriver],
+      const { registry } = yield* makeProviderInstanceRegistry<AllDriversEnv>({
+        drivers: [CodexDriver, ClaudeDriver, CursorDriver, OpenCodeDriver] as ReadonlyArray<
+          AnyProviderDriver<AllDriversEnv>
+        >,
         configMap,
       });
 

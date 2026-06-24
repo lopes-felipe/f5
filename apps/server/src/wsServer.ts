@@ -147,6 +147,7 @@ import { redactServerSettingsForClient, ServerSettingsService } from "./serverSe
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import { makePreviewManager } from "./preview/Manager.ts";
 import { scanLocalServers } from "./preview/PortScanner.ts";
+import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 
 /**
  * ServerShape - Service API for server lifecycle control.
@@ -536,7 +537,8 @@ export type ServerCoreRuntimeServices =
   | CodexMcpSyncService
   | CodexOAuthManager
   | McpRuntimeService
-  | ProjectMcpConfigService;
+  | ProjectMcpConfigService
+  | PreviewAutomationBroker;
 
 export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
@@ -651,6 +653,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const codexOAuthManager = yield* CodexOAuthManager;
   const mcpRuntimeService = yield* McpRuntimeService;
   const projectMcpConfigService = yield* ProjectMcpConfigService;
+  const previewAutomationBroker = yield* PreviewAutomationBroker;
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -729,6 +732,37 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     logOutgoingPush,
   });
   const previewManager = makePreviewManager();
+  const previewAutomationClientIdsByWs = new WeakMap<WebSocket, Map<string, string>>();
+
+  const getPreviewAutomationClientIdsForWs = (ws: WebSocket): Map<string, string> => {
+    let clientIds = previewAutomationClientIdsByWs.get(ws);
+    if (!clientIds) {
+      clientIds = new Map();
+      previewAutomationClientIdsByWs.set(ws, clientIds);
+    }
+    return clientIds;
+  };
+
+  const getServerPreviewAutomationClientId = (ws: WebSocket, rendererClientId: string): string => {
+    const clientIds = getPreviewAutomationClientIdsForWs(ws);
+    const existing = clientIds.get(rendererClientId);
+    if (existing) return existing;
+    const next = `preview-ws-${randomUUID()}`;
+    clientIds.set(rendererClientId, next);
+    return next;
+  };
+
+  const clearPreviewAutomationClient = (ws: WebSocket, rendererClientId: string) => {
+    const clientIds = previewAutomationClientIdsByWs.get(ws);
+    const serverClientId = clientIds?.get(rendererClientId);
+    if (!serverClientId) return Effect.void;
+    clientIds?.delete(rendererClientId);
+    return previewAutomationBroker.clearOwner(serverClientId);
+  };
+
+  const authorizedPreviewAutomationClientIds = (ws: WebSocket): ReadonlySet<string> =>
+    new Set(previewAutomationClientIdsByWs.get(ws)?.values() ?? []);
+
   yield* readiness.markPushBusReady;
   yield* keybindingsManager.start.pipe(
     Effect.mapError(
@@ -2164,6 +2198,49 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return result;
       }
 
+      case WS_METHODS.previewAutomationReportOwner: {
+        const body = stripRequestTag(request.body);
+        const clientId = getServerPreviewAutomationClientId(ws, body.clientId);
+        if (!body.supportsAutomation) {
+          yield* previewAutomationBroker.clearOwner(clientId);
+          return undefined;
+        }
+        if (body.tabId) {
+          const previewList = yield* previewManager.list({ threadId: body.threadId });
+          const ownsTab = previewList.sessions.some((session) => session.tabId === body.tabId);
+          if (!ownsTab) {
+            yield* previewAutomationBroker.clearOwner(clientId);
+            return undefined;
+          }
+        }
+        yield* previewAutomationBroker.reportOwner(
+          {
+            ...body,
+            clientId,
+            supportsAutomation: true,
+            focusedAt: new Date().toISOString(),
+          },
+          {
+            clientId,
+            send: (automationRequest) =>
+              pushBus.publishClient(ws, WS_CHANNELS.previewAutomationRequest, automationRequest),
+          },
+        );
+        return undefined;
+      }
+
+      case WS_METHODS.previewAutomationClearOwner: {
+        const body = stripRequestTag(request.body);
+        yield* clearPreviewAutomationClient(ws, body.clientId);
+        return undefined;
+      }
+
+      case WS_METHODS.previewAutomationRespond: {
+        const body = stripRequestTag(request.body);
+        yield* previewAutomationBroker.respond(body, authorizedPreviewAutomationClientIds(ws));
+        return undefined;
+      }
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         const providers = yield* providerAdvisoryProjection.getProviders;
@@ -2625,6 +2702,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         increment(websocketConnectionsTotal, {
           event: "disconnect",
         }).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              const clientIds = previewAutomationClientIdsByWs.get(ws);
+              if (!clientIds) return;
+              previewAutomationClientIdsByWs.delete(ws);
+              yield* Effect.forEach(
+                clientIds.values(),
+                (clientId) => previewAutomationBroker.clearOwner(clientId),
+                { discard: true },
+              );
+            }),
+          ),
           Effect.andThen(
             Ref.update(clients, (clients) => {
               clients.delete(ws);
