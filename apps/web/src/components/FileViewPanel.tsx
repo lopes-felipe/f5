@@ -17,6 +17,7 @@ import { useTheme } from "../hooks/useTheme";
 import { resolveDiffThemeName } from "../lib/diffRendering";
 import { looksLikeAbsoluteFilePath } from "../lib/normalizeFilePathForDiff";
 import { fileContentQueryOptions, providerQueryKeys } from "../lib/providerReactQuery";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { readNativeApi } from "../nativeApi";
 import { type RightPanelSurface, useRightPanelStore } from "../rightPanelStore";
 import { useStore } from "../store";
@@ -94,11 +95,15 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
   const activeThread = useStore((store) =>
     activeThreadId ? store.threads.find((thread) => thread.id === activeThreadId) : undefined,
   );
-  const activeProjectId = activeThread?.projectId ?? null;
+  const draftThread = useComposerDraftStore((store) =>
+    activeThreadId ? (store.draftThreadsByThreadId[activeThreadId] ?? null) : null,
+  );
+  const activeProjectId = activeThread?.projectId ?? draftThread?.projectId ?? null;
   const activeProject = useStore((store) =>
     activeProjectId ? store.projects.find((project) => project.id === activeProjectId) : undefined,
   );
-  const workspaceRoot = activeThread?.worktreePath ?? activeProject?.cwd;
+  const workspaceRoot =
+    activeThread?.worktreePath ?? draftThread?.worktreePath ?? activeProject?.cwd;
   const filePath = surface?.relativePath ?? fileSearch.fileViewPath;
   const fileLine = surface?.line ?? fileSearch.fileLine;
   const fileEndLine = surface?.endLine ?? fileSearch.fileEndLine;

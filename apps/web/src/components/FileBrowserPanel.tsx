@@ -160,9 +160,10 @@ export default function FileBrowserPanel({
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set());
   const treeRowsRef = useRef<HTMLDivElement>(null);
   const pendingRevealPathRef = useRef<string | null>(null);
+  const workspaceUnavailable = cwd === null;
   const entriesQuery = useQuery(projectListEntriesQueryOptions({ cwd, limit: entryLimit }));
   const trimmedSearchQuery = searchQuery.trim();
-  const searchMode = trimmedSearchQuery.length > 0;
+  const searchMode = !workspaceUnavailable && trimmedSearchQuery.length > 0;
   const [debouncedSearchQuery, searchDebouncer] = useDebouncedValue(
     trimmedSearchQuery,
     { wait: SEARCH_INPUT_DEBOUNCE_MS },
@@ -355,9 +356,11 @@ export default function FileBrowserPanel({
         <div className="min-w-0 flex-1">
           <p className="truncate text-xs font-medium text-foreground">{projectName}</p>
           <p className="truncate text-[10px] leading-none text-muted-foreground/80">
-            {entriesQuery.isFetching && entries.length === 0
-              ? "Indexing..."
-              : `${fileCount.toLocaleString()} files`}
+            {workspaceUnavailable
+              ? "Unavailable"
+              : entriesQuery.isFetching && entries.length === 0
+                ? "Indexing..."
+                : `${fileCount.toLocaleString()} files`}
             {entriesQuery.data && entriesQuery.data.totalEntries > entries.length
               ? ` · showing ${entries.length.toLocaleString()} of ${entriesQuery.data.totalEntries.toLocaleString()}`
               : ""}
@@ -369,6 +372,7 @@ export default function FileBrowserPanel({
           variant="ghost"
           onClick={refreshEntries}
           aria-label="Refresh workspace files"
+          disabled={workspaceUnavailable}
         >
           <RefreshCwIcon className={cn("size-3.5", entriesQuery.isFetching && "animate-spin")} />
         </Button>
@@ -385,12 +389,17 @@ export default function FileBrowserPanel({
             onChange={(event) => setSearchQuery(event.currentTarget.value)}
             onKeyDown={handleSearchInputKeyDown}
             placeholder="Search files"
+            disabled={workspaceUnavailable}
             className="rounded-md [&_[data-slot=input]]:pl-8"
           />
         </div>
       </div>
 
-      {!searchMode && entriesQuery.isError ? (
+      {workspaceUnavailable ? (
+        <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
+          Workspace files are unavailable for this thread.
+        </div>
+      ) : !searchMode && entriesQuery.isError ? (
         <div className="p-3 text-xs leading-relaxed text-destructive">
           {entriesQuery.error instanceof Error
             ? entriesQuery.error.message

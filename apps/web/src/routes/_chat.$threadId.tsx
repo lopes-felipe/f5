@@ -304,13 +304,17 @@ function ChatThreadRouteView() {
   const { settings } = useAppSettings();
   const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
   const threadExists = useStore((store) => store.threads.some((thread) => thread.id === threadId));
+  const draftThread = useComposerDraftStore(
+    (store) => store.draftThreadsByThreadId[threadId] ?? null,
+  );
+  const effectiveProjectId = thread?.projectId ?? draftThread?.projectId ?? null;
+  const effectiveWorktreePath = thread?.worktreePath ?? draftThread?.worktreePath ?? null;
   const activeProject = useStore((store) =>
-    thread?.projectId ? store.projects.find((project) => project.id === thread.projectId) : null,
+    effectiveProjectId
+      ? (store.projects.find((project) => project.id === effectiveProjectId) ?? null)
+      : null,
   );
-  const draftThreadExists = useComposerDraftStore((store) =>
-    Object.hasOwn(store.draftThreadsByThreadId, threadId),
-  );
-  const routeThreadExists = threadExists || draftThreadExists;
+  const routeThreadExists = threadExists || draftThread !== null;
   const threadDetailQuery = useThreadDetail(thread ? threadId : null, {
     includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
   });
@@ -344,9 +348,9 @@ function ChatThreadRouteView() {
       threadTasks,
     ],
   );
-  const markdownCwd = thread?.worktreePath ?? activeProject?.cwd ?? undefined;
+  const markdownCwd = effectiveWorktreePath ?? activeProject?.cwd ?? undefined;
   const workspaceRoot = activeProject?.cwd ?? undefined;
-  const workspaceBrowserRoot = thread?.worktreePath ?? activeProject?.cwd ?? null;
+  const workspaceBrowserRoot = effectiveWorktreePath ?? activeProject?.cwd ?? null;
   const workspaceBrowserName = activeProject?.name ?? "Workspace";
   const previewAvailable = typeof window !== "undefined" && Boolean(window.desktopBridge?.preview);
   const { copyToClipboard } = useCopyToClipboard<{ relativePath: string }>({

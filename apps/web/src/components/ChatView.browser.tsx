@@ -49,6 +49,7 @@ import { isMacPlatform } from "../lib/utils";
 import { useModelPreferencesStore } from "../modelPreferencesStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
+import { useRightPanelStore } from "../rightPanelStore";
 import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
@@ -1299,6 +1300,17 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       pr: null,
     };
   }
+  if (tag === WS_METHODS.projectsListEntries) {
+    return {
+      entries: [
+        { path: "src", kind: "directory" },
+        { path: "src/index.ts", kind: "file", parentPath: "src" },
+        { path: "README.md", kind: "file" },
+      ],
+      truncated: false,
+      totalEntries: 3,
+    };
+  }
   if (tag === WS_METHODS.projectsSearchEntries) {
     return {
       entries: [],
@@ -1827,6 +1839,7 @@ describe("ChatView timeline (full app)", () => {
       open: false,
       openIntent: null,
     });
+    useRightPanelStore.setState({ byThreadId: {} });
     clearAllPendingTurnDispatchArtifacts();
     useStore.setState({
       projects: [],
@@ -1848,6 +1861,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   afterEach(() => {
+    useRightPanelStore.setState({ byThreadId: {} });
     document.body.innerHTML = "";
   });
 
@@ -2424,6 +2438,61 @@ describe("ChatView timeline (full app)", () => {
           });
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("lists project files for draft threads before the first message is sent", async () => {
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [PROJECT_ID]: THREAD_ID,
+      },
+    });
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+    });
+
+    try {
+      await page.getByRole("button", { name: "Toggle workspace files" }).click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === WS_METHODS.projectsListEntries && request.cwd === "/repo/project",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      await waitForElement(
+        () =>
+          Array.from(document.querySelectorAll("p")).find(
+            (element) =>
+              element.textContent === "Project" &&
+              element.nextElementSibling?.textContent?.includes("2 files"),
+          ) ?? null,
+        "Unable to find project file browser header.",
+      );
+      expect(document.body.textContent).not.toContain(
+        "Workspace files are unavailable for this thread.",
       );
     } finally {
       await mounted.cleanup();

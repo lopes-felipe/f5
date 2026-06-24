@@ -42,7 +42,7 @@ function listResult(entries: ProjectEntry[] = TREE_ENTRIES): ProjectListEntriesR
   };
 }
 
-async function renderPanel(options: { entryLimit?: number } = {}) {
+async function renderPanel(options: { cwd?: string | null; entryLimit?: number } = {}) {
   const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false },
@@ -52,7 +52,7 @@ async function renderPanel(options: { entryLimit?: number } = {}) {
   const screen = await render(
     <QueryClientProvider client={queryClient}>
       <FileBrowserPanel
-        cwd="/repo/project"
+        cwd={options.cwd === undefined ? "/repo/project" : options.cwd}
         projectName="Project"
         entryLimit={options.entryLimit ?? 5_000}
         onOpenFile={onOpenFile}
@@ -126,6 +126,25 @@ describe("FileBrowserPanel", () => {
       await expect.element(page.getByText("App.tsx")).toBeInTheDocument();
 
       expect(listEntries).toHaveBeenCalledWith({ cwd: "/repo/project", limit: 5_000 });
+      expect(searchEntries).not.toHaveBeenCalled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows an unavailable state without listing files when cwd is missing", async () => {
+    const mounted = await renderPanel({ cwd: null });
+    try {
+      await expect
+        .element(page.getByText("Workspace files are unavailable for this thread."))
+        .toBeInTheDocument();
+      expect(
+        Array.from(document.querySelectorAll("p")).some(
+          (element) => element.textContent === "Unavailable",
+        ),
+      ).toBe(true);
+
+      expect(listEntries).not.toHaveBeenCalled();
       expect(searchEntries).not.toHaveBeenCalled();
     } finally {
       await mounted.cleanup();

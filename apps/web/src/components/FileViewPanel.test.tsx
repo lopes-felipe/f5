@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mockedValues = vi.hoisted(() => ({
   navigate: vi.fn(),
   capturedButtons: [] as Array<ButtonHTMLAttributes<HTMLButtonElement>>,
+  draftThreadsByThreadId: {} as Record<string, { projectId: string; worktreePath: string | null }>,
 }));
 
 let searchState: Record<string, unknown> = {
@@ -16,7 +17,7 @@ let searchState: Record<string, unknown> = {
 };
 
 const useQueryMock = vi.fn();
-const storeState = {
+let storeState = {
   threads: [{ id: "thread-1", projectId: "project-1", worktreePath: "/repo/project" }],
   projects: [{ id: "project-1", cwd: "/repo/project" }],
 };
@@ -37,6 +38,14 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("../store", () => ({
   useStore: (selector: (state: typeof storeState) => unknown) => selector(storeState),
+}));
+
+vi.mock("../composerDraftStore", () => ({
+  useComposerDraftStore: (
+    selector: (state: {
+      draftThreadsByThreadId: typeof mockedValues.draftThreadsByThreadId;
+    }) => unknown,
+  ) => selector({ draftThreadsByThreadId: mockedValues.draftThreadsByThreadId }),
 }));
 
 vi.mock("../hooks/useTheme", () => ({
@@ -87,6 +96,11 @@ describe("FileViewPanel", () => {
     useQueryMock.mockReset();
     mockedValues.navigate.mockReset();
     mockedValues.capturedButtons.length = 0;
+    mockedValues.draftThreadsByThreadId = {};
+    storeState = {
+      threads: [{ id: "thread-1", projectId: "project-1", worktreePath: "/repo/project" }],
+      projects: [{ id: "project-1", cwd: "/repo/project" }],
+    };
     searchState = {
       diff: "1",
       fileViewPath: "src/app.ts",
@@ -221,6 +235,38 @@ describe("FileViewPanel", () => {
     expect(markup).toContain("src/app.ts:export const value = 1;");
     expect(markup).toContain('data-selected-lines="42-44"');
     expect(markup).toContain("file-view-surface");
+  });
+
+  it("reads file contents from the draft project before the thread is persisted", async () => {
+    storeState = {
+      threads: [],
+      projects: [{ id: "project-1", cwd: "/repo/project" }],
+    };
+    mockedValues.draftThreadsByThreadId = {
+      "thread-1": {
+        projectId: "project-1",
+        worktreePath: null,
+      },
+    };
+    useQueryMock.mockReturnValue({
+      isLoading: false,
+      isError: false,
+      error: null,
+      data: {
+        relativePath: "src/app.ts",
+        contents: "export const draft = true;\n",
+      },
+      refetch: vi.fn(),
+    });
+
+    const markup = await renderPanel();
+
+    expect(useQueryMock.mock.calls[0]?.[0]).toMatchObject({
+      queryKey: ["fileContent", "/repo/project", "src/app.ts"],
+      enabled: true,
+    });
+    expect(markup).toContain("src/app.ts:export const draft = true;");
+    expect(markup).not.toContain("File contents are unavailable.");
   });
 
   it("preserves line and column in the editor handoff target", async () => {
