@@ -46,7 +46,8 @@ type TextGenerationOp =
   | "generateCommitMessage"
   | "generatePrContent"
   | "generateBranchName"
-  | "generateThreadTitle";
+  | "generateThreadTitle"
+  | "generateStructuredJson";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistryShape,
@@ -103,6 +104,14 @@ export const makeTextGenerationFromRegistry = (
       Effect.flatMap((modelSelection) =>
         resolveInstance(registry, "generateThreadTitle", modelSelection.instanceId).pipe(
           Effect.flatMap((tg) => tg.generateThreadTitle({ ...input, modelSelection })),
+        ),
+      ),
+    ),
+  generateStructuredJson: (input) =>
+    Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
+      Effect.flatMap((modelSelection) =>
+        resolveInstance(registry, "generateStructuredJson", modelSelection.instanceId).pipe(
+          Effect.flatMap((tg) => tg.generateStructuredJson({ ...input, modelSelection })),
         ),
       ),
     ),

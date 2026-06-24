@@ -5,6 +5,7 @@ import { runProcess } from "../../processRunner";
 import { GitHubCliError } from "../Errors.ts";
 import {
   GitHubCli,
+  type GitHubMergePullRequestInput,
   type GitHubRepositoryCloneUrls,
   type GitHubCliShape,
   type GitHubPullRequestSummary,
@@ -18,6 +19,7 @@ function normalizeGitHubCliError(operation: "execute" | "stdout", error: unknown
       return new GitHubCliError({
         operation,
         detail: "GitHub CLI (`gh`) is required but not available on PATH.",
+        kind: "binary_missing",
         cause: error,
       });
     }
@@ -32,6 +34,70 @@ function normalizeGitHubCliError(operation: "execute" | "stdout", error: unknown
       return new GitHubCliError({
         operation,
         detail: "GitHub CLI is not authenticated. Run `gh auth login` and retry.",
+        kind: "unauthenticated",
+        cause: error,
+      });
+    }
+
+    if (lower.includes("rate limit") || lower.includes("secondary rate")) {
+      return new GitHubCliError({
+        operation,
+        detail: "GitHub API rate limit reached.",
+        kind: "rate_limited",
+        cause: error,
+      });
+    }
+
+    const httpStatus = error.message.match(/\bHTTP\s+(\d{3})\b/i)?.[1];
+    if (httpStatus) {
+      const statusCode = Number(httpStatus);
+      const kind =
+        statusCode === 401
+          ? "unauthenticated"
+          : statusCode === 403
+            ? "forbidden"
+            : statusCode === 429
+              ? "rate_limited"
+              : statusCode >= 500
+                ? "network"
+                : "generic";
+      return new GitHubCliError({
+        operation,
+        detail: `GitHub API returned HTTP ${httpStatus}.`,
+        kind,
+        cause: error,
+      });
+    }
+
+    if (
+      lower.includes("could not resolve host") ||
+      lower.includes("network") ||
+      lower.includes("connection refused") ||
+      lower.includes("connection reset") ||
+      lower.includes("tls")
+    ) {
+      return new GitHubCliError({
+        operation,
+        detail: "GitHub CLI could not reach GitHub.",
+        kind: "network",
+        cause: error,
+      });
+    }
+
+    if (lower.includes("timed out") || lower.includes("timeout")) {
+      return new GitHubCliError({
+        operation,
+        detail: "GitHub CLI command timed out.",
+        kind: "timeout",
+        cause: error,
+      });
+    }
+
+    if (lower.includes("forbidden") || lower.includes("resource not accessible")) {
+      return new GitHubCliError({
+        operation,
+        detail: "GitHub refused access to the requested resource.",
+        kind: "forbidden",
         cause: error,
       });
     }
@@ -45,13 +111,15 @@ function normalizeGitHubCliError(operation: "execute" | "stdout", error: unknown
       return new GitHubCliError({
         operation,
         detail: "Pull request not found. Check the PR number or URL and try again.",
+        kind: "not_found",
         cause: error,
       });
     }
 
     return new GitHubCliError({
       operation,
-      detail: `GitHub CLI command failed: ${error.message}`,
+      detail: "GitHub CLI command failed.",
+      kind: "generic",
       cause: error,
     });
   }
@@ -59,6 +127,7 @@ function normalizeGitHubCliError(operation: "execute" | "stdout", error: unknown
   return new GitHubCliError({
     operation,
     detail: "GitHub CLI command failed.",
+    kind: "generic",
     cause: error,
   });
 }
@@ -146,7 +215,13 @@ function normalizeRepositoryCloneUrls(
 function decodeGitHubJson<S extends Schema.Top>(
   raw: string,
   schema: S,
-  operation: "listOpenPullRequests" | "getPullRequest" | "getRepositoryCloneUrls",
+  operation:
+    | "listOpenPullRequests"
+    | "getPullRequest"
+    | "getRepositoryCloneUrls"
+    | "getViewerTeams"
+    | "runGraphql"
+    | "searchPullRequests",
   invalidDetail: string,
 ): Effect.Effect<S["Type"], GitHubCliError, S["DecodingServices"]> {
   return Schema.decodeEffect(Schema.fromJsonString(schema))(raw).pipe(
@@ -155,10 +230,22 @@ function decodeGitHubJson<S extends Schema.Top>(
         new GitHubCliError({
           operation,
           detail: error instanceof Error ? `${invalidDetail}: ${error.message}` : invalidDetail,
+          kind: "invalid_json",
           cause: error,
         }),
     ),
   );
+}
+
+function mergeArgsForMethod(method: GitHubMergePullRequestInput["method"]): string {
+  switch (method) {
+    case "squash":
+      return "--squash";
+    case "merge":
+      return "--merge";
+    case "rebase":
+      return "--rebase";
+  }
 }
 
 const makeGitHubCli = Effect.sync(() => {
@@ -271,6 +358,152 @@ const makeGitHubCli = Effect.sync(() => {
       execute({
         cwd: input.cwd,
         args: ["pr", "checkout", input.reference, ...(input.force ? ["--force"] : [])],
+      }).pipe(Effect.asVoid),
+    getAuthenticatedLogin: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["api", "user", "--jq", ".login"],
+      }).pipe(
+        Effect.flatMap((result) => {
+          const login = result.stdout.trim();
+          if (login.length === 0) {
+            return Effect.fail(
+              new GitHubCliError({
+                operation: "getAuthenticatedLogin",
+                detail: "GitHub CLI returned an empty login.",
+                kind: "invalid_json",
+              }),
+            );
+          }
+          return Effect.succeed(login);
+        }),
+      ),
+    getViewerTeams: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "api",
+          "user/teams",
+          "--paginate",
+          "--jq",
+          ".[] | [.organization.login, .slug] | @tsv",
+        ],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.map((raw) =>
+          raw.length === 0
+            ? []
+            : raw
+                .split(/\r?\n/)
+                .map((line) => line.trim())
+                .filter(Boolean)
+                .map((line) => {
+                  const [organization, slug] = line.split("\t");
+                  return organization && slug ? `${organization}/${slug}` : null;
+                })
+                .filter((team): team is string => team !== null)
+                .toSorted(),
+        ),
+      ),
+    runGraphql: (input) => {
+      const variableArgs = Object.entries(input.variables ?? {}).flatMap(([key, value]) =>
+        value === undefined
+          ? []
+          : Array.isArray(value)
+            ? value.flatMap((item) =>
+                item === undefined || item === null ? [] : ["-F", `${key}[]=${String(item)}`],
+              )
+            : typeof value === "string"
+              ? ["-f", `${key}=${value}`]
+              : ["-F", `${key}=${value === null ? "null" : String(value)}`],
+      );
+      return execute({
+        cwd: input.cwd,
+        args: ["api", "graphql", "-f", `query=${input.query}`, ...variableArgs],
+        timeoutMs: 45_000,
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          decodeGitHubJson(
+            raw,
+            Schema.Unknown,
+            "runGraphql",
+            "GitHub CLI returned invalid GraphQL JSON.",
+          ),
+        ),
+      );
+    },
+    searchPullRequests: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "search",
+          "prs",
+          ...input.args,
+          "--json",
+          "number,title,state,url,repository,author,createdAt,updatedAt,isDraft,labels,assignees,commentsCount",
+          "--limit",
+          String(input.limit ?? 50),
+        ],
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.flatMap((raw) =>
+          raw.length === 0
+            ? Effect.succeed([])
+            : decodeGitHubJson(
+                raw,
+                Schema.Unknown,
+                "searchPullRequests",
+                "GitHub CLI returned invalid search JSON.",
+              ),
+        ),
+      ),
+    reviewPullRequest: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "review",
+          input.url,
+          "--approve",
+          ...(input.body ? ["--body", input.body] : []),
+        ],
+      }).pipe(Effect.asVoid),
+    requestChanges: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["pr", "review", input.url, "--request-changes", "--body", input.body],
+      }).pipe(Effect.asVoid),
+    commentPullRequest: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["pr", "comment", input.url, "--body", input.body],
+      }).pipe(Effect.asVoid),
+    mergePullRequest: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "merge",
+          input.url,
+          mergeArgsForMethod(input.method),
+          ...(input.expectedHeadOid ? ["--match-head-commit", input.expectedHeadOid] : []),
+        ],
+      }).pipe(Effect.asVoid),
+    markPullRequestReady: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["pr", "ready", input.url],
+      }).pipe(Effect.asVoid),
+    addPullRequestReviewers: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "edit",
+          input.url,
+          ...input.reviewers.flatMap((reviewer) => ["--add-reviewer", reviewer]),
+        ],
       }).pipe(Effect.asVoid),
   } satisfies GitHubCliShape;
 

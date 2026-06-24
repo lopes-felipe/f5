@@ -283,8 +283,8 @@ layer("033_ProjectMcpConfigScopes", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 50,
-          name: "CopyDebugWorkflowsToInvestigationWorkflows",
+          migrationId: 53,
+          name: "PrHubAdvisories",
         },
       ]);
     }),

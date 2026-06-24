@@ -3,6 +3,25 @@ import { describe, expect, it } from "vitest";
 import { parseTabTargetKey, resolveTabTargetFromRoute } from "./tabTargets";
 
 describe("tabTargets", () => {
+  it("resolves Pull Requests routes to a switchable tab target", () => {
+    expect(
+      resolveTabTargetFromRoute({
+        pathname: "/pull-requests",
+        routeId: "/_chat/pull-requests",
+        params: {},
+        search: {},
+      }),
+    ).toMatchObject({
+      key: "pullRequests",
+      kind: "pullRequests",
+    });
+
+    expect(parseTabTargetKey("pullRequests")).toMatchObject({
+      key: "pullRequests",
+      kind: "pullRequests",
+    });
+  });
+
   it("resolves investigation workflow routes and legacy debug aliases to investigation targets", () => {
     expect(
       resolveTabTargetFromRoute({

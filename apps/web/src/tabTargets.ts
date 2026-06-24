@@ -25,6 +25,10 @@ export type TabTarget =
     }
   | {
       key: TabTargetKey;
+      kind: "pullRequests";
+    }
+  | {
+      key: TabTargetKey;
       kind: "planningWorkflow";
       workflowId: PlanningWorkflowId;
     }
@@ -54,6 +58,10 @@ export function settingsTabTargetKey(): TabTargetKey {
   return "settings";
 }
 
+export function pullRequestsTabTargetKey(): TabTargetKey {
+  return "pullRequests";
+}
+
 export function planningWorkflowTabTargetKey(workflowId: PlanningWorkflowId): TabTargetKey {
   return `planningWorkflow:${workflowId}`;
 }
@@ -74,6 +82,13 @@ export function parseTabTargetKey(key: TabTargetKey): TabTarget | null {
       key,
       kind: "settings",
       category: "general",
+    };
+  }
+
+  if (key === "pullRequests") {
+    return {
+      key,
+      kind: "pullRequests",
     };
   }
 
@@ -131,6 +146,13 @@ export function resolveTabTargetFromRoute(route: TabRouteSnapshot | null): TabTa
       key: settingsTabTargetKey(),
       kind: "settings",
       category: resolveSettingsCategoryFromSearch(route.search),
+    };
+  }
+
+  if (route.pathname === "/pull-requests") {
+    return {
+      key: pullRequestsTabTargetKey(),
+      kind: "pullRequests",
     };
   }
 

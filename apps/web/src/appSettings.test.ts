@@ -57,6 +57,10 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).enableThreadStatusNotifications).toBe(true);
   });
 
+  it("defaults PR attention notifications to true", () => {
+    expect(parsePersistedAppSettings(null).enablePrAttentionNotifications).toBe(true);
+  });
+
   it("defaults assistant streaming to true", () => {
     expect(parsePersistedAppSettings(null).enableAssistantStreaming).toBe(true);
   });

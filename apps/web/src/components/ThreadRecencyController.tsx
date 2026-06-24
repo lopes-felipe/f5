@@ -20,6 +20,7 @@ import {
   investigationWorkflowTabTargetKey,
   parseTabTargetKey,
   planningWorkflowTabTargetKey,
+  pullRequestsTabTargetKey,
   resolveTabTargetFromRoute,
   settingsTabTargetKey,
   threadTabTargetKey,
@@ -86,6 +87,8 @@ function fallbackTitleForTarget(target: TabTarget | null): string {
       return target.threadId;
     case "settings":
       return "Settings";
+    case "pullRequests":
+      return "Pull Requests";
     case "planningWorkflow":
       return "Feature workflow";
     case "codeReviewWorkflow":
@@ -155,6 +158,7 @@ export default function ThreadRecencyController() {
       ...threadTargetKeys,
       ...draftTargetKeys,
       settingsTabTargetKey(),
+      pullRequestsTabTargetKey(),
       ...workflowTargetKeys,
       ...codeReviewTargetKeys,
       ...debugTargetKeys,
@@ -210,6 +214,11 @@ export default function ThreadRecencyController() {
             search: {
               category: lastVisitedSettingsCategoryRef.current,
             },
+          });
+          return;
+        case "pullRequests":
+          void navigate({
+            to: "/pull-requests",
           });
           return;
         case "planningWorkflow":
@@ -494,6 +503,18 @@ export default function ThreadRecencyController() {
           title: "Settings",
           subtitle: SETTINGS_CATEGORY_LABELS[lastVisitedSettingsCategory],
           badgeLabel: "Settings",
+          threadStatusPill: null,
+          isDraft: false,
+          isStale,
+        };
+      }
+
+      if (target?.kind === "pullRequests") {
+        return {
+          id: targetKey,
+          title: "Pull Requests",
+          subtitle: "GitHub",
+          badgeLabel: "PRs",
           threadStatusPill: null,
           isDraft: false,
           isStale,

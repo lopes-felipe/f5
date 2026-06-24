@@ -21,6 +21,19 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
 export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("GitHubCliError", {
   operation: Schema.String,
   detail: Schema.String,
+  kind: Schema.optional(
+    Schema.Literals([
+      "binary_missing",
+      "unauthenticated",
+      "rate_limited",
+      "network",
+      "timeout",
+      "forbidden",
+      "not_found",
+      "invalid_json",
+      "generic",
+    ]),
+  ),
   cause: Schema.optional(Schema.Defect),
 }) {
   override get message(): string {

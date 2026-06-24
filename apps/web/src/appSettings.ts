@@ -95,6 +95,7 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly providerModelPreferences?: unknown;
   readonly enableGitStatusAutoRefresh?: unknown;
   readonly gitStatusAutoRefreshIntervalSeconds?: unknown;
+  readonly enablePrAttentionNotifications?: unknown;
   readonly workspaceFileTreeEntryLimit?: unknown;
 };
 
@@ -248,6 +249,10 @@ export const AppSettingsSchema = Schema.Struct({
   gitStatusAutoRefreshIntervalSeconds: GitStatusAutoRefreshIntervalSecondsSchema,
   enableThreadStatusNotifications: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
+  ),
+  enablePrAttentionNotifications: Schema.Boolean.pipe(
+    Schema.withConstructorDefault(() => Option.some(true)),
+    Schema.withDecodingDefault(() => true),
   ),
   showAgentCommandTranscripts: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),

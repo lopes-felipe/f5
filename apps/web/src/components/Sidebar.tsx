@@ -802,6 +802,7 @@ export default function Sidebar() {
   });
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
+  const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const { settings: appSettings } = useAppSettings();
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
@@ -823,6 +824,7 @@ export default function Sidebar() {
   const [newCwd, setNewCwd] = useState("");
   const [isPickingFolder, setIsPickingFolder] = useState(false);
   const [isAddingProject, setIsAddingProject] = useState(false);
+  const [prHubNeedsYouCount, setPrHubNeedsYouCount] = useState(0);
   const [addProjectError, setAddProjectError] = useState<string | null>(null);
   const addProjectInputRef = useRef<HTMLInputElement | null>(null);
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
@@ -879,6 +881,33 @@ export default function Sidebar() {
     }
     return map;
   }, [threads]);
+
+  useEffect(() => {
+    const api = readNativeApi();
+    if (!api?.prHub) return;
+
+    const updateCount = (snapshot: Awaited<ReturnType<typeof api.prHub.getSnapshot>>) => {
+      const now = Date.now();
+      setPrHubNeedsYouCount(
+        snapshot.pullRequests.filter((pr) => {
+          const snoozedUntil = pr.snoozedUntil ? new Date(pr.snoozedUntil).getTime() : 0;
+          return (
+            pr.attentionBucket === "needs_you" &&
+            (!Number.isFinite(snoozedUntil) || snoozedUntil <= now)
+          );
+        }).length,
+      );
+    };
+
+    void api.prHub
+      .getSnapshot()
+      .then(updateCount)
+      .catch(() => {
+        setPrHubNeedsYouCount(0);
+      });
+
+    return api.prHub.onSnapshotUpdated(updateCount);
+  }, []);
   const persistedThreadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads]);
   const projectCwdById = useMemo(
     () => new Map(projects.map((project) => [project.id, project.cwd] as const)),
@@ -1808,6 +1837,13 @@ export default function Sidebar() {
         return;
       }
 
+      if (command === "prHub.open") {
+        event.preventDefault();
+        event.stopPropagation();
+        void navigate({ to: "/pull-requests" });
+        return;
+      }
+
       if (command === "chat.newLocal") {
         if (!projectId) return;
         event.preventDefault();
@@ -1851,6 +1887,7 @@ export default function Sidebar() {
     handleNewThread,
     keybindings,
     mostRecentProjectId,
+    navigate,
     openWorkflowCreateDialog,
     routeThreadId,
     terminalStateByThreadId,
@@ -1952,6 +1989,10 @@ export default function Sidebar() {
   );
   const commandPaletteShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "commandPalette.toggle"),
+    [keybindings],
+  );
+  const pullRequestsShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "prHub.open"),
     [keybindings],
   );
   const handleOpenCommandPalette = useCallback(() => {
@@ -2160,6 +2201,27 @@ export default function Sidebar() {
                 {commandPaletteShortcutLabel ? (
                   <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
                     {commandPaletteShortcutLabel}
+                  </Kbd>
+                ) : null}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                size="sm"
+                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                isActive={isOnPullRequests}
+                onClick={() => void navigate({ to: "/pull-requests" })}
+              >
+                <GitPullRequestIcon className="size-3.5" />
+                <span className="flex-1 truncate text-xs">Pull Requests</span>
+                {prHubNeedsYouCount > 0 ? (
+                  <span className="inline-flex h-4 min-w-4 items-center justify-center rounded-sm bg-warning/12 px-1 text-[10px] font-medium text-warning-foreground">
+                    {prHubNeedsYouCount}
+                  </span>
+                ) : null}
+                {pullRequestsShortcutLabel ? (
+                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
+                    {pullRequestsShortcutLabel}
                   </Kbd>
                 ) : null}
               </SidebarMenuButton>

@@ -9,6 +9,10 @@ import {
   type PreviewEvent,
   type ContextMenuItem,
   type NativeApi,
+  PR_HUB_WS_CHANNELS,
+  PR_HUB_WS_METHODS,
+  type PrHubAdvisorySnapshot,
+  type PrHubSnapshot,
   type ServerProviderAdvisoriesUpdatedPayload,
   ServerConfigUpdatedPayload,
   type StorageCleanupProgressPayload,
@@ -36,6 +40,8 @@ const previewAutomationRequestListeners = new Set<(payload: PreviewAutomationReq
 const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => void>();
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
+const prHubSnapshotUpdatedListeners = new Set<(payload: PrHubSnapshot) => void>();
+const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisorySnapshot) => void>();
 
 /**
  * Subscribe to the server welcome message. If a welcome was already received
@@ -100,6 +106,44 @@ export function onProviderAdvisoriesUpdated(
 
   return () => {
     providerAdvisoriesUpdatedListeners.delete(listener);
+  };
+}
+
+export function onPrHubUpdated(listener: (payload: PrHubSnapshot) => void): () => void {
+  prHubSnapshotUpdatedListeners.add(listener);
+
+  const latestSnapshot =
+    instance?.transport.getLatestPush(PR_HUB_WS_CHANNELS.snapshotUpdated)?.data ?? null;
+  if (latestSnapshot) {
+    try {
+      listener(latestSnapshot);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+
+  return () => {
+    prHubSnapshotUpdatedListeners.delete(listener);
+  };
+}
+
+export function onPrHubAdvisoriesUpdated(
+  listener: (payload: PrHubAdvisorySnapshot) => void,
+): () => void {
+  prHubAdvisoriesUpdatedListeners.add(listener);
+
+  const latestSnapshot =
+    instance?.transport.getLatestPush(PR_HUB_WS_CHANNELS.advisoriesUpdated)?.data ?? null;
+  if (latestSnapshot) {
+    try {
+      listener(latestSnapshot);
+    } catch {
+      // Swallow listener errors
+    }
+  }
+
+  return () => {
+    prHubAdvisoriesUpdatedListeners.delete(listener);
   };
 }
 
@@ -211,6 +255,26 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(WS_CHANNELS.storageCleanupProgress, (message) => {
     const payload = message.data;
     for (const listener of storageCleanupProgressListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(PR_HUB_WS_CHANNELS.snapshotUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of prHubSnapshotUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(PR_HUB_WS_CHANNELS.advisoriesUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of prHubAdvisoriesUpdatedListeners) {
       try {
         listener(payload);
       } catch {
@@ -398,6 +462,29 @@ export function createWsNativeApi(): NativeApi {
           storageCleanupProgressListeners.delete(callback);
         };
       },
+    },
+    prHub: {
+      getSnapshot: () => transport.request(PR_HUB_WS_METHODS.getSnapshot),
+      refresh: (input) => transport.request(PR_HUB_WS_METHODS.refresh, input),
+      approve: (input) => transport.request(PR_HUB_WS_METHODS.approve, input),
+      requestChanges: (input) => transport.request(PR_HUB_WS_METHODS.requestChanges, input),
+      comment: (input) => transport.request(PR_HUB_WS_METHODS.comment, input),
+      merge: (input) => transport.request(PR_HUB_WS_METHODS.merge, input),
+      markReady: (input) => transport.request(PR_HUB_WS_METHODS.markReady, input),
+      reRequestReview: (input) => transport.request(PR_HUB_WS_METHODS.reRequestReview, input),
+      snooze: (input) => transport.request(PR_HUB_WS_METHODS.snooze, input),
+      unsnooze: (input) => transport.request(PR_HUB_WS_METHODS.unsnooze, input),
+      ignore: (input) => transport.request(PR_HUB_WS_METHODS.ignore, input),
+      markSeen: (input) => transport.request(PR_HUB_WS_METHODS.markSeen, input),
+      markNotified: (input) => transport.request(PR_HUB_WS_METHODS.markNotified, input),
+      analyzeAdvisories: (input = {}) =>
+        transport.request(PR_HUB_WS_METHODS.analyzeAdvisories, input, { timeoutMs: null }),
+      getAdvisories: (input = {}) => transport.request(PR_HUB_WS_METHODS.getAdvisories, input),
+      listLocalCheckoutCandidates: (input) =>
+        transport.request(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, input),
+      clearData: (input = {}) => transport.request(PR_HUB_WS_METHODS.clearData, input),
+      onSnapshotUpdated: (callback) => onPrHubUpdated(callback),
+      onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

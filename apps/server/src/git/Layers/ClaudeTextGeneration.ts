@@ -104,7 +104,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateStructuredJson"
+      | (string & {});
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -332,10 +334,23 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     };
   });
 
+  const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = Effect.fn(
+    "ClaudeTextGeneration.generateStructuredJson",
+  )(function* (input) {
+    return yield* runClaudeJson({
+      operation: input.operation,
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: input.outputSchema,
+      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateStructuredJson,
   } satisfies TextGenerationShape;
 });

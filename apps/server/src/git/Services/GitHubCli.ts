@@ -29,6 +29,13 @@ export interface GitHubRepositoryCloneUrls {
   readonly sshUrl: string;
 }
 
+export interface GitHubMergePullRequestInput {
+  readonly cwd: string;
+  readonly url: string;
+  readonly method: "squash" | "merge" | "rebase";
+  readonly expectedHeadOid?: string | undefined;
+}
+
 /**
  * GitHubCliShape - Service API for executing GitHub CLI commands.
  */
@@ -92,6 +99,69 @@ export interface GitHubCliShape {
     readonly cwd: string;
     readonly reference: string;
     readonly force?: boolean;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly getAuthenticatedLogin: (input: {
+    readonly cwd: string;
+  }) => Effect.Effect<string, GitHubCliError>;
+
+  readonly getViewerTeams: (input: {
+    readonly cwd: string;
+  }) => Effect.Effect<ReadonlyArray<string>, GitHubCliError>;
+
+  readonly runGraphql: (input: {
+    readonly cwd: string;
+    readonly query: string;
+    readonly variables?: Readonly<
+      Record<
+        string,
+        | string
+        | number
+        | boolean
+        | null
+        | undefined
+        | ReadonlyArray<string | number | boolean | null | undefined>
+      >
+    >;
+  }) => Effect.Effect<unknown, GitHubCliError>;
+
+  readonly searchPullRequests: (input: {
+    readonly cwd: string;
+    readonly args: ReadonlyArray<string>;
+    readonly limit?: number;
+  }) => Effect.Effect<unknown, GitHubCliError>;
+
+  readonly reviewPullRequest: (input: {
+    readonly cwd: string;
+    readonly url: string;
+    readonly body?: string | undefined;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly requestChanges: (input: {
+    readonly cwd: string;
+    readonly url: string;
+    readonly body: string;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly commentPullRequest: (input: {
+    readonly cwd: string;
+    readonly url: string;
+    readonly body: string;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly mergePullRequest: (
+    input: GitHubMergePullRequestInput,
+  ) => Effect.Effect<void, GitHubCliError>;
+
+  readonly markPullRequestReady: (input: {
+    readonly cwd: string;
+    readonly url: string;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly addPullRequestReviewers: (input: {
+    readonly cwd: string;
+    readonly url: string;
+    readonly reviewers: ReadonlyArray<string>;
   }) => Effect.Effect<void, GitHubCliError>;
 }
 

@@ -3,8 +3,9 @@ import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "@t3tools/contracts";
+import { DEFAULT_GIT_TEXT_GENERATION_MODEL, type ModelSelection } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
+import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -22,7 +23,8 @@ import {
   TextGeneration,
 } from "../Services/TextGeneration.ts";
 
-const CODEX_REASONING_EFFORT = "low";
+const DEFAULT_CODEX_REASONING_EFFORT = "low";
+const CODEX_REASONING_EFFORTS = new Set(["xhigh", "high", "medium", "low"]);
 const CODEX_TIMEOUT_MS = 180_000;
 
 function toCodexOutputJsonSchema(schema: Schema.Top): unknown {
@@ -97,6 +99,14 @@ function sanitizePrTitle(raw: string): string {
     return singleLine;
   }
   return "Update project changes";
+}
+
+function resolveCodexReasoningEffort(
+  modelSelection: ModelSelection | undefined,
+  fallback = DEFAULT_CODEX_REASONING_EFFORT,
+): string {
+  const selected = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
+  return selected && CODEX_REASONING_EFFORTS.has(selected) ? selected : fallback;
 }
 
 export const makeCodexTextGeneration = Effect.gen(function* () {
@@ -193,23 +203,26 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
     cwd,
     prompt,
     outputSchemaJson,
-    model = DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    model,
+    modelSelection,
+    reasoningEffort,
     imagePaths = [],
     cleanupPaths = [],
   }: {
-    operation:
-      | "generateCommitMessage"
-      | "generatePrContent"
-      | "generateBranchName"
-      | "generateThreadTitle";
+    operation: string;
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
     imagePaths?: ReadonlyArray<string>;
     cleanupPaths?: ReadonlyArray<string>;
     model?: string;
+    modelSelection?: ModelSelection;
+    reasoningEffort?: string;
   }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
     Effect.gen(function* () {
+      const selectedModel = modelSelection?.model ?? model ?? DEFAULT_GIT_TEXT_GENERATION_MODEL;
+      const selectedReasoningEffort =
+        reasoningEffort ?? resolveCodexReasoningEffort(modelSelection);
       const schemaPath = yield* writeTempFile(
         operation,
         "codex-schema",
@@ -227,9 +240,9 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
             "-s",
             "read-only",
             "--model",
-            model,
+            selectedModel,
             "--config",
-            `model_reasoning_effort="${CODEX_REASONING_EFFORT}"`,
+            `model_reasoning_effort="${selectedReasoningEffort}"`,
             "--output-schema",
             schemaPath,
             "--output-last-message",
@@ -370,6 +383,7 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
       prompt,
       outputSchemaJson,
       ...(input.model ? { model: input.model } : {}),
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
     }).pipe(
       Effect.map(
         (generated) =>
@@ -416,6 +430,7 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
         body: Schema.String,
       }),
       ...(input.model ? { model: input.model } : {}),
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
     }).pipe(
       Effect.map(
         (generated) =>
@@ -468,6 +483,7 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
         }),
         imagePaths,
         ...(input.model ? { model: input.model } : {}),
+        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       });
 
       return {
@@ -519,6 +535,7 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
           title: Schema.String,
         }),
         ...(input.model ? { model: input.model } : {}),
+        ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
         imagePaths,
       });
 
@@ -533,11 +550,22 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
       return { title } satisfies ThreadTitleGenerationResult;
     });
 
+  const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = (input) =>
+    runCodexJson({
+      operation: input.operation,
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: input.outputSchema,
+      ...(input.model ? { model: input.model } : {}),
+      ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
+    });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateStructuredJson,
   } satisfies TextGenerationShape;
 });
 

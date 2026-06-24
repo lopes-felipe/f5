@@ -169,7 +169,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateStructuredJson"
+      | (string & {});
   }) =>
     sharedServerMutex.withPermit(
       Effect.gen(function* () {
@@ -279,7 +281,9 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateStructuredJson"
+      | (string & {});
     readonly cwd: string;
     readonly prompt: string;
     readonly outputSchemaJson: S;
@@ -468,10 +472,23 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
     };
   });
 
+  const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = Effect.fn(
+    "OpenCodeTextGeneration.generateStructuredJson",
+  )(function* (input) {
+    return yield* runOpenCodeJson({
+      operation: input.operation,
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: input.outputSchema,
+      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateStructuredJson,
   } satisfies TextGenerationShape;
 });

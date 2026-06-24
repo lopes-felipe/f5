@@ -245,6 +245,7 @@ function createTextGeneration(overrides: Partial<FakeGitTextGeneration> = {}): T
             }),
         ),
       ),
+    generateStructuredJson: () => Effect.die("generateStructuredJson not configured"),
   };
 }
 
@@ -414,6 +415,10 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
   return {
     service: {
       execute,
+      getAuthenticatedLogin: () => Effect.succeed("test-user"),
+      getViewerTeams: () => Effect.succeed([]),
+      runGraphql: () => Effect.succeed({}),
+      searchPullRequests: () => Effect.succeed([]),
       listOpenPullRequests: (input) =>
         execute({
           cwd: input.cwd,
@@ -481,6 +486,12 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           cwd: input.cwd,
           args: ["pr", "checkout", input.reference, ...(input.force ? ["--force"] : [])],
         }).pipe(Effect.asVoid),
+      reviewPullRequest: () => Effect.void,
+      requestChanges: () => Effect.void,
+      commentPullRequest: () => Effect.void,
+      mergePullRequest: () => Effect.void,
+      markPullRequestReady: () => Effect.void,
+      addPullRequestReviewers: () => Effect.void,
     },
     ghCalls,
   };

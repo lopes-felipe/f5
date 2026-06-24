@@ -7,7 +7,7 @@
  * @module TextGeneration
  */
 import { ServiceMap } from "effect";
-import type { Effect } from "effect";
+import type { Effect, Schema } from "effect";
 import type { ChatAttachment, ModelSelection } from "@t3tools/contracts";
 
 import type { TextGenerationError } from "../Errors.ts";
@@ -73,6 +73,15 @@ export interface ThreadTitleGenerationResult {
   title: string;
 }
 
+export interface StructuredJsonGenerationInput<S extends Schema.Top> {
+  cwd: string;
+  operation: string;
+  prompt: string;
+  outputSchema: S;
+  model?: string;
+  modelSelection?: ModelSelection;
+}
+
 export interface TextGenerationService {
   generateCommitMessage(
     input: CommitMessageGenerationInput,
@@ -80,6 +89,9 @@ export interface TextGenerationService {
   generatePrContent(input: PrContentGenerationInput): Promise<PrContentGenerationResult>;
   generateBranchName(input: BranchNameGenerationInput): Promise<BranchNameGenerationResult>;
   generateThreadTitle(input: ThreadTitleGenerationInput): Promise<ThreadTitleGenerationResult>;
+  generateStructuredJson<S extends Schema.Top>(
+    input: StructuredJsonGenerationInput<S>,
+  ): Promise<S["Type"]>;
 }
 
 /**
@@ -113,6 +125,13 @@ export interface TextGenerationShape {
   readonly generateThreadTitle: (
     input: ThreadTitleGenerationInput,
   ) => Effect.Effect<ThreadTitleGenerationResult, TextGenerationError>;
+
+  /**
+   * Generate schema-validated JSON for feature-specific read-only analysis.
+   */
+  readonly generateStructuredJson: <S extends Schema.Top>(
+    input: StructuredJsonGenerationInput<S>,
+  ) => Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]>;
 }
 
 /**

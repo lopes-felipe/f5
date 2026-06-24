@@ -119,6 +119,27 @@ import type {
   StorageUsageReport,
 } from "./storage";
 import type {
+  PrHubAdvisorySnapshot,
+  PrHubAnalyzeAdvisoriesInput,
+  PrHubClearDataInput,
+  PrHubCommentInput,
+  PrHubGetAdvisoriesInput,
+  PrHubIgnoreInput,
+  PrHubLocalCandidatesInput,
+  PrHubLocalCheckoutCandidate,
+  PrHubMarkNotifiedInput,
+  PrHubMarkReadyInput,
+  PrHubMarkSeenInput,
+  PrHubMergeInput,
+  PrHubRefreshInput,
+  PrHubRequestChangesInput,
+  PrHubReRequestInput,
+  PrHubReviewInput,
+  PrHubSnapshot,
+  PrHubSnoozeInput,
+  PrHubUnsnoozeInput,
+} from "./prHub";
+import type {
   OrchestrationArchiveInvestigationWorkflowInput,
   OrchestrationArchiveCodeReviewWorkflowInput,
   OrchestrationArchiveWorkflowInput,
@@ -399,6 +420,29 @@ export interface NativeApi {
     cancelCleanup: (input: StorageCancelCleanupRequest) => Promise<void>;
     onInvalidated: (callback: (payload: StorageInvalidatedPayload) => void) => () => void;
     onCleanupProgress: (callback: (payload: StorageCleanupProgressPayload) => void) => () => void;
+  };
+  prHub: {
+    getSnapshot: () => Promise<PrHubSnapshot>;
+    refresh: (input: PrHubRefreshInput) => Promise<PrHubSnapshot>;
+    approve: (input: PrHubReviewInput) => Promise<PrHubSnapshot>;
+    requestChanges: (input: PrHubRequestChangesInput) => Promise<PrHubSnapshot>;
+    comment: (input: PrHubCommentInput) => Promise<PrHubSnapshot>;
+    merge: (input: PrHubMergeInput) => Promise<PrHubSnapshot>;
+    markReady: (input: PrHubMarkReadyInput) => Promise<PrHubSnapshot>;
+    reRequestReview: (input: PrHubReRequestInput) => Promise<PrHubSnapshot>;
+    snooze: (input: PrHubSnoozeInput) => Promise<PrHubSnapshot>;
+    unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubSnapshot>;
+    ignore: (input: PrHubIgnoreInput) => Promise<PrHubSnapshot>;
+    markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubSnapshot>;
+    markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubSnapshot>;
+    analyzeAdvisories: (input?: PrHubAnalyzeAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
+    getAdvisories: (input?: PrHubGetAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
+    listLocalCheckoutCandidates: (
+      input: PrHubLocalCandidatesInput,
+    ) => Promise<PrHubLocalCheckoutCandidate[]>;
+    clearData: (input?: PrHubClearDataInput) => Promise<PrHubSnapshot>;
+    onSnapshotUpdated: (callback: (snapshot: PrHubSnapshot) => void) => () => void;
+    onAdvisoriesUpdated: (callback: (snapshot: PrHubAdvisorySnapshot) => void) => () => void;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

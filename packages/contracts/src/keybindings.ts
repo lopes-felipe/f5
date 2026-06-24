@@ -42,6 +42,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "thread.switchRecentNext",
   "thread.switchRecentPrevious",
   "model.switchRecent",
+  "prHub.open",
   ...MODEL_PICKER_KEYBINDING_COMMANDS,
   "commandPalette.toggle",
 ] as const;

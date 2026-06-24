@@ -50,7 +50,9 @@ function mapCursorAcpError(
     | "generateCommitMessage"
     | "generatePrContent"
     | "generateBranchName"
-    | "generateThreadTitle",
+    | "generateThreadTitle"
+    | "generateStructuredJson"
+    | (string & {}),
   detail: string,
   cause: unknown,
 ): TextGenerationError {
@@ -91,7 +93,9 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
       | "generateCommitMessage"
       | "generatePrContent"
       | "generateBranchName"
-      | "generateThreadTitle";
+      | "generateThreadTitle"
+      | "generateStructuredJson"
+      | (string & {});
     cwd: string;
     prompt: string;
     outputSchemaJson: S;
@@ -287,11 +291,24 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     } satisfies ThreadTitleGenerationResult;
   });
 
+  const generateStructuredJson: TextGenerationShape["generateStructuredJson"] = Effect.fn(
+    "CursorTextGeneration.generateStructuredJson",
+  )(function* (input) {
+    return yield* runCursorJson({
+      operation: input.operation,
+      cwd: input.cwd,
+      prompt: input.prompt,
+      outputSchemaJson: input.outputSchema,
+      modelSelection: resolveInputModelSelection(input.modelSelection, input.model),
+    });
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
     generateBranchName,
     generateThreadTitle,
+    generateStructuredJson,
   } satisfies TextGenerationShape;
 });
 

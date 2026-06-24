@@ -63,6 +63,8 @@ import {
   PreviewMcpHttpServerLive,
 } from "./mcp/PreviewMcpHttpServer";
 import { StorageMaintenanceLive } from "./storage/StorageMaintenance";
+import { PrHubAdvisoryServiceLive } from "./prHub/Layers/PrHubAdvisoryService";
+import { PrHubServiceLive } from "./prHub/Layers/PrHubService";
 
 import { TerminalManagerLive } from "./terminal/Layers/Manager";
 import { KeybindingsLive } from "./keybindings";
@@ -235,6 +237,7 @@ export function makeServerProviderLayer(): Layer.Layer<
 
 export function makeServerRuntimeServicesLayer() {
   const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
+  const githubCliLayer = GitHubCliLive;
   const textGenerationLayer = TextGenerationLive;
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
@@ -254,7 +257,17 @@ export function makeServerRuntimeServicesLayer() {
 
   const gitManagerLayer = GitManagerLive.pipe(
     Layer.provideMerge(gitCoreLayer),
-    Layer.provideMerge(GitHubCliLive),
+    Layer.provideMerge(githubCliLayer),
+    Layer.provideMerge(textGenerationLayer),
+  );
+  const prHubLayer = PrHubServiceLive.pipe(
+    Layer.provideMerge(gitCoreLayer),
+    Layer.provideMerge(githubCliLayer),
+    Layer.provideMerge(ProjectionProjectRepositoryLive),
+  );
+  const prHubAdvisoryLayer = PrHubAdvisoryServiceLive.pipe(
+    Layer.provideMerge(prHubLayer),
+    Layer.provideMerge(githubCliLayer),
     Layer.provideMerge(textGenerationLayer),
   );
 
@@ -266,6 +279,8 @@ export function makeServerRuntimeServicesLayer() {
     checkpointDiffQueryLayer,
     gitCoreLayer,
     gitManagerLayer,
+    prHubLayer,
+    prHubAdvisoryLayer,
     terminalLayer,
     KeybindingsLive,
     ObservabilityLive,

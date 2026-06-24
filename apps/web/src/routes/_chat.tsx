@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react"
 import { CommandPalette } from "../components/CommandPalette";
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import ThreadStatusNotificationController from "../components/ThreadStatusNotificationController";
+import PrAttentionNotificationController from "../components/prHub/PrAttentionNotificationController";
 import ModelRecencyController from "../components/ModelRecencyController";
 import ThreadRecencyController from "../components/ThreadRecencyController";
 import ThreadSidebar from "../components/Sidebar";
@@ -91,6 +92,7 @@ function ChatRouteLayout() {
           <ThreadRecencyController />
           <ModelRecencyController />
           <ThreadStatusNotificationController />
+          <PrAttentionNotificationController />
           <Outlet />
         </DiffWorkerPoolProvider>
       </CommandPalette>

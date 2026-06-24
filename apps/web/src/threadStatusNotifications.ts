@@ -1,10 +1,21 @@
 import { useSyncExternalStore } from "react";
 import type { ThreadId } from "@t3tools/contracts";
 import { isVisibleThreadStatus, threadStatusLabel, type ThreadStatus } from "./threadStatus";
+import {
+  getNotificationPermissionState,
+  isAppWindowFocused,
+  requestNotificationPermission,
+  useNotificationPermissionState,
+  type AppNotificationConstructor,
+  type AppNotificationInstance,
+  type AppNotificationPermissionState,
+} from "./notifications";
+
+export { isAppWindowFocused };
 
 const THREAD_STATUS_NOTIFICATION_PROMPT_STORAGE_KEY = "t3code:thread-status-notification-prompt:v1";
 
-export type ThreadStatusNotificationPermissionState = NotificationPermission | "unsupported";
+export type ThreadStatusNotificationPermissionState = AppNotificationPermissionState;
 
 export interface ThreadStatusNotificationPromptState {
   shown: boolean;
@@ -26,29 +37,16 @@ export interface ThreadStatusNotificationTransition extends Omit<
   status: Exclude<ThreadStatus, "none">;
 }
 
-export interface ThreadStatusNotificationInstance {
-  close(): void;
-  addEventListener(type: "click", listener: (event: Event) => void): void;
-}
+export type ThreadStatusNotificationInstance = AppNotificationInstance;
 
-export interface ThreadStatusNotificationConstructor {
-  new (title: string, options?: NotificationOptions): ThreadStatusNotificationInstance;
-}
+export type ThreadStatusNotificationConstructor = AppNotificationConstructor;
 
 let promptListeners: Array<() => void> = [];
 let cachedRawPromptState: string | null | undefined;
 let cachedPromptState: ThreadStatusNotificationPromptState = { shown: false, dismissed: false };
 
-let permissionListeners: Array<() => void> = [];
-
 function emitPromptChange(): void {
   for (const listener of promptListeners) {
-    listener();
-  }
-}
-
-function emitPermissionChange(): void {
-  for (const listener of permissionListeners) {
     listener();
   }
 }
@@ -150,60 +148,15 @@ export function resetThreadStatusNotificationPrompt(): void {
 }
 
 export function getThreadStatusNotificationPermissionState(): ThreadStatusNotificationPermissionState {
-  if (typeof window === "undefined" || typeof window.Notification === "undefined") {
-    return "unsupported";
-  }
-
-  return window.Notification.permission;
-}
-
-function subscribeThreadStatusNotificationPermission(listener: () => void): () => void {
-  permissionListeners.push(listener);
-
-  const notify = () => {
-    emitPermissionChange();
-  };
-
-  window.addEventListener("focus", notify);
-  window.addEventListener("blur", notify);
-  document.addEventListener("visibilitychange", notify);
-
-  return () => {
-    permissionListeners = permissionListeners.filter((entry) => entry !== listener);
-    window.removeEventListener("focus", notify);
-    window.removeEventListener("blur", notify);
-    document.removeEventListener("visibilitychange", notify);
-  };
+  return getNotificationPermissionState();
 }
 
 export function useThreadStatusNotificationPermissionState(): ThreadStatusNotificationPermissionState {
-  return useSyncExternalStore(
-    subscribeThreadStatusNotificationPermission,
-    getThreadStatusNotificationPermissionState,
-    () => "unsupported",
-  );
+  return useNotificationPermissionState();
 }
 
 export async function requestThreadStatusNotificationPermission(): Promise<ThreadStatusNotificationPermissionState> {
-  if (typeof window === "undefined" || typeof window.Notification === "undefined") {
-    return "unsupported";
-  }
-
-  try {
-    await window.Notification.requestPermission();
-  } finally {
-    emitPermissionChange();
-  }
-
-  return getThreadStatusNotificationPermissionState();
-}
-
-export function isAppWindowFocused(): boolean {
-  if (typeof document === "undefined") {
-    return true;
-  }
-
-  return document.visibilityState === "visible" && document.hasFocus();
+  return requestNotificationPermission();
 }
 
 export function diffThreadStatusNotifications(

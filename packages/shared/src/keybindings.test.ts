@@ -39,6 +39,14 @@ describe("shared keybinding helpers", () => {
     expect(parseKeybindingShortcut("mod++")).toMatchObject({ key: "+", modKey: true });
   });
 
+  it("includes the Pull Requests navigation default", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+shift+p",
+      command: "prHub.open",
+      when: "!terminalFocus",
+    });
+  });
+
   it("scopes modified-enter defaults by dialog focus", () => {
     expect(DEFAULT_KEYBINDINGS).toContainEqual({
       key: "mod+enter",

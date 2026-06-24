@@ -142,6 +142,17 @@ export const ObservabilitySettings = Schema.Struct({
 });
 export type ObservabilitySettings = typeof ObservabilitySettings.Type;
 
+const PrHubPollIntervalSeconds = Schema.Union([
+  Schema.Literal(0),
+  Schema.Int.check(Schema.isGreaterThanOrEqualTo(60)).check(Schema.isLessThanOrEqualTo(3600)),
+]);
+
+export const PrHubSettings = Schema.Struct({
+  pollIntervalSeconds: PrHubPollIntervalSeconds.pipe(Schema.withDecodingDefault(() => 180)),
+  excludeRepos: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+});
+export type PrHubSettings = typeof PrHubSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
@@ -177,6 +188,7 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(() => ({})),
   ),
   observability: ObservabilitySettings.pipe(Schema.withDecodingDefault(() => ({}))),
+  prHub: PrHubSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -248,6 +260,11 @@ const GrokSettingsPatch = Schema.Struct({
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const PrHubSettingsPatch = Schema.Struct({
+  pollIntervalSeconds: Schema.optionalKey(PrHubPollIntervalSeconds),
+  excludeRepos: Schema.optionalKey(Schema.Array(Schema.String)),
+});
+
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -260,6 +277,7 @@ export const ServerSettingsPatch = Schema.Struct({
       otlpMetricsUrl: Schema.optionalKey(Schema.String),
     }),
   ),
+  prHub: Schema.optionalKey(PrHubSettingsPatch),
   providers: Schema.optionalKey(
     Schema.Struct({
       codex: Schema.optionalKey(CodexSettingsPatch),

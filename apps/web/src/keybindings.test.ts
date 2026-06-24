@@ -125,6 +125,11 @@ const DEFAULT_BINDINGS = compile([
   },
   { shortcut: modShortcut("o"), command: "editor.openFavorite" },
   {
+    shortcut: modShortcut("p", { shiftKey: true }),
+    command: "prHub.open",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  {
     shortcut: modShortcut("m", { shiftKey: true }),
     command: "modelPicker.toggle",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
@@ -295,6 +300,7 @@ describe("shortcutLabelForCommand", () => {
       shortcutLabelForCommand(DEFAULT_BINDINGS, "editor.openFavorite", "Linux"),
       "Ctrl+O",
     );
+    assert.strictEqual(shortcutLabelForCommand(DEFAULT_BINDINGS, "prHub.open", "MacIntel"), "⇧⌘P");
     assert.strictEqual(
       shortcutLabelForCommand(DEFAULT_BINDINGS, "modelPicker.toggle", "MacIntel"),
       "⇧⌘M",
@@ -497,6 +503,23 @@ describe("resolveShortcutCommand", () => {
         context: { dialogFocus: true },
       }),
       "dialog.primaryAction",
+    );
+  });
+
+  it("returns Pull Requests navigation only outside terminal focus", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "p", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+      "prHub.open",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "p", metaKey: true, shiftKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+      null,
     );
   });
 

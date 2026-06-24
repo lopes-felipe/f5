@@ -62,6 +62,9 @@ import Migration0047 from "./Migrations/047_ProjectionReadModelStartupTablesRepa
 import Migration0048 from "./Migrations/048_ProjectionCoreSchemaRepair.ts";
 import Migration0049 from "./Migrations/049_ProjectionInvestigationWorkflows.ts";
 import Migration0050 from "./Migrations/050_CopyDebugWorkflowsToInvestigationWorkflows.ts";
+import Migration0051 from "./Migrations/051_PrHub.ts";
+import Migration0052 from "./Migrations/052_PrHubIgnoredAt.ts";
+import Migration0053 from "./Migrations/053_PrHubAdvisories.ts";
 import { Effect } from "effect";
 
 /**
@@ -125,6 +128,9 @@ const loader = Migrator.fromRecord({
   "48_ProjectionCoreSchemaRepair": Migration0048,
   "49_ProjectionInvestigationWorkflows": Migration0049,
   "50_CopyDebugWorkflowsToInvestigationWorkflows": Migration0050,
+  "51_PrHub": Migration0051,
+  "52_PrHubIgnoredAt": Migration0052,
+  "53_PrHubAdvisories": Migration0053,
 });
 
 /**

@@ -83,6 +83,12 @@ it.effect("parses keybinding rules", () =>
     });
     assert.strictEqual(parsedModelPickerToggle.command, "modelPicker.toggle");
 
+    const parsedPrHubOpen = yield* decode(KeybindingRule, {
+      key: "mod+shift+p",
+      command: "prHub.open",
+    });
+    assert.strictEqual(parsedPrHubOpen.command, "prHub.open");
+
     const parsedModelPickerJump = yield* decode(KeybindingRule, {
       key: "mod+1",
       command: "modelPicker.jump.1",

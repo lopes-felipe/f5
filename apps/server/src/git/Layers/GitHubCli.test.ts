@@ -1,5 +1,5 @@
 import { assert, it } from "@effect/vitest";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
 import { afterEach, expect, vi } from "vitest";
 
 vi.mock("../../processRunner", () => ({
@@ -103,6 +103,111 @@ layer("GitHubCliLive", (it) => {
         url: "https://github.com/octocat/codething-mvp",
         sshUrl: "git@github.com:octocat/codething-mvp.git",
       });
+    }),
+  );
+
+  it.effect("reads paginated viewer team slugs from jq line output", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: "wolt\tplatform\nwolt\tcode-review\n",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+
+      const result = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.getViewerTeams({ cwd: "/home/me" });
+      });
+
+      assert.deepStrictEqual(result, ["wolt/code-review", "wolt/platform"]);
+      expect(mockedRunProcess).toHaveBeenCalledWith(
+        "gh",
+        ["api", "user/teams", "--paginate", "--jq", ".[] | [.organization.login, .slug] | @tsv"],
+        expect.objectContaining({ cwd: "/home/me" }),
+      );
+    }),
+  );
+
+  it.effect(
+    "passes GraphQL string variables with raw flags and typed variables with typed flags",
+    () =>
+      Effect.gen(function* () {
+        mockedRunProcess.mockResolvedValueOnce({
+          stdout: JSON.stringify({ data: { ok: true } }),
+          stderr: "",
+          code: 0,
+          signal: null,
+          timedOut: false,
+        });
+
+        const result = yield* Effect.gen(function* () {
+          const gh = yield* GitHubCli;
+          return yield* gh.runGraphql({
+            cwd: "/home/me",
+            query:
+              "query($q:String!,$ids:[ID!]!,$number:Int!,$flag:Boolean!,$empty:String){viewer{login}}",
+            variables: {
+              q: "is:pr is:open author:me",
+              ids: ["PR_kw1", "PR_kw2"],
+              number: 123,
+              flag: true,
+              empty: null,
+            },
+          });
+        });
+
+        assert.deepStrictEqual(result, { data: { ok: true } });
+        expect(mockedRunProcess).toHaveBeenCalledWith(
+          "gh",
+          [
+            "api",
+            "graphql",
+            "-f",
+            "query=query($q:String!,$ids:[ID!]!,$number:Int!,$flag:Boolean!,$empty:String){viewer{login}}",
+            "-f",
+            "q=is:pr is:open author:me",
+            "-F",
+            "ids[]=PR_kw1",
+            "-F",
+            "ids[]=PR_kw2",
+            "-F",
+            "number=123",
+            "-F",
+            "flag=true",
+            "-F",
+            "empty=null",
+          ],
+          expect.objectContaining({ cwd: "/home/me", timeoutMs: 45_000 }),
+        );
+      }),
+  );
+
+  it.effect("normalizes GitHub HTTP failures without leaking the full command", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockRejectedValueOnce(
+        new Error(
+          "gh api graphql -f query=query PrHub($rr:String!){viewer{login}} failed (code=1, signal=null). gh: HTTP 502",
+        ),
+      );
+
+      const exit = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.runGraphql({
+          cwd: "/home/me",
+          query: "query PrHub($rr:String!){viewer{login}}",
+          variables: { rr: "is:pr is:open review-requested:me" },
+        });
+      }).pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { kind?: string; detail: string };
+        assert.equal(error.kind, "network");
+        assert.equal(error.detail, "GitHub API returned HTTP 502.");
+        assert.equal(error.detail.includes("query PrHub"), false);
+      }
     }),
   );
 

@@ -119,6 +119,28 @@ import {
   StorageGetUsageRequest,
   StorageInvalidatedPayload,
 } from "./storage";
+import {
+  PR_HUB_WS_CHANNELS,
+  PR_HUB_WS_METHODS,
+  PrHubAdvisorySnapshot,
+  PrHubAnalyzeAdvisoriesInput,
+  PrHubClearDataInput,
+  PrHubCommentInput,
+  PrHubGetAdvisoriesInput,
+  PrHubIgnoreInput,
+  PrHubLocalCandidatesInput,
+  PrHubMarkNotifiedInput,
+  PrHubMarkReadyInput,
+  PrHubMarkSeenInput,
+  PrHubMergeInput,
+  PrHubRefreshInput,
+  PrHubRequestChangesInput,
+  PrHubReRequestInput,
+  PrHubReviewInput,
+  PrHubSnapshot,
+  PrHubSnoozeInput,
+  PrHubUnsnoozeInput,
+} from "./prHub";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -390,6 +412,25 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
   tagRequestBody(WS_METHODS.mcpStartOAuthLogin, McpStartOauthLoginRequest),
   tagRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
+
+  // PR Hub methods
+  tagRequestBody(PR_HUB_WS_METHODS.getSnapshot, Schema.Struct({})),
+  tagRequestBody(PR_HUB_WS_METHODS.refresh, PrHubRefreshInput),
+  tagRequestBody(PR_HUB_WS_METHODS.approve, PrHubReviewInput),
+  tagRequestBody(PR_HUB_WS_METHODS.requestChanges, PrHubRequestChangesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.comment, PrHubCommentInput),
+  tagRequestBody(PR_HUB_WS_METHODS.merge, PrHubMergeInput),
+  tagRequestBody(PR_HUB_WS_METHODS.markReady, PrHubMarkReadyInput),
+  tagRequestBody(PR_HUB_WS_METHODS.reRequestReview, PrHubReRequestInput),
+  tagRequestBody(PR_HUB_WS_METHODS.snooze, PrHubSnoozeInput),
+  tagRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
+  tagRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
+  tagRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
+  tagRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),
+  tagRequestBody(PR_HUB_WS_METHODS.analyzeAdvisories, PrHubAnalyzeAdvisoriesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getAdvisories, PrHubGetAdvisoriesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, PrHubLocalCandidatesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.clearData, PrHubClearDataInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({
@@ -434,6 +475,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
+  readonly [PR_HUB_WS_CHANNELS.snapshotUpdated]: typeof PrHubSnapshot.Type;
+  readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisorySnapshot.Type;
 }
 
 export type WsPushChannel = keyof WsPushPayloadByChannel;
@@ -493,6 +536,14 @@ export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
 );
+export const WsPushPrHubSnapshotUpdated = makeWsPushSchema(
+  PR_HUB_WS_CHANNELS.snapshotUpdated,
+  PrHubSnapshot,
+);
+export const WsPushPrHubAdvisoriesUpdated = makeWsPushSchema(
+  PR_HUB_WS_CHANNELS.advisoriesUpdated,
+  PrHubAdvisorySnapshot,
+);
 
 export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.gitActionProgress,
@@ -508,6 +559,8 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
+  PR_HUB_WS_CHANNELS.snapshotUpdated,
+  PR_HUB_WS_CHANNELS.advisoriesUpdated,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
@@ -525,6 +578,8 @@ export const WsPush = Schema.Union([
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,
   WsPushOrchestrationDomainEvent,
+  WsPushPrHubSnapshotUpdated,
+  WsPushPrHubAdvisoriesUpdated,
 ]);
 export type WsPush = typeof WsPush.Type;
 

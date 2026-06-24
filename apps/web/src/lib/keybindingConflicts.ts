@@ -188,6 +188,8 @@ export function formatKeybindingCommandLabel(
       return "Previous recent thread";
     case "model.switchRecent":
       return "Switch recent model";
+    case "prHub.open":
+      return "Open Pull Requests";
     case "modelPicker.toggle":
       return "Toggle model picker";
     case "modelPicker.jump.1":

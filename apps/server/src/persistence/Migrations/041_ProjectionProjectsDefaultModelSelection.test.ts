@@ -204,8 +204,8 @@ layer("041_ProjectionProjectsDefaultModelSelection", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 50,
-          name: "CopyDebugWorkflowsToInvestigationWorkflows",
+          migrationId: 53,
+          name: "PrHubAdvisories",
         },
       ]);
     }),

@@ -20,6 +20,10 @@
       "types": "./src/git.ts",
       "import": "./src/git.ts"
     },
+    "./prHub": {
+      "types": "./src/prHub.ts",
+      "import": "./src/prHub.ts"
+    },
     "./keybindings": {
       "types": "./src/keybindings.ts",
       "import": "./src/keybindings.ts"
