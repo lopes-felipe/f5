@@ -59,6 +59,12 @@ it.effect("parses keybinding rules", () =>
     });
     assert.strictEqual(parsedScrollToBottom.command, "chat.scrollToBottom");
 
+    const parsedDialogPrimaryAction = yield* decode(KeybindingRule, {
+      key: "mod+enter",
+      command: "dialog.primaryAction",
+    });
+    assert.strictEqual(parsedDialogPrimaryAction.command, "dialog.primaryAction");
+
     const parsedThreadSwitchNext = yield* decode(KeybindingRule, {
       key: "ctrl+tab",
       command: "thread.switchRecentNext",

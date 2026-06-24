@@ -555,6 +555,33 @@ interface ChatViewProps {
   threadId: ThreadId;
 }
 
+const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
+const DIALOG_PORTALED_POPUP_SELECTOR = [
+  '[data-slot="combobox-positioner"]',
+  '[data-slot="combobox-popup"]',
+  '[data-slot="menu-positioner"]',
+  '[data-slot="menu-popup"]',
+  '[data-slot="popover-positioner"]',
+  '[data-slot="popover-popup"]',
+  '[data-slot="select-positioner"]',
+  '[data-slot="select-popup"]',
+].join(",");
+
+function isEventInDialogKeybindingContext(event: globalThis.KeyboardEvent): boolean {
+  const eventTarget = event.target instanceof Node ? event.target : null;
+  const eventTargetElement =
+    event.target instanceof Element ? event.target : eventTarget?.parentElement;
+  if (eventTargetElement?.closest(DIALOG_POPUP_SELECTOR)) {
+    return true;
+  }
+
+  if (!document.querySelector(DIALOG_POPUP_SELECTOR)) {
+    return false;
+  }
+
+  return Boolean(eventTargetElement?.closest(DIALOG_PORTALED_POPUP_SELECTOR));
+}
+
 function providerInstanceBelongsToProvider(input: {
   readonly instanceId: ProviderInstanceId | null | undefined;
   readonly provider: ProviderKind;
@@ -3385,17 +3412,19 @@ export default function ChatView({ threadId }: ChatViewProps) {
     const handler = (event: globalThis.KeyboardEvent) => {
       if (!activeThreadId || event.defaultPrevented) return;
       if (wsInteractionBlocked) return;
+      const eventTarget = event.target instanceof Node ? event.target : null;
+      const dialogFocus = isEventInDialogKeybindingContext(event);
 
       const command = resolveShortcutCommand(event, keybindings, {
         context: {
           terminalFocus: isTerminalFocused(),
           terminalOpen: Boolean(terminalState.terminalOpen),
+          dialogFocus,
         },
       });
       if (command !== "chat.scrollToBottom") return;
 
       const composerForm = composerFormRef.current;
-      const eventTarget = event.target instanceof Node ? event.target : null;
       const activeElement = document.activeElement;
       const composerFocused = Boolean(
         composerForm &&
@@ -3433,6 +3462,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       const shortcutContext = {
         terminalFocus: isTerminalFocused(),
         terminalOpen: Boolean(terminalState.terminalOpen),
+        dialogFocus: isEventInDialogKeybindingContext(event),
         modelPickerOpen: isModelPickerOpen,
       };
 

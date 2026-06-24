@@ -8,6 +8,8 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { evaluateWhenNode, formatShortcutLabel } from "@t3tools/shared/keybindings";
+import { useQuery } from "@tanstack/react-query";
+import { serverConfigQueryOptions } from "./lib/serverReactQuery";
 import { isMacPlatform } from "./lib/utils";
 
 export { formatShortcutLabel } from "@t3tools/shared/keybindings";
@@ -24,6 +26,7 @@ export interface ShortcutEventLike {
 export interface ShortcutMatchContext {
   terminalFocus: boolean;
   terminalOpen: boolean;
+  dialogFocus: boolean;
   [key: string]: boolean;
 }
 
@@ -37,6 +40,7 @@ const TERMINAL_WORD_FORWARD = "\u001bf";
 const TERMINAL_LINE_START = "\u0001";
 const TERMINAL_LINE_END = "\u0005";
 const TERMINAL_DELETE_TO_LINE_START = "\u0015";
+const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
 function normalizeEventKey(key: string): string {
   const normalized = key.toLowerCase();
@@ -71,8 +75,14 @@ function resolveContext(options: ShortcutMatchOptions | undefined): ShortcutMatc
   return {
     terminalFocus: false,
     terminalOpen: false,
+    dialogFocus: false,
     ...options?.context,
   };
+}
+
+export function useServerKeybindings(): ResolvedKeybindingsConfig {
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  return serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
 }
 
 function matchesWhenClause(

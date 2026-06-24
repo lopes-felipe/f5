@@ -178,6 +178,8 @@ export function formatKeybindingCommandLabel(
       return "New workflow";
     case "chat.scrollToBottom":
       return "Scroll to bottom";
+    case "dialog.primaryAction":
+      return "Dialog primary action";
     case "editor.openFavorite":
       return "Open in preferred editor";
     case "thread.switchRecentNext":

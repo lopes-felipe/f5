@@ -37,6 +37,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.newLocal",
   "workflow.new",
   "chat.scrollToBottom",
+  "dialog.primaryAction",
   "editor.openFavorite",
   "thread.switchRecentNext",
   "thread.switchRecentPrevious",

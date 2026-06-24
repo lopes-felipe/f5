@@ -3558,6 +3558,89 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("does not scroll the background chat from cmd+enter inside a dialog popup", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-dialog-scroll-shortcut" as MessageId,
+        targetText: "dialog scroll shortcut target",
+        fillerPairCount: 40,
+        targetPairIndex: 34,
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            createModKeybinding("chat.scrollToBottom", "enter", {
+              whenAst: {
+                type: "not",
+                node: { type: "identifier", name: "dialogFocus" },
+              },
+            }),
+          ],
+        };
+      },
+    });
+
+    const dialogPopup = document.createElement("div");
+    dialogPopup.setAttribute("data-slot", "dialog-popup");
+    const dialogButton = document.createElement("button");
+    dialogButton.type = "button";
+    dialogPopup.append(dialogButton);
+    document.body.append(dialogPopup);
+    const portaledMenuPopup = document.createElement("div");
+    portaledMenuPopup.setAttribute("data-slot", "menu-popup");
+    const portaledMenuButton = document.createElement("button");
+    portaledMenuButton.type = "button";
+    portaledMenuPopup.append(portaledMenuButton);
+    document.body.append(portaledMenuPopup);
+
+    try {
+      const scrollContainer = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-slot="messages-scroll-container"]'),
+        "Messages scroll container should render before testing dialog scroll shortcuts.",
+      );
+      scrollContainer.scrollTo({ top: 0, behavior: "auto" });
+      scrollContainer.scrollTop = 0;
+      scrollContainer.dispatchEvent(new Event("scroll"));
+
+      await waitForButtonContainingText("Scroll to bottom");
+
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      dialogButton.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+
+      expect(document.body.textContent).toContain("Scroll to bottom");
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+
+      portaledMenuButton.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+
+      expect(document.body.textContent).toContain("Scroll to bottom");
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+    } finally {
+      portaledMenuPopup.remove();
+      dialogPopup.remove();
+      await mounted.cleanup();
+    }
+  });
+
   it("never sends from cmd+enter while the composer is focused and the pill is hidden", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

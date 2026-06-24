@@ -5,7 +5,6 @@ import {
   type FilesystemBrowseResult,
   type ProjectId,
   type ProjectEntry,
-  type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -36,7 +35,6 @@ import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useAppSettings } from "../appSettings";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
-import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { compareThreadsByActivity, getMostRecentThreadForProject } from "../lib/threadOrdering";
 import {
@@ -59,7 +57,7 @@ import {
   filesystemBrowseQueryOptions,
   projectSearchEntriesQueryOptions,
 } from "../lib/projectReactQuery";
-import { resolveShortcutCommand } from "../keybindings";
+import { resolveShortcutCommand, useServerKeybindings } from "../keybindings";
 import { openFileRightPanelSurface, setSearchParamsForSurface } from "../rightPanelNavigation";
 import { useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -115,7 +113,6 @@ function getServerHttpOrigin(): string {
   }
 }
 
-const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
@@ -130,11 +127,6 @@ function getLocalFileManagerName(platform: string): string {
     return "Explorer";
   }
   return "Files";
-}
-
-function useServerKeybindings(): ResolvedKeybindingsConfig {
-  const serverConfigQuery = useQuery(serverConfigQueryOptions());
-  return serverConfigQuery.data?.keybindings ?? EMPTY_KEYBINDINGS;
 }
 
 function ProjectFaviconIcon({ cwd, className }: { cwd: string; className: string }) {

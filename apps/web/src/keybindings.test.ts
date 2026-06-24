@@ -113,7 +113,16 @@ const DEFAULT_BINDINGS = compile([
     command: "workflow.new",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
-  { shortcut: modShortcut("enter"), command: "chat.scrollToBottom" },
+  {
+    shortcut: modShortcut("enter"),
+    command: "chat.scrollToBottom",
+    whenAst: whenNot(whenIdentifier("dialogFocus")),
+  },
+  {
+    shortcut: modShortcut("enter"),
+    command: "dialog.primaryAction",
+    whenAst: whenIdentifier("dialogFocus"),
+  },
   { shortcut: modShortcut("o"), command: "editor.openFavorite" },
   {
     shortcut: modShortcut("m", { shiftKey: true }),
@@ -276,6 +285,10 @@ describe("shortcutLabelForCommand", () => {
     assert.strictEqual(
       shortcutLabelForCommand(DEFAULT_BINDINGS, "chat.scrollToBottom", "Linux"),
       "Ctrl+Enter",
+    );
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "dialog.primaryAction", "MacIntel"),
+      "⌘Enter",
     );
     assert.strictEqual(shortcutLabelForCommand(DEFAULT_BINDINGS, "diff.toggle", "Linux"), "Ctrl+D");
     assert.strictEqual(
@@ -474,8 +487,16 @@ describe("resolveShortcutCommand", () => {
     assert.strictEqual(
       resolveShortcutCommand(event({ key: "Enter", ctrlKey: true }), DEFAULT_BINDINGS, {
         platform: "Linux",
+        context: { dialogFocus: false },
       }),
       "chat.scrollToBottom",
+    );
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: "Enter", ctrlKey: true }), DEFAULT_BINDINGS, {
+        platform: "Linux",
+        context: { dialogFocus: true },
+      }),
+      "dialog.primaryAction",
     );
   });
 

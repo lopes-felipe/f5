@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_KEYBINDINGS,
+  DEFAULT_RESOLVED_KEYBINDINGS,
+  evaluateWhenNode,
   matchesKeybindingTarget,
   parseKeybindingShortcut,
   parseWhenAst,
@@ -34,5 +37,48 @@ describe("shared keybinding helpers", () => {
 
   it("parses plus key shortcuts", () => {
     expect(parseKeybindingShortcut("mod++")).toMatchObject({ key: "+", modKey: true });
+  });
+
+  it("scopes modified-enter defaults by dialog focus", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+enter",
+      command: "chat.scrollToBottom",
+      when: "!dialogFocus",
+    });
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+enter",
+      command: "dialog.primaryAction",
+      when: "dialogFocus",
+    });
+
+    const scrollBinding = DEFAULT_RESOLVED_KEYBINDINGS.find(
+      (binding) => binding.command === "chat.scrollToBottom",
+    );
+    const dialogBinding = DEFAULT_RESOLVED_KEYBINDINGS.find(
+      (binding) => binding.command === "dialog.primaryAction",
+    );
+
+    expect(scrollBinding?.whenAst).toBeDefined();
+    expect(dialogBinding?.whenAst).toBeDefined();
+    expect(
+      scrollBinding?.whenAst
+        ? evaluateWhenNode(scrollBinding.whenAst, { dialogFocus: false })
+        : null,
+    ).toBe(true);
+    expect(
+      scrollBinding?.whenAst
+        ? evaluateWhenNode(scrollBinding.whenAst, { dialogFocus: true })
+        : null,
+    ).toBe(false);
+    expect(
+      dialogBinding?.whenAst
+        ? evaluateWhenNode(dialogBinding.whenAst, { dialogFocus: true })
+        : null,
+    ).toBe(true);
+    expect(
+      dialogBinding?.whenAst
+        ? evaluateWhenNode(dialogBinding.whenAst, { dialogFocus: false })
+        : null,
+    ).toBe(false);
   });
 });

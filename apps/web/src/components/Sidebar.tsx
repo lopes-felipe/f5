@@ -65,7 +65,8 @@ import { isElectron } from "../env";
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { useStartupReady } from "../lib/startupReady";
-import { isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
+import { cn, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
+import { WORKFLOW_TYPE_BADGE_CLASS } from "../lib/workflowType";
 import {
   getMostRecentProject,
   getMostRecentThreadForProject,
@@ -2541,7 +2542,12 @@ export default function Sidebar() {
                                         />
                                       </button>
                                       <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                                      <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                      <span
+                                        className={cn(
+                                          "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                                          WORKFLOW_TYPE_BADGE_CLASS[type],
+                                        )}
+                                      >
                                         {workflowTypeLabel(type)}
                                       </span>
                                       <span className="truncate text-xs font-medium">
@@ -2989,7 +2995,12 @@ export default function Sidebar() {
                                         >
                                           <div className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
                                             <WorkflowIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                                            <span className="rounded border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+                                            <span
+                                              className={cn(
+                                                "rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide",
+                                                WORKFLOW_TYPE_BADGE_CLASS[item.type],
+                                              )}
+                                            >
                                               {workflowTypeLabel(item.type)}
                                             </span>
                                             <span className="min-w-0 flex-1 truncate text-xs">

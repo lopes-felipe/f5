@@ -1,6 +1,7 @@
 import {
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   useMemo,
   useRef,
   useState,
@@ -33,11 +34,23 @@ import {
 import { isElectron } from "../../env";
 import { useTheme } from "../../hooks/useTheme";
 import {
+  resolveShortcutCommand,
+  shortcutLabelForCommand,
+  useServerKeybindings,
+} from "../../keybindings";
+import {
   appendAttachedFilesToPrompt,
   normalizeAttachedFilePaths,
   relativePathForDisplay,
   sanitizeAttachedFileReferencePaths,
 } from "../../lib/attachedFiles";
+import { cn } from "../../lib/utils";
+import {
+  WORKFLOW_TYPE_DIALOG_LABEL,
+  WORKFLOW_TYPE_ORDER,
+  WORKFLOW_TYPE_TOGGLE_CLASS,
+  type WorkflowTypeValue,
+} from "../../lib/workflowType";
 import {
   getModelPreferences,
   recordModelSelection,
@@ -66,7 +79,9 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../ui/dialog";
+import { Kbd } from "../ui/kbd";
 import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { toastManager } from "../ui/toast";
 import { ChevronDownIcon, XIcon } from "lucide-react";
 
@@ -381,15 +396,14 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const navigate = useNavigate();
   const { settings } = useAppSettings();
   const { resolvedTheme } = useTheme();
+  const keybindings = useServerKeybindings();
   const project = useStore(
     (store) => store.projects.find((entry) => entry.id === props.projectId) ?? null,
   );
   const initialBranchADefaults = getWorkflowSlotDefaults("branchA", "codex");
   const initialBranchBDefaults = getWorkflowSlotDefaults("branchB", "claudeAgent");
   const initialMergeDefaults = getWorkflowSlotDefaults("merge", "codex");
-  const [workflowType, setWorkflowType] = useState<"planning" | "codeReview" | "investigation">(
-    "planning",
-  );
+  const [workflowType, setWorkflowType] = useState<WorkflowTypeValue>("planning");
   const [requirementPrompt, setRequirementPrompt] = useState("");
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
   const [reviewBranch, setReviewBranch] = useState("");
@@ -419,6 +433,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [isDragOverPrompt, setIsDragOverPrompt] = useState(false);
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const submittingRef = useRef(false);
   const dragDepthRef = useRef(0);
   const modelOptionsByProvider = useMemo(
     () => getCustomModelOptionsByProvider(settings),
@@ -448,9 +463,50 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const canSubmit =
     (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
     !sameInvestigationInvestigatorModel;
+  const primaryActionShortcutLabel = useMemo(
+    () => shortcutLabelForCommand(keybindings, "dialog.primaryAction"),
+    [keybindings],
+  );
 
   const focusPromptEditor = () => {
     promptTextareaRef.current?.focus();
+  };
+
+  const onWorkflowTypeKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+
+    const currentIndex = WORKFLOW_TYPE_ORDER.indexOf(workflowType);
+    const lastIndex = WORKFLOW_TYPE_ORDER.length - 1;
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? lastIndex
+          : event.key === "ArrowRight" || event.key === "ArrowDown"
+            ? currentIndex === lastIndex
+              ? 0
+              : currentIndex + 1
+            : event.key === "ArrowLeft" || event.key === "ArrowUp"
+              ? currentIndex === 0
+                ? lastIndex
+                : currentIndex - 1
+              : null;
+    if (nextIndex === null) return;
+    const nextType = WORKFLOW_TYPE_ORDER[nextIndex];
+    if (!nextType) return;
+    event.preventDefault();
+
+    // Base UI moves roving focus for this group, but toggles are only pressed by click/Space/Enter.
+    // Keep the selected workflow type in sync with the keyboard-focused segment.
+    if (nextType && nextType !== workflowType) {
+      setWorkflowType(nextType);
+    }
+    const toggles = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-slot="toggle"]'),
+    );
+    queueMicrotask(() => {
+      toggles[nextIndex]?.focus();
+    });
   };
 
   const reset = () => {
@@ -477,6 +533,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setError(null);
     setIsDragOverPrompt(false);
     dragDepthRef.current = 0;
+    submittingRef.current = false;
     setSubmitting(false);
   };
 
@@ -577,9 +634,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   };
 
   const onSubmit = async () => {
+    if (submittingRef.current) return;
+    submittingRef.current = true;
     const api = readNativeApi();
     if (!api) {
       setError("Native API is unavailable.");
+      submittingRef.current = false;
       return;
     }
     setSubmitting(true);
@@ -598,6 +658,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       });
       if (invalidAttachedFilePathCount > 0) {
         setError("Remove or reattach invalid file attachments before creating the workflow.");
+        submittingRef.current = false;
         setSubmitting(false);
         return;
       }
@@ -719,6 +780,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       } else {
         if (sameInvestigationInvestigatorModel) {
           setError("Choose two different investigator models for Investigation workflows.");
+          submittingRef.current = false;
           setSubmitting(false);
           return;
         }
@@ -786,13 +848,31 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       props.onOpenChange(false);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
+      submittingRef.current = false;
       setSubmitting(false);
     }
   };
 
+  const onDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const command = resolveShortcutCommand(event, keybindings, {
+      context: { dialogFocus: true, terminalFocus: false, terminalOpen: false },
+    });
+    if (command !== "dialog.primaryAction") return;
+
+    if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.repeat) return;
+    if (submittingRef.current) return;
+    if (!canSubmit) return;
+    void onSubmit();
+  };
+
   return (
     <Dialog open={props.open} onOpenChange={props.onOpenChange}>
-      <DialogPopup className="max-w-2xl">
+      <DialogPopup className="max-w-2xl" onKeyDown={onDialogKeyDown}>
         <DialogHeader>
           <DialogTitle>New Workflow</DialogTitle>
           <DialogDescription>
@@ -801,41 +881,29 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">
-          <div className="grid grid-cols-3 gap-2 rounded-md border border-input bg-background p-1">
-            <button
-              type="button"
-              className={`rounded-sm px-3 py-2 text-sm ${
-                workflowType === "planning"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground"
-              }`}
-              onClick={() => setWorkflowType("planning")}
-            >
-              Feature
-            </button>
-            <button
-              type="button"
-              className={`rounded-sm px-3 py-2 text-sm ${
-                workflowType === "codeReview"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground"
-              }`}
-              onClick={() => setWorkflowType("codeReview")}
-            >
-              Code Review
-            </button>
-            <button
-              type="button"
-              className={`rounded-sm px-3 py-2 text-sm ${
-                workflowType === "investigation"
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground"
-              }`}
-              onClick={() => setWorkflowType("investigation")}
-            >
-              Investigation
-            </button>
-          </div>
+          <ToggleGroup
+            variant="outline"
+            className="grid w-full grid-cols-3"
+            aria-label="Workflow type"
+            value={[workflowType]}
+            onKeyDown={onWorkflowTypeKeyDown}
+            onValueChange={(value) => {
+              const next = value[0];
+              if (next === "planning" || next === "codeReview" || next === "investigation") {
+                setWorkflowType(next);
+              }
+            }}
+          >
+            {WORKFLOW_TYPE_ORDER.map((type) => (
+              <Toggle
+                key={type}
+                value={type}
+                className={cn("w-full justify-center", WORKFLOW_TYPE_TOGGLE_CLASS[type])}
+              >
+                {WORKFLOW_TYPE_DIALOG_LABEL[type]}
+              </Toggle>
+            ))}
+          </ToggleGroup>
           <div className="space-y-2">
             <label className="block text-sm font-medium text-foreground">
               {workflowType === "planning"
@@ -1063,6 +1131,12 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           {error ? <p className="text-sm text-red-500">{error}</p> : null}
         </DialogPanel>
         <DialogFooter>
+          {primaryActionShortcutLabel ? (
+            <span className="mr-auto hidden items-center gap-1 text-muted-foreground text-xs sm:flex">
+              <Kbd>{primaryActionShortcutLabel}</Kbd>
+              <span>to start</span>
+            </span>
+          ) : null}
           <Button variant="outline" onClick={() => props.onOpenChange(false)}>
             Cancel
           </Button>

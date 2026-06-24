@@ -47,6 +47,15 @@ const mod3 = {
   modKey: true,
 } as const;
 
+const modEnter = {
+  key: "enter",
+  metaKey: false,
+  ctrlKey: false,
+  shiftKey: false,
+  altKey: false,
+  modKey: true,
+} as const;
+
 describe("parseKeybindingShortcutValue", () => {
   it("parses normalized shortcut tokens", () => {
     expect(parseKeybindingShortcutValue("mod+shift+n")).toEqual({
@@ -89,6 +98,23 @@ describe("findKeybindingConflicts", () => {
         command: "chat.new",
         shortcut: modN,
         whenAst: whenNot(whenIdentifier("terminalFocus")),
+      },
+    ] satisfies ResolvedKeybindingsConfig);
+
+    expect(conflicts).toEqual([]);
+  });
+
+  it("does not report mutually-exclusive dialog-focus bindings", () => {
+    const conflicts = findKeybindingConflicts([
+      {
+        command: "chat.scrollToBottom",
+        shortcut: modEnter,
+        whenAst: whenNot(whenIdentifier("dialogFocus")),
+      },
+      {
+        command: "dialog.primaryAction",
+        shortcut: modEnter,
+        whenAst: whenIdentifier("dialogFocus"),
       },
     ] satisfies ResolvedKeybindingsConfig);
 
@@ -177,6 +203,7 @@ describe("findConflictsForCandidateKeybinding", () => {
 describe("formatKeybindingCommandLabel", () => {
   it("formats static and project action commands", () => {
     expect(formatKeybindingCommandLabel("chat.new")).toBe("New thread");
+    expect(formatKeybindingCommandLabel("dialog.primaryAction")).toBe("Dialog primary action");
     expect(formatKeybindingCommandLabel("modelPicker.toggle")).toBe("Toggle model picker");
     expect(formatKeybindingCommandLabel("modelPicker.jump.4")).toBe("Pick model 4");
     expect(

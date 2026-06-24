@@ -1,6 +1,9 @@
 import "../../index.css";
 
-import { page } from "vitest/browser";
+import type { ReactElement } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
+import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
 import type {
@@ -9,9 +12,12 @@ import type {
   OrchestrationCreateInvestigationWorkflowInput,
   OrchestrationCreateWorkflowInput,
   ProjectId,
+  ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
+import { serverQueryKeys } from "../../lib/serverReactQuery";
+import { isMacPlatform } from "../../lib/utils";
 import {
   MODEL_PREFERENCES_STORAGE_KEY,
   useModelPreferencesStore,
@@ -28,17 +34,27 @@ const nativeApiMocks = vi.hoisted(() => ({
   createInvestigationWorkflow: vi.fn<
     (input: OrchestrationCreateInvestigationWorkflowInput) => Promise<{ workflowId: string }>
   >(async () => ({ workflowId: "workflow-3" })),
+  getConfig: vi.fn(async () => ({
+    keybindings: [],
+  })),
 }));
 
-vi.mock("../../nativeApi", () => ({
-  readNativeApi: () => ({
+vi.mock("../../nativeApi", () => {
+  const api = {
     orchestration: {
       createWorkflow: nativeApiMocks.createWorkflow,
       createCodeReviewWorkflow: nativeApiMocks.createCodeReviewWorkflow,
       createInvestigationWorkflow: nativeApiMocks.createInvestigationWorkflow,
     },
-  }),
-}));
+    server: {
+      getConfig: nativeApiMocks.getConfig,
+    },
+  };
+  return {
+    ensureNativeApi: () => api,
+    readNativeApi: () => api,
+  };
+});
 
 vi.mock("@tanstack/react-router", async () => {
   const actual =
@@ -79,6 +95,60 @@ import {
 } from "./WorkflowCreateDialog";
 
 const desktopBridgePathByFileName = new Map<string, string>();
+
+function createTestQueryClient(
+  keybindings: ResolvedKeybindingsConfig = DEFAULT_RESOLVED_KEYBINDINGS,
+): QueryClient {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+      },
+      mutations: {
+        retry: false,
+      },
+    },
+  });
+  queryClient.setQueryData(serverQueryKeys.config(), { keybindings });
+  return queryClient;
+}
+
+async function renderWithQueryClient(
+  element: ReactElement,
+  options: { container?: HTMLElement; keybindings?: ResolvedKeybindingsConfig } = {},
+) {
+  const queryClient = createTestQueryClient(options.keybindings);
+  const renderOptions = options.container ? { container: options.container } : undefined;
+  const screen = await render(
+    <QueryClientProvider client={queryClient}>{element}</QueryClientProvider>,
+    renderOptions,
+  );
+  return {
+    ...screen,
+    unmount: async () => {
+      await screen.unmount();
+      queryClient.clear();
+    },
+  };
+}
+
+function createDialogPrimaryKeybinding(
+  key: string,
+  options: { shiftKey?: boolean } = {},
+): ResolvedKeybindingsConfig[number] {
+  return {
+    command: "dialog.primaryAction",
+    shortcut: {
+      key,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: options.shiftKey ?? false,
+      altKey: false,
+      modKey: true,
+    },
+    whenAst: { type: "identifier", name: "dialogFocus" },
+  };
+}
 
 function installDesktopBridgeMock() {
   const desktopBridge: Pick<DesktopBridge, "getPathForFile" | "resolveRealPath" | "setTheme"> = {
@@ -158,6 +228,27 @@ function createWorkflowButton(): HTMLButtonElement {
   return button;
 }
 
+function createModifiedEnterEvent(options: KeyboardEventInit = {}): KeyboardEvent {
+  const useMetaForMod = isMacPlatform(navigator.platform);
+  return new KeyboardEvent("keydown", {
+    key: "Enter",
+    metaKey: useMetaForMod,
+    ctrlKey: !useMetaForMod,
+    bubbles: true,
+    cancelable: true,
+    ...options,
+  });
+}
+
+function dispatchModifiedEnter(
+  target: EventTarget,
+  options: KeyboardEventInit = {},
+): KeyboardEvent {
+  const event = createModifiedEnterEvent(options);
+  target.dispatchEvent(event);
+  return event;
+}
+
 function getRequirementEditorSurface(): HTMLDivElement {
   const textarea = document.querySelector("textarea");
   if (!(textarea instanceof HTMLTextAreaElement)) {
@@ -223,6 +314,7 @@ describe("WorkflowCreateDialog", () => {
     nativeApiMocks.createWorkflow.mockClear();
     nativeApiMocks.createCodeReviewWorkflow.mockClear();
     nativeApiMocks.createInvestigationWorkflow.mockClear();
+    nativeApiMocks.getConfig.mockClear();
     useStore.setState({
       projects: [],
       threads: [],
@@ -335,7 +427,7 @@ describe("WorkflowCreateDialog", () => {
 
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
       { container: host },
     );
@@ -372,7 +464,7 @@ describe("WorkflowCreateDialog", () => {
   it("remembers the merge provider when reopening the workflow dialog", async () => {
     const firstHost = document.createElement("div");
     document.body.append(firstHost);
-    const firstScreen = await render(
+    const firstScreen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
       { container: firstHost },
     );
@@ -404,7 +496,7 @@ describe("WorkflowCreateDialog", () => {
 
     const secondHost = document.createElement("div");
     document.body.append(secondHost);
-    const secondScreen = await render(
+    const secondScreen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
       { container: secondHost },
     );
@@ -442,7 +534,7 @@ describe("WorkflowCreateDialog", () => {
   it("removes the manual title field and enables submit from the prompt alone", async () => {
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
       { container: host },
     );
@@ -469,12 +561,219 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("renders keyboard-navigable workflow type toggles with distinct hue classes", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      const feature = page.getByRole("button", { name: "Feature" }).element();
+      const codeReview = page.getByRole("button", { name: "Code Review" }).element();
+      const investigation = page.getByRole("button", { name: "Investigation" }).element();
+
+      expect(feature.getAttribute("aria-pressed")).toBe("true");
+      expect(feature.className).toContain("data-pressed:bg-sky-500/15");
+      expect(codeReview.className).toContain("data-pressed:bg-emerald-500/15");
+      expect(investigation.className).toContain("data-pressed:bg-amber-500/15");
+
+      await page.getByRole("button", { name: "Feature" }).click();
+      await userEvent.keyboard("{ArrowRight}");
+      await vi.waitFor(() => {
+        expect(
+          page.getByRole("button", { name: "Code Review" }).element().getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(document.activeElement).toBe(codeReview);
+      });
+      expect(document.body.textContent ?? "").toContain("Reviewer A");
+
+      await userEvent.keyboard("{ArrowRight}");
+      await vi.waitFor(() => {
+        expect(
+          page
+            .getByRole("button", { name: "Investigation" })
+            .element()
+            .getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(document.activeElement).toBe(investigation);
+      });
+      expect(document.body.textContent ?? "").toContain("Investigator A");
+
+      await userEvent.keyboard("{Home}");
+      await vi.waitFor(() => {
+        expect(
+          page.getByRole("button", { name: "Feature" }).element().getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(document.activeElement).toBe(feature);
+      });
+
+      await userEvent.keyboard("{End}");
+      await vi.waitFor(() => {
+        expect(
+          page
+            .getByRole("button", { name: "Investigation" })
+            .element()
+            .getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(document.activeElement).toBe(investigation);
+      });
+
+      await userEvent.keyboard("{ArrowDown}");
+      await vi.waitFor(() => {
+        expect(
+          page.getByRole("button", { name: "Feature" }).element().getAttribute("aria-pressed"),
+        ).toBe("true");
+        expect(document.activeElement).toBe(feature);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("shows the configured dialog primary shortcut hint", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      {
+        container: host,
+        keybindings: [createDialogPrimaryKeybinding("r", { shiftKey: true })],
+      },
+    );
+
+    try {
+      const footer = document.querySelector('[data-slot="dialog-footer"]');
+      expect(footer?.textContent ?? "").toContain(
+        isMacPlatform(navigator.platform) ? "⇧⌘R" : "Ctrl+Shift+R",
+      );
+      expect(footer?.textContent ?? "").toContain("to start");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("starts a planning workflow from the dialog primary shortcut", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onWorkflowCreated = vi.fn();
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog
+        open
+        projectId={"project-1" as ProjectId}
+        onOpenChange={() => {}}
+        onWorkflowCreated={onWorkflowCreated}
+      />,
+      { container: host },
+    );
+
+    try {
+      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      await prompt.fill("Plan the new workflow behavior");
+
+      dispatchModifiedEnter(prompt.element());
+
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
+      });
+
+      const firstCall = nativeApiMocks.createWorkflow.mock.calls[0];
+      expect(firstCall).toBeDefined();
+      if (!firstCall) {
+        throw new Error("Expected planning workflow request payload.");
+      }
+      const [payload] = firstCall;
+      expect(payload).toMatchObject({
+        projectId: "project-1",
+        requirementPrompt: "Plan the new workflow behavior",
+        titleGenerationModel: "custom/thread-title-model",
+      });
+      expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("does not start from the dialog primary shortcut when submit is disabled", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      dispatchModifiedEnter(prompt.element());
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(0);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("ignores IME composition and repeated primary-action keydowns", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      await prompt.fill("Plan the new workflow behavior");
+
+      const composingEvent = createModifiedEnterEvent();
+      Object.defineProperty(composingEvent, "isComposing", { value: true });
+      prompt.element().dispatchEvent(composingEvent);
+
+      dispatchModifiedEnter(prompt.element(), { repeat: true });
+
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(0);
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("keeps plain Enter in the prompt as a newline", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      const prompt = page.getByPlaceholder("Describe the feature or requirement to plan.");
+      await prompt.click();
+      await userEvent.keyboard("First line{Enter}Second line");
+
+      const textarea = prompt.element();
+      expect(textarea).toBeInstanceOf(HTMLTextAreaElement);
+      expect((textarea as HTMLTextAreaElement).value).toBe("First line\nSecond line");
+      expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(0);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("sends a planning workflow request without title and with titleGenerationModel", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onOpenChange = vi.fn();
     const onWorkflowCreated = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog
         open
         projectId={"project-1" as ProjectId}
@@ -522,7 +821,7 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onWorkflowCreated = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog
         open
         projectId={"project-1" as ProjectId}
@@ -573,7 +872,7 @@ describe("WorkflowCreateDialog", () => {
     const host = document.createElement("div");
     document.body.append(host);
     const onWorkflowCreated = vi.fn();
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog
         open
         projectId={"project-1" as ProjectId}
@@ -625,7 +924,7 @@ describe("WorkflowCreateDialog", () => {
 
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
       { container: host },
     );
@@ -655,7 +954,7 @@ describe("WorkflowCreateDialog", () => {
 
     const host = document.createElement("div");
     document.body.append(host);
-    const screen = await render(
+    const screen = await renderWithQueryClient(
       <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
       { container: host },
     );
