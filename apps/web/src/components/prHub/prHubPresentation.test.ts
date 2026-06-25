@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PrAttentionState, TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
 
-import { prRowActionVisibility, primaryActionFor } from "./prHubPresentation";
+import { comparePrPriority, prRowActionVisibility, primaryActionFor } from "./prHubPresentation";
 
 function makePr(
   overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
@@ -133,5 +133,53 @@ describe("prRowActionVisibility", () => {
     expect(visibility.canSnooze).toBe(true);
     expect(visibility.canSuggest).toBe(true);
     expect(visibility.canIgnore).toBe(true);
+  });
+});
+
+describe("comparePrPriority", () => {
+  const order = (prs: TrackedPullRequest[]) =>
+    [...prs].sort(comparePrPriority).map((pr) => pr.number);
+
+  it("orders needs_you before waiting_on_others before informational", () => {
+    const fyi = makePr({
+      number: 1,
+      attentionState: "mentioned",
+      attentionBucket: "informational",
+    });
+    const waiting = makePr({
+      number: 2,
+      attentionState: "reviewed_waiting",
+      attentionBucket: "waiting_on_others",
+    });
+    const needsYou = makePr({
+      number: 3,
+      attentionState: "ci_failing",
+      attentionBucket: "needs_you",
+    });
+
+    expect(order([fyi, waiting, needsYou])).toEqual([3, 2, 1]);
+  });
+
+  it("orders by attention-state severity within a bucket", () => {
+    const draft = makePr({ number: 1, attentionState: "draft" });
+    const ci = makePr({ number: 2, attentionState: "ci_failing" });
+    const conflict = makePr({ number: 3, attentionState: "merge_conflict" });
+
+    expect(order([draft, ci, conflict])).toEqual([3, 2, 1]);
+  });
+
+  it("breaks ties by most-recently-updated first", () => {
+    const older = makePr({
+      number: 1,
+      attentionState: "ci_failing",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const newer = makePr({
+      number: 2,
+      attentionState: "ci_failing",
+      updatedAt: "2026-02-01T00:00:00.000Z",
+    });
+
+    expect(order([older, newer])).toEqual([2, 1]);
   });
 });

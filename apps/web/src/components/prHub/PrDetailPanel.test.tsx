@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { PrHubAdvisory, TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
 
-import { PullRequestRow } from "./PullRequestRow";
+import { PrDetailPanel } from "./PrDetailPanel";
+import { TooltipProvider } from "../ui/tooltip";
 
-function makePr(): TrackedPullRequest {
+function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest {
   return {
     key: PullRequestKey.makeUnsafe("github.com/octo/repo#1"),
     nodeId: "PR_1",
@@ -50,6 +51,7 @@ function makePr(): TrackedPullRequest {
     ignoredAt: null,
     notificationPending: false,
     attentionFingerprint: "fingerprint-1",
+    ...overrides,
   };
 }
 
@@ -80,33 +82,34 @@ function makeAdvisory(pr: TrackedPullRequest): PrHubAdvisory {
   };
 }
 
-describe("PullRequestRow advisory UI", () => {
-  it("renders advisory state and read-only suggest action", () => {
+function render(node: React.ReactElement): string {
+  return renderToStaticMarkup(<TooltipProvider delay={0}>{node}</TooltipProvider>);
+}
+
+describe("PrDetailPanel", () => {
+  it("renders advisory state and the read-only suggest overflow trigger", () => {
     const pr = makePr();
-    const markup = renderToStaticMarkup(
-      <PullRequestRow pr={pr} advisory={makeAdvisory(pr)} onAnalyzeAdvisory={() => {}} />,
+    const markup = render(
+      <PrDetailPanel pr={pr} advisory={makeAdvisory(pr)} onAnalyzeAdvisory={() => {}} />,
     );
 
     expect(markup).toContain("Fix CI");
     expect(markup).toContain("90%");
     expect(markup).toContain("Fix failing CI before requesting more review.");
     expect(markup).toContain("Details");
-    // Secondary actions (Suggest, Comment, Ignore, …) now live in the overflow
-    // menu, which is portalled and closed by default, so it is absent from the
-    // static markup. Assert the always-rendered overflow trigger instead.
+    // Secondary actions live in a portalled, closed overflow menu; assert the
+    // always-rendered trigger instead.
     expect(markup).toContain('aria-label="More actions"');
   });
 
-  it("renders the contextual primary action inline", () => {
-    const pr: TrackedPullRequest = {
-      ...makePr(),
+  it("renders the contextual primary action", () => {
+    const pr = makePr({
       roles: ["review_requested"],
       attentionState: "review_requested",
       attentionBucket: "needs_you",
-    };
-    const markup = renderToStaticMarkup(<PullRequestRow pr={pr} />);
+    });
+    const markup = render(<PrDetailPanel pr={pr} />);
 
-    // A requested reviewer sees Approve as the inline primary action.
     expect(markup).toContain("Approve");
     expect(markup).toContain('aria-label="More actions"');
   });

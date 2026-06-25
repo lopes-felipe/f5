@@ -13,8 +13,14 @@ import {
   safeHttpsUrl,
 } from "./prHubPresentation";
 
-export function PrAdvisoryInline({ advisory }: { advisory: PrHubAdvisory }) {
-  const [isExpanded, setIsExpanded] = useState(false);
+export function PrAdvisoryInline({
+  advisory,
+  defaultExpanded = false,
+}: {
+  advisory: PrHubAdvisory;
+  defaultExpanded?: boolean;
+}) {
+  const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const statusLabel = advisoryStatusLabel(advisory);
   const hasDetails =
     advisory.findings.length > 0 || advisory.blockers.length > 0 || Boolean(advisory.errorMessage);

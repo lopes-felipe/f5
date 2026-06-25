@@ -1,5 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { GitPullRequestIcon, RefreshCwIcon, SparklesIcon } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  GitPullRequestIcon,
+  InboxIcon,
+  RefreshCwIcon,
+  SparklesIcon,
+  TargetIcon,
+} from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
 
@@ -8,9 +14,12 @@ import { prHubAdvisoriesQueryOptions, prHubSnapshotQueryOptions } from "../../li
 import { ensureNativeApi } from "../../nativeApi";
 import { onPrHubAdvisoriesUpdated, onPrHubUpdated } from "../../wsNativeApi";
 import { Button } from "../ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { Empty, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { TooltipProvider } from "../ui/tooltip";
-import { PullRequestRow } from "./PullRequestRow";
+import { PrInboxView } from "./PrInboxView";
+import { PrFocusView } from "./PrFocusView";
+import { PR_HUB_VIEW_MODE_STORAGE_KEY, type PrHubViewMode } from "./prHubPresentation";
 
 type PrHubFilter =
   | "needs_my_review"
@@ -137,12 +146,16 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
   const queryClient = useQueryClient();
   const snapshotQuery = useQuery(prHubSnapshotQueryOptions());
   const [filter, setFilter] = useState<PrHubFilter>("needs_my_review");
+  const [viewMode, setViewMode] = useState<PrHubViewMode>(() => {
+    if (typeof window === "undefined") return "inbox";
+    const stored = window.localStorage.getItem(PR_HUB_VIEW_MODE_STORAGE_KEY);
+    return stored === "focus" || stored === "inbox" ? stored : "inbox";
+  });
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analyzingKeys, setAnalyzingKeys] = useState<ReadonlySet<PullRequestKey>>(
     new Set<PullRequestKey>(),
   );
-  const focusedRowRef = useRef<HTMLDivElement | null>(null);
   const snapshot = snapshotQuery.data;
   const advisoryKeys = useMemo(
     () =>
@@ -222,12 +235,9 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
   }, [focusedPr]);
 
   useEffect(() => {
-    if (!focusedPrKey) return;
-    const frame = window.requestAnimationFrame(() => {
-      focusedRowRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [focusedPrKey, visiblePullRequests]);
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(PR_HUB_VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
 
   const banner = snapshot ? statusMessage(snapshot.status) : null;
   const bannerDetail = compactStatusDetail(snapshot?.errorMessage);
@@ -262,6 +272,22 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            value={[viewMode]}
+            onValueChange={(value) => {
+              const next = value[0];
+              if (next === "inbox" || next === "focus") setViewMode(next);
+            }}
+          >
+            <Toggle value="inbox" aria-label="Inbox view">
+              <InboxIcon /> Inbox
+            </Toggle>
+            <Toggle value="focus" aria-label="Focus view">
+              <TargetIcon /> Focus
+            </Toggle>
+          </ToggleGroup>
           <Button
             size="sm"
             variant="outline"
@@ -334,7 +360,7 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
         })}
       </div>
 
-      <main className="min-h-0 flex-1 overflow-auto">
+      <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
         {snapshotQuery.isLoading ? (
           <Empty>
             <EmptyHeader>
@@ -344,37 +370,27 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
               <EmptyTitle>Loading pull requests</EmptyTitle>
             </EmptyHeader>
           </Empty>
-        ) : visiblePullRequests.length === 0 ? (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <GitPullRequestIcon />
-              </EmptyMedia>
-              <EmptyTitle>No pull requests</EmptyTitle>
-              <EmptyDescription>No entries match this filter.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
         ) : (
-          // PrMetaStrip relies on this provider for its tooltips. If those rows
-          // are ever reused outside this view, wrap them in their own provider.
+          // Tooltip provider for any base-ui tooltips rendered by the views;
+          // there is no global TooltipProvider in the app.
           <TooltipProvider delay={0}>
-            <div>
-              {visiblePullRequests.map((pr) => (
-                <PullRequestRow
-                  key={pr.key}
-                  pr={pr}
-                  advisory={advisoriesByKey.get(pr.key)}
-                  isAnalyzingAdvisory={
-                    analyzingKeys.has(pr.key) ||
-                    advisoriesByKey.get(pr.key)?.status === "queued" ||
-                    advisoriesByKey.get(pr.key)?.status === "running"
-                  }
-                  onAnalyzeAdvisory={() => void analyzeKeys([pr.key])}
-                  isFocused={pr.key === focusedPrKey}
-                  {...(pr.key === focusedPrKey ? { rowRef: focusedRowRef } : {})}
-                />
-              ))}
-            </div>
+            {viewMode === "inbox" ? (
+              <PrInboxView
+                prs={visiblePullRequests}
+                advisoriesByKey={advisoriesByKey}
+                analyzingKeys={analyzingKeys}
+                onAnalyzeAdvisory={(key) => void analyzeKeys([key])}
+                focusedPrKey={focusedPrKey}
+              />
+            ) : (
+              <PrFocusView
+                prs={visiblePullRequests}
+                advisoriesByKey={advisoriesByKey}
+                analyzingKeys={analyzingKeys}
+                onAnalyzeAdvisory={(key) => void analyzeKeys([key])}
+                focusedPrKey={focusedPrKey}
+              />
+            )}
           </TooltipProvider>
         )}
       </main>

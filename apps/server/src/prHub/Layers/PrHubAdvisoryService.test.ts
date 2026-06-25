@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { Effect, Layer, Stream } from "effect";
+import { Effect, Layer, Schema, Stream } from "effect";
 
 import { PullRequestKey, type PrHubSnapshot, type TrackedPullRequest } from "@t3tools/contracts";
 
@@ -395,6 +395,23 @@ it.effect("uses the stronger default advisory model and maps model JSON onto rea
   const modelSelections: string[] = [];
   const textGeneration = makeTextGenerationStub({
     generateStructuredJson: ((input) => {
+      const schemaDocument = Schema.toJsonSchemaDocument(input.outputSchema);
+      const schema = schemaDocument.schema as {
+        properties?: {
+          findings?: {
+            items?: {
+              required?: ReadonlyArray<string>;
+            };
+          };
+        };
+      };
+      assert.deepEqual(schema.properties?.findings?.items?.required, [
+        "id",
+        "validity",
+        "summary",
+        "rationale",
+        "category",
+      ]);
       modelSelections.push(
         `${input.modelSelection?.instanceId ?? "none"}:${input.modelSelection?.model ?? "none"}:${
           input.modelSelection?.options

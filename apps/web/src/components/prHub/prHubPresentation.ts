@@ -205,8 +205,108 @@ export function advisoryStatusLabel(advisory: PrHubAdvisory): string | null {
   return null;
 }
 
+export function reviewDecisionLabel(decision: TrackedPullRequest["reviewDecision"]): string {
+  switch (decision) {
+    case "approved":
+      return "Approved";
+    case "changes_requested":
+      return "Changes requested";
+    case "review_required":
+      return "Review required";
+    case "none":
+      return "No reviews";
+  }
+}
+
+export function mergeableLabel(mergeable: TrackedPullRequest["mergeable"]): string {
+  switch (mergeable) {
+    case "mergeable":
+      return "Mergeable";
+    case "conflicting":
+      return "Conflicts";
+    case "unknown":
+      return "Unknown";
+  }
+}
+
 export function defaultSnoozeUntil(): string {
   return new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+}
+
+/** The two layouts the PR Hub can render. Persisted per-user in localStorage. */
+export type PrHubViewMode = "inbox" | "focus";
+
+export const PR_HUB_VIEW_MODE_STORAGE_KEY = "f5.prHub.viewMode";
+
+/**
+ * Attention buckets, ordered by how much they demand the viewer's attention.
+ * Lower rank sorts first (more urgent).
+ */
+function bucketRank(pr: TrackedPullRequest): number {
+  switch (pr.attentionBucket) {
+    case "needs_you":
+      return 0;
+    case "waiting_on_others":
+      return 1;
+    default:
+      return 2;
+  }
+}
+
+/**
+ * Within a bucket, order by how actionable / pressing the attention state is.
+ * Lower rank sorts first. States not listed fall to the end.
+ */
+function stateSeverityRank(pr: TrackedPullRequest): number {
+  switch (pr.attentionState) {
+    case "merge_conflict":
+      return 0;
+    case "ci_failing":
+      return 1;
+    case "branch_behind":
+      return 2;
+    case "changes_requested":
+      return 3;
+    case "re_review_requested":
+      return 4;
+    case "review_requested":
+      return 5;
+    case "ready_to_merge":
+      return 6;
+    case "awaiting_review":
+      return 7;
+    case "reviewed_waiting":
+      return 8;
+    case "draft":
+      return 9;
+    case "mentioned":
+      return 10;
+    case "merged":
+      return 11;
+    case "closed":
+      return 12;
+    default:
+      return 13;
+  }
+}
+
+/**
+ * Total ordering for the Focus queue and the Inbox spine: most-pressing first.
+ * Bucket (needs_you → waiting_on_others → informational), then state severity,
+ * then most-recently-updated first. Pure and stable for a given snapshot.
+ */
+export function comparePrPriority(a: TrackedPullRequest, b: TrackedPullRequest): number {
+  const byBucket = bucketRank(a) - bucketRank(b);
+  if (byBucket !== 0) return byBucket;
+  const bySeverity = stateSeverityRank(a) - stateSeverityRank(b);
+  if (bySeverity !== 0) return bySeverity;
+  const aTime = new Date(a.updatedAt).getTime();
+  const bTime = new Date(b.updatedAt).getTime();
+  const aValid = Number.isFinite(aTime);
+  const bValid = Number.isFinite(bTime);
+  if (aValid && bValid && aTime !== bTime) return bTime - aTime;
+  if (aValid !== bValid) return aValid ? -1 : 1;
+  return 0;
 }
 
 export function safeHttpsUrl(input: string): string | null {

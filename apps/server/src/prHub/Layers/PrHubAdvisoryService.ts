@@ -85,7 +85,7 @@ const AdvisoryModelOutput = Schema.Struct({
       validity: Schema.Literals(ADVISORY_FINDING_VALIDITIES),
       summary: Schema.String,
       rationale: Schema.String,
-      category: Schema.optional(Schema.String),
+      category: Schema.String,
     }),
   ),
 });
