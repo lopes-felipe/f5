@@ -35,20 +35,25 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { type ComposerImageAttachment, useComposerDraftStore } from "../composerDraftStore";
 import { cn, randomUUID } from "../lib/utils";
 import { ensureNativeApi } from "../nativeApi";
+import {
+  readReadyWebContentsId,
+  readReadyWebviewValue,
+  type PreviewWebviewReaderElement,
+} from "./PreviewPanel.logic";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Spinner } from "./ui/spinner";
 import { toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-type PreviewWebviewElement = HTMLElement & {
-  getWebContentsId?: () => number;
-  getURL?: () => string;
-  getTitle?: () => string;
-  canGoBack?: () => boolean;
-  canGoForward?: () => boolean;
-  isLoading?: () => boolean;
-};
+type PreviewWebviewElement = HTMLElement &
+  PreviewWebviewReaderElement & {
+    getURL?: () => string;
+    getTitle?: () => string;
+    canGoBack?: () => boolean;
+    canGoForward?: () => boolean;
+    isLoading?: () => boolean;
+  };
 
 interface PreviewPanelProps {
   threadId: ThreadId;
@@ -432,8 +437,8 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
         threadId,
         tabId: activeSession.tabId,
         navStatus,
-        canGoBack: webview?.canGoBack?.() ?? false,
-        canGoForward: webview?.canGoForward?.() ?? false,
+        canGoBack: readReadyWebviewValue(() => webview?.canGoBack?.(), false),
+        canGoForward: readReadyWebviewValue(() => webview?.canGoForward?.(), false),
       };
       const reportKey = JSON.stringify(report);
       if (lastStatusReportKeyRef.current === reportKey) {
@@ -450,13 +455,14 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
     if (!desktopPreview || !activeSession || !webview) return;
 
     const register = () => {
-      const webContentsId = webview.getWebContentsId?.();
-      if (typeof webContentsId === "number" && webContentsId > 0) {
+      const webContentsId = readReadyWebContentsId(webview);
+      if (webContentsId !== null) {
         void desktopPreview.registerWebview(activeSession.tabId, webContentsId);
       }
     };
-    const currentUrl = () => webview.getURL?.() || activeUrl || "about:blank";
-    const currentTitle = () => webview.getTitle?.() || activeTitle || "";
+    const currentUrl = () =>
+      readReadyWebviewValue(() => webview.getURL?.(), activeUrl || "about:blank");
+    const currentTitle = () => readReadyWebviewValue(() => webview.getTitle?.(), activeTitle);
     const onStart = () => {
       const url = currentUrl();
       if (!url || url === "about:blank") return;

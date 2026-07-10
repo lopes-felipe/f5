@@ -1686,12 +1686,32 @@ export const makeWorkflowService = Effect.gen(function* () {
             : null;
       if (authorBranchId) {
         const branch = authorBranchId === "a" ? workflow.branchA : workflow.branchB;
-        if (branch.status !== "authoring" && branch.status !== "revising") {
-          return workflow;
-        }
-
         const turnId = getFinishedLatestTurnId(thread);
         if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
+          return workflow;
+        }
+        if (branch.status === "plan_saved") {
+          if (
+            branch.reviews.length > 0 ||
+            workflow.merge.status !== "not_started" ||
+            turnId === branch.planTurnId ||
+            !thread.latestTurn ||
+            thread.latestTurn.requestedAt < branch.updatedAt ||
+            !hasProposedPlanForTurn(thread, turnId)
+          ) {
+            return workflow;
+          }
+
+          const nextWorkflow = markBranchPlanSaved(workflow, authorBranchId, {
+            turnId,
+            updatedAt,
+          });
+          if (nextWorkflow !== workflow) {
+            yield* upsertWorkflow(nextWorkflow);
+          }
+          return nextWorkflow;
+        }
+        if (branch.status !== "authoring" && branch.status !== "revising") {
           return workflow;
         }
         if (branch.status === "revising" && turnId === branch.planTurnId) {

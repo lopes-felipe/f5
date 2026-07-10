@@ -58,6 +58,7 @@ import {
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
+import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
 
 syncShellEnvironment();
 
@@ -210,13 +211,6 @@ function writeBackendSessionBoundary(phase: "START" | "END", details: string): v
   backendLogSink.write(
     `[${logTimestamp()}] ---- APP SESSION ${phase} run=${APP_RUN_ID} ${normalizedDetails} ----\n`,
   );
-}
-
-function formatErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return String(error);
 }
 
 function getSafeExternalUrl(rawUrl: unknown): string | null {
@@ -2208,7 +2202,14 @@ function registerIpcHandlers(): void {
     if (!guest || !url) {
       throw new Error("Preview navigation target is invalid.");
     }
-    await guest.loadURL(url);
+    try {
+      await guest.loadURL(url);
+    } catch (error) {
+      if (isPreviewNavigationAbortError(error)) {
+        return;
+      }
+      throw error;
+    }
   });
 
   ipcMain.removeHandler(PREVIEW_GO_BACK_CHANNEL);

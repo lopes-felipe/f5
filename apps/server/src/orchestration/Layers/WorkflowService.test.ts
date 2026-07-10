@@ -637,6 +637,152 @@ describe("WorkflowService", () => {
     harness = null;
   });
 
+  async function expectPlanSavedBranchRepinSkipped(input: {
+    readonly reviews?: PlanningWorkflow["branchA"]["reviews"];
+    readonly mergeStatus?: PlanningWorkflow["merge"]["status"];
+    readonly branchUpdatedAt?: string;
+    readonly finalRequestedAt?: string;
+    readonly trigger?: "message-sent" | "proposed-plan-upserted";
+  }) {
+    const savedTurnId = TurnId.makeUnsafe("saved-plan-turn-a");
+    const finalTurnId = TurnId.makeUnsafe("final-turn-a");
+    const savedAt = "2026-03-26T12:00:00.000Z";
+    const finalAt = "2026-03-26T12:02:00.000Z";
+    const mergeStatus = input.mergeStatus ?? "not_started";
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: savedTurnId,
+        reviews: input.reviews ?? [],
+        status: "plan_saved",
+        updatedAt: input.branchUpdatedAt ?? savedAt,
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: null,
+        reviews: [],
+        status: "authoring",
+      },
+      merge: {
+        ...makeWorkflow().merge,
+        threadId: mergeStatus === "not_started" ? null : ThreadId.makeUnsafe("merge-thread"),
+        outputFilePath: null,
+        turnId: null,
+        approvedPlanId: null,
+        status: mergeStatus,
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: finalTurnId,
+              state: "completed",
+              requestedAt: input.finalRequestedAt ?? finalAt,
+              startedAt: input.finalRequestedAt ?? finalAt,
+              completedAt: input.finalRequestedAt ?? finalAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-final-a"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: finalAt,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-saved-a"),
+                role: "assistant",
+                text: "SAVED_PLAN_A",
+                turnId: savedTurnId,
+                streaming: false,
+                createdAt: savedAt,
+                updatedAt: savedAt,
+              },
+              {
+                id: MessageId.makeUnsafe("assistant-final-a"),
+                role: "assistant",
+                text: "FINAL_PLAN_A_SHOULD_NOT_PIN",
+                turnId: finalTurnId,
+                streaming: false,
+                createdAt: finalAt,
+                updatedAt: finalAt,
+              },
+            ],
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("saved-plan-a"),
+                turnId: savedTurnId,
+                planMarkdown: "SAVED_PLAN_A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: savedAt,
+                updatedAt: savedAt,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    if ((input.trigger ?? "proposed-plan-upserted") === "message-sent") {
+      await harness.emit(
+        makeEvent(
+          "thread.message-sent",
+          {
+            threadId: ThreadId.makeUnsafe("author-a"),
+            messageId: MessageId.makeUnsafe("assistant-final-a"),
+            role: "assistant",
+            text: "FINAL_PLAN_A_SHOULD_NOT_PIN",
+            turnId: finalTurnId,
+            streaming: false,
+            createdAt: finalAt,
+            updatedAt: finalAt,
+          },
+          finalAt,
+        ),
+      );
+    } else {
+      await harness.emit(
+        makeEvent(
+          "thread.proposed-plan-upserted",
+          {
+            threadId: ThreadId.makeUnsafe("author-a"),
+            proposedPlan: {
+              id: OrchestrationProposedPlanId.makeUnsafe("final-plan-a"),
+              turnId: finalTurnId,
+              planMarkdown: "FINAL_PLAN_A_SHOULD_NOT_PIN",
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: finalAt,
+              updatedAt: finalAt,
+            },
+          },
+          finalAt,
+        ),
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const currentWorkflow = harness.getSnapshot().planningWorkflows[0];
+    expect(currentWorkflow?.branchA.planTurnId).toBe(savedTurnId);
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "project.workflow.upsert" &&
+          command.workflow.branchA.planTurnId === finalTurnId,
+      ),
+    ).toBe(false);
+  }
+
   it("rejects startImplementation unless the merge is ready for manual review", async () => {
     const workflow = makeWorkflow({
       merge: {
@@ -4695,6 +4841,207 @@ describe("WorkflowService", () => {
       harness.dispatched.filter((command) => command.type === "project.workflow.upsert"),
     ).toHaveLength(workflowUpsertCountBefore);
     expect(harness.getSnapshot().planningWorkflows[0]?.branchA.status).toBe("reviews_requested");
+  });
+
+  it("re-pins a plan-saved branch to a later proposed plan before reviews start", async () => {
+    const statusTurnId = TurnId.makeUnsafe("status-turn-a");
+    const finalTurnId = TurnId.makeUnsafe("final-turn-a");
+    const planTurnIdB = TurnId.makeUnsafe("plan-turn-b");
+    const statusAt = "2026-03-26T12:00:00.000Z";
+    const finalAt = "2026-03-26T12:02:00.000Z";
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: statusTurnId,
+        status: "plan_saved",
+        updatedAt: statusAt,
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: planTurnIdB,
+        status: "plan_saved",
+        updatedAt: statusAt,
+      },
+      merge: {
+        ...makeWorkflow().merge,
+        threadId: null,
+        status: "not_started",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: finalTurnId,
+              state: "completed",
+              requestedAt: finalAt,
+              startedAt: finalAt,
+              completedAt: finalAt,
+              assistantMessageId: MessageId.makeUnsafe("assistant-final-a"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: finalAt,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-status-a"),
+                role: "assistant",
+                text: "STATUS_ONLY_DO_NOT_REVIEW",
+                turnId: statusTurnId,
+                streaming: false,
+                createdAt: statusAt,
+                updatedAt: statusAt,
+              },
+              {
+                id: MessageId.makeUnsafe("assistant-final-a"),
+                role: "assistant",
+                text: "FINAL_PLAN_A_FOR_REVIEW",
+                turnId: finalTurnId,
+                streaming: false,
+                createdAt: finalAt,
+                updatedAt: finalAt,
+              },
+            ],
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("status-plan-a"),
+                turnId: statusTurnId,
+                planMarkdown: "STATUS_ONLY_DO_NOT_REVIEW",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: statusAt,
+                updatedAt: statusAt,
+              },
+            ],
+          }),
+          makeThread({
+            id: ThreadId.makeUnsafe("author-b"),
+            latestTurn: {
+              turnId: planTurnIdB,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("assistant-plan-b"),
+            },
+            session: {
+              threadId: ThreadId.makeUnsafe("author-b"),
+              status: "ready",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-plan-b"),
+                role: "assistant",
+                text: "Plan B",
+                turnId: planTurnIdB,
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-b"),
+                turnId: planTurnIdB,
+                planMarkdown: "Plan B",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent(
+        "thread.proposed-plan-upserted",
+        {
+          threadId: ThreadId.makeUnsafe("author-a"),
+          proposedPlan: {
+            id: OrchestrationProposedPlanId.makeUnsafe("final-plan-a"),
+            turnId: finalTurnId,
+            planMarkdown: "FINAL_PLAN_A_FOR_REVIEW",
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: finalAt,
+            updatedAt: finalAt,
+          },
+        },
+        finalAt,
+      ),
+    );
+
+    await waitFor(
+      () =>
+        lastWorkflowUpsert(harness!.dispatched)?.workflow.branchA.status === "reviews_requested",
+    );
+
+    const finalWorkflow = lastWorkflowUpsert(harness.dispatched)?.workflow;
+    expect(finalWorkflow?.branchA.planTurnId).toBe(finalTurnId);
+    expect(finalWorkflow?.branchB.status).toBe("reviews_requested");
+
+    const reviewPrompts = harness.dispatched
+      .filter(
+        (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
+          command.type === "thread.turn.start",
+      )
+      .map((command) => command.message.text);
+    expect(reviewPrompts.some((prompt) => prompt.includes("FINAL_PLAN_A_FOR_REVIEW"))).toBe(true);
+    expect(reviewPrompts.some((prompt) => prompt.includes("STATUS_ONLY_DO_NOT_REVIEW"))).toBe(
+      false,
+    );
+  });
+
+  it("does not re-pin a plan-saved branch after reviews have started", async () => {
+    await expectPlanSavedBranchRepinSkipped({
+      reviews: [
+        {
+          slot: "cross",
+          threadId: ThreadId.makeUnsafe("review-a"),
+          outputFilePath: null,
+          status: "running",
+          error: null,
+          updatedAt: NOW,
+        },
+      ],
+    });
+  });
+
+  it("does not re-pin a plan-saved branch after merge has started", async () => {
+    await expectPlanSavedBranchRepinSkipped({
+      mergeStatus: "in_progress",
+    });
+  });
+
+  it("does not re-pin a plan-saved branch to a later turn without a proposed plan", async () => {
+    await expectPlanSavedBranchRepinSkipped({
+      trigger: "message-sent",
+    });
+  });
+
+  it("does not re-pin a plan-saved branch from a stale completed turn", async () => {
+    await expectPlanSavedBranchRepinSkipped({
+      branchUpdatedAt: "2026-03-26T12:03:00.000Z",
+      finalRequestedAt: "2026-03-26T12:02:00.000Z",
+    });
   });
 
   it("starts reviews from a ready author session without querying the projection snapshot", async () => {
