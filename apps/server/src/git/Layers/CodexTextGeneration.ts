@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
-import { DEFAULT_GIT_TEXT_GENERATION_MODEL, type ModelSelection } from "@t3tools/contracts";
+import {
+  CODEX_REASONING_EFFORT_OPTIONS,
+  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  type ModelSelection,
+} from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
@@ -24,7 +28,7 @@ import {
 } from "../Services/TextGeneration.ts";
 
 const DEFAULT_CODEX_REASONING_EFFORT = "low";
-const CODEX_REASONING_EFFORTS = new Set(["xhigh", "high", "medium", "low"]);
+const CODEX_REASONING_EFFORTS = new Set<string>(CODEX_REASONING_EFFORT_OPTIONS);
 const CODEX_TIMEOUT_MS = 180_000;
 
 function toCodexOutputJsonSchema(schema: Schema.Top): unknown {

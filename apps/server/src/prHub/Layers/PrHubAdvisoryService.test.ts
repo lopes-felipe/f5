@@ -457,7 +457,7 @@ it.effect("uses the stronger default advisory model and maps model JSON onto rea
     assert.equal(advisory.findings.length, 1);
     assert.equal(advisory.findings[0]?.id, "comment_model_1");
     assert.equal(advisory.findings[0]?.validity, "valid");
-    assert.equal(modelSelections[0], "codex:gpt-5.5:reasoningEffort=high");
+    assert.equal(modelSelections[0], "codex:gpt-5.6-sol:reasoningEffort=high");
   }).pipe(
     Effect.provide(
       makeLayer({

@@ -11,6 +11,7 @@ import {
   type ProviderModelOptions,
   type ProviderOptionSelection,
 } from "@t3tools/contracts";
+import { resolveReasoningEffortForProvider } from "@t3tools/shared/model";
 
 function readRecordField(candidate: Record<string, unknown> | null, key: string) {
   const value = candidate?.[key];
@@ -35,6 +36,12 @@ function readCursorReasoning(value: unknown): CursorReasoningOption | undefined 
     : undefined;
 }
 
+function readCodexReasoningEffort(value: unknown): CodexReasoningEffort | undefined {
+  return typeof value === "string"
+    ? (resolveReasoningEffortForProvider("codex", value) ?? undefined)
+    : undefined;
+}
+
 export function normalizeProviderModelOptions(
   value: unknown,
   provider?: ProviderKind | null,
@@ -51,19 +58,9 @@ export function normalizeProviderModelOptions(
   const openCodeCandidate = readRecordField(candidate, "opencode");
   const grokCandidate = readRecordField(candidate, "grok");
 
-  const codexReasoningEffort: CodexReasoningEffort | undefined =
-    codexCandidate?.reasoningEffort === "low" ||
-    codexCandidate?.reasoningEffort === "medium" ||
-    codexCandidate?.reasoningEffort === "high" ||
-    codexCandidate?.reasoningEffort === "xhigh"
-      ? codexCandidate.reasoningEffort
-      : provider === "codex" &&
-          (legacy?.effort === "low" ||
-            legacy?.effort === "medium" ||
-            legacy?.effort === "high" ||
-            legacy?.effort === "xhigh")
-        ? legacy.effort
-        : undefined;
+  const codexReasoningEffort =
+    readCodexReasoningEffort(codexCandidate?.reasoningEffort) ??
+    (provider === "codex" ? readCodexReasoningEffort(legacy?.effort) : undefined);
   const codexFastMode =
     codexCandidate?.fastMode === true ||
     (provider === "codex" && legacy?.codexFastMode === true) ||

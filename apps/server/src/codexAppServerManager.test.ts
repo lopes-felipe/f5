@@ -299,6 +299,12 @@ describe("classifyCodexStderrLine", () => {
 });
 
 describe("normalizeCodexModelSlug", () => {
+  it("maps 5.6 aliases to gpt-5.6-sol", () => {
+    expect(normalizeCodexModelSlug("5.6")).toBe("gpt-5.6-sol");
+    expect(normalizeCodexModelSlug("gpt-5.6")).toBe("gpt-5.6-sol");
+    expect(normalizeCodexModelSlug("gpt-5.6-sol")).toBe("gpt-5.6-sol");
+  });
+
   it("maps 5.5 aliases to gpt-5.5", () => {
     expect(normalizeCodexModelSlug("5.5")).toBe("gpt-5.5");
   });

@@ -29,6 +29,8 @@ import {
 
 describe("normalizeModelSlug", () => {
   it("maps known aliases to canonical slugs", () => {
+    expect(normalizeModelSlug("5.6")).toBe("gpt-5.6-sol");
+    expect(normalizeModelSlug("gpt-5.6")).toBe("gpt-5.6-sol");
     expect(normalizeModelSlug("5.5")).toBe("gpt-5.5");
     expect(normalizeModelSlug("5.3")).toBe("gpt-5.3-codex");
     expect(normalizeModelSlug("gpt-5.3")).toBe("gpt-5.3-codex");
@@ -133,7 +135,14 @@ describe("resolveSelectableModel", () => {
 
 describe("getReasoningEffortOptions", () => {
   it("returns codex reasoning options for codex", () => {
-    expect(getReasoningEffortOptions("codex")).toEqual(["xhigh", "high", "medium", "low"]);
+    expect(getReasoningEffortOptions("codex")).toEqual([
+      "ultra",
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+    ]);
   });
 
   it("exposes full Claude Fable effort controls", () => {
@@ -259,6 +268,8 @@ describe("getEffectiveClaudeCodeEffort", () => {
 
 describe("estimateModelContextWindowTokens", () => {
   it("returns the configured context windows for known models", () => {
+    expect(estimateModelContextWindowTokens("gpt-5.6-sol")).toBe(1_050_000);
+    expect(estimateModelContextWindowTokens("gpt-5.6")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.5")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4-mini")).toBe(400_000);

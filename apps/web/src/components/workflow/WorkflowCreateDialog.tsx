@@ -86,10 +86,12 @@ import { toastManager } from "../ui/toast";
 import { ChevronDownIcon, XIcon } from "lucide-react";
 
 const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
+  ultra: "Ultra",
+  max: "Max",
   xhigh: "Extra High",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
 };
 
 const CLAUDE_REASONING_LABELS: Record<Exclude<ClaudeCodeEffort, "ultrathink">, string> = {

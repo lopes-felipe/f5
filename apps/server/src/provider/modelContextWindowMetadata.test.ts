@@ -40,6 +40,23 @@ describe("modelContextWindowMetadata", () => {
     );
   });
 
+  it("resolves codex context windows through normalized catalog aliases", () => {
+    const catalog = readCodexModelContextWindowCatalog({
+      data: [
+        {
+          id: "gpt-5.6",
+          limits: {
+            contextWindowTokens: 1_050_000,
+          },
+        },
+      ],
+    });
+
+    expect(
+      lookupModelContextWindowTokens({ provider: "codex", model: "gpt-5.6-sol", catalog }),
+    ).toBe(1_050_000);
+  });
+
   it("builds a claude model catalog from supported-model metadata", () => {
     const catalog = readClaudeModelContextWindowCatalog([
       {

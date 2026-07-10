@@ -7,6 +7,58 @@ import {
 } from "./providerModelOptions";
 
 describe("providerModelOptions", () => {
+  it("normalizes non-default Codex reasoning efforts from the shared effort options", () => {
+    expect(
+      normalizeProviderModelOptions({
+        codex: {
+          reasoningEffort: "max",
+        },
+      }),
+    ).toEqual({
+      codex: {
+        reasoningEffort: "max",
+      },
+    });
+
+    expect(
+      normalizeProviderModelOptions({
+        codex: {
+          reasoningEffort: "ultra",
+          fastMode: true,
+        },
+      }),
+    ).toEqual({
+      codex: {
+        reasoningEffort: "ultra",
+        fastMode: true,
+      },
+    });
+
+    expect(normalizeProviderModelOptions({}, "codex", { effort: "ultra" })).toEqual({
+      codex: {
+        reasoningEffort: "ultra",
+      },
+    });
+  });
+
+  it("round-trips Codex max and ultra option selections", () => {
+    expect(
+      providerSelectionsToModelOptions("codex", [{ id: "reasoningEffort", value: "ultra" }]),
+    ).toEqual({
+      codex: {
+        reasoningEffort: "ultra",
+      },
+    });
+
+    expect(
+      providerModelOptionsToSelections("codex", {
+        codex: {
+          reasoningEffort: "max",
+        },
+      }),
+    ).toEqual([{ id: "reasoningEffort", value: "max" }]);
+  });
+
   it("normalizes Cursor runtime model options without dropping false booleans", () => {
     expect(
       normalizeProviderModelOptions({

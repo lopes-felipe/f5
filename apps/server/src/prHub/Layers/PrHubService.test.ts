@@ -298,6 +298,10 @@ function reconcileByNumberResponse(nodes: ReadonlyArray<unknown>) {
   };
 }
 
+function recentResolvedAtIso() {
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+}
+
 function makePrNode(input: {
   readonly id?: string;
   readonly number?: number;
@@ -529,6 +533,7 @@ it.effect("stores a concise degraded message when GraphQL details cannot be hydr
 it.effect("transitions missing node-id PRs to recently resolved", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_resolved", number: 11 });
+  const resolvedAt = recentResolvedAtIso();
 
   return Effect.gen(function* () {
     const service = yield* PrHubService;
@@ -549,9 +554,9 @@ it.effect("transitions missing node-id PRs to recently resolved", () => {
             {
               id: "PR_resolved",
               state: "MERGED",
-              closedAt: "2026-06-23T00:00:00.000Z",
-              mergedAt: "2026-06-23T00:00:00.000Z",
-              updatedAt: "2026-06-23T00:00:00.000Z",
+              closedAt: resolvedAt,
+              mergedAt: resolvedAt,
+              updatedAt: resolvedAt,
             },
           ]),
         ],
@@ -563,6 +568,7 @@ it.effect("transitions missing node-id PRs to recently resolved", () => {
 it.effect("terminal-reconciles capped missing PRs by node id", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_capped_resolved", number: 16 });
+  const resolvedAt = recentResolvedAtIso();
 
   return Effect.gen(function* () {
     const service = yield* PrHubService;
@@ -586,9 +592,9 @@ it.effect("terminal-reconciles capped missing PRs by node id", () => {
             {
               id: "PR_capped_resolved",
               state: "CLOSED",
-              closedAt: "2026-06-23T00:00:00.000Z",
+              closedAt: resolvedAt,
               mergedAt: null,
-              updatedAt: "2026-06-23T00:00:00.000Z",
+              updatedAt: resolvedAt,
             },
           ]),
         ],
@@ -600,6 +606,7 @@ it.effect("terminal-reconciles capped missing PRs by node id", () => {
 it.effect("terminal-reconciles capped fallback rows by repository and number", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_number_resolved", number: 17 });
+  const resolvedAt = recentResolvedAtIso();
 
   return Effect.gen(function* () {
     const service = yield* PrHubService;
@@ -634,9 +641,9 @@ it.effect("terminal-reconciles capped fallback rows by repository and number", (
             {
               id: "PR_number_resolved",
               state: "MERGED",
-              closedAt: "2026-06-23T00:00:00.000Z",
-              mergedAt: "2026-06-23T00:00:00.000Z",
-              updatedAt: "2026-06-23T00:00:00.000Z",
+              closedAt: resolvedAt,
+              mergedAt: resolvedAt,
+              updatedAt: resolvedAt,
             },
           ]),
         ],

@@ -2,7 +2,14 @@ import { Effect, Schema, SchemaTransformation } from "effect";
 import { TrimmedNonEmptyString } from "./baseSchemas";
 import { ProviderKind } from "./orchestration";
 
-export const CODEX_REASONING_EFFORT_OPTIONS = ["xhigh", "high", "medium", "low"] as const;
+export const CODEX_REASONING_EFFORT_OPTIONS = [
+  "ultra",
+  "max",
+  "xhigh",
+  "high",
+  "medium",
+  "low",
+] as const;
 export type CodexReasoningEffort = (typeof CODEX_REASONING_EFFORT_OPTIONS)[number];
 export const CLAUDE_CODE_EFFORT_OPTIONS = [
   "low",
@@ -162,6 +169,10 @@ type ModelOption = {
 
 export const MODEL_OPTIONS_BY_PROVIDER = {
   codex: [
+    // NOTE: first codex entry must equal DEFAULT_MODEL_BY_PROVIDER.codex.
+    { slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
+    { slug: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
+    { slug: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
     { slug: "gpt-5.5", name: "GPT-5.5" },
     { slug: "gpt-5.4", name: "GPT-5.4" },
     { slug: "gpt-5.4-mini", name: "GPT-5.4 Mini" },
@@ -196,7 +207,7 @@ type BuiltInModelSlug = ModelOptionsByProvider[ProviderKind][number]["slug"];
 export type ModelSlug = BuiltInModelSlug | (string & {});
 
 export const DEFAULT_MODEL_BY_PROVIDER = {
-  codex: "gpt-5.5",
+  codex: "gpt-5.6-sol",
   claudeAgent: "claude-fable-5",
   cursor: "auto",
   opencode: "openai/gpt-5",
@@ -225,6 +236,10 @@ export const DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER = {
 
 export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
   codex: {
+    "5.6": "gpt-5.6-sol",
+    "gpt-5.6": "gpt-5.6-sol",
+    "5.6-terra": "gpt-5.6-terra",
+    "5.6-luna": "gpt-5.6-luna",
     "5.5": "gpt-5.5",
     "5.4": "gpt-5.4",
     "5.3": "gpt-5.3-codex",

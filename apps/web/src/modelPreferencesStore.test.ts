@@ -98,14 +98,14 @@ describe("modelPreferencesStore", () => {
     const store = useModelPreferencesStore.getState();
 
     store.setLastModelOptions("codex", {
-      codex: { reasoningEffort: "xhigh", fastMode: true },
+      codex: { reasoningEffort: "ultra", fastMode: true },
     });
     store.setLastModelOptions("claudeAgent", {
       claudeAgent: { effort: "max" },
     });
 
     expect(useModelPreferencesStore.getState().lastModelOptions).toEqual({
-      codex: { reasoningEffort: "xhigh", fastMode: true },
+      codex: { reasoningEffort: "ultra", fastMode: true },
       claudeAgent: { effort: "max" },
     });
   });
@@ -132,7 +132,7 @@ describe("modelPreferencesStore", () => {
     store.setLastModel("codex", "gpt-5.4-mini");
     store.setLastModel("claudeAgent", "claude-opus-4-6");
     store.setLastModelOptions("codex", {
-      codex: { reasoningEffort: "xhigh" },
+      codex: { reasoningEffort: "max" },
     });
     store.setLastModelOptions("claudeAgent", {
       claudeAgent: { effort: "max" },
@@ -151,7 +151,7 @@ describe("modelPreferencesStore", () => {
       claudeAgent: "claude-opus-4-6",
     });
     expect(mergedState.lastModelOptions).toEqual({
-      codex: { reasoningEffort: "xhigh" },
+      codex: { reasoningEffort: "max" },
       claudeAgent: { effort: "max" },
     });
     expect(mergedState.lastWorkflowProviderBySlot).toEqual({

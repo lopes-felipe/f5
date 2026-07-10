@@ -26,10 +26,12 @@ import {
 } from "../ui/menu";
 
 const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
-  low: "Low",
-  medium: "Medium",
-  high: "High",
+  ultra: "Ultra",
+  max: "Max",
   xhigh: "Extra High",
+  high: "High",
+  medium: "Medium",
+  low: "Low",
 };
 
 function getSelectedCodexTraits(modelOptions: CodexModelOptions | null | undefined): {

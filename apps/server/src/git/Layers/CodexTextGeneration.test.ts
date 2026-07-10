@@ -3,6 +3,8 @@ import { it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Path } from "effect";
 import { expect } from "vitest";
 
+import { ProviderInstanceId } from "@t3tools/contracts";
+
 import { ServerConfig } from "../../config.ts";
 import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
 import { TextGenerationError } from "../Errors.ts";
@@ -27,6 +29,7 @@ function makeFakeCodexBinary(dir: string) {
       [
         "#!/bin/sh",
         'output_path=""',
+        'args_content="$*"',
         "while [ $# -gt 0 ]; do",
         '  if [ "$1" = "--skip-git-repo-check" ]; then',
         '    seen_skip_git_repo_check="1"',
@@ -65,6 +68,12 @@ function makeFakeCodexBinary(dir: string) {
         "    exit 4",
         "  fi",
         "fi",
+        'if [ -n "$T3_FAKE_CODEX_ARGS_MUST_CONTAIN" ]; then',
+        '  printf "%s" "$args_content" | grep -F -- "$T3_FAKE_CODEX_ARGS_MUST_CONTAIN" >/dev/null || {',
+        '    printf "%s\\n" "args missing expected content" >&2',
+        "    exit 6",
+        "  }",
+        "fi",
         'if [ -n "$T3_FAKE_CODEX_STDERR" ]; then',
         '  printf "%s\\n" "$T3_FAKE_CODEX_STDERR" >&2',
         "fi",
@@ -87,6 +96,7 @@ function withFakeCodexEnv<A, E, R>(
     stderr?: string;
     requireImage?: boolean;
     requireSkipGitRepoCheck?: boolean;
+    argsMustContain?: string;
     stdinMustContain?: string;
     stdinMustNotContain?: string;
   },
@@ -103,6 +113,7 @@ function withFakeCodexEnv<A, E, R>(
       const previousStderr = process.env.T3_FAKE_CODEX_STDERR;
       const previousRequireImage = process.env.T3_FAKE_CODEX_REQUIRE_IMAGE;
       const previousRequireSkipGitRepoCheck = process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK;
+      const previousArgsMustContain = process.env.T3_FAKE_CODEX_ARGS_MUST_CONTAIN;
       const previousStdinMustContain = process.env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN;
       const previousStdinMustNotContain = process.env.T3_FAKE_CODEX_STDIN_MUST_NOT_CONTAIN;
 
@@ -134,6 +145,12 @@ function withFakeCodexEnv<A, E, R>(
           delete process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK;
         }
 
+        if (input.argsMustContain !== undefined) {
+          process.env.T3_FAKE_CODEX_ARGS_MUST_CONTAIN = input.argsMustContain;
+        } else {
+          delete process.env.T3_FAKE_CODEX_ARGS_MUST_CONTAIN;
+        }
+
         if (input.stdinMustContain !== undefined) {
           process.env.T3_FAKE_CODEX_STDIN_MUST_CONTAIN = input.stdinMustContain;
         } else {
@@ -154,6 +171,7 @@ function withFakeCodexEnv<A, E, R>(
         previousStderr,
         previousRequireImage,
         previousRequireSkipGitRepoCheck,
+        previousArgsMustContain,
         previousStdinMustContain,
         previousStdinMustNotContain,
       };
@@ -192,6 +210,12 @@ function withFakeCodexEnv<A, E, R>(
         } else {
           process.env.T3_FAKE_CODEX_REQUIRE_SKIP_GIT_REPO_CHECK =
             previous.previousRequireSkipGitRepoCheck;
+        }
+
+        if (previous.previousArgsMustContain === undefined) {
+          delete process.env.T3_FAKE_CODEX_ARGS_MUST_CONTAIN;
+        } else {
+          process.env.T3_FAKE_CODEX_ARGS_MUST_CONTAIN = previous.previousArgsMustContain;
         }
 
         if (previous.previousStdinMustContain === undefined) {
@@ -263,6 +287,35 @@ it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
 
         expect(generated.subject).toBe("Add important change");
         expect(generated.branch).toBe("feature/fix/important-system-change");
+      }),
+    ),
+  );
+
+  it.effect("passes new Codex reasoning efforts from model selections to the CLI", () =>
+    withFakeCodexEnv(
+      {
+        output: JSON.stringify({
+          subject: "Add important change",
+          body: "",
+        }),
+        argsMustContain: 'model_reasoning_effort="ultra"',
+      },
+      Effect.gen(function* () {
+        const textGeneration = yield* TextGeneration;
+
+        const generated = yield* textGeneration.generateCommitMessage({
+          cwd: process.cwd(),
+          branch: "feature/codex-effect",
+          stagedSummary: "M README.md",
+          stagedPatch: "diff --git a/README.md b/README.md",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex"),
+            model: "gpt-5.6-sol",
+            options: [{ id: "reasoningEffort", value: "ultra" }],
+          },
+        });
+
+        expect(generated.subject).toBe("Add important change");
       }),
     ),
   );
