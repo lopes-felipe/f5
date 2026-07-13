@@ -67,13 +67,15 @@ describe("makeServerPushBus", () => {
   it("coalesces next-turn queue snapshots independently per thread", () => {
     const first = pushCoalescingKey(WS_CHANNELS.nextTurnQueueUpdated, {
       threadId: ThreadId.makeUnsafe("thread-a"),
+      version: 0,
       items: [],
-      blockedReason: null,
+      blocker: null,
     });
     const second = pushCoalescingKey(WS_CHANNELS.nextTurnQueueUpdated, {
       threadId: ThreadId.makeUnsafe("thread-b"),
+      version: 0,
       items: [],
-      blockedReason: null,
+      blocker: null,
     });
 
     expect(first).not.toBe(second);

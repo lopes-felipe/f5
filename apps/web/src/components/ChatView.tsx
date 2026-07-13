@@ -117,8 +117,10 @@ import {
   type PendingTurnStartCommand,
   usePendingTurnDispatchStore,
 } from "../pendingTurnDispatchStore";
+import { usePendingQueueEnqueueStore } from "../pendingQueueEnqueueStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { isTransportConnectionErrorMessage, sanitizeThreadErrorMessage } from "../transportError";
+import { WsRequestError } from "../wsTransport";
 import {
   buildPlanImplementationThreadTitle,
   buildPlanImplementationPrompt,
@@ -730,6 +732,13 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const updateStorePendingTurnDispatch = usePendingTurnDispatchStore(
     (store) => store.updatePendingTurnDispatch,
   );
+  const pendingQueueEnqueue = usePendingQueueEnqueueStore(
+    (store) => store.pendingByThreadId[threadId] ?? null,
+  );
+  const setPendingQueueEnqueue = usePendingQueueEnqueueStore((store) => store.setPending);
+  const updatePendingQueueEnqueue = usePendingQueueEnqueueStore((store) => store.updatePending);
+  const clearPendingQueueEnqueue = usePendingQueueEnqueueStore((store) => store.clearPending);
+  const pendingQueueRecoveryInFlightRef = useRef(false);
   const [isConnecting, _setIsConnecting] = useState(false);
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
@@ -940,6 +949,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     [draftThread, fallbackDraftProject?.model, localDraftError, threadId],
   );
   const activeThread = serverThread ?? localDraftThread;
+  const activeThreadMessagesRef = useRef(activeThread?.messages);
+  activeThreadMessagesRef.current = activeThread?.messages;
   const activeWorkflow = useMemo(() => {
     if (activeThread == null) {
       return null;
@@ -1266,7 +1277,23 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       ) ?? null,
     [selectedProviderInstanceId, serverConfigQuery.data?.providers],
   );
+  const activeTurnProviderSnapshot = useMemo(() => {
+    const providers = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
+    const session = activeThread?.session;
+    if (session?.providerInstanceId) {
+      const byInstance = providers.find(
+        (provider) => provider.instanceId === session.providerInstanceId,
+      );
+      if (byInstance) return byInstance;
+    }
+    if (session?.provider) {
+      const byDriver = providers.find((provider) => provider.driver === session.provider);
+      if (byDriver) return byDriver;
+    }
+    return selectedProviderSnapshot;
+  }, [activeThread?.session, selectedProviderSnapshot, serverConfigQuery.data?.providers]);
   const showInteractionModeToggle = selectedProviderSnapshot?.showInteractionModeToggle ?? true;
+  const canSteerActiveTurn = activeTurnProviderSnapshot?.turnSteering === true;
   const genericComposerProviderState = useMemo(
     () =>
       getComposerProviderState({
@@ -1829,8 +1856,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       phase,
     ],
   );
-  const hasPendingTurnDispatch = pendingTurnDispatch !== null;
-  const isPendingTurnDispatchBlocked = hasPendingTurnDispatch;
+  const hasPendingTurnDispatch = pendingTurnDispatch !== null || pendingQueueEnqueue !== null;
+  // A durable existing-thread submission may remain in flight while the user
+  // composes the next draft. Bootstrap dispatch still owns mutable composer
+  // state, so it retains the stronger interaction lock.
+  const isComposerInteractionBlocked = pendingTurnDispatch !== null;
+  const isComposerSubmitBlocked = hasPendingTurnDispatch || isConnecting;
   const pendingTurnDispatchAwaitingUserAction =
     pendingTurnDispatch?.status === "awaiting-user-action";
   const isPreparingWorktree = pendingTurnDispatch?.preparingWorktree ?? false;
@@ -1839,10 +1870,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     pendingTurnDispatch !== null && pendingTurnDispatch.status !== "awaiting-user-action";
   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
   useEffect(() => {
-    if (isPendingTurnDispatchBlocked) {
+    if (isComposerInteractionBlocked) {
       setIsModelPickerOpen(false);
     }
-  }, [isPendingTurnDispatchBlocked]);
+  }, [isComposerInteractionBlocked]);
   const activeWorkStartedAt = useMemo(
     () =>
       deriveActiveWorkStartedAt(
@@ -2801,7 +2832,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const handleRuntimeModeChange = useCallback(
     (mode: RuntimeMode) => {
-      if (isPendingTurnDispatchBlocked) return;
+      if (isComposerInteractionBlocked) return;
       if (mode === runtimeMode) return;
       setComposerDraftRuntimeMode(threadId, mode);
       if (isLocalDraftThread) {
@@ -2810,7 +2841,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       scheduleComposerFocus();
     },
     [
-      isPendingTurnDispatchBlocked,
+      isComposerInteractionBlocked,
       isLocalDraftThread,
       runtimeMode,
       scheduleComposerFocus,
@@ -2822,7 +2853,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const handleInteractionModeChange = useCallback(
     (mode: ProviderInteractionMode) => {
-      if (isPendingTurnDispatchBlocked) return;
+      if (isComposerInteractionBlocked) return;
       if (mode === interactionMode) return;
       setComposerDraftInteractionMode(threadId, mode);
       if (isLocalDraftThread) {
@@ -2832,7 +2863,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     },
     [
       interactionMode,
-      isPendingTurnDispatchBlocked,
+      isComposerInteractionBlocked,
       isLocalDraftThread,
       scheduleComposerFocus,
       setComposerDraftInteractionMode,
@@ -3452,6 +3483,106 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   ]);
 
   useEffect(() => {
+    if (
+      !pendingQueueEnqueue ||
+      pendingQueueEnqueue.status !== "awaiting-recovery" ||
+      wsConnectionState.phase !== "connected" ||
+      pendingQueueRecoveryInFlightRef.current
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let retryTimer: number | null = null;
+    pendingQueueRecoveryInFlightRef.current = true;
+    const scheduleRecoveryRetry = () => {
+      retryTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        updatePendingQueueEnqueue(threadId, (current) =>
+          current.itemId === pendingQueueEnqueue.itemId ? { ...current } : current,
+        );
+      }, 500);
+    };
+    const finishRecovery = (snapshot: NextTurnQueueSnapshot) => {
+      if (cancelled) return;
+      setNextTurnQueueSnapshotHint(snapshot);
+      setOptimisticQueuedTurn((current) =>
+        current?.itemId === pendingQueueEnqueue.itemId ? null : current,
+      );
+      removeOptimisticMessage(pendingQueueEnqueue.command.message.messageId);
+      revokeComposerImagePreviewUrls(pendingQueueEnqueue.rollback.images);
+      clearPendingQueueEnqueue(threadId, pendingQueueEnqueue.itemId);
+      setThreadError(threadId, null);
+    };
+
+    void (async () => {
+      try {
+        const api = readNativeApi();
+        if (!api) {
+          scheduleRecoveryRetry();
+          return;
+        }
+        const listed = await api.nextTurnQueue.list({ threadId });
+        if (cancelled) return;
+        const committed = listed.items.some((item) => item.itemId === pendingQueueEnqueue.itemId);
+        const alreadyStarted = activeThreadMessagesRef.current?.some(
+          (message) => message.id === pendingQueueEnqueue.command.message.messageId,
+        );
+        if (committed || alreadyStarted) {
+          finishRecovery(listed);
+          return;
+        }
+
+        const submitted = await api.nextTurnQueue.submit({
+          itemId: pendingQueueEnqueue.itemId,
+          command: pendingQueueEnqueue.command,
+          activeTurnAction: pendingQueueEnqueue.activeTurnAction,
+        });
+        if (cancelled) return;
+        finishRecovery(submitted.disposition === "queued" ? submitted.snapshot : listed);
+      } catch (error) {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : "Failed to recover queued turn.";
+        if (error instanceof WsRequestError && error.code === "submission_in_progress") {
+          setThreadError(threadId, message);
+          scheduleRecoveryRetry();
+          return;
+        }
+        if (isTransportConnectionErrorMessage(message)) {
+          setThreadError(threadId, message);
+          return;
+        }
+
+        setOptimisticQueuedTurn((current) =>
+          current?.itemId === pendingQueueEnqueue.itemId ? null : current,
+        );
+        clearPendingQueueEnqueue(threadId, pendingQueueEnqueue.itemId);
+        if (composerMatchesClearedState()) {
+          restoreComposerRollback(pendingQueueEnqueue.rollback);
+        }
+        setThreadError(threadId, message);
+      } finally {
+        pendingQueueRecoveryInFlightRef.current = false;
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+    };
+  }, [
+    clearPendingQueueEnqueue,
+    composerMatchesClearedState,
+    pendingQueueEnqueue,
+    removeOptimisticMessage,
+    restoreComposerRollback,
+    setThreadError,
+    threadId,
+    updatePendingQueueEnqueue,
+    wsConnectionState.phase,
+  ]);
+
+  useEffect(() => {
     if (!activeThreadId) return;
     const previous = terminalOpenByThreadRef.current[activeThreadId] ?? false;
     const current = Boolean(terminalState.terminalOpen);
@@ -3581,7 +3712,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       if (command === "modelPicker.toggle") {
         event.preventDefault();
         event.stopPropagation();
-        if (isPendingTurnDispatchBlocked) {
+        if (isComposerInteractionBlocked) {
           setIsModelPickerOpen(false);
           return;
         }
@@ -3606,7 +3737,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     activeThreadId,
     closeTerminal,
     createNewTerminal,
-    isPendingTurnDispatchBlocked,
+    isComposerInteractionBlocked,
     isModelPickerOpen,
     setTerminalOpen,
     runProjectScript,
@@ -3619,7 +3750,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const addComposerImages = (files: File[]) => {
     if (!activeThreadId || files.length === 0) return;
-    if (isPendingTurnDispatchBlocked) return;
+    if (isComposerInteractionBlocked) return;
 
     if (pendingUserInputs.length > 0) {
       toastManager.add({
@@ -3669,7 +3800,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const addComposerFileAttachments = (files: File[]) => {
     if (!activeThreadId || !activeProject || files.length === 0) return;
-    if (isPendingTurnDispatchBlocked) return;
+    if (isComposerInteractionBlocked) return;
 
     if (pendingUserInputs.length > 0) {
       toastManager.add({
@@ -3715,14 +3846,14 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   };
 
   const removeComposerImage = (imageId: string) => {
-    if (isPendingTurnDispatchBlocked) {
+    if (isComposerInteractionBlocked) {
       return;
     }
     removeComposerImageFromDraft(imageId);
   };
 
   const removeComposerFilePath = (filePath: string) => {
-    if (isPendingTurnDispatchBlocked) {
+    if (isComposerInteractionBlocked) {
       return;
     }
     removeComposerFilePathFromDraft(filePath);
@@ -3894,8 +4025,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     setThreadError,
   ]);
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSend = async (
+    e?: { preventDefault: () => void },
+    options?: { activeTurnAction?: "queue" | "steer" },
+  ) => {
     e?.preventDefault();
+    const activeTurnAction = options?.activeTurnAction ?? "queue";
     const api = readNativeApi();
     if (
       !api ||
@@ -3970,7 +4105,9 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
-    const shouldQueueTurn = phase === "running";
+    // This only selects the optimistic presentation. The server remains
+    // authoritative about whether the intent starts, queues, or steers.
+    const clientObservedActiveTurn = phase === "running";
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
@@ -4041,7 +4178,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       composerFilePathsSnapshot,
     );
     const messageIdForSend = newMessageId();
-    const queueItemIdForSend = shouldQueueTurn ? newCommandId() : null;
+    const queueItemIdForSend = newCommandId();
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const inputLengthIssue = getProviderTurnInputLengthIssue(outgoingMessageText);
@@ -4076,19 +4213,23 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     // Let the list preserve the current viewport across optimistic sends.
     // Manual pin-to-end here scrolls historical file-change rows out of view
     // right when the next user message is appended.
-    setOptimisticUserMessages((existing) => [
-      ...existing,
-      {
-        id: messageIdForSend,
-        role: "user",
-        text: messageTextForSend,
-        ...(skillCall !== undefined ? { skillCall } : {}),
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        createdAt: messageCreatedAt,
-        streaming: false,
-      },
-    ]);
-    if (queueItemIdForSend) {
+    if (!clientObservedActiveTurn) {
+      setOptimisticUserMessages((existing) => [
+        ...existing,
+        {
+          id: messageIdForSend,
+          role: "user",
+          text: messageTextForSend,
+          ...(skillCall !== undefined ? { skillCall } : {}),
+          ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+          createdAt: messageCreatedAt,
+          streaming: false,
+        },
+      ]);
+    }
+    const displayPendingSubmissionInQueue =
+      clientObservedActiveTurn && activeTurnAction === "queue";
+    if (displayPendingSubmissionInQueue) {
       setOptimisticQueuedTurn({
         itemId: queueItemIdForSend,
         threadId: threadIdForSend,
@@ -4152,17 +4293,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         baseBranchForWorktree,
       });
 
-      if (isServerThread && !shouldQueueTurn) {
-        await persistThreadSettingsForNextTurn({
-          threadId: threadIdForSend,
-          createdAt: messageCreatedAt,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          modelSelection: selectedModelSelectionForDispatch,
-          runtimeMode,
-          interactionMode,
-        });
-      }
-
       const turnAttachments = await turnAttachmentsPromise;
       const command: PendingTurnStartCommand = {
         type: "thread.turn.start",
@@ -4191,23 +4321,58 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       };
-      if (shouldQueueTurn) {
-        if (command.bootstrap) {
-          throw new Error("Finish starting this thread before queueing another turn.");
-        }
-        if (!queueItemIdForSend) {
-          throw new Error("Failed to prepare the queued turn.");
-        }
-        const nextQueueSnapshot = await api.nextTurnQueue.enqueue({
+      if (!command.bootstrap) {
+        const queuedOptimisticItem: OptimisticQueuedTurn = {
           itemId: queueItemIdForSend,
+          threadId: threadIdForSend,
+          text: messageTextForSend || "Message with attachments",
+          ...(selectedModel ? { model: selectedModel } : {}),
+          interactionMode,
+          runtimeMode,
+        };
+        setPendingQueueEnqueue({
+          itemId: queueItemIdForSend,
+          threadId: threadIdForSend,
           command,
+          rollback,
+          optimisticItem: queuedOptimisticItem,
+          displayInQueue: displayPendingSubmissionInQueue,
+          activeTurnAction,
+          status: "enqueueing",
         });
-        setNextTurnQueueSnapshotHint(nextQueueSnapshot);
+        let submission: Awaited<ReturnType<typeof api.nextTurnQueue.submit>>;
+        try {
+          submission = await api.nextTurnQueue.submit({
+            itemId: queueItemIdForSend,
+            command,
+            activeTurnAction,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Failed to queue message.";
+          if (isTransportConnectionErrorMessage(message)) {
+            updatePendingQueueEnqueue(threadIdForSend, (current) => ({
+              ...current,
+              status: "awaiting-recovery",
+            }));
+            setThreadError(threadIdForSend, message);
+            return;
+          }
+          clearPendingQueueEnqueue(threadIdForSend, queueItemIdForSend);
+          throw error;
+        }
+        if (submission.disposition === "queued") {
+          setNextTurnQueueSnapshotHint(submission.snapshot);
+          removeOptimisticMessage(messageIdForSend);
+          toastManager.add({ type: "success", title: "Turn added to the queue." });
+        } else if (submission.disposition === "steered") {
+          removeOptimisticMessage(messageIdForSend);
+          toastManager.add({ type: "success", title: "Added to the active turn." });
+        }
         setOptimisticQueuedTurn((current) =>
           current?.itemId === queueItemIdForSend ? null : current,
         );
-        removeOptimisticMessage(messageIdForSend);
-        toastManager.add({ type: "success", title: "Turn added to the queue." });
+        clearPendingQueueEnqueue(threadIdForSend, queueItemIdForSend);
+        revokeComposerImagePreviewUrls(rollback.images);
         return;
       }
       const localDispatch = createLocalDispatchSnapshot(activeThread, { preparingWorktree });
@@ -4480,15 +4645,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       setComposerTrigger(null);
 
       try {
-        await persistThreadSettingsForNextTurn({
-          threadId: threadIdForSend,
-          createdAt: messageCreatedAt,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          modelSelection: selectedModelSelectionForDispatch,
-          runtimeMode,
-          interactionMode: nextInteractionMode,
-        });
-
         // Keep the mode toggle and plan-follow-up banner in sync immediately
         // while the same-thread implementation turn is starting.
         setComposerDraftInteractionMode(threadIdForSend, nextInteractionMode);
@@ -4835,7 +4991,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const onProviderModelSelect = useCallback(
     (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
-      if (!activeThread || isPendingTurnDispatchBlocked) return;
+      if (!activeThread || isComposerInteractionBlocked) return;
       const provider = providerKindForDriver(driver);
       if (!provider) return;
       if (lockedProvider !== null && provider !== lockedProvider) {
@@ -4860,7 +5016,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       activeThread,
       composerDraft.modelOptions,
       hasThreadStarted,
-      isPendingTurnDispatchBlocked,
+      isComposerInteractionBlocked,
       lockedProvider,
       modelOptionsByInstance,
       scheduleComposerFocus,
@@ -4872,7 +5028,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   );
   const onEnvModeChange = useCallback(
     (mode: DraftThreadEnvMode) => {
-      if (isPendingTurnDispatchBlocked) {
+      if (isComposerInteractionBlocked) {
         return;
       }
       if (isLocalDraftThread) {
@@ -4882,7 +5038,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     },
     [
       isLocalDraftThread,
-      isPendingTurnDispatchBlocked,
+      isComposerInteractionBlocked,
       scheduleComposerFocus,
       setDraftThreadContext,
       threadId,
@@ -4966,7 +5122,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const onSelectComposerItem = useCallback(
     (item: ComposerCommandItem) => {
-      if (isPendingTurnDispatchBlocked) {
+      if (isComposerInteractionBlocked) {
         return;
       }
       if (composerSelectLockRef.current) return;
@@ -5036,7 +5192,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     [
       applyPromptReplacement,
       handleInteractionModeChange,
-      isPendingTurnDispatchBlocked,
+      isComposerInteractionBlocked,
       resolveActiveComposerTrigger,
     ],
   );
@@ -5085,7 +5241,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         );
         return;
       }
-      if (!isPendingTurnDispatchBlocked && isStandaloneModelPickerSlashCommand(nextPrompt)) {
+      if (!isComposerInteractionBlocked && isStandaloneModelPickerSlashCommand(nextPrompt)) {
         promptRef.current = "";
         setPrompt("");
         setComposerCursor(0);
@@ -5111,7 +5267,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       activePendingProgress?.activeQuestion,
       activePendingUserInput,
       composerTerminalContexts,
-      isPendingTurnDispatchBlocked,
+      isComposerInteractionBlocked,
       onChangeActivePendingUserInputCustomAnswer,
       setPrompt,
       setComposerDraftTerminalContexts,
@@ -5129,6 +5285,13 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
 
     if (key === "Enter" && isComposerKeyboardEventComposing(event)) {
+      return true;
+    }
+
+    if (key === "Enter" && event.shiftKey && (event.metaKey || event.ctrlKey)) {
+      void onSend(undefined, {
+        activeTurnAction: phase === "running" && canSteerActiveTurn ? "steer" : "queue",
+      });
       return true;
     }
 
@@ -5461,7 +5624,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                 {isServerThread ? (
                   <NextTurnQueuePanel
                     threadId={activeThread.id}
-                    optimisticItem={optimisticQueuedTurn}
+                    optimisticItem={
+                      optimisticQueuedTurn ??
+                      (pendingQueueEnqueue?.displayInQueue
+                        ? pendingQueueEnqueue.optimisticItem
+                        : null)
+                    }
                     snapshotHint={nextTurnQueueSnapshotHint}
                   />
                 ) : null}
@@ -5597,7 +5765,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                     className="absolute right-1 top-1 bg-background/80 hover:bg-background/90"
                                     onClick={() => removeComposerImage(image.id)}
                                     aria-label={`Remove ${image.name}`}
-                                    disabled={isPendingTurnDispatchBlocked}
+                                    disabled={isComposerInteractionBlocked}
                                   >
                                     <XIcon />
                                   </Button>
@@ -5631,7 +5799,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                       variant="ghost"
                                       size="icon-xs"
                                       onClick={() => removeComposerFilePath(filePath)}
-                                      disabled={isPendingTurnDispatchBlocked}
+                                      disabled={isComposerInteractionBlocked}
                                       aria-label={`Remove ${displayPath}`}
                                     >
                                       <XIcon className="size-3" />
@@ -5675,7 +5843,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                   : "Ask anything, @tag files/folders, or use / for skills and slash commands"
                         }
                         disabled={
-                          isConnecting || isComposerApprovalState || isPendingTurnDispatchBlocked
+                          isConnecting || isComposerApprovalState || isComposerInteractionBlocked
                         }
                       />
                     </div>
@@ -5727,7 +5895,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                             terminalOpen={Boolean(terminalState.terminalOpen)}
                             open={isModelPickerOpen}
                             onOpenChange={setIsModelPickerOpen}
-                            disabled={isPendingTurnDispatchBlocked}
+                            disabled={isComposerInteractionBlocked}
                             onInstanceModelChange={onProviderModelSelect}
                           />
 
@@ -5738,7 +5906,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                               )}
                               canCompactConversation={canCompactConversation}
                               compactConversationDisabled={isWorking || hasPendingTurnDispatch}
-                              disabled={isPendingTurnDispatchBlocked}
+                              disabled={isComposerInteractionBlocked}
                               interactionMode={interactionMode}
                               showInteractionModeToggle={showInteractionModeToggle}
                               planSidebarOpen={planSidebarOpen}
@@ -5812,7 +5980,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                     size="sm"
                                     type="button"
                                     onClick={toggleInteractionMode}
-                                    disabled={isPendingTurnDispatchBlocked}
+                                    disabled={isComposerInteractionBlocked}
                                     title={
                                       interactionMode === "plan"
                                         ? "Plan mode — click to return to normal chat mode"
@@ -5844,7 +6012,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                       : "full-access",
                                   )
                                 }
-                                disabled={isPendingTurnDispatchBlocked}
+                                disabled={isComposerInteractionBlocked}
                                 title={
                                   runtimeMode === "full-access"
                                     ? "Full access — click to require approvals"
@@ -5874,7 +6042,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                     size="sm"
                                     type="button"
                                     onClick={togglePlanSidebar}
-                                    disabled={isPendingTurnDispatchBlocked}
+                                    disabled={isComposerInteractionBlocked}
                                     title={
                                       planSidebarOpen ? "Hide plan sidebar" : "Show plan sidebar"
                                     }
@@ -5936,10 +6104,29 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                 size="sm"
                                 variant="outline"
                                 className="rounded-full"
-                                disabled={!composerSendState.hasSendableContent}
+                                disabled={
+                                  hasPendingTurnDispatch || !composerSendState.hasSendableContent
+                                }
                               >
                                 Queue
                               </Button>
+                              {canSteerActiveTurn ? (
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="ghost"
+                                  className="rounded-full"
+                                  disabled={
+                                    hasPendingTurnDispatch || !composerSendState.hasSendableContent
+                                  }
+                                  title="Steer the active turn (Shift+Cmd/Ctrl+Enter)"
+                                  onClick={() =>
+                                    void onSend(undefined, { activeTurnAction: "steer" })
+                                  }
+                                >
+                                  Steer
+                                </Button>
+                              ) : null}
                               <button
                                 type="button"
                                 className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
@@ -5964,7 +6151,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                   type="submit"
                                   size="sm"
                                   className="h-9 rounded-full px-4 sm:h-8"
-                                  disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                  disabled={isComposerSubmitBlocked}
                                 >
                                   {isConnecting || isSendBusy ? "Sending..." : "Refine"}
                                 </Button>
@@ -5987,7 +6174,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                         type="submit"
                                         size="sm"
                                         className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
-                                        disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                        disabled={isComposerSubmitBlocked}
                                       >
                                         {isConnecting || isSendBusy ? "Sending..." : "Implement"}
                                       </Button>
@@ -5999,9 +6186,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                               variant="default"
                                               className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                                               aria-label="Implementation actions"
-                                              disabled={
-                                                isPendingTurnDispatchBlocked || isConnecting
-                                              }
+                                              disabled={isComposerSubmitBlocked}
                                             />
                                           }
                                         >
@@ -6009,7 +6194,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                         </MenuTrigger>
                                         <MenuPopup align="end" side="top">
                                           <MenuItem
-                                            disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                            disabled={isComposerSubmitBlocked}
                                             onClick={() => void onImplementPlanInNewThread()}
                                           >
                                             Implement in a new thread
@@ -6025,9 +6210,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                 type="submit"
                                 className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
                                 disabled={
-                                  isPendingTurnDispatchBlocked ||
-                                  isConnecting ||
-                                  !composerSendState.hasSendableContent
+                                  isComposerSubmitBlocked || !composerSendState.hasSendableContent
                                 }
                                 aria-label={
                                   isConnecting

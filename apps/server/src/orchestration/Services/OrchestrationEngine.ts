@@ -42,6 +42,12 @@ export interface OrchestrationEngineShape {
     fromSequenceExclusive: number,
   ) => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError, never>;
 
+  /** Indexed lookup used by explicit durable-intent retries. */
+  readonly findEventByCommandId?: (
+    commandId: OrchestrationCommand["commandId"],
+    eventType: OrchestrationEvent["type"],
+  ) => Effect.Effect<OrchestrationEvent | null, OrchestrationEventStoreError, never>;
+
   /**
    * Dispatch a validated orchestration command.
    *

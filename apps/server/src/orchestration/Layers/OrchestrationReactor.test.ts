@@ -42,6 +42,7 @@ describe("OrchestrationReactor", () => {
               started.push("provider-command-reactor");
             }),
             drain: Effect.void,
+            retryTurnStart: () => Effect.succeed(false),
             applyMcpConfigToLiveSessions: (_input) =>
               Effect.die(new Error("unused in OrchestrationReactor tests")),
           }),

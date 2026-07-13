@@ -52,6 +52,12 @@ export interface OrchestrationEventStoreShape {
    */
   readonly readAll: () => Stream.Stream<OrchestrationEvent, OrchestrationEventStoreError>;
 
+  /** Find one event for an idempotent command using the command-id index. */
+  readonly findByCommandId?: (
+    commandId: CommandId,
+    eventType: OrchestrationEvent["type"],
+  ) => Effect.Effect<OrchestrationEvent | null, OrchestrationEventStoreError>;
+
   /**
    * Collect command ids associated with a thread event stream.
    */

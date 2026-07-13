@@ -86,6 +86,7 @@ const toSnapshot = (input: {
       groupKey: input.continuationKey ?? `codex:instance:${input.instance.instanceId}`,
     },
     showInteractionModeToggle: true,
+    turnSteering: true,
     enabled,
     installed: enabled ? available : false,
     version: status?.version ?? null,

@@ -5,7 +5,7 @@ import type {
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
-import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { OrchestrationCommandConflictError, OrchestrationCommandInvariantError } from "./Errors.ts";
 import {
   listThreadsByProjectId,
   requireProject,
@@ -59,7 +59,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly readModel: OrchestrationReadModel;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
-  OrchestrationCommandInvariantError
+  OrchestrationCommandConflictError | OrchestrationCommandInvariantError
 > {
   switch (command.type) {
     case "project.create": {
@@ -846,6 +846,70 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Proposed plan '${sourceProposedPlan?.planId}' belongs to thread '${sourceThread.id}' in a different project.`,
         });
       }
+      if (
+        targetThread.latestTurn?.state === "running" ||
+        targetThread.session?.activeTurnId != null ||
+        targetThread.session?.status === "starting"
+      ) {
+        return yield* new OrchestrationCommandConflictError({
+          code: "thread_busy",
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' already has a pending or active turn.`,
+        });
+      }
+
+      const settingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (command.model !== undefined || command.modelSelection !== undefined) {
+        settingEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            ...(command.model !== undefined ? { model: command.model } : {}),
+            ...(command.modelSelection !== undefined
+              ? { modelSelection: command.modelSelection }
+              : {}),
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (command.runtimeMode !== targetThread.runtimeMode) {
+        settingEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.runtime-mode-set",
+          payload: {
+            threadId: command.threadId,
+            runtimeMode: command.runtimeMode,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (command.interactionMode !== targetThread.interactionMode) {
+        settingEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.interaction-mode-set",
+          payload: {
+            threadId: command.threadId,
+            interactionMode: command.interactionMode,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
       const userMessageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -900,13 +964,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { providerOptions: command.providerOptions }
             : {}),
           assistantDeliveryMode: command.assistantDeliveryMode ?? DEFAULT_ASSISTANT_DELIVERY_MODE,
-          runtimeMode: targetThread.runtimeMode,
-          interactionMode: targetThread.interactionMode,
+          runtimeMode: command.runtimeMode,
+          interactionMode: command.interactionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,
         },
       };
-      return [userMessageEvent, turnStartRequestedEvent];
+      return [...settingEvents, userMessageEvent, turnStartRequestedEvent];
     }
 
     case "thread.turn.interrupt": {

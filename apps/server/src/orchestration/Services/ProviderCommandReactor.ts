@@ -9,6 +9,7 @@
 import { ServiceMap } from "effect";
 import type { Effect, Scope } from "effect";
 import type {
+  CommandId,
   McpApplyToLiveSessionsRequest,
   McpApplyToLiveSessionsResult,
 } from "@t3tools/contracts";
@@ -33,6 +34,9 @@ export interface ProviderCommandReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  /** Re-enqueues a durable turn-start intent after an explicit user retry. */
+  readonly retryTurnStart: (commandId: CommandId) => Effect.Effect<boolean, Error>;
 
   readonly applyMcpConfigToLiveSessions: (
     input: McpApplyToLiveSessionsRequest,

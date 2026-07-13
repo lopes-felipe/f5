@@ -2287,6 +2287,512 @@ describe("WebSocket Server", () => {
     expect(thread?.messages).toEqual([]);
   });
 
+  it("rejects stale next-turn queue mutations from simultaneous clients", async () => {
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [firstClient] = await connectAndAwaitWelcome(port);
+    const [secondClient] = await connectAndAwaitWelcome(port);
+    connections.push(firstClient, secondClient);
+
+    const workspaceRoot = makeTempDir("t3code-ws-queue-version-project-");
+    const createdAt = new Date().toISOString();
+    expect(
+      (
+        await sendRequest(firstClient, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "cmd-queue-version-project",
+          projectId: "project-queue-version",
+          title: "Queue Version Project",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await sendRequest(firstClient, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "thread.create",
+          commandId: "cmd-queue-version-thread",
+          threadId: "thread-queue-version",
+          projectId: "project-queue-version",
+          title: "Queue Version Thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await sendRequest(firstClient, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "thread.archive",
+          commandId: "cmd-queue-version-archive",
+          threadId: "thread-queue-version",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const enqueueResponse = await sendRequest(firstClient, WS_METHODS.nextTurnQueueEnqueue, {
+      itemId: "queue-version-item",
+      command: {
+        type: "thread.turn.start",
+        commandId: "queue-version-command",
+        threadId: "thread-queue-version",
+        message: {
+          messageId: "queue-version-message",
+          role: "user",
+          text: "original",
+          attachments: [],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt,
+      },
+    });
+    expect(enqueueResponse.error).toBeUndefined();
+    const initial = enqueueResponse.result as {
+      version: number;
+      items: Array<{ revision: number }>;
+    };
+
+    const firstUpdate = await sendRequest(firstClient, WS_METHODS.nextTurnQueueUpdate, {
+      itemId: "queue-version-item",
+      threadId: "thread-queue-version",
+      expectedVersion: initial.version,
+      expectedRevision: initial.items[0]?.revision ?? 0,
+      text: "first client",
+    });
+    expect(firstUpdate.error).toBeUndefined();
+
+    const staleUpdate = await sendRequest(secondClient, WS_METHODS.nextTurnQueueUpdate, {
+      itemId: "queue-version-item",
+      threadId: "thread-queue-version",
+      expectedVersion: initial.version,
+      expectedRevision: initial.items[0]?.revision ?? 0,
+      text: "stale second client",
+    });
+    expect(staleUpdate.result).toBeUndefined();
+    expect(staleUpdate.error?.message).toContain("queue changed in another client");
+    expect(staleUpdate.error?.code).toBe("stale_version");
+    expect(staleUpdate.error?.message).not.toContain("SqlError");
+  });
+
+  it("cleans queue-owned attachments after rejection, cancellation, and thread deletion", async () => {
+    const stateDir = makeTempDir("t3code-ws-queue-attachments-state-");
+    server = await createTestServer({ cwd: "/test", stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const workspaceRoot = makeTempDir("t3code-ws-queue-attachments-project-");
+    const createdAt = new Date().toISOString();
+    for (const command of [
+      {
+        type: "project.create",
+        commandId: "cmd-queue-attachments-project",
+        projectId: "project-queue-attachments",
+        title: "Queue Attachments Project",
+        workspaceRoot,
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      },
+      {
+        type: "thread.create",
+        commandId: "cmd-queue-attachments-thread",
+        threadId: "thread-queue-attachments",
+        projectId: "project-queue-attachments",
+        title: "Queue Attachments Thread",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      },
+      {
+        type: "thread.archive",
+        commandId: "cmd-queue-attachments-archive",
+        threadId: "thread-queue-attachments",
+        createdAt,
+      },
+    ]) {
+      const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, command);
+      expect(response.error).toBeUndefined();
+    }
+
+    const baseCommand = {
+      type: "thread.turn.start" as const,
+      threadId: "thread-queue-attachments",
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      createdAt,
+    };
+    const first = await sendRequest(ws, WS_METHODS.nextTurnQueueEnqueue, {
+      itemId: "queue-attachments-conflict-item",
+      command: {
+        ...baseCommand,
+        commandId: "queue-attachments-command-1",
+        message: {
+          messageId: "queue-attachments-message-1",
+          role: "user",
+          text: "original",
+          attachments: [],
+        },
+      },
+    });
+    expect(first.error).toBeUndefined();
+
+    const image = {
+      type: "image" as const,
+      name: "diagram.png",
+      mimeType: "image/png",
+      sizeBytes: 5,
+      dataUrl: "data:image/png;base64,aGVsbG8=",
+    };
+    const rejected = await sendRequest(ws, WS_METHODS.nextTurnQueueEnqueue, {
+      itemId: "queue-attachments-conflict-item",
+      command: {
+        ...baseCommand,
+        commandId: "queue-attachments-conflicting-command",
+        message: {
+          messageId: "queue-attachments-conflicting-message",
+          role: "user",
+          text: "conflict",
+          attachments: [image],
+        },
+      },
+    });
+    expect(rejected.error?.message).toContain("already exists with different content");
+    const attachmentsDir = path.join(stateDir, "attachments");
+    expect(fs.existsSync(attachmentsDir) ? fs.readdirSync(attachmentsDir) : []).toEqual([]);
+
+    const imageQueueCommand = {
+      ...baseCommand,
+      commandId: "queue-attachments-image-command",
+      message: {
+        messageId: "queue-attachments-image-message",
+        role: "user" as const,
+        text: "",
+        attachments: [image],
+      },
+    };
+    const enqueued = await sendRequest(ws, WS_METHODS.nextTurnQueueEnqueue, {
+      itemId: "queue-attachments-image-item",
+      command: imageQueueCommand,
+    });
+    expect(enqueued.error).toBeUndefined();
+    const enqueuedSnapshot = enqueued.result as {
+      version: number;
+      items: Array<{
+        itemId: string;
+        command: { message: { attachments: Array<{ id: string }> } };
+      }>;
+    };
+    const queuedAttachmentId = enqueuedSnapshot.items.find(
+      (item) => item.itemId === "queue-attachments-image-item",
+    )?.command.message.attachments[0]?.id;
+    expect(queuedAttachmentId).toBeTruthy();
+    const queuedAttachmentPath = path.join(
+      attachmentsDir,
+      `${queuedAttachmentId ?? "missing"}.png`,
+    );
+    expect(fs.existsSync(queuedAttachmentPath)).toBe(true);
+    const deduplicatedRetry = await sendRequest(ws, WS_METHODS.nextTurnQueueEnqueue, {
+      itemId: "queue-attachments-image-item",
+      command: imageQueueCommand,
+    });
+    expect(deduplicatedRetry.error).toBeUndefined();
+    expect((deduplicatedRetry.result as { version: number }).version).toBe(
+      enqueuedSnapshot.version,
+    );
+    expect(fs.readdirSync(attachmentsDir)).toEqual([path.basename(queuedAttachmentPath)]);
+
+    const cancelled = await sendRequest(ws, WS_METHODS.nextTurnQueueCancel, {
+      itemId: "queue-attachments-image-item",
+      threadId: "thread-queue-attachments",
+      expectedVersion: enqueuedSnapshot.version,
+    });
+    expect(cancelled.error).toBeUndefined();
+    expect(fs.existsSync(queuedAttachmentPath)).toBe(false);
+
+    const afterCancel = cancelled.result as { snapshot: { version: number } };
+    const deletionItem = await sendRequest(ws, WS_METHODS.nextTurnQueueEnqueue, {
+      itemId: "queue-attachments-delete-item",
+      command: {
+        ...baseCommand,
+        commandId: "queue-attachments-delete-command",
+        message: {
+          messageId: "queue-attachments-delete-message",
+          role: "user",
+          text: "delete with thread",
+          attachments: [{ ...image, dataUrl: "data:image/png;base64,d29ybGQ=" }],
+        },
+      },
+    });
+    expect(deletionItem.error).toBeUndefined();
+    expect((deletionItem.result as { version: number }).version).toBeGreaterThan(
+      afterCancel.snapshot.version,
+    );
+    const deletionAttachmentId = (
+      deletionItem.result as {
+        items: Array<{
+          itemId: string;
+          command: { message: { attachments: Array<{ id: string }> } };
+        }>;
+      }
+    ).items.find((item) => item.itemId === "queue-attachments-delete-item")?.command.message
+      .attachments[0]?.id;
+    const deletionAttachmentPath = path.join(
+      attachmentsDir,
+      `${deletionAttachmentId ?? "missing"}.png`,
+    );
+    expect(fs.existsSync(deletionAttachmentPath)).toBe(true);
+
+    const deleted = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.delete",
+      commandId: "cmd-queue-attachments-delete-thread",
+      threadId: "thread-queue-attachments",
+      createdAt: new Date().toISOString(),
+    });
+    expect(deleted.error).toBeUndefined();
+    await vi.waitFor(() => expect(fs.existsSync(deletionAttachmentPath)).toBe(false));
+  });
+
+  it("submits active-thread intents as queued, steered, or stale-steer fallbacks", async () => {
+    const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
+    const sendTurn = vi.fn<ProviderServiceShape["sendTurn"]>((input) =>
+      Effect.succeed({
+        threadId: input.threadId,
+        turnId: asTurnId("provider-turn-active"),
+      }),
+    );
+    let rejectAsStale = false;
+    const steerTurn = vi.fn<NonNullable<ProviderServiceShape["steerTurn"]>>((input) =>
+      rejectAsStale
+        ? Effect.die(
+            new Error(
+              `Active turn changed before steering (expected '${input.expectedTurnId}', current 'none').`,
+            ),
+          )
+        : Effect.void,
+    );
+    const unsupported = () => Effect.die(new Error("Unsupported provider call in test")) as never;
+    const getCapabilities = vi.fn<ProviderServiceShape["getCapabilities"]>(() =>
+      Effect.succeed({ sessionModelSwitch: "in-session", turnSteering: true }),
+    );
+    const providerService: ProviderServiceShape = {
+      startSession: (threadId) =>
+        Effect.succeed({
+          provider: "codex",
+          status: "ready",
+          runtimeMode: "full-access",
+          threadId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }),
+      sendTurn,
+      steerTurn,
+      interruptTurn: () => unsupported(),
+      respondToRequest: () => unsupported(),
+      respondToUserInput: () => unsupported(),
+      stopSession: () => unsupported(),
+      listSessions: () => Effect.succeed([]),
+      getCapabilities,
+      readThread: () => unsupported(),
+      rollbackConversation: () => unsupported(),
+      runOneOffPrompt: () => unsupported(),
+      compactConversation: () => unsupported(),
+      reloadMcpConfigForProject: () => unsupported(),
+      streamEvents: Stream.fromPubSub(runtimeEventPubSub),
+    };
+
+    server = await createTestServer({
+      cwd: "/test",
+      providerLayer: Layer.succeed(ProviderService, providerService),
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const workspaceRoot = makeTempDir("t3code-ws-submit-project-");
+    const createdAt = new Date().toISOString();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "cmd-submit-project",
+          projectId: "project-submit",
+          title: "Submit Project",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "thread.create",
+          commandId: "cmd-submit-thread",
+          threadId: "thread-submit",
+          projectId: "project-submit",
+          title: "Submit Thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const initialSubmission = {
+      itemId: "submit-initial-item",
+      command: {
+        type: "thread.turn.start",
+        commandId: "submit-initial-command",
+        threadId: "thread-submit",
+        message: {
+          messageId: "submit-initial-message",
+          role: "user",
+          text: "Start the active turn",
+          attachments: [],
+        },
+        provider: "codex",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt,
+      },
+      activeTurnAction: "queue" as const,
+    };
+    const initial = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, initialSubmission);
+    expect(initial.error).toBeUndefined();
+    expect(getCapabilities).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(sendTurn).toHaveBeenCalledTimes(1));
+    const initialRetry = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, initialSubmission);
+    expect(initialRetry.error).toBeUndefined();
+    expect((initialRetry.result as { disposition: string }).disposition).toBe("started");
+    expect(sendTurn).toHaveBeenCalledTimes(1);
+
+    Effect.runSync(
+      PubSub.publish(runtimeEventPubSub, {
+        type: "turn.started",
+        eventId: asEventId("evt-submit-turn-started"),
+        provider: "codex",
+        threadId: asThreadId("thread-submit"),
+        createdAt: new Date().toISOString(),
+        turnId: asTurnId("provider-turn-active"),
+        payload: {},
+      }),
+    );
+    await waitForPush(ws, ORCHESTRATION_WS_CHANNELS.domainEvent, (push) => {
+      const event = push.data as {
+        type?: string;
+        payload?: { session?: { activeTurnId?: string | null } };
+      };
+      return (
+        event.type === "thread.session-set" &&
+        event.payload?.session?.activeTurnId === "provider-turn-active"
+      );
+    });
+
+    const queuedCommand = {
+      type: "thread.turn.start" as const,
+      commandId: "submit-queued-command",
+      threadId: "thread-submit",
+      message: {
+        messageId: "submit-queued-message",
+        role: "user" as const,
+        text: "Queue this follow-up",
+        attachments: [],
+      },
+      provider: "codex" as const,
+      model: "gpt-5-codex",
+      runtimeMode: "full-access" as const,
+      interactionMode: "default" as const,
+      createdAt,
+    };
+    const queued = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+      itemId: "submit-queued-item",
+      command: queuedCommand,
+      activeTurnAction: "queue",
+    });
+    expect(queued.error).toBeUndefined();
+    expect((queued.result as { disposition: string }).disposition).toBe("queued");
+    expect(getCapabilities).not.toHaveBeenCalled();
+
+    const steeredSubmission = {
+      itemId: "submit-steered-item",
+      command: {
+        ...queuedCommand,
+        provider: undefined,
+        commandId: "submit-steered-command",
+        message: {
+          ...queuedCommand.message,
+          messageId: "submit-steered-message",
+          text: "Steer the active turn",
+        },
+      },
+      activeTurnAction: "steer" as const,
+    };
+    const steered = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, steeredSubmission);
+    expect(steered.error).toBeUndefined();
+    expect((steered.result as { disposition: string }).disposition).toBe("steered");
+    expect(getCapabilities).toHaveBeenCalledTimes(1);
+    expect(steerTurn).toHaveBeenCalledWith({
+      threadId: "thread-submit",
+      expectedTurnId: "provider-turn-active",
+      input: "Steer the active turn",
+    });
+    const steeredRetry = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, steeredSubmission);
+    expect(steeredRetry.error).toBeUndefined();
+    expect((steeredRetry.result as { disposition: string }).disposition).toBe("steered");
+    expect(steerTurn).toHaveBeenCalledTimes(1);
+    expect(getCapabilities).toHaveBeenCalledTimes(1);
+
+    rejectAsStale = true;
+    const staleFallback = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+      itemId: "submit-stale-item",
+      command: {
+        ...queuedCommand,
+        commandId: "submit-stale-command",
+        message: {
+          ...queuedCommand.message,
+          messageId: "submit-stale-message",
+          text: "Preserve this stale steer",
+        },
+      },
+      activeTurnAction: "steer",
+    });
+    expect(staleFallback.error).toBeUndefined();
+    expect((staleFallback.result as { disposition: string }).disposition).toBe("queued");
+    expect(getCapabilities).toHaveBeenCalledTimes(2);
+
+    const listed = await sendRequest(ws, WS_METHODS.nextTurnQueueList, {
+      threadId: "thread-submit",
+    });
+    const queuedItems = (listed.result as { items: Array<{ itemId: string; command: unknown }> })
+      .items;
+    expect(queuedItems.map((item) => item.itemId)).toEqual([
+      "submit-queued-item",
+      "submit-stale-item",
+    ]);
+    expect(queuedItems[1]?.command).toMatchObject({
+      commandId: "submit-stale-command",
+      message: { messageId: "submit-stale-message", text: "Preserve this stale steer" },
+    });
+  });
+
   it("keeps orchestration domain push behavior for provider runtime events", async () => {
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     const emitRuntimeEvent = (event: ProviderRuntimeEvent) => {

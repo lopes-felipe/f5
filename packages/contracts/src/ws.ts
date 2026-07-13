@@ -143,12 +143,16 @@ import {
 } from "./prHub";
 import {
   NextTurnQueueCancelInput,
+  NextTurnQueueClearInput,
   NextTurnQueueEnqueueInput,
   NextTurnQueueListInput,
+  NextTurnQueuePauseQueueInput,
   NextTurnQueueReorderInput,
   NextTurnQueueResumeInput,
+  NextTurnQueueResumeQueueInput,
   NextTurnQueueSnapshot,
   NextTurnQueueUpdateInput,
+  NextTurnSubmitInput,
 } from "./nextTurnQueue";
 import { GlobalSearchQueryInput } from "./globalSearch";
 import {
@@ -225,6 +229,10 @@ export const WS_METHODS = {
 
   // Durable per-thread next-turn queue
   nextTurnQueueList: "nextTurnQueue.list",
+  nextTurnQueueSubmit: "nextTurnQueue.submit",
+  nextTurnQueuePauseQueue: "nextTurnQueue.pauseQueue",
+  nextTurnQueueResumeQueue: "nextTurnQueue.resumeQueue",
+  nextTurnQueueClear: "nextTurnQueue.clear",
   nextTurnQueueEnqueue: "nextTurnQueue.enqueue",
   nextTurnQueueUpdate: "nextTurnQueue.update",
   nextTurnQueueCancel: "nextTurnQueue.cancel",
@@ -430,6 +438,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
   tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueSubmit, NextTurnSubmitInput),
+  tagRequestBody(WS_METHODS.nextTurnQueuePauseQueue, NextTurnQueuePauseQueueInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueResumeQueue, NextTurnQueueResumeQueueInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueClear, NextTurnQueueClearInput),
   tagRequestBody(WS_METHODS.nextTurnQueueEnqueue, NextTurnQueueEnqueueInput),
   tagRequestBody(WS_METHODS.nextTurnQueueUpdate, NextTurnQueueUpdateInput),
   tagRequestBody(WS_METHODS.nextTurnQueueCancel, NextTurnQueueCancelInput),
@@ -488,6 +500,7 @@ export const WebSocketResponse = Schema.Struct({
   error: Schema.optional(
     Schema.Struct({
       message: Schema.String,
+      code: Schema.optional(Schema.String),
     }),
   ),
 });

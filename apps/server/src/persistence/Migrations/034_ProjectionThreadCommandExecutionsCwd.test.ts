@@ -275,8 +275,8 @@ layer("034_ProjectionThreadCommandExecutionsCwd", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 55,
-          name: "GlobalSearchFts",
+          migrationId: 58,
+          name: "NextTurnSubmissionReceipts",
         },
       ]);
     }),

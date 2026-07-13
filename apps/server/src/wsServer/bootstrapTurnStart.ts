@@ -7,6 +7,7 @@ import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import { resolveDefaultWorktreePath } from "../git/worktreePaths.ts";
 import { PersistenceDecodeError, PersistenceSqlError } from "../persistence/Errors.ts";
 import {
+  OrchestrationCommandConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -61,6 +62,7 @@ export interface BootstrapTurnStartDependencies {
 
 function isDefinitelyUncommittedDispatchError(error: OrchestrationDispatchError): boolean {
   return (
+    Schema.is(OrchestrationCommandConflictError)(error) ||
     Schema.is(OrchestrationCommandInvariantError)(error) ||
     Schema.is(OrchestrationCommandPreviouslyRejectedError)(error)
   );
@@ -116,6 +118,12 @@ function withAppendedCleanupDetail(
     return new PersistenceDecodeError({
       ...error,
       issue: `${error.issue}${suffix}`,
+    });
+  }
+  if (Schema.is(OrchestrationCommandConflictError)(error)) {
+    return new OrchestrationCommandConflictError({
+      ...error,
+      detail: `${error.detail}${suffix}`,
     });
   }
   if (Schema.is(OrchestrationCommandInvariantError)(error)) {

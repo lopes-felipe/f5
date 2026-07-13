@@ -39,6 +39,26 @@ export class OrchestrationCommandInvariantError extends Schema.TaggedErrorClass<
   }
 }
 
+/**
+ * A command could not be applied because another valid command won a race.
+ * Unlike an invariant failure, this is not persisted as a rejected command
+ * receipt: the same command ID may be retried after the transient condition
+ * clears.
+ */
+export class OrchestrationCommandConflictError extends Schema.TaggedErrorClass<OrchestrationCommandConflictError>()(
+  "OrchestrationCommandConflictError",
+  {
+    code: Schema.Literal("thread_busy"),
+    commandType: Schema.String,
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {
+  override get message(): string {
+    return `Orchestration command conflict (${this.commandType}, ${this.code}): ${this.detail}`;
+  }
+}
+
 export class OrchestrationCommandPreviouslyRejectedError extends Schema.TaggedErrorClass<OrchestrationCommandPreviouslyRejectedError>()(
   "OrchestrationCommandPreviouslyRejectedError",
   {
@@ -80,6 +100,7 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedErrorClass<
 
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
+  | OrchestrationCommandConflictError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | OrchestrationProjectorDecodeError

@@ -68,6 +68,8 @@ import Migration0053 from "./Migrations/053_PrHubAdvisories.ts";
 import Migration0054 from "./Migrations/054_NextTurnQueue.ts";
 import Migration0055 from "./Migrations/055_GlobalSearchFts.ts";
 import Migration0056 from "./Migrations/056_NextTurnQueueDispatchStartedAt.ts";
+import Migration0057 from "./Migrations/057_NextTurnQueueReliability.ts";
+import Migration0058 from "./Migrations/058_NextTurnSubmissionReceipts.ts";
 import { Effect } from "effect";
 
 /**
@@ -137,6 +139,8 @@ export const MIGRATIONS = {
   "54_NextTurnQueue": Migration0054,
   "55_GlobalSearchFts": Migration0055,
   "56_NextTurnQueueDispatchStartedAt": Migration0056,
+  "57_NextTurnQueueReliability": Migration0057,
+  "58_NextTurnSubmissionReceipts": Migration0058,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

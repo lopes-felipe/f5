@@ -476,6 +476,10 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     nextTurnQueue: {
+      submit: (input) => transport.request(WS_METHODS.nextTurnQueueSubmit, input),
+      pauseQueue: (input) => transport.request(WS_METHODS.nextTurnQueuePauseQueue, input),
+      resumeQueue: (input) => transport.request(WS_METHODS.nextTurnQueueResumeQueue, input),
+      clear: (input) => transport.request(WS_METHODS.nextTurnQueueClear, input),
       list: (input) => transport.request(WS_METHODS.nextTurnQueueList, input),
       enqueue: (input) => transport.request(WS_METHODS.nextTurnQueueEnqueue, input),
       update: (input) => transport.request(WS_METHODS.nextTurnQueueUpdate, input),

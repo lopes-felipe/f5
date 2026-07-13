@@ -19,6 +19,7 @@ import type {
   ProviderRespondToUserInputInput,
   ProviderRuntimeEvent,
   ProviderSendTurnInput,
+  ProviderSteerTurnInput,
   ProviderSession,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
@@ -56,6 +57,11 @@ export interface ProviderServiceShape {
   readonly sendTurn: (
     input: ProviderSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, ProviderServiceError>;
+
+  /** Append input to the currently active provider turn. */
+  readonly steerTurn?:
+    | ((input: ProviderSteerTurnInput) => Effect.Effect<void, ProviderServiceError>)
+    | undefined;
 
   /**
    * Interrupt a running provider turn.

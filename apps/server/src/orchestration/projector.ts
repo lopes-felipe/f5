@@ -685,6 +685,9 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               ...(payload.title !== undefined ? { title: payload.title } : {}),
               ...(payload.model !== undefined ? { model: payload.model } : {}),
+              ...(payload.modelSelection !== undefined
+                ? { modelSelection: payload.modelSelection }
+                : {}),
               ...(payload.model !== undefined
                 ? {
                     modelContextWindowTokens: estimateModelContextWindowTokens(

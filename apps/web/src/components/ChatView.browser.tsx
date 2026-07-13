@@ -17,6 +17,7 @@ import {
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
+  PR_HUB_WS_METHODS,
   type ServerConfig,
   ThreadId,
   TurnId,
@@ -38,6 +39,7 @@ import {
   clearAllPendingTurnDispatchArtifacts,
   usePendingTurnDispatchStore,
 } from "../pendingTurnDispatchStore";
+import { usePendingQueueEnqueueStore } from "../pendingQueueEnqueueStore";
 import { parsePersistedAppSettings } from "../appSettings";
 import { appendAttachedFilesToPrompt } from "../lib/attachedFiles";
 import { resetLiveThreadWarmSchedulerForTests } from "../lib/threadPreload";
@@ -1271,6 +1273,30 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
+  if (tag === PR_HUB_WS_METHODS.getSnapshot) {
+    return {
+      status: "ok",
+      viewerLogin: null,
+      host: "github.com",
+      pullRequests: [],
+      recentlyResolved: [],
+      lastPolledAt: null,
+    };
+  }
+  if (tag === WS_METHODS.nextTurnQueueList) {
+    return {
+      threadId: typeof body.threadId === "string" ? body.threadId : THREAD_ID,
+      version: 0,
+      items: [],
+      blocker: null,
+    };
+  }
+  if (tag === WS_METHODS.nextTurnQueueSubmit) {
+    return {
+      disposition: "started",
+      sequence: fixture.snapshot.snapshotSequence,
+    };
+  }
   if (tag === WS_METHODS.gitListBranches) {
     return {
       isRepo: true,
@@ -1511,7 +1537,10 @@ function getDispatchCommandRequests(
   type?: string,
 ): Array<WsRequestEnvelope["body"] & { command?: unknown }> {
   return wsRequests.filter((request) => {
-    if (request._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
+    if (
+      request._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand &&
+      request._tag !== WS_METHODS.nextTurnQueueSubmit
+    ) {
       return false;
     }
     if (!type) {
@@ -1833,6 +1862,9 @@ describe("ChatView timeline (full app)", () => {
       lastCompletedAt: null,
     });
     usePendingTurnDispatchStore.setState({
+      pendingByThreadId: {},
+    });
+    usePendingQueueEnqueueStore.setState({
       pendingByThreadId: {},
     });
     useCommandPaletteStore.setState({
@@ -2872,6 +2904,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   it("renders a collapsible task panel when the thread has tracked tasks", async () => {
+    persistAppSettings({ tasksPanelAutoOpen: true });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -3415,6 +3448,198 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it("routes active-turn Queue and Steer actions through the authoritative submit RPC", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-queue-steer" as MessageId,
+      targetText: "queue and steer target",
+      sessionStatus: "running",
+    });
+    const runningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) => ({
+        ...thread,
+        session: thread.session
+          ? {
+              ...thread.session,
+              activeTurnId: "turn-active" as TurnId,
+            }
+          : null,
+      })),
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: runningSnapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: nextFixture.serverConfig.providers.map((provider) => ({
+            ...provider,
+            turnSteering: true,
+          })),
+        };
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag !== WS_METHODS.nextTurnQueueSubmit) return;
+          if (body.activeTurnAction === "steer") {
+            return { type: "result", result: { disposition: "steered" } };
+          }
+          return {
+            type: "result",
+            result: {
+              disposition: "queued",
+              snapshot: {
+                threadId: THREAD_ID,
+                version: 1,
+                items: [],
+                blocker: {
+                  code: "active_turn",
+                  message: "The current provider turn is still active.",
+                  resumable: false,
+                },
+              },
+            },
+          };
+        };
+      },
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Queue this follow-up");
+      const queueButton = await waitForButtonByText("Queue");
+      await vi.waitFor(
+        () => {
+          expect(queueButton.disabled).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      queueButton.click();
+
+      await vi.waitFor(
+        () => {
+          const submitRequests = wsRequests.filter(
+            (request) => request._tag === WS_METHODS.nextTurnQueueSubmit,
+          );
+          expect(submitRequests).toHaveLength(1);
+          expect(submitRequests[0]?.activeTurnAction).toBe("queue");
+          expect(
+            (submitRequests[0]?.command as { message?: { text?: unknown } } | undefined)?.message
+              ?.text,
+          ).toBe("Queue this follow-up");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Steer this correction");
+      const steerButton = await waitForButtonByText("Steer");
+      await vi.waitFor(
+        () => {
+          expect(steerButton.disabled).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      steerButton.click();
+
+      await vi.waitFor(
+        () => {
+          const submitRequests = wsRequests.filter(
+            (request) => request._tag === WS_METHODS.nextTurnQueueSubmit,
+          );
+          expect(submitRequests).toHaveLength(2);
+          expect(submitRequests[1]?.activeTurnAction).toBe("steer");
+          expect(
+            (submitRequests[1]?.command as { message?: { text?: unknown } } | undefined)?.message
+              ?.text,
+          ).toBe("Steer this correction");
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps the next draft editable and out of the queue panel while an idle submit is pending", async () => {
+    const nextDraft = "Compose the next message immediately";
+    let resolveSubmit: ((resolution: WsRequestResolution) => void) | null = null;
+    const pendingSubmit = new Promise<WsRequestResolution>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    const completeSubmit = () => {
+      resolveSubmit?.({
+        type: "result",
+        result: { disposition: "started", sequence: fixture.snapshot.snapshotSequence },
+      });
+      resolveSubmit = null;
+    };
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-idle-submit-pending" as MessageId,
+        targetText: "idle submit pending target",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.nextTurnQueueSubmit) return pendingSubmit;
+        };
+      },
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Start this idle turn");
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => expect(sendButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.filter((request) => request._tag === WS_METHODS.nextTurnQueueSubmit),
+          ).toHaveLength(1);
+          expect(
+            usePendingQueueEnqueueStore.getState().pendingByThreadId[THREAD_ID]?.displayInQueue,
+          ).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      expect(document.body.textContent).not.toContain("Adding to queue");
+      const composerEditor = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="composer-editor"]'),
+        "Unable to find composer editor while submit is pending.",
+      );
+      expect(composerEditor.getAttribute("contenteditable")).toBe("true");
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, nextDraft);
+      await vi.waitFor(() => {
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          nextDraft,
+        );
+        expect(sendButton.disabled).toBe(true);
+      });
+
+      completeSubmit();
+      await vi.waitFor(
+        () => {
+          expect(
+            usePendingQueueEnqueueStore.getState().pendingByThreadId[THREAD_ID],
+          ).toBeUndefined();
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+            nextDraft,
+          );
+          expect(sendButton.disabled).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      completeSubmit();
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps the new thread selected after clicking the new-thread button", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
@@ -3922,6 +4147,196 @@ describe("ChatView timeline (full app)", () => {
           expect(document.body.textContent).not.toContain("Retry send");
         },
         { timeout: 12_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("reconciles an ambiguous queued-send commit without changing its durable IDs", async () => {
+    const sentText = "Recover this committed queue item";
+    let committed:
+      | {
+          itemId: string;
+          command: Record<string, unknown>;
+        }
+      | undefined;
+    let postCommitListCount = 0;
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-queue-recovery" as MessageId,
+        targetText: "queue recovery target",
+        sessionStatus: "running",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.nextTurnQueueSubmit) {
+            committed ??= {
+              itemId: body.itemId as string,
+              command: body.command as Record<string, unknown>,
+            };
+            return { type: "close" };
+          }
+          if (body._tag !== WS_METHODS.nextTurnQueueList || !committed) {
+            return null;
+          }
+
+          postCommitListCount += 1;
+          const createdAt =
+            typeof committed.command.createdAt === "string" ? committed.command.createdAt : NOW_ISO;
+          return {
+            type: "result",
+            result: {
+              threadId: THREAD_ID,
+              version: 1,
+              items: [
+                {
+                  itemId: committed.itemId,
+                  threadId: THREAD_ID,
+                  position: 0,
+                  status: "queued",
+                  failurePolicy: "stop",
+                  revision: 0,
+                  envelopeVersion: 1,
+                  command: committed.command,
+                  blocker: null,
+                  dispatchStartedAt: null,
+                  createdAt,
+                  updatedAt: createdAt,
+                },
+              ],
+              blocker: {
+                code: "active_turn",
+                message: "The current provider turn is still active.",
+                resumable: false,
+              },
+            },
+          };
+        };
+      },
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, sentText);
+      const queueButton = await waitForButtonByText("Queue");
+      await vi.waitFor(
+        () => {
+          expect(queueButton.disabled).toBe(false);
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+      queueButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(committed).toBeDefined();
+          expect(postCommitListCount).toBeGreaterThan(0);
+          expect(useRecoveryStateStore.getState().recoveryEpoch).toBeGreaterThan(0);
+          expect(
+            usePendingQueueEnqueueStore.getState().pendingByThreadId[THREAD_ID],
+          ).toBeUndefined();
+          expect(document.body.textContent).toContain(sentText);
+        },
+        { timeout: 12_000, interval: 16 },
+      );
+
+      const submitRequests = wsRequests.filter(
+        (request) => request._tag === WS_METHODS.nextTurnQueueSubmit,
+      );
+      const submitCommand = submitRequests[0]?.command as
+        | { commandId?: unknown; message?: { messageId?: unknown } }
+        | undefined;
+      expect(submitRequests).toHaveLength(1);
+      expect(submitRequests[0]?.itemId).toBe(committed?.itemId);
+      expect(submitCommand?.commandId).toBe(committed?.command.commandId);
+      expect(submitCommand?.message?.messageId).toBe(
+        (committed?.command.message as { messageId?: unknown } | undefined)?.messageId,
+      );
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe("");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("recovers a lost steered response with the original idempotency keys", async () => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-steer-recovery" as MessageId,
+      targetText: "steer recovery target",
+      sessionStatus: "running",
+    });
+    const runningSnapshot: OrchestrationReadModel = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) => ({
+        ...thread,
+        session: thread.session
+          ? { ...thread.session, activeTurnId: "turn-steer-recovery" as TurnId }
+          : null,
+      })),
+    };
+    let submitCount = 0;
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: runningSnapshot,
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: nextFixture.serverConfig.providers.map((provider) => ({
+            ...provider,
+            turnSteering: true,
+          })),
+        };
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag === WS_METHODS.nextTurnQueueList) {
+            return {
+              type: "result",
+              result: { threadId: THREAD_ID, version: 0, items: [], blocker: null },
+            };
+          }
+          if (body._tag !== WS_METHODS.nextTurnQueueSubmit) return;
+          submitCount += 1;
+          return submitCount === 1
+            ? { type: "close" }
+            : { type: "result", result: { disposition: "steered" } };
+        };
+      },
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Recover this steer once");
+      const steerButton = await waitForButtonByText("Steer");
+      await vi.waitFor(() => expect(steerButton.disabled).toBe(false), {
+        timeout: 8_000,
+        interval: 16,
+      });
+      steerButton.click();
+
+      await vi.waitFor(
+        () => {
+          expect(submitCount).toBe(2);
+          expect(
+            usePendingQueueEnqueueStore.getState().pendingByThreadId[THREAD_ID],
+          ).toBeUndefined();
+        },
+        { timeout: 12_000, interval: 16 },
+      );
+
+      const submissions = wsRequests.filter(
+        (request) => request._tag === WS_METHODS.nextTurnQueueSubmit,
+      );
+      expect(submissions).toHaveLength(2);
+      expect(submissions[1]?.itemId).toBe(submissions[0]?.itemId);
+      expect((submissions[1]?.command as { commandId?: unknown } | undefined)?.commandId).toBe(
+        (submissions[0]?.command as { commandId?: unknown } | undefined)?.commandId,
+      );
+      expect(
+        (submissions[1]?.command as { message?: { messageId?: unknown } } | undefined)?.message
+          ?.messageId,
+      ).toBe(
+        (submissions[0]?.command as { message?: { messageId?: unknown } } | undefined)?.message
+          ?.messageId,
       );
     } finally {
       await mounted.cleanup();
@@ -4668,11 +5083,16 @@ describe("ChatView timeline (full app)", () => {
 
       await vi.waitFor(
         () => {
-          expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1);
-          expect(document.body.textContent).toContain(sentText);
+          const startRequests = getDispatchCommandRequests("thread.turn.start");
+          expect(startRequests).toHaveLength(1);
+          expect(
+            (startRequests[0]?.command as { message?: { text?: unknown } } | undefined)?.message
+              ?.text,
+          ).toBe(sentText);
         },
         { timeout: 8_000, interval: 16 },
       );
+      await waitForLayout();
       useStore.getState().applyDomainEvent({
         sequence: 2,
         eventId: EventId.makeUnsafe("event-thread-session-set-optimistic-next"),

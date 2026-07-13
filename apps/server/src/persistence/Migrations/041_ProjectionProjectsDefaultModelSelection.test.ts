@@ -204,8 +204,8 @@ layer("041_ProjectionProjectsDefaultModelSelection", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 55,
-          name: "GlobalSearchFts",
+          migrationId: 58,
+          name: "NextTurnSubmissionReceipts",
         },
       ]);
     }),

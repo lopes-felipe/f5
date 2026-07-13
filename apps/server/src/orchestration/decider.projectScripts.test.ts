@@ -312,11 +312,12 @@ describe("decider project scripts", () => {
 
     expect(Array.isArray(result)).toBe(true);
     const events = Array.isArray(result) ? result : [result];
-    expect(events).toHaveLength(2);
-    expect(events[0]?.type).toBe("thread.message-sent");
-    const turnStartEvent = events[1];
+    expect(events).toHaveLength(3);
+    expect(events[0]?.type).toBe("thread.meta-updated");
+    expect(events[1]?.type).toBe("thread.message-sent");
+    const turnStartEvent = events[2];
     expect(turnStartEvent?.type).toBe("thread.turn-start-requested");
-    expect(turnStartEvent?.causationEventId).toBe(events[0]?.eventId ?? null);
+    expect(turnStartEvent?.causationEventId).toBe(events[1]?.eventId ?? null);
     if (turnStartEvent?.type !== "thread.turn-start-requested") {
       return;
     }

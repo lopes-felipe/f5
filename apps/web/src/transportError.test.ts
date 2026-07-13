@@ -11,6 +11,10 @@ describe("transportError", () => {
     expect(isTransportConnectionErrorMessage("Failed to send WebSocket request.")).toBe(true);
   });
 
+  it("detects ambiguous request timeouts", () => {
+    expect(isTransportConnectionErrorMessage("Request timed out: nextTurnQueue.submit")).toBe(true);
+  });
+
   it("leaves non-transport errors untouched", () => {
     expect(isTransportConnectionErrorMessage("Failed to compact thread.")).toBe(false);
     expect(sanitizeThreadErrorMessage("Failed to compact thread.")).toBe(

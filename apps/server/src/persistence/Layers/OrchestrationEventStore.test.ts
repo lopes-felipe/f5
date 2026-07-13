@@ -62,6 +62,19 @@ layer("OrchestrationEventStore", (it) => {
       assert.equal(replayed.length, 1);
       assert.equal(replayed[0]?.type, "project.created");
       assert.equal(replayed[0]?.metadata.adapterKey, "codex");
+
+      assert.ok(eventStore.findByCommandId);
+      const found = yield* eventStore.findByCommandId(
+        CommandId.makeUnsafe("cmd-store-roundtrip"),
+        "project.created",
+      );
+      assert.equal(found?.eventId, appended.eventId);
+      assert.isNull(
+        yield* eventStore.findByCommandId(
+          CommandId.makeUnsafe("cmd-store-roundtrip"),
+          "thread.turn-start-requested",
+        ),
+      );
     }),
   );
 

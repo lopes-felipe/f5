@@ -3,6 +3,7 @@ const TRANSPORT_ERROR_PATTERNS = [
   /\bSocketOpenError\b/i,
   /Unable to connect to the F5 server WebSocket\./i,
   /\bping timeout\b/i,
+  /^Request timed out:/i,
   /WebSocket connection closed\./i,
   /Failed to send WebSocket request\./i,
 ] as const;

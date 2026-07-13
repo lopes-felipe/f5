@@ -345,6 +345,20 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   const readEvents: OrchestrationEngineShape["readEvents"] = (fromSequenceExclusive) =>
     eventStore.readFromSequence(fromSequenceExclusive);
 
+  const findEventByCommandId: NonNullable<OrchestrationEngineShape["findEventByCommandId"]> = (
+    commandId,
+    eventType,
+  ) =>
+    eventStore.findByCommandId
+      ? eventStore.findByCommandId(commandId, eventType)
+      : Stream.runHead(
+          eventStore
+            .readAll()
+            .pipe(
+              Stream.filter((event) => event.commandId === commandId && event.type === eventType),
+            ),
+        ).pipe(Effect.map(Option.getOrNull));
+
   const dispatch: OrchestrationEngineShape["dispatch"] = (command) =>
     Effect.gen(function* () {
       const result = yield* Deferred.make<{ sequence: number }, OrchestrationDispatchError>();
@@ -355,6 +369,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
   return {
     getReadModel,
     readEvents,
+    findEventByCommandId,
     dispatch,
     acquireMaintenanceLock: maintenanceLock.acquireExclusive,
     // Each access creates a fresh PubSub subscription so that multiple

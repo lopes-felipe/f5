@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 
 import type { ChatAttachment } from "@t3tools/contracts";
@@ -39,6 +39,15 @@ export function createAttachmentId(threadId: string): string | null {
     return null;
   }
   return `${threadSegment}-${randomUUID()}`;
+}
+
+/** Creates a retry-stable attachment id without exposing the source identity. */
+export function createStableAttachmentId(threadId: string, identity: string): string | null {
+  const threadSegment = toSafeThreadAttachmentSegment(threadId);
+  if (!threadSegment) return null;
+  const digest = createHash("sha256").update(identity).digest("hex").slice(0, 32);
+  const uuid = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}`;
+  return `${threadSegment}-${uuid}`;
 }
 
 export function parseThreadSegmentFromAttachmentId(attachmentId: string): string | null {

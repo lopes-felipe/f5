@@ -120,12 +120,19 @@ import type {
 } from "./storage";
 import type {
   NextTurnQueueCancelInput,
+  NextTurnQueueCancelResult,
+  NextTurnQueueClearInput,
+  NextTurnQueueClearResult,
   NextTurnQueueEnqueueInput,
   NextTurnQueueListInput,
+  NextTurnQueuePauseQueueInput,
   NextTurnQueueReorderInput,
   NextTurnQueueResumeInput,
+  NextTurnQueueResumeQueueInput,
   NextTurnQueueSnapshot,
   NextTurnQueueUpdateInput,
+  NextTurnSubmitInput,
+  NextTurnSubmitResult,
 } from "./nextTurnQueue";
 import type { GlobalSearchQueryInput, GlobalSearchQueryResult } from "./globalSearch";
 import type {
@@ -439,10 +446,14 @@ export interface NativeApi {
     onCleanupProgress: (callback: (payload: StorageCleanupProgressPayload) => void) => () => void;
   };
   nextTurnQueue: {
+    submit: (input: NextTurnSubmitInput) => Promise<NextTurnSubmitResult>;
+    pauseQueue: (input: NextTurnQueuePauseQueueInput) => Promise<NextTurnQueueSnapshot>;
+    resumeQueue: (input: NextTurnQueueResumeQueueInput) => Promise<NextTurnQueueSnapshot>;
+    clear: (input: NextTurnQueueClearInput) => Promise<NextTurnQueueClearResult>;
     list: (input: NextTurnQueueListInput) => Promise<NextTurnQueueSnapshot>;
     enqueue: (input: NextTurnQueueEnqueueInput) => Promise<NextTurnQueueSnapshot>;
     update: (input: NextTurnQueueUpdateInput) => Promise<NextTurnQueueSnapshot>;
-    cancel: (input: NextTurnQueueCancelInput) => Promise<NextTurnQueueSnapshot>;
+    cancel: (input: NextTurnQueueCancelInput) => Promise<NextTurnQueueCancelResult>;
     reorder: (input: NextTurnQueueReorderInput) => Promise<NextTurnQueueSnapshot>;
     resume: (input: NextTurnQueueResumeInput) => Promise<NextTurnQueueSnapshot>;
     onUpdated: (callback: (payload: NextTurnQueueSnapshot) => void) => () => void;

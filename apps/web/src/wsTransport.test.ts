@@ -7,7 +7,7 @@ import {
   SLOW_RPC_THRESHOLD_MS,
 } from "./requestLatencyState";
 import { getWsConnectionState, resetWsConnectionStateForTests } from "./wsConnectionState";
-import { WsTransport } from "./wsTransport";
+import { WsRequestError, WsTransport } from "./wsTransport";
 
 type WsEventType = "open" | "message" | "close" | "error";
 type WsEvent = { data?: unknown; type?: string };
@@ -243,6 +243,34 @@ describe("WsTransport", () => {
     );
 
     await expect(requestPromise).resolves.toEqual({ projects: [{ id: "project-1" }] });
+
+    transport.dispose();
+  });
+
+  it("preserves machine-readable request error codes", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+
+    const requestPromise = transport.request("nextTurnQueue.update");
+    const requestEnvelope = JSON.parse(socket.sent[0] ?? "{}") as { id: string };
+    socket.serverMessage(
+      JSON.stringify({
+        id: requestEnvelope.id,
+        error: {
+          message: "The queue changed in another client.",
+          code: "stale_version",
+        },
+      }),
+    );
+
+    const requestError = await requestPromise.catch((error: unknown) => error);
+    expect(requestError).toBeInstanceOf(WsRequestError);
+    expect(requestError).toMatchObject({
+      name: "WsRequestError",
+      message: "The queue changed in another client.",
+      code: "stale_version",
+    });
 
     transport.dispose();
   });

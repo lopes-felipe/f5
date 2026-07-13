@@ -22,6 +22,7 @@ import {
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  ProviderKind,
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
@@ -59,7 +60,10 @@ import {
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
-import { makeNextTurnQueueStore } from "./nextTurnQueue";
+import { makeNextTurnQueueStore, NextTurnQueueError } from "./nextTurnQueue";
+import { makeNextTurnQueueService } from "./nextTurnQueueService.ts";
+import { makeNextTurnSubmissionReceiptStore } from "./nextTurnSubmissionReceipts.ts";
+import { makeProviderTurnIntentReceiptStore } from "./providerTurnIntentReceipts.ts";
 import { makeGlobalSearch } from "./globalSearch";
 import { makeBackupService } from "./backupService";
 import {
@@ -67,7 +71,6 @@ import {
   createWorkflowPlatformRun,
   inspectWorkflowPlatformRun,
 } from "./workflowPlatform.ts";
-import { drainNextTurnQueue, resolveNextTurnQueueGate } from "./nextTurnQueueDrainer";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { Keybindings } from "./keybindings";
@@ -130,7 +133,7 @@ import {
 } from "./attachmentPaths";
 
 import {
-  createAttachmentId,
+  createStableAttachmentId,
   resolveAttachmentPath,
   resolveAttachmentPathById,
 } from "./attachmentStore.ts";
@@ -536,6 +539,30 @@ function resolveGitStatusInvalidation(event: OrchestrationEvent):
   return { publish: false };
 }
 
+function affectsNextTurnQueueGate(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.deleted":
+    case "thread.archived":
+    case "thread.unarchived":
+    case "thread.meta-updated":
+    case "thread.session-set":
+    case "thread.proposed-plan-upserted":
+    case "thread.reverted":
+    case "thread.compacted":
+      return true;
+    case "thread.activity-appended":
+      return (
+        event.payload.activity.kind === "approval.requested" ||
+        event.payload.activity.kind === "approval.resolved" ||
+        event.payload.activity.kind === "user-input.requested" ||
+        event.payload.activity.kind === "user-input.resolved" ||
+        event.payload.activity.kind === "provider.turn.start.failed"
+      );
+    default:
+      return false;
+  }
+}
+
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
 const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 
@@ -580,21 +607,36 @@ export class ServerLifecycleError extends Schema.TaggedErrorClass<ServerLifecycl
 
 class RouteRequestError extends Schema.TaggedErrorClass<RouteRequestError>()("RouteRequestError", {
   message: Schema.String,
+  code: Schema.optional(Schema.String),
 }) {}
 
-function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
+function formatRouteFailure(cause: Cause.Cause<unknown>): {
+  readonly message: string;
+  readonly code?: string;
+} {
   const squashed = Cause.squash(cause);
-  if (
-    squashed &&
-    typeof squashed === "object" &&
-    "_tag" in squashed &&
-    squashed._tag === "RouteRequestError" &&
-    "message" in squashed &&
-    typeof squashed.message === "string"
-  ) {
-    return squashed.message;
+  if (Schema.is(RouteRequestError)(squashed)) {
+    return {
+      message: squashed.message,
+      ...(squashed.code === undefined ? {} : { code: squashed.code }),
+    };
   }
-  return Cause.pretty(cause);
+  return { message: Cause.pretty(cause) };
+}
+
+function exposeNextTurnQueueRouteError<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, RouteRequestError, R> {
+  return effect.pipe(
+    Effect.mapError((error) =>
+      Schema.is(NextTurnQueueError)(error)
+        ? new RouteRequestError({ message: error.message, code: error.code })
+        : new RouteRequestError({
+            message: "The next-turn queue could not be updated.",
+            code: "storage_error",
+          }),
+    ),
+  );
 }
 
 const MAX_ROUTE_CAUSE_MESSAGE_LENGTH = 1000;
@@ -687,6 +729,46 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const nextTurnQueueStore = yield* makeNextTurnQueueStore;
+  const nextTurnSubmissionReceipts = yield* makeNextTurnSubmissionReceiptStore();
+  const providerTurnIntentReceipts = yield* makeProviderTurnIntentReceiptStore(
+    "next-turn-queue-observer",
+  );
+  const pendingQueueThreadLifecycle = new Map<ThreadId, boolean>();
+  let handleQueueThreadLifecycle = (threadId: ThreadId, deleted: boolean): Effect.Effect<void> =>
+    Effect.sync(() => {
+      pendingQueueThreadLifecycle.set(
+        threadId,
+        deleted || (pendingQueueThreadLifecycle.get(threadId) ?? false),
+      );
+    });
+  const cleanupAttachments = (
+    attachments: ReadonlyArray<
+      Extract<
+        OrchestrationCommand,
+        { readonly type: "thread.turn.start" }
+      >["message"]["attachments"][number]
+    >,
+  ) =>
+    Effect.forEach(
+      attachments,
+      (attachment) => {
+        const attachmentPath = resolveAttachmentPath({
+          attachmentsDir: serverConfig.attachmentsDir,
+          attachment,
+        });
+        return attachmentPath
+          ? fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.catch(() => Effect.void))
+          : Effect.void;
+      },
+      { concurrency: 4, discard: true },
+    );
+  const cleanupAttachmentPaths = (attachmentPaths: ReadonlyArray<string>) =>
+    Effect.forEach(
+      attachmentPaths,
+      (attachmentPath) =>
+        fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.catch(() => Effect.void)),
+      { concurrency: 4, discard: true },
+    );
   const globalSearch = yield* makeGlobalSearch;
   const backupService = yield* makeBackupService;
 
@@ -805,6 +887,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
     readonly command: ClientOrchestrationCommand;
+    readonly onNewAttachmentPath?: ((attachmentPath: string) => void) | undefined;
   }) {
     const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
       const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
@@ -861,9 +944,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           }
         : turnStartCommand.bootstrap;
 
+    const persistedAttachmentPaths: string[] = [];
     const normalizedAttachments = yield* Effect.forEach(
-      turnStartCommand.message.attachments,
-      (attachment) =>
+      turnStartCommand.message.attachments.map((attachment, attachmentIndex) => ({
+        attachment,
+        attachmentIndex,
+      })),
+      ({ attachment, attachmentIndex }) =>
         Effect.gen(function* () {
           const parsed = parseBase64DataUrl(attachment.dataUrl);
           if (!parsed || !parsed.mimeType.startsWith("image/")) {
@@ -879,7 +966,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             });
           }
 
-          const attachmentId = createAttachmentId(turnStartCommand.threadId);
+          const contentDigest = createHash("sha256").update(bytes).digest("hex");
+          const attachmentId = createStableAttachmentId(
+            turnStartCommand.threadId,
+            `${turnStartCommand.commandId}:${turnStartCommand.message.messageId}:${attachmentIndex}:${contentDigest}`,
+          );
           if (!attachmentId) {
             return yield* new RouteRequestError({
               message: "Failed to create a safe attachment id.",
@@ -904,6 +995,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             });
           }
 
+          const attachmentAlreadyExisted = yield* fileSystem.stat(attachmentPath).pipe(
+            Effect.as(true),
+            Effect.catch(() => Effect.succeed(false)),
+          );
+
           yield* fileSystem.makeDirectory(path.dirname(attachmentPath), { recursive: true }).pipe(
             Effect.mapError(
               () =>
@@ -920,10 +1016,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
                 }),
             ),
           );
+          if (!attachmentAlreadyExisted) {
+            persistedAttachmentPaths.push(attachmentPath);
+            input.onNewAttachmentPath?.(attachmentPath);
+          }
 
           return persistedAttachment;
         }),
       { concurrency: 1 },
+    ).pipe(
+      Effect.tapError(() =>
+        Effect.forEach(
+          persistedAttachmentPaths,
+          (attachmentPath) =>
+            fileSystem
+              .remove(attachmentPath, { force: true })
+              .pipe(Effect.catch(() => Effect.void)),
+          { concurrency: 4, discard: true },
+        ),
+      ),
     );
 
     return {
@@ -1403,6 +1514,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
+          if (event.aggregateKind === "thread" && affectsNextTurnQueueGate(event)) {
+            yield* handleQueueThreadLifecycle(
+              event.aggregateId as ThreadId,
+              event.type === "thread.deleted",
+            );
+          }
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
           if (gitStatusInvalidation.publish) {
             yield* pushBus.publishAll(WS_CHANNELS.gitStatusInvalidated, {
@@ -1556,57 +1673,44 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.map((info) => info.type === "Directory"),
       Effect.catch(() => Effect.succeed(false)),
     );
-
-  const getNextTurnQueueSnapshot = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const items = yield* nextTurnQueueStore.list(threadId);
-      const first = items[0];
-      if (!first) {
-        return { threadId, items, blockedReason: null };
-      }
-      const snapshot = yield* projectionReadModelQuery.getSnapshot();
-      const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
-      const gate = resolveNextTurnQueueGate(thread, first);
-      let blockedReason = gate.kind === "ready" ? null : gate.reason;
-      if (gate.kind === "ready" && thread?.worktreePath) {
-        const exists = yield* nextTurnQueueWorktreeExists(thread.worktreePath);
-        if (!exists) {
-          blockedReason = `Queue paused because worktree '${thread.worktreePath}' is missing.`;
-        }
-      }
-      return { threadId, items, blockedReason };
-    });
-
-  const publishNextTurnQueueSnapshot = (threadId: ThreadId) =>
-    getNextTurnQueueSnapshot(threadId).pipe(
-      Effect.flatMap((snapshot) => pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot)),
-      Effect.catchCause((cause) =>
-        Effect.logWarning("failed to publish next-turn queue snapshot", {
-          threadId,
-          causePretty: Cause.pretty(cause),
-        }),
-      ),
-    );
-
-  const drainQueuedTurns = drainNextTurnQueue({
+  const nextTurnQueueService = yield* makeNextTurnQueueService({
     store: nextTurnQueueStore,
-    getSnapshot: () => projectionReadModelQuery.getSnapshot(),
+    receipts: providerTurnIntentReceipts,
+    scope: subscriptionsScope,
+    getReadModel: () => projectionReadModelQuery.getSnapshot(),
     worktreeExists: nextTurnQueueWorktreeExists,
     dispatch: (command) =>
       awaitOrchestrationRuntimeForRoute.pipe(
         Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.dispatch(command)),
       ),
-    onUpdated: publishNextTurnQueueSnapshot,
-  });
-
-  yield* Effect.forever(
-    drainQueuedTurns.pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("next-turn queue drain failed", { causePretty: Cause.pretty(cause) }),
+    retryTurnStart: (commandId) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(({ providerCommandReactor }) =>
+          providerCommandReactor.retryTurnStart(commandId),
+        ),
       ),
-      Effect.andThen(Effect.sleep(Duration.millis(750))),
-    ),
-  ).pipe(Effect.forkIn(subscriptionsScope));
+    publishSnapshot: (snapshot) => pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot),
+    cleanupAttachments,
+    cleanupAttachmentPaths,
+  });
+  handleQueueThreadLifecycle = (threadId, deleted) =>
+    nextTurnQueueService.handleThreadLifecycle(threadId, deleted).pipe(
+      Effect.andThen(deleted ? nextTurnSubmissionReceipts.purgeThread(threadId) : Effect.void),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to purge next-turn submission receipts", {
+          threadId,
+          causePretty: Cause.pretty(cause),
+        }),
+      ),
+    );
+  const startupQueueThreadLifecycle = Array.from(pendingQueueThreadLifecycle.entries());
+  pendingQueueThreadLifecycle.clear();
+  yield* Effect.forEach(
+    startupQueueThreadLifecycle,
+    ([threadId, deleted]) => handleQueueThreadLifecycle(threadId, deleted),
+    { discard: true },
+  );
+  yield* nextTurnQueueService.start;
 
   const unsubscribeTerminalEvents = yield* terminalManager.subscribe(
     (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event)),
@@ -1776,7 +1880,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const { orchestrationEngine, projectSetupScriptRunner } =
           yield* awaitOrchestrationRuntimeForRoute;
         const { command } = request.body;
-        const normalizedCommand = yield* normalizeDispatchCommand({ command });
+        if (command.type === "thread.turn.start" && !command.bootstrap) {
+          const snapshot = yield* projectionReadModelQuery.getSnapshot();
+          const threadExists = snapshot.threads.some(
+            (thread) => thread.id === command.threadId && thread.deletedAt === null,
+          );
+          if (!threadExists) {
+            return yield* new RouteRequestError({ message: "Thread no longer exists." });
+          }
+        }
+        const newAttachmentPaths: string[] = [];
+        const normalizedCommand = yield* normalizeDispatchCommand({
+          command,
+          onNewAttachmentPath: (attachmentPath) => newAttachmentPaths.push(attachmentPath),
+        });
         if (normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap) {
           return yield* dispatchBootstrapTurnStart({
             command: normalizedCommand,
@@ -1784,19 +1901,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             git,
             projectSetupScriptRunner,
             worktreesDir: serverConfig.worktreesDir,
+          }).pipe(Effect.tapError(() => cleanupAttachmentPaths(newAttachmentPaths)));
+        }
+        if (normalizedCommand.type === "thread.turn.start") {
+          yield* nextTurnQueueService.enqueue({
+            itemId: normalizedCommand.commandId,
+            command: normalizedCommand,
+            createdAttachmentPaths: newAttachmentPaths,
           });
+          yield* nextTurnQueueService.drain;
+          const queuedDispatchSnapshot = yield* projectionReadModelQuery.getSnapshot();
+          return { sequence: queuedDispatchSnapshot.snapshotSequence };
         }
         const result = yield* orchestrationEngine.dispatch(normalizedCommand);
         if (
           normalizedCommand.type === "thread.checkpoint.revert" ||
           normalizedCommand.type === "thread.compact.request"
         ) {
-          const reason =
+          const message =
             normalizedCommand.type === "thread.checkpoint.revert"
               ? "Queue paused because the thread was reverted."
               : "Queue paused because the thread was compacted.";
-          yield* nextTurnQueueStore.pauseThread(normalizedCommand.threadId, reason);
-          yield* publishNextTurnQueueSnapshot(normalizedCommand.threadId);
+          yield* nextTurnQueueService.pauseThread(normalizedCommand.threadId, message);
         }
         return result;
       }
@@ -2748,55 +2874,374 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.nextTurnQueueSubmit: {
+        const body = stripRequestTag(request.body);
+        if (body.command.bootstrap) {
+          return yield* new RouteRequestError({
+            message: "Turn submission requires an existing thread without bootstrap work.",
+          });
+        }
+        const orchestrationSnapshot = yield* projectionReadModelQuery.getSnapshot();
+        const thread = orchestrationSnapshot.threads.find(
+          (candidate) => candidate.id === body.command.threadId && candidate.deletedAt === null,
+        );
+        if (!thread) {
+          return yield* new RouteRequestError({ message: "Thread no longer exists." });
+        }
+
+        const submissionNow = new Date().toISOString();
+        const requestHash = createHash("sha256")
+          .update(
+            JSON.stringify({
+              command: body.command,
+              activeTurnAction: body.activeTurnAction,
+            }),
+          )
+          .digest("hex");
+        const submissionClaim = yield* exposeNextTurnQueueRouteError(
+          nextTurnSubmissionReceipts.claim({
+            itemId: body.itemId,
+            commandId: body.command.commandId,
+            threadId: body.command.threadId,
+            requestHash,
+            now: submissionNow,
+          }),
+        );
+
+        switch (submissionClaim.kind) {
+          case "started":
+            return { disposition: "started" as const, sequence: submissionClaim.sequence };
+          case "steered":
+            return { disposition: "steered" as const };
+          case "conflict":
+            return yield* new RouteRequestError({
+              message: submissionClaim.error,
+              code: "conflict",
+            });
+          case "delivery_unknown":
+            return yield* new RouteRequestError({
+              message: submissionClaim.error,
+              code: "delivery_unknown",
+            });
+          case "in_progress":
+            return yield* new RouteRequestError({
+              message: "The same turn submission is still being processed.",
+              code: "submission_in_progress",
+            });
+          case "recover_starting": {
+            const queued = yield* exposeNextTurnQueueRouteError(
+              nextTurnQueueService.getSnapshot(body.command.threadId),
+            );
+            const recoveredItem = queued.items.find((item) => item.itemId === body.itemId);
+            if (recoveredItem) {
+              if (recoveredItem.status === "dispatching") {
+                const recoveredProjection = yield* projectionReadModelQuery.getSnapshot();
+                yield* exposeNextTurnQueueRouteError(
+                  nextTurnSubmissionReceipts.completeStarted(
+                    body.itemId,
+                    recoveredProjection.snapshotSequence,
+                    new Date().toISOString(),
+                  ),
+                );
+                return {
+                  disposition: "started" as const,
+                  sequence: recoveredProjection.snapshotSequence,
+                };
+              }
+              yield* exposeNextTurnQueueRouteError(
+                nextTurnSubmissionReceipts.releaseToQueue(body.itemId),
+              );
+              return { disposition: "queued" as const, snapshot: queued };
+            }
+
+            const recoveredProjection = yield* projectionReadModelQuery.getSnapshot();
+            const recoveredThread = recoveredProjection.threads.find(
+              (candidate) => candidate.id === body.command.threadId,
+            );
+            const wasPersisted = recoveredThread?.messages.some(
+              (message) => message.id === body.command.message.messageId,
+            );
+            if (wasPersisted) {
+              yield* exposeNextTurnQueueRouteError(
+                nextTurnSubmissionReceipts.completeStarted(
+                  body.itemId,
+                  recoveredProjection.snapshotSequence,
+                  new Date().toISOString(),
+                ),
+              );
+              return {
+                disposition: "started" as const,
+                sequence: recoveredProjection.snapshotSequence,
+              };
+            }
+
+            // No queue row or orchestration message exists, so the previous
+            // process stopped before a start could become externally visible.
+            yield* exposeNextTurnQueueRouteError(
+              nextTurnSubmissionReceipts.reclaimStarting(body.itemId, new Date().toISOString()),
+            );
+            break;
+          }
+          case "acquired":
+            break;
+        }
+
+        const newAttachmentPaths: string[] = [];
+        const normalizedExit = yield* Effect.exit(
+          normalizeDispatchCommand({
+            command: body.command,
+            onNewAttachmentPath: (attachmentPath) => newAttachmentPaths.push(attachmentPath),
+          }),
+        );
+        if (Exit.isFailure(normalizedExit)) {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.releaseBeforeDelivery(body.itemId),
+          );
+          yield* cleanupAttachmentPaths(newAttachmentPaths);
+          return yield* Effect.failCause(normalizedExit.cause);
+        }
+        const command = normalizedExit.value;
+        if (command.type !== "thread.turn.start" || command.bootstrap) {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.releaseBeforeDelivery(body.itemId),
+          );
+          return yield* new RouteRequestError({
+            message: "Turn submission requires an existing thread without bootstrap work.",
+          });
+        }
+
+        const hasActiveTurn =
+          thread.latestTurn?.state === "running" ||
+          thread.session?.activeTurnId != null ||
+          thread.session?.status === "starting";
+
+        const activeTurnId = thread.session?.activeTurnId ?? thread.latestTurn?.turnId ?? null;
+        const sessionProvider = thread.session?.providerName;
+        const activeTurnProvider = Schema.is(ProviderKind)(sessionProvider)
+          ? sessionProvider
+          : (command.provider ?? null);
+        // Capability discovery may invoke the provider CLI and is allowed to
+        // be slow or fail. Queue and idle-start submissions do not need it, so
+        // only probe after every cheap steering precondition is satisfied.
+        // In particular, a normal queue acknowledgement must never wait for a
+        // provider authentication/status check.
+        const shouldProbeTurnSteering =
+          hasActiveTurn &&
+          body.activeTurnAction === "steer" &&
+          activeTurnId !== null &&
+          activeTurnProvider !== null &&
+          providerService.steerTurn !== undefined;
+        const canSteerActiveTurn = shouldProbeTurnSteering
+          ? yield* providerService.getCapabilities(activeTurnProvider).pipe(
+              Effect.map((capabilities) => capabilities.turnSteering === true),
+              Effect.catch(() => Effect.succeed(false)),
+            )
+          : false;
+        let startingSubmission = false;
+        if (
+          hasActiveTurn &&
+          body.activeTurnAction === "steer" &&
+          activeTurnId !== null &&
+          canSteerActiveTurn &&
+          providerService.steerTurn
+        ) {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.beginSteering(body.itemId, new Date().toISOString()),
+          );
+          const steerExit = yield* Effect.exit(
+            providerService.steerTurn({
+              threadId: command.threadId,
+              expectedTurnId: activeTurnId,
+              ...(command.message.text.trim().length > 0 ? { input: command.message.text } : {}),
+              ...(command.message.attachments.length > 0
+                ? { attachments: command.message.attachments }
+                : {}),
+            }),
+          );
+          if (steerExit._tag === "Success") {
+            yield* exposeNextTurnQueueRouteError(
+              nextTurnSubmissionReceipts.completeSteered(body.itemId, new Date().toISOString()),
+            );
+            yield* cleanupAttachments(command.message.attachments);
+            return { disposition: "steered" as const };
+          }
+
+          const detail = Cause.pretty(steerExit.cause);
+          const staleActiveTurn = /active turn changed|expected.+current|no active turn/iu.test(
+            detail,
+          );
+          if (!staleActiveTurn) {
+            const deliveryMessage = `Steer delivery could not be confirmed: ${compactRouteCauseMessage(detail)}`;
+            yield* exposeNextTurnQueueRouteError(
+              nextTurnSubmissionReceipts.markDeliveryUnknown(
+                body.itemId,
+                deliveryMessage,
+                new Date().toISOString(),
+              ),
+            );
+            yield* cleanupAttachmentPaths(newAttachmentPaths);
+            return yield* new RouteRequestError({
+              message: deliveryMessage,
+              code: "delivery_unknown",
+            });
+          }
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.beginStarting(body.itemId, new Date().toISOString()),
+          );
+          startingSubmission = true;
+        }
+
+        // Steering is capability-gated below. Until a provider accepts the
+        // steer, the same durable item/command identifiers remain available for
+        // an atomic queue fallback.
+        if (!startingSubmission) {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.beginStarting(body.itemId, new Date().toISOString()),
+          );
+        }
+        const shouldQueue = hasActiveTurn;
+        const enqueueExit = yield* Effect.exit(
+          exposeNextTurnQueueRouteError(
+            nextTurnQueueService.enqueue({
+              itemId: body.itemId,
+              command,
+              createdAttachmentPaths: newAttachmentPaths,
+            }),
+          ),
+        );
+        if (Exit.isFailure(enqueueExit)) {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.releaseBeforeDelivery(body.itemId),
+          );
+          return yield* Effect.failCause(enqueueExit.cause);
+        }
+        const queuedSnapshot = enqueueExit.value;
+
+        if (shouldQueue) {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.releaseToQueue(body.itemId),
+          );
+          return {
+            disposition: "queued" as const,
+            snapshot: queuedSnapshot,
+          };
+        }
+
+        yield* exposeNextTurnQueueRouteError(nextTurnQueueService.drain);
+        const afterDrain = yield* exposeNextTurnQueueRouteError(
+          nextTurnQueueService.getSnapshot(command.threadId),
+        );
+        const submittedItem = afterDrain.items.find((item) => item.itemId === body.itemId);
+        if (!submittedItem) {
+          const afterDispatch = yield* projectionReadModelQuery.getSnapshot();
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.completeStarted(
+              body.itemId,
+              afterDispatch.snapshotSequence,
+              new Date().toISOString(),
+            ),
+          );
+          return {
+            disposition: "started" as const,
+            sequence: afterDispatch.snapshotSequence,
+          };
+        }
+        if (submittedItem.status !== "dispatching") {
+          yield* exposeNextTurnQueueRouteError(
+            nextTurnSubmissionReceipts.releaseToQueue(body.itemId),
+          );
+          return {
+            disposition: "queued" as const,
+            snapshot: afterDrain,
+          };
+        }
+        const afterDispatch = yield* projectionReadModelQuery.getSnapshot();
+        yield* exposeNextTurnQueueRouteError(
+          nextTurnSubmissionReceipts.completeStarted(
+            body.itemId,
+            afterDispatch.snapshotSequence,
+            new Date().toISOString(),
+          ),
+        );
+        return {
+          disposition: "started" as const,
+          sequence: afterDispatch.snapshotSequence,
+        };
+      }
+
       case WS_METHODS.nextTurnQueueList: {
         const body = stripRequestTag(request.body);
-        return yield* getNextTurnQueueSnapshot(body.threadId);
+        return yield* exposeNextTurnQueueRouteError(
+          nextTurnQueueService.getSnapshot(body.threadId),
+        );
+      }
+
+      case WS_METHODS.nextTurnQueuePauseQueue: {
+        const body = stripRequestTag(request.body);
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.pauseQueue(body));
+      }
+
+      case WS_METHODS.nextTurnQueueResumeQueue: {
+        const body = stripRequestTag(request.body);
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.resumeQueue(body));
+      }
+
+      case WS_METHODS.nextTurnQueueClear: {
+        const body = stripRequestTag(request.body);
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.clear(body));
       }
 
       case WS_METHODS.nextTurnQueueEnqueue: {
         const body = stripRequestTag(request.body);
-        const command = yield* normalizeDispatchCommand({ command: body.command });
+        if (body.command.bootstrap) {
+          return yield* new RouteRequestError({
+            message: "Only existing-thread turn-start commands can be queued.",
+          });
+        }
+        const orchestrationSnapshot = yield* projectionReadModelQuery.getSnapshot();
+        const threadExists = orchestrationSnapshot.threads.some(
+          (thread) => thread.id === body.command.threadId && thread.deletedAt === null,
+        );
+        if (!threadExists) {
+          return yield* new RouteRequestError({ message: "Thread no longer exists." });
+        }
+        const newAttachmentPaths: string[] = [];
+        const command = yield* normalizeDispatchCommand({
+          command: body.command,
+          onNewAttachmentPath: (attachmentPath) => newAttachmentPaths.push(attachmentPath),
+        });
         if (command.type !== "thread.turn.start") {
           return yield* new RouteRequestError({
             message: "Only thread turn-start commands can be queued.",
           });
         }
-        yield* nextTurnQueueStore.enqueue({ itemId: body.itemId, command });
-        const snapshot = yield* getNextTurnQueueSnapshot(command.threadId);
-        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
-        return snapshot;
+        return yield* exposeNextTurnQueueRouteError(
+          nextTurnQueueService.enqueue({
+            itemId: body.itemId,
+            command,
+            createdAttachmentPaths: newAttachmentPaths,
+          }),
+        );
       }
 
       case WS_METHODS.nextTurnQueueUpdate: {
         const body = stripRequestTag(request.body);
-        const updated = yield* nextTurnQueueStore.update(body);
-        const snapshot = yield* getNextTurnQueueSnapshot(updated.threadId);
-        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
-        return snapshot;
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.update(body));
       }
 
       case WS_METHODS.nextTurnQueueCancel: {
         const body = stripRequestTag(request.body);
-        const updated = yield* nextTurnQueueStore.cancel(body.itemId);
-        const snapshot = yield* getNextTurnQueueSnapshot(updated.threadId);
-        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
-        return snapshot;
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.cancel(body));
       }
 
       case WS_METHODS.nextTurnQueueReorder: {
         const body = stripRequestTag(request.body);
-        yield* nextTurnQueueStore.reorder(body);
-        const snapshot = yield* getNextTurnQueueSnapshot(body.threadId);
-        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
-        return snapshot;
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.reorder(body));
       }
 
       case WS_METHODS.nextTurnQueueResume: {
         const body = stripRequestTag(request.body);
-        const updated = yield* nextTurnQueueStore.resume(body.itemId);
-        const snapshot = yield* getNextTurnQueueSnapshot(updated.threadId);
-        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
-        return snapshot;
+        return yield* exposeNextTurnQueueRouteError(nextTurnQueueService.resume(body));
       }
 
       case WS_METHODS.globalSearchQuery: {
@@ -3073,7 +3518,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (Exit.isFailure(result)) {
       return yield* sendWsResponse({
         id: request.success.id,
-        error: { message: formatRouteFailureMessage(result.cause) },
+        error: formatRouteFailure(result.cause),
       });
     }
 

@@ -420,6 +420,7 @@ describe("ProviderCommandReactor", () => {
     );
     const layer = ProviderCommandReactorLive.pipe(
       Layer.provideMerge(orchestrationLayer),
+      Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(
         Layer.succeed(ProjectMcpConfigService, {
           readCommonStoredConfig: () =>
@@ -865,6 +866,65 @@ describe("ProviderCommandReactor", () => {
     expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
       threadId: ThreadId.makeUnsafe("thread-1"),
       interactionMode: "plan",
+    });
+  });
+
+  it("applies turn execution settings as provider input and thread defaults", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-start-authoritative-settings"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-authoritative-settings"),
+          role: "user",
+          text: "use these queued settings",
+          attachments: [],
+        },
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex"),
+          model: "gpt-5.3-codex",
+        },
+        interactionMode: "plan",
+        runtimeMode: "full-access",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
+      model: "gpt-5.3-codex",
+      runtimeMode: "full-access",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.3-codex",
+      },
+    });
+    expect(harness.sendTurn.mock.calls[0]?.[0]).toMatchObject({
+      model: "gpt-5.3-codex",
+      interactionMode: "plan",
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-5.3-codex",
+      },
+    });
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const updatedThread = readModel.threads.find(
+        (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
+      );
+      return (
+        updatedThread?.model === "gpt-5.3-codex" &&
+        updatedThread.runtimeMode === "full-access" &&
+        updatedThread.interactionMode === "plan" &&
+        updatedThread.modelSelection?.model === "gpt-5.3-codex"
+      );
     });
   });
 
@@ -1699,7 +1759,7 @@ describe("ProviderCommandReactor", () => {
           attachments: [],
         },
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-        runtimeMode: "full-access",
+        runtimeMode: "approval-required",
         createdAt: now,
       }),
     );

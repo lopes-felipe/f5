@@ -161,6 +161,13 @@ export interface CodexAppServerSendTurnInput {
   readonly interactionMode?: ProviderInteractionMode;
 }
 
+export interface CodexAppServerSteerTurnInput {
+  readonly threadId: ThreadId;
+  readonly expectedTurnId: TurnId;
+  readonly input?: string;
+  readonly attachments?: ReadonlyArray<{ type: "image"; url: string }>;
+}
+
 export interface CodexAppServerStartSessionInput {
   readonly threadId: ThreadId;
   readonly provider?: "codex";
@@ -875,9 +882,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     }
   }
 
-  async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
-    const context = this.requireSession(input.threadId);
-
+  private buildTurnInput(input: {
+    readonly input?: string;
+    readonly attachments?: ReadonlyArray<{ type: "image"; url: string }>;
+  }): Array<{ type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }> {
     const turnInput: Array<
       { type: "text"; text: string; text_elements: [] } | { type: "image"; url: string }
     > = [];
@@ -899,6 +907,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (turnInput.length === 0) {
       throw new Error("Turn input must include text or attachments.");
     }
+    return turnInput;
+  }
+
+  async sendTurn(input: CodexAppServerSendTurnInput): Promise<ProviderTurnStartResult> {
+    const context = this.requireSession(input.threadId);
+    const turnInput = this.buildTurnInput(input);
 
     const providerThreadId = readResumeThreadId({
       threadId: context.session.threadId,
@@ -995,6 +1009,28 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ? { resumeCursor: context.session.resumeCursor }
         : {}),
     };
+  }
+
+  async steerTurn(input: CodexAppServerSteerTurnInput): Promise<void> {
+    const context = this.requireSession(input.threadId);
+    if (context.session.activeTurnId !== input.expectedTurnId) {
+      throw new Error(
+        `Active turn changed before steering (expected '${input.expectedTurnId}', current '${context.session.activeTurnId ?? "none"}').`,
+      );
+    }
+    const providerThreadId = readResumeThreadId({
+      threadId: context.session.threadId,
+      runtimeMode: context.session.runtimeMode,
+      resumeCursor: context.session.resumeCursor,
+    });
+    if (!providerThreadId) {
+      throw new Error("Session is missing provider resume thread id.");
+    }
+    await this.sendRequest(context, "turn/steer", {
+      threadId: providerThreadId,
+      expectedTurnId: input.expectedTurnId,
+      input: this.buildTurnInput(input),
+    });
   }
 
   async runOneOffPrompt(input: {

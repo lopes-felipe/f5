@@ -20,6 +20,7 @@ import {
   ProviderRespondToUserInputInput,
   RuntimeMode,
   ProviderSendTurnInput,
+  ProviderSteerTurnInput,
   ProviderSessionStartInput,
   ProviderStopSessionInput,
   ProviderDriverKind,
@@ -903,6 +904,39 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         );
       });
 
+    const steerTurn: ProviderServiceShape["steerTurn"] = (rawInput) =>
+      Effect.gen(function* () {
+        const input = yield* decodeInputOrValidationError({
+          operation: "ProviderService.steerTurn",
+          schema: ProviderSteerTurnInput,
+          payload: rawInput,
+        });
+        const attachments = input.attachments ?? [];
+        if (!input.input && attachments.length === 0) {
+          return yield* toValidationError(
+            "ProviderService.steerTurn",
+            "Either input text or at least one attachment is required",
+          );
+        }
+        const routed = yield* resolveRoutableSession({
+          threadId: input.threadId,
+          operation: "ProviderService.steerTurn",
+          allowRecovery: false,
+        });
+        if (!routed.adapter.capabilities.turnSteering || !routed.adapter.steerTurn) {
+          return yield* toValidationError(
+            "ProviderService.steerTurn",
+            `Provider '${routed.adapter.provider}' does not support active-turn steering.`,
+          );
+        }
+        yield* routed.adapter.steerTurn({ ...input, attachments });
+        yield* analytics.record("provider.turn.steered", {
+          provider: routed.adapter.provider,
+          attachmentCount: attachments.length,
+          hasInput: typeof input.input === "string" && input.input.length > 0,
+        });
+      });
+
     const interruptTurn: ProviderServiceShape["interruptTurn"] = (rawInput) =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
@@ -1353,6 +1387,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     return {
       startSession,
       sendTurn,
+      steerTurn,
       interruptTurn,
       respondToRequest,
       respondToUserInput,

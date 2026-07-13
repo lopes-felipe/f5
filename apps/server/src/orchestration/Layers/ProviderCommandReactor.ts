@@ -22,7 +22,7 @@ import {
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -58,6 +58,7 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
+import { makeProviderTurnIntentReceiptStore } from "../../providerTurnIntentReceipts.ts";
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -128,14 +129,9 @@ function mapProviderSessionStatusToOrchestrationStatus(
   }
 }
 
-const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
-  event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
-
 const serverCommandId = (tag: string): CommandId =>
   CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
 
-const HANDLED_TURN_START_KEY_MAX = 10_000;
-const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const WORKTREE_BRANCH_PREFIX = "t3code";
 const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(`^${WORKTREE_BRANCH_PREFIX}\\/[0-9a-f]{8}$`);
@@ -252,18 +248,7 @@ const make = Effect.gen(function* () {
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
-  const handledTurnStartKeys = yield* Cache.make<string, true>({
-    capacity: HANDLED_TURN_START_KEY_MAX,
-    timeToLive: HANDLED_TURN_START_KEY_TTL,
-    lookup: () => Effect.succeed(true),
-  });
-
-  const hasHandledTurnStartRecently = (key: string) =>
-    Cache.getOption(handledTurnStartKeys, key).pipe(
-      Effect.flatMap((cached) =>
-        Cache.set(handledTurnStartKeys, key, true).pipe(Effect.as(Option.isSome(cached))),
-      ),
-    );
+  const turnIntentReceipts = yield* makeProviderTurnIntentReceiptStore();
 
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
   const threadModelOptions = new Map<string, ProviderModelOptions>();
@@ -919,40 +904,25 @@ const make = Effect.gen(function* () {
   const processTurnStartRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
-    const key = turnStartKeyForEvent(event);
-    if (yield* hasHandledTurnStartRecently(key)) {
-      return;
-    }
-
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
-      return;
+      return yield* Effect.fail(
+        new Error(`Thread '${event.payload.threadId}' was not found for turn start request.`),
+      );
     }
 
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
     if (!message || message.role !== "user") {
-      yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.turn.start.failed",
-        summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
-      return;
+      return yield* Effect.fail(
+        new Error(
+          `User message '${event.payload.messageId}' was not found for turn start request.`,
+        ),
+      );
     }
 
     const inputLengthIssue = getProviderTurnInputLengthIssue(message.text);
     if (inputLengthIssue) {
-      yield* appendProviderFailureActivity({
-        threadId: event.payload.threadId,
-        kind: "provider.turn.start.failed",
-        summary: "Provider turn start failed",
-        detail: inputLengthIssue.message,
-        turnId: null,
-        createdAt: event.payload.createdAt,
-      });
-      return;
+      return yield* Effect.fail(new Error(inputLengthIssue.message));
     }
 
     yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
@@ -1006,6 +976,49 @@ const make = Effect.gen(function* () {
       interactionMode: event.payload.interactionMode,
       createdAt: event.payload.createdAt,
     });
+  });
+
+  const processTurnStartDurably = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
+  ) {
+    const commandId =
+      event.commandId ?? CommandId.makeUnsafe(`provider-intent-event:${event.eventId}`);
+    const claim = yield* turnIntentReceipts.claim({
+      commandId,
+      eventId: event.eventId,
+      threadId: event.payload.threadId,
+      attemptedAt: new Date().toISOString(),
+    });
+
+    if (claim.kind !== "acquired") {
+      return;
+    }
+
+    const deliveryExit = yield* Effect.exit(processTurnStartRequested(event));
+    if (deliveryExit._tag === "Success") {
+      yield* turnIntentReceipts.accept(commandId, new Date().toISOString());
+      return;
+    }
+
+    const error = Cause.pretty(deliveryExit.cause);
+    yield* turnIntentReceipts.fail(commandId, error);
+    yield* appendProviderFailureActivity({
+      threadId: event.payload.threadId,
+      kind: "provider.turn.start.failed",
+      summary: "Provider turn start failed",
+      detail: error,
+      turnId: null,
+      createdAt: event.payload.createdAt,
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to publish provider turn-start failure activity", {
+          threadId: event.payload.threadId,
+          commandId,
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+    return yield* Effect.failCause(deliveryExit.cause);
   });
 
   const processTurnInterruptRequested = Effect.fnUntraced(function* (
@@ -1388,7 +1401,7 @@ const make = Effect.gen(function* () {
           threadModelOptions.delete(event.payload.threadId);
           break;
         case "thread.turn-start-requested":
-          yield* processTurnStartRequested(event);
+          yield* processTurnStartDurably(event);
           break;
         case "thread.turn-interrupt-requested":
           yield* processTurnInterruptRequested(event);
@@ -1426,29 +1439,84 @@ const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processDomainEventSafely);
 
-  const start: ProviderCommandReactorShape["start"] = Effect.forkScoped(
-    Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-      if (
-        event.type !== "thread.runtime-mode-set" &&
-        event.type !== "thread.meta-updated" &&
-        event.type !== "thread.deleted" &&
-        event.type !== "thread.turn-start-requested" &&
-        event.type !== "thread.turn-interrupt-requested" &&
-        event.type !== "thread.approval-response-requested" &&
-        event.type !== "thread.user-input-response-requested" &&
-        event.type !== "thread.session-stop-requested" &&
-        event.type !== "thread.archived"
-      ) {
-        return Effect.void;
+  const isProviderIntentEvent = (event: OrchestrationEvent): event is ProviderIntentEvent =>
+    event.type === "thread.runtime-mode-set" ||
+    event.type === "thread.meta-updated" ||
+    event.type === "thread.deleted" ||
+    event.type === "thread.turn-start-requested" ||
+    event.type === "thread.turn-interrupt-requested" ||
+    event.type === "thread.approval-response-requested" ||
+    event.type === "thread.user-input-response-requested" ||
+    event.type === "thread.session-stop-requested" ||
+    event.type === "thread.archived";
+
+  let replayCursor = 0;
+  const reconcilePersistedTurnStarts = () =>
+    Stream.runForEach(orchestrationEngine.readEvents(replayCursor), (event) => {
+      replayCursor = Math.max(replayCursor, event.sequence);
+      return event.type === "thread.turn-start-requested" ? worker.enqueue(event) : Effect.void;
+    });
+
+  const retryTurnStart: ProviderCommandReactorShape["retryTurnStart"] = (commandId) =>
+    Effect.gen(function* () {
+      if (orchestrationEngine.findEventByCommandId) {
+        const event = yield* orchestrationEngine.findEventByCommandId(
+          commandId,
+          "thread.turn-start-requested",
+        );
+        if (!event || event.type !== "thread.turn-start-requested") return false;
+        yield* worker.enqueue(event);
+        return true;
       }
 
-      return worker.enqueue(event);
-    }),
-  ).pipe(Effect.asVoid);
+      let found = false;
+      yield* Stream.runForEach(orchestrationEngine.readEvents(0), (event) => {
+        if (event.type !== "thread.turn-start-requested" || event.commandId !== commandId) {
+          return Effect.void;
+        }
+        found = true;
+        return worker.enqueue(event);
+      });
+      return found;
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof Error ? error : new Error("Failed to replay provider turn intent."),
+      ),
+    );
+
+  const start: ProviderCommandReactorShape["start"] = Effect.gen(function* () {
+    // Subscribe before replaying so events committed during startup cannot fall
+    // into the gap between historical replay and the hot stream.
+    yield* Effect.forkScoped(
+      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
+        isProviderIntentEvent(event) ? worker.enqueue(event) : Effect.void,
+      ),
+    );
+    yield* reconcilePersistedTurnStarts().pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("initial provider turn-intent reconciliation failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.sleep(Duration.seconds(30)).pipe(
+          Effect.andThen(reconcilePersistedTurnStarts()),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider turn-intent reconciliation failed", {
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      ),
+    );
+  });
 
   return {
     start,
     drain: worker.drain,
+    retryTurnStart,
     applyMcpConfigToLiveSessions,
   } satisfies ProviderCommandReactorShape;
 });

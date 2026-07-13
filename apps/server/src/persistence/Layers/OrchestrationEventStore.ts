@@ -64,6 +64,10 @@ const ReadFromSequenceRequestSchema = Schema.Struct({
 const ThreadStreamRequestSchema = Schema.Struct({
   threadId: ThreadId,
 });
+const CommandEventRequestSchema = Schema.Struct({
+  commandId: CommandId,
+  eventType: OrchestrationEventType,
+});
 const CommandIdRowSchema = Schema.Struct({
   commandId: CommandId,
 });
@@ -198,6 +202,30 @@ const makeEventStore = Effect.gen(function* () {
       `,
   });
 
+  const findEventRowsByCommandId = SqlSchema.findAll({
+    Request: CommandEventRequestSchema,
+    Result: OrchestrationEventPersistedRowSchema,
+    execute: ({ commandId, eventType }) =>
+      sql`
+        SELECT
+          sequence,
+          event_id AS "eventId",
+          event_type AS "type",
+          aggregate_kind AS "aggregateKind",
+          stream_id AS "aggregateId",
+          occurred_at AS "occurredAt",
+          command_id AS "commandId",
+          causation_event_id AS "causationEventId",
+          correlation_id AS "correlationId",
+          payload_json AS "payload",
+          metadata_json AS "metadata"
+        FROM orchestration_events
+        WHERE command_id = ${commandId} AND event_type = ${eventType}
+        ORDER BY sequence DESC
+        LIMIT 1
+      `,
+  });
+
   const deleteEventRowsForThread = SqlSchema.void({
     Request: ThreadStreamRequestSchema,
     execute: ({ threadId }) =>
@@ -300,6 +328,29 @@ const makeEventStore = Effect.gen(function* () {
       Effect.map((rows) => rows.map((row) => row.commandId)),
     );
 
+  const findByCommandId: NonNullable<OrchestrationEventStoreShape["findByCommandId"]> = (
+    commandId,
+    eventType,
+  ) =>
+    findEventRowsByCommandId({ commandId, eventType }).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "OrchestrationEventStore.findByCommandId:query",
+          "OrchestrationEventStore.findByCommandId:decodeRows",
+        ),
+      ),
+      Effect.flatMap((rows) => {
+        const row = rows[0];
+        return row
+          ? decodeEvent(row).pipe(
+              Effect.mapError(
+                toPersistenceDecodeError("OrchestrationEventStore.findByCommandId:rowToEvent"),
+              ),
+            )
+          : Effect.succeed(null);
+      }),
+    );
+
   const deleteForThreadStream: OrchestrationEventStoreShape["deleteForThreadStream"] = (threadId) =>
     deleteEventRowsForThread({ threadId }).pipe(
       Effect.mapError(toPersistenceSqlError("OrchestrationEventStore.deleteForThreadStream:query")),
@@ -309,6 +360,7 @@ const makeEventStore = Effect.gen(function* () {
     append,
     readFromSequence,
     readAll: () => readFromSequence(0, Number.MAX_SAFE_INTEGER),
+    findByCommandId,
     collectCommandIdsForThread,
     deleteForThreadStream,
   } satisfies OrchestrationEventStoreShape;

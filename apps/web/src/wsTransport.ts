@@ -69,6 +69,16 @@ interface WsRequestEnvelope {
   };
 }
 
+export class WsRequestError extends Error {
+  readonly code: string | undefined;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "WsRequestError";
+    this.code = code;
+  }
+}
+
 function asError(value: unknown, fallback: string): Error {
   if (value instanceof Error) {
     return value;
@@ -463,7 +473,7 @@ export class WsTransport {
     acknowledgeSlowRpcRequest(message.id);
 
     if (message.error) {
-      pending.reject(new Error(message.error.message));
+      pending.reject(new WsRequestError(message.error.message, message.error.code));
       return;
     }
 

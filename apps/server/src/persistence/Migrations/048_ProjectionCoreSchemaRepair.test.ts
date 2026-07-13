@@ -972,8 +972,8 @@ layer("048_ProjectionCoreSchemaRepair", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 55,
-          name: "GlobalSearchFts",
+          migrationId: 58,
+          name: "NextTurnSubmissionReceipts",
         },
       ]);
     }),
