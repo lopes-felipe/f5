@@ -4,29 +4,38 @@ This file is the source of truth for F5's environment-variable surface. A drift 
 
 Prefer `F5_*` variables for F5-owned state. The legacy `T3CODE_*` prefix remains supported for upstream compatibility (see [NOTICE.md](../NOTICE.md)).
 
-| Variable                         | Description                                                  |
-| -------------------------------- | ------------------------------------------------------------ |
-| `F5_HOME`                        | Base directory for F5 state; defaults to `~/.f5`             |
-| `F5_STATE_DIR`                   | Directory for persistent state; defaults to `~/.f5/userdata` |
-| `F5_PORT_OFFSET`                 | Dev-runner port offset alias                                 |
-| `F5_DEV_INSTANCE`                | Dev-runner deterministic port-offset seed                    |
-| `T3CODE_PORT`                    | Server port                                                  |
-| `T3CODE_MODE`                    | Operating mode                                               |
-| `T3CODE_AUTH_TOKEN`              | Authentication token for WebSocket connections               |
-| `T3CODE_HOME`                    | Legacy base directory override                               |
-| `T3CODE_STATE_DIR`               | Legacy state directory override                              |
-| `T3CODE_PORT_OFFSET`             | Legacy dev-runner port offset                                |
-| `T3CODE_DEV_INSTANCE`            | Legacy dev-runner deterministic port-offset seed             |
-| `T3CODE_NO_BROWSER`              | Skip auto-opening the browser on start                       |
-| `T3CODE_LOG_WS_EVENTS`           | Enable verbose WebSocket event logging                       |
-| `T3CODE_LOG_THREAD_OPEN_TIMINGS` | Log per-thread open timing diagnostics                       |
-| `T3CODE_LOG_PROJECTION_TIMINGS`  | Log orchestration projection timing diagnostics              |
-| `T3CODE_OBSERVABILITY_ENABLED`   | Enable local ndjson trace/metrics export                     |
-| `T3CODE_DESKTOP_WS_URL`          | WebSocket URL override (used by the desktop app)             |
-| `PORT`                           | Fallback HTTP port (used when `T3CODE_PORT` unset)           |
-| `ELECTRON_RENDERER_PORT`         | Port for the Electron renderer dev server                    |
-| `VITE_WS_URL`                    | WebSocket URL for the web frontend (dev)                     |
-| `VITE_DEV_SERVER_URL`            | Vite dev server URL for proxy mode                           |
+| Variable                           | Description                                                    |
+| ---------------------------------- | -------------------------------------------------------------- |
+| `F5_HOME`                          | Base directory for F5 state; defaults to `~/.f5`               |
+| `F5_STATE_DIR`                     | Directory for persistent state; defaults to `~/.f5/userdata`   |
+| `F5_PORT_OFFSET`                   | Dev-runner port offset alias                                   |
+| `F5_DEV_INSTANCE`                  | Dev-runner deterministic port-offset seed                      |
+| `F5_BACKUP_MAX_COMPRESSED_BYTES`   | Maximum compressed restore upload; defaults to 2 GiB           |
+| `F5_BACKUP_MAX_DECOMPRESSED_BYTES` | Maximum decompressed restore archive; defaults to 8 GiB        |
+| `F5_BACKUP_MAX_TEMPORARY_BYTES`    | Maximum combined restore staging footprint; defaults to 16 GiB |
+| `F5_BACKUP_MAX_EXPANSION_RATIO`    | Maximum gzip expansion ratio; defaults to 200×                 |
+| `F5_BACKUP_MIN_FREE_BYTES`         | Free disk space restore staging leaves; defaults to 512 MiB    |
+| `T3CODE_PORT`                      | Server port                                                    |
+| `T3CODE_MODE`                      | Operating mode                                                 |
+| `T3CODE_AUTH_TOKEN`                | Authentication token for WebSocket connections                 |
+| `T3CODE_HOME`                      | Legacy base directory override                                 |
+| `T3CODE_STATE_DIR`                 | Legacy state directory override                                |
+| `T3CODE_PORT_OFFSET`               | Legacy dev-runner port offset                                  |
+| `T3CODE_DEV_INSTANCE`              | Legacy dev-runner deterministic port-offset seed               |
+| `T3CODE_NO_BROWSER`                | Skip auto-opening the browser on start                         |
+| `T3CODE_LOG_WS_EVENTS`             | Enable verbose WebSocket event logging                         |
+| `T3CODE_LOG_THREAD_OPEN_TIMINGS`   | Log per-thread open timing diagnostics                         |
+| `T3CODE_LOG_PROJECTION_TIMINGS`    | Log orchestration projection timing diagnostics                |
+| `T3CODE_OBSERVABILITY_ENABLED`     | Enable local ndjson trace/metrics export                       |
+| `T3CODE_DESKTOP_WS_URL`            | WebSocket URL override (used by the desktop app)               |
+| `PORT`                             | Fallback HTTP port (used when `T3CODE_PORT` unset)             |
+| `ELECTRON_RENDERER_PORT`           | Port for the Electron renderer dev server                      |
+| `VITE_WS_URL`                      | WebSocket URL for the web frontend (dev)                       |
+| `VITE_DEV_SERVER_URL`              | Vite dev server URL for proxy mode                             |
+
+Restore limits are enforced while streaming, before extraction, and against the combined raw plus
+extracted staging footprint. F5 also reserves free space on the staging volume. Increase the caps or
+reduce the reserve only when restoring a known archive that legitimately requires it.
 
 ## State separation from T3 Code
 

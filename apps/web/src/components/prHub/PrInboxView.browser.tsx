@@ -68,11 +68,14 @@ afterEach(async () => {
   active = undefined;
 });
 
-async function renderInbox(focusedPrKey: string | null = null) {
+async function renderInbox(
+  focusedPrKey: string | null = null,
+  prs: readonly TrackedPullRequest[] = PRS,
+) {
   active = await render(
     <TooltipProvider delay={0}>
       <PrInboxView
-        prs={PRS}
+        prs={prs}
         advisoriesByKey={new Map()}
         analyzingKeys={new Set()}
         onAnalyzeAdvisory={() => {}}
@@ -120,5 +123,22 @@ describe("PrInboxView navigation", () => {
 
     await userEvent.keyboard("{k}");
     await expect.element(detailHeading("Bravo PR")).toBeInTheDocument();
+  });
+
+  it("updates the selected row when the spine is virtualized", async () => {
+    const manyPrs = Array.from({ length: 61 }, (_, index) =>
+      makePr(index + 1, `Pull request ${index + 1}`),
+    );
+    await renderInbox(null, manyPrs);
+
+    const first = page.getByRole("option", { name: /^Pull request 1 / });
+    const second = page.getByRole("option", { name: /^Pull request 2 / });
+    await expect.element(first).toHaveAttribute("aria-selected", "true");
+
+    await second.click();
+
+    await expect.element(detailHeading("Pull request 2")).toBeInTheDocument();
+    await expect.element(second).toHaveAttribute("aria-selected", "true");
+    await expect.element(first).toHaveAttribute("aria-selected", "false");
   });
 });

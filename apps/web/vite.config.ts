@@ -16,7 +16,12 @@ const buildSourcemap =
 
 export default defineConfig({
   plugins: [
-    tanstackRouter(),
+    tanstackRouter({
+      // Route components are the largest independent UI surfaces in F5.
+      // Keep route metadata synchronous while loading settings, PR Hub,
+      // workflows, and thread detail only when navigation requires them.
+      autoCodeSplitting: true,
+    }),
     react({
       babel: {
         // Parse workspace TypeScript/TSX sources explicitly and enable the React compiler.

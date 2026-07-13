@@ -15,6 +15,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- **Breaking:** the web server now binds to `127.0.0.1` by default. Remote deployments must set an
+  explicit non-loopback `--host`, use an authentication token of at least 24 bytes, and provide
+  encrypted transport through a private network or HTTPS/WSS reverse proxy.
 - README rewritten with user-first framing (download links, explicit provider auth commands, install/run matrix).
 - `CONTRIBUTING.md` restructured so "how to run / test / ship" appears before the triage policy.
 - `AGENTS.md` adds a Repository map section and now mentions both Codex and Claude Code.

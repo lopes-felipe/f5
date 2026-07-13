@@ -39,6 +39,7 @@ import {
   nextWorkflowSlug,
   slotLabel,
 } from "../workflowSharedUtils.ts";
+import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 
 type InvestigatorKey = "investigatorA" | "investigatorB";
 type InvestigationWorkflowTitleGenerationWorkItem = {
@@ -124,6 +125,8 @@ function buildWorkflowRecord(input: {
       error: null,
       updatedAt: input.createdAt,
     },
+    totalCostUsd: 0,
+    maxCostUsd: input.request.maxCostUsd ?? null,
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
     archivedAt: null,
@@ -778,6 +781,8 @@ function startInvestigationTurn(input: {
   readonly isRetry: boolean;
   readonly createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(input.workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -838,6 +843,8 @@ function startCrossReviewTurn(input: {
   readonly isRetry: boolean;
   readonly createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(input.workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -897,6 +904,8 @@ function startSelfReviewTurn(input: {
   readonly isRetry: boolean;
   readonly createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(input.workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -958,6 +967,8 @@ function startSynthesisTurn(input: {
   readonly isRetry: boolean;
   readonly createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(input.workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -1984,11 +1995,19 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
 
         case "thread.session-set": {
           const readModel = yield* orchestrationEngine.getReadModel();
-          const workflow = readModel.investigationWorkflows.find(
+          const matchedWorkflow = readModel.investigationWorkflows.find(
             (entry) => !isDeletedWorkflow(entry) && labelForThread(entry, event.payload.threadId),
           );
-          if (!workflow) {
+          if (!matchedWorkflow) {
             return;
+          }
+          const workflow = applyWorkflowTurnCost(
+            matchedWorkflow,
+            event.payload.session.turnCostUsd,
+            event.occurredAt,
+          );
+          if (workflow !== matchedWorkflow) {
+            yield* upsertWorkflow(orchestrationEngine, workflow, event.occurredAt);
           }
 
           const investigation = investigationMatch(workflow, event.payload.threadId);
@@ -2229,6 +2248,7 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         investigatorA: input.investigatorA,
         investigatorB: input.investigatorB,
         synthesis: input.synthesis,
+        maxCostUsd: input.maxCostUsd ?? null,
         investigationThreadIdA,
         investigationThreadIdB,
         createdAt: now,

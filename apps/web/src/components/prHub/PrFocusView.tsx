@@ -31,6 +31,7 @@ export function PrFocusView({
   advisoriesByKey,
   analyzingKeys,
   onAnalyzeAdvisory,
+  onThreadCreated,
   focusedPrKey,
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
@@ -164,6 +165,7 @@ export function PrFocusView({
             advisory={advisory}
             isAnalyzingAdvisory={isAnalyzing(currentPr, analyzingKeys, advisory)}
             onAnalyzeAdvisory={() => onAnalyzeAdvisory(currentPr.key)}
+            onThreadCreated={onThreadCreated}
           />
         </div>
       </div>

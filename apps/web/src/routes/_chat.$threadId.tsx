@@ -13,7 +13,7 @@ import {
 
 import { useAppSettings } from "../appSettings";
 import ChatView from "../components/ChatView";
-import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
+import { DiffSurfaceBoundary } from "../components/DiffSurfaceBoundary";
 import PlanSidebar from "../components/PlanSidebar";
 import { RightPanelHost } from "../components/RightPanelHost";
 import { RightPanelSheet } from "../components/RightPanelSheet";
@@ -85,11 +85,11 @@ const DiffLoadingFallback = (props: { mode: DiffPanelMode }) => {
 
 const LazyDiffPanel = (props: { mode: DiffPanelMode }) => {
   return (
-    <DiffWorkerPoolProvider>
+    <DiffSurfaceBoundary fallback={<DiffLoadingFallback mode={props.mode} />}>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
         <DiffPanel mode={props.mode} />
       </Suspense>
-    </DiffWorkerPoolProvider>
+    </DiffSurfaceBoundary>
   );
 };
 
@@ -99,11 +99,11 @@ const LazyFileViewPanel = (props: {
   onClose: () => void;
 }) => {
   return (
-    <DiffWorkerPoolProvider>
+    <DiffSurfaceBoundary fallback={<DiffLoadingFallback mode={props.mode} />}>
       <Suspense fallback={<DiffLoadingFallback mode={props.mode} />}>
         <FileViewPanel mode={props.mode} surface={props.surface} onClose={props.onClose} />
       </Suspense>
-    </DiffWorkerPoolProvider>
+    </DiffSurfaceBoundary>
   );
 };
 
@@ -136,6 +136,7 @@ const LazyPreviewPanel = (props: { threadId: ThreadId; onClose: () => void }) =>
 function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
   return [
     threadId,
+    search.timelineEntryId ?? "",
     search.diff ?? "",
     search.diffTurnId ?? "",
     search.diffFileChangeId ?? "",
@@ -405,6 +406,7 @@ function ChatThreadRouteView() {
     search.fileEndLine,
     search.fileLine,
     search.fileViewPath,
+    search.timelineEntryId,
     threadId,
   ]);
 
@@ -746,7 +748,11 @@ function ChatThreadRouteView() {
     return (
       <>
         <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-          <ChatView key={threadId} threadId={threadId} />
+          <ChatView
+            key={threadId}
+            threadId={threadId}
+            focusTimelineEntryId={search.timelineEntryId}
+          />
         </SidebarInset>
         <RightPanelInlineSidebar
           open={rightPanelState.isOpen}
@@ -762,7 +768,11 @@ function ChatThreadRouteView() {
   return (
     <>
       <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground">
-        <ChatView key={threadId} threadId={threadId} />
+        <ChatView
+          key={threadId}
+          threadId={threadId}
+          focusTimelineEntryId={search.timelineEntryId}
+        />
       </SidebarInset>
       <RightPanelSheet open={rightPanelState.isOpen} onClose={closeRightPanelSheet}>
         {renderRightPanelHost("sheet")}
@@ -776,6 +786,7 @@ export const Route = createFileRoute("/_chat/$threadId")({
   search: {
     middlewares: [
       retainSearchParams<DiffRouteSearch>([
+        "timelineEntryId",
         "diff",
         "diffTurnId",
         "diffFileChangeId",

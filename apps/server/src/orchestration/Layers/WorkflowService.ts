@@ -49,6 +49,7 @@ import {
   nextWorkflowSlug,
   slotLabel,
 } from "../workflowSharedUtils.ts";
+import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 
 const WORKFLOW_PLANNING_INTERACTION_MODE: ProviderInteractionMode = "plan";
 const MAX_AUTO_RETRY_ATTEMPTS = 2;
@@ -110,26 +111,6 @@ function formatSessionError(
   ]
     .filter((part): part is string => part !== null)
     .join(" | ");
-}
-
-function addUsd(left: number, right: number): number {
-  return Number((left + right).toFixed(6));
-}
-
-function applyWorkflowTurnCost(
-  workflow: PlanningWorkflow,
-  turnCostUsd: number | undefined,
-  updatedAt: string,
-): PlanningWorkflow {
-  if (turnCostUsd === undefined || !Number.isFinite(turnCostUsd) || turnCostUsd <= 0) {
-    return workflow;
-  }
-
-  return {
-    ...workflow,
-    totalCostUsd: addUsd(workflow.totalCostUsd, turnCostUsd),
-    updatedAt,
-  };
 }
 
 function hasActiveRunningTurn(
@@ -285,6 +266,7 @@ function buildWorkflowRecord(input: {
   branchA: CreateWorkflowInput["branchA"];
   branchB: CreateWorkflowInput["branchB"];
   merge: CreateWorkflowInput["merge"];
+  maxCostUsd?: number | undefined;
   createdAt: string;
 }): PlanningWorkflow {
   return {
@@ -335,6 +317,7 @@ function buildWorkflowRecord(input: {
     },
     implementation: null,
     totalCostUsd: 0,
+    maxCostUsd: input.maxCostUsd ?? null,
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
     archivedAt: null,
@@ -1395,6 +1378,12 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
+      const budgetError = workflowBudgetError(workflow);
+      if (budgetError) {
+        yield* upsertWorkflow(markMergeError(workflow, budgetError.message, updatedAt));
+        return;
+      }
+
       const branchAReviews: Array<{
         slot: WorkflowReviewSlot;
         reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
@@ -1939,6 +1928,12 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
+      const budgetError = workflowBudgetError(workflow);
+      if (budgetError) {
+        yield* upsertWorkflow(markImplementationError(workflow, budgetError.message, updatedAt));
+        return;
+      }
+
       yield* orchestrationEngine.dispatch({
         type: "thread.turn.start",
         commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -2034,6 +2029,8 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (!input.workflow.implementation) {
         return yield* Effect.die(new Error("Workflow implementation not found for retry."));
       }
+      const budgetError = workflowBudgetError(input.workflow);
+      if (budgetError) return yield* budgetError;
 
       const latestUserMessage = input.thread.messages
         .toReversed()
@@ -3002,6 +2999,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         branchA: input.branchA,
         branchB: input.branchB,
         merge: input.merge,
+        maxCostUsd: input.maxCostUsd,
         createdAt: now,
       });
 
@@ -3020,6 +3018,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         branchA: input.branchA,
         branchB: input.branchB,
         merge: input.merge,
+        maxCostUsd: input.maxCostUsd ?? null,
         createdAt: now,
       });
 
@@ -3110,6 +3109,8 @@ export const makeWorkflowService = Effect.gen(function* () {
           new Error("Implementation has already been started for this workflow."),
         );
       }
+      const budgetError = workflowBudgetError(workflow);
+      if (budgetError) return yield* budgetError;
 
       const snapshot = yield* orchestrationEngine.getReadModel();
       const mergeThread = snapshot.threads.find((thread) => thread.id === workflow.merge.threadId);
@@ -3463,6 +3464,8 @@ function startAuthoringTurn({
   branch: PlanningWorkflow["branchA"];
   createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -3536,6 +3539,8 @@ function startReviewTurn({
   reviewKind: WorkflowReviewSlot;
   createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -3576,6 +3581,8 @@ function startRevisionTurn({
   }>;
   createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -3643,6 +3650,8 @@ function startCodeReviewTurn({
   reviewerLabel: string;
   createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),

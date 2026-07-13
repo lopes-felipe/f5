@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && bun ../../scripts/check-web-bundle-budget.ts",
+    "check:bundle-budget": "bun ../../scripts/check-web-bundle-budget.ts",
     "prepare": "effect-language-service patch",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",

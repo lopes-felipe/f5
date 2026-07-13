@@ -8,6 +8,7 @@ import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import { WorkflowImplementDialog } from "./WorkflowImplementDialog";
 import { canStartImplementation, resolveApprovedMergedPlanMarkdown } from "./workflowUtils";
 import { deriveTimelinePhases } from "./workflowSidebarTimeline";
+import { WorkflowRunInspector } from "./WorkflowRunInspector";
 
 function statusLabel(workflow: {
   readonly branchA: { readonly status: string };
@@ -126,6 +127,11 @@ export function WorkflowView(props: { workflowId: string }) {
         <main className="min-h-0 min-w-0 rounded-xl border border-border bg-card">
           <div className="flex h-full min-h-0 min-w-0 flex-col p-5">
             <div className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-y-contain">
+              <WorkflowRunInspector
+                runKind="planning"
+                workflowId={workflow.id}
+                updatedAt={workflow.updatedAt}
+              />
               <section>
                 <h2 className="text-sm font-semibold text-foreground">Requirement</h2>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">

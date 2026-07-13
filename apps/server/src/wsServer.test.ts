@@ -542,10 +542,14 @@ function asWebSocketResponse(message: unknown): WebSocketResponse | null {
   return message as WebSocketResponse;
 }
 
-function connectWsOnce(port: number, token?: string): Promise<WebSocket> {
+function connectWsOnce(
+  port: number,
+  token?: string,
+  headers?: Readonly<Record<string, string>>,
+): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const query = token ? `?token=${encodeURIComponent(token)}` : "";
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/${query}`);
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/${query}`, { headers });
     const channels: SocketChannels = {
       push: { queue: [], waiters: [] },
       response: { queue: [], waiters: [] },
@@ -569,12 +573,17 @@ function connectWsOnce(port: number, token?: string): Promise<WebSocket> {
   });
 }
 
-async function connectWs(port: number, token?: string, attempts = 5): Promise<WebSocket> {
+async function connectWs(
+  port: number,
+  token?: string,
+  attempts = 5,
+  headers?: Readonly<Record<string, string>>,
+): Promise<WebSocket> {
   let lastError: unknown = new Error("WebSocket connection failed");
 
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      return await connectWsOnce(port, token);
+      return await connectWsOnce(port, token, headers);
     } catch (error) {
       lastError = error;
       if (attempt < attempts - 1) {
@@ -590,8 +599,9 @@ async function connectWs(port: number, token?: string, attempts = 5): Promise<We
 async function connectAndAwaitWelcome(
   port: number,
   token?: string,
+  headers?: Readonly<Record<string, string>>,
 ): Promise<[WebSocket, WsPushMessage<typeof WS_CHANNELS.serverWelcome>]> {
-  const ws = await connectWs(port, token);
+  const ws = await connectWs(port, token, 5, headers);
   const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
   return [ws, welcome];
 }
@@ -739,6 +749,7 @@ describe("WebSocket Server", () => {
         SqlClient.SqlClient,
         SqlError.SqlError | MigrationError | PlatformError.PlatformError
       >;
+      mode?: ServerConfigShape["mode"];
       cwd?: string;
       autoBootstrapProjectFromCwd?: boolean;
       logWebSocketEvents?: boolean;
@@ -781,7 +792,7 @@ describe("WebSocket Server", () => {
       makePreviewAutomationBroker(),
     );
     const serverConfigLayer = Layer.succeed(ServerConfig, {
-      mode: "web",
+      mode: options.mode ?? "web",
       port: 0,
       host: undefined,
       cwd: options.cwd ?? "/test/project",
@@ -3200,5 +3211,129 @@ describe("WebSocket Server", () => {
 
     const [authorizedWs] = await connectAndAwaitWelcome(port, "secret-token");
     connections.push(authorizedWs);
+  });
+
+  it("accepts the authenticated packaged desktop websocket origin", async () => {
+    server = await createTestServer({
+      mode: "desktop",
+      cwd: "/test",
+      authToken: "secret-token",
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [authorizedWs] = await connectAndAwaitWelcome(port, "secret-token", {
+      Origin: "t3://app",
+    });
+    connections.push(authorizedWs);
+  });
+
+  it("accepts the authenticated configured development origin", async () => {
+    server = await createTestServer({
+      cwd: "/test",
+      authToken: "secret-token",
+      devUrl: "http://localhost:5173",
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [authorizedWs] = await connectAndAwaitWelcome(port, "secret-token", {
+      Origin: "http://localhost:5173",
+    });
+    connections.push(authorizedWs);
+  });
+
+  it("prepares a complete backup before committing the download response", async () => {
+    const stateDir = makeTempDir("t3code-state-backup-export-");
+    server = await createTestServer({ cwd: "/test", stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/storage/backup`);
+    const archive = await response.arrayBuffer();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("application/x-f5-backup");
+    expect(Number(response.headers.get("content-length"))).toBe(archive.byteLength);
+    expect(archive.byteLength).toBeGreaterThan(0);
+  });
+
+  it("returns an HTTP error when backup preparation fails before streaming", async () => {
+    const stateDir = makeTempDir("t3code-state-backup-failure-");
+    fs.writeFileSync(path.join(stateDir, "backup-staging"), "blocks staging directory creation");
+    server = await createTestServer({ cwd: "/test", stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const response = await fetch(`http://127.0.0.1:${port}/api/storage/backup`);
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("content-type")).toContain("application/json");
+    const body = (await response.json()) as { error?: unknown };
+    expect(typeof body.error).toBe("string");
+    expect((body.error as string).length).toBeGreaterThan(0);
+  });
+
+  it("exchanges remote auth tokens for sessions and protects private routes", async () => {
+    const stateDir = makeTempDir("t3code-state-auth-");
+    const attachmentPath = path.join(stateDir, "attachments", "thread-a", "message-a", "0.txt");
+    fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+    fs.writeFileSync(attachmentPath, "private attachment");
+
+    server = await createTestServer({
+      cwd: "/test",
+      authToken: "secret-token",
+      stateDir,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const origin = `http://127.0.0.1:${port}`;
+    const attachmentUrl = `${origin}/attachments/thread-a/message-a/0.txt`;
+
+    const unauthenticatedResponse = await fetch(attachmentUrl);
+    expect(unauthenticatedResponse.status).toBe(401);
+
+    const invalidSessionResponse = await fetch(`${origin}/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "wrong-token" }),
+    });
+    expect(invalidSessionResponse.status).toBe(401);
+
+    const sessionResponse = await fetch(`${origin}/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "secret-token" }),
+    });
+    expect(sessionResponse.status).toBe(204);
+    const setCookie = sessionResponse.headers.get("set-cookie");
+    expect(setCookie).toContain("f5_session=");
+    expect(setCookie).toContain("HttpOnly");
+    expect(setCookie).toContain("SameSite=Strict");
+    const cookie = setCookie?.split(";", 1)[0];
+    expect(cookie).toBeTruthy();
+
+    const authenticatedResponse = await fetch(attachmentUrl, {
+      headers: { Cookie: cookie ?? "" },
+    });
+    expect(authenticatedResponse.status).toBe(200);
+    expect(await authenticatedResponse.text()).toBe("private attachment");
+
+    const [authorizedWs] = await connectAndAwaitWelcome(port, undefined, {
+      Cookie: cookie ?? "",
+      Origin: origin,
+    });
+    connections.push(authorizedWs);
+
+    await expect(
+      connectWs(port, "secret-token", 1, { Origin: "https://attacker.example" }),
+    ).rejects.toThrow("WebSocket connection failed");
+
+    const logoutResponse = await fetch(`${origin}/auth/logout`, {
+      method: "POST",
+      headers: { Cookie: cookie ?? "" },
+    });
+    expect(logoutResponse.status).toBe(204);
+    expect((await fetch(attachmentUrl, { headers: { Cookie: cookie ?? "" } })).status).toBe(401);
   });
 });

@@ -18,6 +18,7 @@ import {
   type RuntimeMode,
   type ServerConfigShape,
 } from "./config";
+import { applyPendingRestore } from "./backupService.ts";
 import { fixPath, resolveBaseDir, resolveStateDir } from "./os-jank";
 import { Open } from "./open";
 import * as SqlitePersistence from "./persistence/Layers/Sqlite";
@@ -30,6 +31,7 @@ import {
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { Server } from "./wsServer";
 import { ServerLoggerLive } from "./serverLogger";
+import { MIN_REMOTE_AUTH_TOKEN_BYTES } from "./serverAuth";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { withStartupPhaseTiming } from "./startupTiming";
@@ -213,7 +215,7 @@ const ServerConfigLive = (input: CliInput) =>
             }
           : yield* deriveServerPaths(baseDir, devUrl);
       const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
-      const authToken = Option.getOrUndefined(input.authToken) ?? env.authToken;
+      const authToken = trimToUndefined(Option.getOrUndefined(input.authToken) ?? env.authToken);
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
         input.autoBootstrapProjectFromCwd,
         env.autoBootstrapProjectFromCwd ?? mode === "web",
@@ -223,10 +225,26 @@ const ServerConfigLive = (input: CliInput) =>
         env.logWebSocketEvents ?? Boolean(devUrl),
       );
       const staticDir = devUrl ? undefined : yield* cliConfig.resolveStaticDir;
-      const host =
-        Option.getOrUndefined(input.host) ??
-        env.host ??
-        (mode === "desktop" ? "127.0.0.1" : undefined);
+      const host = Option.getOrUndefined(input.host) ?? env.host ?? "127.0.0.1";
+
+      if (!isLoopbackHost(host) && !authToken) {
+        return yield* new StartupError({
+          message:
+            `Refusing to bind F5 to non-loopback host '${host}' without authentication. ` +
+            "Set --auth-token (or T3CODE_AUTH_TOKEN), or bind to 127.0.0.1/localhost.",
+        });
+      }
+      if (
+        !isLoopbackHost(host) &&
+        authToken &&
+        Buffer.byteLength(authToken, "utf8") < MIN_REMOTE_AUTH_TOKEN_BYTES
+      ) {
+        return yield* new StartupError({
+          message:
+            `Remote authentication tokens must be at least ${MIN_REMOTE_AUTH_TOKEN_BYTES} bytes. ` +
+            "Generate one with `openssl rand -hex 24`.",
+        });
+      }
 
       const config: ServerConfigShape = {
         mode,
@@ -297,6 +315,20 @@ const ServerConfigLive = (input: CliInput) =>
         }
       }
 
+      const restoreResult = yield* Effect.tryPromise({
+        try: () => applyPendingRestore(config),
+        catch: (cause) =>
+          new StartupError({
+            message: `Failed to apply staged restore: ${cause instanceof Error ? cause.message : String(cause)}`,
+          }),
+      });
+      if (restoreResult.status === "applied") {
+        yield* Effect.logInfo("applied staged F5 restore", {
+          restoreId: restoreResult.restoreId,
+          rollbackDir: restoreResult.rollbackDir,
+        });
+      }
+
       return config;
     }).pipe(
       Effect.withSpan("server.startup.config.resolve", {
@@ -327,6 +359,17 @@ const LayerLive = (input: CliInput) =>
 
 const isWildcardHost = (host: string | undefined): boolean =>
   host === "0.0.0.0" || host === "::" || host === "[::]";
+
+export const isLoopbackHost = (host: string | undefined): boolean => {
+  const normalized =
+    host
+      ?.trim()
+      .toLowerCase()
+      .replace(/^\[|\]$/gu, "") ?? "";
+  return (
+    normalized === "localhost" || normalized === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(normalized)
+  );
+};
 
 const formatHostForUrl = (host: string): string =>
   host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
@@ -390,6 +433,15 @@ const makeServerProgram = (input: CliInput) =>
       );
     }
 
+    if (!isLoopbackHost(config.host)) {
+      yield* Effect.logWarning("remote binding has no built-in TLS termination", {
+        host: config.host,
+        hint:
+          "Use an HTTPS/WSS reverse proxy or an encrypted private network such as Tailscale; " +
+          "direct HTTP/WS sends authentication credentials in cleartext.",
+      });
+    }
+
     yield* withStartupPhaseTiming("server.start", start);
     if (!isTestRuntime()) {
       yield* withStartupPhaseTiming(
@@ -411,13 +463,19 @@ const makeServerProgram = (input: CliInput) =>
     });
 
     if (!config.noBrowser) {
-      const target = config.devUrl?.toString() ?? bindUrl;
+      const baseTarget = config.devUrl?.toString() ?? bindUrl;
+      const target =
+        config.authToken && !config.devUrl
+          ? `${baseTarget.replace(/#.*$/u, "")}#token=${encodeURIComponent(config.authToken)}`
+          : baseTarget;
       yield* withStartupPhaseTiming(
         "browser.open",
         openDeps.openBrowser(target).pipe(
           Effect.catch(() =>
             Effect.logInfo("browser auto-open unavailable", {
-              hint: `Open ${target} in your browser.`,
+              hint: config.authToken
+                ? `Open ${baseTarget} and supply the configured launch token in the URL fragment.`
+                : `Open ${baseTarget} in your browser.`,
             }),
           ),
         ),
@@ -462,7 +520,7 @@ const noBrowserFlag = Flag.boolean("no-browser").pipe(
   Flag.optional,
 );
 const authTokenFlag = Flag.string("auth-token").pipe(
-  Flag.withDescription("Auth token required for WebSocket connections."),
+  Flag.withDescription("Auth token required for remote HTTP and WebSocket access."),
   Flag.withAlias("token"),
   Flag.optional,
 );

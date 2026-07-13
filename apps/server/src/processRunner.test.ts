@@ -20,4 +20,20 @@ describe("runProcess", () => {
     expect(result.stdoutTruncated).toBe(true);
     expect(result.stderrTruncated).toBe(false);
   });
+
+  it("terminates nested subprocesses without waiting for inherited pipes", async () => {
+    const nestedProcess = [
+      'const { spawnSync } = require("node:child_process");',
+      'spawnSync(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" });',
+    ].join("\n");
+    const startedAt = Date.now();
+
+    const result = await runProcess(process.execPath, ["-e", nestedProcess], {
+      timeoutMs: 100,
+      allowNonZeroExit: true,
+    });
+
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+  });
 });

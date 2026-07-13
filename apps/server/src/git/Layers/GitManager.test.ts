@@ -40,6 +40,7 @@ interface FakeGhScenario {
     url: string;
     baseRefName: string;
     headRefName: string;
+    headRefOid?: string | null;
     state?: "open" | "closed" | "merged";
     isCrossRepository?: boolean;
     headRepositoryNameWithOwner?: string | null;
@@ -169,10 +170,11 @@ function configureCrossRepoRemote(
   cwd: string,
   remoteName: string,
   localRemotePath: string,
+  githubUrl = CROSS_REPO_GITHUB_SSH_URL,
 ): Effect.Effect<void, GitCommandError, GitService> {
   return Effect.gen(function* () {
-    yield* runGit(cwd, ["config", `remote.${remoteName}.url`, CROSS_REPO_GITHUB_SSH_URL]);
-    yield* runGit(cwd, ["config", `url.${localRemotePath}.insteadOf`, CROSS_REPO_GITHUB_SSH_URL]);
+    yield* runGit(cwd, ["config", `remote.${remoteName}.url`, githubUrl]);
+    yield* runGit(cwd, ["config", `url.${localRemotePath}.insteadOf`, githubUrl]);
   });
 }
 
@@ -473,7 +475,7 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
             "view",
             input.reference,
             "--json",
-            "number,title,url,baseRefName,headRefName,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
+            "number,title,url,baseRefName,headRefName,headRefOid,state,mergedAt,isCrossRepository,headRepository,headRepositoryOwner",
           ],
         }).pipe(Effect.map((result) => JSON.parse(result.stdout) as GitHubPullRequestSummary)),
       getRepositoryCloneUrls: (input) =>
@@ -516,7 +518,12 @@ function resolvePullRequest(manager: GitManagerShape, input: { cwd: string; refe
 
 function preparePullRequestThread(
   manager: GitManagerShape,
-  input: { cwd: string; reference: string; mode: "local" | "worktree" },
+  input: {
+    cwd: string;
+    reference: string;
+    mode: "local" | "worktree";
+    expectedHeadOid?: string;
+  },
 ) {
   return manager.preparePullRequestThread(input);
 }
@@ -648,11 +655,12 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
         yield* runGit(repoDir, ["push", "-u", "fork-seed", "statemachine"]);
         yield* runGit(repoDir, ["checkout", "-b", "t3code/pr-488/statemachine"]);
         yield* runGit(repoDir, ["branch", "--set-upstream-to", "fork-seed/statemachine"]);
-        yield* runGit(repoDir, [
-          "config",
-          "remote.fork-seed.url",
+        yield* configureCrossRepoRemote(
+          repoDir,
+          "fork-seed",
+          forkDir,
           "git@github.com:jasonLaster/codething-mvp.git",
-        ]);
+        );
 
         const { manager, ghCalls } = yield* makeManager({
           ghScenario: {
@@ -1717,6 +1725,39 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
       const branch = (yield* runGit(repoDir, ["branch", "--show-current"])).stdout.trim();
       expect(branch).toBe("feature/pr-local");
       expect(ghCalls).toContain("pr checkout 64 --force");
+    }),
+  );
+
+  it.effect("rejects pull request preparation when the observed head SHA is stale", () =>
+    Effect.gen(function* () {
+      const repoDir = yield* makeTempDir("t3code-git-manager-");
+      yield* initRepo(repoDir);
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          pullRequest: {
+            number: 65,
+            title: "Moved PR",
+            url: "https://github.com/pingdotgg/codething-mvp/pull/65",
+            baseRefName: "main",
+            headRefName: "feature/moved-pr",
+            headRefOid: "new-head",
+            state: "open",
+          },
+        },
+      });
+
+      const errorMessage = yield* preparePullRequestThread(manager, {
+        cwd: repoDir,
+        reference: "65",
+        mode: "worktree",
+        expectedHeadOid: "old-head",
+      }).pipe(
+        Effect.flip,
+        Effect.map((error) => error.message),
+      );
+
+      expect(errorMessage).toContain("Refresh PR Hub");
+      expect(ghCalls.some((call) => call.startsWith("pr checkout"))).toBe(false);
     }),
   );
 

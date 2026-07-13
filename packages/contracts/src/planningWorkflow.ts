@@ -142,6 +142,9 @@ export const PlanningWorkflow = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   totalCostUsd: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),

@@ -162,6 +162,10 @@ function WorkflowReasoningPicker(props: {
     );
   }
 
+  if (props.provider !== "claudeAgent") {
+    return null;
+  }
+
   const options = getReasoningEffortOptions("claudeAgent", props.model).filter(
     (option): option is Exclude<ClaudeCodeEffort, "ultrathink"> => option !== "ultrathink",
   );
@@ -301,6 +305,9 @@ export function normalizeWorkflowSlotModelOptions(
     }
     return codex ? { codex } : undefined;
   }
+  if (provider !== "claudeAgent") {
+    return getSingleProviderModelOptions(provider, modelOptions);
+  }
   const reasoningOptions = getReasoningEffortOptions("claudeAgent", model);
   const effort = resolveReasoningEffortForProvider(
     "claudeAgent",
@@ -431,6 +438,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   );
   const [selfReviewEnabled, setSelfReviewEnabled] = useState(true);
   const [investigationSelfReviewEnabled, setInvestigationSelfReviewEnabled] = useState(false);
+  const [maxCostUsd, setMaxCostUsd] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isDragOverPrompt, setIsDragOverPrompt] = useState(false);
@@ -462,9 +470,13 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     workflowType === "investigation" &&
     branchAProvider === branchBProvider &&
     branchASelection === branchBSelection;
+  const parsedMaxCostUsd = maxCostUsd.trim().length > 0 ? Number(maxCostUsd) : null;
+  const validMaxCostUsd =
+    parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);
   const canSubmit =
     (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
-    !sameInvestigationInvestigatorModel;
+    !sameInvestigationInvestigatorModel &&
+    validMaxCostUsd;
   const primaryActionShortcutLabel = useMemo(
     () => shortcutLabelForCommand(keybindings, "dialog.primaryAction"),
     [keybindings],
@@ -532,6 +544,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     setMergeModelOptions(mergeDefaults.modelOptions);
     setSelfReviewEnabled(true);
     setInvestigationSelfReviewEnabled(false);
+    setMaxCostUsd("");
     setError(null);
     setIsDragOverPrompt(false);
     dragDepthRef.current = 0;
@@ -669,113 +682,131 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         attachedFilePathsSnapshot,
       );
       if (workflowType === "planning") {
-        const result = await api.orchestration.createWorkflow({
-          projectId: props.projectId,
-          requirementPrompt: promptForSubmission,
-          titleGenerationModel,
-          plansDirectory: plansDirectory.trim() || "plans",
-          selfReviewEnabled,
-          branchA: {
-            provider: branchAProvider,
-            model: branchASelection,
-            ...(normalizeWorkflowSlotModelOptions(
-              branchAProvider,
-              branchASelection,
-              branchAModelOptions,
-            )
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    branchAProvider,
-                    branchASelection,
-                    branchAModelOptions,
-                  ),
-                }
-              : {}),
-          },
-          branchB: {
-            provider: branchBProvider,
-            model: branchBSelection,
-            ...(normalizeWorkflowSlotModelOptions(
-              branchBProvider,
-              branchBSelection,
-              branchBModelOptions,
-            )
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    branchBProvider,
-                    branchBSelection,
-                    branchBModelOptions,
-                  ),
-                }
-              : {}),
-          },
-          merge: {
-            provider: mergeProvider,
-            model: mergeSelection,
-            ...(normalizeWorkflowSlotModelOptions(mergeProvider, mergeSelection, mergeModelOptions)
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    mergeProvider,
-                    mergeSelection,
-                    mergeModelOptions,
-                  ),
-                }
-              : {}),
+        const result = await api.workflowPlatform.createRun({
+          templateId: "builtin.planning.dual",
+          templateVersion: 1,
+          ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
+          input: {
+            projectId: props.projectId,
+            requirementPrompt: promptForSubmission,
+            titleGenerationModel,
+            plansDirectory: plansDirectory.trim() || "plans",
+            selfReviewEnabled,
+            branchA: {
+              provider: branchAProvider,
+              model: branchASelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                branchAProvider,
+                branchASelection,
+                branchAModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      branchAProvider,
+                      branchASelection,
+                      branchAModelOptions,
+                    ),
+                  }
+                : {}),
+            },
+            branchB: {
+              provider: branchBProvider,
+              model: branchBSelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                branchBProvider,
+                branchBSelection,
+                branchBModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      branchBProvider,
+                      branchBSelection,
+                      branchBModelOptions,
+                    ),
+                  }
+                : {}),
+            },
+            merge: {
+              provider: mergeProvider,
+              model: mergeSelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                mergeProvider,
+                mergeSelection,
+                mergeModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      mergeProvider,
+                      mergeSelection,
+                      mergeModelOptions,
+                    ),
+                  }
+                : {}),
+            },
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
       } else if (workflowType === "codeReview") {
-        const result = await api.orchestration.createCodeReviewWorkflow({
-          projectId: props.projectId,
-          reviewPrompt: promptForSubmission,
-          titleGenerationModel,
-          ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
-          reviewerA: {
-            provider: branchAProvider,
-            model: branchASelection,
-            ...(normalizeWorkflowSlotModelOptions(
-              branchAProvider,
-              branchASelection,
-              branchAModelOptions,
-            )
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    branchAProvider,
-                    branchASelection,
-                    branchAModelOptions,
-                  ),
-                }
-              : {}),
-          },
-          reviewerB: {
-            provider: branchBProvider,
-            model: branchBSelection,
-            ...(normalizeWorkflowSlotModelOptions(
-              branchBProvider,
-              branchBSelection,
-              branchBModelOptions,
-            )
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    branchBProvider,
-                    branchBSelection,
-                    branchBModelOptions,
-                  ),
-                }
-              : {}),
-          },
-          consolidation: {
-            provider: mergeProvider,
-            model: mergeSelection,
-            ...(normalizeWorkflowSlotModelOptions(mergeProvider, mergeSelection, mergeModelOptions)
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    mergeProvider,
-                    mergeSelection,
-                    mergeModelOptions,
-                  ),
-                }
-              : {}),
+        const result = await api.workflowPlatform.createRun({
+          templateId: "builtin.code-review.dual",
+          templateVersion: 1,
+          ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
+          input: {
+            projectId: props.projectId,
+            reviewPrompt: promptForSubmission,
+            titleGenerationModel,
+            ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
+            reviewerA: {
+              provider: branchAProvider,
+              model: branchASelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                branchAProvider,
+                branchASelection,
+                branchAModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      branchAProvider,
+                      branchASelection,
+                      branchAModelOptions,
+                    ),
+                  }
+                : {}),
+            },
+            reviewerB: {
+              provider: branchBProvider,
+              model: branchBSelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                branchBProvider,
+                branchBSelection,
+                branchBModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      branchBProvider,
+                      branchBSelection,
+                      branchBModelOptions,
+                    ),
+                  }
+                : {}),
+            },
+            consolidation: {
+              provider: mergeProvider,
+              model: mergeSelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                mergeProvider,
+                mergeSelection,
+                mergeModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      mergeProvider,
+                      mergeSelection,
+                      mergeModelOptions,
+                    ),
+                  }
+                : {}),
+            },
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
@@ -786,58 +817,67 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
           setSubmitting(false);
           return;
         }
-        const result = await api.orchestration.createInvestigationWorkflow({
-          projectId: props.projectId,
-          problemPrompt: promptForSubmission,
-          titleGenerationModel,
-          ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
-          selfReviewEnabled: investigationSelfReviewEnabled,
-          investigatorA: {
-            provider: branchAProvider,
-            model: branchASelection,
-            ...(normalizeWorkflowSlotModelOptions(
-              branchAProvider,
-              branchASelection,
-              branchAModelOptions,
-            )
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    branchAProvider,
-                    branchASelection,
-                    branchAModelOptions,
-                  ),
-                }
-              : {}),
-          },
-          investigatorB: {
-            provider: branchBProvider,
-            model: branchBSelection,
-            ...(normalizeWorkflowSlotModelOptions(
-              branchBProvider,
-              branchBSelection,
-              branchBModelOptions,
-            )
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    branchBProvider,
-                    branchBSelection,
-                    branchBModelOptions,
-                  ),
-                }
-              : {}),
-          },
-          synthesis: {
-            provider: mergeProvider,
-            model: mergeSelection,
-            ...(normalizeWorkflowSlotModelOptions(mergeProvider, mergeSelection, mergeModelOptions)
-              ? {
-                  modelOptions: normalizeWorkflowSlotModelOptions(
-                    mergeProvider,
-                    mergeSelection,
-                    mergeModelOptions,
-                  ),
-                }
-              : {}),
+        const result = await api.workflowPlatform.createRun({
+          templateId: "builtin.investigation.dual",
+          templateVersion: 1,
+          ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
+          input: {
+            projectId: props.projectId,
+            problemPrompt: promptForSubmission,
+            titleGenerationModel,
+            ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
+            selfReviewEnabled: investigationSelfReviewEnabled,
+            investigatorA: {
+              provider: branchAProvider,
+              model: branchASelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                branchAProvider,
+                branchASelection,
+                branchAModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      branchAProvider,
+                      branchASelection,
+                      branchAModelOptions,
+                    ),
+                  }
+                : {}),
+            },
+            investigatorB: {
+              provider: branchBProvider,
+              model: branchBSelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                branchBProvider,
+                branchBSelection,
+                branchBModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      branchBProvider,
+                      branchBSelection,
+                      branchBModelOptions,
+                    ),
+                  }
+                : {}),
+            },
+            synthesis: {
+              provider: mergeProvider,
+              model: mergeSelection,
+              ...(normalizeWorkflowSlotModelOptions(
+                mergeProvider,
+                mergeSelection,
+                mergeModelOptions,
+              )
+                ? {
+                    modelOptions: normalizeWorkflowSlotModelOptions(
+                      mergeProvider,
+                      mergeSelection,
+                      mergeModelOptions,
+                    ),
+                  }
+                : {}),
+            },
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
@@ -1122,10 +1162,30 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               ) : null}
             </>
           )}
+          <div className="space-y-2">
+            <label className="block text-sm font-medium text-foreground">
+              Run cost limit in USD (optional)
+            </label>
+            <input
+              type="number"
+              min="0.01"
+              step="0.01"
+              className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={maxCostUsd}
+              onChange={(event) => setMaxCostUsd(event.target.value)}
+              placeholder="No limit"
+            />
+            <p className="text-xs text-muted-foreground">
+              F5 checks the limit before launching each subsequent workflow node.
+            </p>
+          </div>
           {sameInvestigationInvestigatorModel ? (
             <p className="text-sm text-red-500">
               Investigation workflows require two different investigator models.
             </p>
+          ) : null}
+          {!validMaxCostUsd ? (
+            <p className="text-sm text-red-500">Cost limit must be greater than zero.</p>
           ) : null}
           <p className="text-sm text-muted-foreground">
             Workflow titles are generated automatically using the thread title model.

@@ -1,4 +1,4 @@
-import { Schema, Struct } from "effect";
+import { Schema, Struct, Tuple } from "effect";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
 import {
@@ -141,6 +141,20 @@ import {
   PrHubSnoozeInput,
   PrHubUnsnoozeInput,
 } from "./prHub";
+import {
+  NextTurnQueueCancelInput,
+  NextTurnQueueEnqueueInput,
+  NextTurnQueueListInput,
+  NextTurnQueueReorderInput,
+  NextTurnQueueResumeInput,
+  NextTurnQueueSnapshot,
+  NextTurnQueueUpdateInput,
+} from "./nextTurnQueue";
+import { GlobalSearchQueryInput } from "./globalSearch";
+import {
+  WorkflowPlatformCreateRunInput,
+  WorkflowPlatformInspectRunInput,
+} from "./workflowPlatform";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
@@ -209,6 +223,22 @@ export const WS_METHODS = {
   storageCleanup: "storage.cleanup",
   storageCancelCleanup: "storage.cancelCleanup",
 
+  // Durable per-thread next-turn queue
+  nextTurnQueueList: "nextTurnQueue.list",
+  nextTurnQueueEnqueue: "nextTurnQueue.enqueue",
+  nextTurnQueueUpdate: "nextTurnQueue.update",
+  nextTurnQueueCancel: "nextTurnQueue.cancel",
+  nextTurnQueueReorder: "nextTurnQueue.reorder",
+  nextTurnQueueResume: "nextTurnQueue.resume",
+
+  // Cross-project full-text search
+  globalSearchQuery: "globalSearch.query",
+
+  // Versioned declarative workflow platform
+  workflowPlatformListTemplates: "workflowPlatform.listTemplates",
+  workflowPlatformCreateRun: "workflowPlatform.createRun",
+  workflowPlatformInspectRun: "workflowPlatform.inspectRun",
+
   mcpGetCommonConfig: "mcp.getCommonConfig",
   mcpReplaceCommonConfig: "mcp.replaceCommonConfig",
   mcpGetProjectConfig: "mcp.getProjectConfig",
@@ -240,6 +270,7 @@ export const WS_CHANNELS = {
   mcpStatusUpdated: "mcp.statusUpdated",
   storageInvalidated: "storage.invalidated",
   storageCleanupProgress: "storage.cleanupProgress",
+  nextTurnQueueUpdated: "nextTurnQueue.updated",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -398,6 +429,18 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageGetUsage, StorageGetUsageRequest),
   tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
+  tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueEnqueue, NextTurnQueueEnqueueInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueUpdate, NextTurnQueueUpdateInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueCancel, NextTurnQueueCancelInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueReorder, NextTurnQueueReorderInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueResume, NextTurnQueueResumeInput),
+  tagRequestBody(WS_METHODS.globalSearchQuery, GlobalSearchQueryInput),
+  tagRequestBody(WS_METHODS.workflowPlatformListTemplates, Schema.Struct({})),
+  WorkflowPlatformCreateRunInput.mapMembers(
+    Tuple.map(Schema.fieldsAssign({ _tag: Schema.tag(WS_METHODS.workflowPlatformCreateRun) })),
+  ),
+  tagRequestBody(WS_METHODS.workflowPlatformInspectRun, WorkflowPlatformInspectRunInput),
   tagRequestBody(WS_METHODS.mcpGetCommonConfig, McpGetCommonConfigRequest),
   tagRequestBody(WS_METHODS.mcpReplaceCommonConfig, McpReplaceCommonConfigRequest),
   tagRequestBody(WS_METHODS.mcpGetProjectConfig, McpGetProjectConfigRequest),
@@ -474,6 +517,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.mcpStatusUpdated]: McpStatusUpdatedPayload;
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
+  readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
   readonly [PR_HUB_WS_CHANNELS.snapshotUpdated]: typeof PrHubSnapshot.Type;
   readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisorySnapshot.Type;
@@ -532,6 +576,10 @@ export const WsPushStorageCleanupProgress = makeWsPushSchema(
   WS_CHANNELS.storageCleanupProgress,
   StorageCleanupProgressPayload,
 );
+export const WsPushNextTurnQueueUpdated = makeWsPushSchema(
+  WS_CHANNELS.nextTurnQueueUpdated,
+  NextTurnQueueSnapshot,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -558,6 +606,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.mcpStatusUpdated,
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
+  WS_CHANNELS.nextTurnQueueUpdated,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   PR_HUB_WS_CHANNELS.snapshotUpdated,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
@@ -577,6 +626,7 @@ export const WsPush = Schema.Union([
   WsPushMcpStatusUpdated,
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,
+  WsPushNextTurnQueueUpdated,
   WsPushOrchestrationDomainEvent,
   WsPushPrHubSnapshotUpdated,
   WsPushPrHubAdvisoriesUpdated,

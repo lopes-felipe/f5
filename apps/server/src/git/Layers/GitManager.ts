@@ -38,6 +38,7 @@ interface ResolvedPullRequest {
   url: string;
   baseBranch: string;
   headBranch: string;
+  headOid?: string | null;
   state: "open" | "closed" | "merged";
 }
 
@@ -342,6 +343,7 @@ function toResolvedPullRequest(pr: {
   url: string;
   baseRefName: string;
   headRefName: string;
+  headRefOid?: string | null;
   state?: "open" | "closed" | "merged";
 }): ResolvedPullRequest {
   return {
@@ -350,6 +352,7 @@ function toResolvedPullRequest(pr: {
     url: pr.url,
     baseBranch: pr.baseRefName,
     headBranch: pr.headRefName,
+    ...(pr.headRefOid !== undefined ? { headOid: pr.headRefOid } : {}),
     state: pr.state ?? "open",
   };
 }
@@ -931,6 +934,14 @@ export const makeGitManager = Effect.gen(function* () {
         cwd: input.cwd,
         reference: normalizedReference,
       });
+      const expectedHeadOid = input.expectedHeadOid?.trim().toLowerCase();
+      const currentHeadOid = pullRequestSummary.headRefOid?.trim().toLowerCase() ?? null;
+      if (expectedHeadOid && currentHeadOid !== expectedHeadOid) {
+        return yield* gitManagerError(
+          "preparePullRequestThread",
+          `Pull request head changed before checkout (expected ${expectedHeadOid}, found ${currentHeadOid ?? "unknown"}). Refresh PR Hub before retrying.`,
+        );
+      }
       const pullRequest = toResolvedPullRequest(pullRequestSummary);
       const pullRequestWithRemoteInfo = {
         ...pullRequest,

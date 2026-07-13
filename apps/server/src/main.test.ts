@@ -108,7 +108,7 @@ it.layer(testLayer)("server CLI command", (it) => {
         "http://127.0.0.1:5173",
         "--no-browser",
         "--auth-token",
-        "auth-secret",
+        "auth-secret-auth-secret-auth-secret",
       ]);
 
       assert.equal(start.mock.calls.length, 1);
@@ -118,7 +118,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.stateDir, "/tmp/t3-cli-state");
       assert.equal(resolvedConfig?.devUrl?.toString(), "http://127.0.0.1:5173/");
       assert.equal(resolvedConfig?.noBrowser, true);
-      assert.equal(resolvedConfig?.authToken, "auth-secret");
+      assert.equal(resolvedConfig?.authToken, "auth-secret-auth-secret-auth-secret");
       assert.equal(resolvedConfig?.autoBootstrapProjectFromCwd, false);
       assert.equal(resolvedConfig?.logWebSocketEvents, true);
       assert.equal(resolvedConfig?.observabilityEnabled, false);
@@ -144,7 +144,7 @@ it.layer(testLayer)("server CLI command", (it) => {
         T3CODE_STATE_DIR: "/tmp/t3-env-state",
         VITE_DEV_SERVER_URL: "http://localhost:5173",
         T3CODE_NO_BROWSER: "true",
-        T3CODE_AUTH_TOKEN: "env-token",
+        T3CODE_AUTH_TOKEN: "env-token-env-token-env-token",
       });
 
       assert.equal(start.mock.calls.length, 1);
@@ -154,7 +154,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.stateDir, "/tmp/t3-env-state");
       assert.equal(resolvedConfig?.devUrl?.toString(), "http://localhost:5173/");
       assert.equal(resolvedConfig?.noBrowser, true);
-      assert.equal(resolvedConfig?.authToken, "env-token");
+      assert.equal(resolvedConfig?.authToken, "env-token-env-token-env-token");
       assert.equal(resolvedConfig?.autoBootstrapProjectFromCwd, false);
       assert.equal(resolvedConfig?.logWebSocketEvents, true);
       assert.equal(resolvedConfig?.observabilityEnabled, false);
@@ -423,7 +423,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(start.mock.calls.length, 1);
       assert.equal(resolvedConfig?.mode, "web");
       assert.equal(resolvedConfig?.port, 4666);
-      assert.equal(resolvedConfig?.host, undefined);
+      assert.equal(resolvedConfig?.host, "127.0.0.1");
     }),
   );
 
@@ -465,9 +465,9 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
-  it.effect("allows overriding desktop host with --host", () =>
+  it.effect("allows authenticated desktop host overrides", () =>
     Effect.gen(function* () {
-      yield* runCli(["--host", "0.0.0.0"], {
+      yield* runCli(["--host", "0.0.0.0", "--auth-token", "secret-token-secret-token"], {
         T3CODE_MODE: "desktop",
         T3CODE_NO_BROWSER: "true",
       });
@@ -475,6 +475,28 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(start.mock.calls.length, 1);
       assert.equal(resolvedConfig?.mode, "desktop");
       assert.equal(resolvedConfig?.host, "0.0.0.0");
+    }),
+  );
+
+  it.effect("refuses non-loopback binding without authentication", () =>
+    Effect.gen(function* () {
+      yield* runCli(["--host", "0.0.0.0"], {
+        T3CODE_NO_BROWSER: "true",
+      }).pipe(Effect.catch(() => Effect.void));
+
+      assert.equal(start.mock.calls.length, 0);
+      assert.equal(stop.mock.calls.length, 0);
+    }),
+  );
+
+  it.effect("refuses weak authentication tokens on non-loopback bindings", () =>
+    Effect.gen(function* () {
+      yield* runCli(["--host", "0.0.0.0", "--auth-token", "weak-token"], {
+        T3CODE_NO_BROWSER: "true",
+      }).pipe(Effect.catch(() => Effect.void));
+
+      assert.equal(start.mock.calls.length, 0);
+      assert.equal(stop.mock.calls.length, 0);
     }),
   );
 

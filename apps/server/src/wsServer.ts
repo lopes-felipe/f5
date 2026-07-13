@@ -33,6 +33,7 @@ import {
   type WsResponse as WsResponseMessage,
   WsResponse,
   type WsPushEnvelopeBase,
+  type WorkflowPlatformCreateRunInput,
 } from "@t3tools/contracts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -58,6 +59,15 @@ import {
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { createLogger } from "./logger";
+import { makeNextTurnQueueStore } from "./nextTurnQueue";
+import { makeGlobalSearch } from "./globalSearch";
+import { makeBackupService } from "./backupService";
+import {
+  BUILTIN_WORKFLOW_TEMPLATES,
+  createWorkflowPlatformRun,
+  inspectWorkflowPlatformRun,
+} from "./workflowPlatform.ts";
+import { drainNextTurnQueue, resolveNextTurnQueueGate } from "./nextTurnQueueDrainer";
 import { GitManager } from "./git/Services/GitManager.ts";
 import { TerminalManager } from "./terminal/Services/Manager.ts";
 import { Keybindings } from "./keybindings";
@@ -135,6 +145,7 @@ import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import { withStartupPhaseTiming } from "./startupTiming.ts";
+import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
 import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -636,6 +647,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 > {
   const serverConfig = yield* ServerConfig;
   const {
+    mode,
     port,
     cwd,
     keybindingsConfigPath,
@@ -646,6 +658,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     logWebSocketEvents,
     autoBootstrapProjectFromCwd,
   } = serverConfig;
+  const serverAuth = makeServerAuth(authToken, {
+    allowedWebSocketOrigins: [
+      ...(mode === "desktop" ? ["t3://app"] : []),
+      ...(devUrl ? [devUrl.origin] : []),
+    ],
+  });
   const availableEditors = resolveAvailableEditors();
 
   const gitManager = yield* GitManager;
@@ -668,6 +686,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const git = yield* GitCore;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const nextTurnQueueStore = yield* makeNextTurnQueueStore;
+  const globalSearch = yield* makeGlobalSearch;
+  const backupService = yield* makeBackupService;
 
   yield* keybindingsManager.syncDefaultKeybindingsOnStartup.pipe(
     Effect.catch((error) =>
@@ -929,6 +950,146 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void Effect.runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+        const handledAuthRequest = yield* Effect.promise(() =>
+          serverAuth.handleHttpRequest(req, res, url),
+        );
+        if (handledAuthRequest) {
+          return;
+        }
+        if (isPrivateHttpPath(url.pathname) && !serverAuth.isHttpRequestAuthenticated(req)) {
+          respond(
+            401,
+            {
+              "Cache-Control": "no-store",
+              "Content-Type": "application/json; charset=utf-8",
+            },
+            JSON.stringify({ error: "Authentication required." }),
+          );
+          return;
+        }
+        if (url.pathname.startsWith("/api/storage/") && !serverAuth.isWebSocketOriginAllowed(req)) {
+          respond(
+            403,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify({ error: "Request origin is not allowed." }),
+          );
+          return;
+        }
+
+        if (url.pathname === "/api/storage/backup") {
+          if (req.method !== "GET") {
+            respond(405, { Allow: "GET", "Content-Type": "application/json; charset=utf-8" });
+            return;
+          }
+          const includeSecrets = url.searchParams.get("includeSecrets") === "1";
+          const passwordHeader = req.headers["x-f5-backup-password"];
+          const password = Array.isArray(passwordHeader) ? passwordHeader[0] : passwordHeader;
+          if (includeSecrets && (!password || password.length < 12)) {
+            respond(
+              400,
+              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+              JSON.stringify({
+                error: "Encrypted secret export requires a password of at least 12 characters.",
+              }),
+            );
+            return;
+          }
+          const filename = `f5-backup-${new Date().toISOString().slice(0, 10)}.f5backup`;
+          const exit = yield* Effect.exit(
+            backupService.exportArchive({
+              output: res,
+              includeSecrets,
+              ...(password ? { password } : {}),
+              onReady: ({ contentLength }) => {
+                res.writeHead(200, {
+                  "Cache-Control": "no-store",
+                  "Content-Disposition": `attachment; filename="${filename}"`,
+                  "Content-Length": contentLength,
+                  "Content-Type": "application/x-f5-backup",
+                  "X-Content-Type-Options": "nosniff",
+                });
+              },
+            }),
+          );
+          if (Exit.isFailure(exit)) {
+            if (!res.headersSent) {
+              const failure = Cause.squash(exit.cause);
+              respond(
+                500,
+                { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+                JSON.stringify({
+                  error:
+                    failure instanceof Error ? failure.message : "Unable to create backup archive.",
+                }),
+              );
+            } else if (!res.destroyed) {
+              res.destroy();
+            }
+          }
+          return;
+        }
+
+        if (url.pathname === "/api/storage/restore") {
+          if (req.method !== "POST") {
+            respond(405, { Allow: "POST", "Content-Type": "application/json; charset=utf-8" });
+            return;
+          }
+          const passwordHeader = req.headers["x-f5-backup-password"];
+          const password = Array.isArray(passwordHeader) ? passwordHeader[0] : passwordHeader;
+          const contentLengthHeader = req.headers["content-length"];
+          const contentLength =
+            typeof contentLengthHeader === "string" ? Number(contentLengthHeader) : undefined;
+          if (
+            contentLength !== undefined &&
+            (!Number.isSafeInteger(contentLength) || contentLength < 0)
+          ) {
+            req.resume();
+            respond(
+              400,
+              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+              JSON.stringify({ error: "Backup upload has an invalid Content-Length header." }),
+            );
+            return;
+          }
+          if (
+            contentLength !== undefined &&
+            contentLength > backupService.restoreLimits.maxCompressedBytes
+          ) {
+            req.resume();
+            respond(
+              413,
+              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+              JSON.stringify({
+                error: "Backup upload exceeds the compressed restore size limit.",
+              }),
+            );
+            return;
+          }
+          const exit = yield* Effect.exit(
+            backupService.stageRestore({
+              source: req,
+              ...(password ? { password } : {}),
+              ...(contentLength !== undefined ? { contentLength } : {}),
+            }),
+          );
+          if (Exit.isFailure(exit)) {
+            const failure = Cause.squash(exit.cause);
+            const message =
+              failure instanceof Error ? failure.message : "Unable to validate and stage backup.";
+            respond(
+              400,
+              { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+              JSON.stringify({ error: message }),
+            );
+            return;
+          }
+          respond(
+            202,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify(exit.value),
+          );
+          return;
+        }
         if (tryHandleProjectFaviconRequest(url, res)) {
           return;
         }
@@ -1390,6 +1551,63 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.option,
   );
 
+  const nextTurnQueueWorktreeExists = (worktreePath: string) =>
+    fileSystem.stat(worktreePath).pipe(
+      Effect.map((info) => info.type === "Directory"),
+      Effect.catch(() => Effect.succeed(false)),
+    );
+
+  const getNextTurnQueueSnapshot = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      const items = yield* nextTurnQueueStore.list(threadId);
+      const first = items[0];
+      if (!first) {
+        return { threadId, items, blockedReason: null };
+      }
+      const snapshot = yield* projectionReadModelQuery.getSnapshot();
+      const thread = snapshot.threads.find((candidate) => candidate.id === threadId);
+      const gate = resolveNextTurnQueueGate(thread, first);
+      let blockedReason = gate.kind === "ready" ? null : gate.reason;
+      if (gate.kind === "ready" && thread?.worktreePath) {
+        const exists = yield* nextTurnQueueWorktreeExists(thread.worktreePath);
+        if (!exists) {
+          blockedReason = `Queue paused because worktree '${thread.worktreePath}' is missing.`;
+        }
+      }
+      return { threadId, items, blockedReason };
+    });
+
+  const publishNextTurnQueueSnapshot = (threadId: ThreadId) =>
+    getNextTurnQueueSnapshot(threadId).pipe(
+      Effect.flatMap((snapshot) => pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot)),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to publish next-turn queue snapshot", {
+          threadId,
+          causePretty: Cause.pretty(cause),
+        }),
+      ),
+    );
+
+  const drainQueuedTurns = drainNextTurnQueue({
+    store: nextTurnQueueStore,
+    getSnapshot: () => projectionReadModelQuery.getSnapshot(),
+    worktreeExists: nextTurnQueueWorktreeExists,
+    dispatch: (command) =>
+      awaitOrchestrationRuntimeForRoute.pipe(
+        Effect.flatMap(({ orchestrationEngine }) => orchestrationEngine.dispatch(command)),
+      ),
+    onUpdated: publishNextTurnQueueSnapshot,
+  });
+
+  yield* Effect.forever(
+    drainQueuedTurns.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("next-turn queue drain failed", { causePretty: Cause.pretty(cause) }),
+      ),
+      Effect.andThen(Effect.sleep(Duration.millis(750))),
+    ),
+  ).pipe(Effect.forkIn(subscriptionsScope));
+
   const unsubscribeTerminalEvents = yield* terminalManager.subscribe(
     (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event)),
   );
@@ -1569,6 +1787,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           });
         }
         const result = yield* orchestrationEngine.dispatch(normalizedCommand);
+        if (
+          normalizedCommand.type === "thread.checkpoint.revert" ||
+          normalizedCommand.type === "thread.compact.request"
+        ) {
+          const reason =
+            normalizedCommand.type === "thread.checkpoint.revert"
+              ? "Queue paused because the thread was reverted."
+              : "Queue paused because the thread was compacted.";
+          yield* nextTurnQueueStore.pauseThread(normalizedCommand.threadId, reason);
+          yield* publishNextTurnQueueSnapshot(normalizedCommand.threadId);
+        }
         return result;
       }
 
@@ -2519,6 +2748,98 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.nextTurnQueueList: {
+        const body = stripRequestTag(request.body);
+        return yield* getNextTurnQueueSnapshot(body.threadId);
+      }
+
+      case WS_METHODS.nextTurnQueueEnqueue: {
+        const body = stripRequestTag(request.body);
+        const command = yield* normalizeDispatchCommand({ command: body.command });
+        if (command.type !== "thread.turn.start") {
+          return yield* new RouteRequestError({
+            message: "Only thread turn-start commands can be queued.",
+          });
+        }
+        yield* nextTurnQueueStore.enqueue({ itemId: body.itemId, command });
+        const snapshot = yield* getNextTurnQueueSnapshot(command.threadId);
+        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
+        return snapshot;
+      }
+
+      case WS_METHODS.nextTurnQueueUpdate: {
+        const body = stripRequestTag(request.body);
+        const updated = yield* nextTurnQueueStore.update(body);
+        const snapshot = yield* getNextTurnQueueSnapshot(updated.threadId);
+        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
+        return snapshot;
+      }
+
+      case WS_METHODS.nextTurnQueueCancel: {
+        const body = stripRequestTag(request.body);
+        const updated = yield* nextTurnQueueStore.cancel(body.itemId);
+        const snapshot = yield* getNextTurnQueueSnapshot(updated.threadId);
+        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
+        return snapshot;
+      }
+
+      case WS_METHODS.nextTurnQueueReorder: {
+        const body = stripRequestTag(request.body);
+        yield* nextTurnQueueStore.reorder(body);
+        const snapshot = yield* getNextTurnQueueSnapshot(body.threadId);
+        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
+        return snapshot;
+      }
+
+      case WS_METHODS.nextTurnQueueResume: {
+        const body = stripRequestTag(request.body);
+        const updated = yield* nextTurnQueueStore.resume(body.itemId);
+        const snapshot = yield* getNextTurnQueueSnapshot(updated.threadId);
+        yield* pushBus.publishAll(WS_CHANNELS.nextTurnQueueUpdated, snapshot);
+        return snapshot;
+      }
+
+      case WS_METHODS.globalSearchQuery: {
+        const body = stripRequestTag(request.body);
+        return yield* globalSearch.query(body).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: `Search failed: ${error.message}`,
+              }),
+          ),
+        );
+      }
+
+      case WS_METHODS.workflowPlatformListTemplates:
+        return { templates: BUILTIN_WORKFLOW_TEMPLATES };
+
+      case WS_METHODS.workflowPlatformCreateRun: {
+        const { workflowService, codeReviewWorkflowService, investigationWorkflowService } =
+          yield* awaitOrchestrationRuntimeForRoute;
+        const body = stripRequestTag(request.body) as WorkflowPlatformCreateRunInput;
+        return yield* createWorkflowPlatformRun(body, {
+          planning: workflowService,
+          codeReview: codeReviewWorkflowService,
+          investigation: investigationWorkflowService,
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RouteRequestError({ message: `Failed to create workflow run: ${String(cause)}` }),
+          ),
+        );
+      }
+
+      case WS_METHODS.workflowPlatformInspectRun: {
+        const body = stripRequestTag(request.body);
+        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        return yield* Effect.try({
+          try: () => ({ inspection: inspectWorkflowPlatformRun(body, snapshot) }),
+          catch: (cause) =>
+            new RouteRequestError({ message: `Failed to inspect workflow run: ${String(cause)}` }),
+        });
+      }
+
       case WS_METHODS.mcpGetProjectConfig: {
         const body = stripRequestTag(request.body);
         return yield* projectMcpConfigService.readProjectConfig(body.projectId).pipe(
@@ -2765,20 +3086,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   httpServer.on("upgrade", (request, socket, head) => {
     socket.on("error", () => {}); // Prevent unhandled `EPIPE`/`ECONNRESET` from crashing the process if the client disconnects mid-handshake
 
-    if (authToken) {
-      let providedToken: string | null = null;
-      try {
-        const url = new URL(request.url ?? "/", `http://localhost:${port}`);
-        providedToken = url.searchParams.get("token");
-      } catch {
-        rejectUpgrade(socket, 400, "Invalid WebSocket URL");
-        return;
-      }
+    let url: URL;
+    try {
+      url = new URL(request.url ?? "/", `http://localhost:${port}`);
+    } catch {
+      rejectUpgrade(socket, 400, "Invalid WebSocket URL");
+      return;
+    }
 
-      if (providedToken !== authToken) {
-        rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
-        return;
-      }
+    if (!serverAuth.isWebSocketOriginAllowed(request)) {
+      rejectUpgrade(socket, 403, "WebSocket origin is not allowed");
+      return;
+    }
+
+    if (!serverAuth.isWebSocketRequestAuthenticated(request, url)) {
+      rejectUpgrade(socket, 401, "Unauthorized WebSocket connection");
+      return;
     }
 
     wss.handleUpgrade(request, socket, head, (ws) => {

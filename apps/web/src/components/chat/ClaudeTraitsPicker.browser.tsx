@@ -154,6 +154,7 @@ async function mountPicker(props?: {
     filePaths: [],
     terminalContexts: [],
     provider: "claudeAgent",
+    providerInstanceId: null,
     model,
     modelOptions: {
       claudeAgent: {

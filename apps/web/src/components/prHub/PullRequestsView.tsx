@@ -7,7 +7,8 @@ import {
   TargetIcon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
+import { useNavigate } from "@tanstack/react-router";
+import type { PullRequestKey, ThreadId, TrackedPullRequest } from "@t3tools/contracts";
 
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { prHubAdvisoriesQueryOptions, prHubSnapshotQueryOptions } from "../../lib/prHubReactQuery";
@@ -144,6 +145,7 @@ function compactStatusDetail(message: string | undefined): string | null {
 
 export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const snapshotQuery = useQuery(prHubSnapshotQueryOptions());
   const [filter, setFilter] = useState<PrHubFilter>("needs_my_review");
   const [viewMode, setViewMode] = useState<PrHubViewMode>(() => {
@@ -380,6 +382,9 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
                 advisoriesByKey={advisoriesByKey}
                 analyzingKeys={analyzingKeys}
                 onAnalyzeAdvisory={(key) => void analyzeKeys([key])}
+                onThreadCreated={(threadId: ThreadId) =>
+                  navigate({ to: "/$threadId", params: { threadId } })
+                }
                 focusedPrKey={focusedPrKey}
               />
             ) : (
@@ -388,6 +393,9 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
                 advisoriesByKey={advisoriesByKey}
                 analyzingKeys={analyzingKeys}
                 onAnalyzeAdvisory={(key) => void analyzeKeys([key])}
+                onThreadCreated={(threadId: ThreadId) =>
+                  navigate({ to: "/$threadId", params: { threadId } })
+                }
                 focusedPrKey={focusedPrKey}
               />
             )}

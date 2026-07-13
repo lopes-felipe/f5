@@ -17,6 +17,7 @@ import {
   statusLabel,
 } from "./investigationWorkflowView.logic";
 import { deriveInvestigationTimelinePhases } from "./investigationWorkflowSidebarTimeline";
+import { WorkflowRunInspector } from "./WorkflowRunInspector";
 
 function combinedAssistantFeedback(
   messages: ReadonlyArray<ChatMessage>,
@@ -174,6 +175,11 @@ export function InvestigationWorkflowView(props: { workflowId: string }) {
         <main className="min-h-0 min-w-0 rounded-xl border border-border bg-card">
           <div className="flex h-full min-h-0 min-w-0 flex-col p-5">
             <div className="min-h-0 min-w-0 flex-1 space-y-6 overflow-y-auto overscroll-y-contain">
+              <WorkflowRunInspector
+                runKind="investigation"
+                workflowId={workflow.id}
+                updatedAt={workflow.updatedAt}
+              />
               <section>
                 <h2 className="text-sm font-semibold text-foreground">Problem</h2>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">

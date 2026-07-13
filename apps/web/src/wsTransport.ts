@@ -48,9 +48,12 @@ interface OutboundMessage {
 }
 
 const REQUEST_TIMEOUT_MS = 60_000;
+const MAX_OUTBOUND_QUEUE_SIZE = 256;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000];
 const INITIAL_CONNECTION_ERROR_MESSAGE = "Unable to connect to the F5 server WebSocket.";
 const WS_CONNECTION_CLOSED_MESSAGE = "WebSocket connection closed.";
+const AUTH_STATUS_PATH = "/auth/status";
+const AUTH_SESSION_PATH = "/auth/session";
 const DETACHED_SOCKET_GENERATION = -1;
 const decodeWsResponse = decodeUnknownJsonResult(WsResponseSchema);
 const isWebSocketResponseEnvelope = Schema.is(WebSocketResponse);
@@ -73,6 +76,50 @@ function asError(value: unknown, fallback: string): Error {
   return new Error(fallback);
 }
 
+function authTokenFromLocationHash(): string | null {
+  const hash = window.location.hash.replace(/^#/u, "");
+  const token = new URLSearchParams(hash).get("token")?.trim();
+  return token && token.length > 0 ? token : null;
+}
+
+function scrubAuthTokenFromLocationHash(): void {
+  const params = new URLSearchParams(window.location.hash.replace(/^#/u, ""));
+  if (!params.has("token")) return;
+  params.delete("token");
+  const nextHash = params.size > 0 ? `#${params.toString()}` : "";
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `${window.location.pathname}${window.location.search}${nextHash}`,
+  );
+}
+
+async function ensureBrowserAuthSession(): Promise<void> {
+  const token = authTokenFromLocationHash();
+  if (token) {
+    const response = await fetch(AUTH_SESSION_PATH, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token }),
+    });
+    if (!response.ok) {
+      throw new Error("F5 authentication failed. Check the remote access token.");
+    }
+    scrubAuthTokenFromLocationHash();
+    return;
+  }
+
+  const response = await fetch(AUTH_STATUS_PATH, {
+    method: "GET",
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) {
+    throw new Error("F5 authentication is required. Open the authenticated remote access URL.");
+  }
+}
+
 export class WsTransport {
   private ws: WebSocket | null = null;
   private socketGeneration = 0;
@@ -81,12 +128,17 @@ export class WsTransport {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Map<string, Set<(message: WsPush) => void>>();
   private readonly latestPushByChannel = new Map<string, WsPush>();
-  private readonly outboundQueue: OutboundMessage[] = [];
+  // Map preserves insertion order while making cancellation by request id O(1).
+  // A timed-out request must never remain eligible for a later flush: doing so
+  // can execute a mutation after its caller has already been told it failed.
+  private readonly outboundQueue = new Map<string, OutboundMessage>();
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private authConnectInFlight = false;
   private disposed = false;
   private unregisterReconnectHandler: (() => void) | null = null;
   private readonly url: string;
+  private readonly browserSessionAuth: boolean;
 
   constructor(url?: string) {
     const bridgeUrl = window.desktopBridge?.getWsUrl();
@@ -98,6 +150,8 @@ export class WsTransport {
         : envUrl && envUrl.length > 0
           ? envUrl
           : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${window.location.port}`);
+    this.browserSessionAuth =
+      url === undefined && !(bridgeUrl && bridgeUrl.length > 0) && !(envUrl && envUrl.length > 0);
 
     this.unregisterReconnectHandler = registerWsTransportReconnectHandler(() => this.reconnect());
     this.connect();
@@ -128,6 +182,7 @@ export class WsTransport {
           ? null
           : setTimeout(() => {
               this.pending.delete(id);
+              this.outboundQueue.delete(id);
               acknowledgeSlowRpcRequest(id);
               reject(new Error(`Request timed out: ${method}`));
             }, timeoutMs);
@@ -138,7 +193,16 @@ export class WsTransport {
         timeout,
       });
 
-      this.send(outboundMessage);
+      try {
+        this.send(outboundMessage);
+      } catch (error) {
+        if (timeout !== null) {
+          clearTimeout(timeout);
+        }
+        this.pending.delete(id);
+        this.outboundQueue.delete(id);
+        reject(asError(error, `Failed to queue request: ${method}`));
+      }
     });
   }
 
@@ -236,7 +300,7 @@ export class WsTransport {
 
     const currentSocket = this.ws;
     this.failPendingRequests("Transport disposed");
-    this.outboundQueue.length = 0;
+    this.outboundQueue.clear();
     this.detachAuthoritativeSocket();
 
     if (currentSocket && currentSocket.readyState < WebSocket.CLOSING) {
@@ -248,6 +312,32 @@ export class WsTransport {
     if (this.disposed) {
       return;
     }
+
+    if (this.browserSessionAuth) {
+      if (this.authConnectInFlight) return;
+      this.authConnectInFlight = true;
+      void ensureBrowserAuthSession().then(
+        () => {
+          this.authConnectInFlight = false;
+          if (!this.disposed) this.openSocket();
+        },
+        (error: unknown) => {
+          this.authConnectInFlight = false;
+          if (this.disposed) return;
+          noteWsConnectionError(
+            error instanceof Error ? error.message : "F5 authentication failed.",
+          );
+          this.scheduleReconnect();
+        },
+      );
+      return;
+    }
+
+    this.openSocket();
+  }
+
+  private openSocket() {
+    if (this.disposed) return;
 
     noteWsConnectionAttempt();
 
@@ -318,7 +408,7 @@ export class WsTransport {
 
   private failPendingRequests(message: string): void {
     if (this.pending.size === 0) {
-      this.outboundQueue.length = 0;
+      this.outboundQueue.clear();
       return;
     }
 
@@ -331,7 +421,7 @@ export class WsTransport {
       pending.reject(new Error(message));
     }
 
-    this.outboundQueue.length = 0;
+    this.outboundQueue.clear();
   }
 
   private handleMessage(raw: unknown) {
@@ -385,7 +475,13 @@ export class WsTransport {
       return;
     }
 
-    this.outboundQueue.push(message);
+    if (!this.outboundQueue.has(message.id) && this.outboundQueue.size >= MAX_OUTBOUND_QUEUE_SIZE) {
+      throw new Error(
+        `WebSocket request queue is full (${MAX_OUTBOUND_QUEUE_SIZE} pending requests).`,
+      );
+    }
+
+    this.outboundQueue.set(message.id, message);
     try {
       this.flushQueue();
     } catch {
@@ -398,17 +494,25 @@ export class WsTransport {
       return;
     }
 
-    while (this.outboundQueue.length > 0) {
-      const message = this.outboundQueue.shift();
-      if (!message) {
+    while (this.outboundQueue.size > 0) {
+      const first = this.outboundQueue.entries().next().value as
+        | [string, OutboundMessage]
+        | undefined;
+      if (!first) break;
+      const [id, message] = first;
+
+      // The request may have timed out or been cancelled between enqueue and
+      // flush. Drop it instead of producing a ghost RPC.
+      if (!this.pending.has(id)) {
+        this.outboundQueue.delete(id);
         continue;
       }
 
       try {
         this.ws.send(message.encoded);
+        this.outboundQueue.delete(id);
         trackSlowRpcRequestSent(message.id, message.method);
       } catch (error) {
-        this.outboundQueue.unshift(message);
         throw asError(error, "Failed to send WebSocket request.");
       }
     }

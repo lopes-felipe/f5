@@ -65,6 +65,9 @@ import Migration0050 from "./Migrations/050_CopyDebugWorkflowsToInvestigationWor
 import Migration0051 from "./Migrations/051_PrHub.ts";
 import Migration0052 from "./Migrations/052_PrHubIgnoredAt.ts";
 import Migration0053 from "./Migrations/053_PrHubAdvisories.ts";
+import Migration0054 from "./Migrations/054_NextTurnQueue.ts";
+import Migration0055 from "./Migrations/055_GlobalSearchFts.ts";
+import Migration0056 from "./Migrations/056_NextTurnQueueDispatchStartedAt.ts";
 import { Effect } from "effect";
 
 /**
@@ -77,7 +80,7 @@ import { Effect } from "effect";
  * Uses Migrator.fromRecord which parses the key format and
  * returns migrations sorted by ID.
  */
-const loader = Migrator.fromRecord({
+export const MIGRATIONS = {
   "1_OrchestrationEvents": Migration0001,
   "2_OrchestrationCommandReceipts": Migration0002,
   "3_CheckpointDiffBlobs": Migration0003,
@@ -131,7 +134,16 @@ const loader = Migrator.fromRecord({
   "51_PrHub": Migration0051,
   "52_PrHubIgnoredAt": Migration0052,
   "53_PrHubAdvisories": Migration0053,
-});
+  "54_NextTurnQueue": Migration0054,
+  "55_GlobalSearchFts": Migration0055,
+  "56_NextTurnQueueDispatchStartedAt": Migration0056,
+} as const;
+
+export const LATEST_MIGRATION_ID = Math.max(
+  ...Object.keys(MIGRATIONS).map((key) => Number.parseInt(key, 10)),
+);
+
+const loader = Migrator.fromRecord(MIGRATIONS);
 
 /**
  * Migrator run function - no schema dumping needed

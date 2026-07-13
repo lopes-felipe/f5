@@ -69,6 +69,10 @@ export const InvestigationWorkflow = Schema.Struct({
   investigatorA: InvestigationInvestigator,
   investigatorB: InvestigationInvestigator,
   synthesis: InvestigationSynthesis,
+  totalCostUsd: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),

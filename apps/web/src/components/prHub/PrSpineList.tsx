@@ -92,6 +92,7 @@ export function PrSpineList({
         <LegendList<TrackedPullRequest>
           ref={listRef}
           data={prs as TrackedPullRequest[]}
+          extraData={selectedKey}
           keyExtractor={(pr) => pr.key}
           renderItem={({ item }) => (
             <PrSpineRow pr={item} selected={item.key === selectedKey} onSelect={onSelect} />

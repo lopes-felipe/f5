@@ -2,7 +2,6 @@ import { Outlet, createFileRoute, useLocation, useNavigate } from "@tanstack/rea
 import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react";
 
 import { CommandPalette } from "../components/CommandPalette";
-import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
 import ThreadStatusNotificationController from "../components/ThreadStatusNotificationController";
 import PrAttentionNotificationController from "../components/prHub/PrAttentionNotificationController";
 import ModelRecencyController from "../components/ModelRecencyController";
@@ -88,13 +87,11 @@ function ChatRouteLayout() {
           <ThreadSidebar />
           <SidebarRail />
         </Sidebar>
-        <DiffWorkerPoolProvider>
-          <ThreadRecencyController />
-          <ModelRecencyController />
-          <ThreadStatusNotificationController />
-          <PrAttentionNotificationController />
-          <Outlet />
-        </DiffWorkerPoolProvider>
+        <ThreadRecencyController />
+        <ModelRecencyController />
+        <ThreadStatusNotificationController />
+        <PrAttentionNotificationController />
+        <Outlet />
       </CommandPalette>
     </SidebarProvider>
   );

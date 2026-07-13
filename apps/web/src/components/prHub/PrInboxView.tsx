@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { GitPullRequestIcon } from "lucide-react";
-import type { PrHubAdvisory, PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
+import type {
+  PrHubAdvisory,
+  PullRequestKey,
+  ThreadId,
+  TrackedPullRequest,
+} from "@t3tools/contracts";
 
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Kbd } from "../ui/kbd";
@@ -14,6 +19,7 @@ export interface PrModeViewProps {
   advisoriesByKey: Map<PullRequestKey, PrHubAdvisory>;
   analyzingKeys: ReadonlySet<PullRequestKey>;
   onAnalyzeAdvisory: (key: PullRequestKey) => void;
+  onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
   focusedPrKey: string | null;
 }
 
@@ -37,6 +43,7 @@ export function PrInboxView({
   advisoriesByKey,
   analyzingKeys,
   onAnalyzeAdvisory,
+  onThreadCreated,
   focusedPrKey,
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
@@ -148,6 +155,7 @@ export function PrInboxView({
             advisory={selectedAdvisory}
             isAnalyzingAdvisory={isAnalyzing(selectedPr, analyzingKeys, selectedAdvisory)}
             onAnalyzeAdvisory={() => onAnalyzeAdvisory(selectedPr.key)}
+            onThreadCreated={onThreadCreated}
           />
         ) : (
           <Empty>

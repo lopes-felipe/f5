@@ -458,8 +458,8 @@ layer("047_ProjectionReadModelStartupTablesRepair", (it) => {
 
       assert.deepEqual(latestMigration, [
         {
-          migrationId: 53,
-          name: "PrHubAdvisories",
+          migrationId: 55,
+          name: "GlobalSearchFts",
         },
       ]);
     }),

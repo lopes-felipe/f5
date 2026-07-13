@@ -1,4 +1,3 @@
-import { DiffsHighlighter, getSharedHighlighter, SupportedLanguages } from "@pierre/diffs";
 import { CheckIcon, CopyIcon } from "lucide-react";
 import React, {
   Children,
@@ -21,6 +20,7 @@ import { openInPreferredEditor } from "../editorPreferences";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
 import { LRUCache } from "../lib/lruCache";
+import type { MarkdownHighlighter } from "../lib/markdownHighlighter";
 import {
   EMPTY_STREAMING_MARKDOWN_STATE,
   advanceStreamingMarkdown,
@@ -74,7 +74,7 @@ const highlightedCodeCache = new LRUCache<string>(
   MAX_HIGHLIGHT_CACHE_ENTRIES,
   MAX_HIGHLIGHT_CACHE_MEMORY_BYTES,
 );
-const highlighterPromiseCache = new Map<string, Promise<DiffsHighlighter>>();
+const highlighterPromiseCache = new Map<string, Promise<MarkdownHighlighter>>();
 
 function extractFenceLanguage(className: string | undefined): string {
   const match = className?.match(CODE_FENCE_LANGUAGE_REGEX);
@@ -126,23 +126,16 @@ function estimateHighlightedSize(html: string, code: string): number {
   return Math.max(html.length * 2, code.length * 3);
 }
 
-function getHighlighterPromise(language: string): Promise<DiffsHighlighter> {
+function getHighlighterPromise(language: string): Promise<MarkdownHighlighter> {
   const cached = highlighterPromiseCache.get(language);
   if (cached) return cached;
 
-  const promise = getSharedHighlighter({
-    themes: [resolveDiffThemeName("dark"), resolveDiffThemeName("light")],
-    langs: [language as SupportedLanguages],
-    preferredHighlighter: "shiki-js",
-  }).catch((err) => {
-    highlighterPromiseCache.delete(language);
-    if (language === "text") {
-      // "text" itself failed — Shiki cannot initialize at all, surface the error
-      throw err;
-    }
-    // Language not supported by Shiki — fall back to "text"
-    return getHighlighterPromise("text");
-  });
+  const promise = import("../lib/markdownHighlighter")
+    .then((module) => module.getMarkdownHighlighter(language))
+    .catch((error: unknown) => {
+      highlighterPromiseCache.delete(language);
+      throw error;
+    });
   highlighterPromiseCache.set(language, promise);
   return promise;
 }

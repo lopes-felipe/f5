@@ -119,6 +119,23 @@ import type {
   StorageUsageReport,
 } from "./storage";
 import type {
+  NextTurnQueueCancelInput,
+  NextTurnQueueEnqueueInput,
+  NextTurnQueueListInput,
+  NextTurnQueueReorderInput,
+  NextTurnQueueResumeInput,
+  NextTurnQueueSnapshot,
+  NextTurnQueueUpdateInput,
+} from "./nextTurnQueue";
+import type { GlobalSearchQueryInput, GlobalSearchQueryResult } from "./globalSearch";
+import type {
+  WorkflowPlatformCreateRunInput,
+  WorkflowPlatformCreateRunResult,
+  WorkflowPlatformInspectRunInput,
+  WorkflowPlatformInspectRunResult,
+  WorkflowPlatformListTemplatesResult,
+} from "./workflowPlatform";
+import type {
   PrHubAdvisorySnapshot,
   PrHubAnalyzeAdvisoriesInput,
   PrHubClearDataInput,
@@ -420,6 +437,25 @@ export interface NativeApi {
     cancelCleanup: (input: StorageCancelCleanupRequest) => Promise<void>;
     onInvalidated: (callback: (payload: StorageInvalidatedPayload) => void) => () => void;
     onCleanupProgress: (callback: (payload: StorageCleanupProgressPayload) => void) => () => void;
+  };
+  nextTurnQueue: {
+    list: (input: NextTurnQueueListInput) => Promise<NextTurnQueueSnapshot>;
+    enqueue: (input: NextTurnQueueEnqueueInput) => Promise<NextTurnQueueSnapshot>;
+    update: (input: NextTurnQueueUpdateInput) => Promise<NextTurnQueueSnapshot>;
+    cancel: (input: NextTurnQueueCancelInput) => Promise<NextTurnQueueSnapshot>;
+    reorder: (input: NextTurnQueueReorderInput) => Promise<NextTurnQueueSnapshot>;
+    resume: (input: NextTurnQueueResumeInput) => Promise<NextTurnQueueSnapshot>;
+    onUpdated: (callback: (payload: NextTurnQueueSnapshot) => void) => () => void;
+  };
+  globalSearch: {
+    query: (input: GlobalSearchQueryInput) => Promise<GlobalSearchQueryResult>;
+  };
+  workflowPlatform: {
+    listTemplates: () => Promise<WorkflowPlatformListTemplatesResult>;
+    createRun: (input: WorkflowPlatformCreateRunInput) => Promise<WorkflowPlatformCreateRunResult>;
+    inspectRun: (
+      input: WorkflowPlatformInspectRunInput,
+    ) => Promise<WorkflowPlatformInspectRunResult>;
   };
   prHub: {
     getSnapshot: () => Promise<PrHubSnapshot>;

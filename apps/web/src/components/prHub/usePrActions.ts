@@ -1,8 +1,15 @@
 import { useMemo, useState } from "react";
-import type { PrHubLocalCheckoutCandidate, TrackedPullRequest } from "@t3tools/contracts";
+import type {
+  PrHubAdvisory,
+  PrHubLocalCheckoutCandidate,
+  ThreadId,
+  TrackedPullRequest,
+} from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../../nativeApi";
+import { useStore } from "../../store";
 import { toastManager } from "../ui/toast";
+import { createPrF5Thread, prF5RunLabel, resolvePrF5RunKind, type PrF5Intent } from "./prF5Thread";
 import { defaultSnoozeUntil, openExternalHttps } from "./prHubPresentation";
 
 export type PrPendingAction =
@@ -38,7 +45,13 @@ export interface PrActionHandlers {
   onUnsnooze: () => void;
   onIgnore: () => void;
   onOpenInF5: () => void;
+  onRunInF5: () => void;
   onOpenGitHub: () => void;
+}
+
+export interface PrF5CandidatePicker {
+  candidates: PrHubLocalCheckoutCandidate[];
+  intent: PrF5Intent;
 }
 
 /** Everything {@link PrActionDialogs} needs to render and run the dialogs. */
@@ -57,15 +70,17 @@ export interface PrActionDialogProps {
   setSnoozeUntil: (value: string) => void;
   isRunning: boolean;
   runAction: () => Promise<void>;
-  candidatePicker: PrHubLocalCheckoutCandidate[] | null;
-  setCandidatePicker: (candidates: PrHubLocalCheckoutCandidate[] | null) => void;
-  openInF5: (candidate: PrHubLocalCheckoutCandidate) => Promise<void>;
+  candidatePicker: PrF5CandidatePicker | null;
+  setCandidatePicker: (picker: PrF5CandidatePicker | null) => void;
+  isOpeningInF5: boolean;
+  openInF5: (candidate: PrHubLocalCheckoutCandidate, intent: PrF5Intent) => Promise<void>;
 }
 
 export interface UsePrActionsResult {
   flags: PrActionFlags;
   handlers: PrActionHandlers;
   dialogProps: PrActionDialogProps;
+  runInF5Label: string | null;
 }
 
 /**
@@ -75,7 +90,14 @@ export interface UsePrActionsResult {
  * the websocket snapshot dropping the acted-on PR from the list, so there is no
  * explicit completion callback here.
  */
-export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
+export function usePrActions(
+  pr: TrackedPullRequest,
+  options: {
+    advisory?: PrHubAdvisory | undefined;
+    onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
+  } = {},
+): UsePrActionsResult {
+  const projects = useStore((store) => store.projects);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
   const [body, setBody] = useState("");
   const [reviewers, setReviewers] = useState("");
@@ -83,9 +105,8 @@ export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
   const [snoozeUntil, setSnoozeUntil] = useState(defaultSnoozeUntil);
   const [isRunning, setIsRunning] = useState(false);
   const [isIgnoring, setIsIgnoring] = useState(false);
-  const [candidatePicker, setCandidatePicker] = useState<PrHubLocalCheckoutCandidate[] | null>(
-    null,
-  );
+  const [candidatePicker, setCandidatePicker] = useState<PrF5CandidatePicker | null>(null);
+  const [isOpeningInF5, setIsOpeningInF5] = useState(false);
 
   const isAuthor = pr.roles.includes("author");
   const isOpen = pr.state === "open";
@@ -94,6 +115,8 @@ export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
     pr.snoozedUntil !== null &&
     Number.isFinite(new Date(pr.snoozedUntil).getTime()) &&
     new Date(pr.snoozedUntil).getTime() > Date.now();
+  const runKind = resolvePrF5RunKind(pr, options.advisory);
+  const runInF5Label = runKind ? prF5RunLabel(runKind) : null;
 
   const dialogTitle = useMemo(() => {
     switch (pendingAction) {
@@ -160,29 +183,43 @@ export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
     }
   };
 
-  const openInF5 = async (candidate: PrHubLocalCheckoutCandidate) => {
+  const openInF5 = async (candidate: PrHubLocalCheckoutCandidate, intent: PrF5Intent) => {
+    setIsOpeningInF5(true);
     try {
-      const result = await ensureNativeApi().git.preparePullRequestThread({
-        cwd: candidate.cwd,
-        reference: pr.url,
-        mode: "worktree",
+      const api = ensureNativeApi();
+      const project = projects.find((entry) => entry.id === candidate.projectId);
+      if (!project) {
+        throw new Error("The selected F5 project no longer exists. Refresh PR Hub and retry.");
+      }
+      const serverConfig = await api.server.getConfig();
+      const result = await createPrF5Thread({
+        api,
+        candidate,
+        pr,
+        advisory: options.advisory,
+        intent,
+        preferredModel: project.model,
+        providers: serverConfig.providers,
       });
       toastManager.add({
         type: "success",
-        title: "Pull request prepared",
-        description: result.worktreePath ?? result.branch,
+        title: intent === "open" ? "Pull request opened in F5" : `${prF5RunLabel(intent)} started`,
+        description: result.worktreePath,
       });
       setCandidatePicker(null);
+      await options.onThreadCreated?.(result.threadId);
     } catch (error) {
       toastManager.add({
         type: "error",
-        title: "Could not open pull request in F5",
+        title: intent === "open" ? "Could not open pull request in F5" : "Could not start F5 run",
         description: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      setIsOpeningInF5(false);
     }
   };
 
-  const handleOpenInF5 = async () => {
+  const handleOpenInF5 = async (intent: PrF5Intent) => {
     try {
       const candidates = await ensureNativeApi().prHub.listLocalCheckoutCandidates({ key: pr.key });
       if (candidates.length === 0) {
@@ -194,10 +231,10 @@ export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
         return;
       }
       if (candidates.length === 1) {
-        await openInF5(candidates[0]!);
+        await openInF5(candidates[0]!, intent);
         return;
       }
-      setCandidatePicker(candidates);
+      setCandidatePicker({ candidates, intent });
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -242,7 +279,10 @@ export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
       onSnooze: () => setPendingAction("snooze"),
       onUnsnooze: handleUnsnooze,
       onIgnore: () => void handleIgnore(),
-      onOpenInF5: () => void handleOpenInF5(),
+      onOpenInF5: () => void handleOpenInF5("open"),
+      onRunInF5: () => {
+        if (runKind) void handleOpenInF5(runKind);
+      },
       onOpenGitHub: () => void openExternalHttps(pr.url, "pull request"),
     },
     dialogProps: {
@@ -262,7 +302,9 @@ export function usePrActions(pr: TrackedPullRequest): UsePrActionsResult {
       runAction,
       candidatePicker,
       setCandidatePicker,
+      isOpeningInF5,
       openInF5,
     },
+    runInF5Label,
   };
 }

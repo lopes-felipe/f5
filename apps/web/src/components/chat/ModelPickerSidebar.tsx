@@ -1,6 +1,7 @@
 import { type ProviderKind, type ServerProvider } from "@t3tools/contracts";
 import { memo } from "react";
 import { Clock3Icon, StarIcon } from "lucide-react";
+import type { Icon } from "../Icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import {
@@ -20,27 +21,42 @@ const SELECTED_INDICATOR_CLASS =
 const SOON_BADGE_CLASS =
   "pointer-events-none absolute -right-0.5 top-0.5 z-10 flex size-3.5 items-center justify-center rounded-full bg-transparent text-muted-foreground shadow-sm";
 
-export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
-  selectedProvider: ProviderKind | "favorites";
-  providers?: ReadonlyArray<ServerProvider> | undefined;
-  onSelectProvider: (provider: ProviderKind | "favorites") => void;
+export interface ModelPickerSidebarRailItem {
+  readonly id: string;
+  readonly label: string;
+  readonly icon: Icon;
+  readonly iconClassName?: string | undefined;
+  readonly disabled?: boolean | undefined;
+  readonly comingSoon?: boolean | undefined;
+  readonly isCustom?: boolean | undefined;
+  readonly accentColor?: string | undefined;
+}
+
+/**
+ * Shared visual rail for the legacy provider picker and the instance-aware
+ * picker. Keeping the presentation here preserves the compact provider
+ * sidebar while letting callers own their routing keys and availability
+ * rules.
+ */
+export const ModelPickerSidebarRail = memo(function ModelPickerSidebarRail(props: {
+  selectedId: string | "favorites";
+  items: ReadonlyArray<ModelPickerSidebarRailItem>;
+  onSelect: (id: string | "favorites") => void;
 }) {
   return (
     <div className="flex w-12 flex-col gap-1 overflow-y-auto border-r bg-muted/30 p-1">
       <div className="mb-1 border-b pb-1">
         <div className="relative w-full">
-          {props.selectedProvider === "favorites" ? (
-            <div className={SELECTED_INDICATOR_CLASS} />
-          ) : null}
+          {props.selectedId === "favorites" ? <div className={SELECTED_INDICATOR_CLASS} /> : null}
           <Tooltip>
             <TooltipTrigger
               render={
                 <button
                   className={cn(
                     "relative isolate flex aspect-square w-full cursor-pointer items-center justify-center rounded transition-colors hover:bg-muted",
-                    props.selectedProvider === "favorites" && SELECTED_BUTTON_CLASS,
+                    props.selectedId === "favorites" && SELECTED_BUTTON_CLASS,
                   )}
-                  onClick={() => props.onSelectProvider("favorites")}
+                  onClick={() => props.onSelect("favorites")}
                   type="button"
                   data-model-picker-provider="favorites"
                   aria-label="Favorites"
@@ -56,119 +72,106 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
         </div>
       </div>
 
-      {AVAILABLE_PROVIDER_OPTIONS.map((option) => {
-        const OptionIcon = PROVIDER_ICON_BY_PICKER_KIND[option.value];
-        const status = findProviderStatus(props.providers, option.value);
-        const isSelectable = isProviderSelectable(status);
-        const isSelected = props.selectedProvider === option.value;
-        const tooltip = describeProviderStatus(option.label, status);
-
+      {props.items.map((item) => {
+        const ItemIcon = item.icon;
+        const isSelected = props.selectedId === item.id;
         const button = (
           <button
-            data-model-picker-provider={option.value}
+            data-model-picker-provider={item.id}
             className={cn(
               "relative isolate flex aspect-square w-full items-center justify-center rounded transition-colors",
-              isSelectable
-                ? "cursor-pointer hover:bg-muted"
-                : "cursor-not-allowed opacity-50 hover:bg-transparent",
+              item.disabled
+                ? "cursor-not-allowed opacity-50 hover:bg-transparent"
+                : "cursor-pointer hover:bg-muted",
               isSelected && SELECTED_BUTTON_CLASS,
             )}
             onClick={() => {
-              if (isSelectable) {
-                props.onSelectProvider(option.value);
-              }
+              if (!item.disabled) props.onSelect(item.id);
             }}
-            disabled={!isSelectable}
+            disabled={item.disabled}
             type="button"
-            aria-label={tooltip}
+            aria-label={item.label}
           >
-            <OptionIcon
-              className={cn("size-5 shrink-0", providerIconClassName(option.value))}
-              aria-hidden
-            />
+            <ItemIcon className={cn("size-5 shrink-0", item.iconClassName)} aria-hidden />
+            {item.comingSoon ? (
+              <span className={SOON_BADGE_CLASS} aria-hidden>
+                <Clock3Icon className="size-2" />
+              </span>
+            ) : item.isCustom ? (
+              <span
+                className="pointer-events-none absolute right-1 bottom-1 size-1.5 rounded-full border border-background bg-foreground/50"
+                style={item.accentColor ? { backgroundColor: item.accentColor } : undefined}
+                aria-hidden
+              />
+            ) : null}
           </button>
         );
 
         return (
-          <div key={option.value} className="relative w-full">
+          <div key={item.id} className="relative w-full">
             {isSelected ? <div className={SELECTED_INDICATOR_CLASS} /> : null}
             <Tooltip>
               <TooltipTrigger
                 render={
-                  isSelectable ? button : <span className="relative block w-full">{button}</span>
+                  item.disabled ? <span className="relative block w-full">{button}</span> : button
                 }
               />
               <TooltipPopup side="left" align="center" className="max-w-64 leading-snug">
-                {tooltip}
+                {item.label}
               </TooltipPopup>
             </Tooltip>
           </div>
         );
       })}
-
-      {UNAVAILABLE_PROVIDER_OPTIONS.map((option) => {
-        const OptionIcon = PROVIDER_ICON_BY_PICKER_KIND[option.value];
-        return (
-          <Tooltip key={option.value}>
-            <TooltipTrigger
-              render={
-                <span className="relative block w-full">
-                  <button
-                    className="relative isolate flex aspect-square w-full cursor-not-allowed items-center justify-center rounded opacity-50"
-                    disabled
-                    type="button"
-                    data-model-picker-provider={`${option.value}-unavailable`}
-                    aria-label={`${option.label} · coming soon`}
-                  >
-                    <OptionIcon
-                      className={cn(
-                        "size-5 text-muted-foreground/85",
-                        providerIconClassName(option.value),
-                      )}
-                      aria-hidden
-                    />
-                    <span className={SOON_BADGE_CLASS} aria-hidden>
-                      <Clock3Icon className="size-2" />
-                    </span>
-                  </button>
-                </span>
-              }
-            />
-            <TooltipPopup side="left" align="center" className="max-w-64 leading-snug">
-              {option.label} · Coming soon
-            </TooltipPopup>
-          </Tooltip>
-        );
-      })}
-
-      {COMING_SOON_PROVIDER_OPTIONS.map((option) => {
-        const OptionIcon = option.icon;
-        return (
-          <Tooltip key={option.id}>
-            <TooltipTrigger
-              render={
-                <span className="relative block w-full">
-                  <button
-                    className="relative isolate flex aspect-square w-full cursor-not-allowed items-center justify-center rounded opacity-50"
-                    disabled
-                    type="button"
-                    data-model-picker-provider={`${option.id}-coming-soon`}
-                    aria-label={`${option.label} · coming soon`}
-                  >
-                    <OptionIcon className="size-5 text-muted-foreground/85" aria-hidden />
-                    <span className={SOON_BADGE_CLASS} aria-hidden>
-                      <Clock3Icon className="size-2" />
-                    </span>
-                  </button>
-                </span>
-              }
-            />
-            <TooltipPopup side="left" align="center" className="max-w-64 leading-snug">
-              {option.label} · Coming soon
-            </TooltipPopup>
-          </Tooltip>
-        );
-      })}
     </div>
+  );
+});
+
+export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
+  selectedProvider: ProviderKind | "favorites";
+  providers?: ReadonlyArray<ServerProvider> | undefined;
+  onSelectProvider: (provider: ProviderKind | "favorites") => void;
+}) {
+  const items: ModelPickerSidebarRailItem[] = [
+    ...AVAILABLE_PROVIDER_OPTIONS.map((option) => {
+      const status = findProviderStatus(props.providers, option.value);
+      return {
+        id: option.value,
+        label: describeProviderStatus(option.label, status),
+        icon: PROVIDER_ICON_BY_PICKER_KIND[option.value],
+        iconClassName: providerIconClassName(option.value),
+        disabled: !isProviderSelectable(status),
+      } satisfies ModelPickerSidebarRailItem;
+    }),
+    ...UNAVAILABLE_PROVIDER_OPTIONS.map(
+      (option) =>
+        ({
+          id: `${option.value}-unavailable`,
+          label: `${option.label} · Coming soon`,
+          icon: PROVIDER_ICON_BY_PICKER_KIND[option.value],
+          iconClassName: cn("text-muted-foreground/85", providerIconClassName(option.value)),
+          disabled: true,
+          comingSoon: true,
+        }) satisfies ModelPickerSidebarRailItem,
+    ),
+    ...COMING_SOON_PROVIDER_OPTIONS.map(
+      (option) =>
+        ({
+          id: `${option.id}-coming-soon`,
+          label: `${option.label} · Coming soon`,
+          icon: option.icon,
+          iconClassName: "text-muted-foreground/85",
+          disabled: true,
+          comingSoon: true,
+        }) satisfies ModelPickerSidebarRailItem,
+    ),
+  ];
+
+  return (
+    <ModelPickerSidebarRail
+      selectedId={props.selectedProvider}
+      items={items}
+      onSelect={(id) => props.onSelectProvider(id as ProviderKind | "favorites")}
+    />
   );
 });

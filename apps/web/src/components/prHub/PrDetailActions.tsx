@@ -23,6 +23,8 @@ export interface PrDetailActionsProps {
   isSnoozed: boolean;
   isIgnoring: boolean;
   isAnalyzingAdvisory: boolean;
+  isOpeningInF5: boolean;
+  runInF5Label: string | null;
   onApprove: () => void;
   onComment: () => void;
   onRequestChanges: () => void;
@@ -34,6 +36,7 @@ export interface PrDetailActionsProps {
   onIgnore: () => void;
   onAnalyzeAdvisory?: (() => void) | undefined;
   onOpenInF5: () => void;
+  onRunInF5: () => void;
   onOpenGitHub: () => void;
 }
 
@@ -51,6 +54,8 @@ export function PrDetailActions({
   isSnoozed,
   isIgnoring,
   isAnalyzingAdvisory,
+  isOpeningInF5,
+  runInF5Label,
   onApprove,
   onComment,
   onRequestChanges,
@@ -62,6 +67,7 @@ export function PrDetailActions({
   onIgnore,
   onAnalyzeAdvisory,
   onOpenInF5,
+  onRunInF5,
   onOpenGitHub,
 }: PrDetailActionsProps) {
   const { primary, canReview, canSnooze, canSuggest, canIgnore } = prRowActionVisibility(pr, {
@@ -128,9 +134,14 @@ export function PrDetailActions({
       <Button size="sm" variant="outline" onClick={onOpenGitHub}>
         <GithubIcon /> GitHub
       </Button>
-      <Button size="sm" variant="outline" onClick={onOpenInF5}>
+      <Button size="sm" variant="outline" disabled={isOpeningInF5} onClick={onOpenInF5}>
         <SquareArrowOutUpRightIcon /> Open in F5
       </Button>
+      {runInF5Label ? (
+        <Button size="sm" disabled={isOpeningInF5} onClick={onRunInF5}>
+          <SparklesIcon /> {isOpeningInF5 ? "Starting…" : runInF5Label}
+        </Button>
+      ) : null}
 
       {canIgnore ? (
         <Menu>

@@ -17,7 +17,7 @@ import {
   DIFF_PANEL_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
-} from "../DiffPanel";
+} from "../../lib/diffPatch";
 import { relativePathForDisplay } from "~/lib/attachedFiles";
 import { resolveDiffThemeName } from "~/lib/diffRendering";
 import { normalizeFilePathForDiffLookup } from "~/lib/normalizeFilePathForDiff";
@@ -27,7 +27,7 @@ import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 import { buildInlineFileChangeCheckpointDiffQueryInput } from "./InlineFileChangeDiff.logic";
 
-interface InlineFileChangeDiffProps {
+export interface InlineFileChangeDiffProps {
   workEntryId: string;
   threadId: ThreadId | null;
   turnId: TurnId;

@@ -54,6 +54,10 @@ export const CodeReviewWorkflow = Schema.Struct({
   reviewerA: CodeReviewReviewer,
   reviewerB: CodeReviewReviewer,
   consolidation: CodeReviewConsolidation,
+  totalCostUsd: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),

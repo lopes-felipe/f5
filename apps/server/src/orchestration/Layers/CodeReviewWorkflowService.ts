@@ -37,6 +37,7 @@ import {
   nextWorkflowSlug,
   slotLabel,
 } from "../workflowSharedUtils.ts";
+import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 
 type CodeReviewWorkflowTitleGenerationWorkItem = {
   readonly workflowId: CodeReviewWorkflowId;
@@ -94,6 +95,8 @@ function buildWorkflowRecord(input: {
       error: null,
       updatedAt: input.createdAt,
     },
+    totalCostUsd: 0,
+    maxCostUsd: input.request.maxCostUsd ?? null,
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
     archivedAt: null,
@@ -400,6 +403,8 @@ function startReviewerTurn(input: {
   reviewer: CodeReviewReviewer;
   createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(input.workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -452,6 +457,8 @@ function startConsolidationTurn(input: {
   reviews: ReadonlyArray<{ readonly label: string; readonly text: string }>;
   createdAt: string;
 }) {
+  const budgetError = workflowBudgetError(input.workflow);
+  if (budgetError) return Effect.fail(budgetError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -886,10 +893,18 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
 
         case "thread.session-set": {
           const readModel = yield* orchestrationEngine.getReadModel();
-          const workflow = readModel.codeReviewWorkflows.find(
+          const matchedWorkflow = readModel.codeReviewWorkflows.find(
             (entry) => !isDeletedWorkflow(entry) && reviewerMatch(entry, event.payload.threadId),
           );
-          if (workflow) {
+          if (matchedWorkflow) {
+            const workflow = applyWorkflowTurnCost(
+              matchedWorkflow,
+              event.payload.session.turnCostUsd,
+              event.occurredAt,
+            );
+            if (workflow !== matchedWorkflow) {
+              yield* upsertWorkflow(orchestrationEngine, workflow, event.occurredAt);
+            }
             const match = reviewerMatch(workflow, event.payload.threadId)!;
             const thread = readModel.threads.find((entry) => entry.id === event.payload.threadId);
             if (event.payload.session.status === "error") {
@@ -921,12 +936,20 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             return;
           }
 
-          const consolidationWorkflow = readModel.codeReviewWorkflows.find(
+          const matchedConsolidationWorkflow = readModel.codeReviewWorkflows.find(
             (entry) =>
               !isDeletedWorkflow(entry) && entry.consolidation.threadId === event.payload.threadId,
           );
-          if (!consolidationWorkflow) {
+          if (!matchedConsolidationWorkflow) {
             return;
+          }
+          const consolidationWorkflow = applyWorkflowTurnCost(
+            matchedConsolidationWorkflow,
+            event.payload.session.turnCostUsd,
+            event.occurredAt,
+          );
+          if (consolidationWorkflow !== matchedConsolidationWorkflow) {
+            yield* upsertWorkflow(orchestrationEngine, consolidationWorkflow, event.occurredAt);
           }
           if (event.payload.session.status === "error") {
             yield* upsertWorkflow(
@@ -1040,6 +1063,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         reviewerA: input.reviewerA,
         reviewerB: input.reviewerB,
         consolidation: input.consolidation,
+        maxCostUsd: input.maxCostUsd ?? null,
         reviewerThreadIdA: reviewThreadIdA,
         reviewerThreadIdB: reviewThreadIdB,
         createdAt: now,

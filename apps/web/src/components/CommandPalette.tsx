@@ -3,8 +3,11 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   type FilesystemBrowseResult,
+  type GlobalSearchQueryInput,
+  type GlobalSearchResult,
   type ProjectId,
   type ProjectEntry,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -13,6 +16,7 @@ import {
   ArrowDownIcon,
   ArrowLeftIcon,
   ArrowUpIcon,
+  ActivityIcon,
   CornerLeftUpIcon,
   FileIcon,
   FolderIcon,
@@ -59,6 +63,9 @@ import {
 } from "../lib/projectReactQuery";
 import { resolveShortcutCommand, useServerKeybindings } from "../keybindings";
 import { openFileRightPanelSurface, setSearchParamsForSurface } from "../rightPanelNavigation";
+import { parseGlobalSearchQuery } from "../lib/globalSearchQuery";
+import { formatRelativeTimeLabel } from "../lib/relativeTime";
+import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
@@ -92,27 +99,6 @@ import {
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
 import { toastManager } from "./ui/toast";
-/**
- * Derives the server's HTTP origin (scheme + host + port) from the same
- * sources WsTransport uses, converting ws(s) to http(s).
- */
-function getServerHttpOrigin(): string {
-  const bridgeUrl = window.desktopBridge?.getWsUrl();
-  const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
-  const wsUrl =
-    bridgeUrl && bridgeUrl.length > 0
-      ? bridgeUrl
-      : envUrl && envUrl.length > 0
-        ? envUrl
-        : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${window.location.port}`;
-  const httpUrl = wsUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-  try {
-    return new URL(httpUrl).origin;
-  } catch {
-    return httpUrl;
-  }
-}
-
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
@@ -309,6 +295,53 @@ function OpenCommandPaletteDialog() {
   const fileSearchEntries = fileSearchResultsMatchInput
     ? (fileSearchQuery.data?.entries ?? EMPTY_PROJECT_ENTRIES)
     : EMPTY_PROJECT_ENTRIES;
+  const parsedGlobalSearch = useMemo(
+    () => parseGlobalSearchQuery(debouncedFileSearchQuery),
+    [debouncedFileSearchQuery],
+  );
+  const globalSearchInput = useMemo<GlobalSearchQueryInput | null>(() => {
+    if (currentView !== null || isBrowsing || isActionsOnly || parsedGlobalSearch.text.length < 2) {
+      return null;
+    }
+    const normalizedProjectFilter = parsedGlobalSearch.project?.toLowerCase() ?? null;
+    const project = normalizedProjectFilter
+      ? projects.find(
+          (candidate) =>
+            candidate.id.toLowerCase() === normalizedProjectFilter ||
+            candidate.name.toLowerCase() === normalizedProjectFilter,
+        )
+      : null;
+    if (normalizedProjectFilter && !project) return null;
+
+    let providerInstanceId: ProviderInstanceId | undefined;
+    if (parsedGlobalSearch.provider) {
+      try {
+        providerInstanceId = ProviderInstanceId.make(parsedGlobalSearch.provider);
+      } catch {
+        return null;
+      }
+    }
+    return {
+      query: parsedGlobalSearch.text,
+      ...(project ? { projectId: project.id } : {}),
+      ...(providerInstanceId ? { providerInstanceId } : {}),
+      ...(parsedGlobalSearch.model ? { model: parsedGlobalSearch.model } : {}),
+      ...(parsedGlobalSearch.status ? { status: parsedGlobalSearch.status } : {}),
+      ...(parsedGlobalSearch.dateFrom ? { dateFrom: parsedGlobalSearch.dateFrom } : {}),
+      ...(parsedGlobalSearch.dateTo ? { dateTo: parsedGlobalSearch.dateTo } : {}),
+      ...(parsedGlobalSearch.includeArchived ? { includeArchived: true } : {}),
+      limit: 24,
+    };
+  }, [currentView, isActionsOnly, isBrowsing, parsedGlobalSearch, projects]);
+  const globalSearchQuery = useQuery({
+    queryKey: ["globalSearch", globalSearchInput],
+    enabled: globalSearchInput !== null,
+    staleTime: 5_000,
+    queryFn: async () => {
+      if (!globalSearchInput) return { results: [] };
+      return ensureNativeApi().globalSearch.query(globalSearchInput);
+    },
+  });
   // Normally we strip the leaf segment from the query before hitting the server
   // so that many keystrokes in the same directory share a cache entry and the
   // client does the incremental filtering. But the server only returns
@@ -491,6 +524,73 @@ function OpenCommandPaletteDialog() {
         runFile: openFileFromSearch,
       }),
     [fileSearchEntries, openFileFromSearch],
+  );
+
+  const openGlobalSearchResult = useCallback(
+    async (result: GlobalSearchResult) => {
+      if (result.kind.startsWith("workflow.") && result.workflowId) {
+        const to =
+          result.kind === "workflow.planning"
+            ? "/workflow/$workflowId"
+            : result.kind === "workflow.codeReview"
+              ? "/code-review/$workflowId"
+              : "/investigation/$workflowId";
+        await navigate({ to, params: { workflowId: result.workflowId } });
+        return;
+      }
+      if (!result.threadId) return;
+      if (result.kind === "fileChange" && result.fileChangeId) {
+        await navigate({
+          to: "/$threadId",
+          params: { threadId: result.threadId },
+          search: {
+            diff: "1",
+            diffFileChangeId: result.fileChangeId,
+            ...(result.path ? { diffFilePath: result.path } : {}),
+          },
+        });
+        return;
+      }
+      const timelineEntryId =
+        result.messageId ??
+        (result.kind === "activity" ? result.documentKey.slice("activity:".length) : undefined);
+      await navigate({
+        to: "/$threadId",
+        params: { threadId: result.threadId },
+        ...(timelineEntryId ? { search: { timelineEntryId } } : {}),
+      });
+    },
+    [navigate],
+  );
+
+  const globalSearchItems = useMemo<CommandPaletteActionItem[]>(
+    () =>
+      (globalSearchQuery.data?.results ?? []).map((result) => ({
+        kind: "action",
+        value: `global-search:${result.documentKey}`,
+        searchTerms: [result.title, result.snippet, result.path ?? ""],
+        title: result.title,
+        description: [
+          result.projectTitle,
+          result.role ? `${result.role} message` : null,
+          result.snippet || null,
+        ]
+          .filter((part): part is string => Boolean(part))
+          .join(" · "),
+        timestamp: formatRelativeTimeLabel(result.createdAt),
+        icon:
+          result.kind === "fileChange" ? (
+            <FileIcon className={ITEM_ICON_CLASS} />
+          ) : result.kind === "activity" ? (
+            <ActivityIcon className={ITEM_ICON_CLASS} />
+          ) : result.kind.startsWith("workflow.") ? (
+            <RocketIcon className={ITEM_ICON_CLASS} />
+          ) : (
+            <MessageSquareIcon className={ITEM_ICON_CLASS} />
+          ),
+        run: () => openGlobalSearchResult(result),
+      })),
+    [globalSearchQuery.data?.results, openGlobalSearchResult],
   );
 
   function pushPaletteView(view: CommandPaletteView): void {
@@ -792,6 +892,12 @@ function OpenCommandPaletteDialog() {
   });
 
   let displayedGroups = filteredGroups;
+  if (globalSearchInput && globalSearchItems.length > 0) {
+    displayedGroups = [
+      ...displayedGroups,
+      { value: "global-search", label: "Messages and workflows", items: globalSearchItems },
+    ];
+  }
   if (isBrowsing) {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }

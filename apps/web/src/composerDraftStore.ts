@@ -1,6 +1,7 @@
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   ProjectId,
+  ProviderInstanceId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
   ThreadId,
   type CodexReasoningEffort,
@@ -169,6 +170,7 @@ interface PersistedComposerThreadDraftState {
   filePaths?: string[];
   terminalContexts?: PersistedTerminalContextDraft[];
   provider?: ProviderKind | null;
+  providerInstanceId?: ProviderInstanceId | null;
   model?: string | null;
   modelOptions?: ProviderModelOptions | null;
   runtimeMode?: RuntimeMode | null;
@@ -202,6 +204,7 @@ interface ComposerThreadDraftState {
   filePaths: string[];
   terminalContexts: TerminalContextDraft[];
   provider: ProviderKind | null;
+  providerInstanceId: ProviderInstanceId | null;
   model: string | null;
   modelOptions: ProviderModelOptions | null;
   runtimeMode: RuntimeMode | null;
@@ -309,6 +312,10 @@ interface ComposerDraftStoreState {
   setFilePaths: (threadId: ThreadId, filePaths: string[]) => void;
   setTerminalContexts: (threadId: ThreadId, contexts: TerminalContextDraft[]) => void;
   setProvider: (threadId: ThreadId, provider: ProviderKind | null | undefined) => void;
+  setProviderInstance: (
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId | null | undefined,
+  ) => void;
   setModel: (threadId: ThreadId, model: string | null | undefined) => void;
   setModelOptions: (
     threadId: ThreadId,
@@ -375,6 +382,7 @@ const EMPTY_THREAD_DRAFT = Object.freeze({
   filePaths: EMPTY_FILE_PATHS,
   terminalContexts: EMPTY_TERMINAL_CONTEXTS,
   provider: null,
+  providerInstanceId: null,
   model: null,
   modelOptions: null,
   runtimeMode: null,
@@ -396,6 +404,7 @@ function createEmptyThreadDraft(): ComposerThreadDraftState {
     filePaths: [],
     terminalContexts: [],
     provider: null,
+    providerInstanceId: null,
     model: null,
     modelOptions: null,
     runtimeMode: null,
@@ -477,6 +486,7 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
     draft.filePaths.length === 0 &&
     draft.terminalContexts.length === 0 &&
     draft.provider === null &&
+    draft.providerInstanceId === null &&
     draft.model === null &&
     draft.modelOptions === null &&
     draft.runtimeMode === null &&
@@ -494,6 +504,15 @@ function normalizeProviderKind(value: unknown): ProviderKind | null {
     value === "grok"
     ? value
     : null;
+}
+
+function normalizeProviderInstanceId(value: unknown): ProviderInstanceId | null {
+  if (typeof value !== "string") return null;
+  try {
+    return ProviderInstanceId.make(value.trim());
+  } catch {
+    return null;
+  }
 }
 
 function revokeObjectPreviewUrl(previewUrl: string): void {
@@ -712,6 +731,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
         })
       : [];
     const provider = normalizeProviderKind(draftCandidate.provider);
+    const providerInstanceId = normalizeProviderInstanceId(draftCandidate.providerInstanceId);
     const model =
       typeof draftCandidate.model === "string"
         ? normalizeModelSlug(draftCandidate.model, provider ?? "codex")
@@ -753,6 +773,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       filePaths.length === 0 &&
       terminalContexts.length === 0 &&
       !provider &&
+      !providerInstanceId &&
       !model &&
       !modelOptions &&
       !runtimeMode &&
@@ -768,6 +789,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       ...(filePaths.length > 0 ? { filePaths } : {}),
       ...(terminalContexts.length > 0 ? { terminalContexts } : {}),
       ...(provider ? { provider } : {}),
+      ...(providerInstanceId ? { providerInstanceId } : {}),
       ...(model ? { model } : {}),
       ...(modelOptions ? { modelOptions } : {}),
       ...(runtimeMode ? { runtimeMode } : {}),
@@ -884,6 +906,7 @@ function toHydratedThreadDraft(
         text: "",
       })) ?? [],
     provider: persistedDraft.provider ?? null,
+    providerInstanceId: persistedDraft.providerInstanceId ?? null,
     model: persistedDraft.model ?? null,
     modelOptions: persistedDraft.modelOptions ?? null,
     runtimeMode: persistedDraft.runtimeMode ?? null,
@@ -1289,6 +1312,34 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const nextDraft: ComposerThreadDraftState = {
             ...base,
             provider: normalizedProvider,
+            ...(base.provider === normalizedProvider ? {} : { providerInstanceId: null }),
+          };
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(nextDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = nextDraft;
+          }
+          return { draftsByThreadId: nextDraftsByThreadId };
+        });
+      },
+      setProviderInstance: (threadId, providerInstanceId) => {
+        if (threadId.length === 0) {
+          return;
+        }
+        const normalizedInstanceId = normalizeProviderInstanceId(providerInstanceId);
+        set((state) => {
+          const existing = state.draftsByThreadId[threadId];
+          if (!existing && normalizedInstanceId === null) {
+            return state;
+          }
+          const base = existing ?? createEmptyThreadDraft();
+          if (base.providerInstanceId === normalizedInstanceId) {
+            return state;
+          }
+          const nextDraft: ComposerThreadDraftState = {
+            ...base,
+            providerInstanceId: normalizedInstanceId,
           };
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
           if (shouldRemoveDraft(nextDraft)) {
@@ -1930,6 +1981,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             draft.filePaths.length === 0 &&
             draft.terminalContexts.length === 0 &&
             draft.provider === null &&
+            draft.providerInstanceId === null &&
             draft.model === null &&
             draft.modelOptions === null &&
             draft.runtimeMode === null &&
@@ -1962,6 +2014,9 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           if (draft.provider) {
             persistedDraft.provider = draft.provider;
+          }
+          if (draft.providerInstanceId) {
+            persistedDraft.providerInstanceId = draft.providerInstanceId;
           }
           if (draft.modelOptions) {
             persistedDraft.modelOptions = draft.modelOptions;

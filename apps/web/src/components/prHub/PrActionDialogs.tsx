@@ -36,6 +36,7 @@ export function PrActionDialogs({
   runAction,
   candidatePicker,
   setCandidatePicker,
+  isOpeningInF5,
   openInF5,
 }: PrActionDialogProps) {
   return (
@@ -116,16 +117,23 @@ export function PrActionDialogs({
       >
         <DialogPopup>
           <DialogHeader>
-            <DialogTitle>Choose local clone</DialogTitle>
+            <DialogTitle>
+              {candidatePicker?.intent === "open"
+                ? "Choose local clone"
+                : "Choose clone for F5 run"}
+            </DialogTitle>
             <DialogDescription>{pr.repository.nameWithOwner}</DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-2">
-            {(candidatePicker ?? []).map((candidate) => (
+            {(candidatePicker?.candidates ?? []).map((candidate) => (
               <button
                 key={`${candidate.projectId}:${candidate.cwd}`}
                 type="button"
                 className="flex w-full min-w-0 flex-col rounded-lg border border-border px-3 py-2 text-left hover:bg-accent"
-                onClick={() => void openInF5(candidate)}
+                disabled={isOpeningInF5}
+                onClick={() => {
+                  if (candidatePicker) void openInF5(candidate, candidatePicker.intent);
+                }}
               >
                 <span className="truncate text-sm font-medium">{candidate.projectTitle}</span>
                 <span className="truncate text-xs text-muted-foreground">{candidate.cwd}</span>

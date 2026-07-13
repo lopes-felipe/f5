@@ -17,6 +17,7 @@ export interface GitHubPullRequestSummary {
   readonly url: string;
   readonly baseRefName: string;
   readonly headRefName: string;
+  readonly headRefOid?: string | null;
   readonly state?: "open" | "closed" | "merged";
   readonly isCrossRepository?: boolean;
   readonly headRepositoryNameWithOwner?: string | null;

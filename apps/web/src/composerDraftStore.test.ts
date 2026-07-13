@@ -1,4 +1,4 @@
-import { ProjectId, ThreadId } from "@t3tools/contracts";
+import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -848,6 +848,24 @@ describe("composerDraftStore setProvider", () => {
     store.setProvider(threadId, null);
 
     expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toBeUndefined();
+  });
+
+  it("stores an exact provider instance and clears it when the driver changes", () => {
+    const store = useComposerDraftStore.getState();
+    const instanceId = ProviderInstanceId.make("codex_personal");
+
+    store.setProvider(threadId, "codex");
+    store.setProviderInstance(threadId, instanceId);
+
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadId]).toMatchObject({
+      provider: "codex",
+      providerInstanceId: instanceId,
+    });
+
+    store.setProvider(threadId, "claudeAgent");
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.providerInstanceId,
+    ).toBeNull();
   });
 });
 

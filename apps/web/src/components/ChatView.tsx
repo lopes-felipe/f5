@@ -14,6 +14,7 @@ import {
   type ProjectScript,
   type ModelSlug,
   type ModelSelection,
+  type NextTurnQueueSnapshot,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
@@ -40,6 +41,7 @@ import {
   isClaudeUltrathinkPrompt,
   normalizeCodexModelOptions,
   normalizeModelSlug,
+  resolveSelectableModel,
   supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import {
@@ -151,11 +153,12 @@ import { ensureThreadHistoryState } from "../lib/threadHistory";
 import { finishThreadOpenTrace } from "../lib/threadOpenTrace";
 import { isTerminalFocused } from "../lib/terminalFocus";
 import { recordModelSelection } from "../modelPreferencesStore";
+import { getCustomModelOptionsByInstance } from "../modelSelection";
+import { useSettings } from "../hooks/useSettings";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import BranchToolbar from "./BranchToolbar";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
-import ThreadTerminalDrawer from "./ThreadTerminalDrawer";
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
 import { codeReviewWorkflowContainsThread } from "./workflow/codeReviewWorkflowUtils";
 import { investigationWorkflowContainsThread } from "./workflow/investigationWorkflowUtils";
@@ -224,7 +227,8 @@ import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
 import { buildExpandedImagePreview, ExpandedImagePreview } from "./chat/ExpandedImagePreview";
-import { ProviderModelPicker } from "./chat/ProviderModelPicker";
+import { ProviderInstanceModelPicker } from "./chat/ProviderInstanceModelPicker";
+import { NextTurnQueuePanel, type OptimisticQueuedTurn } from "./chat/NextTurnQueuePanel";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./chat/ComposerPendingApprovalActions";
 import {
@@ -260,7 +264,6 @@ import {
   deriveComposerSendState,
   getCustomModelOptionsByProvider,
   identityAbsolutePathNormalizer,
-  resolveComposerPickerModel,
   DISMISSED_PROVIDER_STATUS_KEY,
   DismissedProviderStatusSchema,
   LAST_INVOKED_SCRIPT_BY_PROJECT_KEY,
@@ -302,6 +305,7 @@ const WorkflowImplementDialog = lazy(() =>
     default: module.WorkflowImplementDialog,
   })),
 );
+const ThreadTerminalDrawer = lazy(() => import("./ThreadTerminalDrawer"));
 
 type NativeApiClient = NonNullable<ReturnType<typeof readNativeApi>>;
 type PendingTurnDispatch = PendingTurnDispatchState;
@@ -553,6 +557,7 @@ function ThreadTasksPanel(input: {
 
 interface ChatViewProps {
   threadId: ThreadId;
+  focusTimelineEntryId?: string | undefined;
 }
 
 const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
@@ -603,7 +608,17 @@ function providerInstanceBelongsToProvider(input: {
   return input.instanceId === defaultInstanceIdForDriver(driver);
 }
 
-export default function ChatView({ threadId }: ChatViewProps) {
+function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null {
+  return driver === "codex" ||
+    driver === "claudeAgent" ||
+    driver === "cursor" ||
+    driver === "opencode" ||
+    driver === "grok"
+    ? (driver as ProviderKind)
+    : null;
+}
+
+export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewProps) {
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
@@ -618,6 +633,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   );
   const changedFilesExpandedByThreadId = useStore((store) => store.changedFilesExpandedByThreadId);
   const { settings } = useAppSettings();
+  const unifiedSettings = useSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const timestampFormat = settings.timestampFormat;
   const tasksPanelAutoOpen = settings.tasksPanelAutoOpen;
@@ -649,6 +665,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const setComposerDraftPrompt = useComposerDraftStore((store) => store.setPrompt);
   const setComposerDraftFilePaths = useComposerDraftStore((store) => store.setFilePaths);
   const setComposerDraftProvider = useComposerDraftStore((store) => store.setProvider);
+  const setComposerDraftProviderInstance = useComposerDraftStore(
+    (store) => store.setProviderInstance,
+  );
   const setComposerDraftModel = useComposerDraftStore((store) => store.setModel);
   const setComposerDraftModelOptions = useComposerDraftStore((store) => store.setModelOptions);
   const setComposerDraftRuntimeMode = useComposerDraftStore((store) => store.setRuntimeMode);
@@ -690,6 +709,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
+  const [optimisticQueuedTurn, setOptimisticQueuedTurn] = useState<OptimisticQueuedTurn | null>(
+    null,
+  );
+  const [nextTurnQueueSnapshotHint, setNextTurnQueueSnapshotHint] =
+    useState<NextTurnQueueSnapshot | null>(null);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const composerFilePathsRef = useRef<string[]>(composerFilePaths);
@@ -1152,7 +1176,9 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ProviderDriverKind.make(selectedProvider),
     );
     const threadInstanceId =
-      activeThread?.session?.providerInstanceId ?? activeThread?.modelSelection?.instanceId;
+      composerDraft.providerInstanceId ??
+      activeThread?.session?.providerInstanceId ??
+      activeThread?.modelSelection?.instanceId;
     return providerInstanceBelongsToProvider({
       instanceId: threadInstanceId,
       provider: selectedProvider,
@@ -1164,6 +1190,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
   }, [
     activeThread?.modelSelection?.instanceId,
     activeThread?.session?.providerInstanceId,
+    composerDraft.providerInstanceId,
     serverConfigQuery.data?.providers,
     serverConfigQuery.data?.settings?.providerInstances,
     selectedProvider,
@@ -1177,41 +1204,49 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ),
     [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
   );
-  const selectedProviderPickerOptions = modelOptionsByProvider[selectedProvider];
+  const modelOptionsByInstance = useMemo(() => {
+    const providers = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
+    const next = new Map(getCustomModelOptionsByInstance(unifiedSettings, providers));
+    for (const provider of providers) {
+      if (provider.instanceId !== defaultInstanceIdForDriver(provider.driver)) continue;
+      const legacyOptions = modelOptionsByProvider[provider.driver as ProviderKind] ?? [];
+      const instanceOptions = next.get(provider.instanceId) ?? [];
+      const seen = new Set(instanceOptions.map((option) => option.slug));
+      next.set(provider.instanceId, [
+        ...instanceOptions,
+        ...legacyOptions.filter((option) => !seen.has(option.slug)),
+      ]);
+    }
+    return next;
+  }, [modelOptionsByProvider, serverConfigQuery.data?.providers, unifiedSettings]);
+  const selectedProviderPickerOptions =
+    modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];
   const baseThreadModel = useMemo(() => {
     const rawModel =
       activeThread?.model ?? activeProject?.model ?? getDefaultModel(selectedProvider);
-    return resolveComposerPickerModel({
-      provider: selectedProvider,
-      rawModel,
-      pickerOptions: selectedProviderPickerOptions,
-      providers: serverConfigQuery.data?.providers ?? null,
-    });
+    return (
+      resolveSelectableModel(selectedProviderDriver, rawModel, selectedProviderPickerOptions) ??
+      selectedProviderPickerOptions[0]?.slug ??
+      getDefaultModel(selectedProvider)
+    );
   }, [
     activeProject?.model,
     activeThread?.model,
     selectedProvider,
+    selectedProviderDriver,
     selectedProviderPickerOptions,
-    serverConfigQuery.data?.providers,
   ]);
   const selectedModel = useMemo(() => {
     const draftModel = composerDraft.model;
     if (!draftModel) {
       return baseThreadModel;
     }
-    return resolveComposerPickerModel({
-      provider: selectedProvider,
-      rawModel: draftModel,
-      pickerOptions: selectedProviderPickerOptions,
-      providers: serverConfigQuery.data?.providers ?? null,
-    }) as ModelSlug;
-  }, [
-    baseThreadModel,
-    composerDraft.model,
-    selectedProvider,
-    selectedProviderPickerOptions,
-    serverConfigQuery.data?.providers,
-  ]);
+    return (resolveSelectableModel(
+      selectedProviderDriver,
+      draftModel,
+      selectedProviderPickerOptions,
+    ) ?? baseThreadModel) as ModelSlug;
+  }, [baseThreadModel, composerDraft.model, selectedProviderDriver, selectedProviderPickerOptions]);
   const selectedProviderModelOptions = useMemo(
     () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
     [draftModelOptions, selectedProvider],
@@ -1224,6 +1259,14 @@ export default function ChatView({ threadId }: ChatViewProps) {
       []
     );
   }, [selectedProviderDriver, selectedProviderInstanceId, serverConfigQuery.data?.providers]);
+  const selectedProviderSnapshot = useMemo(
+    () =>
+      (serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES).find(
+        (provider) => provider.instanceId === selectedProviderInstanceId,
+      ) ?? null,
+    [selectedProviderInstanceId, serverConfigQuery.data?.providers],
+  );
+  const showInteractionModeToggle = selectedProviderSnapshot?.showInteractionModeToggle ?? true;
   const genericComposerProviderState = useMemo(
     () =>
       getComposerProviderState({
@@ -1389,11 +1432,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
   ]);
   const selectedModelForPicker = selectedModel;
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
-    const currentOptions = modelOptionsByProvider[selectedProvider];
+    const currentOptions = modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];
     return currentOptions.some((option) => option.slug === selectedModelForPicker)
       ? selectedModelForPicker
       : (normalizeModelSlug(selectedModelForPicker, selectedProvider) ?? selectedModelForPicker);
-  }, [modelOptionsByProvider, selectedModelForPicker, selectedProvider]);
+  }, [
+    modelOptionsByInstance,
+    selectedModelForPicker,
+    selectedProvider,
+    selectedProviderInstanceId,
+  ]);
   const phase = derivePhase(activeThread?.session ?? null);
   const showAgentCommandTranscripts = settings.showAgentCommandTranscripts;
   const alwaysExpandAgentCommandTranscripts = settings.alwaysExpandAgentCommandTranscripts;
@@ -1978,6 +2026,23 @@ export default function ChatView({ threadId }: ChatViewProps) {
       ),
     [activeThread?.proposedPlans, commandExecutions, timelineMessages, workLogEntries],
   );
+  const lastFocusedTimelineEntryIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!focusTimelineEntryId || lastFocusedTimelineEntryIdRef.current === focusTimelineEntryId) {
+      return;
+    }
+    const index = timelineEntries.findIndex((entry) => entry.id === focusTimelineEntryId);
+    if (index < 0) return;
+    const frame = window.requestAnimationFrame(() => {
+      void legendListRef.current?.scrollToIndex({
+        index,
+        animated: true,
+        viewPosition: 0.3,
+      });
+      lastFocusedTimelineEntryIdRef.current = focusTimelineEntryId;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusTimelineEntryId, timelineEntries]);
   const shouldRenderTimeline = shouldRenderTimelineContent({
     detailsLoaded: activeThread?.detailsLoaded ?? false,
     hasRenderableMessage: timelineMessages.length > 0,
@@ -3905,6 +3970,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     }
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
+    const shouldQueueTurn = phase === "running";
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
@@ -3975,6 +4041,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
       composerFilePathsSnapshot,
     );
     const messageIdForSend = newMessageId();
+    const queueItemIdForSend = shouldQueueTurn ? newCommandId() : null;
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const inputLengthIssue = getProviderTurnInputLengthIssue(outgoingMessageText);
@@ -4021,6 +4088,16 @@ export default function ChatView({ threadId }: ChatViewProps) {
         streaming: false,
       },
     ]);
+    if (queueItemIdForSend) {
+      setOptimisticQueuedTurn({
+        itemId: queueItemIdForSend,
+        threadId: threadIdForSend,
+        text: messageTextForSend || "Message with attachments",
+        ...(selectedModel ? { model: selectedModel } : {}),
+        interactionMode,
+        runtimeMode,
+      });
+    }
 
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
@@ -4045,6 +4122,11 @@ export default function ChatView({ threadId }: ChatViewProps) {
       failureRollback: PendingTurnDispatchRollback,
     ) => {
       removeOptimisticMessage(messageIdForSend);
+      if (queueItemIdForSend) {
+        setOptimisticQueuedTurn((current) =>
+          current?.itemId === queueItemIdForSend ? null : current,
+        );
+      }
       if (composerMatchesClearedState()) {
         restoreComposerRollback(failureRollback);
       }
@@ -4070,7 +4152,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
         baseBranchForWorktree,
       });
 
-      if (isServerThread) {
+      if (isServerThread && !shouldQueueTurn) {
         await persistThreadSettingsForNextTurn({
           threadId: threadIdForSend,
           createdAt: messageCreatedAt,
@@ -4109,6 +4191,25 @@ export default function ChatView({ threadId }: ChatViewProps) {
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       };
+      if (shouldQueueTurn) {
+        if (command.bootstrap) {
+          throw new Error("Finish starting this thread before queueing another turn.");
+        }
+        if (!queueItemIdForSend) {
+          throw new Error("Failed to prepare the queued turn.");
+        }
+        const nextQueueSnapshot = await api.nextTurnQueue.enqueue({
+          itemId: queueItemIdForSend,
+          command,
+        });
+        setNextTurnQueueSnapshotHint(nextQueueSnapshot);
+        setOptimisticQueuedTurn((current) =>
+          current?.itemId === queueItemIdForSend ? null : current,
+        );
+        removeOptimisticMessage(messageIdForSend);
+        toastManager.add({ type: "success", title: "Turn added to the queue." });
+        return;
+      }
       const localDispatch = createLocalDispatchSnapshot(activeThread, { preparingWorktree });
       await dispatchPendingTurnStartCommand({
         api,
@@ -4733,19 +4834,24 @@ export default function ChatView({ threadId }: ChatViewProps) {
   ]);
 
   const onProviderModelSelect = useCallback(
-    (provider: ProviderKind, model: ModelSlug) => {
+    (instanceId: ProviderInstanceId, driver: ProviderDriverKind, model: ModelSlug) => {
       if (!activeThread || isPendingTurnDispatchBlocked) return;
+      const provider = providerKindForDriver(driver);
+      if (!provider) return;
       if (lockedProvider !== null && provider !== lockedProvider) {
         scheduleComposerFocus();
         return;
       }
-      const pickerResolvedModel = resolveComposerPickerModel({
-        provider,
-        rawModel: model,
-        pickerOptions: modelOptionsByProvider[provider],
-        providers: serverConfigQuery.data?.providers ?? null,
-      });
+      if (hasThreadStarted && instanceId !== selectedProviderInstanceId) {
+        scheduleComposerFocus();
+        return;
+      }
+      const pickerOptions = modelOptionsByInstance.get(instanceId) ?? [];
+      const pickerResolvedModel =
+        resolveSelectableModel(driver, model, pickerOptions) ?? pickerOptions[0]?.slug;
+      if (!pickerResolvedModel) return;
       setComposerDraftProvider(activeThread.id, provider);
+      setComposerDraftProviderInstance(activeThread.id, instanceId);
       setComposerDraftModel(activeThread.id, pickerResolvedModel);
       recordModelSelection(provider, pickerResolvedModel, composerDraft.modelOptions);
       scheduleComposerFocus();
@@ -4753,13 +4859,15 @@ export default function ChatView({ threadId }: ChatViewProps) {
     [
       activeThread,
       composerDraft.modelOptions,
+      hasThreadStarted,
       isPendingTurnDispatchBlocked,
       lockedProvider,
-      modelOptionsByProvider,
+      modelOptionsByInstance,
       scheduleComposerFocus,
-      serverConfigQuery.data?.providers,
+      selectedProviderInstanceId,
       setComposerDraftModel,
       setComposerDraftProvider,
+      setComposerDraftProviderInstance,
     ],
   );
   const onEnvModeChange = useCallback(
@@ -5350,6 +5458,13 @@ export default function ChatView({ threadId }: ChatViewProps) {
               <div
                 className={cn("px-3 pt-1.5 sm:px-5 sm:pt-2", isGitRepo ? "pb-1" : "pb-3 sm:pb-4")}
               >
+                {isServerThread ? (
+                  <NextTurnQueuePanel
+                    threadId={activeThread.id}
+                    optimisticItem={optimisticQueuedTurn}
+                    snapshotHint={nextTurnQueueSnapshotHint}
+                  />
+                ) : null}
                 <form
                   ref={composerFormRef}
                   onSubmit={onSend}
@@ -5600,12 +5715,12 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           )}
                         >
                           {/* Provider/model picker */}
-                          <ProviderModelPicker
+                          <ProviderInstanceModelPicker
                             compact={isComposerFooterCompact}
-                            provider={selectedProvider}
+                            instanceId={selectedProviderInstanceId}
                             model={selectedModelForPickerWithCustomFallback}
-                            lockedProvider={lockedProvider}
-                            modelOptionsByProvider={modelOptionsByProvider}
+                            lockedInstanceId={hasThreadStarted ? selectedProviderInstanceId : null}
+                            modelOptionsByInstance={modelOptionsByInstance}
                             ultrathinkActive={isClaudeUltrathink}
                             providers={providerStatuses}
                             keybindings={keybindings}
@@ -5613,7 +5728,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                             open={isModelPickerOpen}
                             onOpenChange={setIsModelPickerOpen}
                             disabled={isPendingTurnDispatchBlocked}
-                            onProviderModelChange={onProviderModelSelect}
+                            onInstanceModelChange={onProviderModelSelect}
                           />
 
                           {isComposerFooterCompact ? (
@@ -5625,6 +5740,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               compactConversationDisabled={isWorking || hasPendingTurnDispatch}
                               disabled={isPendingTurnDispatchBlocked}
                               interactionMode={interactionMode}
+                              showInteractionModeToggle={showInteractionModeToggle}
                               planSidebarOpen={planSidebarOpen}
                               runtimeMode={runtimeMode}
                               traitsMenuContent={
@@ -5683,29 +5799,33 @@ export default function ChatView({ threadId }: ChatViewProps) {
                                 </>
                               ) : null}
 
-                              <Separator
-                                orientation="vertical"
-                                className="mx-0.5 hidden h-4 sm:block"
-                              />
+                              {showInteractionModeToggle ? (
+                                <>
+                                  <Separator
+                                    orientation="vertical"
+                                    className="mx-0.5 hidden h-4 sm:block"
+                                  />
 
-                              <Button
-                                variant="ghost"
-                                className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-                                size="sm"
-                                type="button"
-                                onClick={toggleInteractionMode}
-                                disabled={isPendingTurnDispatchBlocked}
-                                title={
-                                  interactionMode === "plan"
-                                    ? "Plan mode — click to return to normal chat mode"
-                                    : "Default mode — click to enter plan mode"
-                                }
-                              >
-                                {interactionMode === "plan" ? <NotebookPenIcon /> : <BotIcon />}
-                                <span className="sr-only sm:not-sr-only">
-                                  {interactionMode === "plan" ? "Plan" : "Agent"}
-                                </span>
-                              </Button>
+                                  <Button
+                                    variant="ghost"
+                                    className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
+                                    size="sm"
+                                    type="button"
+                                    onClick={toggleInteractionMode}
+                                    disabled={isPendingTurnDispatchBlocked}
+                                    title={
+                                      interactionMode === "plan"
+                                        ? "Plan mode — click to return to normal chat mode"
+                                        : "Default mode — click to enter plan mode"
+                                    }
+                                  >
+                                    {interactionMode === "plan" ? <NotebookPenIcon /> : <BotIcon />}
+                                    <span className="sr-only sm:not-sr-only">
+                                      {interactionMode === "plan" ? "Plan" : "Agent"}
+                                    </span>
+                                  </Button>
+                                </>
+                              ) : null}
 
                               <Separator
                                 orientation="vertical"
@@ -5810,22 +5930,33 @@ export default function ChatView({ threadId }: ChatViewProps) {
                               </Button>
                             </div>
                           ) : phase === "running" ? (
-                            <button
-                              type="button"
-                              className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
-                              onClick={() => void onInterrupt()}
-                              aria-label="Stop generation"
-                            >
-                              <svg
-                                width="12"
-                                height="12"
-                                viewBox="0 0 12 12"
-                                fill="currentColor"
-                                aria-hidden="true"
+                            <div className="flex items-center gap-1.5">
+                              <Button
+                                type="submit"
+                                size="sm"
+                                variant="outline"
+                                className="rounded-full"
+                                disabled={!composerSendState.hasSendableContent}
                               >
-                                <rect x="2" y="2" width="8" height="8" rx="1.5" />
-                              </svg>
-                            </button>
+                                Queue
+                              </Button>
+                              <button
+                                type="button"
+                                className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
+                                onClick={() => void onInterrupt()}
+                                aria-label="Stop generation"
+                              >
+                                <svg
+                                  width="12"
+                                  height="12"
+                                  viewBox="0 0 12 12"
+                                  fill="currentColor"
+                                  aria-hidden="true"
+                                >
+                                  <rect x="2" y="2" width="8" height="8" rx="1.5" />
+                                </svg>
+                              </button>
+                            </div>
                           ) : pendingUserInputs.length === 0 ? (
                             showPlanFollowUpPrompt ? (
                               prompt.trim().length > 0 ? (
@@ -5990,27 +6121,38 @@ export default function ChatView({ threadId }: ChatViewProps) {
             return null;
           }
           return (
-            <ThreadTerminalDrawer
-              key={activeThread.id}
-              threadId={activeThread.id}
-              cwd={gitCwd ?? activeProject.cwd}
-              runtimeEnv={threadTerminalRuntimeEnv}
-              height={terminalState.terminalHeight}
-              terminalIds={terminalState.terminalIds}
-              activeTerminalId={terminalState.activeTerminalId}
-              terminalGroups={terminalState.terminalGroups}
-              activeTerminalGroupId={terminalState.activeTerminalGroupId}
-              focusRequestId={terminalFocusRequestId}
-              onSplitTerminal={splitTerminal}
-              onNewTerminal={createNewTerminal}
-              splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
-              newShortcutLabel={newTerminalShortcutLabel ?? undefined}
-              closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
-              onActiveTerminalChange={activateTerminal}
-              onCloseTerminal={closeTerminal}
-              onHeightChange={setTerminalHeight}
-              onAddTerminalContext={addTerminalContextToDraft}
-            />
+            <Suspense
+              fallback={
+                <div
+                  className="flex shrink-0 items-center justify-center border-t border-border bg-card text-xs text-muted-foreground"
+                  style={{ height: terminalState.terminalHeight }}
+                >
+                  Loading terminal…
+                </div>
+              }
+            >
+              <ThreadTerminalDrawer
+                key={activeThread.id}
+                threadId={activeThread.id}
+                cwd={gitCwd ?? activeProject.cwd}
+                runtimeEnv={threadTerminalRuntimeEnv}
+                height={terminalState.terminalHeight}
+                terminalIds={terminalState.terminalIds}
+                activeTerminalId={terminalState.activeTerminalId}
+                terminalGroups={terminalState.terminalGroups}
+                activeTerminalGroupId={terminalState.activeTerminalGroupId}
+                focusRequestId={terminalFocusRequestId}
+                onSplitTerminal={splitTerminal}
+                onNewTerminal={createNewTerminal}
+                splitShortcutLabel={splitTerminalShortcutLabel ?? undefined}
+                newShortcutLabel={newTerminalShortcutLabel ?? undefined}
+                closeShortcutLabel={closeTerminalShortcutLabel ?? undefined}
+                onActiveTerminalChange={activateTerminal}
+                onCloseTerminal={closeTerminal}
+                onHeightChange={setTerminalHeight}
+                onAddTerminalContext={addTerminalContextToDraft}
+              />
+            </Suspense>
           );
         })()}
 

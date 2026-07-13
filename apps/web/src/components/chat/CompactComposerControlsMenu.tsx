@@ -19,6 +19,7 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   compactConversationDisabled?: boolean;
   disabled?: boolean;
   interactionMode: ProviderInteractionMode;
+  showInteractionModeToggle?: boolean;
   planSidebarOpen: boolean;
   runtimeMode: RuntimeMode;
   traitsMenuContent?: ReactNode;
@@ -49,27 +50,31 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
             <MenuDivider />
           </>
         ) : null}
-        <MenuGroup>
-          <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Mode</div>
-          <MenuRadioGroup
-            value={props.interactionMode}
-            onValueChange={(value) => {
-              if (props.disabled) return;
-              if (!value || value === props.interactionMode) return;
-              props.onToggleInteractionMode();
-            }}
-          >
-            <MenuRadioItem value="default">
-              <BotIcon className="size-4 shrink-0" />
-              Chat
-            </MenuRadioItem>
-            <MenuRadioItem value="plan">
-              <NotebookPenIcon className="size-4 shrink-0" />
-              Plan
-            </MenuRadioItem>
-          </MenuRadioGroup>
-        </MenuGroup>
-        <MenuDivider />
+        {props.showInteractionModeToggle !== false ? (
+          <>
+            <MenuGroup>
+              <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Mode</div>
+              <MenuRadioGroup
+                value={props.interactionMode}
+                onValueChange={(value) => {
+                  if (props.disabled) return;
+                  if (!value || value === props.interactionMode) return;
+                  props.onToggleInteractionMode();
+                }}
+              >
+                <MenuRadioItem value="default">
+                  <BotIcon className="size-4 shrink-0" />
+                  Chat
+                </MenuRadioItem>
+                <MenuRadioItem value="plan">
+                  <NotebookPenIcon className="size-4 shrink-0" />
+                  Plan
+                </MenuRadioItem>
+              </MenuRadioGroup>
+            </MenuGroup>
+            <MenuDivider />
+          </>
+        ) : null}
         <MenuGroup>
           <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
           <MenuRadioGroup

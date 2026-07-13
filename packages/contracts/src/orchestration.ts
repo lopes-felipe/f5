@@ -819,6 +819,7 @@ const ProjectWorkflowCreateCommand = Schema.Struct({
   branchA: WorkflowModelSlot,
   branchB: WorkflowModelSlot,
   merge: WorkflowModelSlot,
+  maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
   createdAt: IsoDateTime,
 });
 
@@ -842,6 +843,7 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   reviewerA: WorkflowModelSlot,
   reviewerB: WorkflowModelSlot,
   consolidation: WorkflowModelSlot,
+  maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
   reviewerThreadIdA: ThreadId,
   reviewerThreadIdB: ThreadId,
   createdAt: IsoDateTime,
@@ -876,6 +878,7 @@ const ProjectInvestigationWorkflowCreateCommand = Schema.Struct({
   investigatorA: WorkflowModelSlot,
   investigatorB: WorkflowModelSlot,
   synthesis: WorkflowModelSlot,
+  maxCostUsd: Schema.optional(Schema.NullOr(Schema.Number)),
   investigationThreadIdA: ThreadId,
   investigationThreadIdB: ThreadId,
   createdAt: IsoDateTime,
@@ -1022,8 +1025,9 @@ export const ThreadTurnStartCommand = Schema.Struct({
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
+export type ThreadTurnStartCommand = typeof ThreadTurnStartCommand.Type;
 
-const ClientThreadTurnStartCommand = Schema.Struct({
+export const ClientThreadTurnStartCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.start"),
   commandId: CommandId,
   threadId: ThreadId,
@@ -1049,6 +1053,7 @@ const ClientThreadTurnStartCommand = Schema.Struct({
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
+export type ClientThreadTurnStartCommand = typeof ClientThreadTurnStartCommand.Type;
 
 const ThreadTurnInterruptCommand = Schema.Struct({
   type: Schema.Literal("thread.turn.interrupt"),
@@ -2202,6 +2207,7 @@ export const OrchestrationCreateWorkflowInput = Schema.Struct({
   branchA: WorkflowModelSlot,
   branchB: WorkflowModelSlot,
   merge: WorkflowModelSlot,
+  maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
 });
 export type OrchestrationCreateWorkflowInput = typeof OrchestrationCreateWorkflowInput.Type;
 
@@ -2219,6 +2225,7 @@ export const OrchestrationCreateCodeReviewWorkflowInput = Schema.Struct({
   reviewerA: WorkflowModelSlot,
   reviewerB: WorkflowModelSlot,
   consolidation: WorkflowModelSlot,
+  maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
 });
 export type OrchestrationCreateCodeReviewWorkflowInput =
   typeof OrchestrationCreateCodeReviewWorkflowInput.Type;
@@ -2239,6 +2246,7 @@ export const OrchestrationCreateInvestigationWorkflowInput = Schema.Struct({
   investigatorA: WorkflowModelSlot,
   investigatorB: WorkflowModelSlot,
   synthesis: WorkflowModelSlot,
+  maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
 });
 export type OrchestrationCreateInvestigationWorkflowInput =
   typeof OrchestrationCreateInvestigationWorkflowInput.Type;

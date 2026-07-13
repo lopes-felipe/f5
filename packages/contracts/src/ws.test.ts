@@ -71,9 +71,73 @@ it.effect("accepts git.preparePullRequestThread requests", () =>
         cwd: "/repo",
         reference: "#42",
         mode: "worktree",
+        expectedHeadOid: "abc123",
       },
     });
     assert.strictEqual(parsed.body._tag, WS_METHODS.gitPreparePullRequestThread);
+  }),
+);
+
+it.effect("decodes every built-in workflow platform create-run request", () =>
+  Effect.gen(function* () {
+    const codex = { provider: "codex", model: "gpt-5.1-codex" };
+    const claude = { provider: "claudeAgent", model: "claude-sonnet-4-6" };
+    const requests = [
+      {
+        id: "req-workflow-planning",
+        body: {
+          _tag: WS_METHODS.workflowPlatformCreateRun,
+          templateId: "builtin.planning.dual",
+          templateVersion: 1,
+          input: {
+            projectId: "project-1",
+            requirementPrompt: "Plan reconnect recovery",
+            selfReviewEnabled: true,
+            branchA: codex,
+            branchB: claude,
+            merge: codex,
+          },
+        },
+      },
+      {
+        id: "req-workflow-review",
+        body: {
+          _tag: WS_METHODS.workflowPlatformCreateRun,
+          templateId: "builtin.code-review.dual",
+          templateVersion: 1,
+          input: {
+            projectId: "project-1",
+            reviewPrompt: "Review reconnect recovery",
+            reviewerA: codex,
+            reviewerB: claude,
+            consolidation: codex,
+          },
+        },
+      },
+      {
+        id: "req-workflow-investigation",
+        body: {
+          _tag: WS_METHODS.workflowPlatformCreateRun,
+          templateId: "builtin.investigation.dual",
+          templateVersion: 1,
+          input: {
+            projectId: "project-1",
+            problemPrompt: "Investigate reconnect recovery",
+            investigatorA: codex,
+            investigatorB: claude,
+            synthesis: codex,
+          },
+        },
+      },
+    ] as const;
+
+    for (const request of requests) {
+      const parsed = yield* decodeWebSocketRequest(request);
+      assert.strictEqual(parsed.body._tag, WS_METHODS.workflowPlatformCreateRun);
+      if (parsed.body._tag === WS_METHODS.workflowPlatformCreateRun) {
+        assert.strictEqual(parsed.body.templateId, request.body.templateId);
+      }
+    }
   }),
 );
 

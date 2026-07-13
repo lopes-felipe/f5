@@ -67,6 +67,7 @@ class MockWebSocket {
 }
 
 const originalWebSocket = globalThis.WebSocket;
+const originalFetch = globalThis.fetch;
 
 function getSocket(index = sockets.length - 1): MockWebSocket {
   const socket = sockets[index];
@@ -85,7 +86,15 @@ beforeEach(() => {
   Object.defineProperty(globalThis, "window", {
     configurable: true,
     value: {
-      location: { hostname: "localhost", port: "3020", protocol: "http:" },
+      location: {
+        hash: "",
+        hostname: "localhost",
+        pathname: "/",
+        port: "3020",
+        protocol: "http:",
+        search: "",
+      },
+      history: { replaceState: vi.fn(), state: null },
       desktopBridge: undefined,
     },
   });
@@ -95,6 +104,7 @@ beforeEach(() => {
 
 afterEach(() => {
   globalThis.WebSocket = originalWebSocket;
+  globalThis.fetch = originalFetch;
   resetRequestLatencyStateForTests();
   resetWsConnectionStateForTests();
   vi.useRealTimers();
@@ -102,6 +112,27 @@ afterEach(() => {
 });
 
 describe("WsTransport", () => {
+  it("exchanges a URL-fragment token for a cookie before opening the browser websocket", async () => {
+    window.location.hash = "#token=remote-secret";
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    globalThis.fetch = fetchMock;
+
+    const transport = new WsTransport();
+    await vi.waitFor(() => expect(sockets).toHaveLength(1));
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/auth/session",
+      expect.objectContaining({
+        method: "POST",
+        credentials: "same-origin",
+        body: JSON.stringify({ token: "remote-secret" }),
+      }),
+    );
+    expect(window.history.replaceState).toHaveBeenCalledWith(null, "", "/");
+
+    transport.dispose();
+  });
+
   it("routes valid push envelopes to channel listeners", () => {
     const transport = new WsTransport("ws://localhost:3020");
     const socket = getSocket();
@@ -212,6 +243,37 @@ describe("WsTransport", () => {
     );
 
     await expect(requestPromise).resolves.toEqual({ projects: [{ id: "project-1" }] });
+
+    transport.dispose();
+  });
+
+  it("removes timed-out queued requests so they cannot execute after reconnect", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+
+    const requestPromise = transport.request("projects.list", undefined, { timeoutMs: 25 });
+    const rejection = expect(requestPromise).rejects.toThrow("Request timed out: projects.list");
+    await vi.advanceTimersByTimeAsync(25);
+    await rejection;
+
+    socket.open();
+    expect(socket.sent).toHaveLength(0);
+
+    transport.dispose();
+  });
+
+  it("bounds requests queued before the websocket opens", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const pending = Array.from({ length: 256 }, (_, index) =>
+      transport.request(`projects.list.${index}`, undefined, { timeoutMs: null }),
+    );
+    for (const request of pending) {
+      void request.catch(() => undefined);
+    }
+
+    await expect(
+      transport.request("projects.list.overflow", undefined, { timeoutMs: null }),
+    ).rejects.toThrow("WebSocket request queue is full");
 
     transport.dispose();
   });

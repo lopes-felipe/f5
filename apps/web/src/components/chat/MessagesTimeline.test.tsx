@@ -26,6 +26,10 @@ vi.mock("../DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => <>{children}</>,
 }));
 
+vi.mock("../DiffSurfaceBoundary", () => ({
+  DiffSurfaceBoundary: ({ children }: { children?: ReactNode }) => <>{children}</>,
+}));
+
 vi.mock("@pierre/diffs/react", async () => {
   const actual = await vi.importActual<typeof import("@pierre/diffs/react")>("@pierre/diffs/react");
   return {
@@ -99,7 +103,7 @@ beforeEach(() => {
   localStorageStore.clear();
 });
 
-beforeAll(() => {
+beforeAll(async () => {
   const classList = {
     add: () => {},
     remove: () => {},
@@ -136,6 +140,9 @@ beforeAll(() => {
     callback(0);
     return 0;
   });
+
+  const { preloadInlineDiffComponents } = await import("./MessagesTimeline");
+  await preloadInlineDiffComponents();
 });
 
 function extractMessageRowMarkup(markup: string, messageId: string): string {

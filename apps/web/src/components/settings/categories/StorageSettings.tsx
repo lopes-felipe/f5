@@ -11,17 +11,23 @@ import { formatByteSize } from "@t3tools/shared/byteSize";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   DatabaseIcon,
+  DownloadIcon,
   HardDriveIcon,
+  KeyRoundIcon,
   Loader2Icon,
   RefreshCwIcon,
   Trash2Icon,
+  UploadIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { ensureNativeApi } from "../../../nativeApi";
 import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
+import { Input } from "../../ui/input";
+import { toastManager } from "../../ui/toast";
+import { getServerHttpOrigin } from "../../../lib/serverHttpOrigin";
 import {
   StorageActionConfirmDialog,
   type StorageConfirmAction,
@@ -256,6 +262,10 @@ export function StorageSettings() {
   const [confirmAction, setConfirmAction] = useState<StorageConfirmAction | null>(null);
   const [progress, setProgress] = useState<StorageCleanupProgressPayload | null>(null);
   const [lastResult, setLastResult] = useState<StorageCleanupResult | null>(null);
+  const [includeSecretsInBackup, setIncludeSecretsInBackup] = useState(false);
+  const [backupPassword, setBackupPassword] = useState("");
+  const [backupBusy, setBackupBusy] = useState<"export" | "restore" | null>(null);
+  const restoreInputRef = useRef<HTMLInputElement>(null);
   const usageQuery = useQuery({
     queryKey: storageQueryKey,
     queryFn: () => ensureNativeApi().storage.getUsage(),
@@ -439,8 +449,185 @@ export function StorageSettings() {
       : category.reclaimableBytes > 0 || category.targetCount > 0,
   );
 
+  const parseHttpError = async (response: Response): Promise<string> => {
+    try {
+      const body = (await response.json()) as { error?: unknown };
+      if (typeof body.error === "string") return body.error;
+    } catch {
+      // Fall through to status text.
+    }
+    return response.statusText || `Request failed with status ${response.status}.`;
+  };
+
+  const exportBackup = async () => {
+    if (includeSecretsInBackup && backupPassword.length < 12) {
+      toastManager.add({
+        type: "error",
+        title: "Use at least 12 characters to encrypt exported credentials.",
+      });
+      return;
+    }
+    setBackupBusy("export");
+    try {
+      const response = await fetch(
+        `${getServerHttpOrigin()}/api/storage/backup${includeSecretsInBackup ? "?includeSecrets=1" : ""}`,
+        {
+          credentials: "include",
+          headers:
+            includeSecretsInBackup && backupPassword
+              ? { "X-F5-Backup-Password": backupPassword }
+              : {},
+        },
+      );
+      if (!response.ok) throw new Error(await parseHttpError(response));
+      const blob = await response.blob();
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const filename =
+        disposition.match(/filename="([^"]+)"/u)?.[1] ??
+        `f5-backup-${new Date().toISOString().slice(0, 10)}.f5backup`;
+      const url = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = filename;
+        anchor.click();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+      toastManager.add({ type: "success", title: "Backup archive created." });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Backup export failed",
+        description: error instanceof Error ? error.message : "Unable to export F5 state.",
+      });
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  const restoreBackup = async (file: File) => {
+    const confirmed = await ensureNativeApi().dialogs.confirm(
+      "Validate and stage this backup? F5 will replace local state on the next restart and retain a rollback copy.",
+    );
+    if (!confirmed) return;
+    setBackupBusy("restore");
+    try {
+      const response = await fetch(`${getServerHttpOrigin()}/api/storage/restore`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/x-f5-backup",
+          ...(backupPassword ? { "X-F5-Backup-Password": backupPassword } : {}),
+        },
+        body: file,
+      });
+      if (!response.ok) throw new Error(await parseHttpError(response));
+      const result = (await response.json()) as {
+        fileCount: number;
+        includesEncryptedSecrets: boolean;
+      };
+      toastManager.add({
+        type: "success",
+        title: "Restore validated and staged. Restart F5 to apply it.",
+        description: `${result.fileCount} files validated${result.includesEncryptedSecrets ? ", including encrypted credentials" : ""}.`,
+      });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Backup restore failed",
+        description:
+          error instanceof Error ? error.message : "Unable to validate the backup archive.",
+      });
+    } finally {
+      setBackupBusy(null);
+      if (restoreInputRef.current) restoreInputRef.current.value = "";
+    }
+  };
+
   return (
     <>
+      <section className="rounded-2xl border border-border bg-card p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-sm font-medium text-foreground">Backup and restore</h2>
+            <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+              Export a versioned, checksummed archive of the database, settings, and attachments.
+              Credentials are excluded unless encrypted export is enabled.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              ref={restoreInputRef}
+              type="file"
+              accept=".f5backup,application/x-f5-backup"
+              className="hidden"
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0];
+                if (file) void restoreBackup(file);
+              }}
+            />
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={backupBusy !== null}
+              onClick={() => restoreInputRef.current?.click()}
+            >
+              {backupBusy === "restore" ? <Loader2Icon className="animate-spin" /> : <UploadIcon />}
+              Restore
+            </Button>
+            <Button size="xs" disabled={backupBusy !== null} onClick={() => void exportBackup()}>
+              {backupBusy === "export" ? (
+                <Loader2Icon className="animate-spin" />
+              ) : (
+                <DownloadIcon />
+              )}
+              Export backup
+            </Button>
+          </div>
+        </div>
+        <label className="mt-4 flex items-start gap-3 rounded-lg border border-border bg-background px-3 py-3">
+          <Checkbox
+            checked={includeSecretsInBackup}
+            onCheckedChange={(value) => setIncludeSecretsInBackup(value === true)}
+            aria-label="Include encrypted credentials"
+            className="mt-0.5"
+          />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+              <KeyRoundIcon className="size-3.5" />
+              Include credentials using AES-256-GCM encryption
+            </span>
+            <span className="mt-0.5 block text-xs text-muted-foreground">
+              The password is never stored. It is required to restore encrypted credentials.
+            </span>
+          </span>
+        </label>
+        {includeSecretsInBackup ? (
+          <div className="mt-3 max-w-md">
+            <Input
+              type="password"
+              value={backupPassword}
+              onChange={(event) => setBackupPassword(event.currentTarget.value)}
+              placeholder="Encryption password (12+ characters)"
+              autoComplete="new-password"
+              aria-label="Backup encryption password"
+            />
+          </div>
+        ) : (
+          <div className="mt-3 max-w-md">
+            <Input
+              type="password"
+              value={backupPassword}
+              onChange={(event) => setBackupPassword(event.currentTarget.value)}
+              placeholder="Restore password, if the archive is encrypted"
+              autoComplete="current-password"
+              aria-label="Backup restore password"
+            />
+          </div>
+        )}
+      </section>
+
       <section className="rounded-2xl border border-border bg-card p-5">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>

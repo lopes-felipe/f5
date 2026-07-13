@@ -1,6 +1,6 @@
 import { forwardRef, useImperativeHandle, type ReactNode } from "react";
 import { GitPullRequestIcon, SparklesIcon } from "lucide-react";
-import type { PrHubAdvisory, TrackedPullRequest } from "@t3tools/contracts";
+import type { PrHubAdvisory, ThreadId, TrackedPullRequest } from "@t3tools/contracts";
 
 import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import { Badge } from "../ui/badge";
@@ -34,6 +34,7 @@ export interface PrDetailPanelProps {
   advisory?: PrHubAdvisory | undefined;
   isAnalyzingAdvisory?: boolean;
   onAnalyzeAdvisory?: (() => void) | undefined;
+  onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
 }
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -77,10 +78,13 @@ function stateBadge(pr: TrackedPullRequest): ReactNode {
  * {@link usePrActions}.
  */
 export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(function PrDetailPanel(
-  { pr, advisory, isAnalyzingAdvisory = false, onAnalyzeAdvisory },
+  { pr, advisory, isAnalyzingAdvisory = false, onAnalyzeAdvisory, onThreadCreated },
   ref,
 ) {
-  const { flags, handlers, dialogProps } = usePrActions(pr);
+  const { flags, handlers, dialogProps, runInF5Label } = usePrActions(pr, {
+    advisory,
+    onThreadCreated,
+  });
   const visibility = prRowActionVisibility(pr, {
     isAuthor: flags.isAuthor,
     isOpen: flags.isOpen,
@@ -153,6 +157,8 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         isSnoozed={flags.isSnoozed}
         isIgnoring={flags.isIgnoring}
         isAnalyzingAdvisory={isAnalyzingAdvisory}
+        isOpeningInF5={dialogProps.isOpeningInF5}
+        runInF5Label={runInF5Label}
         onApprove={handlers.onApprove}
         onComment={handlers.onComment}
         onRequestChanges={handlers.onRequestChanges}
@@ -164,6 +170,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         onIgnore={handlers.onIgnore}
         {...(onAnalyzeAdvisory ? { onAnalyzeAdvisory } : {})}
         onOpenInF5={handlers.onOpenInF5}
+        onRunInF5={handlers.onRunInF5}
         onOpenGitHub={handlers.onOpenGitHub}
       />
 

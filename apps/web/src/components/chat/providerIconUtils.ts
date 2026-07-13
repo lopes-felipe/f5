@@ -1,6 +1,7 @@
 import {
   defaultInstanceIdForDriver,
   ProviderDriverKind,
+  type ProviderDriverKind as ProviderDriverKindType,
   type ProviderKind,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -54,7 +55,9 @@ function isAvailableProviderOption(option: (typeof PROVIDER_OPTIONS)[number]): o
 export const AVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter(isAvailableProviderOption);
 export const UNAVAILABLE_PROVIDER_OPTIONS = PROVIDER_OPTIONS.filter((option) => !option.available);
 
-export function providerIconClassName(provider: ProviderKind | ProviderPickerKind): string {
+export function providerIconClassName(
+  provider: ProviderDriverKindType | ProviderKind | ProviderPickerKind,
+): string {
   if (provider === "claudeAgent") {
     return "text-[#d97757]";
   }

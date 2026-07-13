@@ -20,11 +20,11 @@ import {
   DIFF_PANEL_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
-} from "../DiffPanel";
+} from "../../lib/diffPatch";
 import { Button } from "../ui/button";
 import { toastManager } from "../ui/toast";
 
-interface InlineExactFileChangeDiffProps {
+export interface InlineExactFileChangeDiffProps {
   workEntryId: string;
   threadId: ThreadId | null;
   fileChangeId: OrchestrationFileChangeId;

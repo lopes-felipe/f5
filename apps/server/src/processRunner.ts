@@ -93,11 +93,7 @@ function normalizeBufferError(
 
 const DEFAULT_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
-/**
- * On Windows with `shell: true`, `child.kill()` only terminates the `cmd.exe`
- * wrapper, leaving the actual command running. Use `taskkill /T` to kill the
- * entire process tree instead.
- */
+/** Terminate the command and every subprocess that inherited its stdio. */
 function killChild(child: ChildProcessHandle, signal: NodeJS.Signals = "SIGTERM"): void {
   if (process.platform === "win32" && child.pid !== undefined) {
     try {
@@ -105,6 +101,17 @@ function killChild(child: ChildProcessHandle, signal: NodeJS.Signals = "SIGTERM"
       return;
     } catch {
       // fallback to direct kill
+    }
+  }
+  if (process.platform !== "win32" && child.pid !== undefined) {
+    try {
+      // POSIX children are spawned as process-group leaders below. Killing the
+      // group prevents a wrapper's grandchild from keeping stdout/stderr pipes
+      // open after the wrapper itself has timed out.
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // The group may already be gone; fall through to the direct handle.
     }
   }
   child.kill(signal);
@@ -153,6 +160,7 @@ export async function runProcess(
       env: options.env,
       stdio: "pipe",
       shell: process.platform === "win32",
+      detached: process.platform !== "win32",
     });
 
     let stdout = "";

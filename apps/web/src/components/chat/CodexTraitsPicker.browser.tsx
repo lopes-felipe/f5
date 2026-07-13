@@ -25,6 +25,7 @@ async function mountPicker(props?: {
     filePaths: [],
     terminalContexts: [],
     provider: "codex",
+    providerInstanceId: null,
     model: "gpt-5",
     modelOptions: {
       codex: {

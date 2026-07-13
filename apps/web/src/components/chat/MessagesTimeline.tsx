@@ -7,6 +7,8 @@ import {
   type UserMessageSkillCall,
 } from "@t3tools/contracts";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { InlineExactFileChangeDiffProps } from "./InlineExactFileChangeDiff";
+import type { InlineFileChangeDiffProps } from "./InlineFileChangeDiff";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
@@ -65,10 +67,49 @@ import {
 import { buildCollapsedUserMessageText, shouldCollapseUserMessage } from "./userMessageCollapse";
 import { ReasoningSection } from "./ReasoningSection";
 import { COMPOSER_INLINE_CHIP_CLASS_NAME } from "../composerInlineChip";
+import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 import { classifyCompactCommand, isGenericCommandTitle } from "@t3tools/shared/commandSummary";
-import { InlineExactFileChangeDiff } from "./InlineExactFileChangeDiff";
-import { InlineFileChangeDiff } from "./InlineFileChangeDiff";
+
+type InlineExactFileChangeDiffComponent =
+  (typeof import("./InlineExactFileChangeDiff"))["InlineExactFileChangeDiff"];
+type InlineFileChangeDiffComponent =
+  (typeof import("./InlineFileChangeDiff"))["InlineFileChangeDiff"];
+
+let loadedInlineExactFileChangeDiff: InlineExactFileChangeDiffComponent | null = null;
+let loadedInlineFileChangeDiff: InlineFileChangeDiffComponent | null = null;
+let inlineExactFileChangeDiffPromise: Promise<void> | null = null;
+let inlineFileChangeDiffPromise: Promise<void> | null = null;
+
+function loadInlineExactFileChangeDiff(): Promise<void> {
+  inlineExactFileChangeDiffPromise ??= import("./InlineExactFileChangeDiff").then((module) => {
+    loadedInlineExactFileChangeDiff = module.InlineExactFileChangeDiff;
+  });
+  return inlineExactFileChangeDiffPromise;
+}
+
+function loadInlineFileChangeDiff(): Promise<void> {
+  inlineFileChangeDiffPromise ??= import("./InlineFileChangeDiff").then((module) => {
+    loadedInlineFileChangeDiff = module.InlineFileChangeDiff;
+  });
+  return inlineFileChangeDiffPromise;
+}
+
+export async function preloadInlineDiffComponents(): Promise<void> {
+  await Promise.all([loadInlineExactFileChangeDiff(), loadInlineFileChangeDiff()]);
+}
+
+function InlineExactFileChangeDiff(props: InlineExactFileChangeDiffProps) {
+  const Component = loadedInlineExactFileChangeDiff;
+  if (!Component) throw loadInlineExactFileChangeDiff();
+  return <Component {...props} />;
+}
+
+function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
+  const Component = loadedInlineFileChangeDiff;
+  if (!Component) throw loadInlineFileChangeDiff();
+  return <Component {...props} />;
+}
 
 const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const LEGEND_LIST_IS_AT_END_THRESHOLD = 0.1;
@@ -2212,6 +2253,8 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             size="xs"
             variant="ghost"
             className="h-6 px-2 text-[10px] text-muted-foreground/70 hover:text-foreground/85"
+            onMouseEnter={() => void preloadInlineDiffComponents()}
+            onFocus={() => void preloadInlineDiffComponents()}
             onClick={() => chatDiffContext.onToggleFileChangeDiff(workEntry.id)}
           >
             {inlineDiffExpanded ? "Hide diff" : "Show diff"}
@@ -2220,43 +2263,51 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ) : null}
       {inlineDiffExpanded && canRenderExactInlineFileDiff && workEntry.fileChangeId ? (
         <div className="mt-1 pl-6">
-          <InlineExactFileChangeDiff
-            workEntryId={workEntry.id}
-            threadId={chatDiffContext.threadId}
-            fileChangeId={workEntry.fileChangeId}
-            workspaceRoot={workspaceRoot}
-            resolvedTheme={resolvedTheme}
-            onOpenFileChangeDiff={chatDiffContext.onOpenFileChangeDiff}
-            fallback={
-              canRenderTurnFallbackInlineDiff && workEntry.turnId ? (
-                <InlineFileChangeDiff
-                  workEntryId={workEntry.id}
-                  threadId={chatDiffContext.threadId}
-                  turnId={workEntry.turnId}
-                  checkpointTurnCount={fileChangeCheckpointTurnCount}
-                  filePaths={fileChangeFiles}
-                  workspaceRoot={workspaceRoot}
-                  resolvedTheme={resolvedTheme}
-                  turnDiffSummary={fileChangeTurnSummary}
-                  onOpenTurnDiff={onOpenTurnDiff}
-                />
-              ) : null
-            }
-          />
+          <DiffSurfaceBoundary
+            fallback={<div className="py-3 text-xs text-muted-foreground">Loading diff…</div>}
+          >
+            <InlineExactFileChangeDiff
+              workEntryId={workEntry.id}
+              threadId={chatDiffContext.threadId}
+              fileChangeId={workEntry.fileChangeId}
+              workspaceRoot={workspaceRoot}
+              resolvedTheme={resolvedTheme}
+              onOpenFileChangeDiff={chatDiffContext.onOpenFileChangeDiff}
+              fallback={
+                canRenderTurnFallbackInlineDiff && workEntry.turnId ? (
+                  <InlineFileChangeDiff
+                    workEntryId={workEntry.id}
+                    threadId={chatDiffContext.threadId}
+                    turnId={workEntry.turnId}
+                    checkpointTurnCount={fileChangeCheckpointTurnCount}
+                    filePaths={fileChangeFiles}
+                    workspaceRoot={workspaceRoot}
+                    resolvedTheme={resolvedTheme}
+                    turnDiffSummary={fileChangeTurnSummary}
+                    onOpenTurnDiff={onOpenTurnDiff}
+                  />
+                ) : null
+              }
+            />
+          </DiffSurfaceBoundary>
         </div>
       ) : inlineDiffExpanded && canRenderTurnFallbackInlineDiff && workEntry.turnId ? (
         <div className="mt-1 pl-6">
-          <InlineFileChangeDiff
-            workEntryId={workEntry.id}
-            threadId={chatDiffContext.threadId}
-            turnId={workEntry.turnId}
-            checkpointTurnCount={fileChangeCheckpointTurnCount}
-            filePaths={fileChangeFiles}
-            workspaceRoot={workspaceRoot}
-            resolvedTheme={resolvedTheme}
-            turnDiffSummary={fileChangeTurnSummary}
-            onOpenTurnDiff={onOpenTurnDiff}
-          />
+          <DiffSurfaceBoundary
+            fallback={<div className="py-3 text-xs text-muted-foreground">Loading diff…</div>}
+          >
+            <InlineFileChangeDiff
+              workEntryId={workEntry.id}
+              threadId={chatDiffContext.threadId}
+              turnId={workEntry.turnId}
+              checkpointTurnCount={fileChangeCheckpointTurnCount}
+              filePaths={fileChangeFiles}
+              workspaceRoot={workspaceRoot}
+              resolvedTheme={resolvedTheme}
+              turnDiffSummary={fileChangeTurnSummary}
+              onOpenTurnDiff={onOpenTurnDiff}
+            />
+          </DiffSurfaceBoundary>
         </div>
       ) : null}
     </div>
