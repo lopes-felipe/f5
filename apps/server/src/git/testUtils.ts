@@ -1,299 +1,188 @@
-import { accessSync, chmodSync, constants, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const GIT_WRAPPER_STATE_KEY = "__t3LocalPushFriendlyGitWrapperState__";
-const REAL_GIT_ENV_KEY = "T3_REAL_GIT_BIN";
+import { Effect, Layer } from "effect";
 
-interface GitWrapperState {
-  refCount: number;
-  previousPath: string | undefined;
-  previousRealGitBinary: string | undefined;
-  wrapperDir: string;
+import { GitService, type GitServiceShape } from "./Services/GitService.ts";
+
+interface PushSpec {
+  readonly source: string | null;
+  readonly destination: string;
+  readonly localBranch: string | null;
 }
 
-function findGitBinaryOnPath(): string | null {
-  const pathEntries = (process.env.PATH ?? "")
-    .split(delimiter)
-    .map((entry) => entry.trim().replace(/^"(.*)"$/u, "$1"))
-    .filter((entry) => entry.length > 0);
-  const accessMode = process.platform === "win32" ? constants.F_OK : constants.X_OK;
-  const commandNames =
-    process.platform === "win32"
-      ? Array.from(
-          new Set([
-            "git",
-            ...(process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
-              .split(";")
-              .map((extension) => extension.trim())
-              .filter((extension) => extension.length > 0)
-              .map((extension) =>
-                extension.startsWith(".")
-                  ? `git${extension.toLowerCase()}`
-                  : `git.${extension.toLowerCase()}`,
-              ),
-          ]),
-        )
-      : ["git"];
-
-  for (const pathEntry of pathEntries) {
-    for (const commandName of commandNames) {
-      const candidate = join(pathEntry, commandName);
-      try {
-        accessSync(candidate, accessMode);
-        return candidate;
-      } catch {
-        continue;
-      }
+function resolveLocalRemotePath(remoteUrl: string): string | null {
+  const trimmed = remoteUrl.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  if (trimmed.startsWith("file://")) {
+    try {
+      return fileURLToPath(trimmed);
+    } catch {
+      return null;
     }
   }
-
-  return null;
+  return isAbsolute(trimmed) ? trimmed : null;
 }
 
-function resolveRealGitBinary(): string {
-  const configuredBinary = process.env[REAL_GIT_ENV_KEY]?.trim();
-  if (configuredBinary) {
-    return configuredBinary;
+function parsePushSpec(refspec: string, currentBranch: string): PushSpec | null {
+  if (refspec === "HEAD") {
+    return currentBranch.length > 0
+      ? {
+          source: "HEAD",
+          destination: `refs/heads/${currentBranch}`,
+          localBranch: currentBranch,
+        }
+      : null;
   }
 
-  const gitBinary = findGitBinaryOnPath();
-  if (gitBinary) {
-    return gitBinary;
-  }
-
-  throw new Error("Could not resolve a git binary on PATH before installing the test wrapper.");
-}
-
-function createGitWrapperDir(realGitBinary: string): string {
-  const wrapperDir = mkdtempSync(join(tmpdir(), "t3code-git-wrapper-"));
-  const wrapperScriptPath = join(wrapperDir, "git-wrapper.cjs");
-  const posixWrapperPath = join(wrapperDir, "git");
-  const windowsWrapperPath = join(wrapperDir, "git.cmd");
-
-  writeFileSync(
-    wrapperScriptPath,
-    [
-      'const { spawnSync } = require("node:child_process");',
-      'const { isAbsolute } = require("node:path");',
-      'const { fileURLToPath } = require("node:url");',
-      "",
-      `const realGit = process.env.${REAL_GIT_ENV_KEY} || ${JSON.stringify(realGitBinary)};`,
-      "const cwd = process.cwd();",
-      "const args = process.argv.slice(2);",
-      "",
-      "function writeOutput(result) {",
-      "  if (result.stdout) process.stdout.write(result.stdout);",
-      "  if (result.stderr) process.stderr.write(result.stderr);",
-      "}",
-      "",
-      "function runGit(commandArgs, targetCwd = cwd) {",
-      "  const result = spawnSync(realGit, commandArgs, {",
-      "    cwd: targetCwd,",
-      '    encoding: "utf8",',
-      "  });",
-      "  if (result.error) throw result.error;",
-      "  return result;",
-      "}",
-      "",
-      "function passthrough() {",
-      "  const result = runGit(args);",
-      "  writeOutput(result);",
-      "  process.exit(result.status ?? 1);",
-      "}",
-      "",
-      "function mustGit(commandArgs, targetCwd = cwd) {",
-      "  const result = runGit(commandArgs, targetCwd);",
-      "  if ((result.status ?? 1) !== 0) {",
-      "    writeOutput(result);",
-      "    process.exit(result.status ?? 1);",
-      "  }",
-      '  return (result.stdout ?? "").trim();',
-      "}",
-      "",
-      "function resolveLocalRemotePath(remoteUrl) {",
-      '  const trimmed = (remoteUrl ?? "").trim();',
-      "  if (!trimmed) return null;",
-      '  if (trimmed.startsWith("file://")) {',
-      "    try {",
-      "      return fileURLToPath(trimmed);",
-      "    } catch {",
-      "      return null;",
-      "    }",
-      "  }",
-      "  return isAbsolute(trimmed) ? trimmed : null;",
-      "}",
-      "",
-      "function parsePushSpec(refspec, currentBranch) {",
-      "  if (!refspec) return null;",
-      '  if (refspec === "HEAD") {',
-      "    return currentBranch",
-      '      ? { source: "HEAD", destination: `refs/heads/${currentBranch}`, localBranch: currentBranch }',
-      "      : null;",
-      "  }",
-      '  if (refspec.includes(":")) {',
-      '    const [sourceRaw, destinationRaw] = refspec.split(":", 2);',
-      '    const source = sourceRaw && sourceRaw.length > 0 ? sourceRaw : "HEAD";',
-      "    const destination =",
-      '      destinationRaw && destinationRaw.startsWith("refs/")',
-      "        ? destinationRaw",
-      '        : `refs/heads/${destinationRaw ?? ""}`;',
-      "    return {",
-      "      source,",
-      "      destination,",
-      '      localBranch: source === "HEAD" ? currentBranch : source,',
-      "    };",
-      "  }",
-      "  return {",
-      "    source: refspec,",
-      "    destination: `refs/heads/${refspec}`,",
-      "    localBranch: refspec,",
-      "  };",
-      "}",
-      "",
-      'if (args[0] !== "push") {',
-      "  passthrough();",
-      "}",
-      "",
-      'const currentBranch = mustGit(["branch", "--show-current"]);',
-      "let setUpstream = false;",
-      "let index = 1;",
-      'while (index < args.length && args[index].startsWith("-")) {',
-      "  const option = args[index];",
-      '  if (option === "-u" || option === "--set-upstream") {',
-      "    setUpstream = true;",
-      "    index += 1;",
-      "    continue;",
-      "  }",
-      "  passthrough();",
-      "}",
-      "",
-      "let remoteName = args[index] ?? null;",
-      "let refspecs = remoteName ? args.slice(index + 1) : [];",
-      "",
-      "if (!remoteName) {",
-      '  const upstreamRef = mustGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]);',
-      '  const separatorIndex = upstreamRef.indexOf("/");',
-      "  if (separatorIndex <= 0 || separatorIndex === upstreamRef.length - 1) {",
-      "    passthrough();",
-      "  }",
-      "  remoteName = upstreamRef.slice(0, separatorIndex);",
-      "  const upstreamBranch = upstreamRef.slice(separatorIndex + 1);",
-      "  refspecs = [`HEAD:${upstreamBranch}`];",
-      "}",
-      "",
-      "if (!remoteName) {",
-      "  passthrough();",
-      "}",
-      "",
-      'const remoteUrl = mustGit(["remote", "get-url", remoteName]);',
-      "const remotePath = resolveLocalRemotePath(remoteUrl);",
-      "if (!remotePath) {",
-      "  passthrough();",
-      "}",
-      "",
-      'const parsedSpecs = (refspecs.length > 0 ? refspecs : ["HEAD"])',
-      "  .map((refspec) => parsePushSpec(refspec, currentBranch))",
-      "  .filter(Boolean);",
-      "if (parsedSpecs.length === 0) {",
-      "  passthrough();",
-      "}",
-      "",
-      "for (const spec of parsedSpecs) {",
-      '  const sourceSha = mustGit(["rev-parse", spec.source]);',
-      '  mustGit(["-C", remotePath, "fetch", cwd, `${sourceSha}:${spec.destination}`]);',
-      '  if (!spec.destination.startsWith("refs/heads/")) {',
-      "    continue;",
-      "  }",
-      '  const remoteBranch = spec.destination.slice("refs/heads/".length);',
-      '  mustGit(["update-ref", `refs/remotes/${remoteName}/${remoteBranch}`, sourceSha]);',
-      "  if (setUpstream && spec.localBranch) {",
-      '    mustGit(["branch", "--set-upstream-to", `${remoteName}/${remoteBranch}`, spec.localBranch]);',
-      "  }",
-      "}",
-      "",
-      "process.exit(0);",
-      "",
-    ].join("\n"),
-  );
-  writeFileSync(
-    posixWrapperPath,
-    [
-      "#!/bin/sh",
-      'script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)',
-      'if [ -n "${NODE:-}" ]; then',
-      '  exec "$NODE" "$script_dir/git-wrapper.cjs" "$@"',
-      "fi",
-      'exec node "$script_dir/git-wrapper.cjs" "$@"',
-      "",
-    ].join("\n"),
-  );
-  writeFileSync(
-    windowsWrapperPath,
-    [
-      "@echo off",
-      "setlocal",
-      "if defined NODE (",
-      '  "%NODE%" "%~dp0git-wrapper.cjs" %*',
-      ") else (",
-      '  node "%~dp0git-wrapper.cjs" %*',
-      ")",
-      "exit /b %ERRORLEVEL%",
-      "",
-    ].join("\r\n"),
-  );
-  chmodSync(posixWrapperPath, 0o755);
-
-  return wrapperDir;
-}
-
-export function installLocalPushFriendlyGitWrapper(): () => void {
-  const globalState = globalThis as typeof globalThis & {
-    [GIT_WRAPPER_STATE_KEY]?: GitWrapperState;
-  };
-
-  const existingState = globalState[GIT_WRAPPER_STATE_KEY];
-  if (existingState) {
-    existingState.refCount += 1;
-    return () => {
-      existingState.refCount -= 1;
+  const separatorIndex = refspec.indexOf(":");
+  if (separatorIndex >= 0) {
+    const source = refspec.slice(0, separatorIndex) || null;
+    const rawDestination = refspec.slice(separatorIndex + 1);
+    if (rawDestination.length === 0) {
+      return null;
+    }
+    return {
+      source,
+      destination: rawDestination.startsWith("refs/")
+        ? rawDestination
+        : `refs/heads/${rawDestination}`,
+      localBranch: source === "HEAD" ? currentBranch || null : source,
     };
   }
 
-  const realGitBinary = resolveRealGitBinary();
-  const wrapperDir = createGitWrapperDir(realGitBinary);
-  const previousPath = process.env.PATH;
-  const previousRealGitBinary = process.env[REAL_GIT_ENV_KEY];
-
-  process.env.PATH = `${wrapperDir}${delimiter}${previousPath ?? ""}`;
-  process.env[REAL_GIT_ENV_KEY] = realGitBinary;
-
-  const state: GitWrapperState = {
-    refCount: 1,
-    previousPath,
-    previousRealGitBinary,
-    wrapperDir,
+  return {
+    source: refspec,
+    destination: `refs/heads/${refspec}`,
+    localBranch: refspec,
   };
-  globalState[GIT_WRAPPER_STATE_KEY] = state;
+}
 
-  return () => {
-    const currentState = globalState[GIT_WRAPPER_STATE_KEY];
-    if (!currentState) {
-      return;
-    }
+/**
+ * Decorates the real Git service for integration tests that push to a local
+ * repository. Local pushes are materialized with fetch/update-ref so they work
+ * in restricted sandboxes. All other commands go directly to the real service,
+ * avoiding the former shell -> Node wrapper -> Git process chain.
+ */
+export function makeLocalPushFriendlyGitService(base: GitServiceShape): GitServiceShape {
+  const executeText = (
+    input: Parameters<GitServiceShape["execute"]>[0],
+    cwd: string,
+    args: ReadonlyArray<string>,
+  ) =>
+    base
+      .execute({
+        ...input,
+        cwd,
+        args,
+        allowNonZeroExit: false,
+      })
+      .pipe(Effect.map((result) => result.stdout.trim()));
 
-    currentState.refCount -= 1;
-    if (currentState.refCount > 0) {
-      return;
-    }
+  return {
+    execute: (input) => {
+      if (input.args[0] !== "push") {
+        return base.execute(input);
+      }
 
-    process.env.PATH = currentState.previousPath;
-    if (currentState.previousRealGitBinary === undefined) {
-      delete process.env[REAL_GIT_ENV_KEY];
-    } else {
-      process.env[REAL_GIT_ENV_KEY] = currentState.previousRealGitBinary;
-    }
-    rmSync(currentState.wrapperDir, { recursive: true, force: true });
-    delete globalState[GIT_WRAPPER_STATE_KEY];
+      return Effect.gen(function* () {
+        const currentBranch = yield* executeText(input, input.cwd, ["branch", "--show-current"]);
+        let setUpstream = false;
+        let argumentIndex = 1;
+
+        while (argumentIndex < input.args.length && input.args[argumentIndex]?.startsWith("-")) {
+          const option = input.args[argumentIndex];
+          if (option !== "-u" && option !== "--set-upstream") {
+            return yield* base.execute(input);
+          }
+          setUpstream = true;
+          argumentIndex += 1;
+        }
+
+        let remoteName = input.args[argumentIndex] ?? null;
+        let refspecs = remoteName ? input.args.slice(argumentIndex + 1) : [];
+
+        if (!remoteName) {
+          const upstreamRef = yield* executeText(input, input.cwd, [
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+          ]);
+          const separatorIndex = upstreamRef.indexOf("/");
+          if (separatorIndex <= 0 || separatorIndex === upstreamRef.length - 1) {
+            return yield* base.execute(input);
+          }
+          remoteName = upstreamRef.slice(0, separatorIndex);
+          refspecs = [`HEAD:${upstreamRef.slice(separatorIndex + 1)}`];
+        }
+
+        const remoteUrl = yield* executeText(input, input.cwd, ["remote", "get-url", remoteName]);
+        const remotePath = resolveLocalRemotePath(remoteUrl);
+        if (!remotePath) {
+          return yield* base.execute(input);
+        }
+
+        const specs = (refspecs.length > 0 ? refspecs : ["HEAD"])
+          .map((refspec) => parsePushSpec(refspec, currentBranch))
+          .filter((spec): spec is PushSpec => spec !== null);
+        if (specs.length === 0) {
+          return yield* base.execute(input);
+        }
+
+        for (const spec of specs) {
+          if (spec.source === null) {
+            yield* executeText(input, remotePath, ["update-ref", "-d", spec.destination]);
+            if (spec.destination.startsWith("refs/heads/")) {
+              const remoteBranch = spec.destination.slice("refs/heads/".length);
+              yield* executeText(input, input.cwd, [
+                "update-ref",
+                "-d",
+                `refs/remotes/${remoteName}/${remoteBranch}`,
+              ]);
+            }
+            continue;
+          }
+
+          const sourceSha = yield* executeText(input, input.cwd, ["rev-parse", spec.source]);
+          yield* executeText(input, remotePath, [
+            "fetch",
+            input.cwd,
+            `${sourceSha}:${spec.destination}`,
+          ]);
+
+          if (!spec.destination.startsWith("refs/heads/")) {
+            continue;
+          }
+          const remoteBranch = spec.destination.slice("refs/heads/".length);
+          yield* executeText(input, input.cwd, [
+            "update-ref",
+            `refs/remotes/${remoteName}/${remoteBranch}`,
+            sourceSha,
+          ]);
+          if (setUpstream && spec.localBranch) {
+            yield* executeText(input, input.cwd, [
+              "branch",
+              "--set-upstream-to",
+              `${remoteName}/${remoteBranch}`,
+              spec.localBranch,
+            ]);
+          }
+        }
+
+        return { code: 0, stdout: "", stderr: "" };
+      });
+    },
   };
+}
+
+export function makeLocalPushFriendlyGitServiceLayer<R, E>(
+  baseLayer: Layer.Layer<GitService, E, R>,
+): Layer.Layer<GitService, E, R> {
+  return Layer.effect(
+    GitService,
+    Effect.service(GitService).pipe(Effect.map(makeLocalPushFriendlyGitService)),
+  ).pipe(Layer.provide(baseLayer));
 }

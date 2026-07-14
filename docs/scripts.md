@@ -9,7 +9,11 @@
 - `bun run start` — Runs the production server (serves built web app as static files).
 - `bun run build` — Builds contracts, web app, and server through Turbo.
 - `bun run typecheck` — Strict TypeScript checks for all packages.
-- `bun run test` — Runs workspace tests.
+- `bun run test` — Runs the fast workspace suite, including service-boundary Git tests and a representative real-Git smoke suite.
+- `bun run test:server:git:smoke` — Runs only the representative real-Git smoke contracts.
+- `bun run test:server:git` — Runs both smoke and exhaustive real-Git contracts.
+- `bun run test:server:git:extended` — Runs the exhaustive real-Git edge-case matrix.
+- `bun run test:full` — Runs the fast workspace suite followed by the exhaustive real-Git matrix; required before declaring work complete, releases, and after major Git subsystem changes.
 - `bun run dist:desktop:artifact -- --platform <mac|linux|win> --target <target> --arch <arch>` — Builds a desktop artifact for a specific platform/target/arch.
 - `bun run dist:desktop:dmg` — Builds a shareable macOS `.dmg` into `./release`.
 - `bun run dist:desktop:dmg:x64` — Builds an Intel macOS `.dmg`.

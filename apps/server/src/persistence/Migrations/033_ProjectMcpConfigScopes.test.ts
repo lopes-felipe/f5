@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
-import { runMigrations } from "../Migrations.ts";
+import { LATEST_MIGRATION, runMigrations } from "../Migrations.ts";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import Migration0033 from "./033_ProjectMcpConfigScopes.ts";
 import Migration0043 from "./043_ProjectMcpConfigsSchemaRepair.ts";
@@ -281,12 +281,7 @@ layer("033_ProjectMcpConfigScopes", (it) => {
         LIMIT 1
       `;
 
-      assert.deepEqual(latestMigration, [
-        {
-          migrationId: 55,
-          name: "GlobalSearchFts",
-        },
-      ]);
+      assert.deepEqual(latestMigration, [LATEST_MIGRATION]);
     }),
   );
 

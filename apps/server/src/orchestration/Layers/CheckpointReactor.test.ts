@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 import type { ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
 import {
@@ -17,8 +16,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { CheckpointStoreLive } from "../../checkpointing/Layers/CheckpointStore.ts";
-import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
+import {
+  CheckpointStore,
+  type CheckpointStoreShape,
+} from "../../checkpointing/Services/CheckpointStore.ts";
+import { CheckpointInvariantError } from "../../checkpointing/Errors.ts";
 import { CheckpointReactorLive } from "./CheckpointReactor.ts";
 import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
@@ -162,36 +164,128 @@ async function waitForEvent(
   return poll();
 }
 
-function runGit(cwd: string, args: ReadonlyArray<string>) {
-  return execFileSync("git", args, {
-    cwd,
-    stdio: ["ignore", "pipe", "pipe"],
-    encoding: "utf8",
-  });
+type WorkspaceSnapshot = ReadonlyMap<string, string>;
+
+const fakeCheckpointSnapshots = new Map<string, Map<string, WorkspaceSnapshot>>();
+
+function snapshotWorkspace(cwd: string): WorkspaceSnapshot {
+  const snapshot = new Map<string, string>();
+  const visit = (directory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (directory === cwd && entry.name === ".git") {
+        continue;
+      }
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath);
+      } else if (entry.isFile()) {
+        snapshot.set(path.relative(cwd, absolutePath), fs.readFileSync(absolutePath, "utf8"));
+      }
+    }
+  };
+  visit(cwd);
+  return snapshot;
 }
+
+function restoreWorkspace(cwd: string, snapshot: WorkspaceSnapshot): void {
+  for (const entry of fs.readdirSync(cwd, { withFileTypes: true })) {
+    if (entry.name !== ".git") {
+      fs.rmSync(path.join(cwd, entry.name), { recursive: true, force: true });
+    }
+  }
+  for (const [relativePath, contents] of snapshot) {
+    const absolutePath = path.join(cwd, relativePath);
+    fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+    fs.writeFileSync(absolutePath, contents, "utf8");
+  }
+}
+
+function createUnifiedDiff(before: WorkspaceSnapshot, after: WorkspaceSnapshot): string {
+  const paths = new Set([...before.keys(), ...after.keys()]);
+  return [...paths]
+    .toSorted()
+    .flatMap((filePath) => {
+      const oldContents = before.get(filePath) ?? "";
+      const newContents = after.get(filePath) ?? "";
+      if (oldContents === newContents) {
+        return [];
+      }
+      const oldLines = oldContents.split("\n").filter((line, index, lines) => {
+        return index < lines.length - 1 || line.length > 0;
+      });
+      const newLines = newContents.split("\n").filter((line, index, lines) => {
+        return index < lines.length - 1 || line.length > 0;
+      });
+      return [
+        `diff --git a/${filePath} b/${filePath}`,
+        `--- a/${filePath}`,
+        `+++ b/${filePath}`,
+        `@@ -1,${oldLines.length} +1,${newLines.length} @@`,
+        ...oldLines.map((line) => `-${line}`),
+        ...newLines.map((line) => `+${line}`),
+      ];
+    })
+    .join("\n");
+}
+
+const fakeCheckpointStore: CheckpointStoreShape = {
+  isGitRepository: (cwd) => Effect.succeed(fs.existsSync(path.join(cwd, ".git"))),
+  captureCheckpoint: ({ cwd, checkpointRef }) =>
+    Effect.sync(() => {
+      const snapshots = fakeCheckpointSnapshots.get(cwd) ?? new Map();
+      snapshots.set(checkpointRef, snapshotWorkspace(cwd));
+      fakeCheckpointSnapshots.set(cwd, snapshots);
+    }),
+  hasCheckpointRef: ({ cwd, checkpointRef }) =>
+    Effect.succeed(fakeCheckpointSnapshots.get(cwd)?.has(checkpointRef) ?? false),
+  restoreCheckpoint: ({ cwd, checkpointRef }) =>
+    Effect.sync(() => {
+      const snapshot = fakeCheckpointSnapshots.get(cwd)?.get(checkpointRef);
+      if (!snapshot) {
+        return false;
+      }
+      restoreWorkspace(cwd, snapshot);
+      return true;
+    }),
+  diffCheckpoints: ({ cwd, fromCheckpointRef, toCheckpointRef }) =>
+    Effect.gen(function* () {
+      const snapshots = fakeCheckpointSnapshots.get(cwd);
+      const before = snapshots?.get(fromCheckpointRef);
+      const after = snapshots?.get(toCheckpointRef);
+      if (!before || !after) {
+        return yield* new CheckpointInvariantError({
+          operation: "fakeCheckpointStore.diffCheckpoints",
+          detail: `Missing checkpoint ${!before ? fromCheckpointRef : toCheckpointRef}.`,
+        });
+      }
+      return createUnifiedDiff(before, after);
+    }),
+  deleteCheckpointRefs: ({ cwd, checkpointRefs }) =>
+    Effect.sync(() => {
+      const snapshots = fakeCheckpointSnapshots.get(cwd);
+      for (const checkpointRef of checkpointRefs) {
+        snapshots?.delete(checkpointRef);
+      }
+    }),
+};
 
 function createGitRepository() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-checkpoint-handler-"));
-  runGit(cwd, ["init", "--initial-branch=main"]);
-  runGit(cwd, ["config", "user.email", "test@example.com"]);
-  runGit(cwd, ["config", "user.name", "Test User"]);
+  fs.mkdirSync(path.join(cwd, ".git"));
   fs.writeFileSync(path.join(cwd, "README.md"), "v1\n", "utf8");
-  runGit(cwd, ["add", "."]);
-  runGit(cwd, ["commit", "-m", "Initial"]);
   return cwd;
 }
 
 function gitRefExists(cwd: string, ref: string): boolean {
-  try {
-    runGit(cwd, ["show-ref", "--verify", "--quiet", ref]);
-    return true;
-  } catch {
-    return false;
-  }
+  return fakeCheckpointSnapshots.get(cwd)?.has(ref) ?? false;
 }
 
 function gitShowFileAtRef(cwd: string, ref: string, filePath: string): string {
-  return runGit(cwd, ["show", `${ref}:${filePath}`]);
+  const contents = fakeCheckpointSnapshots.get(cwd)?.get(ref)?.get(filePath);
+  if (contents === undefined) {
+    throw new Error(`Missing fake checkpoint file ${ref}:${filePath}.`);
+  }
+  return contents;
 }
 
 async function waitForGitFileAtRefContent(
@@ -255,6 +349,7 @@ describe("CheckpointReactor", () => {
       await runtime.dispose();
     }
     runtime = null;
+    fakeCheckpointSnapshots.clear();
     while (tempDirs.length > 0) {
       const dir = tempDirs.pop();
       if (dir) {
@@ -290,7 +385,7 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
-      Layer.provideMerge(CheckpointStoreLive),
+      Layer.provideMerge(Layer.succeed(CheckpointStore, fakeCheckpointStore)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );

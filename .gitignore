@@ -18,3 +18,7 @@ apps/web/.playwright
 apps/web/playwright-report
 apps/web/src/components/__screenshots__
 .vitest-*
+
+# Keep repository-wide agent instructions under version control even when a
+# developer's global Git ignore file excludes AGENTS.md.
+!AGENTS.md

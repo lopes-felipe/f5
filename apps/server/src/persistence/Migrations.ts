@@ -143,6 +143,18 @@ export const LATEST_MIGRATION_ID = Math.max(
   ...Object.keys(MIGRATIONS).map((key) => Number.parseInt(key, 10)),
 );
 
+const latestMigrationKey = Object.keys(MIGRATIONS).find((key) =>
+  key.startsWith(`${LATEST_MIGRATION_ID}_`),
+);
+if (!latestMigrationKey) {
+  throw new Error(`Could not resolve migration ${LATEST_MIGRATION_ID}.`);
+}
+
+export const LATEST_MIGRATION = {
+  migrationId: LATEST_MIGRATION_ID,
+  name: latestMigrationKey.slice(latestMigrationKey.indexOf("_") + 1),
+} as const;
+
 const loader = Migrator.fromRecord(MIGRATIONS);
 
 /**
