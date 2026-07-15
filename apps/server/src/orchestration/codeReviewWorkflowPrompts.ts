@@ -9,8 +9,8 @@ export function buildCodeReviewReviewerPrompt(input: {
   readonly provider?: ProviderKind;
 }): string {
   const branchInstructions = input.branch
-    ? `Review the changes by comparing the current workspace against \`${input.branch}\`, using commands like \`git diff ${input.branch}\` and targeted file inspection.`
-    : "Review the current workspace changes using git diff and targeted file inspection.";
+    ? `When the review target is not a pull request, review the changes by comparing the current workspace against \`${input.branch}\`, using commands like \`git diff ${input.branch}\` and targeted file inspection.`
+    : "When the review target is not a pull request, review the current workspace changes using git diff and targeted file inspection.";
 
   return joinPromptSections([
     `You are ${input.reviewerLabel} in a standalone code review workflow.`,
@@ -18,6 +18,11 @@ export function buildCodeReviewReviewerPrompt(input: {
     `Follow the user's review instructions below:
 
 ${input.reviewPrompt}`,
+    `## Review Target
+- Resolve the exact review target from the user's instructions before inspecting changes.
+- If the user's instructions identify a pull request by URL or number, that pull request is the authoritative review target. Verify whether the local checkout represents the pull request's head before relying on workspace state or a local diff.
+- If the local checkout does not represent the requested pull request, do not review the locally checked-out branch and do not switch branches. Use available Git/GitHub skills, APIs, or CLI tools to retrieve the actual pull request metadata, base and head revisions, diff, and relevant file contents.
+- If the requested pull request cannot be accessed, state that the review cannot be completed. Do not substitute the local checkout or another branch as the review target.`,
     providerGuidanceSection(input.provider),
     `## Requirements
 - Do not modify any files.
