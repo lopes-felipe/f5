@@ -15,6 +15,7 @@ import {
   CodexAppServerManager,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
+  legacyCodexApprovalDecision,
   normalizeCodexModelSlug,
   readCodexAccountSnapshot,
   readEnabledSkillsFromSkillsListResponse,
@@ -143,8 +144,11 @@ function createPendingUserInputHarness() {
     )
     .mockReturnValue(context);
   const writeMessage = vi
-    .spyOn(manager as unknown as { writeMessage: (...args: unknown[]) => void }, "writeMessage")
-    .mockImplementation(() => {});
+    .spyOn(
+      manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+      "writeMessage",
+    )
+    .mockResolvedValue();
   const emitEvent = vi
     .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
     .mockImplementation(() => {});
@@ -193,8 +197,11 @@ function createPendingApprovalHarness(
     )
     .mockReturnValue(context);
   const writeMessage = vi
-    .spyOn(manager as unknown as { writeMessage: (...args: unknown[]) => void }, "writeMessage")
-    .mockImplementation(() => {});
+    .spyOn(
+      manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+      "writeMessage",
+    )
+    .mockResolvedValue();
   const emitEvent = vi
     .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
     .mockImplementation(() => {});
@@ -493,6 +500,9 @@ describe("startSession", () => {
       },
       capabilities: {
         experimentalApi: true,
+        requestAttestation: false,
+        mcpServerOpenaiFormElicitation: false,
+        optOutNotificationMethods: ["hook/started"],
       },
     });
   });
@@ -1649,6 +1659,15 @@ describe("thread checkpoint control", () => {
 
 describe("respondToRequest", () => {
   it.each([
+    ["accept", "approved"],
+    ["acceptForSession", "approved_for_session"],
+    ["decline", "denied"],
+    ["cancel", "abort"],
+  ] as const)("translates legacy approval decision %s", (decision, expected) => {
+    expect(legacyCodexApprovalDecision(decision)).toBe(expected);
+  });
+
+  it.each([
     [
       "accept",
       "accept",
@@ -1690,6 +1709,7 @@ describe("respondToRequest", () => {
           payload: {
             requestId: "req-permissions-1",
             requestKind: "permission",
+            requestMethod: "item/permissions/requestApproval",
             decision,
           },
         }),
@@ -1717,10 +1737,413 @@ describe("respondToRequest", () => {
         payload: {
           requestId: "req-permissions-1",
           requestKind: "permission",
+          requestMethod: "item/permissions/requestApproval",
           decision: "accept",
         },
       }),
     );
+  });
+
+  it("retains approval state when the JSON-RPC response write fails", async () => {
+    const { manager, context, requestId, writeMessage, emitEvent } = createPendingApprovalHarness();
+    writeMessage.mockRejectedValueOnce(new Error("stdin disconnected"));
+
+    await expect(
+      manager.respondToRequest(asThreadId("thread_1"), requestId, "accept"),
+    ).rejects.toThrow("stdin disconnected");
+
+    expect(context.pendingApprovals.has(requestId)).toBe(true);
+    expect(
+      (
+        context as typeof context & {
+          nativeRequestCorrelations: Map<string, { resolvedLocally: boolean }>;
+        }
+      ).nativeRequestCorrelations.get("43")?.resolvedLocally,
+    ).toBe(false);
+    expect(emitEvent).not.toHaveBeenCalled();
+  });
+
+  it("lets a provider resolution win a race with an in-flight approval write", async () => {
+    const { manager, context, requestId, writeMessage, emitEvent } = createPendingApprovalHarness();
+    let finishWrite: (() => void) | undefined;
+    writeMessage.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+
+    const response = manager.respondToRequest(asThreadId("thread_1"), requestId, "accept");
+    await vi.waitFor(() => expect(writeMessage).toHaveBeenCalledOnce());
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { requestId: 43 },
+    });
+    finishWrite?.();
+    await response;
+
+    expect(emitEvent).toHaveBeenCalledTimes(1);
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ method: "serverRequest/resolved" }),
+    );
+    expect(context.pendingApprovals.has(requestId)).toBe(false);
+  });
+
+  it.each([
+    ["accept", "approved"],
+    ["acceptForSession", "approved_for_session"],
+    ["decline", "denied"],
+    ["cancel", "abort"],
+  ] as const)("serializes legacy exec approval %s", async (decision, translated) => {
+    const manager = new CodexAppServerManager();
+    const requestId = ApprovalRequestId.makeUnsafe("req-legacy-exec");
+    const context = {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId: asThreadId("thread_1"),
+        runtimeMode: "full-access",
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+      pendingApprovals: new Map([
+        [
+          requestId,
+          {
+            requestId,
+            jsonRpcId: 81,
+            method: "execCommandApproval",
+            requestKind: "command",
+            responseKind: "legacy-decision",
+            threadId: asThreadId("thread_1"),
+          },
+        ],
+      ]),
+      nativeRequestCorrelations: new Map(),
+    };
+    vi.spyOn(
+      manager as unknown as { requireSession: (threadId: ThreadId) => unknown },
+      "requireSession",
+    ).mockReturnValue(context);
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    vi.spyOn(
+      manager as unknown as { emitEvent: (...args: unknown[]) => void },
+      "emitEvent",
+    ).mockImplementation(() => {});
+
+    await manager.respondToRequest(asThreadId("thread_1"), requestId, decision);
+
+    expect(writeMessage).toHaveBeenCalledWith(context, {
+      id: 81,
+      result: { decision: translated },
+    });
+  });
+});
+
+describe("Codex server requests", () => {
+  function requestContext() {
+    return {
+      session: {
+        provider: "codex",
+        status: "ready",
+        threadId: asThreadId("thread_1"),
+        runtimeMode: "full-access",
+        createdAt: "2026-02-10T00:00:00.000Z",
+        updatedAt: "2026-02-10T00:00:00.000Z",
+      },
+      pendingApprovals: new Map(),
+      pendingUserInputs: new Map(),
+      nativeRequestCorrelations: new Map(),
+    };
+  }
+
+  it("routes legacy callId fields to provider items", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest(context, {
+      id: 82,
+      method: "execCommandApproval",
+      params: {
+        conversationId: "thread_1",
+        callId: "exec-legacy-1",
+        command: ["git", "status"],
+      },
+    });
+
+    const pending = Array.from(context.pendingApprovals.values())[0] as
+      | Record<string, unknown>
+      | undefined;
+    expect(pending).toMatchObject({
+      method: "execCommandApproval",
+      requestKind: "command",
+      responseKind: "legacy-decision",
+      itemId: "exec-legacy-1",
+    });
+    expect(context.nativeRequestCorrelations.size).toBe(1);
+  });
+
+  it("bounds native request correlations while retaining the newest prompts", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const handleServerRequest = (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest.bind(manager);
+
+    for (let requestId = 1; requestId <= 300; requestId += 1) {
+      handleServerRequest(context, {
+        id: requestId,
+        method: "execCommandApproval",
+        params: {
+          conversationId: "thread_1",
+          callId: `exec-${requestId}`,
+          command: ["echo", String(requestId)],
+        },
+      });
+    }
+
+    expect(context.nativeRequestCorrelations.size).toBe(256);
+    expect(context.nativeRequestCorrelations.has("44")).toBe(false);
+    expect(context.nativeRequestCorrelations.has("45")).toBe(true);
+    expect(context.nativeRequestCorrelations.has("300")).toBe(true);
+
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 1 },
+    });
+
+    expect(context.pendingApprovals.size).toBe(299);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      method: "serverRequest/resolved",
+      requestKind: "command",
+      itemId: "exec-1",
+      payload: {
+        request: { method: "execCommandApproval", kind: "command" },
+        resolutionSource: "server",
+      },
+    });
+  });
+
+  it("answers currentTime/read without creating a prompt", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(1_750_000_000_999);
+    try {
+      (
+        manager as unknown as {
+          handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+        }
+      ).handleServerRequest(context, { id: 83, method: "currentTime/read", params: {} });
+
+      await vi.waitFor(() => {
+        expect(writeMessage).toHaveBeenCalledWith(context, {
+          id: 83,
+          result: { currentTimeAt: 1_750_000_000 },
+        });
+      });
+    } finally {
+      dateNow.mockRestore();
+    }
+    expect(context.pendingApprovals.size).toBe(0);
+    expect(context.pendingUserInputs.size).toBe(0);
+  });
+
+  it("cancels unsupported MCP elicitations and emits an actionable warning", async () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const events: Array<{ method: string; message?: string }> = [];
+    manager.on("event", (event) =>
+      events.push({
+        method: event.method,
+        ...(event.message === undefined ? {} : { message: event.message }),
+      }),
+    );
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest(context, {
+      id: 84,
+      method: "mcpServer/elicitation/request",
+      params: { mode: "form", serverName: "example", message: "Pick a value" },
+    });
+
+    await vi.waitFor(() => {
+      expect(writeMessage).toHaveBeenCalledWith(context, {
+        id: 84,
+        result: { action: "cancel", content: null, _meta: null },
+      });
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        method: "protocol/unsupportedServerRequest",
+        message: expect.stringContaining("does not support yet"),
+      }),
+    ]);
+  });
+
+  it.each([
+    ["item/tool/call", "dynamic tool"],
+    ["account/chatgptAuthTokens/refresh", "auth-token refresh"],
+    ["attestation/generate", "attestation"],
+  ] as const)("rejects unexpected %s requests deterministically", async (method, messagePart) => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const events: Array<{ method: string; message?: string }> = [];
+    manager.on("event", (event) =>
+      events.push({
+        method: event.method,
+        ...(event.message === undefined ? {} : { message: event.message }),
+      }),
+    );
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+
+    (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest(context, { id: 90, method, params: {} });
+
+    await vi.waitFor(() => {
+      expect(writeMessage).toHaveBeenCalledWith(context, {
+        id: 90,
+        error: {
+          code: -32000,
+          message: expect.stringContaining(messagePart),
+        },
+      });
+    });
+    expect(events).toEqual([
+      expect.objectContaining({
+        method: "protocol/unsupportedServerRequest",
+        message: expect.stringContaining(messagePart),
+      }),
+    ]);
+  });
+
+  it("clears externally resolved prompts while preserving request type", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const requestId = ApprovalRequestId.makeUnsafe("req-external");
+    context.pendingApprovals.set(requestId, {});
+    context.nativeRequestCorrelations.set("85", {
+      nativeRequestId: "85",
+      requestId,
+      method: "applyPatchApproval",
+      requestKind: "file-change",
+      responseChannel: "approval",
+      itemId: "patch-call-1",
+      resolvedLocally: false,
+    });
+    const events: Array<Record<string, unknown>> = [];
+    manager.on("event", (event) => events.push(event as unknown as Record<string, unknown>));
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 85 },
+    });
+
+    expect(context.pendingApprovals.size).toBe(0);
+    expect(context.nativeRequestCorrelations.size).toBe(0);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      method: "serverRequest/resolved",
+      requestId: "req-external",
+      requestKind: "file-change",
+      itemId: "patch-call-1",
+      payload: {
+        request: { method: "applyPatchApproval", kind: "file-change" },
+        resolutionSource: "server",
+      },
+    });
+  });
+
+  it("suppresses the server acknowledgement after a local resolution", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const requestId = ApprovalRequestId.makeUnsafe("req-local");
+    context.nativeRequestCorrelations.set("86", {
+      nativeRequestId: "86",
+      requestId,
+      method: "execCommandApproval",
+      requestKind: "command",
+      responseChannel: "approval",
+      resolvedLocally: true,
+    });
+    const events: unknown[] = [];
+    manager.on("event", (event) => events.push(event));
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 86 },
+    });
+
+    expect(events).toEqual([]);
+    expect(context.nativeRequestCorrelations.size).toBe(0);
+  });
+
+  it("suppresses uncorrelated late server acknowledgements", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const events: unknown[] = [];
+    manager.on("event", (event) => events.push(event));
+
+    (
+      manager as unknown as {
+        handleServerNotification: (context: unknown, notification: Record<string, unknown>) => void;
+      }
+    ).handleServerNotification(context, {
+      method: "serverRequest/resolved",
+      params: { threadId: "thread_1", requestId: 999 },
+    });
+
+    expect(events).toEqual([]);
   });
 });
 
@@ -1794,6 +2217,26 @@ describe("respondToUserInput", () => {
         },
       }),
     );
+  });
+
+  it("retains user-input state when the JSON-RPC response write fails", async () => {
+    const { manager, context, writeMessage, emitEvent } = createPendingUserInputHarness();
+    const requestId = ApprovalRequestId.makeUnsafe("req-user-input-1");
+    writeMessage.mockRejectedValueOnce(new Error("stdin disconnected"));
+
+    await expect(
+      manager.respondToUserInput(asThreadId("thread_1"), requestId, { scope: "All" }),
+    ).rejects.toThrow("stdin disconnected");
+
+    expect(context.pendingUserInputs.has(requestId)).toBe(true);
+    expect(
+      (
+        context as typeof context & {
+          nativeRequestCorrelations: Map<string, { resolvedLocally: boolean }>;
+        }
+      ).nativeRequestCorrelations.get("42")?.resolvedLocally,
+    ).toBe(false);
+    expect(emitEvent).not.toHaveBeenCalled();
   });
 
   it("tracks file-read approval requests with the correct method", () => {

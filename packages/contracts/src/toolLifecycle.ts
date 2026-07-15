@@ -6,4 +6,6 @@ export const TOOL_LIFECYCLE_ITEM_TYPES = [
   "collab_agent_tool_call",
   "web_search",
   "image_view",
+  "image_generation",
+  "sleep",
 ] as const;

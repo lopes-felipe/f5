@@ -3,6 +3,8 @@ import {
   RUNTIME_WARNING_VISIBILITY_OPTIONS,
   SIDEBAR_THREAD_PREVIEW_COUNT_MAX,
   SIDEBAR_THREAD_PREVIEW_COUNT_MIN,
+  WORK_LOG_FILTER_OPTIONS,
+  WORK_LOG_MODE_OPTIONS,
   WORKSPACE_FILE_TREE_ENTRY_LIMIT_MAX,
   WORKSPACE_FILE_TREE_ENTRY_LIMIT_MIN,
   WORKSPACE_FILE_TREE_ENTRY_LIMIT_OPTIONS,
@@ -20,12 +22,24 @@ const RESPONSE_AUXILIARY_KEYS = [
   "enableAssistantStreaming",
   "openFileLinksInPanel",
   "workspaceFileTreeEntryLimit",
+  "workLogMode",
+  "workLogFilter",
 ] as const;
 const SIDEBAR_THREAD_PREVIEW_COUNT_OPTIONS = [1, 2, 3, 4, 5, 6, 8, 10, 12, 15] as const;
 const RUNTIME_WARNING_VISIBILITY_LABELS = {
   hidden: "Hidden",
   summarized: "Compact",
   full: "Full",
+} as const;
+const WORK_LOG_MODE_LABELS = {
+  essential: "Essential",
+  diagnostics: "Diagnostics",
+} as const;
+const WORK_LOG_FILTER_LABELS = {
+  all: "All activity",
+  tools: "Tools",
+  hooks: "Hooks",
+  issues: "Issues",
 } as const;
 
 function hasSettingsChanges<K extends keyof AppSettings>(
@@ -40,6 +54,14 @@ function isRuntimeWarningVisibility(
   value: string | null,
 ): value is (typeof RUNTIME_WARNING_VISIBILITY_OPTIONS)[number] {
   return RUNTIME_WARNING_VISIBILITY_OPTIONS.some((option) => option === value);
+}
+
+function isWorkLogMode(value: string | null): value is AppSettings["workLogMode"] {
+  return WORK_LOG_MODE_OPTIONS.some((option) => option === value);
+}
+
+function isWorkLogFilter(value: string | null): value is AppSettings["workLogFilter"] {
+  return WORK_LOG_FILTER_OPTIONS.some((option) => option === value);
 }
 
 export function DisplaySettings() {
@@ -124,6 +146,72 @@ export function DisplaySettings() {
               ))}
             </SelectPopup>
           </Select>
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-border bg-background/50 p-4">
+          <div>
+            <p className="text-sm font-medium text-foreground">Work log</p>
+            <p className="text-xs text-muted-foreground">
+              Choose which operational activity appears in every chat.
+            </p>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Detail level</p>
+              <p className="text-xs text-muted-foreground">
+                Essential hides successful hooks and reviews. Diagnostics shows the full activity
+                history.
+              </p>
+            </div>
+            <Select
+              value={settings.workLogMode}
+              onValueChange={(value) => {
+                if (isWorkLogMode(value)) {
+                  updateSettings({ workLogMode: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-36" aria-label="Work log detail level">
+                <SelectValue>{WORK_LOG_MODE_LABELS[settings.workLogMode]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                {WORK_LOG_MODE_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {WORK_LOG_MODE_LABELS[option]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </div>
+
+          <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Category</p>
+              <p className="text-xs text-muted-foreground">
+                Show all work-log entries or limit every chat to one category.
+              </p>
+            </div>
+            <Select
+              value={settings.workLogFilter}
+              onValueChange={(value) => {
+                if (isWorkLogFilter(value)) {
+                  updateSettings({ workLogFilter: value });
+                }
+              }}
+            >
+              <SelectTrigger className="w-36" aria-label="Work log category">
+                <SelectValue>{WORK_LOG_FILTER_LABELS[settings.workLogFilter]}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup align="end">
+                {WORK_LOG_FILTER_OPTIONS.map((option) => (
+                  <SelectItem key={option} value={option}>
+                    {WORK_LOG_FILTER_LABELS[option]}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+          </div>
         </div>
 
         <DisplayProfileSelector settings={settings} updateSettings={updateSettings}>

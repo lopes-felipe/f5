@@ -10,7 +10,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode
 import type { InlineExactFileChangeDiffProps } from "./InlineExactFileChangeDiff";
 import type { InlineFileChangeDiffProps } from "./InlineFileChangeDiff";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { deriveTimelineEntries, formatElapsed } from "../../session-logic";
+import { deriveTimelineEntries, formatDuration, formatElapsed } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
@@ -20,9 +20,11 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  ClockIcon,
   EyeIcon,
   GlobeIcon,
   HammerIcon,
+  ImageIcon,
   type LucideIcon,
   SearchIcon,
   SquarePenIcon,
@@ -70,6 +72,7 @@ import { COMPOSER_INLINE_CHIP_CLASS_NAME } from "../composerInlineChip";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 import { classifyCompactCommand, isGenericCommandTitle } from "@t3tools/shared/commandSummary";
+import { WORK_LOG_PAGE_SIZE } from "./workLogConstants";
 
 type InlineExactFileChangeDiffComponent =
   (typeof import("./InlineExactFileChangeDiff"))["InlineExactFileChangeDiff"];
@@ -111,7 +114,6 @@ function InlineFileChangeDiff(props: InlineFileChangeDiffProps) {
   return <Component {...props} />;
 }
 
-const MAX_VISIBLE_WORK_LOG_ENTRIES = 6;
 const LEGEND_LIST_IS_AT_END_THRESHOLD = 0.1;
 
 interface MessagesTimelineProps {
@@ -139,8 +141,8 @@ interface MessagesTimelineProps {
    * long streaming turns we should port that split.
    */
   nowIso: string;
-  expandedWorkGroups: Record<string, boolean>;
-  onToggleWorkGroup: (groupId: string) => void;
+  expandedWorkGroups: Record<string, number>;
+  onToggleWorkGroup: (groupId: string, paginatedEntryCount: number) => void;
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
   onRevertUserMessage: (messageId: MessageId) => void;
@@ -306,6 +308,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           id: timelineEntry.id,
           createdAt: timelineEntry.createdAt,
           commandExecution: timelineEntry.commandExecution,
+          ...(timelineEntry.nestedDiagnostics
+            ? { nestedDiagnostics: timelineEntry.nestedDiagnostics }
+            : {}),
         });
         continue;
       }
@@ -565,13 +570,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     : undefined;
                   return [
                     entry.id,
+                    entry.label,
                     entry.status ?? "",
                     entry.itemType ?? "",
+                    entry.warningCount ?? 1,
+                    entry.diagnostic?.status ?? "",
+                    entry.diagnostic?.sourcePath ?? "",
+                    entry.diagnostic?.durationMs ?? "",
+                    entry.diagnostic?.output?.length ?? 0,
+                    entry.diagnostic?.entries?.length ?? 0,
                     entry.turnId ?? "",
                     checkpointTurnCount,
                     entry.fileChangeId ?? "",
                     fileChangeSummary?.status ?? "",
                     fileChangeSummary?.hasPatch ? "patch" : "no-patch",
+                    ...(entry.nestedDiagnostics?.map((diagnostic) =>
+                      diagnosticDataVersion(diagnostic),
+                    ) ?? []),
                     isInlineFileChangeDiffExpanded(
                       entry.id,
                       chatDiffContext.expandedFileChangeDiffs,
@@ -588,6 +603,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                 row.createdAt,
                 row.commandExecution.status,
                 row.commandExecution.completedAt ?? "",
+                ...(row.nestedDiagnostics?.map((diagnostic) => diagnosticDataVersion(diagnostic)) ??
+                  []),
               ].join(":");
             case "proposed-plan":
               return [row.kind, row.id, row.createdAt, row.proposedPlan.updatedAt].join(":");
@@ -606,7 +623,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           const groupId = row.id;
           const groupState = resolveWorkGroupRenderState(
             row.groupedEntries,
-            expandedWorkGroups[groupId] ?? false,
+            expandedWorkGroups[groupId] ?? WORK_LOG_PAGE_SIZE,
           );
           const standaloneExpandedMcpEntry = resolveStandaloneExpandedMcpWorkEntry(
             row.groupedEntries,
@@ -618,12 +635,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           if (standaloneExpandedMcpEntry) {
             return (
               <div className="min-w-0 px-1 py-0.5">
-                <McpToolCallRow
+                <WorkEntryRow
                   workEntry={standaloneExpandedMcpEntry}
-                  expandByDefault={settings.expandMcpToolCallCardsByDefault}
+                  expandMcpToolCalls={settings.expandMcpToolCalls}
+                  expandMcpByDefault={settings.expandMcpToolCallCardsByDefault}
                   turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
                   workspaceRoot={workspaceRoot}
                   markdownCwd={markdownCwd}
+                  resolvedTheme={resolvedTheme}
+                  showFileChangeDiffsInline={settings.showFileChangeDiffsInline}
+                  chatDiffContext={chatDiffContext}
+                  onOpenTurnDiff={onOpenTurnDiff}
                 />
               </div>
             );
@@ -640,45 +662,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     <button
                       type="button"
                       className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/55 transition-colors duration-150 hover:text-foreground/75"
-                      onClick={() => onToggleWorkGroup(groupId)}
+                      onClick={() => onToggleWorkGroup(groupId, groupState.paginatedEntryCount)}
                     >
-                      {groupState.isExpanded ? "Show less" : `Show ${groupState.hiddenCount} more`}
+                      {groupState.isExpanded
+                        ? "Show less"
+                        : `Show ${Math.min(WORK_LOG_PAGE_SIZE, groupState.hiddenCount)} more`}
                     </button>
                   )}
                 </div>
               )}
               <div className="space-y-0.5">
-                {groupState.visibleEntries.map((workEntry) =>
-                  workEntry.itemType === "collab_agent_tool_call" ? (
-                    <SubagentWorkEntryRow
-                      key={`work-row:${workEntry.id}`}
-                      workEntry={workEntry}
-                      turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
-                      workspaceRoot={workspaceRoot}
-                      markdownCwd={markdownCwd}
-                    />
-                  ) : workEntry.itemType === "mcp_tool_call" && settings.expandMcpToolCalls ? (
-                    <McpToolCallRow
-                      key={`work-row:${workEntry.id}`}
-                      workEntry={workEntry}
-                      expandByDefault={settings.expandMcpToolCallCardsByDefault}
-                      turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
-                      workspaceRoot={workspaceRoot}
-                      markdownCwd={markdownCwd}
-                    />
-                  ) : (
-                    <SimpleWorkEntryRow
-                      key={`work-row:${workEntry.id}`}
-                      workEntry={workEntry}
-                      turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
-                      workspaceRoot={workspaceRoot}
-                      resolvedTheme={resolvedTheme}
-                      showFileChangeDiffsInline={settings.showFileChangeDiffsInline}
-                      chatDiffContext={chatDiffContext}
-                      onOpenTurnDiff={onOpenTurnDiff}
-                    />
-                  ),
-                )}
+                {groupState.visibleEntries.map((workEntry) => (
+                  <WorkEntryRow
+                    key={`work-row:${workEntry.id}`}
+                    workEntry={workEntry}
+                    expandMcpToolCalls={settings.expandMcpToolCalls}
+                    expandMcpByDefault={settings.expandMcpToolCallCardsByDefault}
+                    turnDiffSummaryByTurnId={turnDiffSummaryByTurnId}
+                    workspaceRoot={workspaceRoot}
+                    markdownCwd={markdownCwd}
+                    resolvedTheme={resolvedTheme}
+                    showFileChangeDiffsInline={settings.showFileChangeDiffsInline}
+                    chatDiffContext={chatDiffContext}
+                    onOpenTurnDiff={onOpenTurnDiff}
+                  />
+                ))}
               </div>
             </div>
           );
@@ -913,6 +921,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
             timestampFormat={timestampFormat}
             onToggle={() => onToggleCommandExecution(row.commandExecution.id)}
           />
+          {row.nestedDiagnostics && row.nestedDiagnostics.length > 0 ? (
+            <NestedDiagnosticList diagnostics={row.nestedDiagnostics} className="mt-1" />
+          ) : null}
         </div>
       )}
 
@@ -1047,6 +1058,17 @@ type TimelineProposedPlan = Extract<TimelineEntry, { kind: "proposed-plan" }>["p
 type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
 type TimelineCommandExecution = Extract<TimelineEntry, { kind: "command" }>["commandExecution"];
 
+function diagnosticDataVersion(entry: TimelineWorkEntry): string {
+  return [
+    entry.id,
+    entry.diagnostic?.status ?? "unknown",
+    entry.diagnostic?.sourcePath ?? "",
+    entry.diagnostic?.durationMs ?? "",
+    entry.diagnostic?.output?.length ?? 0,
+    entry.diagnostic?.entries?.length ?? 0,
+  ].join(":");
+}
+
 function shouldRenderWorkEntryAsStandaloneRow(
   entry: TimelineWorkEntry,
   options: { settingsExpandMcpToolCalls: boolean },
@@ -1092,6 +1114,7 @@ type TimelineRow =
       id: string;
       createdAt: string;
       commandExecution: TimelineCommandExecution;
+      nestedDiagnostics?: ReadonlyArray<TimelineWorkEntry>;
     }
   | { kind: "working"; id: string; createdAt: string | null };
 
@@ -1100,26 +1123,35 @@ interface WorkGroupRenderState {
   hasOverflow: boolean;
   hiddenCount: number;
   isExpanded: boolean;
+  paginatedEntryCount: number;
   showHeader: boolean;
   visibleEntries: TimelineWorkEntry[];
 }
 
 function resolveWorkGroupRenderState(
   groupedEntries: TimelineWorkEntry[],
-  isExpanded: boolean,
+  revealedEntryCount: number,
 ): WorkGroupRenderState {
-  const hasOverflow = groupedEntries.length > MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const visibleEntries =
-    hasOverflow && !isExpanded
-      ? groupedEntries.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES)
-      : groupedEntries;
-  const hiddenCount = groupedEntries.length - visibleEntries.length;
+  const paginatedEntries = groupedEntries.filter((entry) => !isFileChangeWorkEntry(entry));
+  const hasOverflow = paginatedEntries.length > WORK_LOG_PAGE_SIZE;
+  const normalizedRevealCount = Math.max(WORK_LOG_PAGE_SIZE, revealedEntryCount);
+  const visiblePaginatedEntries = hasOverflow
+    ? paginatedEntries.slice(-Math.min(paginatedEntries.length, normalizedRevealCount))
+    : paginatedEntries;
+  const visiblePaginatedEntrySet = new Set(visiblePaginatedEntries);
+  const visibleEntries = hasOverflow
+    ? groupedEntries.filter(
+        (entry) => isFileChangeWorkEntry(entry) || visiblePaginatedEntrySet.has(entry),
+      )
+    : groupedEntries;
+  const hiddenCount = paginatedEntries.length - visiblePaginatedEntries.length;
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   return {
     groupLabel: onlyToolEntries ? "Tool calls" : "Work log",
     hasOverflow,
     hiddenCount,
-    isExpanded,
+    isExpanded: hasOverflow && hiddenCount === 0,
+    paginatedEntryCount: paginatedEntries.length,
     showHeader: hasOverflow || !onlyToolEntries,
     visibleEntries,
   };
@@ -1656,9 +1688,16 @@ function isFileReadWorkEntry(
 }
 
 function isFileChangeWorkEntry(
-  workEntry: Pick<TimelineWorkEntry, "itemType" | "label" | "requestKind" | "toolTitle">,
+  workEntry: Pick<
+    TimelineWorkEntry,
+    "fileChangeId" | "itemType" | "label" | "requestKind" | "toolTitle"
+  >,
 ): boolean {
-  if (workEntry.requestKind === "file-change" || workEntry.itemType === "file_change") {
+  if (
+    workEntry.fileChangeId ||
+    workEntry.requestKind === "file-change" ||
+    workEntry.itemType === "file_change"
+  ) {
     return true;
   }
   const normalizedLabel = normalizedWorkEntryHeading(workEntry).toLowerCase();
@@ -1939,6 +1978,8 @@ function workEntryIcon(workEntry: TimelineWorkEntry): TimelineEntryIcon {
   }
   if (workEntry.itemType === "web_search") return GlobeIcon;
   if (workEntry.itemType === "image_view") return EyeIcon;
+  if (workEntry.itemType === "image_generation") return ImageIcon;
+  if (workEntry.itemType === "sleep") return ClockIcon;
 
   switch (workEntry.itemType) {
     case "mcp_tool_call":
@@ -2155,6 +2196,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             <span className={cn("text-foreground/80", workToneClass(workEntry.tone))}>
               {heading}
             </span>
+            {(workEntry.warningCount ?? 1) > 1 ? (
+              <span className="ml-1 rounded bg-secondary/60 px-1 py-0.5 text-[9px] tabular-nums text-muted-foreground/65">
+                ×{workEntry.warningCount}
+              </span>
+            ) : null}
             {inlineFilePreview ? (
               <>
                 <span className="text-muted-foreground/55"> {" - "}</span>
@@ -2450,10 +2496,15 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   const preview =
     workEntry.subagentDescription ??
     workEntry.detail ??
+    workEntry.subagentPath ??
     workEntry.subagentResult ??
     workEntryPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot);
   const displayText = preview ? `${heading} - ${preview}` : heading;
-  const hasNestedContent = Boolean(workEntry.subagentPrompt) || Boolean(workEntry.subagentResult);
+  const hasNestedContent =
+    Boolean(workEntry.subagentPrompt) ||
+    Boolean(workEntry.subagentResult) ||
+    Boolean(workEntry.subagentPath) ||
+    Boolean(workEntry.subagentThreadId);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setUserOverrodeOpen(true);
@@ -2488,7 +2539,7 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
             </span>
             {preview && <span className="text-muted-foreground/55"> - {preview}</span>}
           </p>
-          {(workEntry.subagentType || workEntry.subagentModel) && (
+          {(workEntry.subagentType || workEntry.subagentModel || workEntry.subagentThreadId) && (
             <div className="mt-1 flex flex-wrap gap-1">
               {workEntry.subagentType && (
                 <span className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 text-[10px] text-muted-foreground/75">
@@ -2498,6 +2549,14 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
               {workEntry.subagentModel && (
                 <span className="rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75">
                   {workEntry.subagentModel}
+                </span>
+              )}
+              {workEntry.subagentThreadId && (
+                <span
+                  className="max-w-48 truncate rounded-md border border-border/55 bg-background/75 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75"
+                  title={workEntry.subagentThreadId}
+                >
+                  {workEntry.subagentThreadId}
                 </span>
               )}
             </div>
@@ -2515,6 +2574,16 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
       {hasNestedContent && (
         <CollapsiblePanel>
           <div className="mt-1 ml-6 space-y-2 rounded-lg border border-border/45 bg-background/60 p-3">
+            {workEntry.subagentPath && (
+              <div>
+                <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                  Agent
+                </p>
+                <p className="break-all font-mono text-[11px] text-muted-foreground/75">
+                  {workEntry.subagentPath}
+                </p>
+              </div>
+            )}
             {workEntry.subagentPrompt && (
               <div>
                 <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
@@ -2547,5 +2616,223 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
         </CollapsiblePanel>
       )}
     </Collapsible>
+  );
+});
+
+function diagnosticSourceLabel(workEntry: TimelineWorkEntry): string | undefined {
+  const diagnostic = workEntry.diagnostic;
+  if (!diagnostic) {
+    return undefined;
+  }
+  const sourceName = diagnostic.sourcePath
+    ?.split(/[\\/]/u)
+    .filter((part) => part.length > 0)
+    .at(-1);
+  if (diagnostic.source && sourceName) {
+    return `${diagnostic.source}:${sourceName}`;
+  }
+  return sourceName ?? diagnostic.source;
+}
+
+function diagnosticEntriesText(entries: ReadonlyArray<unknown> | undefined): string | undefined {
+  if (!entries || entries.length === 0) {
+    return undefined;
+  }
+  try {
+    return JSON.stringify(entries, null, 2);
+  } catch {
+    return "[Diagnostic entries could not be serialized]";
+  }
+}
+
+const DiagnosticWorkEntryRow = memo(function DiagnosticWorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+}) {
+  const { workEntry } = props;
+  const diagnostic = workEntry.diagnostic;
+  const [open, setOpen] = useState(false);
+  if (!diagnostic) {
+    return null;
+  }
+  const sourceLabel = diagnosticSourceLabel(workEntry);
+  const duration =
+    diagnostic.durationMs !== undefined ? formatDuration(diagnostic.durationMs) : undefined;
+  const metadata = [
+    sourceLabel,
+    diagnostic.displayOrder !== undefined ? `order ${diagnostic.displayOrder}` : undefined,
+    diagnostic.handlerType,
+    duration,
+    diagnostic.status,
+  ].filter((value): value is string => Boolean(value));
+  const canExpand = Boolean(
+    diagnostic.sourcePath ||
+    diagnostic.statusMessage ||
+    diagnostic.rationale ||
+    diagnostic.output ||
+    (diagnostic.entries && diagnostic.entries.length > 0),
+  );
+  const fullOutput = open
+    ? (diagnostic.output ?? diagnosticEntriesText(diagnostic.entries))
+    : undefined;
+  const failed = workEntry.isIssue === true;
+  const StatusIcon = failed ? CircleAlertIcon : CheckIcon;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md">
+      <CollapsibleTrigger
+        disabled={!canExpand}
+        className={cn(
+          "flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-1 text-left",
+          canExpand && "hover:bg-secondary/35",
+        )}
+      >
+        <span className="flex size-5 shrink-0 items-center justify-center">
+          <StatusIcon
+            className={cn("size-3", failed ? "text-rose-400/70" : "text-muted-foreground/60")}
+          />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-[11px] leading-4 text-muted-foreground/70">
+            <span className={failed ? "text-rose-300/75" : "text-foreground/70"}>
+              {workEntry.label}
+            </span>
+            {metadata.length > 0 ? (
+              <span className="text-muted-foreground/45"> — {metadata.join(" · ")}</span>
+            ) : null}
+          </p>
+        </div>
+        {canExpand ? (
+          <ChevronRightIcon
+            className={cn(
+              "size-3 shrink-0 text-muted-foreground/45 transition-transform",
+              open && "rotate-90",
+            )}
+          />
+        ) : null}
+      </CollapsibleTrigger>
+      {canExpand ? (
+        <CollapsiblePanel>
+          <div className="ml-6 space-y-2 rounded-md border border-border/40 bg-background/55 p-2 text-[10px] text-muted-foreground/70">
+            {diagnostic.sourcePath ? (
+              <div>
+                <p className="mb-0.5 uppercase tracking-[0.1em] text-muted-foreground/45">Source</p>
+                <p className="break-all font-mono">{diagnostic.sourcePath}</p>
+              </div>
+            ) : null}
+            {diagnostic.statusMessage || diagnostic.rationale ? (
+              <div>
+                <p className="mb-0.5 uppercase tracking-[0.1em] text-muted-foreground/45">Status</p>
+                <p className="whitespace-pre-wrap wrap-break-word">
+                  {diagnostic.statusMessage ?? diagnostic.rationale}
+                </p>
+              </div>
+            ) : null}
+            {fullOutput ? (
+              <div>
+                <p className="mb-0.5 uppercase tracking-[0.1em] text-muted-foreground/45">Output</p>
+                <pre className="max-h-72 overflow-auto whitespace-pre-wrap wrap-break-word rounded bg-secondary/35 p-2 font-mono">
+                  {fullOutput}
+                </pre>
+              </div>
+            ) : null}
+          </div>
+        </CollapsiblePanel>
+      ) : null}
+    </Collapsible>
+  );
+});
+
+const NestedDiagnosticList = memo(function NestedDiagnosticList(props: {
+  diagnostics: ReadonlyArray<TimelineWorkEntry>;
+  className?: string;
+}) {
+  const [revealedCount, setRevealedCount] = useState(WORK_LOG_PAGE_SIZE);
+  const normalizedRevealCount = Math.max(WORK_LOG_PAGE_SIZE, revealedCount);
+  const visibleDiagnostics = props.diagnostics.slice(
+    -Math.min(props.diagnostics.length, normalizedRevealCount),
+  );
+  const hiddenCount = props.diagnostics.length - visibleDiagnostics.length;
+  const hasOverflow = props.diagnostics.length > WORK_LOG_PAGE_SIZE;
+
+  return (
+    <div className={cn("ml-5 border-l border-border/45 pl-2", props.className)}>
+      {hasOverflow ? (
+        <div className="flex items-center justify-between gap-2 px-1 py-0.5">
+          <p className="text-[9px] uppercase tracking-[0.12em] text-muted-foreground/45">
+            Diagnostics ({props.diagnostics.length})
+          </p>
+          <button
+            type="button"
+            className="text-[9px] uppercase tracking-[0.1em] text-muted-foreground/50 transition-colors hover:text-foreground/75"
+            onClick={() => {
+              setRevealedCount((current) =>
+                current >= props.diagnostics.length
+                  ? WORK_LOG_PAGE_SIZE
+                  : Math.min(props.diagnostics.length, current + WORK_LOG_PAGE_SIZE),
+              );
+            }}
+          >
+            {hiddenCount === 0
+              ? "Show less"
+              : `Show ${Math.min(WORK_LOG_PAGE_SIZE, hiddenCount)} more`}
+          </button>
+        </div>
+      ) : null}
+      {visibleDiagnostics.map((diagnostic) => (
+        <DiagnosticWorkEntryRow key={`nested-diagnostic:${diagnostic.id}`} workEntry={diagnostic} />
+      ))}
+    </div>
+  );
+});
+
+const WorkEntryRow = memo(function WorkEntryRow(props: {
+  workEntry: TimelineWorkEntry;
+  expandMcpToolCalls: boolean;
+  expandMcpByDefault: boolean;
+  turnDiffSummaryByTurnId: Map<TurnId, TurnDiffSummary>;
+  workspaceRoot: string | undefined;
+  markdownCwd: string | undefined;
+  resolvedTheme: "light" | "dark";
+  showFileChangeDiffsInline: boolean;
+  chatDiffContext: ChatDiffContext;
+  onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
+}) {
+  const { workEntry } = props;
+  const row = workEntry.diagnostic ? (
+    <DiagnosticWorkEntryRow workEntry={workEntry} />
+  ) : workEntry.itemType === "collab_agent_tool_call" ? (
+    <SubagentWorkEntryRow
+      workEntry={workEntry}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      markdownCwd={props.markdownCwd}
+    />
+  ) : workEntry.itemType === "mcp_tool_call" && props.expandMcpToolCalls ? (
+    <McpToolCallRow
+      workEntry={workEntry}
+      expandByDefault={props.expandMcpByDefault}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      markdownCwd={props.markdownCwd}
+    />
+  ) : (
+    <SimpleWorkEntryRow
+      workEntry={workEntry}
+      turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId}
+      workspaceRoot={props.workspaceRoot}
+      resolvedTheme={props.resolvedTheme}
+      showFileChangeDiffsInline={props.showFileChangeDiffsInline}
+      chatDiffContext={props.chatDiffContext}
+      onOpenTurnDiff={props.onOpenTurnDiff}
+    />
+  );
+
+  return (
+    <div className="min-w-0">
+      {row}
+      {workEntry.nestedDiagnostics && workEntry.nestedDiagnostics.length > 0 ? (
+        <NestedDiagnosticList diagnostics={workEntry.nestedDiagnostics} />
+      ) : null}
+    </div>
   );
 });

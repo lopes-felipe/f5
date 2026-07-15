@@ -22,11 +22,13 @@ import type { deriveTimelineEntries } from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { MessagesTimeline } from "./MessagesTimeline";
+import { WORK_LOG_PAGE_SIZE } from "./workLogConstants";
 import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
 const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 
 type TimelineEntry = ReturnType<typeof deriveTimelineEntries>[number];
+type TimelineWorkEntry = Extract<TimelineEntry, { kind: "work" }>["entry"];
 const INLINE_DIFF_THREAD_ID = ThreadId.makeUnsafe("thread-inline-browser");
 const getTurnDiffSpy = vi.fn();
 const getFullThreadDiffSpy = vi.fn();
@@ -191,6 +193,7 @@ function TimelineHarness(
   const [expandedCommandExecutions, setExpandedCommandExecutions] = useState<
     Record<string, boolean>
   >(props.initialExpandedCommandExecutions ?? {});
+  const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, number>>({});
   const [expandedFileChangeDiffs, setExpandedFileChangeDiffs] = useState<Record<string, boolean>>(
     {},
   );
@@ -231,8 +234,19 @@ function TimelineHarness(
           turnDiffSummaryByAssistantMessageId={new Map()}
           turnDiffSummaryByTurnId={props.turnDiffSummaryByTurnId ?? new Map()}
           nowIso="2026-03-04T12:05:00.000Z"
-          expandedWorkGroups={{}}
-          onToggleWorkGroup={() => {}}
+          expandedWorkGroups={expandedWorkGroups}
+          onToggleWorkGroup={(groupId, paginatedEntryCount) => {
+            setExpandedWorkGroups((current) => {
+              const revealedEntries = current[groupId] ?? WORK_LOG_PAGE_SIZE;
+              return {
+                ...current,
+                [groupId]:
+                  revealedEntries >= paginatedEntryCount
+                    ? WORK_LOG_PAGE_SIZE
+                    : Math.min(paginatedEntryCount, revealedEntries + WORK_LOG_PAGE_SIZE),
+              };
+            });
+          }}
           onOpenTurnDiff={props.onOpenTurnDiff ?? (() => {})}
           revertTurnCountByUserMessageId={new Map()}
           onRevertUserMessage={() => {}}
@@ -1199,6 +1213,125 @@ describe("MessagesTimeline (LegendList)", () => {
     }
   });
 
+  it("keeps inline file diffs visible while routine work entries are paginated", async () => {
+    persistAppSettings({ showFileChangeDiffsInline: true });
+    const turnId = TurnId.makeUnsafe("turn-inline-always-visible");
+    getTurnDiffSpy.mockResolvedValue({
+      diff: [
+        "diff --git a/apps/web/src/always-visible.ts b/apps/web/src/always-visible.ts",
+        "index 1111111..2222222 100644",
+        "--- a/apps/web/src/always-visible.ts",
+        "+++ b/apps/web/src/always-visible.ts",
+        "@@ -1 +1,2 @@",
+        " export const visible = true;",
+        "+export const stillVisible = true;",
+      ].join("\n"),
+    });
+    const createdAt = "2026-03-04T12:01:00.000Z";
+    const entries: TimelineEntry[] = [
+      {
+        id: "always-visible-file-change-entry",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "always-visible-file-change-work",
+          createdAt,
+          turnId,
+          label: "File change",
+          tone: "tool",
+          itemType: "file_change",
+          status: "completed",
+          changedFiles: ["apps/web/src/always-visible.ts"],
+        },
+      } as TimelineEntry,
+      ...Array.from({ length: 8 }, (_, index): TimelineEntry => {
+        const activityNumber = index + 1;
+        const activityCreatedAt = new Date(
+          Date.parse(createdAt) + activityNumber * 1_000,
+        ).toISOString();
+        return {
+          id: `routine-entry-${activityNumber}`,
+          kind: "work",
+          createdAt: activityCreatedAt,
+          entry: {
+            id: `routine-work-${activityNumber}`,
+            createdAt: activityCreatedAt,
+            label: `Routine activity ${String(activityNumber).padStart(2, "0")}`,
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+          },
+        } as TimelineEntry;
+      }),
+    ];
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={entries}
+        initialHeight={760}
+        onIsAtEndChangeSpy={() => {}}
+        workspaceRoot="/repo/project"
+        turnDiffSummaryByTurnId={
+          new Map([
+            [
+              turnId,
+              {
+                turnId,
+                completedAt: "2026-03-04T12:01:10.000Z",
+                checkpointTurnCount: 3,
+                files: [{ path: "apps/web/src/always-visible.ts", additions: 1, deletions: 0 }],
+              },
+            ],
+          ])
+        }
+        chatDiffContextOverrides={{
+          threadId: INLINE_DIFF_THREAD_ID,
+          isGitRepo: true,
+          inferredCheckpointTurnCountByTurnId: { [turnId]: 3 },
+        }}
+      />,
+      { container: host },
+    );
+
+    const findButton = (label: string) =>
+      Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+        button.textContent?.includes(label),
+      );
+    const findInlineDiff = () =>
+      host.querySelector(
+        '[data-testid="inline-file-diff"][data-work-entry-id="always-visible-file-change-work"]',
+      );
+
+    try {
+      await vi.waitFor(() => {
+        expect(getTurnDiffSpy).toHaveBeenCalledTimes(1);
+        expect(findInlineDiff()).not.toBeNull();
+        expect(host.textContent).not.toContain("Routine activity 01");
+        expect(host.textContent).not.toContain("Routine activity 02");
+        expect(host.textContent).toContain("Routine activity 08");
+        expect(findButton("Show 2 more")).toBeTruthy();
+      });
+
+      findButton("Show 2 more")?.click();
+      await vi.waitFor(() => {
+        expect(findInlineDiff()).not.toBeNull();
+        expect(host.textContent).toContain("Routine activity 01");
+        expect(findButton("Show less")).toBeTruthy();
+      });
+
+      findButton("Show less")?.click();
+      await vi.waitFor(() => {
+        expect(findInlineDiff()).not.toBeNull();
+        expect(host.textContent).not.toContain("Routine activity 01");
+        expect(findButton("Show 2 more")).toBeTruthy();
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("keeps a historical file-change row rendered after appending a newer user message", async () => {
     const fillerEntries: TimelineEntry[] = Array.from({ length: 32 }, (_, index) =>
       index % 2 === 0
@@ -1513,6 +1646,105 @@ describe("MessagesTimeline (LegendList)", () => {
           inlineDiff,
           "User-expanded inline diff should stay open after appending a newer user message.",
         ).not.toBeNull();
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("renders hook-heavy diagnostics incrementally and expands full hook details", async () => {
+    const hookDiagnostics = Array.from({ length: 14 }, (_, offset): TimelineWorkEntry => {
+      const handlerNumber = offset + 1;
+      const createdAt = new Date(
+        Date.parse("2026-03-04T12:03:00.000Z") + offset * 1_000,
+      ).toISOString();
+      return {
+        id: `hook-work-${handlerNumber}`,
+        createdAt,
+        label: `Handler ${handlerNumber} completed`,
+        tone: "info",
+        activityKind: "hook.completed",
+        category: "hook",
+        isIssue: false,
+        diagnostic: {
+          type: "hook",
+          id: `hook-${handlerNumber}`,
+          hookEvent: "preToolUse",
+          source: "plugin",
+          sourcePath: `/Users/example/.codex/plugins/example/handler-${handlerNumber}.json`,
+          handlerType: "command",
+          executionMode: "sync",
+          scope: "project",
+          displayOrder: handlerNumber,
+          status: "completed",
+          durationMs: handlerNumber,
+          statusMessage: `Handler ${handlerNumber} finished successfully`,
+          ...(handlerNumber === 1
+            ? { entries: [{ message: `diagnostic output ${handlerNumber}` }] }
+            : { output: `diagnostic output ${handlerNumber}` }),
+        },
+      };
+    });
+    const hookEntries: TimelineEntry[] = [
+      {
+        id: "hook-parent-entry",
+        kind: "work",
+        createdAt: "2026-03-04T12:02:59.000Z",
+        entry: {
+          id: "hook-parent-work",
+          createdAt: "2026-03-04T12:02:59.000Z",
+          label: "Read file",
+          tone: "tool",
+          itemType: "dynamic_tool_call",
+          nestedDiagnostics: hookDiagnostics,
+        },
+      },
+    ];
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={hookEntries}
+        initialHeight={760}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Read file");
+        expect(host.textContent).toContain("Diagnostics (14)");
+        expect(host.textContent).toContain("Handler 9 completed");
+        expect(host.textContent).not.toContain("Handler 1 completed");
+        expect(host.textContent).toContain("Show 6 more");
+      });
+
+      const findButton = (label: string) =>
+        Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+          button.textContent?.includes(label),
+        );
+
+      findButton("Show 6 more")?.click();
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Handler 3 completed");
+        expect(host.textContent).not.toContain("Handler 1 completed");
+        expect(host.textContent).toContain("Show 2 more");
+      });
+
+      findButton("Show 2 more")?.click();
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Handler 1 completed");
+        expect(host.textContent).toContain("Show less");
+      });
+
+      findButton("Handler 1 completed")?.click();
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("/Users/example/.codex/plugins/example/handler-1.json");
+        expect(host.textContent).toContain("Handler 1 finished successfully");
+        expect(host.textContent).toContain("diagnostic output 1");
       });
     } finally {
       await screen.unmount();

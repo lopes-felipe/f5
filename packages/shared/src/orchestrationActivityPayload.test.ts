@@ -338,6 +338,36 @@ describe("orchestrationActivityPayload", () => {
     });
   });
 
+  it("preserves current Codex collaboration correlation fields", () => {
+    const compacted = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            prompt: "Inspect the protocol adapter",
+            model: "gpt-5.4-mini",
+            senderThreadId: "thread-parent",
+            receiverThreadIds: ["thread-reviewer"],
+          },
+        },
+      },
+    });
+
+    expect(compacted).toEqual({
+      itemType: "collab_agent_tool_call",
+      status: "completed",
+      subagentType: "spawnAgent",
+      subagentPrompt: "Inspect the protocol adapter",
+      subagentModel: "gpt-5.4-mini",
+      subagentSenderThreadId: "thread-parent",
+      subagentReceiverThreadIds: ["thread-reviewer"],
+    });
+  });
+
   it("truncates oversized subagent prompt and result text during compaction", () => {
     const oversizedPrompt = "p".repeat(4_100);
     const oversizedResult = "r".repeat(4_100);

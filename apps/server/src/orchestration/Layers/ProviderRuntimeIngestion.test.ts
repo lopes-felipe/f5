@@ -904,6 +904,66 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBeNull();
   });
 
+  it("keeps transient thread errors non-terminal while closing explicit terminal states", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-thread-status");
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-thread-status-turn-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      createdAt: new Date().toISOString(),
+      payload: {},
+    });
+    await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "running" && entry.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-thread-status-system-error"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "error", detail: { status: { type: "systemError" } } },
+    });
+    await harness.drain();
+
+    let readModel = await Effect.runPromise(harness.engine.getReadModel());
+    let thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.session?.status).toBe("running");
+    expect(thread?.session?.activeTurnId).toBe(turnId);
+    expect(
+      thread?.activities.find((activity) => activity.id === "evt-thread-status-system-error"),
+    ).toMatchObject({
+      kind: "runtime.warning",
+      tone: "error",
+      payload: {
+        message: "Codex thread reported a system error",
+        category: "provider",
+        actionable: true,
+      },
+    });
+
+    harness.emit({
+      type: "thread.state.changed",
+      eventId: asEventId("evt-thread-status-closed"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "closed" },
+    });
+    await harness.drain();
+
+    readModel = await Effect.runPromise(harness.engine.getReadModel());
+    thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+    expect(thread?.session?.status).toBe("stopped");
+    expect(thread?.session?.activeTurnId).toBeNull();
+  });
+
   it("updates the thread model from provider session.configured payloads", async () => {
     const harness = await createHarness();
 
@@ -2580,6 +2640,10 @@ describe("ProviderRuntimeIngestion", () => {
       turnId: asTurnId("turn-warning"),
       payload: {
         message: "Reconnecting... 2/5",
+        category: "protocol",
+        actionable: true,
+        protocolMethod: "serverRequest/resolved",
+        protocolValue: "request-42",
         detail: {
           willRetry: true,
         },
@@ -2599,6 +2663,12 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("running");
     expect(thread.session?.activeTurnId).toBe("turn-warning");
     expect(thread.session?.lastError).toBeNull();
+    expect(
+      thread.activities.find((activity) => activity.id === "evt-warning-runtime")?.payload,
+    ).toMatchObject({
+      protocolMethod: "serverRequest/resolved",
+      protocolValue: "request-42",
+    });
   });
 
   it("maps session.configured into a runtime.configured activity", async () => {
@@ -2739,6 +2809,14 @@ describe("ProviderRuntimeIngestion", () => {
         hookId: "hook-1",
         hookName: "pre_tool_use",
         hookEvent: "pre_tool_use",
+        handlerType: "command",
+        executionMode: "sync",
+        scope: "turn",
+        source: "plugin",
+        sourcePath: "C:\\Users\\dev\\hooks\\pre-tool-use.ps1",
+        displayOrder: 2,
+        statusMessage: "Preparing tool",
+        startedAt: 1_000,
       },
       raw: {
         source: "codex.app-server.notification",
@@ -2762,6 +2840,20 @@ describe("ProviderRuntimeIngestion", () => {
       payload: {
         hookId: "hook-1",
         outcome: "error",
+        hookName: "pre_tool_use",
+        hookEvent: "pre_tool_use",
+        handlerType: "command",
+        executionMode: "sync",
+        scope: "turn",
+        source: "plugin",
+        sourcePath: "C:\\Users\\dev\\hooks\\pre-tool-use.ps1",
+        displayOrder: 2,
+        rawStatus: "failed",
+        statusMessage: "Hook failed",
+        startedAt: 1_000,
+        completedAt: 1_025,
+        durationMs: 25,
+        entries: [{ kind: "error", text: "Hook failed" }],
         output: `Hook failed\n\n${"x".repeat(220)}`,
       },
       raw: {
@@ -2796,8 +2888,14 @@ describe("ProviderRuntimeIngestion", () => {
       summary: "Running pre_tool_use hook: Preparing tool",
     });
     expect(started?.payload).toMatchObject({
-      sourcePath: "/tmp/hooks/pre-tool-use.sh",
-      detail: "Source: /tmp/hooks/pre-tool-use.sh",
+      handlerType: "command",
+      executionMode: "sync",
+      scope: "turn",
+      source: "plugin",
+      sourcePath: "C:\\Users\\dev\\hooks\\pre-tool-use.ps1",
+      displayOrder: 2,
+      startedAt: 1_000,
+      detail: "Source: C:\\Users\\dev\\hooks\\pre-tool-use.ps1",
     });
 
     const completed = thread.activities.find((activity) => activity.id === "evt-hook-completed");
@@ -2816,6 +2914,68 @@ describe("ProviderRuntimeIngestion", () => {
         : null;
     expect(completedDetail).not.toBeNull();
     expect(completedDetail?.endsWith("...")).toBe(true);
+    expect(completedPayload).toMatchObject({
+      hookName: "pre_tool_use",
+      hookEvent: "pre_tool_use",
+      rawStatus: "failed",
+      handlerType: "command",
+      executionMode: "sync",
+      scope: "turn",
+      source: "plugin",
+      sourcePath: "C:\\Users\\dev\\hooks\\pre-tool-use.ps1",
+      displayOrder: 2,
+      statusMessage: "Hook failed",
+      startedAt: 1_000,
+      completedAt: 1_025,
+      durationMs: 25,
+      entries: [{ kind: "error", text: "Hook failed" }],
+      output: `Hook failed\n\n${"x".repeat(220)}`,
+    });
+  });
+
+  it("bounds persisted hook diagnostic entries and textual output", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const entries = Array.from({ length: 80 }, (_, index) => ({
+      index,
+      text: `${index}:${"x".repeat(20_000)}`,
+    }));
+
+    harness.emit({
+      type: "hook.completed",
+      eventId: asEventId("evt-hook-bounded"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      payload: {
+        hookId: "hook-bounded",
+        outcome: "success",
+        hookEvent: "post_tool_use",
+        entries,
+        output: "o".repeat(100_000),
+        stdout: "s".repeat(100_000),
+        stderr: "e".repeat(100_000),
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.id === "evt-hook-bounded"),
+    );
+    const activity = thread.activities.find((entry) => entry.id === "evt-hook-bounded");
+    const payload = activity?.payload as Record<string, unknown> | undefined;
+    const persistedEntries = payload?.entries as ReadonlyArray<unknown> | undefined;
+
+    expect(persistedEntries?.length).toBeLessThanOrEqual(32);
+    expect(Buffer.byteLength(JSON.stringify(persistedEntries), "utf8")).toBeLessThanOrEqual(
+      64 * 1024,
+    );
+    expect(persistedEntries?.at(-1)).toMatchObject({ truncated: true });
+    for (const key of ["output", "stdout", "stderr"] as const) {
+      const value = payload?.[key];
+      expect(typeof value).toBe("string");
+      expect(Buffer.byteLength(String(value), "utf8")).toBeLessThanOrEqual(64 * 1024);
+      expect(String(value)).toContain("hook diagnostic output truncated");
+    }
   });
 
   it("projects MCP, config, and deprecation diagnostics into thread activities", async () => {

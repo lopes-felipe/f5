@@ -122,6 +122,23 @@ describe("parsePersistedAppSettings", () => {
     expect(parsePersistedAppSettings(null).runtimeWarningVisibility).toBe("summarized");
   });
 
+  it("defaults work logs to essential activity without a category filter", () => {
+    const parsed = parsePersistedAppSettings(null);
+    expect(parsed.workLogMode).toBe("essential");
+    expect(parsed.workLogFilter).toBe("all");
+  });
+
+  it("restores persisted work log preferences", () => {
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        workLogMode: "diagnostics",
+        workLogFilter: "hooks",
+      }),
+    );
+    expect(parsed.workLogMode).toBe("diagnostics");
+    expect(parsed.workLogFilter).toBe("hooks");
+  });
+
   it("defaults provider runtime metadata visibility to false", () => {
     expect(parsePersistedAppSettings(null).showProviderRuntimeMetadata).toBe(false);
   });
@@ -194,12 +211,16 @@ describe("parsePersistedAppSettings", () => {
       showAgentCommandTranscripts: false,
     };
     delete persisted.favoriteModels;
+    delete persisted.workLogMode;
+    delete persisted.workLogFilter;
 
     const decoded = Schema.decodeSync(Schema.fromJsonString(AppSettingsSchema))(
       JSON.stringify(persisted),
     );
 
     expect(decoded.favoriteModels).toEqual([]);
+    expect(decoded.workLogMode).toBe("essential");
+    expect(decoded.workLogFilter).toBe("all");
     expect(decoded.codexBinaryPath).toBe("/opt/t3/bin/codex");
     expect(decoded.showAgentCommandTranscripts).toBe(false);
   });

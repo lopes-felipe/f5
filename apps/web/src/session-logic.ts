@@ -1,6 +1,6 @@
 import {
   ApprovalRequestId,
-  type ProviderItemId,
+  ProviderItemId,
   type RuntimeItemStatus,
   type OrchestrationCommandExecutionSummary,
   type OrchestrationFileChangeId,
@@ -30,9 +30,30 @@ import {
   isGenericCommandTitle,
 } from "@t3tools/shared/commandSummary";
 import { compareCommandExecutions } from "./lib/commandExecutions";
-import type { RuntimeWarningVisibility } from "./appSettings";
+import type { RuntimeWarningVisibility, WorkLogFilter, WorkLogMode } from "./appSettings";
 
 export type ProviderPickerKind = ProviderKind;
+
+export interface WorkLogDiagnostic {
+  type: "hook" | "approval-review";
+  id: string;
+  status: string;
+  incomplete?: boolean;
+  hookEvent?: string;
+  handlerType?: string;
+  executionMode?: string;
+  scope?: string;
+  source?: string;
+  sourcePath?: string;
+  displayOrder?: number;
+  statusMessage?: string;
+  durationMs?: number;
+  output?: string;
+  entries?: ReadonlyArray<unknown>;
+  actionType?: string;
+  riskLevel?: string;
+  rationale?: string;
+}
 
 export const PROVIDER_OPTIONS: Array<{
   value: ProviderPickerKind;
@@ -74,6 +95,20 @@ export interface WorkLogEntry {
   mcpToolName?: string;
   mcpInput?: string;
   mcpResult?: string;
+  activityKind?: string;
+  category?: "tool" | "hook" | "review" | "issue" | "other";
+  isIssue?: boolean;
+  warningCategory?: string;
+  warningProtocolMethod?: string;
+  warningProtocolValue?: string;
+  warningCount?: number;
+  parentProviderItemId?: ProviderItemId;
+  diagnostic?: WorkLogDiagnostic;
+  nestedDiagnostics?: ReadonlyArray<WorkLogEntry>;
+  subagentThreadId?: string;
+  subagentPath?: string;
+  subagentSenderThreadId?: string;
+  subagentReceiverThreadIds?: ReadonlyArray<string>;
 }
 
 export interface PendingApproval {
@@ -134,6 +169,7 @@ export type TimelineEntry =
       kind: "command";
       createdAt: string;
       commandExecution: OrchestrationCommandExecutionSummary;
+      nestedDiagnostics?: ReadonlyArray<WorkLogEntry>;
     };
 
 export function formatDuration(durationMs: number): string {
@@ -642,6 +678,10 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     subagentPrompt: entry.subagentPrompt,
     subagentResult: entry.subagentResult,
     subagentModel: entry.subagentModel,
+    subagentThreadId: entry.subagentThreadId,
+    subagentPath: entry.subagentPath,
+    subagentSenderThreadId: entry.subagentSenderThreadId,
+    subagentReceiverThreadIds: entry.subagentReceiverThreadIds ?? [],
     mcpServerName: entry.mcpServerName,
     mcpToolName: entry.mcpToolName,
     mcpInput: entry.mcpInput,
@@ -675,15 +715,260 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
   return deduped.filter((entry): entry is WorkLogEntry => entry !== null);
 }
 
+function workLogPayload(activity: OrchestrationThreadActivity): Record<string, unknown> | null {
+  return activity.payload && typeof activity.payload === "object"
+    ? (activity.payload as Record<string, unknown>)
+    : null;
+}
+
+function asFiniteNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function providerItemIdFromPayload(
+  payload: Record<string, unknown> | null,
+): ProviderItemId | undefined {
+  const value = asTrimmedString(payload?.providerItemId);
+  return value ? ProviderItemId.makeUnsafe(value) : undefined;
+}
+
+function diagnosticFromActivity(
+  activity: OrchestrationThreadActivity,
+  payload: Record<string, unknown> | null,
+): WorkLogDiagnostic | undefined {
+  if (activity.kind === "hook.started" || activity.kind === "hook.completed") {
+    const id = asTrimmedString(payload?.hookId);
+    if (!id) {
+      return undefined;
+    }
+    const status =
+      asTrimmedString(payload?.rawStatus) ??
+      asTrimmedString(payload?.outcome) ??
+      (activity.kind === "hook.started" ? "running" : "unknown");
+    const output = asTrimmedString(payload?.output);
+    const hookEvent = asTrimmedString(payload?.hookEvent);
+    const handlerType = asTrimmedString(payload?.handlerType);
+    const executionMode = asTrimmedString(payload?.executionMode);
+    const scope = asTrimmedString(payload?.scope);
+    const source = asTrimmedString(payload?.source);
+    const sourcePath = asTrimmedString(payload?.sourcePath);
+    const displayOrder = asFiniteNumber(payload?.displayOrder);
+    const statusMessage = asTrimmedString(payload?.statusMessage);
+    const durationMs = asFiniteNumber(payload?.durationMs);
+    return {
+      type: "hook",
+      id,
+      status,
+      ...(hookEvent ? { hookEvent } : {}),
+      ...(handlerType ? { handlerType } : {}),
+      ...(executionMode ? { executionMode } : {}),
+      ...(scope ? { scope } : {}),
+      ...(source ? { source } : {}),
+      ...(sourcePath ? { sourcePath } : {}),
+      ...(displayOrder !== undefined ? { displayOrder } : {}),
+      ...(statusMessage ? { statusMessage } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(output ? { output } : {}),
+      ...(Array.isArray(payload?.entries) ? { entries: payload.entries } : {}),
+    };
+  }
+
+  if (
+    activity.kind === "approval-review.started" ||
+    activity.kind === "approval-review.completed"
+  ) {
+    const id = asTrimmedString(payload?.reviewId);
+    if (!id) {
+      return undefined;
+    }
+    const actionType = asTrimmedString(payload?.actionType);
+    const riskLevel = asTrimmedString(payload?.riskLevel);
+    const rationale = asTrimmedString(payload?.rationale);
+    const durationMs = asFiniteNumber(payload?.durationMs);
+    return {
+      type: "approval-review",
+      id,
+      status:
+        asTrimmedString(payload?.status) ??
+        (activity.kind === "approval-review.started" ? "inProgress" : "unknown"),
+      ...(actionType ? { actionType } : {}),
+      ...(riskLevel ? { riskLevel } : {}),
+      ...(rationale ? { rationale } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+    };
+  }
+  return undefined;
+}
+
+function isWorkLogIssue(entry: WorkLogEntry): boolean {
+  if (entry.tone === "error") {
+    return true;
+  }
+  if (entry.activityKind === "runtime.warning") {
+    return true;
+  }
+  if (entry.status === "failed" || entry.status === "declined") {
+    return true;
+  }
+  if (entry.diagnostic?.type === "hook") {
+    return ["failed", "blocked", "stopped", "error", "cancelled", "incomplete"].includes(
+      entry.diagnostic.status,
+    );
+  }
+  if (entry.diagnostic?.type === "approval-review") {
+    return ["denied", "timedOut", "aborted", "incomplete"].includes(entry.diagnostic.status);
+  }
+  return false;
+}
+
+function pairDiagnosticLifecycles(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const completedKeys = new Set(
+    entries.flatMap((entry) => {
+      if (
+        !entry.diagnostic ||
+        (entry.activityKind !== "hook.completed" &&
+          entry.activityKind !== "approval-review.completed")
+      ) {
+        return [];
+      }
+      return [`${entry.diagnostic.type}:${entry.diagnostic.id}`];
+    }),
+  );
+
+  return entries.flatMap((entry) => {
+    if (
+      !entry.diagnostic ||
+      (entry.activityKind !== "hook.started" && entry.activityKind !== "approval-review.started")
+    ) {
+      return [entry];
+    }
+    const key = `${entry.diagnostic.type}:${entry.diagnostic.id}`;
+    if (completedKeys.has(key)) {
+      return [];
+    }
+    const label =
+      entry.diagnostic.type === "hook"
+        ? `${entry.diagnostic.hookEvent ?? "Hook"} (incomplete)`
+        : `${entry.diagnostic.actionType ?? "Approval"} review (incomplete)`;
+    return [
+      {
+        ...entry,
+        label,
+        isIssue: true,
+        diagnostic: {
+          ...entry.diagnostic,
+          status: "incomplete",
+          incomplete: true,
+        },
+      },
+    ];
+  });
+}
+
+function coalesceProtocolWarnings(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const result: WorkLogEntry[] = [];
+  const indexBySignature = new Map<string, number>();
+  for (const entry of entries) {
+    if (entry.activityKind !== "runtime.warning" || entry.warningCategory !== "protocol") {
+      result.push(entry);
+      continue;
+    }
+    const payloadSignature = [
+      entry.turnId ?? "",
+      entry.label,
+      entry.warningProtocolMethod ?? "",
+      entry.warningProtocolValue ?? "",
+      entry.detail ?? "",
+    ].join(":");
+    const existingIndex = indexBySignature.get(payloadSignature);
+    if (existingIndex === undefined) {
+      indexBySignature.set(payloadSignature, result.length);
+      result.push(entry);
+      continue;
+    }
+    const existing = result[existingIndex];
+    if (!existing) {
+      continue;
+    }
+    result[existingIndex] = {
+      ...existing,
+      warningCount: (existing.warningCount ?? 1) + 1,
+    };
+  }
+  return result;
+}
+
+function correlateSubagentActivities(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const correlated = [...entries];
+  const dropped = new Set<number>();
+  const spawnParentIndexByAgentThreadId = new Map<string, number>();
+  const latestParentIndexByAgentThreadId = new Map<string, number>();
+  const metadataByProviderItemId = new Map<
+    ProviderItemId,
+    Pick<WorkLogEntry, "subagentPath" | "subagentThreadId">
+  >();
+  entries.forEach((entry, index) => {
+    if (entry.activityKind !== "subagent.activity") {
+      const correlatedMetadata = entry.providerItemId
+        ? metadataByProviderItemId.get(entry.providerItemId)
+        : undefined;
+      if (correlatedMetadata) {
+        correlated[index] = { ...entry, ...correlatedMetadata };
+      }
+      const normalizedSubagentType = entry.subagentType
+        ?.replace(/[\s_-]+/gu, "")
+        .toLocaleLowerCase();
+      for (const threadId of entry.subagentReceiverThreadIds ?? []) {
+        latestParentIndexByAgentThreadId.set(threadId, index);
+        if (normalizedSubagentType === "spawnagent") {
+          spawnParentIndexByAgentThreadId.set(threadId, index);
+        }
+      }
+      return;
+    }
+
+    if (!entry.subagentThreadId) {
+      return;
+    }
+    const parentIndex =
+      spawnParentIndexByAgentThreadId.get(entry.subagentThreadId) ??
+      latestParentIndexByAgentThreadId.get(entry.subagentThreadId);
+    if (parentIndex === undefined || parentIndex === index) {
+      return;
+    }
+    const parent = correlated[parentIndex];
+    if (!parent) {
+      return;
+    }
+    const metadata = {
+      subagentThreadId: entry.subagentThreadId,
+      ...(entry.subagentPath ? { subagentPath: entry.subagentPath } : {}),
+    };
+    correlated[parentIndex] = {
+      ...parent,
+      ...metadata,
+    };
+    if (parent.providerItemId) {
+      metadataByProviderItemId.set(parent.providerItemId, metadata);
+    }
+    dropped.add(index);
+  });
+  return correlated.filter((_entry, index) => !dropped.has(index));
+}
+
 export function deriveWorkLogEntries(
   activities: ReadonlyArray<OrchestrationThreadActivity>,
   latestTurnId: TurnId | undefined,
   options?: {
     readonly suppressCommandToolLifecycle?: boolean;
     readonly runtimeWarningVisibility?: RuntimeWarningVisibility;
+    readonly mode?: WorkLogMode;
+    readonly filter?: WorkLogFilter;
   },
 ): WorkLogEntry[] {
   const runtimeWarningVisibility = options?.runtimeWarningVisibility ?? "hidden";
+  const mode = options?.mode ?? "essential";
+  const selectedFilter = options?.filter ?? "all";
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
   const entries = ordered
     .filter((activity) => shouldKeepHistoricalWorkEntry(activity, latestTurnId))
@@ -695,16 +980,19 @@ export function deriveWorkLogEntries(
         return true;
       }
 
-      const payload =
-        activity.payload && typeof activity.payload === "object"
-          ? (activity.payload as Record<string, unknown>)
-          : null;
+      const payload = workLogPayload(activity);
       const message = typeof payload?.message === "string" ? payload.message : "";
       if (isIgnorableCodexProcessStderrMessage(message)) {
         return false;
       }
 
-      return runtimeWarningVisibility !== "hidden";
+      const category = asTrimmedString(payload?.category);
+      const alwaysVisible =
+        category === "guardian" ||
+        category === "verification" ||
+        category === "protocol" ||
+        payload?.actionable === true;
+      return alwaysVisible || runtimeWarningVisibility !== "hidden";
     })
     .filter((activity) => activity.kind !== "tool.started")
     .filter((activity) => activity.kind !== "runtime.configured")
@@ -714,14 +1002,18 @@ export function deriveWorkLogEntries(
     .filter((activity) => activity.summary !== "Checkpoint captured")
     .map((activity) => {
       const toolPayload = readToolActivityPayload(activity.payload);
-      const payload =
-        activity.payload && typeof activity.payload === "object"
-          ? (activity.payload as Record<string, unknown>)
-          : null;
+      const payload = workLogPayload(activity);
+      const diagnostic = diagnosticFromActivity(activity, payload);
+      const warningCategory = asTrimmedString(payload?.category);
       const label =
         toolPayload?.title && isGenericToolActivitySummary(activity.summary)
           ? toolPayload.title
-          : activity.kind === "runtime.warning" && runtimeWarningVisibility === "full"
+          : activity.kind === "runtime.warning" &&
+              (runtimeWarningVisibility === "full" ||
+                warningCategory === "guardian" ||
+                warningCategory === "verification" ||
+                warningCategory === "protocol" ||
+                payload?.actionable === true)
             ? typeof payload?.message === "string" && payload.message.length > 0
               ? payload.message
               : activity.summary
@@ -731,6 +1023,7 @@ export function deriveWorkLogEntries(
         createdAt: activity.createdAt,
         label,
         tone: activity.tone === "approval" ? "info" : activity.tone,
+        activityKind: activity.kind,
       };
       if (activity.turnId) {
         entry.turnId = activity.turnId;
@@ -753,6 +1046,10 @@ export function deriveWorkLogEntries(
       }
       if (toolPayload?.providerItemId) {
         entry.providerItemId = toolPayload.providerItemId;
+      }
+      const payloadProviderItemId = providerItemIdFromPayload(payload);
+      if (diagnostic && payloadProviderItemId) {
+        entry.parentProviderItemId = payloadProviderItemId;
       }
       const displayHints = extractWorkLogDisplayHints({
         payload,
@@ -802,6 +1099,21 @@ export function deriveWorkLogEntries(
       if (toolPayload?.subagentModel) {
         entry.subagentModel = toolPayload.subagentModel;
       }
+      if (toolPayload?.subagentThreadId) {
+        entry.subagentThreadId = toolPayload.subagentThreadId;
+      }
+      if (toolPayload?.subagentPath) {
+        entry.subagentPath = toolPayload.subagentPath;
+      }
+      if (toolPayload?.subagentSenderThreadId) {
+        entry.subagentSenderThreadId = toolPayload.subagentSenderThreadId;
+      }
+      if (
+        toolPayload?.subagentReceiverThreadIds &&
+        toolPayload.subagentReceiverThreadIds.length > 0
+      ) {
+        entry.subagentReceiverThreadIds = toolPayload.subagentReceiverThreadIds;
+      }
       if (toolPayload?.mcpServerName) {
         entry.mcpServerName = toolPayload.mcpServerName;
       }
@@ -814,10 +1126,79 @@ export function deriveWorkLogEntries(
       if (toolPayload?.mcpResult) {
         entry.mcpResult = toolPayload.mcpResult;
       }
+      if (diagnostic) {
+        entry.diagnostic = diagnostic;
+        entry.category = diagnostic.type === "hook" ? "hook" : "review";
+      } else if (toolPayload) {
+        entry.category = "tool";
+      } else if (
+        activity.kind === "runtime.warning" ||
+        activity.kind === "runtime.error" ||
+        activity.kind === "auth.status" ||
+        activity.kind === "config.warning"
+      ) {
+        entry.category = "issue";
+      } else {
+        entry.category = "other";
+      }
+      if (activity.kind === "runtime.warning" && warningCategory) {
+        entry.warningCategory = warningCategory;
+      }
+      if (activity.kind === "runtime.warning") {
+        const detail = asUnknownRecord(payload?.detail);
+        const warningProtocolMethod =
+          asTrimmedString(payload?.protocolMethod) ??
+          asTrimmedString(detail?.method) ??
+          asTrimmedString(detail?.requestMethod);
+        const warningProtocolValue =
+          asTrimmedString(payload?.protocolValue) ??
+          asTrimmedString(detail?.itemType) ??
+          asTrimmedString(detail?.type) ??
+          asTrimmedString(detail?.kind);
+        if (warningProtocolMethod) {
+          entry.warningProtocolMethod = warningProtocolMethod;
+        }
+        if (warningProtocolValue) {
+          entry.warningProtocolValue = warningProtocolValue;
+        }
+      }
+      entry.isIssue = isWorkLogIssue(entry);
       return entry;
     });
 
-  return dedupeProviderItemWorkLogEntries(entries);
+  const deduped = dedupeProviderItemWorkLogEntries(correlateSubagentActivities(entries));
+  const paired = pairDiagnosticLifecycles(deduped);
+  const modeFiltered = paired.filter((entry) => {
+    if (mode === "diagnostics") {
+      return true;
+    }
+    if (
+      (entry.activityKind === "hook.started" || entry.activityKind === "approval-review.started") &&
+      entry.diagnostic?.incomplete !== true
+    ) {
+      return false;
+    }
+    if (entry.diagnostic?.type === "hook") {
+      return isWorkLogIssue(entry);
+    }
+    if (entry.diagnostic?.type === "approval-review") {
+      return isWorkLogIssue(entry);
+    }
+    return true;
+  });
+  const filtered = modeFiltered.filter((entry) => {
+    switch (selectedFilter) {
+      case "tools":
+        return entry.category === "tool";
+      case "hooks":
+        return entry.category === "hook";
+      case "issues":
+        return entry.isIssue === true;
+      case "all":
+        return true;
+    }
+  });
+  return coalesceProtocolWarnings(filtered);
 }
 
 function asTrimmedString(value: unknown): string | undefined {
@@ -967,16 +1348,73 @@ export function deriveTimelineEntries(
     createdAt: proposedPlan.createdAt,
     proposedPlan,
   }));
-  const workRows: TimelineEntry[] = workEntries.map((entry) => ({
-    id: entry.id,
-    kind: "work",
-    createdAt: entry.createdAt,
-    entry,
-  }));
-  const commandRows = deriveCommandTimelineEntries(commandExecutions);
-  return [...messageRows, ...proposedPlanRows, ...workRows, ...commandRows].toSorted(
-    compareTimelineEntries,
-  );
+  const diagnosticEntries = workEntries.filter((entry) => entry.diagnostic !== undefined);
+  const regularWorkEntries = workEntries
+    .filter((entry) => entry.diagnostic === undefined)
+    .map((entry) => ({ ...entry }));
+  const pendingDiagnosticsByProviderItemId = new Map<string, WorkLogEntry[]>();
+  for (const diagnostic of diagnosticEntries) {
+    if (!diagnostic.parentProviderItemId) {
+      continue;
+    }
+    const key = String(diagnostic.parentProviderItemId);
+    const existing = pendingDiagnosticsByProviderItemId.get(key) ?? [];
+    existing.push(diagnostic);
+    pendingDiagnosticsByProviderItemId.set(key, existing);
+  }
+  const takeDiagnostics = (providerItemId: ProviderItemId | null | undefined) => {
+    if (!providerItemId) {
+      return undefined;
+    }
+    const key = String(providerItemId);
+    const diagnostics = pendingDiagnosticsByProviderItemId.get(key);
+    if (!diagnostics) {
+      return undefined;
+    }
+    pendingDiagnosticsByProviderItemId.delete(key);
+    return diagnostics;
+  };
+
+  const workRows: TimelineEntry[] = regularWorkEntries.map((entry) => {
+    const nestedDiagnostics = takeDiagnostics(entry.providerItemId);
+    const nestedEntry = nestedDiagnostics ? { ...entry, nestedDiagnostics } : entry;
+    return {
+      id: nestedEntry.id,
+      kind: "work",
+      createdAt: nestedEntry.createdAt,
+      entry: nestedEntry,
+    };
+  });
+  const commandRows = deriveCommandTimelineEntries(commandExecutions).map((row) => {
+    if (row.kind === "work") {
+      const nestedDiagnostics = takeDiagnostics(row.entry.providerItemId);
+      return nestedDiagnostics ? { ...row, entry: { ...row.entry, nestedDiagnostics } } : row;
+    }
+    if (row.kind === "command") {
+      const nestedDiagnostics = takeDiagnostics(row.commandExecution.providerItemId);
+      return nestedDiagnostics ? { ...row, nestedDiagnostics } : row;
+    }
+    return row;
+  });
+  const uncorrelatedDiagnosticRows: TimelineEntry[] = diagnosticEntries
+    .filter(
+      (entry) =>
+        !entry.parentProviderItemId ||
+        pendingDiagnosticsByProviderItemId.has(String(entry.parentProviderItemId)),
+    )
+    .map((entry) => ({
+      id: entry.id,
+      kind: "work",
+      createdAt: entry.createdAt,
+      entry,
+    }));
+  return [
+    ...messageRows,
+    ...proposedPlanRows,
+    ...workRows,
+    ...uncorrelatedDiagnosticRows,
+    ...commandRows,
+  ].toSorted(compareTimelineEntries);
 }
 
 export function deriveCommandTimelineEntries(
@@ -1000,6 +1438,9 @@ export function deriveCommandTimelineEntries(
           ...(commandExecution.cwd ? { cwd: commandExecution.cwd } : {}),
           tone: "tool" as const,
           turnId: commandExecution.turnId,
+          ...(commandExecution.providerItemId
+            ? { providerItemId: commandExecution.providerItemId }
+            : {}),
           changedFiles: commandClassification.fileRead.filePaths,
           requestKind: "file-read" as const,
           toolTitle: label,
@@ -1026,6 +1467,9 @@ export function deriveCommandTimelineEntries(
           ...(commandExecution.cwd ? { cwd: commandExecution.cwd } : {}),
           tone: "tool" as const,
           turnId: commandExecution.turnId,
+          ...(commandExecution.providerItemId
+            ? { providerItemId: commandExecution.providerItemId }
+            : {}),
           itemType: "command_execution" as const,
           requestKind: "command" as const,
           toolTitle: label,

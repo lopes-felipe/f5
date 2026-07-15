@@ -40,6 +40,18 @@ function clickLabeledControl(ariaLabel: string) {
   element.click();
 }
 
+async function selectLabeledOption(ariaLabel: string, optionLabel: string) {
+  const trigger = document.querySelector<HTMLElement>(`[aria-label="${ariaLabel}"]`);
+  if (!trigger) {
+    throw new Error(`Missing select: ${ariaLabel}`);
+  }
+  trigger.click();
+  await page.getByRole("option", { name: optionLabel }).click();
+  await vi.waitFor(() => {
+    expect(document.querySelector("[data-base-ui-inert]")).toBeNull();
+  });
+}
+
 function DisplaySettingsHarness() {
   const { settings, defaults, updateSettings } = useAppSettings();
   const value = useMemo(
@@ -120,6 +132,26 @@ describe("DisplayProfileSelector", () => {
         expect(getDisplayProfile(readPersistedSettings())).toBe("detailed");
       });
       await expect.element(page.getByText(DISPLAY_PROFILE_CUSTOM_WARNING)).not.toBeInTheDocument();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("persists app-wide work log detail and category preferences", async () => {
+    const screen = await renderDisplaySettings();
+
+    try {
+      const initialProfile = getDisplayProfile(readPersistedSettings());
+      await selectLabeledOption("Work log detail level", "Diagnostics");
+      await selectLabeledOption("Work log category", "Hooks");
+
+      await vi.waitFor(() => {
+        expect(readPersistedSettings()).toMatchObject({
+          workLogMode: "diagnostics",
+          workLogFilter: "hooks",
+        });
+      });
+      expect(getDisplayProfile(readPersistedSettings())).toBe(initialProfile);
     } finally {
       await screen.unmount();
     }

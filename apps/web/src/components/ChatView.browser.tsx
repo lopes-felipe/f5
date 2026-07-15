@@ -7,6 +7,7 @@ import {
   EventId,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  PR_HUB_WS_METHODS,
   type OrchestrationFileChange,
   type OrchestrationGetThreadCommandExecutionResult,
   type OrchestrationGetThreadFileChangeResult,
@@ -1268,6 +1269,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       fileChange: fixture.threadFileChangeById[threadId]?.[fileChangeId] ?? null,
     } satisfies OrchestrationGetThreadFileChangeResult;
   }
+  if (tag === PR_HUB_WS_METHODS.getSnapshot) {
+    return {
+      status: "ok",
+      viewerLogin: null,
+      host: "github.com",
+      pullRequests: [],
+      recentlyResolved: [],
+      lastPolledAt: null,
+    };
+  }
   if (tag === WS_METHODS.serverGetConfig) {
     return fixture.serverConfig;
   }
@@ -1939,6 +1950,77 @@ describe("ChatView timeline (full app)", () => {
             request.threadId === THREAD_ID,
         ),
       ).toBe(false);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("applies persisted worklog preferences without rendering per-chat controls", async () => {
+    persistAppSettings({
+      workLogMode: "diagnostics",
+      workLogFilter: "hooks",
+    });
+    const baseSnapshot = createSnapshotForTargetUser({
+      targetMessageId: "msg-user-hook-worklog" as MessageId,
+      targetText: "hook-heavy worklog",
+      fillerPairCount: 2,
+      targetPairIndex: 1,
+    });
+    const snapshot: OrchestrationReadModel = {
+      ...baseSnapshot,
+      threads: baseSnapshot.threads.map((thread) =>
+        thread.id !== THREAD_ID
+          ? thread
+          : {
+              ...thread,
+              activities: [
+                createThreadActivity({
+                  id: "activity-hook-success",
+                  createdAt: isoAt(100),
+                  kind: "hook.completed",
+                  summary: "Successful hook row",
+                  tone: "info",
+                  payload: {
+                    hookId: "hook-success",
+                    hookEvent: "postToolUse",
+                    rawStatus: "completed",
+                  },
+                }),
+                createThreadActivity({
+                  id: "activity-tool-row",
+                  createdAt: isoAt(101),
+                  kind: "tool.completed",
+                  summary: "Read file tool",
+                  payload: {
+                    itemType: "dynamic_tool_call",
+                    providerItemId: "read-tool-1",
+                  },
+                }),
+                createThreadActivity({
+                  id: "activity-hook-blocked",
+                  createdAt: isoAt(102),
+                  kind: "hook.completed",
+                  summary: "Blocked hook row",
+                  tone: "error",
+                  payload: {
+                    hookId: "hook-blocked",
+                    hookEvent: "preToolUse",
+                    rawStatus: "blocked",
+                  },
+                }),
+              ],
+            },
+      ),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot });
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[data-testid="worklog-controls"]')).toBeNull();
+        expect(document.body.textContent).toContain("Successful hook row");
+        expect(document.body.textContent).toContain("Blocked hook row");
+        expect(document.body.textContent).not.toContain("Read file tool");
+      });
     } finally {
       await mounted.cleanup();
     }

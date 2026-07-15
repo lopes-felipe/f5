@@ -25,6 +25,10 @@ import {
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import {
+  codexNotificationDisposition,
+  codexThreadItemDisposition,
+} from "@t3tools/shared/codexProtocolManifest";
 import { Effect, FileSystem, Layer, Queue, Schema, ServiceMap, Stream } from "effect";
 
 import {
@@ -220,25 +224,60 @@ function normalizeItemType(raw: unknown): string {
     .toLowerCase();
 }
 
-function toCanonicalItemType(raw: unknown): CanonicalItemType {
-  const type = normalizeItemType(raw);
-  if (type.includes("user")) return "user_message";
-  if (type.includes("agent message") || type.includes("assistant")) return "assistant_message";
-  if (type.includes("reasoning") || type.includes("thought")) return "reasoning";
-  if (type.includes("plan") || type.includes("todo")) return "plan";
-  if (type.includes("command")) return "command_execution";
-  if (type.includes("file change") || type.includes("patch") || type.includes("edit"))
-    return "file_change";
-  if (type.includes("mcp")) return "mcp_tool_call";
-  if (type.includes("dynamic tool")) return "dynamic_tool_call";
-  if (type.includes("collab")) return "collab_agent_tool_call";
-  if (type.includes("web search")) return "web_search";
-  if (type.includes("image")) return "image_view";
-  if (type.includes("review entered")) return "review_entered";
-  if (type.includes("review exited")) return "review_exited";
-  if (type.includes("compact")) return "context_compaction";
-  if (type.includes("error")) return "error";
-  return "unknown";
+type NormalizedCodexItemType = CanonicalItemType | "hook_prompt" | "subagent_activity";
+
+/**
+ * Exact aliases observed in current app-server items and historical persisted
+ * events. Deliberately avoid substring matching: for example, imageGeneration
+ * must never fall through to image_view.
+ */
+const CODEX_ITEM_TYPE_ALIASES: Readonly<Record<string, NormalizedCodexItemType>> = {
+  user: "user_message",
+  "user message": "user_message",
+  assistant: "assistant_message",
+  "assistant message": "assistant_message",
+  "agent message": "assistant_message",
+  reasoning: "reasoning",
+  thought: "reasoning",
+  plan: "plan",
+  todo: "plan",
+  command: "command_execution",
+  "shell command": "command_execution",
+  "command execution": "command_execution",
+  patch: "file_change",
+  edit: "file_change",
+  "file edit": "file_change",
+  "file change": "file_change",
+  "patch apply begin": "file_change",
+  "patch apply end": "file_change",
+  "mcp call": "mcp_tool_call",
+  "mcp tool call": "mcp_tool_call",
+  "dynamic tool": "dynamic_tool_call",
+  "dynamic tool call": "dynamic_tool_call",
+  "collab agent": "collab_agent_tool_call",
+  "collab agent tool call": "collab_agent_tool_call",
+  "sub agent activity": "subagent_activity",
+  search: "web_search",
+  "web search": "web_search",
+  "image view": "image_view",
+  "image generation": "image_generation",
+  sleep: "sleep",
+  "review entered": "review_entered",
+  "entered review mode": "review_entered",
+  "review exited": "review_exited",
+  "exited review mode": "review_exited",
+  compact: "context_compaction",
+  "context compaction": "context_compaction",
+  error: "error",
+  "hook prompt": "hook_prompt",
+};
+
+export function normalizeCodexThreadItemType(raw: unknown): NormalizedCodexItemType {
+  const rawType = asString(raw);
+  if (rawType && codexThreadItemDisposition(rawType) === "internal-duplicate") {
+    return "hook_prompt";
+  }
+  return CODEX_ITEM_TYPE_ALIASES[normalizeItemType(raw)] ?? "unknown";
 }
 
 function itemTitle(itemType: CanonicalItemType): string | undefined {
@@ -263,6 +302,10 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
       return "Web search";
     case "image_view":
       return "Image view";
+    case "image_generation":
+      return "Generated image";
+    case "sleep":
+      return "Waited";
     case "error":
       return "Error";
     default:
@@ -275,6 +318,7 @@ function itemDetail(
   payload: Record<string, unknown>,
 ): string | undefined {
   const nestedResult = asObject(item.result);
+  const durationMs = asNumber(item.durationMs ?? item.duration_ms);
   const candidates = [
     asString(item.command),
     asString(item.title),
@@ -282,6 +326,11 @@ function itemDetail(
     asString(item.text),
     asString(item.path),
     asString(item.prompt),
+    asString(item.savedPath),
+    asString(item.saved_path),
+    asString(item.revisedPrompt),
+    asString(item.revised_prompt),
+    asString(item.result),
     asString(nestedResult?.command),
     asString(payload.command),
     asString(payload.message),
@@ -293,7 +342,40 @@ function itemDetail(
     if (trimmed.length === 0) continue;
     return trimmed;
   }
+  if (durationMs !== undefined) {
+    if (durationMs >= 1_000) {
+      const seconds = Math.round((durationMs / 1_000) * 100) / 100;
+      return `${seconds}s`;
+    }
+    return `${durationMs}ms`;
+  }
   return undefined;
+}
+
+function itemLifecycleStatus(
+  source: Record<string, unknown>,
+  lifecycle: "item.started" | "item.updated" | "item.completed",
+): "inProgress" | "completed" | "failed" | "declined" | undefined {
+  if (lifecycle === "item.started") {
+    return "inProgress";
+  }
+  switch (source.status) {
+    case "inProgress":
+    case "in_progress":
+    case "running":
+      return "inProgress";
+    case "failed":
+    case "error":
+      return "failed";
+    case "declined":
+    case "denied":
+      return "declined";
+    case "completed":
+    case "success":
+      return "completed";
+    default:
+      return lifecycle === "item.completed" ? "completed" : undefined;
+  }
 }
 
 function toRequestTypeFromMethod(method: string): CanonicalRequestType {
@@ -433,7 +515,9 @@ function toUserInputQuestions(payload: Record<string, unknown> | undefined) {
 function toThreadState(
   value: unknown,
 ): "active" | "idle" | "archived" | "closed" | "compacted" | "error" {
-  switch (value) {
+  const status = asString(asObject(value)?.type) ?? asString(value);
+  switch (status) {
+    case "notLoaded":
     case "idle":
       return "idle";
     case "archived":
@@ -444,6 +528,7 @@ function toThreadState(
       return "compacted";
     case "error":
     case "failed":
+    case "systemError":
       return "error";
     default:
       return "active";
@@ -606,6 +691,78 @@ function runtimeEventBase(
   };
 }
 
+function runtimeEventBaseForTargetItem(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  targetItemId: string | undefined,
+): Omit<ProviderRuntimeEvent, "type" | "payload"> {
+  const base = runtimeEventBase(event, canonicalThreadId);
+  if (!targetItemId) {
+    return base;
+  }
+  const providerItemId = ProviderItemId.makeUnsafe(targetItemId);
+  return {
+    ...base,
+    itemId: asRuntimeItemId(providerItemId),
+    providerRefs: {
+      ...base.providerRefs,
+      providerItemId,
+    },
+  };
+}
+
+function protocolWarningEvent(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  message: string,
+  protocolValue?: string,
+): ProviderRuntimeEvent {
+  return {
+    type: "runtime.warning",
+    ...runtimeEventBase(event, canonicalThreadId),
+    payload: {
+      message,
+      category: "protocol",
+      actionable: true,
+      protocolMethod: event.method,
+      ...(protocolValue ? { protocolValue } : {}),
+      ...(event.payload !== undefined ? { detail: event.payload } : {}),
+    },
+  };
+}
+
+function mapSubagentActivity(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  source: Record<string, unknown>,
+): ProviderRuntimeEvent {
+  const kind = source.kind;
+  const agentThreadId = asString(source.agentThreadId ?? source.agent_thread_id)?.trim();
+  const agentPath = asString(source.agentPath ?? source.agent_path)?.trim();
+  if (
+    (kind !== "started" && kind !== "interacted" && kind !== "interrupted") ||
+    !agentThreadId ||
+    !agentPath
+  ) {
+    return protocolWarningEvent(
+      event,
+      canonicalThreadId,
+      "Malformed Codex subagent activity: expected kind, agentThreadId, and agentPath.",
+      "subAgentActivity",
+    );
+  }
+
+  return {
+    ...runtimeEventBase(event, canonicalThreadId),
+    type: "subagent.activity",
+    payload: {
+      kind,
+      agentThreadId,
+      agentPath,
+    },
+  };
+}
+
 function mapItemLifecycle(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -615,21 +772,32 @@ function mapItemLifecycle(
   const item = asObject(payload?.item);
   const source = item ?? payload;
   if (!source) {
-    return undefined;
+    return protocolWarningEvent(
+      event,
+      canonicalThreadId,
+      "Malformed Codex thread item: missing item payload.",
+    );
   }
 
-  const itemType = toCanonicalItemType(source.type ?? source.kind);
-  if (itemType === "unknown" && lifecycle !== "item.updated") {
+  const itemType = normalizeCodexThreadItemType(source.type ?? source.kind);
+  if (itemType === "hook_prompt") {
     return undefined;
+  }
+  if (itemType === "subagent_activity") {
+    return mapSubagentActivity(event, canonicalThreadId, source);
+  }
+  if (itemType === "unknown") {
+    const rawType = asString(source.type ?? source.kind)?.trim() ?? "unknown";
+    return protocolWarningEvent(
+      event,
+      canonicalThreadId,
+      `Unsupported Codex thread item: ${rawType}`,
+      rawType,
+    );
   }
 
   const detail = itemDetail(source, payload ?? {});
-  const status =
-    lifecycle === "item.started"
-      ? "inProgress"
-      : lifecycle === "item.completed"
-        ? "completed"
-        : undefined;
+  const status = itemLifecycleStatus(source, lifecycle);
 
   return {
     ...runtimeEventBase(event, canonicalThreadId),
@@ -641,6 +809,149 @@ function mapItemLifecycle(
       ...(detail ? { detail } : {}),
       ...(event.payload !== undefined ? { data: event.payload } : {}),
     },
+  };
+}
+
+const CODEX_EXEC_ITEM_ID_REGEX =
+  /^exec-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Tool hook run ids end in the provider item id. Source paths can contain
+ * colons on Windows, so only the final segment is considered and it must match
+ * Codex's exec UUID shape.
+ */
+export function hookTargetItemId(hookId: string): string | undefined {
+  const separator = hookId.lastIndexOf(":");
+  const candidate = separator >= 0 ? hookId.slice(separator + 1) : "";
+  return CODEX_EXEC_ITEM_ID_REGEX.test(candidate) ? candidate : undefined;
+}
+
+function approvalReviewStatus(
+  value: unknown,
+): "inProgress" | "approved" | "denied" | "timedOut" | "aborted" {
+  switch (value) {
+    case "approved":
+    case "denied":
+    case "timedOut":
+    case "aborted":
+      return value;
+    case "inProgress":
+    default:
+      return "inProgress";
+  }
+}
+
+function approvalReviewRiskLevel(
+  value: unknown,
+): "low" | "medium" | "high" | "critical" | undefined {
+  switch (value) {
+    case "low":
+    case "medium":
+    case "high":
+    case "critical":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function approvalReviewUserAuthorization(
+  value: unknown,
+): "unknown" | "low" | "medium" | "high" | undefined {
+  switch (value) {
+    case "unknown":
+    case "low":
+    case "medium":
+    case "high":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function mapApprovalReview(
+  event: ProviderEvent,
+  canonicalThreadId: ThreadId,
+  type: "approval-review.started" | "approval-review.completed",
+): ProviderRuntimeEvent | undefined {
+  const payload = asObject(event.payload);
+  const review = asObject(payload?.review);
+  const action = asObject(payload?.action);
+  const reviewId = asString(payload?.reviewId)?.trim();
+  if (!reviewId) {
+    return undefined;
+  }
+  const targetItemId = asString(payload?.targetItemId)?.trim();
+  const startedAtMs = asNumber(payload?.startedAtMs);
+  const completedAtMs = asNumber(payload?.completedAtMs);
+  const durationMs =
+    startedAtMs !== undefined && completedAtMs !== undefined
+      ? Math.max(0, completedAtMs - startedAtMs)
+      : undefined;
+  const riskLevel = approvalReviewRiskLevel(review?.riskLevel);
+  const userAuthorization = approvalReviewUserAuthorization(review?.userAuthorization);
+  const rationale = asString(review?.rationale)?.trim();
+  const decisionSource = asString(payload?.decisionSource)?.trim();
+  const actionType = asString(action?.type)?.trim();
+
+  return {
+    ...runtimeEventBaseForTargetItem(event, canonicalThreadId, targetItemId),
+    type,
+    payload: {
+      reviewId,
+      ...(targetItemId
+        ? { targetItemId: asRuntimeItemId(ProviderItemId.makeUnsafe(targetItemId)) }
+        : {}),
+      status: approvalReviewStatus(review?.status),
+      ...(actionType ? { actionType } : {}),
+      ...(riskLevel ? { riskLevel } : {}),
+      ...(userAuthorization ? { userAuthorization } : {}),
+      ...(rationale ? { rationale } : {}),
+      ...(decisionSource ? { decisionSource } : {}),
+      ...(startedAtMs !== undefined ? { startedAtMs } : {}),
+      ...(completedAtMs !== undefined ? { completedAtMs } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(payload?.action !== undefined ? { action: payload.action } : {}),
+    },
+  };
+}
+
+function hookRunMetadata(run: Record<string, unknown>) {
+  const hookId = asString(run.id)?.trim();
+  const hookEvent = asString(run.eventName)?.trim();
+  if (!hookId || !hookEvent) {
+    return undefined;
+  }
+  const targetItemId = hookTargetItemId(hookId);
+  const handlerType = asString(run.handlerType)?.trim();
+  const executionMode = asString(run.executionMode)?.trim();
+  const scope = asString(run.scope)?.trim();
+  const source = asString(run.source)?.trim();
+  const sourcePath = asString(run.sourcePath)?.trim();
+  const displayOrder = asNumber(run.displayOrder);
+  const rawStatus = asString(run.status)?.trim();
+  const statusMessage = asString(run.statusMessage)?.trim();
+  const startedAt = asNumber(run.startedAt);
+  const completedAt = asNumber(run.completedAt);
+  const durationMs = asNumber(run.durationMs);
+  const entries = asArray(run.entries);
+
+  return {
+    hookId,
+    hookEvent,
+    ...(targetItemId ? { targetItemId } : {}),
+    ...(handlerType ? { handlerType } : {}),
+    ...(executionMode ? { executionMode } : {}),
+    ...(scope ? { scope } : {}),
+    ...(source ? { source } : {}),
+    ...(sourcePath ? { sourcePath } : {}),
+    ...(displayOrder !== undefined ? { displayOrder } : {}),
+    ...(rawStatus ? { rawStatus } : {}),
+    ...(statusMessage ? { statusMessage } : {}),
+    ...(startedAt !== undefined ? { startedAt } : {}),
+    ...(completedAt !== undefined ? { completedAt } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(entries ? { entries } : {}),
   };
 }
 
@@ -694,8 +1005,10 @@ function mapToRuntimeEvents(
 
   if (event.method === "item/requestApproval/decision" && event.requestId) {
     const decision = Schema.decodeUnknownSync(ProviderApprovalDecision)(payload?.decision);
-    const requestType =
-      event.requestKind !== undefined
+    const requestMethod = asString(payload?.requestMethod);
+    const requestType = requestMethod
+      ? toRequestTypeFromMethod(requestMethod)
+      : event.requestKind !== undefined
         ? toRequestTypeFromKind(event.requestKind)
         : toRequestTypeFromMethod(event.method);
     return [
@@ -799,6 +1112,7 @@ function mapToRuntimeEvents(
   if (
     event.method === "thread/status/changed" ||
     event.method === "thread/archived" ||
+    event.method === "thread/deleted" ||
     event.method === "thread/unarchived" ||
     event.method === "thread/closed" ||
     event.method === "thread/compacted"
@@ -811,11 +1125,13 @@ function mapToRuntimeEvents(
           state:
             event.method === "thread/archived"
               ? "archived"
-              : event.method === "thread/closed"
+              : event.method === "thread/closed" || event.method === "thread/deleted"
                 ? "closed"
                 : event.method === "thread/compacted"
                   ? "compacted"
-                  : toThreadState(asObject(payload?.thread)?.state ?? payload?.state),
+                  : toThreadState(
+                      asObject(payload?.thread)?.state ?? payload?.state ?? payload?.status,
+                    ),
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },
@@ -940,6 +1256,40 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "item/autoApprovalReview/started") {
+    const review = mapApprovalReview(event, canonicalThreadId, "approval-review.started");
+    return review ? [review] : [];
+  }
+
+  if (event.method === "item/autoApprovalReview/completed") {
+    const review = mapApprovalReview(event, canonicalThreadId, "approval-review.completed");
+    return review ? [review] : [];
+  }
+
+  if (event.method === "item/fileChange/patchUpdated") {
+    const itemId = asString(payload?.itemId)?.trim() ?? event.itemId;
+    if (!itemId) {
+      return [];
+    }
+    return [
+      {
+        ...runtimeEventBaseForTargetItem(event, canonicalThreadId, itemId),
+        type: "item.updated",
+        payload: {
+          itemType: "file_change",
+          title: "File change",
+          data: {
+            item: {
+              type: "fileChange",
+              id: itemId,
+              changes: asArray(payload?.changes) ?? [],
+            },
+          },
+        },
+      },
+    ];
+  }
+
   if (event.method === "item/started") {
     const started = mapItemLifecycle(event, canonicalThreadId, "item.started");
     return started ? [started] : [];
@@ -952,7 +1302,7 @@ function mapToRuntimeEvents(
     if (!source) {
       return [];
     }
-    const itemType = source ? toCanonicalItemType(source.type ?? source.kind) : "unknown";
+    const itemType = source ? normalizeCodexThreadItemType(source.type ?? source.kind) : "unknown";
     if (itemType === "plan") {
       const detail = itemDetail(source, payload ?? {});
       if (!detail) {
@@ -1057,6 +1407,17 @@ function mapToRuntimeEvents(
         : event.requestId && event.requestKind !== undefined
           ? toRequestTypeFromKind(event.requestKind)
           : "unknown";
+    if (requestType === "tool_user_input") {
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "user-input.resolved",
+          payload: {
+            answers: {},
+          },
+        },
+      ];
+    }
     return [
       {
         ...runtimeEventBase(event, canonicalThreadId),
@@ -1237,6 +1598,46 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "warning" || event.method === "guardianWarning") {
+    const guardian = event.method === "guardianWarning";
+    const message =
+      asString(payload?.message)?.trim() ??
+      event.message?.trim() ??
+      (guardian ? "Codex guardian warning" : "Codex warning");
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message,
+          category: guardian ? "guardian" : "provider",
+          actionable: guardian,
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (event.method === "model/verification") {
+    const verifications = asArray(payload?.verifications)?.filter(
+      (value): value is string => typeof value === "string" && value.trim().length > 0,
+    );
+    const description =
+      verifications && verifications.length > 0 ? verifications.join(", ") : "additional access";
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message: `Model verification required: ${description}`,
+          category: "verification",
+          actionable: true,
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
   if (event.method === "deprecationNotice") {
     return [
       {
@@ -1289,6 +1690,22 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "account/login/completed") {
+    const success = payload?.success === true;
+    const error = asString(payload?.error)?.trim();
+    return [
+      {
+        type: "auth.status",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          isAuthenticating: false,
+          output: [success ? "Account login completed" : "Account login failed"],
+          ...(!success && error ? { error } : {}),
+        },
+      },
+    ];
+  }
+
   if (event.method === "mcpServer/oauthLogin/completed") {
     return [
       {
@@ -1305,20 +1722,32 @@ function mapToRuntimeEvents(
 
   if (event.method === "hook/started") {
     const run = asObject(payload?.run);
-    const hookId = asString(run?.id);
-    const hookEvent = asString(run?.eventName);
-    if (!hookId || !hookEvent) {
+    const metadata = run ? hookRunMetadata(run) : undefined;
+    if (!metadata) {
       return [];
     }
 
     return [
       {
         type: "hook.started",
-        ...runtimeEventBase(event, canonicalThreadId),
+        ...runtimeEventBaseForTargetItem(event, canonicalThreadId, metadata.targetItemId),
         payload: {
-          hookId,
-          hookName: hookEvent,
-          hookEvent,
+          hookId: metadata.hookId,
+          hookName: metadata.hookEvent,
+          hookEvent: metadata.hookEvent,
+          ...(metadata.targetItemId
+            ? {
+                targetItemId: asRuntimeItemId(ProviderItemId.makeUnsafe(metadata.targetItemId)),
+              }
+            : {}),
+          ...(metadata.handlerType ? { handlerType: metadata.handlerType } : {}),
+          ...(metadata.executionMode ? { executionMode: metadata.executionMode } : {}),
+          ...(metadata.scope ? { scope: metadata.scope } : {}),
+          ...(metadata.source ? { source: metadata.source } : {}),
+          ...(metadata.sourcePath ? { sourcePath: metadata.sourcePath } : {}),
+          ...(metadata.displayOrder !== undefined ? { displayOrder: metadata.displayOrder } : {}),
+          ...(metadata.statusMessage ? { statusMessage: metadata.statusMessage } : {}),
+          ...(metadata.startedAt !== undefined ? { startedAt: metadata.startedAt } : {}),
         },
       },
     ];
@@ -1326,8 +1755,8 @@ function mapToRuntimeEvents(
 
   if (event.method === "hook/completed") {
     const run = asObject(payload?.run);
-    const hookId = asString(run?.id);
-    if (!hookId) {
+    const metadata = run ? hookRunMetadata(run) : undefined;
+    if (!run || !metadata) {
       return [];
     }
     const output = hookCombinedOutput(run);
@@ -1335,10 +1764,29 @@ function mapToRuntimeEvents(
     return [
       {
         type: "hook.completed",
-        ...runtimeEventBase(event, canonicalThreadId),
+        ...runtimeEventBaseForTargetItem(event, canonicalThreadId, metadata.targetItemId),
         payload: {
-          hookId,
+          hookId: metadata.hookId,
+          hookName: metadata.hookEvent,
+          hookEvent: metadata.hookEvent,
           outcome: hookCompletedOutcome(run?.status),
+          ...(metadata.targetItemId
+            ? {
+                targetItemId: asRuntimeItemId(ProviderItemId.makeUnsafe(metadata.targetItemId)),
+              }
+            : {}),
+          ...(metadata.handlerType ? { handlerType: metadata.handlerType } : {}),
+          ...(metadata.executionMode ? { executionMode: metadata.executionMode } : {}),
+          ...(metadata.scope ? { scope: metadata.scope } : {}),
+          ...(metadata.source ? { source: metadata.source } : {}),
+          ...(metadata.sourcePath ? { sourcePath: metadata.sourcePath } : {}),
+          ...(metadata.displayOrder !== undefined ? { displayOrder: metadata.displayOrder } : {}),
+          ...(metadata.rawStatus ? { rawStatus: metadata.rawStatus } : {}),
+          ...(metadata.statusMessage ? { statusMessage: metadata.statusMessage } : {}),
+          ...(metadata.startedAt !== undefined ? { startedAt: metadata.startedAt } : {}),
+          ...(metadata.completedAt !== undefined ? { completedAt: metadata.completedAt } : {}),
+          ...(metadata.durationMs !== undefined ? { durationMs: metadata.durationMs } : {}),
+          ...(metadata.entries ? { entries: metadata.entries } : {}),
           ...(output ? { output } : {}),
         },
       },
@@ -1457,6 +1905,23 @@ function mapToRuntimeEvents(
     ];
   }
 
+  if (event.method === "protocol/unsupportedServerRequest") {
+    const requestMethod = asString(payload?.requestMethod)?.trim();
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message: event.message ?? "Unsupported Codex server request",
+          category: "protocol",
+          actionable: true,
+          protocolMethod: requestMethod ?? event.method,
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
   if (event.method === "error") {
     const message =
       asString(asObject(payload?.error)?.message) ?? event.message ?? "Provider runtime error";
@@ -1533,6 +1998,23 @@ function mapToRuntimeEvents(
           ]
         : []),
     ];
+  }
+
+  if (event.kind === "notification") {
+    const disposition = codexNotificationDisposition(event.method);
+    if (disposition !== undefined) {
+      return [];
+    }
+
+    if (!event.method.startsWith("codex/event/")) {
+      return [
+        protocolWarningEvent(
+          event,
+          canonicalThreadId,
+          `Unsupported Codex notification: ${event.method}`,
+        ),
+      ];
+    }
   }
 
   return [];

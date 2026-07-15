@@ -94,6 +94,13 @@ const FILE_CHANGE_OUTPUT_TRUNCATION_MARKER =
 // amortizing the truncation cost across many small deltas instead of
 // re-scanning/allocating the whole buffer on every delta.
 const FILE_CHANGE_OUTPUT_TRUNCATE_THRESHOLD_BYTES = 2 * MAX_FILE_CHANGE_OUTPUT_BYTES;
+const MAX_HOOK_DIAGNOSTIC_TEXT_BYTES = 64 * 1024;
+const HOOK_DIAGNOSTIC_TEXT_HEAD_BYTES = 48 * 1024;
+const HOOK_DIAGNOSTIC_TEXT_TRUNCATION_MARKER =
+  "\n\n[... hook diagnostic output truncated; middle omitted ...]\n\n";
+const MAX_HOOK_DIAGNOSTIC_ENTRIES = 32;
+const MAX_HOOK_DIAGNOSTIC_ENTRY_BYTES = 16 * 1024;
+const MAX_HOOK_DIAGNOSTIC_ENTRIES_BYTES = 64 * 1024;
 const STRICT_PROVIDER_LIFECYCLE_GUARD = process.env.T3CODE_STRICT_PROVIDER_LIFECYCLE_GUARD !== "0";
 
 type TurnStartRequestedDomainEvent = Extract<
@@ -200,6 +207,83 @@ function isSyntheticClaudeThreadId(value: string): boolean {
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function truncateHookDiagnosticText(value: string): string {
+  return truncateMiddleByBytes(value, {
+    maxBytes: MAX_HOOK_DIAGNOSTIC_TEXT_BYTES,
+    headBytes: HOOK_DIAGNOSTIC_TEXT_HEAD_BYTES,
+    marker: HOOK_DIAGNOSTIC_TEXT_TRUNCATION_MARKER,
+  }).output;
+}
+
+function serializeDiagnosticEntry(value: unknown): string | undefined {
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function hookDiagnosticEntryPreview(serialized: string): Record<string, unknown> {
+  return {
+    truncated: true,
+    preview: truncateMiddleByBytes(serialized, {
+      maxBytes: MAX_HOOK_DIAGNOSTIC_ENTRY_BYTES - 256,
+      headBytes: 12 * 1024,
+      marker: "\n[... diagnostic entry truncated ...]\n",
+    }).output,
+  };
+}
+
+function boundHookDiagnosticEntries(
+  entries: ReadonlyArray<unknown> | undefined,
+): ReadonlyArray<unknown> | undefined {
+  if (!entries || entries.length === 0) {
+    return undefined;
+  }
+
+  const bounded: unknown[] = [];
+  let serializedBytes = 2;
+  let nextIndex = 0;
+  const countLimit =
+    entries.length > MAX_HOOK_DIAGNOSTIC_ENTRIES ? MAX_HOOK_DIAGNOSTIC_ENTRIES - 1 : entries.length;
+
+  for (; nextIndex < countLimit; nextIndex += 1) {
+    const entry = entries[nextIndex];
+    const serialized = serializeDiagnosticEntry(entry);
+    const boundedEntry =
+      serialized === undefined
+        ? { truncated: true, reason: "Diagnostic entry could not be serialized" }
+        : Buffer.byteLength(serialized, "utf8") > MAX_HOOK_DIAGNOSTIC_ENTRY_BYTES
+          ? hookDiagnosticEntryPreview(serialized)
+          : entry;
+    const boundedSerialized = serializeDiagnosticEntry(boundedEntry) ?? "{}";
+    const nextBytes = Buffer.byteLength(boundedSerialized, "utf8") + (bounded.length > 0 ? 1 : 0);
+    if (serializedBytes + nextBytes > MAX_HOOK_DIAGNOSTIC_ENTRIES_BYTES) {
+      break;
+    }
+    bounded.push(boundedEntry);
+    serializedBytes += nextBytes;
+  }
+
+  if (nextIndex < entries.length) {
+    const truncationMarker = {
+      truncated: true,
+      omittedEntries: entries.length - nextIndex,
+    };
+    while (
+      bounded.length > 0 &&
+      Buffer.byteLength(JSON.stringify([...bounded, truncationMarker]), "utf8") >
+        MAX_HOOK_DIAGNOSTIC_ENTRIES_BYTES
+    ) {
+      bounded.pop();
+      truncationMarker.omittedEntries += 1;
+    }
+    bounded.push(truncationMarker);
+  }
+
+  return bounded;
 }
 
 function normalizeProposedPlanMarkdown(planMarkdown: string | undefined): string | undefined {
@@ -897,15 +981,20 @@ function hookEventNameFromEvent(event: ProviderRuntimeEvent): string | undefined
 }
 
 function hookRawStatusFromEvent(event: ProviderRuntimeEvent): string | undefined {
-  return asString(hookRunRecord(event)?.status);
+  return asString(runtimePayloadRecord(event)?.rawStatus) ?? asString(hookRunRecord(event)?.status);
 }
 
 function hookStatusMessageFromEvent(event: ProviderRuntimeEvent): string | undefined {
-  return asString(hookRunRecord(event)?.statusMessage);
+  return (
+    asString(runtimePayloadRecord(event)?.statusMessage) ??
+    asString(hookRunRecord(event)?.statusMessage)
+  );
 }
 
 function hookSourcePathFromEvent(event: ProviderRuntimeEvent): string | undefined {
-  return asString(hookRunRecord(event)?.sourcePath);
+  return (
+    asString(runtimePayloadRecord(event)?.sourcePath) ?? asString(hookRunRecord(event)?.sourcePath)
+  );
 }
 
 function mcpStatusRecord(
@@ -1252,6 +1341,7 @@ function runtimeEventToActivities(
       }
       const statusMessage = hookStatusMessageFromEvent(event);
       const sourcePath = hookSourcePathFromEvent(event);
+      const run = hookRunRecord(event);
 
       return [
         {
@@ -1264,8 +1354,25 @@ function runtimeEventToActivities(
             hookId: event.payload.hookId,
             hookName: event.payload.hookName,
             hookEvent,
+            ...(event.payload.targetItemId ? { providerItemId: event.payload.targetItemId } : {}),
+            ...(event.payload.handlerType ? { handlerType: event.payload.handlerType } : {}),
+            ...(event.payload.executionMode ? { executionMode: event.payload.executionMode } : {}),
+            ...(event.payload.scope ? { scope: event.payload.scope } : {}),
+            ...((event.payload.source ?? asString(run?.source))
+              ? { source: event.payload.source ?? asString(run?.source) }
+              : {}),
             ...(statusMessage ? { statusMessage } : {}),
-            ...(sourcePath ? { sourcePath, detail: `Source: ${sourcePath}` } : {}),
+            ...(sourcePath ? { sourcePath } : {}),
+            ...((event.payload.displayOrder ?? asNonNegativeNumber(run?.displayOrder)) !== undefined
+              ? {
+                  displayOrder:
+                    event.payload.displayOrder ?? asNonNegativeNumber(run?.displayOrder),
+                }
+              : {}),
+            ...((event.payload.startedAt ?? asNonNegativeNumber(run?.startedAt)) !== undefined
+              ? { startedAt: event.payload.startedAt ?? asNonNegativeNumber(run?.startedAt) }
+              : {}),
+            ...(sourcePath ? { detail: `Source: ${sourcePath}` } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1276,7 +1383,19 @@ function runtimeEventToActivities(
     case "hook.completed": {
       const hookEvent = hookEventNameFromEvent(event) ?? event.payload.hookId;
       const rawStatus = hookRawStatusFromEvent(event) ?? event.payload.outcome;
-      const detail = event.payload.output ? truncateDetail(event.payload.output) : undefined;
+      const run = hookRunRecord(event);
+      const sourcePath = event.payload.sourcePath ?? hookSourcePathFromEvent(event);
+      const statusMessage = event.payload.statusMessage ?? hookStatusMessageFromEvent(event);
+      const entries = boundHookDiagnosticEntries(event.payload.entries);
+      const output = event.payload.output
+        ? truncateHookDiagnosticText(event.payload.output)
+        : undefined;
+      const stdout = event.payload.stdout
+        ? truncateHookDiagnosticText(event.payload.stdout)
+        : undefined;
+      const stderr = event.payload.stderr
+        ? truncateHookDiagnosticText(event.payload.stderr)
+        : undefined;
 
       return [
         {
@@ -1287,9 +1406,156 @@ function runtimeEventToActivities(
           summary: `${hookEvent} hook (${rawStatus})`,
           payload: {
             hookId: event.payload.hookId,
+            ...(event.payload.hookName ? { hookName: event.payload.hookName } : {}),
+            hookEvent,
             outcome: event.payload.outcome,
             rawStatus,
-            ...(detail ? { detail } : {}),
+            ...(event.payload.targetItemId ? { providerItemId: event.payload.targetItemId } : {}),
+            ...(event.payload.handlerType ? { handlerType: event.payload.handlerType } : {}),
+            ...(event.payload.executionMode ? { executionMode: event.payload.executionMode } : {}),
+            ...(event.payload.scope ? { scope: event.payload.scope } : {}),
+            ...((event.payload.source ?? asString(run?.source))
+              ? { source: event.payload.source ?? asString(run?.source) }
+              : {}),
+            ...(sourcePath ? { sourcePath } : {}),
+            ...((event.payload.displayOrder ?? asNonNegativeNumber(run?.displayOrder)) !== undefined
+              ? {
+                  displayOrder:
+                    event.payload.displayOrder ?? asNonNegativeNumber(run?.displayOrder),
+                }
+              : {}),
+            ...(statusMessage ? { statusMessage } : {}),
+            ...((event.payload.startedAt ?? asNonNegativeNumber(run?.startedAt)) !== undefined
+              ? { startedAt: event.payload.startedAt ?? asNonNegativeNumber(run?.startedAt) }
+              : {}),
+            ...((event.payload.completedAt ?? asNonNegativeNumber(run?.completedAt)) !== undefined
+              ? {
+                  completedAt: event.payload.completedAt ?? asNonNegativeNumber(run?.completedAt),
+                }
+              : {}),
+            ...((event.payload.durationMs ?? asNonNegativeNumber(run?.durationMs)) !== undefined
+              ? {
+                  durationMs: event.payload.durationMs ?? asNonNegativeNumber(run?.durationMs),
+                }
+              : {}),
+            ...(entries ? { entries } : {}),
+            ...(output ? { output } : {}),
+            ...(stdout ? { stdout } : {}),
+            ...(stderr ? { stderr } : {}),
+            ...(event.payload.exitCode !== undefined ? { exitCode: event.payload.exitCode } : {}),
+            ...(output
+              ? { detail: truncateDetail(output) }
+              : statusMessage
+                ? { detail: statusMessage }
+                : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "approval-review.started": {
+      const actionLabel = event.payload.actionType ? ` ${event.payload.actionType}` : " approval";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "approval-review.started",
+          summary: `Reviewing${actionLabel}`,
+          payload: {
+            reviewId: event.payload.reviewId,
+            status: event.payload.status,
+            ...(event.payload.targetItemId ? { providerItemId: event.payload.targetItemId } : {}),
+            ...(event.payload.actionType ? { actionType: event.payload.actionType } : {}),
+            ...(event.payload.riskLevel ? { riskLevel: event.payload.riskLevel } : {}),
+            ...(event.payload.userAuthorization
+              ? { userAuthorization: event.payload.userAuthorization }
+              : {}),
+            ...(event.payload.rationale ? { rationale: event.payload.rationale } : {}),
+            ...(event.payload.startedAtMs !== undefined
+              ? { startedAtMs: event.payload.startedAtMs }
+              : {}),
+            ...(event.payload.action !== undefined ? { action: event.payload.action } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "approval-review.completed": {
+      const status = event.payload.status;
+      const actionLabel = event.payload.actionType ?? "approval";
+      const statusLabel =
+        status === "approved"
+          ? "approved"
+          : status === "timedOut"
+            ? "timed out"
+            : status === "inProgress"
+              ? "in progress"
+              : status;
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: status === "approved" ? "info" : "error",
+          kind: "approval-review.completed",
+          summary: `${actionLabel} review ${statusLabel}`,
+          payload: {
+            reviewId: event.payload.reviewId,
+            status,
+            ...(event.payload.targetItemId ? { providerItemId: event.payload.targetItemId } : {}),
+            ...(event.payload.actionType ? { actionType: event.payload.actionType } : {}),
+            ...(event.payload.riskLevel ? { riskLevel: event.payload.riskLevel } : {}),
+            ...(event.payload.userAuthorization
+              ? { userAuthorization: event.payload.userAuthorization }
+              : {}),
+            ...(event.payload.rationale
+              ? { rationale: event.payload.rationale, detail: event.payload.rationale }
+              : {}),
+            ...(event.payload.decisionSource
+              ? { decisionSource: event.payload.decisionSource }
+              : {}),
+            ...(event.payload.startedAtMs !== undefined
+              ? { startedAtMs: event.payload.startedAtMs }
+              : {}),
+            ...(event.payload.completedAtMs !== undefined
+              ? { completedAtMs: event.payload.completedAtMs }
+              : {}),
+            ...(event.payload.durationMs !== undefined
+              ? { durationMs: event.payload.durationMs }
+              : {}),
+            ...(event.payload.action !== undefined ? { action: event.payload.action } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "subagent.activity": {
+      const kindLabel =
+        event.payload.kind === "started"
+          ? "started"
+          : event.payload.kind === "interrupted"
+            ? "interrupted"
+            : "interacted";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "tool",
+          kind: "subagent.activity",
+          summary: `Subagent ${kindLabel}`,
+          payload: {
+            itemType: "collab_agent_tool_call",
+            ...(event.itemId ? { providerItemId: event.itemId } : {}),
+            title: `Subagent ${kindLabel}`,
+            subagentType: event.payload.kind,
+            subagentThreadId: event.payload.agentThreadId,
+            subagentPath: event.payload.agentPath,
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1397,6 +1663,55 @@ function runtimeEventToActivities(
       return [];
     }
 
+    case "auth.status": {
+      if (!event.payload.error) {
+        return [];
+      }
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "error",
+          kind: "auth.status",
+          summary: "Account login failed",
+          payload: {
+            message: event.payload.error,
+            detail: event.payload.error,
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
+    case "thread.state.changed": {
+      if (event.payload.state !== "error") {
+        return [];
+      }
+      const detail = asRecord(event.payload.detail);
+      const message =
+        asString(detail?.message) ??
+        asString(asRecord(detail?.error)?.message) ??
+        "Codex thread reported a system error";
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "error",
+          kind: "runtime.warning",
+          summary: "Provider thread error",
+          payload: {
+            message,
+            category: "provider",
+            actionable: true,
+            ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+          },
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "runtime.error": {
       const message = runtimeErrorMessageFromEvent(event);
       if (!message) {
@@ -1423,12 +1738,30 @@ function runtimeEventToActivities(
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "info",
+          tone:
+            event.payload.category === "guardian" || event.payload.category === "verification"
+              ? "error"
+              : "info",
           kind: "runtime.warning",
-          summary: "Runtime warning",
+          summary:
+            event.payload.category === "guardian"
+              ? "Guardian warning"
+              : event.payload.category === "verification"
+                ? "Verification required"
+                : event.payload.category === "protocol"
+                  ? "Protocol warning"
+                  : "Runtime warning",
           payload: {
-            message: truncateDetail(event.payload.message),
+            message: event.payload.message,
             ...(event.payload.detail !== undefined ? { detail: event.payload.detail } : {}),
+            ...(event.payload.category ? { category: event.payload.category } : {}),
+            ...(event.payload.actionable !== undefined
+              ? { actionable: event.payload.actionable }
+              : {}),
+            ...(event.payload.protocolMethod
+              ? { protocolMethod: event.payload.protocolMethod }
+              : {}),
+            ...(event.payload.protocolValue ? { protocolValue: event.payload.protocolValue } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1622,7 +1955,10 @@ function runtimeEventToActivities(
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "tool",
+          tone:
+            event.payload.status === "failed" || event.payload.status === "declined"
+              ? "error"
+              : "tool",
           kind: "tool.updated",
           summary: normalizedTitle ?? "Tool updated",
           payload: compactThreadActivityPayload({
@@ -1647,7 +1983,10 @@ function runtimeEventToActivities(
         {
           id: event.eventId,
           createdAt: event.createdAt,
-          tone: "tool",
+          tone:
+            event.payload.status === "failed" || event.payload.status === "declined"
+              ? "error"
+              : "tool",
           kind: "tool.completed",
           summary: normalizedTitle ?? "Tool",
           payload: compactThreadActivityPayload({
@@ -2850,6 +3189,24 @@ const make = Effect.gen(function* () {
             createdAt: now,
           });
         }
+      }
+
+      if (event.type === "thread.state.changed" && event.payload.state === "closed") {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.session.set",
+          commandId: providerCommandId(event, "thread-provider-state-set"),
+          threadId: thread.id,
+          session: {
+            threadId: thread.id,
+            status: "stopped",
+            providerName: event.provider,
+            runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: now,
+          },
+          createdAt: now,
+        });
       }
 
       if (event.type === "thread.thinking-tokens.updated") {

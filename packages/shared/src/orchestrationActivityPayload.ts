@@ -268,20 +268,24 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
   }
 
   const data = asRecord(payload.data);
-  const input = asRecord(data?.input);
-  const result = asRecord(data?.result);
+  const item = asRecord(data?.item);
+  const input = asRecord(item?.input) ?? asRecord(data?.input);
+  const result = asRecord(item?.result) ?? asRecord(data?.result);
 
   const subagentType =
     asTrimmedString(payload.subagentType) ??
     asTrimmedString(data?.subagentType) ??
+    asTrimmedString(item?.tool) ??
     asTrimmedString(input?.subagent_type);
   const subagentDescription =
     asTrimmedString(payload.subagentDescription) ??
     asTrimmedString(data?.subagentDescription) ??
+    asTrimmedString(item?.description) ??
     asTrimmedString(input?.description);
   const subagentPrompt = truncateCompactText(
     asTrimmedString(payload.subagentPrompt) ??
       asTrimmedString(data?.subagentPrompt) ??
+      asTrimmedString(item?.prompt) ??
       asTrimmedString(input?.prompt),
   );
   const subagentResult = truncateCompactText(
@@ -293,7 +297,21 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
   const subagentModel =
     asTrimmedString(payload.subagentModel) ??
     asTrimmedString(data?.subagentModel) ??
+    asTrimmedString(item?.model) ??
     asTrimmedString(input?.model);
+  const subagentThreadId =
+    asTrimmedString(payload.subagentThreadId) ??
+    asTrimmedString(data?.agentThreadId) ??
+    asTrimmedString(item?.agentThreadId);
+  const subagentPath =
+    asTrimmedString(payload.subagentPath) ??
+    asTrimmedString(data?.agentPath) ??
+    asTrimmedString(item?.agentPath);
+  const subagentSenderThreadId =
+    asTrimmedString(payload.subagentSenderThreadId) ?? asTrimmedString(item?.senderThreadId);
+  const subagentReceiverThreadIds =
+    normalizeStringList(payload.subagentReceiverThreadIds) ??
+    normalizeStringList(item?.receiverThreadIds);
 
   return {
     ...(subagentType ? { subagentType } : {}),
@@ -301,6 +319,12 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
     ...(subagentPrompt ? { subagentPrompt } : {}),
     ...(subagentResult ? { subagentResult } : {}),
     ...(subagentModel ? { subagentModel } : {}),
+    ...(subagentThreadId ? { subagentThreadId } : {}),
+    ...(subagentPath ? { subagentPath } : {}),
+    ...(subagentSenderThreadId ? { subagentSenderThreadId } : {}),
+    ...(subagentReceiverThreadIds && subagentReceiverThreadIds.length > 0
+      ? { subagentReceiverThreadIds }
+      : {}),
   };
 }
 
@@ -631,6 +655,20 @@ function compactToolPayload(payload: CompactToolActivityPayload): Record<string,
       : {}),
     ...(payload.itemType === "collab_agent_tool_call" && payload.subagentModel
       ? { subagentModel: payload.subagentModel }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" && payload.subagentThreadId
+      ? { subagentThreadId: payload.subagentThreadId }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" && payload.subagentPath
+      ? { subagentPath: payload.subagentPath }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" && payload.subagentSenderThreadId
+      ? { subagentSenderThreadId: payload.subagentSenderThreadId }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" &&
+    payload.subagentReceiverThreadIds &&
+    payload.subagentReceiverThreadIds.length > 0
+      ? { subagentReceiverThreadIds: [...payload.subagentReceiverThreadIds] }
       : {}),
     ...(payload.itemType === "mcp_tool_call" && payload.mcpServerName
       ? { mcpServerName: payload.mcpServerName }

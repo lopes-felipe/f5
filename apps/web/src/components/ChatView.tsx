@@ -279,6 +279,7 @@ import {
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
+import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -741,7 +742,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   >({});
   const [pendingUserInputQuestionIndexByRequestId, setPendingUserInputQuestionIndexByRequestId] =
     useState<Record<string, number>>({});
-  const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, boolean>>({});
+  const [expandedWorkGroups, setExpandedWorkGroups] = useState<Record<string, number>>({});
   const [expandedFileChangeDiffs, setExpandedFileChangeDiffs] = useState<Record<string, boolean>>(
     {},
   );
@@ -1446,6 +1447,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const showAgentCommandTranscripts = settings.showAgentCommandTranscripts;
   const alwaysExpandAgentCommandTranscripts = settings.alwaysExpandAgentCommandTranscripts;
   const showFileChangeDiffsInline = settings.showFileChangeDiffsInline;
+  const workLogMode = settings.workLogMode;
+  const workLogFilter = settings.workLogFilter;
   const threadFileChangesQueryKey = useMemo(
     () => orchestrationQueryKeys.threadFileChanges(threadId),
     [threadId],
@@ -1679,6 +1682,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       deriveWorkLogEntries(threadActivities, activeLatestTurn?.turnId ?? undefined, {
         runtimeWarningVisibility: settings.runtimeWarningVisibility,
         suppressCommandToolLifecycle: showAgentCommandTranscripts && commandExecutions.length > 0,
+        mode: workLogMode,
+        filter: workLogFilter,
       }),
     [
       activeLatestTurn?.turnId,
@@ -1686,6 +1691,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       settings.runtimeWarningVisibility,
       showAgentCommandTranscripts,
       threadActivities,
+      workLogFilter,
+      workLogMode,
     ],
   );
   const latestTurnHasToolActivity = useMemo(
@@ -2955,6 +2962,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     showScrollDebouncer.current?.cancel();
     setShowScrollToBottom(false);
   }, [activeThread?.id, threadId]);
+
+  useEffect(() => {
+    setExpandedWorkGroups({});
+  }, [workLogFilter, workLogMode]);
 
   useEffect(() => {
     if (!composerMenuOpen) {
@@ -5160,10 +5171,16 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
     return false;
   };
-  const onToggleWorkGroup = useCallback((groupId: string) => {
+  const onToggleWorkGroup = useCallback((groupId: string, paginatedEntryCount: number) => {
     setExpandedWorkGroups((existing) => ({
       ...existing,
-      [groupId]: !existing[groupId],
+      [groupId]:
+        (existing[groupId] ?? WORK_LOG_PAGE_SIZE) >= paginatedEntryCount
+          ? WORK_LOG_PAGE_SIZE
+          : Math.min(
+              paginatedEntryCount,
+              (existing[groupId] ?? WORK_LOG_PAGE_SIZE) + WORK_LOG_PAGE_SIZE,
+            ),
     }));
   }, []);
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {

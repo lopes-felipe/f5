@@ -2,6 +2,7 @@ import {
   EventId,
   MessageId,
   OrchestrationCommandExecutionId,
+  ProviderItemId,
   ThreadId,
   TurnId,
   type OrchestrationThreadActivity,
@@ -992,6 +993,469 @@ describe("deriveWorkLogEntries", () => {
       runtimeWarningVisibility: "full",
     });
     expect(entry?.label).toBe("Runtime warning");
+  });
+
+  it("keeps Essential mode concise while retaining actionable hook, review, and guardian issues", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "hook-success",
+        kind: "hook.completed",
+        summary: "preToolUse hook (completed)",
+        tone: "info",
+        payload: { hookId: "hook-success", hookEvent: "preToolUse", rawStatus: "completed" },
+      }),
+      makeActivity({
+        id: "hook-blocked",
+        kind: "hook.completed",
+        summary: "preToolUse hook (blocked)",
+        tone: "error",
+        payload: { hookId: "hook-blocked", hookEvent: "preToolUse", rawStatus: "blocked" },
+      }),
+      makeActivity({
+        id: "review-approved",
+        kind: "approval-review.completed",
+        summary: "command review approved",
+        tone: "info",
+        payload: { reviewId: "review-approved", status: "approved", actionType: "command" },
+      }),
+      makeActivity({
+        id: "review-denied",
+        kind: "approval-review.completed",
+        summary: "command review denied",
+        tone: "error",
+        payload: { reviewId: "review-denied", status: "denied", actionType: "command" },
+      }),
+      makeActivity({
+        id: "guardian-warning",
+        kind: "runtime.warning",
+        summary: "Guardian warning",
+        tone: "error",
+        payload: {
+          message: "Review the requested network access",
+          category: "guardian",
+          actionable: true,
+        },
+      }),
+      makeActivity({
+        id: "hook-unmatched",
+        kind: "hook.started",
+        summary: "Running postToolUse hook",
+        tone: "info",
+        payload: { hookId: "hook-unmatched", hookEvent: "postToolUse" },
+      }),
+      makeActivity({
+        id: "review-unmatched",
+        kind: "approval-review.started",
+        summary: "Reviewing command",
+        tone: "info",
+        payload: { reviewId: "review-unmatched", status: "inProgress", actionType: "command" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      mode: "essential",
+      runtimeWarningVisibility: "hidden",
+    });
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "guardian-warning",
+      "hook-blocked",
+      "hook-unmatched",
+      "review-denied",
+      "review-unmatched",
+    ]);
+    expect(entries.every((entry) => entry.isIssue)).toBe(true);
+    expect(entries.find((entry) => entry.id === "hook-unmatched")?.diagnostic?.status).toBe(
+      "incomplete",
+    );
+    expect(entries.find((entry) => entry.id === "review-unmatched")?.diagnostic?.status).toBe(
+      "incomplete",
+    );
+  });
+
+  it("pairs legacy diagnostic starts, preserves completed handlers, and marks unmatched starts", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "hook-start-matched",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "hook.started",
+        summary: "Running preToolUse hook",
+        tone: "info",
+        payload: { hookId: "hook-1", hookEvent: "preToolUse" },
+      }),
+      makeActivity({
+        id: "hook-completed",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "hook.completed",
+        summary: "preToolUse hook (completed)",
+        tone: "info",
+        payload: {
+          hookId: "hook-1",
+          hookEvent: "preToolUse",
+          handlerType: "command",
+          displayOrder: 2,
+          durationMs: 17,
+          rawStatus: "completed",
+        },
+      }),
+      makeActivity({
+        id: "hook-start-unmatched",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "hook.started",
+        summary: "Running postToolUse hook",
+        tone: "info",
+        payload: { hookId: "hook-2", hookEvent: "postToolUse" },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      mode: "diagnostics",
+      filter: "hooks",
+    });
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({
+      id: "hook-completed",
+      diagnostic: {
+        type: "hook",
+        id: "hook-1",
+        status: "completed",
+        handlerType: "command",
+        displayOrder: 2,
+        durationMs: 17,
+      },
+    });
+    expect(entries[1]).toMatchObject({
+      id: "hook-start-unmatched",
+      label: "postToolUse (incomplete)",
+      isIssue: true,
+      diagnostic: { status: "incomplete", incomplete: true },
+    });
+  });
+
+  it("applies All, Tools, Hooks, and Issues filters to diagnostics", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "tool",
+        kind: "tool.completed",
+        summary: "Read file",
+        payload: { itemType: "dynamic_tool_call", providerItemId: "tool-1" },
+      }),
+      makeActivity({
+        id: "hook-success",
+        kind: "hook.completed",
+        summary: "Hook completed",
+        tone: "info",
+        payload: { hookId: "hook-success", rawStatus: "completed" },
+      }),
+      makeActivity({
+        id: "hook-failed",
+        kind: "hook.completed",
+        summary: "Hook failed",
+        tone: "error",
+        payload: { hookId: "hook-failed", rawStatus: "failed" },
+      }),
+      makeActivity({
+        id: "warning",
+        kind: "runtime.warning",
+        summary: "Protocol warning",
+        tone: "info",
+        payload: { message: "Unsupported event", category: "protocol", actionable: true },
+      }),
+    ];
+
+    const idsFor = (filter: "all" | "tools" | "hooks" | "issues") =>
+      deriveWorkLogEntries(activities, undefined, { mode: "diagnostics", filter }).map(
+        (entry) => entry.id,
+      );
+
+    expect(idsFor("all")).toEqual(["hook-failed", "hook-success", "tool", "warning"]);
+    expect(idsFor("tools")).toEqual(["tool"]);
+    expect(idsFor("hooks")).toEqual(["hook-failed", "hook-success"]);
+    expect(idsFor("issues")).toEqual(["hook-failed", "warning"]);
+  });
+
+  it("coalesces identical protocol warnings with a count", () => {
+    const activities = ["one", "two", "three"].map((id, index) =>
+      makeActivity({
+        id,
+        createdAt: `2026-02-23T00:00:0${index + 1}.000Z`,
+        kind: "runtime.warning",
+        summary: "Protocol warning",
+        tone: "info",
+        payload: {
+          message: "Unsupported Codex notification: future/event",
+          category: "protocol",
+          actionable: true,
+        },
+      }),
+    );
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      runtimeWarningVisibility: "hidden",
+    });
+    expect(entries).toEqual([
+      expect.objectContaining({
+        id: "one",
+        label: "Unsupported Codex notification: future/event",
+        warningCount: 3,
+      }),
+    ]);
+  });
+
+  it("keeps protocol warnings with different methods or values distinct", () => {
+    const activities = [
+      makeActivity({
+        id: "one",
+        kind: "runtime.warning",
+        summary: "Protocol warning",
+        tone: "info",
+        payload: {
+          message: "Malformed Codex event",
+          category: "protocol",
+          actionable: true,
+          protocolMethod: "item/completed",
+          protocolValue: "subAgentActivity",
+        },
+      }),
+      makeActivity({
+        id: "two",
+        kind: "runtime.warning",
+        summary: "Protocol warning",
+        tone: "info",
+        payload: {
+          message: "Malformed Codex event",
+          category: "protocol",
+          actionable: true,
+          protocolMethod: "item/reasoning/summaryPartAdded",
+          protocolValue: "futureItem",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      runtimeWarningVisibility: "hidden",
+    });
+    expect(entries.map((entry) => entry.id)).toEqual(["one", "two"]);
+    expect(entries.every((entry) => entry.warningCount === undefined)).toBe(true);
+  });
+
+  it("keeps repeated guardian warnings individually inspectable", () => {
+    const activities = ["guardian-one", "guardian-two"].map((id, index) =>
+      makeActivity({
+        id,
+        createdAt: `2026-02-23T00:00:0${index + 1}.000Z`,
+        kind: "runtime.warning",
+        summary: "Guardian warning",
+        tone: "error",
+        payload: {
+          message: "Review network access",
+          category: "guardian",
+          actionable: true,
+        },
+      }),
+    );
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      runtimeWarningVisibility: "hidden",
+    });
+    expect(entries.map((entry) => entry.id)).toEqual(["guardian-one", "guardian-two"]);
+    expect(entries.every((entry) => entry.warningCount === undefined)).toBe(true);
+  });
+
+  it("correlates subagent activity with the existing collaboration row", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "collab",
+          kind: "tool.completed",
+          summary: "Subagent activity",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            providerItemId: "collab-call-1",
+            data: {
+              item: {
+                type: "collabAgentToolCall",
+                tool: "spawnAgent",
+                receiverThreadIds: ["agent-thread-1"],
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "subagent-activity",
+          kind: "subagent.activity",
+          summary: "Subagent interacted",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            providerItemId: "subagent-activity-1",
+            subagentType: "interacted",
+            subagentThreadId: "agent-thread-1",
+            subagentPath: "/root/reviewer",
+          },
+        }),
+      ],
+      undefined,
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      id: "collab",
+      subagentThreadId: "agent-thread-1",
+      subagentPath: "/root/reviewer",
+    });
+  });
+
+  it("correlates subagent activity only to a preceding spawn row", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "spawn-started",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.updated",
+          summary: "Spawn agent",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            providerItemId: "spawn-call",
+            data: {
+              item: {
+                type: "collabAgentToolCall",
+                tool: "spawnAgent",
+                receiverThreadIds: ["agent-thread-1"],
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "subagent-started",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "subagent.activity",
+          summary: "Subagent started",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            subagentThreadId: "agent-thread-1",
+            subagentPath: "/root/reviewer",
+          },
+        }),
+        makeActivity({
+          id: "spawn-completed",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "tool.completed",
+          summary: "Spawn agent",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            providerItemId: "spawn-call",
+            data: {
+              item: {
+                type: "collabAgentToolCall",
+                tool: "spawnAgent",
+                receiverThreadIds: ["agent-thread-1"],
+              },
+            },
+          },
+        }),
+        makeActivity({
+          id: "send-input",
+          createdAt: "2026-02-23T00:00:04.000Z",
+          kind: "tool.completed",
+          summary: "Send input",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            providerItemId: "send-call",
+            data: {
+              item: {
+                type: "collabAgentToolCall",
+                tool: "sendInput",
+                receiverThreadIds: ["agent-thread-1"],
+              },
+            },
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual(["spawn-completed", "send-input"]);
+    expect(entries[0]).toMatchObject({
+      subagentThreadId: "agent-thread-1",
+      subagentPath: "/root/reviewer",
+    });
+    expect(entries[1]?.subagentPath).toBeUndefined();
+  });
+
+  it("nests correlated diagnostics under tool and command rows with standalone fallback", () => {
+    const workEntries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "tool",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.completed",
+          summary: "Read file",
+          payload: {
+            itemType: "dynamic_tool_call",
+            providerItemId: "tool-item-1",
+          },
+        }),
+        makeActivity({
+          id: "tool-hook",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "hook.completed",
+          summary: "postToolUse hook (completed)",
+          payload: {
+            hookId: "hook-tool",
+            hookEvent: "postToolUse",
+            rawStatus: "completed",
+            providerItemId: "tool-item-1",
+          },
+        }),
+        makeActivity({
+          id: "command-hook",
+          createdAt: "2026-02-23T00:00:03.000Z",
+          kind: "hook.completed",
+          summary: "postToolUse hook (completed)",
+          payload: {
+            hookId: "hook-command",
+            hookEvent: "postToolUse",
+            rawStatus: "completed",
+            providerItemId: "command-item-1",
+          },
+        }),
+        makeActivity({
+          id: "orphan-hook",
+          createdAt: "2026-02-23T00:00:04.000Z",
+          kind: "hook.completed",
+          summary: "stop hook (completed)",
+          payload: { hookId: "hook-orphan", hookEvent: "stop", rawStatus: "completed" },
+        }),
+      ],
+      undefined,
+      { mode: "diagnostics" },
+    );
+    const timeline = deriveTimelineEntries([], [], workEntries, [
+      {
+        id: OrchestrationCommandExecutionId.makeUnsafe("command-row-1"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnId: TurnId.makeUnsafe("turn-1"),
+        providerItemId: ProviderItemId.makeUnsafe("command-item-1"),
+        command: "bun run lint",
+        title: "Run lint",
+        status: "completed",
+        detail: null,
+        exitCode: 0,
+        startedAt: "2026-02-23T00:00:01.500Z",
+        completedAt: "2026-02-23T00:00:03.500Z",
+        updatedAt: "2026-02-23T00:00:03.500Z",
+        startedSequence: 1,
+        lastUpdatedSequence: 2,
+      },
+    ]);
+    const toolRow = timeline.find((entry) => entry.kind === "work" && entry.entry.id === "tool");
+    const commandRow = timeline.find((entry) => entry.kind === "command");
+    const orphanRow = timeline.find(
+      (entry) => entry.kind === "work" && entry.entry.id === "orphan-hook",
+    );
+    expect(toolRow?.kind === "work" ? toolRow.entry.nestedDiagnostics?.[0]?.id : null).toBe(
+      "tool-hook",
+    );
+    expect(commandRow?.kind === "command" ? commandRow.nestedDiagnostics?.[0]?.id : null).toBe(
+      "command-hook",
+    );
+    expect(orphanRow).toBeDefined();
   });
 
   it("orders work log by activity sequence when present", () => {

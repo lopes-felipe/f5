@@ -16,7 +16,11 @@ import { parsePersistedAppSettings } from "../../appSettings";
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
 import { orchestrationQueryKeys } from "../../lib/orchestrationReactQuery";
 import { providerQueryKeys } from "../../lib/providerReactQuery";
-import { deriveTimelineEntries, deriveWorkLogEntries } from "../../session-logic";
+import {
+  deriveTimelineEntries,
+  deriveWorkLogEntries,
+  type TimelineEntry,
+} from "../../session-logic";
 
 vi.mock("../ChatMarkdown", () => ({
   default: ({ text }: { text: string }) => <div>{text}</div>,
@@ -225,6 +229,77 @@ function preloadThreadFileChange(input: {
 }
 
 describe("MessagesTimeline", () => {
+  it("keeps file-change rows visible when routine work exceeds the page size", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const createdAt = "2026-03-17T19:12:28.000Z";
+    const timelineEntries: TimelineEntry[] = [
+      {
+        id: "always-visible-file-change-entry",
+        kind: "work",
+        createdAt,
+        entry: {
+          id: "always-visible-file-change-work",
+          createdAt,
+          label: "File change",
+          tone: "tool",
+          itemType: "file_change",
+          changedFiles: ["apps/web/src/always-visible.ts"],
+        },
+      },
+      ...Array.from({ length: 8 }, (_, index): TimelineEntry => {
+        const activityNumber = index + 1;
+        return {
+          id: `routine-entry-${activityNumber}`,
+          kind: "work",
+          createdAt: new Date(Date.parse(createdAt) + activityNumber * 1_000).toISOString(),
+          entry: {
+            id: `routine-work-${activityNumber}`,
+            createdAt: new Date(Date.parse(createdAt) + activityNumber * 1_000).toISOString(),
+            label: `Routine activity ${String(activityNumber).padStart(2, "0")}`,
+            tone: "tool",
+            itemType: "dynamic_tool_call",
+          },
+        };
+      }),
+    ];
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={timelineEntries}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        nowIso="2026-03-17T19:12:40.000Z"
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("apps/web/src/always-visible.ts");
+    expect(markup).not.toContain("Routine activity 01");
+    expect(markup).not.toContain("Routine activity 02");
+    expect(markup).toContain("Routine activity 08");
+    expect(markup).toContain("Show 2 more");
+  });
+
   it("renders the changed filename inline for file-change rows with one file", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
@@ -2708,5 +2783,122 @@ describe("MessagesTimeline", () => {
     expect(userMarkup).toContain("apps/web/src/components/ChatView.tsx");
     expect(userMarkup).not.toContain("/repo/project/.worktrees/feature/");
     expect(userMarkup).not.toContain("&lt;attached_files&gt;");
+  });
+
+  it("renders generated images, waits, warning counts, and nested hook diagnostics", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    let diagnosticSerializationCount = 0;
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={[
+          {
+            id: "generated-image-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "generated-image-work",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Generated image",
+              detail: "/tmp/generated.png",
+              tone: "tool",
+              itemType: "image_generation",
+              nestedDiagnostics: [
+                {
+                  id: "hook-work",
+                  createdAt: "2026-03-17T19:12:28.100Z",
+                  label: "postToolUse hook completed",
+                  tone: "info",
+                  activityKind: "hook.completed",
+                  category: "hook",
+                  isIssue: false,
+                  diagnostic: {
+                    type: "hook",
+                    id: "hook-1",
+                    hookEvent: "postToolUse",
+                    source: "plugin",
+                    sourcePath: "/Users/example/.codex/hooks/hooks-codex.json",
+                    handlerType: "command",
+                    displayOrder: 2,
+                    status: "completed",
+                    durationMs: 15,
+                    entries: [
+                      {
+                        toJSON() {
+                          diagnosticSerializationCount += 1;
+                          return { message: "hook output" };
+                        },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+          {
+            id: "sleep-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "sleep-work",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Waited 5s",
+              detail: "5000ms",
+              tone: "tool",
+              itemType: "sleep",
+            },
+          },
+          {
+            id: "warning-entry",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            entry: {
+              id: "warning-work",
+              createdAt: "2026-03-17T19:12:30.000Z",
+              label: "Unsupported protocol request",
+              tone: "error",
+              activityKind: "runtime.warning",
+              category: "issue",
+              isIssue: true,
+              warningCount: 3,
+            },
+          },
+        ]}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        nowIso="2026-03-17T19:12:31.000Z"
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Generated image");
+    expect(markup).toContain("Waited 5s");
+    expect(markup).toContain("postToolUse hook completed");
+    expect(markup).toContain("plugin:hooks-codex.json");
+    expect(markup).toContain("order 2");
+    expect(markup).toContain("15ms");
+    expect(markup).toContain("Unsupported protocol request");
+    expect(markup).toContain("×3");
+    expect(diagnosticSerializationCount).toBe(0);
   });
 });

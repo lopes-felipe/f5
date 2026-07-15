@@ -176,6 +176,9 @@ const ProviderRuntimeEventType = Schema.Literals([
   "hook.started",
   "hook.progress",
   "hook.completed",
+  "approval-review.started",
+  "approval-review.completed",
+  "subagent.activity",
   "tool.progress",
   "tool.summary",
   "auth.status",
@@ -228,6 +231,9 @@ const TaskCompletedType = Schema.Literal("task.completed");
 const HookStartedType = Schema.Literal("hook.started");
 const HookProgressType = Schema.Literal("hook.progress");
 const HookCompletedType = Schema.Literal("hook.completed");
+const ApprovalReviewStartedType = Schema.Literal("approval-review.started");
+const ApprovalReviewCompletedType = Schema.Literal("approval-review.completed");
+const SubagentActivityType = Schema.Literal("subagent.activity");
 const ToolProgressType = Schema.Literal("tool.progress");
 const ToolSummaryType = Schema.Literal("tool.summary");
 const AuthStatusType = Schema.Literal("auth.status");
@@ -477,6 +483,15 @@ const HookStartedPayload = Schema.Struct({
   hookId: TrimmedNonEmptyStringSchema,
   hookName: TrimmedNonEmptyStringSchema,
   hookEvent: TrimmedNonEmptyStringSchema,
+  targetItemId: Schema.optional(RuntimeItemId),
+  handlerType: Schema.optional(TrimmedNonEmptyStringSchema),
+  executionMode: Schema.optional(TrimmedNonEmptyStringSchema),
+  scope: Schema.optional(TrimmedNonEmptyStringSchema),
+  source: Schema.optional(TrimmedNonEmptyStringSchema),
+  sourcePath: Schema.optional(TrimmedNonEmptyStringSchema),
+  displayOrder: Schema.optional(Schema.Int),
+  statusMessage: Schema.optional(TrimmedNonEmptyStringSchema),
+  startedAt: Schema.optional(Schema.Number),
 });
 export type HookStartedPayload = typeof HookStartedPayload.Type;
 
@@ -491,12 +506,59 @@ export type HookProgressPayload = typeof HookProgressPayload.Type;
 const HookCompletedPayload = Schema.Struct({
   hookId: TrimmedNonEmptyStringSchema,
   outcome: Schema.Literals(["success", "error", "cancelled"]),
+  hookName: Schema.optional(TrimmedNonEmptyStringSchema),
+  hookEvent: Schema.optional(TrimmedNonEmptyStringSchema),
+  targetItemId: Schema.optional(RuntimeItemId),
+  handlerType: Schema.optional(TrimmedNonEmptyStringSchema),
+  executionMode: Schema.optional(TrimmedNonEmptyStringSchema),
+  scope: Schema.optional(TrimmedNonEmptyStringSchema),
+  source: Schema.optional(TrimmedNonEmptyStringSchema),
+  sourcePath: Schema.optional(TrimmedNonEmptyStringSchema),
+  displayOrder: Schema.optional(Schema.Int),
+  rawStatus: Schema.optional(TrimmedNonEmptyStringSchema),
+  statusMessage: Schema.optional(TrimmedNonEmptyStringSchema),
+  startedAt: Schema.optional(Schema.Number),
+  completedAt: Schema.optional(Schema.Number),
+  durationMs: Schema.optional(Schema.Number),
+  entries: Schema.optional(Schema.Array(Schema.Unknown)),
   output: Schema.optional(Schema.String),
   stdout: Schema.optional(Schema.String),
   stderr: Schema.optional(Schema.String),
   exitCode: Schema.optional(Schema.Int),
 });
 export type HookCompletedPayload = typeof HookCompletedPayload.Type;
+
+const ApprovalReviewStatus = Schema.Literals([
+  "inProgress",
+  "approved",
+  "denied",
+  "timedOut",
+  "aborted",
+]);
+export type ApprovalReviewStatus = typeof ApprovalReviewStatus.Type;
+
+const ApprovalReviewPayload = Schema.Struct({
+  reviewId: TrimmedNonEmptyStringSchema,
+  targetItemId: Schema.optional(RuntimeItemId),
+  status: ApprovalReviewStatus,
+  actionType: Schema.optional(TrimmedNonEmptyStringSchema),
+  riskLevel: Schema.optional(Schema.Literals(["low", "medium", "high", "critical"])),
+  userAuthorization: Schema.optional(Schema.Literals(["unknown", "low", "medium", "high"])),
+  rationale: Schema.optional(TrimmedNonEmptyStringSchema),
+  decisionSource: Schema.optional(TrimmedNonEmptyStringSchema),
+  startedAtMs: Schema.optional(Schema.Number),
+  completedAtMs: Schema.optional(Schema.Number),
+  durationMs: Schema.optional(Schema.Number),
+  action: Schema.optional(Schema.Unknown),
+});
+export type ApprovalReviewPayload = typeof ApprovalReviewPayload.Type;
+
+const SubagentActivityPayload = Schema.Struct({
+  kind: Schema.Literals(["started", "interacted", "interrupted"]),
+  agentThreadId: TrimmedNonEmptyStringSchema,
+  agentPath: TrimmedNonEmptyStringSchema,
+});
+export type SubagentActivityPayload = typeof SubagentActivityPayload.Type;
 
 const ToolProgressPayload = Schema.Struct({
   toolUseId: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -594,6 +656,10 @@ export type FilesPersistedPayload = typeof FilesPersistedPayload.Type;
 const RuntimeWarningPayload = Schema.Struct({
   message: TrimmedNonEmptyStringSchema,
   detail: Schema.optional(Schema.Unknown),
+  category: Schema.optional(Schema.Literals(["provider", "guardian", "verification", "protocol"])),
+  actionable: Schema.optional(Schema.Boolean),
+  protocolMethod: Schema.optional(TrimmedNonEmptyStringSchema),
+  protocolValue: Schema.optional(TrimmedNonEmptyStringSchema),
 });
 export type RuntimeWarningPayload = typeof RuntimeWarningPayload.Type;
 
@@ -872,6 +938,29 @@ const ProviderRuntimeHookCompletedEvent = Schema.Struct({
 });
 export type ProviderRuntimeHookCompletedEvent = typeof ProviderRuntimeHookCompletedEvent.Type;
 
+const ProviderRuntimeApprovalReviewStartedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ApprovalReviewStartedType,
+  payload: ApprovalReviewPayload,
+});
+export type ProviderRuntimeApprovalReviewStartedEvent =
+  typeof ProviderRuntimeApprovalReviewStartedEvent.Type;
+
+const ProviderRuntimeApprovalReviewCompletedEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: ApprovalReviewCompletedType,
+  payload: ApprovalReviewPayload,
+});
+export type ProviderRuntimeApprovalReviewCompletedEvent =
+  typeof ProviderRuntimeApprovalReviewCompletedEvent.Type;
+
+const ProviderRuntimeSubagentActivityEvent = Schema.Struct({
+  ...ProviderRuntimeEventBase.fields,
+  type: SubagentActivityType,
+  payload: SubagentActivityPayload,
+});
+export type ProviderRuntimeSubagentActivityEvent = typeof ProviderRuntimeSubagentActivityEvent.Type;
+
 const ProviderRuntimeToolProgressEvent = Schema.Struct({
   ...ProviderRuntimeEventBase.fields,
   type: ToolProgressType,
@@ -1003,6 +1092,9 @@ export const ProviderRuntimeEventV2 = Schema.Union([
   ProviderRuntimeHookStartedEvent,
   ProviderRuntimeHookProgressEvent,
   ProviderRuntimeHookCompletedEvent,
+  ProviderRuntimeApprovalReviewStartedEvent,
+  ProviderRuntimeApprovalReviewCompletedEvent,
+  ProviderRuntimeSubagentActivityEvent,
   ProviderRuntimeToolProgressEvent,
   ProviderRuntimeToolSummaryEvent,
   ProviderRuntimeAuthStatusEvent,

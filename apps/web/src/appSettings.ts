@@ -21,6 +21,10 @@ export type TimestampFormat = (typeof TIMESTAMP_FORMAT_OPTIONS)[number];
 export const DEFAULT_TIMESTAMP_FORMAT: TimestampFormat = "locale";
 export const RUNTIME_WARNING_VISIBILITY_OPTIONS = ["hidden", "summarized", "full"] as const;
 export type RuntimeWarningVisibility = (typeof RUNTIME_WARNING_VISIBILITY_OPTIONS)[number];
+export const WORK_LOG_MODE_OPTIONS = ["essential", "diagnostics"] as const;
+export type WorkLogMode = (typeof WORK_LOG_MODE_OPTIONS)[number];
+export const WORK_LOG_FILTER_OPTIONS = ["all", "tools", "hooks", "issues"] as const;
+export type WorkLogFilter = (typeof WORK_LOG_FILTER_OPTIONS)[number];
 export const ONBOARDING_LITE_STATUS_OPTIONS = [
   "eligible",
   "dismissed",
@@ -281,6 +285,14 @@ export const AppSettingsSchema = Schema.Struct({
   ),
   runtimeWarningVisibility: Schema.Literals(["hidden", "summarized", "full"]).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_RUNTIME_WARNING_VISIBILITY)),
+  ),
+  workLogMode: Schema.Literals(WORK_LOG_MODE_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some("essential" as const)),
+    Schema.withDecodingDefault(() => "essential" as const),
+  ),
+  workLogFilter: Schema.Literals(WORK_LOG_FILTER_OPTIONS).pipe(
+    Schema.withConstructorDefault(() => Option.some("all" as const)),
+    Schema.withDecodingDefault(() => "all" as const),
   ),
   showProviderRuntimeMetadata: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(false)),

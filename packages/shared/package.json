@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./codexCliVersion": {
+      "types": "./src/codexCliVersion.ts",
+      "import": "./src/codexCliVersion.ts"
+    },
     "./codexStderr": {
       "types": "./src/codexStderr.ts",
       "import": "./src/codexStderr.ts"
@@ -11,6 +15,14 @@
     "./codexOAuthTiming": {
       "types": "./src/codexOAuthTiming.ts",
       "import": "./src/codexOAuthTiming.ts"
+    },
+    "./codexProtocolAudit": {
+      "types": "./src/codexProtocolAudit.ts",
+      "import": "./src/codexProtocolAudit.ts"
+    },
+    "./codexProtocolManifest": {
+      "types": "./src/codexProtocolManifest.ts",
+      "import": "./src/codexProtocolManifest.ts"
     },
     "./model": {
       "types": "./src/model.ts",

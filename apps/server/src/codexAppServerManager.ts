@@ -24,6 +24,7 @@ import {
   ProviderInteractionMode,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
+import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { Effect, ServiceMap } from "effect";
 
@@ -68,13 +69,26 @@ interface PendingApprovalRequest {
     | "item/commandExecution/requestApproval"
     | "item/fileChange/requestApproval"
     | "item/fileRead/requestApproval"
-    | "item/permissions/requestApproval";
+    | "item/permissions/requestApproval"
+    | "applyPatchApproval"
+    | "execCommandApproval";
   requestKind: ProviderRequestKind;
-  responseKind: "decision" | "permissions";
+  responseKind: "decision" | "permissions" | "legacy-decision";
   requestedPermissions?: Record<string, unknown>;
   threadId: ThreadId;
   turnId?: TurnId;
   itemId?: ProviderItemId;
+}
+
+interface NativeRequestCorrelation {
+  readonly nativeRequestId: string;
+  readonly requestId: ApprovalRequestId;
+  readonly method: string;
+  readonly requestKind?: ProviderRequestKind;
+  readonly responseChannel: "approval" | "user-input";
+  readonly turnId?: TurnId;
+  readonly itemId?: ProviderItemId;
+  resolvedLocally: boolean;
 }
 
 interface PendingUserInputRequest {
@@ -98,6 +112,7 @@ interface CodexSessionContext {
   pending: Map<PendingRequestKey, PendingRequest>;
   pendingApprovals: Map<ApprovalRequestId, PendingApprovalRequest>;
   pendingUserInputs: Map<ApprovalRequestId, PendingUserInputRequest>;
+  nativeRequestCorrelations: Map<string, NativeRequestCorrelation>;
   instructionContext?: Partial<SharedInstructionInput>;
   configuredBase?: Record<string, unknown>;
   availableSkills: ReadonlyArray<SupportedSlashCommand>;
@@ -217,6 +232,7 @@ const CODEX_ONE_OFF_THREAD_PREFIX = "one-off:";
 const CODEX_ONE_OFF_PROMPT_TIMEOUT_MS = 120_000;
 const CODEX_SKILLS_REFRESH_TIMEOUT_MS = 5_000;
 const CODEX_INITIAL_SKILLS_RETRY_DELAY_MS = 2_000;
+const CODEX_NATIVE_REQUEST_CORRELATION_CAPACITY = 256;
 const EMPTY_SUPPORTED_COMMANDS_FINGERPRINT = fingerprintSupportedSlashCommands([]);
 
 function asObject(value: unknown): Record<string, unknown> | undefined {
@@ -263,10 +279,27 @@ function codexApprovalResponse(
       return { decision };
     case "permissions":
       return codexPermissionApprovalResponse(decision, pendingRequest.requestedPermissions);
+    case "legacy-decision":
+      return { decision: legacyCodexApprovalDecision(decision) };
     default: {
       const exhaustive: never = pendingRequest.responseKind;
       return exhaustive;
     }
+  }
+}
+
+export function legacyCodexApprovalDecision(
+  decision: ProviderApprovalDecision,
+): "approved" | "approved_for_session" | "denied" | "abort" {
+  switch (decision) {
+    case "accept":
+      return "approved";
+    case "acceptForSession":
+      return "approved_for_session";
+    case "decline":
+      return "denied";
+    case "cancel":
+      return "abort";
   }
 }
 
@@ -445,6 +478,11 @@ export function buildCodexInitializeParams() {
     },
     capabilities: {
       experimentalApi: true,
+      requestAttestation: false,
+      mcpServerOpenaiFormElicitation: false,
+      // Current servers suppress this high-volume diagnostic. The adapter and
+      // UI still accept starts from older servers and persisted worklogs.
+      optOutNotificationMethods: ["hook/started"],
     },
   } as const;
 }
@@ -685,6 +723,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         pending: new Map(),
         pendingApprovals: new Map(),
         pendingUserInputs: new Map(),
+        nativeRequestCorrelations: new Map(),
         instructionContext: buildCodexInstructionContext(input, resolvedCwd),
         availableSkills: [],
         supportedCommandsFingerprint: EMPTY_SUPPORTED_COMMANDS_FINGERPRINT,
@@ -720,15 +759,12 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
       try {
         const accountReadResponse = await this.sendRequest(context, "account/read", {});
-        console.log("codex account/read response", accountReadResponse);
         context.account = readCodexAccountSnapshot(accountReadResponse);
-        console.log("codex subscription status", {
-          type: context.account.type,
-          planType: context.account.planType,
-          sparkEnabled: context.account.sparkEnabled,
-        });
       } catch (error) {
-        console.log("codex account/read failed", error);
+        await Effect.logDebug("codex account/read failed", {
+          threadId,
+          cause: error instanceof Error ? error.message : String(error),
+        }).pipe(this.runPromise);
       }
 
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
@@ -1187,11 +1223,34 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error(`Unknown pending approval request: ${requestId}`);
     }
 
-    context.pendingApprovals.delete(requestId);
+    let correlation = (
+      context.nativeRequestCorrelations as Map<string, NativeRequestCorrelation> | undefined
+    )?.get(String(pendingRequest.jsonRpcId));
+    if (!correlation) {
+      correlation = {
+        nativeRequestId: String(pendingRequest.jsonRpcId),
+        requestId: pendingRequest.requestId,
+        method: pendingRequest.method,
+        requestKind: pendingRequest.requestKind,
+        responseChannel: "approval",
+        ...(pendingRequest.turnId ? { turnId: pendingRequest.turnId } : {}),
+        ...(pendingRequest.itemId ? { itemId: pendingRequest.itemId } : {}),
+        resolvedLocally: false,
+      };
+      this.rememberNativeRequestCorrelation(context, correlation);
+    }
     await this.writeMessage(context, {
       id: pendingRequest.jsonRpcId,
       result: codexApprovalResponse(pendingRequest, decision),
     });
+    // A provider-side cancellation can race the write while it is in flight.
+    // In that case the server resolution owns the row and has already cleared
+    // the pending request.
+    if (!context.pendingApprovals.has(requestId)) {
+      return;
+    }
+    this.markNativeRequestResolvedLocally(context, correlation);
+    context.pendingApprovals.delete(requestId);
 
     this.emitEvent({
       id: EventId.makeUnsafe(randomUUID()),
@@ -1207,6 +1266,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       payload: {
         requestId: pendingRequest.requestId,
         requestKind: pendingRequest.requestKind,
+        requestMethod: pendingRequest.method,
         decision,
       },
     });
@@ -1223,7 +1283,21 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error(`Unknown pending user input request: ${requestId}`);
     }
 
-    context.pendingUserInputs.delete(requestId);
+    let correlation = (
+      context.nativeRequestCorrelations as Map<string, NativeRequestCorrelation> | undefined
+    )?.get(String(pendingRequest.jsonRpcId));
+    if (!correlation) {
+      correlation = {
+        nativeRequestId: String(pendingRequest.jsonRpcId),
+        requestId: pendingRequest.requestId,
+        method: "item/tool/requestUserInput",
+        responseChannel: "user-input",
+        ...(pendingRequest.turnId ? { turnId: pendingRequest.turnId } : {}),
+        ...(pendingRequest.itemId ? { itemId: pendingRequest.itemId } : {}),
+        resolvedLocally: false,
+      };
+      this.rememberNativeRequestCorrelation(context, correlation);
+    }
     const codexAnswers = toCodexUserInputAnswers(answers);
     await this.writeMessage(context, {
       id: pendingRequest.jsonRpcId,
@@ -1231,6 +1305,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         answers: codexAnswers,
       },
     });
+    if (!context.pendingUserInputs.has(requestId)) {
+      return;
+    }
+    this.markNativeRequestResolvedLocally(context, correlation);
+    context.pendingUserInputs.delete(requestId);
 
     this.emitEvent({
       id: EventId.makeUnsafe(randomUUID()),
@@ -1269,6 +1348,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.pending.clear();
     context.pendingApprovals.clear();
     context.pendingUserInputs.clear();
+    context.nativeRequestCorrelations.clear();
     this.clearInitialSkillsRetry(context);
 
     context.output.close();
@@ -1410,6 +1490,68 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context: CodexSessionContext,
     notification: JsonRpcNotification,
   ): void {
+    if (notification.method === "serverRequest/resolved") {
+      const params = asObject(notification.params);
+      const nativeRequestIdValue = params?.requestId;
+      const nativeRequestId =
+        typeof nativeRequestIdValue === "string" || typeof nativeRequestIdValue === "number"
+          ? String(nativeRequestIdValue)
+          : undefined;
+      const correlations = context.nativeRequestCorrelations as
+        | Map<string, NativeRequestCorrelation>
+        | undefined;
+      const correlation = nativeRequestId
+        ? (correlations?.get(nativeRequestId) ??
+          this.findPendingNativeRequestCorrelation(context, nativeRequestId))
+        : undefined;
+      if (correlation) {
+        correlations?.delete(correlation.nativeRequestId);
+        if (correlation.responseChannel === "approval") {
+          context.pendingApprovals.delete(correlation.requestId);
+        } else {
+          context.pendingUserInputs.delete(correlation.requestId);
+        }
+
+        // We already emitted the canonical local resolution after writing the
+        // response. Codex may acknowledge it with serverRequest/resolved; do
+        // not append a second row for the same decision.
+        if (correlation.resolvedLocally) {
+          return;
+        }
+
+        this.emitEvent({
+          id: EventId.makeUnsafe(randomUUID()),
+          kind: "notification",
+          provider: "codex",
+          threadId: context.session.threadId,
+          createdAt: new Date().toISOString(),
+          method: notification.method,
+          ...(correlation.turnId ? { turnId: correlation.turnId } : {}),
+          ...(correlation.itemId ? { itemId: correlation.itemId } : {}),
+          requestId: correlation.requestId,
+          ...(correlation.requestKind ? { requestKind: correlation.requestKind } : {}),
+          payload: {
+            ...params,
+            request: {
+              method: correlation.method,
+              ...(correlation.requestKind ? { kind: correlation.requestKind } : {}),
+            },
+            resolutionSource: "server",
+          },
+        });
+        return;
+      }
+
+      // A local response correlation may already have aged out of the bounded
+      // acknowledgement cache. With no pending prompt left to clear, treating
+      // this as a standalone resolution would only create a duplicate row.
+      void Effect.logDebug("ignoring uncorrelated Codex server request resolution", {
+        threadId: context.session.threadId,
+        nativeRequestId,
+      }).pipe(this.runPromise);
+      return;
+    }
+
     const route = this.readRouteFields(notification.params);
     const textDelta =
       notification.method === "item/agentMessage/delta"
@@ -1436,6 +1578,40 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (providerThreadId) {
         this.updateSession(context, { resumeCursor: { threadId: providerThreadId } });
       }
+      return;
+    }
+
+    if (notification.method === "thread/deleted" || notification.method === "thread/closed") {
+      this.updateSession(context, {
+        status: "closed",
+        activeTurnId: undefined,
+      });
+      return;
+    }
+
+    if (notification.method === "account/login/completed") {
+      const login = asObject(notification.params);
+      if (login?.success !== true) {
+        context.account = {
+          type: "unknown",
+          planType: null,
+          sparkEnabled: true,
+        };
+        return;
+      }
+
+      void this.sendRequest(context, "account/read", {})
+        .then((response) => {
+          if (this.isLiveContext(context)) {
+            context.account = readCodexAccountSnapshot(response);
+          }
+        })
+        .catch((error) => {
+          void Effect.logWarning("codex account refresh after login failed", {
+            threadId: context.session.threadId,
+            cause: error instanceof Error ? error.message : String(error),
+          }).pipe(this.runPromise);
+        });
       return;
     }
 
@@ -1486,8 +1662,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
     let requestId: ApprovalRequestId | undefined;
+    let responseChannel: NativeRequestCorrelation["responseChannel"] | undefined;
     if (approvalRequest) {
       requestId = ApprovalRequestId.makeUnsafe(randomUUID());
+      responseChannel = "approval";
       const params = asObject(request.params);
       const requestedPermissions =
         approvalRequest.responseKind === "permissions"
@@ -1509,6 +1687,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
     if (request.method === "item/tool/requestUserInput") {
       requestId = ApprovalRequestId.makeUnsafe(randomUUID());
+      responseChannel = "user-input";
       context.pendingUserInputs.set(requestId, {
         requestId,
         jsonRpcId: request.id,
@@ -1518,40 +1697,179 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       });
     }
 
-    this.emitEvent({
-      id: EventId.makeUnsafe(randomUUID()),
-      kind: "request",
-      provider: "codex",
-      threadId: context.session.threadId,
-      createdAt: new Date().toISOString(),
-      method: request.method,
-      turnId: route.turnId,
-      itemId: route.itemId,
-      requestId,
-      requestKind,
-      payload: request.params,
-    });
+    if (requestId && responseChannel) {
+      this.rememberNativeRequestCorrelation(context, {
+        nativeRequestId: String(request.id),
+        requestId,
+        method: request.method,
+        ...(requestKind ? { requestKind } : {}),
+        responseChannel,
+        ...(route.turnId ? { turnId: route.turnId } : {}),
+        ...(route.itemId ? { itemId: route.itemId } : {}),
+        resolvedLocally: false,
+      });
 
-    if (approvalRequest) {
+      this.emitEvent({
+        id: EventId.makeUnsafe(randomUUID()),
+        kind: "request",
+        provider: "codex",
+        threadId: context.session.threadId,
+        createdAt: new Date().toISOString(),
+        method: request.method,
+        turnId: route.turnId,
+        itemId: route.itemId,
+        requestId,
+        requestKind,
+        payload: request.params,
+      });
       return;
     }
 
-    if (request.method === "item/tool/requestUserInput") {
+    if (request.method === "currentTime/read") {
+      this.writeServerRequestResponse(context, {
+        id: request.id,
+        result: {
+          // Codex defines currentTimeAt as whole Unix seconds.
+          currentTimeAt: Math.floor(Date.now() / 1_000),
+        },
+      });
       return;
     }
 
-    void this.writeMessage(context, {
+    if (request.method === "mcpServer/elicitation/request") {
+      this.writeServerRequestResponse(context, {
+        id: request.id,
+        result: {
+          action: "cancel",
+          content: null,
+          _meta: null,
+        },
+      });
+      this.emitUnsupportedServerRequestWarning(
+        context,
+        request,
+        "An MCP server requested structured input, which F5 does not support yet. The request was cancelled; use the chat composer to provide the information instead.",
+      );
+      return;
+    }
+
+    const disposition = codexServerRequestDisposition(request.method);
+    const message =
+      request.method === "item/tool/call"
+        ? "Unexpected dynamic tool request; no matching F5 tool was registered."
+        : request.method === "account/chatgptAuthTokens/refresh"
+          ? "Unexpected ChatGPT auth-token refresh request; F5 does not provide external auth tokens."
+          : request.method === "attestation/generate"
+            ? "Unexpected attestation request; attestation capability is disabled."
+            : `Unsupported server request: ${request.method}`;
+    this.writeServerRequestResponse(context, {
       id: request.id,
       error: {
-        code: -32601,
-        message: `Unsupported server request: ${request.method}`,
+        code: disposition === undefined ? -32601 : -32000,
+        message,
       },
-    }).catch((error) => {
+    });
+    this.emitUnsupportedServerRequestWarning(context, request, message);
+  }
+
+  private rememberNativeRequestCorrelation(
+    context: CodexSessionContext,
+    correlation: NativeRequestCorrelation,
+  ): void {
+    let correlations = context.nativeRequestCorrelations as
+      | Map<string, NativeRequestCorrelation>
+      | undefined;
+    if (!correlations) {
+      correlations = new Map();
+      (
+        context as CodexSessionContext & {
+          nativeRequestCorrelations: Map<string, NativeRequestCorrelation>;
+        }
+      ).nativeRequestCorrelations = correlations;
+    }
+    correlations.delete(correlation.nativeRequestId);
+    correlations.set(correlation.nativeRequestId, correlation);
+    while (correlations.size > CODEX_NATIVE_REQUEST_CORRELATION_CAPACITY) {
+      const oldestKey = correlations.keys().next().value as string | undefined;
+      if (oldestKey === undefined) {
+        break;
+      }
+      correlations.delete(oldestKey);
+    }
+  }
+
+  private markNativeRequestResolvedLocally(
+    context: CodexSessionContext,
+    correlation: NativeRequestCorrelation,
+  ): void {
+    correlation.resolvedLocally = true;
+    // Reinsert the acknowledgement tombstone in case the pending correlation
+    // was evicted while the JSON-RPC write was in flight.
+    this.rememberNativeRequestCorrelation(context, correlation);
+  }
+
+  private findPendingNativeRequestCorrelation(
+    context: CodexSessionContext,
+    nativeRequestId: string,
+  ): NativeRequestCorrelation | undefined {
+    for (const pending of context.pendingApprovals.values()) {
+      if (String(pending.jsonRpcId) !== nativeRequestId) {
+        continue;
+      }
+      return {
+        nativeRequestId,
+        requestId: pending.requestId,
+        method: pending.method,
+        requestKind: pending.requestKind,
+        responseChannel: "approval",
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        ...(pending.itemId ? { itemId: pending.itemId } : {}),
+        resolvedLocally: false,
+      };
+    }
+    for (const pending of context.pendingUserInputs.values()) {
+      if (String(pending.jsonRpcId) !== nativeRequestId) {
+        continue;
+      }
+      return {
+        nativeRequestId,
+        requestId: pending.requestId,
+        method: "item/tool/requestUserInput",
+        responseChannel: "user-input",
+        ...(pending.turnId ? { turnId: pending.turnId } : {}),
+        ...(pending.itemId ? { itemId: pending.itemId } : {}),
+        resolvedLocally: false,
+      };
+    }
+    return undefined;
+  }
+
+  private writeServerRequestResponse(context: CodexSessionContext, response: unknown): void {
+    void this.writeMessage(context, response).catch((error) => {
       this.emitErrorEvent(
         context,
         "protocol/writeFailed",
         error instanceof Error ? error.message : "Failed to write protocol response.",
       );
+    });
+  }
+
+  private emitUnsupportedServerRequestWarning(
+    context: CodexSessionContext,
+    request: JsonRpcRequest,
+    message: string,
+  ): void {
+    this.emitEvent({
+      id: EventId.makeUnsafe(randomUUID()),
+      kind: "notification",
+      provider: "codex",
+      threadId: context.session.threadId,
+      createdAt: new Date().toISOString(),
+      method: "protocol/unsupportedServerRequest",
+      message,
+      payload: {
+        requestMethod: request.method,
+      },
     });
   }
 
@@ -1830,6 +2148,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return { method, requestKind: "permission", responseKind: "permissions" };
     }
 
+    if (method === "execCommandApproval") {
+      return { method, requestKind: "command", responseKind: "legacy-decision" };
+    }
+
+    if (method === "applyPatchApproval") {
+      return { method, requestKind: "file-change", responseKind: "legacy-decision" };
+    }
+
     return undefined;
   }
 
@@ -1905,7 +2231,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       this.readString(params, "turnId") ?? this.readString(this.readObject(params, "turn"), "id"),
     );
     const itemId = toProviderItemId(
-      this.readString(params, "itemId") ?? this.readString(this.readObject(params, "item"), "id"),
+      this.readString(params, "itemId") ??
+        this.readString(this.readObject(params, "item"), "id") ??
+        this.readString(params, "callId"),
     );
 
     if (turnId) {
