@@ -32,7 +32,12 @@ type BootstrapFailureStage =
   | "worktree-create"
   | "thread-meta-update"
   | "final-turn-dispatch";
-type BootstrapObservedStage = BootstrapFailureStage | "setup-script-launch" | "cleanup";
+type BootstrapObservedStage =
+  | BootstrapFailureStage
+  | "worktree-base-fetch"
+  | "worktree-base-probe"
+  | "setup-script-launch"
+  | "cleanup";
 interface BootstrapCreatedWorktree {
   readonly cwd: string;
   readonly path: string;
@@ -54,7 +59,10 @@ const stripBootstrapFromTurnStart = (
 
 export interface BootstrapTurnStartDependencies {
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
-  readonly git: Pick<GitCoreShape, "createWorktree" | "removeWorktree">;
+  readonly git: Pick<
+    GitCoreShape,
+    "createWorktree" | "fetchRemoteBranchCommit" | "hasRemote" | "removeWorktree"
+  >;
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
   readonly worktreesDir?: string | undefined;
 }
@@ -425,11 +433,25 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
         failureStage = "worktree-create";
         const newBranch = bootstrap.prepareWorktree.branch ?? buildTemporaryWorktreeBranchName();
+        const hasRemote = yield* observeBootstrapStage(
+          "worktree-base-probe",
+          input.git.hasRemote(bootstrap.prepareWorktree.projectCwd),
+        );
+        const remoteBase = hasRemote
+          ? yield* observeBootstrapStage(
+              "worktree-base-fetch",
+              input.git.fetchRemoteBranchCommit({
+                cwd: bootstrap.prepareWorktree.projectCwd,
+                branch: bootstrap.prepareWorktree.baseBranch,
+              }),
+            )
+          : null;
         const worktree = yield* observeBootstrapStage(
           "worktree-create",
           input.git.createWorktree({
             cwd: bootstrap.prepareWorktree.projectCwd,
             branch: bootstrap.prepareWorktree.baseBranch,
+            ...(remoteBase ? { baseRefName: remoteBase.commit } : {}),
             newBranch,
             path:
               input.worktreesDir === undefined

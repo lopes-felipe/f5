@@ -20,6 +20,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useIsMobile } from "~/hooks/useMediaQuery";
 import { getLocalStorageItem, setLocalStorageItem } from "~/hooks/useLocalStorage";
 import { Schema } from "effect";
+import { resolveShortcutCommand, useServerKeybindings } from "~/keybindings";
+import { isTerminalFocused } from "~/lib/terminalFocus";
 
 const SIDEBAR_COOKIE_NAME = "sidebar_state";
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
@@ -89,6 +91,7 @@ function SidebarProvider({
   defaultOpen = true,
   open: openProp,
   onOpenChange: setOpenProp,
+  keyboardShortcut = false,
   className,
   style,
   children,
@@ -97,6 +100,7 @@ function SidebarProvider({
   defaultOpen?: boolean;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  keyboardShortcut?: boolean;
 }) {
   const isMobile = useIsMobile();
   const [openMobile, setOpenMobile] = React.useState(false);
@@ -149,6 +153,7 @@ function SidebarProvider({
 
   return (
     <SidebarContext.Provider value={contextValue}>
+      {keyboardShortcut ? <SidebarKeyboardShortcut /> : null}
       <div
         className={cn(
           "group/sidebar-wrapper flex min-h-svh w-full has-data-[variant=inset]:bg-sidebar",
@@ -168,6 +173,55 @@ function SidebarProvider({
       </div>
     </SidebarContext.Provider>
   );
+}
+
+function isTextEntryTarget(target: EventTarget | null): boolean {
+  const element = target instanceof HTMLElement ? target : document.activeElement;
+  if (!(element instanceof HTMLElement)) return false;
+  const tagName = element.tagName;
+  return (
+    tagName === "INPUT" ||
+    tagName === "TEXTAREA" ||
+    tagName === "SELECT" ||
+    element.isContentEditable ||
+    element.closest("[contenteditable='true']") !== null
+  );
+}
+
+function isDialogKeybindingContext(target: EventTarget | null): boolean {
+  const element = target instanceof Element ? target : null;
+  return (
+    (element !== null && element.closest('[role="dialog"], [data-slot="dialog-popup"]') !== null) ||
+    document.querySelector('[role="dialog"], [data-slot="dialog-popup"]') !== null
+  );
+}
+
+function SidebarKeyboardShortcut() {
+  const keybindings = useServerKeybindings();
+  const { toggleSidebar } = useSidebar();
+
+  React.useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.repeat) return;
+
+      const terminalFocus = isTerminalFocused();
+      const dialogFocus = isDialogKeybindingContext(event.target);
+      const command = resolveShortcutCommand(event, keybindings, {
+        context: { terminalFocus, terminalOpen: terminalFocus, dialogFocus },
+      });
+      if (command !== "sidebar.toggle") return;
+      if (terminalFocus || dialogFocus || isTextEntryTarget(event.target)) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      toggleSidebar();
+    };
+
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [keybindings, toggleSidebar]);
+
+  return null;
 }
 
 function Sidebar({

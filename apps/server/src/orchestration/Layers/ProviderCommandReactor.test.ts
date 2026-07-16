@@ -1919,6 +1919,8 @@ describe("ProviderCommandReactor", () => {
         orchestrationEngine: harness.engine,
         git: {
           createWorktree: () => Effect.die("unexpected worktree creation"),
+          fetchRemoteBranchCommit: () => Effect.die("unexpected remote base fetch"),
+          hasRemote: () => Effect.die("unexpected remote probe"),
           removeWorktree: () => Effect.die("unexpected worktree removal"),
         },
         projectSetupScriptRunner: {

@@ -6,6 +6,7 @@ import {
   PreviewAutomationNoFocusedOwnerError,
   type PreviewAutomationOperation,
   type PreviewAutomationOwner,
+  type PreviewAutomationRegistration,
   type PreviewAutomationRequest,
   type PreviewAutomationResponse,
   PreviewAutomationResultTooLargeError,
@@ -13,12 +14,14 @@ import {
   PreviewAutomationTimeoutError,
   PreviewAutomationUnavailableError,
   type PreviewTabId,
+  type PreviewHostCapability,
   type ThreadId,
 } from "@t3tools/contracts";
 import { Effect, Layer, Schema, ServiceMap } from "effect";
 
 export interface PreviewAutomationInvokeInput {
   readonly threadId: ThreadId;
+  readonly automationSessionId?: string;
   readonly operation: PreviewAutomationOperation;
   readonly input: unknown;
   readonly tabId?: PreviewTabId;
@@ -27,6 +30,7 @@ export interface PreviewAutomationInvokeInput {
 
 export interface PreviewAutomationClient {
   readonly clientId: string;
+  readonly rendererClientId?: string;
   readonly send: (request: PreviewAutomationRequest) => Effect.Effect<boolean>;
 }
 
@@ -34,8 +38,9 @@ export interface PreviewAutomationBrokerShape {
   readonly reportOwner: (
     owner: PreviewAutomationOwner,
     client: PreviewAutomationClient,
-  ) => Effect.Effect<void>;
-  readonly clearOwner: (clientId: string) => Effect.Effect<void>;
+  ) => Effect.Effect<PreviewAutomationRegistration>;
+  readonly clearOwner: (clientId: string, connectionId?: string) => Effect.Effect<void>;
+  readonly clearTargets: (threadId: ThreadId, tabId?: PreviewTabId) => Effect.Effect<void>;
   readonly respond: (
     response: PreviewAutomationResponse,
     authorizedClientIds: ReadonlySet<string>,
@@ -61,9 +66,36 @@ export type PreviewAutomationBrokerError =
 
 interface PendingRequest {
   readonly clientId: string;
+  readonly rendererClientId: string;
+  readonly connectionId: string;
   readonly timeout: ReturnType<typeof setTimeout>;
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: PreviewAutomationBrokerError) => void;
+}
+
+interface LeasedOwner {
+  readonly owner: PreviewAutomationOwner;
+  readonly client: PreviewAutomationClient;
+  readonly rendererClientId: string;
+  readonly connectionId: string;
+  readonly leaseExpiresAtMs: number;
+}
+
+const PREVIEW_OWNER_LEASE_MS = 30_000;
+const PREVIEW_OWNER_SWEEP_MS = 5_000;
+
+function requiredCapability(operation: PreviewAutomationOperation): PreviewHostCapability {
+  switch (operation) {
+    case "viewport":
+      return "viewport";
+    case "screenshot":
+      return "screenshot";
+    case "recordingStart":
+    case "recordingStop":
+      return "recording";
+    default:
+      return "automation";
+  }
 }
 
 function isPreviewAutomationError(cause: unknown): cause is PreviewAutomationBrokerError {
@@ -128,9 +160,9 @@ function responseErrorToPreviewError(
 }
 
 export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
-  const clients = new Map<string, PreviewAutomationClient>();
-  const owners = new Map<string, PreviewAutomationOwner>();
+  const owners = new Map<string, LeasedOwner>();
   const pending = new Map<string, PendingRequest>();
+  const sessionTargets = new Map<string, { tabId: PreviewTabId; connectionId: string }>();
 
   const removePending = (requestId: string): PendingRequest | undefined => {
     const entry = pending.get(requestId);
@@ -149,29 +181,94 @@ export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
     }
   };
 
+  const clearSessionTargetsForConnection = (connectionId: string): void => {
+    for (const [key, target] of sessionTargets) {
+      if (target.connectionId === connectionId) sessionTargets.delete(key);
+    }
+  };
+
+  const clearLeasedOwner = (clientId: string, connectionId?: string): void => {
+    const leased = owners.get(clientId);
+    if (!leased || (connectionId !== undefined && leased.connectionId !== connectionId)) return;
+    owners.delete(clientId);
+    clearSessionTargetsForConnection(leased.connectionId);
+    failPendingForClient(
+      clientId,
+      new PreviewAutomationUnavailableError({
+        message: "The preview automation client disconnected.",
+      }),
+    );
+  };
+
+  const sweepExpiredOwners = (): void => {
+    const now = Date.now();
+    for (const [clientId, leased] of owners) {
+      if (leased.leaseExpiresAtMs > now) continue;
+      clearLeasedOwner(clientId, leased.connectionId);
+    }
+  };
+  const sweepTimer = setInterval(sweepExpiredOwners, PREVIEW_OWNER_SWEEP_MS);
+  sweepTimer.unref?.();
+
   return {
     reportOwner: (owner, client) =>
       Effect.sync(() => {
-        clients.set(client.clientId, client);
-        owners.set(owner.clientId, owner);
+        sweepExpiredOwners();
+        const previous = owners.get(client.clientId);
+        const canRenew =
+          owner.connectionId !== undefined && previous?.connectionId === owner.connectionId;
+        const connectionId = canRenew
+          ? previous.connectionId
+          : `preview-connection-${randomUUID()}`;
+        if (previous && previous.connectionId !== connectionId) {
+          clearSessionTargetsForConnection(previous.connectionId);
+          failPendingForClient(
+            client.clientId,
+            new PreviewAutomationUnavailableError({
+              message: "The preview automation host connection was replaced.",
+            }),
+          );
+        }
+        const rendererClientId = client.rendererClientId ?? owner.clientId;
+        const leaseExpiresAtMs = Date.now() + PREVIEW_OWNER_LEASE_MS;
+        owners.set(client.clientId, {
+          owner: { ...owner, connectionId },
+          client,
+          rendererClientId,
+          connectionId,
+          leaseExpiresAtMs,
+        });
+        return {
+          clientId: rendererClientId,
+          connectionId,
+          leaseExpiresAt: new Date(leaseExpiresAtMs).toISOString(),
+        };
       }),
 
-    clearOwner: (clientId) =>
+    clearOwner: (clientId, connectionId) =>
       Effect.sync(() => {
-        clients.delete(clientId);
-        owners.delete(clientId);
-        failPendingForClient(
-          clientId,
-          new PreviewAutomationUnavailableError({
-            message: "The preview automation client disconnected.",
-          }),
-        );
+        clearLeasedOwner(clientId, connectionId);
+      }),
+
+    clearTargets: (threadId, tabId) =>
+      Effect.sync(() => {
+        const prefix = `${threadId}\u0000`;
+        for (const [key, target] of sessionTargets) {
+          if (key.startsWith(prefix) && (tabId === undefined || target.tabId === tabId)) {
+            sessionTargets.delete(key);
+          }
+        }
       }),
 
     respond: (response, authorizedClientIds) =>
       Effect.sync(() => {
         const pendingEntry = pending.get(response.requestId);
-        if (!pendingEntry || !authorizedClientIds.has(pendingEntry.clientId)) {
+        if (
+          !pendingEntry ||
+          !authorizedClientIds.has(pendingEntry.clientId) ||
+          response.clientId !== pendingEntry.rendererClientId ||
+          response.connectionId !== pendingEntry.connectionId
+        ) {
           return;
         }
         const entry = removePending(response.requestId);
@@ -193,16 +290,22 @@ export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
       Effect.tryPromise({
         try: () =>
           new Promise<A>((resolve, reject) => {
+            sweepExpiredOwners();
+            const capability = requiredCapability(input.operation);
             const candidates = Array.from(owners.values())
               .filter(
-                (owner) =>
-                  owner.threadId === input.threadId &&
-                  owner.supportsAutomation &&
-                  clients.has(owner.clientId),
+                (leased) =>
+                  leased.owner.threadId === input.threadId &&
+                  leased.owner.supportsAutomation &&
+                  (leased.owner.capabilities ?? ["automation"]).includes(capability),
               )
-              .sort((left, right) => right.focusedAt.localeCompare(left.focusedAt));
-            const owner = candidates[0];
-            if (!owner) {
+              .sort(
+                (left, right) =>
+                  Number(right.owner.visible) - Number(left.owner.visible) ||
+                  right.owner.focusedAt.localeCompare(left.owner.focusedAt),
+              );
+            const leased = candidates[0];
+            if (!leased) {
               reject(
                 new PreviewAutomationNoFocusedOwnerError({
                   message: "No desktop browser preview is available for this thread.",
@@ -211,22 +314,22 @@ export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
               return;
             }
 
-            const client = clients.get(owner.clientId);
-            if (!client) {
-              reject(
-                new PreviewAutomationUnavailableError({
-                  message: "The browser preview host is not connected.",
-                }),
-              );
-              return;
+            const { owner, client } = leased;
+            const sessionKey = input.automationSessionId
+              ? `${input.threadId}\u0000${input.automationSessionId}`
+              : null;
+            const mappedTarget = sessionKey ? sessionTargets.get(sessionKey) : undefined;
+            const mappedTabId =
+              mappedTarget?.connectionId === leased.connectionId ? mappedTarget.tabId : undefined;
+            const targetTabId = input.tabId ?? mappedTabId ?? owner.tabId ?? undefined;
+            if (sessionKey && input.tabId) {
+              sessionTargets.set(sessionKey, {
+                tabId: input.tabId,
+                connectionId: leased.connectionId,
+              });
             }
 
-            if (
-              input.operation !== "open" &&
-              input.operation !== "status" &&
-              !owner.tabId &&
-              !input.tabId
-            ) {
+            if (input.operation !== "open" && input.operation !== "status" && !targetTabId) {
               reject(
                 new PreviewAutomationTabNotFoundError({
                   message: "The browser preview does not have an active tab.",
@@ -248,17 +351,36 @@ export function makePreviewAutomationBroker(): PreviewAutomationBrokerShape {
             }, brokerTimeoutMs);
 
             pending.set(requestId, {
-              clientId: owner.clientId,
+              clientId: client.clientId,
+              rendererClientId: leased.rendererClientId,
+              connectionId: leased.connectionId,
               timeout,
-              resolve: (value) => resolve(value as A),
+              resolve: (value) => {
+                if (
+                  sessionKey &&
+                  value &&
+                  typeof value === "object" &&
+                  "tabId" in value &&
+                  typeof value.tabId === "string" &&
+                  value.tabId.length > 0
+                ) {
+                  sessionTargets.set(sessionKey, {
+                    tabId: value.tabId as PreviewTabId,
+                    connectionId: leased.connectionId,
+                  });
+                }
+                resolve(value as A);
+              },
               reject,
             });
 
             void Effect.runPromise(
               client.send({
                 requestId,
+                clientId: leased.rendererClientId,
+                connectionId: leased.connectionId,
                 threadId: input.threadId,
-                ...((input.tabId ?? owner.tabId) ? { tabId: input.tabId ?? owner.tabId! } : {}),
+                ...(targetTabId ? { tabId: targetTabId } : {}),
                 operation: input.operation,
                 input: input.input,
                 timeoutMs,

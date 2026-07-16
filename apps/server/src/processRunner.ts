@@ -7,7 +7,10 @@ export interface ProcessRunOptions {
   stdin?: string | undefined;
   allowNonZeroExit?: boolean | undefined;
   maxBufferBytes?: number | undefined;
+  maxStdoutBytes?: number | undefined;
+  maxStderrBytes?: number | undefined;
   outputMode?: "error" | "truncate" | undefined;
+  signal?: AbortSignal | undefined;
 }
 
 export interface ProcessRunResult {
@@ -16,6 +19,7 @@ export interface ProcessRunResult {
   code: number | null;
   signal: NodeJS.Signals | null;
   timedOut: boolean;
+  aborted?: boolean | undefined;
   stdoutTruncated?: boolean | undefined;
   stderrTruncated?: boolean | undefined;
 }
@@ -152,6 +156,8 @@ export async function runProcess(
 ): Promise<ProcessRunResult> {
   const timeoutMs = options.timeoutMs ?? 60_000;
   const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
+  const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
+  const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
   const outputMode = options.outputMode ?? "error";
 
   return new Promise<ProcessRunResult>((resolve, reject) => {
@@ -170,6 +176,7 @@ export async function runProcess(
     let stdoutTruncated = false;
     let stderrTruncated = false;
     let timedOut = false;
+    let aborted = false;
     let settled = false;
     let forceKillTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -181,6 +188,14 @@ export async function runProcess(
       }, 1_000);
     }, timeoutMs);
 
+    const abortHandler = () => {
+      aborted = true;
+      killChild(child, "SIGTERM");
+      forceKillTimer = setTimeout(() => killChild(child, "SIGKILL"), 1_000);
+    };
+    options.signal?.addEventListener("abort", abortHandler, { once: true });
+    if (options.signal?.aborted) abortHandler();
+
     const finalize = (callback: () => void): void => {
       if (settled) return;
       settled = true;
@@ -188,6 +203,7 @@ export async function runProcess(
       if (forceKillTimer) {
         clearTimeout(forceKillTimer);
       }
+      options.signal?.removeEventListener("abort", abortHandler);
       callback();
     };
 
@@ -204,7 +220,7 @@ export async function runProcess(
       const byteLength = chunkBuffer.length;
       if (stream === "stdout") {
         if (outputMode === "truncate") {
-          const appended = appendChunkWithinLimit(stdout, stdoutBytes, chunkBuffer, maxBufferBytes);
+          const appended = appendChunkWithinLimit(stdout, stdoutBytes, chunkBuffer, maxStdoutBytes);
           stdout = appended.next;
           stdoutBytes = appended.nextBytes;
           stdoutTruncated = stdoutTruncated || appended.truncated;
@@ -212,12 +228,12 @@ export async function runProcess(
         }
         stdout += text;
         stdoutBytes += byteLength;
-        if (stdoutBytes > maxBufferBytes) {
-          return normalizeBufferError(command, args, "stdout", maxBufferBytes);
+        if (stdoutBytes > maxStdoutBytes) {
+          return normalizeBufferError(command, args, "stdout", maxStdoutBytes);
         }
       } else {
         if (outputMode === "truncate") {
-          const appended = appendChunkWithinLimit(stderr, stderrBytes, chunkBuffer, maxBufferBytes);
+          const appended = appendChunkWithinLimit(stderr, stderrBytes, chunkBuffer, maxStderrBytes);
           stderr = appended.next;
           stderrBytes = appended.nextBytes;
           stderrTruncated = stderrTruncated || appended.truncated;
@@ -225,8 +241,8 @@ export async function runProcess(
         }
         stderr += text;
         stderrBytes += byteLength;
-        if (stderrBytes > maxBufferBytes) {
-          return normalizeBufferError(command, args, "stderr", maxBufferBytes);
+        if (stderrBytes > maxStderrBytes) {
+          return normalizeBufferError(command, args, "stderr", maxStderrBytes);
         }
       }
       return null;
@@ -259,6 +275,7 @@ export async function runProcess(
         code,
         signal,
         timedOut,
+        aborted,
         stdoutTruncated,
         stderrTruncated,
       };

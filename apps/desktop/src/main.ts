@@ -59,6 +59,8 @@ import {
 } from "./updateMachine";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
 import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
+import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
+import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 
 syncShellEnvironment();
 
@@ -72,26 +74,7 @@ const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
 const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
-const PREVIEW_GET_CONFIG_CHANNEL = "desktop-preview:get-config";
-const PREVIEW_CREATE_TAB_CHANNEL = "desktop-preview:create-tab";
-const PREVIEW_CLOSE_TAB_CHANNEL = "desktop-preview:close-tab";
-const PREVIEW_REGISTER_WEBVIEW_CHANNEL = "desktop-preview:register-webview";
-const PREVIEW_NAVIGATE_CHANNEL = "desktop-preview:navigate";
-const PREVIEW_GO_BACK_CHANNEL = "desktop-preview:go-back";
-const PREVIEW_GO_FORWARD_CHANNEL = "desktop-preview:go-forward";
-const PREVIEW_REFRESH_CHANNEL = "desktop-preview:refresh";
-const PREVIEW_HARD_RELOAD_CHANNEL = "desktop-preview:hard-reload";
-const PREVIEW_OPEN_DEVTOOLS_CHANNEL = "desktop-preview:open-devtools";
-const PREVIEW_PICK_ELEMENT_CHANNEL = "desktop-preview:pick-element";
-const PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL = "desktop-preview:cancel-pick-element";
-const PREVIEW_AUTOMATION_STATUS_CHANNEL = "desktop-preview:automation-status";
-const PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL = "desktop-preview:automation-snapshot";
-const PREVIEW_AUTOMATION_CLICK_CHANNEL = "desktop-preview:automation-click";
-const PREVIEW_AUTOMATION_TYPE_CHANNEL = "desktop-preview:automation-type";
-const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop-preview:automation-press";
-const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop-preview:automation-scroll";
-const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop-preview:automation-evaluate";
-const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for";
+const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
@@ -172,13 +155,16 @@ let backendLogSink: RotatingFileSink | null = null;
 let restoreStdIoCapture: (() => void) | null = null;
 
 let destructiveMenuIconCache: Electron.NativeImage | null | undefined;
-interface PreviewTabEntry {
-  webContentsId: number | null;
-  zoomFactor: number;
-  removeListeners: Array<() => void>;
-}
-
-const previewTabs = new Map<string, PreviewTabEntry>();
+const previewRuntime = new PreviewRuntime({
+  stateDirectory: STATE_DIR,
+  defaultZoomFactor: PREVIEW_DEFAULT_ZOOM_FACTOR,
+  getWebContents: (tabId) => getPreviewWebContents(tabId),
+  emitRecordingFrame: (frame) => {
+    mainWindow?.webContents.send(PREVIEW_RECORDING_FRAME_CHANNEL, frame);
+  },
+  onViewportChanged: (tabId) => emitPreviewState(tabId),
+});
+const previewTabs = previewRuntime.tabs;
 
 const desktopRuntimeInfo = resolveDesktopRuntimeInfo({
   platform: process.platform,
@@ -253,26 +239,11 @@ function getSafeTheme(rawTheme: unknown): DesktopTheme | null {
 }
 
 function lookupPreviewTabEntry(tabId: unknown): PreviewTabEntry | null {
-  if (typeof tabId !== "string" || tabId.trim().length === 0) {
-    return null;
-  }
-  return previewTabs.get(tabId) ?? null;
+  return previewRuntime.lookupTab(tabId);
 }
 
 function ensurePreviewTabEntry(tabId: unknown): PreviewTabEntry | null {
-  if (typeof tabId !== "string" || tabId.trim().length === 0) {
-    return null;
-  }
-  let entry = lookupPreviewTabEntry(tabId);
-  if (!entry) {
-    entry = {
-      webContentsId: null,
-      zoomFactor: PREVIEW_DEFAULT_ZOOM_FACTOR,
-      removeListeners: [],
-    };
-    previewTabs.set(tabId, entry);
-  }
-  return entry;
+  return previewRuntime.ensureTab(tabId);
 }
 
 function getPreviewWebContents(tabId: unknown): Electron.WebContents | null {
@@ -307,6 +278,7 @@ function previewStateFromWebContents(
     canGoBack: guest && !guest.isDestroyed() ? guest.canGoBack() : false,
     canGoForward: guest && !guest.isDestroyed() ? guest.canGoForward() : false,
     zoomFactor: entry?.zoomFactor ?? PREVIEW_DEFAULT_ZOOM_FACTOR,
+    ...(entry?.viewport ? { viewport: entry.viewport } : {}),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -371,6 +343,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     const current = previewTabs.get(tabId);
     if (current?.webContentsId === webContentsId) {
       current.webContentsId = null;
+      void previewRuntime.discardRecordingsForTab(tabId);
       emitPreviewState(tabId);
     }
   };
@@ -404,6 +377,7 @@ function closePreviewTab(tabId: string): void {
     removeListener();
   }
   const guest = getPreviewWebContents(tabId);
+  void previewRuntime.discardRecordingsForTab(tabId);
   if (guest && !guest.isDestroyed()) {
     guest.close();
   }
@@ -2161,180 +2135,57 @@ function registerIpcHandlers(): void {
     } satisfies DesktopUpdateActionResult;
   });
 
-  ipcMain.removeHandler(PREVIEW_GET_CONFIG_CHANNEL);
-  ipcMain.handle(PREVIEW_GET_CONFIG_CHANNEL, async () => ({
-    partition: PREVIEW_WEBVIEW_PARTITION,
-    webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
-  }));
-
-  ipcMain.removeHandler(PREVIEW_CREATE_TAB_CHANNEL);
-  ipcMain.handle(PREVIEW_CREATE_TAB_CHANNEL, async (_event, tabId: unknown) => {
-    return ensurePreviewTabEntry(tabId) !== null;
-  });
-
-  ipcMain.removeHandler(PREVIEW_CLOSE_TAB_CHANNEL);
-  ipcMain.handle(PREVIEW_CLOSE_TAB_CHANNEL, async (_event, tabId: unknown) => {
-    if (typeof tabId !== "string") return;
-    closePreviewTab(tabId);
-  });
-
-  ipcMain.removeHandler(PREVIEW_REGISTER_WEBVIEW_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_REGISTER_WEBVIEW_CHANNEL,
-    async (_event, tabId: unknown, webContentsId: unknown) => {
-      if (
-        typeof tabId !== "string" ||
-        tabId.trim().length === 0 ||
-        typeof webContentsId !== "number" ||
-        !Number.isInteger(webContentsId) ||
-        webContentsId <= 0
-      ) {
-        return false;
+  registerPreviewIpc(ipcMain, {
+    getConfig: () => ({
+      partition: PREVIEW_WEBVIEW_PARTITION,
+      webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
+    }),
+    createTab: (tabId) => ensurePreviewTabEntry(tabId) !== null,
+    closeTab: (tabId) => closePreviewTab(tabId),
+    registerWebview: registerPreviewWebContents,
+    navigate: async (tabId, rawUrl) => {
+      const guest = getPreviewWebContents(tabId);
+      const url = getSafePreviewUrl(rawUrl);
+      if (!guest || !url) throw new Error("Preview navigation target is invalid.");
+      try {
+        await guest.loadURL(url);
+      } catch (error) {
+        if (!isPreviewNavigationAbortError(error)) throw error;
       }
-      return registerPreviewWebContents(tabId, webContentsId);
     },
-  );
-
-  ipcMain.removeHandler(PREVIEW_NAVIGATE_CHANNEL);
-  ipcMain.handle(PREVIEW_NAVIGATE_CHANNEL, async (_event, tabId: unknown, rawUrl: unknown) => {
-    const guest = getPreviewWebContents(tabId);
-    const url = getSafePreviewUrl(rawUrl);
-    if (!guest || !url) {
-      throw new Error("Preview navigation target is invalid.");
-    }
-    try {
-      await guest.loadURL(url);
-    } catch (error) {
-      if (isPreviewNavigationAbortError(error)) {
-        return;
-      }
-      throw error;
-    }
-  });
-
-  ipcMain.removeHandler(PREVIEW_GO_BACK_CHANNEL);
-  ipcMain.handle(PREVIEW_GO_BACK_CHANNEL, async (_event, tabId: unknown) => {
-    const guest = getPreviewWebContents(tabId);
-    if (guest?.canGoBack()) guest.goBack();
-  });
-
-  ipcMain.removeHandler(PREVIEW_GO_FORWARD_CHANNEL);
-  ipcMain.handle(PREVIEW_GO_FORWARD_CHANNEL, async (_event, tabId: unknown) => {
-    const guest = getPreviewWebContents(tabId);
-    if (guest?.canGoForward()) guest.goForward();
-  });
-
-  ipcMain.removeHandler(PREVIEW_REFRESH_CHANNEL);
-  ipcMain.handle(PREVIEW_REFRESH_CHANNEL, async (_event, tabId: unknown) => {
-    getPreviewWebContents(tabId)?.reload();
-  });
-
-  ipcMain.removeHandler(PREVIEW_HARD_RELOAD_CHANNEL);
-  ipcMain.handle(PREVIEW_HARD_RELOAD_CHANNEL, async (_event, tabId: unknown) => {
-    getPreviewWebContents(tabId)?.reloadIgnoringCache();
-  });
-
-  ipcMain.removeHandler(PREVIEW_OPEN_DEVTOOLS_CHANNEL);
-  ipcMain.handle(PREVIEW_OPEN_DEVTOOLS_CHANNEL, async (_event, tabId: unknown) => {
-    getPreviewWebContents(tabId)?.openDevTools({ mode: "detach" });
-  });
-
-  ipcMain.removeHandler(PREVIEW_PICK_ELEMENT_CHANNEL);
-  ipcMain.handle(PREVIEW_PICK_ELEMENT_CHANNEL, async (_event, tabId: unknown) => {
-    if (typeof tabId !== "string" || tabId.trim().length === 0) {
-      throw new Error("Preview tab id is invalid.");
-    }
-    return pickPreviewElement(tabId);
-  });
-
-  ipcMain.removeHandler(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL);
-  ipcMain.handle(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, async (_event, tabId: unknown) => {
-    const guest = getPreviewWebContents(tabId);
-    if (!guest) return;
-    await guest.executeJavaScript("window.__f5PreviewPickCancel?.()", true).catch(() => null);
-  });
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_STATUS_CHANNEL);
-  ipcMain.handle(PREVIEW_AUTOMATION_STATUS_CHANNEL, async (_event, tabId: unknown) => {
-    if (typeof tabId !== "string" || tabId.trim().length === 0) {
-      throw new Error("Preview tab id is invalid.");
-    }
-    return previewAutomationStatus(tabId);
-  });
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL);
-  ipcMain.handle(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, async (_event, tabId: unknown) => {
-    if (typeof tabId !== "string" || tabId.trim().length === 0) {
-      throw new Error("Preview tab id is invalid.");
-    }
-    return previewAutomationSnapshot(tabId);
-  });
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_CLICK_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_AUTOMATION_CLICK_CHANNEL,
-    async (_event, tabId: unknown, input: unknown) => {
-      if (typeof tabId !== "string" || tabId.trim().length === 0) {
-        throw new Error("Preview tab id is invalid.");
-      }
-      await previewAutomationClick(tabId, input as PreviewAutomationClickInput);
+    goBack: (tabId) => {
+      const guest = getPreviewWebContents(tabId);
+      if (guest?.canGoBack()) guest.goBack();
     },
-  );
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_TYPE_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_AUTOMATION_TYPE_CHANNEL,
-    async (_event, tabId: unknown, input: unknown) => {
-      if (typeof tabId !== "string" || tabId.trim().length === 0) {
-        throw new Error("Preview tab id is invalid.");
-      }
-      await previewAutomationType(tabId, input as PreviewAutomationTypeInput);
+    goForward: (tabId) => {
+      const guest = getPreviewWebContents(tabId);
+      if (guest?.canGoForward()) guest.goForward();
     },
-  );
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_PRESS_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_AUTOMATION_PRESS_CHANNEL,
-    async (_event, tabId: unknown, input: unknown) => {
-      if (typeof tabId !== "string" || tabId.trim().length === 0) {
-        throw new Error("Preview tab id is invalid.");
-      }
-      await previewAutomationPress(tabId, input as PreviewAutomationPressInput);
+    refresh: (tabId) => getPreviewWebContents(tabId)?.reload(),
+    hardReload: (tabId) => getPreviewWebContents(tabId)?.reloadIgnoringCache(),
+    openDevTools: (tabId) => getPreviewWebContents(tabId)?.openDevTools({ mode: "detach" }),
+    pickElement: (tabId) => pickPreviewElement(tabId),
+    cancelPickElement: async (tabId) => {
+      await getPreviewWebContents(tabId)
+        ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
+        .catch(() => null);
     },
-  );
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_SCROLL_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_AUTOMATION_SCROLL_CHANNEL,
-    async (_event, tabId: unknown, input: unknown) => {
-      if (typeof tabId !== "string" || tabId.trim().length === 0) {
-        throw new Error("Preview tab id is invalid.");
-      }
-      await previewAutomationScroll(tabId, input as PreviewAutomationScrollInput);
-    },
-  );
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_EVALUATE_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_AUTOMATION_EVALUATE_CHANNEL,
-    async (_event, tabId: unknown, input: unknown) => {
-      if (typeof tabId !== "string" || tabId.trim().length === 0) {
-        throw new Error("Preview tab id is invalid.");
-      }
-      return previewAutomationEvaluate(tabId, input as PreviewAutomationEvaluateInput);
-    },
-  );
-
-  ipcMain.removeHandler(PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL);
-  ipcMain.handle(
-    PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL,
-    async (_event, tabId: unknown, input: unknown) => {
-      if (typeof tabId !== "string" || tabId.trim().length === 0) {
-        throw new Error("Preview tab id is invalid.");
-      }
-      await previewAutomationWaitFor(tabId, input as PreviewAutomationWaitForInput);
-    },
-  );
+    automationStatus: previewAutomationStatus,
+    automationSnapshot: previewAutomationSnapshot,
+    automationClick: previewAutomationClick,
+    automationType: previewAutomationType,
+    automationPress: previewAutomationPress,
+    automationScroll: previewAutomationScroll,
+    automationEvaluate: previewAutomationEvaluate,
+    automationWaitFor: previewAutomationWaitFor,
+    setViewport: (tabId, viewport) => previewRuntime.setViewport(tabId, viewport),
+    captureScreenshot: (tabId) => previewRuntime.captureScreenshot(tabId),
+    recordingStart: (tabId) => previewRuntime.startRecording(tabId),
+    recordingAppend: (recordingId, chunk) =>
+      previewRuntime.appendRecordingChunk(recordingId, chunk),
+    recordingStop: (recordingId) => previewRuntime.stopRecording(recordingId),
+    recordingDiscard: (recordingId) => previewRuntime.discardRecording(recordingId),
+  });
 }
 
 function getIconOption(): { icon: string } | Record<string, never> {
@@ -2470,6 +2321,7 @@ async function bootstrap(): Promise<void> {
   process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
   writeDesktopLogHeader(`bootstrap resolved websocket endpoint=ws://127.0.0.1:${backendPort}`);
 
+  await previewRuntime.initialize();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   startBackend();
@@ -2483,6 +2335,7 @@ app.on("before-quit", () => {
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
   stopBackend();
+  void previewRuntime.dispose();
   restoreStdIoCapture?.();
 });
 

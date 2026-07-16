@@ -23,6 +23,7 @@ import { openInPreferredEditor } from "../editorPreferences";
 import { gitBranchesQueryOptions } from "~/lib/gitReactQuery";
 import { threadFileChangeQueryOptions } from "~/lib/orchestrationReactQuery";
 import { checkpointDiffQueryOptions } from "~/lib/providerReactQuery";
+import { reviewPreviewDiffQueryOptions } from "~/lib/reviewReactQuery";
 import { cn } from "~/lib/utils";
 import { useAppSettings } from "../appSettings";
 import { readNativeApi } from "../nativeApi";
@@ -41,6 +42,7 @@ import { useStore } from "../store";
 import { formatShortTimestamp } from "../timestampFormat";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 
 type DiffRenderMode = "stacked" | "split";
 type DiffThemeType = "light" | "dark";
@@ -112,6 +114,8 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const selectedFileChangeId = diffSearch.diffFileChangeId ?? null;
   const selectedFilePath = diffSearch.diffFilePath ?? null;
   const isExactFileChangeMode = selectedFileChangeId !== null;
+  const selectedReviewScope = diffSearch.diffScope ?? null;
+  const isReviewScope = selectedReviewScope !== null && !isExactFileChangeMode;
   const selectedTurn =
     isExactFileChangeMode || selectedTurnId === null
       ? undefined
@@ -169,7 +173,17 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       toTurnCount: activeCheckpointRange?.toTurnCount ?? null,
       cacheScope: selectedTurn ? `turn:${selectedTurn.turnId}` : conversationCacheScope,
       ignoreWhitespace: settings.diffIgnoreWhitespace,
-      enabled: !isExactFileChangeMode && isGitRepo,
+      enabled: !isExactFileChangeMode && !isReviewScope && isGitRepo,
+    }),
+  );
+  const reviewDiffQuery = useQuery(
+    reviewPreviewDiffQueryOptions({
+      threadId: activeThreadId,
+      scope: selectedReviewScope,
+      baseRef: diffSearch.diffBaseRef ?? null,
+      ignoreWhitespace: settings.diffIgnoreWhitespace,
+      autoRefresh: gitAutoRefreshEnabled,
+      refetchIntervalMs: gitAutoRefreshIntervalMs,
     }),
   );
   const exactFileChangeQuery = useQuery(
@@ -199,11 +213,16 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         ? "Failed to load file-change diff."
         : null;
 
+  const reviewDiffResult = isReviewScope ? reviewDiffQuery.data : undefined;
   const selectedPatch = isExactFileChangeMode
     ? exactFileChangeQuery.data?.fileChange?.patch
-    : selectedTurn
-      ? selectedTurnCheckpointDiff
-      : conversationCheckpointDiff;
+    : reviewDiffResult?.kind === "success"
+      ? reviewDiffResult.patch
+      : isReviewScope
+        ? undefined
+        : selectedTurn
+          ? selectedTurnCheckpointDiff
+          : conversationCheckpointDiff;
   const hasResolvedPatch = typeof selectedPatch === "string";
   const hasNoNetChanges = hasResolvedPatch && selectedPatch.trim().length === 0;
   const renderablePatch = useMemo(
@@ -233,9 +252,11 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     }
     const sourceIdentity = isExactFileChangeMode
       ? `file-change:${selectedFileChangeId ?? ""}`
-      : `checkpoint:${activeThreadId}:${activeCheckpointRange?.fromTurnCount ?? ""}:${
-          activeCheckpointRange?.toTurnCount ?? ""
-        }:${settings.diffIgnoreWhitespace ? "ignore-whitespace" : "default-whitespace"}`;
+      : reviewDiffResult?.kind === "success"
+        ? `review:${reviewDiffResult.source.kind}:${reviewDiffResult.diffHash}`
+        : `checkpoint:${activeThreadId}:${activeCheckpointRange?.fromTurnCount ?? ""}:${
+            activeCheckpointRange?.toTurnCount ?? ""
+          }:${settings.diffIgnoreWhitespace ? "ignore-whitespace" : "default-whitespace"}`;
     return `${sourceIdentity}:${renderableFiles.map((file) => buildFileDiffRenderKey(file)).join("|")}`;
   }, [
     activeCheckpointRange?.fromTurnCount,
@@ -244,6 +265,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     isExactFileChangeMode,
     renderableFiles,
     renderablePatch,
+    reviewDiffResult,
     selectedFileChangeId,
     settings.diffIgnoreWhitespace,
   ]);
@@ -308,6 +330,34 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       },
     });
   };
+  const selectDiffScope = (scope: "checkpoint" | "working-tree" | "branch-range") => {
+    if (!activeThread) return;
+    void navigate({
+      to: "/$threadId",
+      params: { threadId: activeThread.id },
+      search: (previous) => {
+        const rest = clearTurnDiffSearchParams(previous);
+        return {
+          ...rest,
+          diff: "1",
+          ...(scope === "checkpoint" ? {} : { diffScope: scope }),
+        };
+      },
+    });
+  };
+  const selectBaseRef = (baseRef: string | null) => {
+    if (!activeThread || selectedReviewScope !== "branch-range") return;
+    void navigate({
+      to: "/$threadId",
+      params: { threadId: activeThread.id },
+      search: (previous) => ({
+        ...previous,
+        diff: "1",
+        diffScope: "branch-range",
+        diffBaseRef: baseRef === null || baseRef === "__auto__" ? undefined : baseRef,
+      }),
+    });
+  };
   const updateTurnStripScrollState = useCallback(() => {
     const element = turnStripRef.current;
     if (!element) {
@@ -368,10 +418,20 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     const selectedChip = element.querySelector<HTMLElement>("[data-turn-chip-selected='true']");
     selectedChip?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
   }, [selectedTurn?.turnId, selectedTurnId]);
-  const patchLoadError = isExactFileChangeMode ? exactFileChangeError : checkpointDiffError;
+  const patchLoadError = isExactFileChangeMode
+    ? exactFileChangeError
+    : isReviewScope
+      ? reviewDiffResult?.kind === "error"
+        ? reviewDiffResult.message
+        : reviewDiffQuery.error instanceof Error
+          ? reviewDiffQuery.error.message
+          : null
+      : checkpointDiffError;
   const isLoadingPatch = isExactFileChangeMode
     ? exactFileChangeQuery.isLoading
-    : isLoadingCheckpointDiff;
+    : isReviewScope
+      ? reviewDiffQuery.isLoading
+      : isLoadingCheckpointDiff;
 
   const exactHeaderRow = (
     <>
@@ -412,8 +472,74 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     </>
   );
 
+  const scopeControls = !isExactFileChangeMode ? (
+    <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
+      <ToggleGroup
+        variant="outline"
+        size="xs"
+        value={[selectedReviewScope ?? "checkpoint"]}
+        onValueChange={(value) => {
+          const next = value[0];
+          if (next === "checkpoint" || next === "working-tree" || next === "branch-range") {
+            selectDiffScope(next);
+          }
+        }}
+      >
+        <Toggle value="checkpoint" aria-label="Checkpoint diff scope">
+          Turns
+        </Toggle>
+        <Toggle value="working-tree" aria-label="Working tree diff scope">
+          Working
+        </Toggle>
+        <Toggle value="branch-range" aria-label="Branch range diff scope">
+          Branch
+        </Toggle>
+      </ToggleGroup>
+      {selectedReviewScope === "branch-range" ? (
+        <Select value={diffSearch.diffBaseRef ?? "__auto__"} onValueChange={selectBaseRef}>
+          <SelectTrigger size="xs" className="max-w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup align="end">
+            <SelectItem value="__auto__">Auto base</SelectItem>
+            {(gitBranchesQuery.data?.branches ?? []).map((branch) => (
+              <SelectItem key={branch.name} value={branch.name}>
+                {branch.name}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      ) : null}
+    </div>
+  ) : null;
+
   const headerRow = isExactFileChangeMode ? (
     exactHeaderRow
+  ) : isReviewScope ? (
+    <>
+      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
+        {selectedReviewScope === "working-tree" ? "Working tree changes" : "Branch changes"}
+      </div>
+      {scopeControls}
+      <Toggle
+        aria-label="Ignore whitespace"
+        variant="outline"
+        size="xs"
+        pressed={settings.diffIgnoreWhitespace}
+        onPressedChange={(pressed) => updateSettings({ diffIgnoreWhitespace: Boolean(pressed) })}
+      >
+        <PilcrowIcon className="size-3" />
+      </Toggle>
+      <Toggle
+        aria-label="Wrap long lines"
+        variant="outline"
+        size="xs"
+        pressed={settings.diffWordWrap}
+        onPressedChange={(pressed) => updateSettings({ diffWordWrap: Boolean(pressed) })}
+      >
+        <WrapTextIcon className="size-3" />
+      </Toggle>
+    </>
   ) : (
     <>
       <div className="relative min-w-0 flex-1 [-webkit-app-region:no-drag]">
@@ -507,6 +633,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
         </div>
       </div>
       <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
+        {scopeControls}
         <Toggle
           aria-label="Ignore whitespace"
           variant="outline"
@@ -555,13 +682,13 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
             ? "Select a thread to inspect file-change diffs."
             : "Select a thread to inspect turn diffs."}
         </div>
-      ) : !isExactFileChangeMode && !activeThread.detailsLoaded ? (
+      ) : !isExactFileChangeMode && !isReviewScope && !activeThread.detailsLoaded ? (
         <DiffPanelLoadingState label="Loading thread diff context..." />
       ) : !isExactFileChangeMode && !isGitRepo ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           Turn diffs are unavailable because this project is not a git repository.
         </div>
-      ) : !isExactFileChangeMode && orderedTurnDiffSummaries.length === 0 ? (
+      ) : !isExactFileChangeMode && !isReviewScope && orderedTurnDiffSummaries.length === 0 ? (
         <div className="flex flex-1 items-center justify-center px-5 text-center text-xs text-muted-foreground/70">
           No completed turns yet.
         </div>
@@ -576,6 +703,11 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                 <p className="mb-2 text-[11px] text-red-500/80">{patchLoadError}</p>
               </div>
             )}
+            {reviewDiffResult?.kind === "success" && reviewDiffResult.truncated ? (
+              <div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[11px] text-amber-700 dark:text-amber-300">
+                {reviewDiffResult.truncationReason ?? "Diff preview was truncated."}
+              </div>
+            ) : null}
             {!renderablePatch ? (
               isLoadingPatch ? (
                 <DiffPanelLoadingState

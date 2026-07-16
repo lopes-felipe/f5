@@ -16,6 +16,7 @@ import React, {
 import type { Components } from "react-markdown";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useDiffWordWrap } from "../appSettings";
 import { openInPreferredEditor } from "../editorPreferences";
 import { resolveDiffThemeName, type DiffThemeName } from "../lib/diffRendering";
 import { fnv1a32 } from "../lib/diffRendering";
@@ -141,6 +142,7 @@ function getHighlighterPromise(language: string): Promise<MarkdownHighlighter> {
 }
 
 function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNode }) {
+  const wordWrap = useDiffWordWrap();
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleCopy = useCallback(() => {
@@ -173,7 +175,10 @@ function MarkdownCodeBlock({ code, children }: { code: string; children: ReactNo
   );
 
   return (
-    <div className="chat-markdown-codeblock">
+    <div
+      className={`chat-markdown-codeblock${wordWrap ? " chat-markdown-codeblock-wrap" : ""}`}
+      data-word-wrap={wordWrap ? "true" : "false"}
+    >
       <button
         type="button"
         className="chat-markdown-copy-button"
@@ -324,6 +329,7 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
   mode: MarkdownRenderMode;
 }) {
   const { text, cwd, mode } = props;
+  const wordWrap = useDiffWordWrap();
   const { resolvedTheme } = useTheme();
   const diffThemeName = resolveDiffThemeName(resolvedTheme);
   const handleFileNavigation = useFileNavigation();
@@ -443,8 +449,18 @@ const RenderedMarkdownFragment = memo(function RenderedMarkdownFragment(props: {
           </MarkdownCodeBlock>
         );
       },
+      table({ node: _node, children, ...props }) {
+        return (
+          <div
+            className={`chat-markdown-table-container${wordWrap ? " chat-markdown-table-wrap" : ""}`}
+            data-word-wrap={wordWrap ? "true" : "false"}
+          >
+            <table {...props}>{children}</table>
+          </div>
+        );
+      },
     }),
-    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme],
+    [cwd, diffThemeName, disambiguatorMap, mode, resolvedTheme, wordWrap],
   );
 
   return (

@@ -25,6 +25,7 @@ function makeServerConfigStub(): ServerConfigShape {
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     observabilityEnabled: false,
+    acpHardeningEnabled: false,
     stateDir: "/tmp/f3-code/state",
     dbPath: "/tmp/f3-code/state.sqlite",
     keybindingsConfigPath: "/tmp/f3-code/keybindings.json",

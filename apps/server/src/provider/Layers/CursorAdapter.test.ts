@@ -1374,3 +1374,112 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     },
   );
 });
+
+const cursorAdapterHardeningTestLayer = it.layer(
+  Layer.effect(
+    CursorAdapter,
+    Effect.gen(function* () {
+      const cursorConfig = Schema.decodeSync(CursorSettings)({});
+      const resolveSettings = yield* makeResolveCursorSettings;
+      return yield* makeCursorAdapter(cursorConfig, { resolveSettings });
+    }),
+  ).pipe(
+    Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(
+      ServerConfig.layerTest(
+        process.cwd(),
+        { prefix: "t3code-cursor-adapter-hardening-test-" },
+        { acpHardeningEnabled: true },
+      ),
+    ),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+cursorAdapterHardeningTestLayer("CursorAdapterLive ACP hardening", (it) => {
+  it.effect("threads resume cursors through the hardened load fallback", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-resume-hardening");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_LOAD_FAIL_NOT_FOUND: "1" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const session = yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+        resumeCursor: { schemaVersion: 1, sessionId: "missing-session" },
+      });
+
+      assert.deepStrictEqual(session.resumeCursor, {
+        schemaVersion: 1,
+        sessionId: "mock-session-1",
+      });
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("serializes overlapping sends and completes each turn exactly once", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-overlapping-send-hardening");
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_PROMPT_DELAY_MS: "80" }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      const events: ProviderRuntimeEvent[] = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
+      ).pipe(Effect.forkScoped);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      const first = yield* adapter
+        .sendTurn({ threadId, input: "first", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      const second = yield* adapter
+        .sendTurn({ threadId, input: "second", attachments: [] })
+        .pipe(Effect.forkChild);
+      const [firstResult, secondResult] = yield* Effect.all(
+        [Fiber.join(first), Fiber.join(second)],
+        {
+          concurrency: "unbounded",
+        },
+      );
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 20)));
+
+      assert.notEqual(firstResult.turnId, secondResult.turnId);
+      const lifecycle = events.filter(
+        (event) => event.type === "turn.started" || event.type === "turn.completed",
+      );
+      assert.deepStrictEqual(
+        lifecycle.map((event) => [event.type, event.turnId]),
+        [
+          ["turn.started", firstResult.turnId],
+          ["turn.completed", firstResult.turnId],
+          ["turn.started", secondResult.turnId],
+          ["turn.completed", secondResult.turnId],
+        ],
+      );
+
+      yield* adapter.stopSession(threadId);
+      yield* Fiber.interrupt(eventFiber);
+    }),
+  );
+});

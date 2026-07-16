@@ -53,6 +53,7 @@ import {
 } from "../lib/orchestrationReactQuery";
 import { mcpQueryKeys } from "../lib/mcpReactQuery";
 import { invalidateGitQueries } from "../lib/gitReactQuery";
+import { invalidateReviewQueries } from "../lib/reviewReactQuery";
 import { useAppSettings } from "../appSettings";
 import { deriveOnboardingLiteState } from "../lib/onboardingLite";
 import {
@@ -1164,6 +1165,7 @@ function EventRouter() {
     });
     const unsubGitStatusInvalidated = api.git.onStatusInvalidated((payload) => {
       void invalidateGitQueries(queryClient, { cwd: payload.cwd });
+      void invalidateReviewQueries(queryClient);
     });
     return () => {
       disposed = true;

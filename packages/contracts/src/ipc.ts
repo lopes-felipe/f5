@@ -44,6 +44,7 @@ import type {
   ServerUpsertKeybindingResult,
 } from "./server";
 import type { ServerSettings, ServerSettingsPatch } from "./settings";
+import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type { ProviderStartOptions } from "./orchestration";
 import type {
   McpApplyToLiveSessionsRequest,
@@ -92,6 +93,7 @@ import type {
   PreviewNavigateInput,
   PreviewOpenInput,
   PreviewRefreshInput,
+  PreviewRecordingMetricsInput,
   PreviewReportStatusInput,
   PreviewSessionSnapshot,
 } from "./preview";
@@ -100,6 +102,7 @@ import type {
   PreviewAutomationClearOwnerInput,
   PreviewAutomationEvaluateInput,
   PreviewAutomationOwner,
+  PreviewAutomationRegistration,
   PreviewAutomationPressInput,
   PreviewAutomationRequest,
   PreviewAutomationResponse,
@@ -108,6 +111,8 @@ import type {
   PreviewAutomationStatus,
   PreviewAutomationTypeInput,
   PreviewAutomationWaitForInput,
+  PreviewArtifact,
+  PreviewViewportSize,
 } from "./previewAutomation";
 import type {
   StorageCancelCleanupRequest,
@@ -240,12 +245,27 @@ export interface DesktopPreviewTabState {
   canGoBack: boolean;
   canGoForward: boolean;
   zoomFactor: number;
+  viewport?: PreviewViewportSize;
   updatedAt: string;
 }
 
 export interface DesktopPreviewWebviewConfig {
   partition: string;
   webPreferences: string;
+}
+
+export interface DesktopPreviewRecordingStartResult {
+  recordingId: string;
+  tabId: string;
+  startedAt: string;
+}
+
+export interface DesktopPreviewRecordingFrame {
+  recordingId: string;
+  tabId: string;
+  data: string;
+  width: number;
+  height: number;
 }
 
 export interface DesktopRuntimeInfo {
@@ -309,6 +329,15 @@ export interface DesktopPreviewBridge {
   openDevTools: (tabId: string) => Promise<void>;
   pickElement: (tabId: string) => Promise<PreviewAnnotationPayload | null>;
   cancelPickElement: (tabId: string) => Promise<void>;
+  setViewport: (tabId: string, viewport: PreviewViewportSize) => Promise<boolean>;
+  captureScreenshot: (tabId: string) => Promise<PreviewArtifact>;
+  recording?: {
+    start: (tabId: string) => Promise<DesktopPreviewRecordingStartResult>;
+    appendChunk: (recordingId: string, chunk: ArrayBuffer) => Promise<void>;
+    stop: (recordingId: string) => Promise<PreviewArtifact>;
+    discard: (recordingId: string) => Promise<void>;
+    onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
+  };
   automation?: {
     status: (tabId: string) => Promise<PreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
@@ -340,13 +369,14 @@ export interface NativeApi {
     open: (input: PreviewOpenInput) => Promise<PreviewSessionSnapshot>;
     navigate: (input: PreviewNavigateInput) => Promise<PreviewSessionSnapshot>;
     reportStatus: (input: PreviewReportStatusInput) => Promise<void>;
+    reportRecordingMetrics: (input: PreviewRecordingMetricsInput) => Promise<void>;
     refresh: (input: PreviewRefreshInput) => Promise<void>;
     close: (input: PreviewCloseInput) => Promise<void>;
     list: (input: PreviewListInput) => Promise<PreviewListResult>;
     listLocalServers: (input?: PreviewListLocalServersInput) => Promise<DiscoveredLocalServerList>;
     automation: {
       respond: (response: PreviewAutomationResponse) => Promise<void>;
-      reportOwner: (owner: PreviewAutomationOwner) => Promise<void>;
+      reportOwner: (owner: PreviewAutomationOwner) => Promise<PreviewAutomationRegistration>;
       clearOwner: (input: PreviewAutomationClearOwnerInput) => Promise<void>;
       onRequest: (callback: (request: PreviewAutomationRequest) => void) => () => void;
     };
@@ -384,6 +414,9 @@ export interface NativeApi {
     runStackedAction: (input: GitRunStackedActionInput) => Promise<GitRunStackedActionResult>;
     onActionProgress: (callback: (event: GitActionProgressEvent) => void) => () => void;
     onStatusInvalidated: (callback: (event: GitStatusInvalidatedPayload) => void) => () => void;
+  };
+  review: {
+    previewDiff: (input: ReviewPreviewDiffInput) => Promise<ReviewPreviewDiffResult>;
   };
   contextMenu: {
     show: <T extends string>(

@@ -1,12 +1,13 @@
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
-import { Effect, Stream } from "effect";
-import { describe, expect } from "vitest";
+import { Deferred, Effect, Fiber, Stream } from "effect";
+import * as TestClock from "effect/testing/TestClock";
+import { describe, expect, vi } from "vitest";
 
 import { AcpSessionRuntime, type AcpSessionRequestLogEvent } from "./AcpSessionRuntime.ts";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
@@ -15,7 +16,334 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 const bunExe = "bun";
 
+function readLoggedMethods(requestLogPath: string): ReadonlyArray<string> {
+  if (!existsSync(requestLogPath)) return [];
+  return readFileSync(requestLogPath, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .flatMap((line) => {
+      const parsed = JSON.parse(line) as { method?: unknown };
+      return typeof parsed.method === "string" ? [parsed.method] : [];
+    });
+}
+
 describe("AcpSessionRuntime", () => {
+  it.effect("keeps the legacy immediate resume fallback when hardening is disabled", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-resume-legacy-"));
+    const requestLogPath = path.join(tempDir, "requests.ndjson");
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+
+      const methods = readLoggedMethods(requestLogPath);
+      expect(methods.filter((method) => method === "session/load")).toHaveLength(1);
+      expect(methods.filter((method) => method === "session/new")).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: {
+              T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+              T3_ACP_LOAD_FAIL_NOT_FOUND: "1",
+            },
+          },
+          cwd: process.cwd(),
+          resumeSessionId: "missing-session",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: { enabled: false, provider: "test" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("falls back once for a definite load failure with hardening enabled", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-resume-missing-"));
+    const requestLogPath = path.join(tempDir, "requests.ndjson");
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+
+      const methods = readLoggedMethods(requestLogPath);
+      expect(methods.filter((method) => method === "session/load")).toHaveLength(1);
+      expect(methods.filter((method) => method === "session/new")).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: {
+              T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+              T3_ACP_LOAD_FAIL_NOT_FOUND: "1",
+            },
+          },
+          cwd: process.cwd(),
+          resumeSessionId: "missing-session",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: {
+            enabled: true,
+            provider: "test",
+            resumeLoadDeadlineMs: 500,
+          },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("resumes a slow load that completes before the deadline", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-resume-slow-"));
+    const requestLogPath = path.join(tempDir, "requests.ndjson");
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.sessionId).toBe("existing-session");
+      const methods = readLoggedMethods(requestLogPath);
+      expect(methods.filter((method) => method === "session/load")).toHaveLength(1);
+      expect(methods).not.toContain("session/new");
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: {
+              T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+              T3_ACP_LOAD_DELAY_MS: "40",
+            },
+          },
+          cwd: process.cwd(),
+          resumeSessionId: "existing-session",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: {
+            enabled: true,
+            provider: "test",
+            resumeLoadDeadlineMs: 1_000,
+            replayIdleMs: 200,
+          },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("bounds a hanging load and creates only one replacement session", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-resume-hang-"));
+    const requestLogPath = path.join(tempDir, "requests.ndjson");
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const startFiber = yield* runtime.start().pipe(Effect.forkChild);
+      yield* Effect.promise(() =>
+        vi.waitFor(() => {
+          expect(readLoggedMethods(requestLogPath)).toContain("session/load");
+        }),
+      );
+      yield* TestClock.adjust("101 millis");
+      yield* Fiber.join(startFiber);
+
+      const methods = readLoggedMethods(requestLogPath);
+      expect(methods.filter((method) => method === "session/load")).toHaveLength(1);
+      expect(methods.filter((method) => method === "session/new")).toHaveLength(1);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: {
+              T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+              T3_ACP_LOAD_HANG: "1",
+            },
+          },
+          cwd: process.cwd(),
+          resumeSessionId: "stalled-session",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: {
+            enabled: true,
+            provider: "test",
+            resumeLoadDeadlineMs: 100,
+            replayIdleMs: 20,
+          },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect(
+    "adopts a replaying session without spawning a replacement after a late failure",
+    () => {
+      const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-resume-replay-"));
+      const requestLogPath = path.join(tempDir, "requests.ndjson");
+      return Effect.gen(function* () {
+        const runtime = yield* AcpSessionRuntime;
+        const started = yield* runtime.start();
+
+        expect(started.sessionId).toBe("existing-session");
+        const methods = readLoggedMethods(requestLogPath);
+        expect(methods.filter((method) => method === "session/load")).toHaveLength(1);
+        expect(methods).not.toContain("session/new");
+      }).pipe(
+        Effect.provide(
+          AcpSessionRuntime.layer({
+            spawn: {
+              command: bunExe,
+              args: [mockAgentPath],
+              env: {
+                T3_ACP_REQUEST_LOG_PATH: requestLogPath,
+                T3_ACP_LOAD_FAIL_AFTER_REPLAY: "1",
+              },
+            },
+            cwd: process.cwd(),
+            resumeSessionId: "existing-session",
+            clientInfo: { name: "t3-test", version: "0.0.0" },
+            authMethodId: "test",
+            hardening: {
+              enabled: true,
+              provider: "test",
+              resumeLoadDeadlineMs: 500,
+              replayIdleMs: 20,
+            },
+          }),
+        ),
+        Effect.scoped,
+        Effect.provide(NodeServices.layer),
+        Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+      );
+    },
+  );
+
+  it.effect("preserves the real setup response when replay precedes a slow load response", () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "acp-resume-replay-response-"));
+    return Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      const started = yield* runtime.start();
+
+      expect(started.sessionId).toBe("existing-session");
+      expect(started.sessionSetupResult.modes?.currentModeId).toBe("ask");
+      expect(
+        started.sessionSetupResult.configOptions?.some((option) => option.id === "model"),
+      ).toBe(true);
+      expect(started.modelConfigId).toBe("model");
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: {
+            command: bunExe,
+            args: [mockAgentPath],
+            env: { T3_ACP_LOAD_RESPONSE_DELAY_MS: "60" },
+          },
+          cwd: process.cwd(),
+          resumeSessionId: "existing-session",
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: {
+            enabled: true,
+            provider: "test",
+            resumeLoadDeadlineMs: 500,
+            replayIdleMs: 10,
+          },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => rmSync(tempDir, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("waits for queued session events at the hardening barrier", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      const processed: string[] = [];
+      const releaseEvents = yield* Deferred.make<void>();
+      const eventFiber = yield* Stream.runForEach(runtime.getEvents(), (event) =>
+        Deferred.await(releaseEvents).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              processed.push(event._tag);
+            }),
+          ),
+        ),
+      ).pipe(Effect.forkScoped);
+
+      yield* runtime.prompt({ prompt: [{ type: "text", text: "hi" }] });
+      let barrierCompleted = false;
+      const barrierFiber = yield* runtime.awaitEventBarrier.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            barrierCompleted = true;
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      expect(barrierCompleted).toBe(false);
+      yield* Deferred.succeed(releaseEvents, undefined);
+      yield* Fiber.join(barrierFiber);
+
+      expect(processed).toContain("AssistantItemCompleted");
+      expect(processed).toContain("ContentDelta");
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: { command: bunExe, args: [mockAgentPath] },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: { enabled: true, provider: "test" },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
+  it.effect("bounds an event barrier when the notification drain is not running", () =>
+    Effect.gen(function* () {
+      const runtime = yield* AcpSessionRuntime;
+      yield* runtime.start();
+      const barrier = yield* runtime.awaitEventBarrier.pipe(Effect.forkChild);
+
+      yield* TestClock.adjust("51 millis");
+      yield* Fiber.join(barrier);
+    }).pipe(
+      Effect.provide(
+        AcpSessionRuntime.layer({
+          spawn: { command: bunExe, args: [mockAgentPath] },
+          cwd: process.cwd(),
+          clientInfo: { name: "t3-test", version: "0.0.0" },
+          authMethodId: "test",
+          hardening: {
+            enabled: true,
+            provider: "test",
+            eventBarrierTimeoutMs: 50,
+          },
+        }),
+      ),
+      Effect.scoped,
+      Effect.provide(NodeServices.layer),
+    ),
+  );
+
   it.effect("merges custom initialize client capabilities into the ACP handshake", () => {
     const requestEvents: Array<AcpSessionRequestLogEvent> = [];
     return Effect.gen(function* () {

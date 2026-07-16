@@ -92,6 +92,7 @@ import {
   PreviewNavigateInput,
   PreviewOpenInput,
   PreviewRefreshInput,
+  PreviewRecordingMetricsInput,
   PreviewReportStatusInput,
 } from "./preview";
 import {
@@ -151,6 +152,7 @@ import {
   NextTurnQueueUpdateInput,
 } from "./nextTurnQueue";
 import { GlobalSearchQueryInput } from "./globalSearch";
+import { ReviewPreviewDiffInput } from "./review";
 import {
   WorkflowPlatformCreateRunInput,
   WorkflowPlatformInspectRunInput,
@@ -186,6 +188,7 @@ export const WS_METHODS = {
   gitInit: "git.init",
   gitResolvePullRequest: "git.resolvePullRequest",
   gitPreparePullRequestThread: "git.preparePullRequestThread",
+  reviewPreviewDiff: "review.previewDiff",
 
   // Terminal methods
   terminalOpen: "terminal.open",
@@ -199,6 +202,7 @@ export const WS_METHODS = {
   previewOpen: "preview.open",
   previewNavigate: "preview.navigate",
   previewReportStatus: "preview.reportStatus",
+  previewReportRecordingMetrics: "preview.reportRecordingMetrics",
   previewRefresh: "preview.refresh",
   previewClose: "preview.close",
   previewList: "preview.list",
@@ -395,6 +399,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.gitInit, GitInitInput),
   tagRequestBody(WS_METHODS.gitResolvePullRequest, GitPullRequestRefInput),
   tagRequestBody(WS_METHODS.gitPreparePullRequestThread, GitPreparePullRequestThreadInput),
+  tagRequestBody(WS_METHODS.reviewPreviewDiff, ReviewPreviewDiffInput),
 
   // Terminal methods
   tagRequestBody(WS_METHODS.terminalOpen, TerminalOpenInput),
@@ -408,6 +413,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.previewOpen, PreviewOpenInput),
   tagRequestBody(WS_METHODS.previewNavigate, PreviewNavigateInput),
   tagRequestBody(WS_METHODS.previewReportStatus, PreviewReportStatusInput),
+  tagRequestBody(WS_METHODS.previewReportRecordingMetrics, PreviewRecordingMetricsInput),
   tagRequestBody(WS_METHODS.previewRefresh, PreviewRefreshInput),
   tagRequestBody(WS_METHODS.previewClose, PreviewCloseInput),
   tagRequestBody(WS_METHODS.previewList, PreviewListInput),

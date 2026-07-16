@@ -108,6 +108,8 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
       readConfigValue: (cwd, key) => core.readConfigValue(cwd, key),
       listBranches: (input) => core.listBranches(input),
       createWorktree: (input) => core.createWorktree(input),
+      hasRemote: (cwd) => core.hasRemote(cwd),
+      fetchRemoteBranchCommit: (input) => core.fetchRemoteBranchCommit(input),
       fetchPullRequestBranch: (input) => core.fetchPullRequestBranch(input),
       ensureRemote: (input) => core.ensureRemote(input),
       fetchRemoteBranch: (input) => core.fetchRemoteBranch(input),
@@ -196,6 +198,8 @@ function initRepoWithCommit(
     yield* initGitRepo({ cwd });
     yield* git(cwd, ["config", "user.email", "test@test.com"]);
     yield* git(cwd, ["config", "user.name", "Test"]);
+    yield* git(cwd, ["config", "commit.gpgSign", "false"]);
+    yield* git(cwd, ["config", "tag.gpgSign", "false"]);
     yield* writeTextFile(path.join(cwd, "README.md"), "# test\n");
     yield* git(cwd, ["add", "."]);
     yield* git(cwd, ["commit", "-m", "initial commit"]);
@@ -242,6 +246,66 @@ it.layer(TestLayer)("git integration", (it) => {
         expect(result.code).toBe(0);
         expect(result.stdout.length).toBeLessThanOrEqual(128);
         expect(result.stdoutTruncated || result.stderrTruncated).toBe(true);
+      }),
+    );
+  });
+
+  describe("readRangeContext", () => {
+    it.effect("uses the remote-tracking merge base for PR diff content", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir("git-range-remote-");
+        const repo = yield* makeTmpDir("git-range-repo-");
+        yield* git(remote, ["init", "--bare"]);
+        const { initialBranch } = yield* initRepoWithCommit(repo);
+        const initialCommit = yield* git(repo, ["rev-parse", "HEAD"]);
+        yield* git(repo, ["remote", "add", "origin", remote]);
+        yield* git(repo, ["push", "-u", "origin", initialBranch]);
+
+        yield* writeTextFile(path.join(repo, "shared-base.txt"), "shared base\n");
+        yield* git(repo, ["add", "shared-base.txt"]);
+        yield* git(repo, ["commit", "-m", "shared base"]);
+        yield* git(repo, ["push", "origin", initialBranch]);
+
+        yield* git(repo, ["checkout", "-b", "feature", `origin/${initialBranch}`]);
+        yield* writeTextFile(path.join(repo, "feature.txt"), "feature change\n");
+        yield* git(repo, ["add", "feature.txt"]);
+        yield* git(repo, ["commit", "-m", "feature change"]);
+
+        yield* git(repo, ["checkout", initialBranch]);
+        yield* git(repo, ["reset", "--hard", `origin/${initialBranch}`]);
+        yield* writeTextFile(path.join(repo, "base-only.txt"), "base moved\n");
+        yield* git(repo, ["add", "base-only.txt"]);
+        yield* git(repo, ["commit", "-m", "move base"]);
+        yield* git(repo, ["push", "origin", initialBranch]);
+        yield* git(repo, ["reset", "--hard", initialCommit]);
+        yield* git(repo, ["checkout", "feature"]);
+
+        const expected = yield* git(repo, [
+          "diff",
+          "--patch",
+          "--minimal",
+          `origin/${initialBranch}...HEAD`,
+        ]);
+        const incorrectTwoDot = yield* git(repo, [
+          "diff",
+          "--patch",
+          "--minimal",
+          `origin/${initialBranch}..HEAD`,
+        ]);
+        const incorrectStaleLocal = yield* git(repo, [
+          "diff",
+          "--patch",
+          "--minimal",
+          `${initialBranch}...HEAD`,
+        ]);
+
+        const core = yield* GitCore;
+        const context = yield* core.readRangeContext(repo, initialBranch);
+        expect(context.diffPatch.trim()).toBe(expected);
+        expect(context.diffPatch.trim()).not.toBe(incorrectTwoDot);
+        expect(context.diffPatch.trim()).not.toBe(incorrectStaleLocal);
+        expect(context.diffPatch).toContain("feature.txt");
+        expect(context.diffPatch).not.toContain("base-only.txt");
       }),
     );
   });
@@ -1015,6 +1079,116 @@ it.layer(TestLayer)("git integration", (it) => {
   // ── createGitWorktree + removeGitWorktree ──
 
   describe("createGitWorktree", () => {
+    it.effect("creates a worktree from the freshly fetched origin commit", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir();
+        const source = yield* makeTmpDir();
+        const peer = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+
+        const { initialBranch } = yield* initRepoWithCommit(source);
+        yield* git(source, ["remote", "add", "origin", remote]);
+        yield* git(source, ["push", "-u", "origin", initialBranch]);
+        const staleLocalCommit = yield* git(source, ["rev-parse", "HEAD"]);
+
+        yield* git(peer, ["clone", remote, "."]);
+        yield* git(peer, ["config", "user.email", "test@test.com"]);
+        yield* git(peer, ["config", "user.name", "Test"]);
+        yield* writeTextFile(path.join(peer, "origin-only.txt"), "from origin\n");
+        yield* git(peer, ["add", "origin-only.txt"]);
+        yield* git(peer, ["commit", "-m", "advance origin"]);
+        yield* git(peer, ["push", "origin", initialBranch]);
+        const originCommit = yield* git(peer, ["rev-parse", "HEAD"]);
+
+        const core = yield* GitCore;
+        const resolved = yield* core.fetchRemoteBranchCommit({
+          cwd: source,
+          branch: initialBranch,
+        });
+        expect(resolved).toMatchObject({
+          remoteName: "origin",
+          branch: initialBranch,
+          refName: `origin/${initialBranch}`,
+          commit: originCommit,
+        });
+
+        const wtPath = path.join(source, "origin-based-worktree");
+        yield* core.createWorktree({
+          cwd: source,
+          branch: initialBranch,
+          baseRefName: resolved.commit,
+          newBranch: "feature/origin-based",
+          path: wtPath,
+        });
+
+        expect(yield* git(wtPath, ["rev-parse", "HEAD"])).toBe(originCommit);
+        expect(yield* git(source, ["rev-parse", initialBranch])).toBe(staleLocalCommit);
+        expect(existsSync(path.join(wtPath, "origin-only.txt"))).toBe(true);
+
+        yield* core.removeWorktree({ cwd: source, path: wtPath });
+      }),
+    );
+
+    it.effect("fetches the origin base when invoked from a linked worktree cwd", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir();
+        const source = yield* makeTmpDir();
+        const peer = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+
+        const { initialBranch } = yield* initRepoWithCommit(source);
+        yield* git(source, ["remote", "add", "origin", remote]);
+        yield* git(source, ["push", "-u", "origin", initialBranch]);
+
+        const linkedPath = path.join(source, "linked-cwd");
+        const core = yield* GitCore;
+        yield* core.createWorktree({
+          cwd: source,
+          branch: initialBranch,
+          newBranch: "feature/linked-cwd",
+          path: linkedPath,
+        });
+
+        yield* git(peer, ["clone", remote, "."]);
+        yield* git(peer, ["config", "user.email", "test@test.com"]);
+        yield* git(peer, ["config", "user.name", "Test"]);
+        yield* writeTextFile(path.join(peer, "remote-update.txt"), "updated\n");
+        yield* git(peer, ["add", "remote-update.txt"]);
+        yield* git(peer, ["commit", "-m", "remote update"]);
+        yield* git(peer, ["push", "origin", initialBranch]);
+        const originCommit = yield* git(peer, ["rev-parse", "HEAD"]);
+
+        const resolved = yield* core.fetchRemoteBranchCommit({
+          cwd: linkedPath,
+          branch: initialBranch,
+        });
+        expect(resolved.commit).toBe(originCommit);
+        expect(yield* git(linkedPath, ["rev-parse", `origin/${initialBranch}`])).toBe(originCommit);
+
+        yield* core.removeWorktree({ cwd: source, path: linkedPath });
+      }),
+    );
+
+    it.effect("returns a typed git error when the origin base branch is missing", () =>
+      Effect.gen(function* () {
+        const remote = yield* makeTmpDir();
+        const source = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        yield* initRepoWithCommit(source);
+        yield* git(source, ["remote", "add", "origin", remote]);
+
+        const core = yield* GitCore;
+        const result = yield* Effect.result(
+          core.fetchRemoteBranchCommit({ cwd: source, branch: "missing-base" }),
+        );
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure).toBeInstanceOf(GitCommandError);
+          expect(result.failure.operation).toBe("GitCore.fetchRemoteBranchCommit.fetch");
+        }
+      }),
+    );
+
     it.effect("creates a worktree with a new branch from the base branch", () =>
       Effect.gen(function* () {
         const tmp = yield* makeTmpDir();

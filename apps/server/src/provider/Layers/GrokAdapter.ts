@@ -397,6 +397,10 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
+            hardening: {
+              enabled: serverConfig.acpHardeningEnabled,
+              provider: PROVIDER,
+            },
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
@@ -838,6 +842,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               };
 
               if (ctx.promptsInFlight === 1) {
+                yield* ctx.acp.awaitEventBarrier;
                 yield* offerRuntimeEvent({
                   type: "turn.completed",
                   ...(yield* makeEventStamp()),

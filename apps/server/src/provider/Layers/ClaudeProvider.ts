@@ -78,6 +78,36 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
     }),
   },
   {
+    slug: "claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    isCustom: false,
+    capabilities: createModelCapabilities({
+      optionDescriptors: [
+        buildSelectOptionDescriptor({
+          id: "effort",
+          label: "Reasoning",
+          options: [
+            { value: "low", label: "Low" },
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High", isDefault: true },
+            { value: "xhigh", label: "Extra High" },
+            { value: "max", label: "Max" },
+            { value: "ultrathink", label: "Ultrathink" },
+          ],
+          promptInjectedValues: ["ultrathink"],
+        }),
+        buildSelectOptionDescriptor({
+          id: "contextWindow",
+          label: "Context Window",
+          options: [
+            { value: "200k", label: "200k", isDefault: true },
+            { value: "1m", label: "1M" },
+          ],
+        }),
+      ],
+    }),
+  },
+  {
     slug: "claude-opus-4-8",
     name: "Claude Opus 4.8",
     isCustom: false,
@@ -239,6 +269,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
 
 const VERSION_GATED_CLAUDE_MODELS = [
   { slug: "claude-fable-5", name: "Claude Fable 5", minVersion: "2.1.170" },
+  { slug: "claude-sonnet-5", name: "Claude Sonnet 5", minVersion: "2.1.170" },
   { slug: "claude-opus-4-8", name: "Claude Opus 4.8", minVersion: "2.1.154" },
   { slug: "claude-opus-4-7", name: "Claude Opus 4.7", minVersion: "2.1.111" },
 ] as const;

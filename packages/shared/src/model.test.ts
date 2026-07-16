@@ -37,6 +37,11 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("fable", "claudeAgent")).toBe("claude-fable-5");
     expect(normalizeModelSlug("fable-5", "claudeAgent")).toBe("claude-fable-5");
     expect(normalizeModelSlug("claude-fable", "claudeAgent")).toBe("claude-fable-5");
+    expect(normalizeModelSlug("sonnet", "claudeAgent")).toBe("claude-sonnet-5");
+    expect(normalizeModelSlug("sonnet-5", "claudeAgent")).toBe("claude-sonnet-5");
+    expect(normalizeModelSlug("claude-sonnet-5.0", "claudeAgent")).toBe("claude-sonnet-5");
+    expect(normalizeModelSlug("claude-sonnet-5-0", "claudeAgent")).toBe("claude-sonnet-5");
+    expect(normalizeModelSlug("sonnet-4.6", "claudeAgent")).toBe("claude-sonnet-4-6");
     expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("claude-opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
@@ -98,6 +103,7 @@ describe("resolveModelSlug", () => {
       "claude-opus-4-7",
       "claude-opus-4-6",
       "claude-opus-4-5",
+      "claude-sonnet-5",
       "claude-sonnet-4-6",
       "claude-haiku-4-5",
     ]);
@@ -156,6 +162,17 @@ describe("getReasoningEffortOptions", () => {
     ]);
   });
 
+  it("exposes full Claude Sonnet 5 effort controls", () => {
+    expect(getReasoningEffortOptions("claudeAgent", "claude-sonnet-5")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultrathink",
+    ]);
+  });
+
   it("keeps Opus 4.6 effort support without exposing xhigh", () => {
     expect(getReasoningEffortOptions("claudeAgent", "claude-opus-4-6")).toEqual([
       "low",
@@ -200,6 +217,14 @@ describe("getReasoningEffortOptions", () => {
 });
 
 describe("Claude capability predicates", () => {
+  it("enables Sonnet 5 adaptive effort and context controls", () => {
+    expect(supportsClaudeFastMode("claude-sonnet-5")).toBe(false);
+    expect(supportsClaudeContextWindow("claude-sonnet-5")).toBe(true);
+    expect(supportsClaudeMaxEffort("claude-sonnet-5")).toBe(true);
+    expect(supportsClaudeAdaptiveReasoning("claude-sonnet-5")).toBe(true);
+    expect(supportsClaudeThinkingToggle("claude-sonnet-5")).toBe(false);
+    expect(supportsClaudeUltrathinkKeyword("claude-sonnet-5")).toBe(true);
+  });
   it("enables Claude Fable 5 effort capabilities while keeping fast mode and thinking off", () => {
     expect(supportsClaudeFastMode("claude-fable-5")).toBe(false);
     expect(supportsClaudeContextWindow("claude-fable-5")).toBe(true);

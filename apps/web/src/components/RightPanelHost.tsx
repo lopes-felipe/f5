@@ -24,6 +24,9 @@ export function RightPanelHost(props: {
 }) {
   const activeSurface =
     props.state.surfaces.find((surface) => surface.id === props.state.activeSurfaceId) ?? null;
+  const previewSurface = props.state.surfaces.find((surface) => surface.kind === "preview") ?? null;
+  const inactivePreviewSurface =
+    previewSurface && previewSurface.id !== activeSurface?.id ? previewSurface : null;
 
   return (
     <RightPanelTabs
@@ -45,7 +48,24 @@ export function RightPanelHost(props: {
       diffAvailable={props.diffAvailable}
       planAvailable={props.planAvailable}
     >
-      {activeSurface ? props.renderSurface(activeSurface) : null}
+      {activeSurface || inactivePreviewSurface ? (
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          {activeSurface ? (
+            <div className="absolute inset-0 flex min-h-0 flex-col">
+              {props.renderSurface(activeSurface)}
+            </div>
+          ) : null}
+          {inactivePreviewSurface ? (
+            <div
+              aria-hidden="true"
+              inert
+              className="pointer-events-none invisible absolute inset-0 flex min-h-0 flex-col"
+            >
+              {props.renderSurface(inactivePreviewSurface)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
     </RightPanelTabs>
   );
 }

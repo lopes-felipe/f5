@@ -18,8 +18,45 @@ export const PreviewAutomationOperation = Schema.Literals([
   "scroll",
   "evaluate",
   "waitFor",
+  "viewport",
+  "screenshot",
+  "recordingStart",
+  "recordingStop",
 ]);
 export type PreviewAutomationOperation = typeof PreviewAutomationOperation.Type;
+
+export const PreviewHostCapability = Schema.Literals([
+  "automation",
+  "viewport",
+  "screenshot",
+  "recording",
+]);
+export type PreviewHostCapability = typeof PreviewHostCapability.Type;
+
+export const PreviewViewportSize = Schema.Struct({
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type PreviewViewportSize = typeof PreviewViewportSize.Type;
+
+export const PreviewAutomationViewportInput = Schema.Struct({
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
+});
+export type PreviewAutomationViewportInput = typeof PreviewAutomationViewportInput.Type;
+
+export const PreviewArtifact = Schema.Struct({
+  artifactId: TrimmedNonEmptyString,
+  kind: Schema.Literals(["screenshot", "recording"]),
+  mimeType: TrimmedNonEmptyString,
+  bytes: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  createdAt: Schema.String,
+  width: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  height: Schema.optional(Schema.Int.check(Schema.isGreaterThan(0))),
+  durationMs: Schema.optional(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+});
+export type PreviewArtifact = typeof PreviewArtifact.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
   available: Schema.Boolean,
@@ -214,16 +251,27 @@ export type PreviewAutomationSnapshot = typeof PreviewAutomationSnapshot.Type;
 
 export const PreviewAutomationOwner = Schema.Struct({
   clientId: TrimmedNonEmptyString,
+  connectionId: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   tabId: Schema.NullOr(PreviewTabId),
   visible: Schema.Boolean,
   supportsAutomation: Schema.Boolean,
+  capabilities: Schema.optional(Schema.Array(PreviewHostCapability)),
   focusedAt: Schema.String,
 });
 export type PreviewAutomationOwner = typeof PreviewAutomationOwner.Type;
 
+export const PreviewAutomationRegistration = Schema.Struct({
+  clientId: TrimmedNonEmptyString,
+  connectionId: TrimmedNonEmptyString,
+  leaseExpiresAt: Schema.String,
+});
+export type PreviewAutomationRegistration = typeof PreviewAutomationRegistration.Type;
+
 export const PreviewAutomationRequest = Schema.Struct({
   requestId: TrimmedNonEmptyString,
+  clientId: Schema.optional(TrimmedNonEmptyString),
+  connectionId: Schema.optional(TrimmedNonEmptyString),
   threadId: ThreadId,
   tabId: Schema.optional(PreviewTabId),
   operation: PreviewAutomationOperation,
@@ -234,6 +282,8 @@ export type PreviewAutomationRequest = typeof PreviewAutomationRequest.Type;
 
 export const PreviewAutomationResponse = Schema.Struct({
   requestId: TrimmedNonEmptyString,
+  clientId: Schema.optional(TrimmedNonEmptyString),
+  connectionId: Schema.optional(TrimmedNonEmptyString),
   ok: Schema.Boolean,
   result: Schema.optional(Schema.Unknown),
   error: Schema.optional(
@@ -248,6 +298,7 @@ export type PreviewAutomationResponse = typeof PreviewAutomationResponse.Type;
 
 export const PreviewAutomationClearOwnerInput = Schema.Struct({
   clientId: TrimmedNonEmptyString,
+  connectionId: Schema.optional(TrimmedNonEmptyString),
 });
 export type PreviewAutomationClearOwnerInput = typeof PreviewAutomationClearOwnerInput.Type;
 

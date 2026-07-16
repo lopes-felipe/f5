@@ -1,4 +1,4 @@
-import type { SourceControlProviderKind } from "@t3tools/contracts";
+import type { ChangeRequest, SourceControlProviderKind } from "@t3tools/contracts";
 
 export interface ParsedSourceControlRemote {
   readonly kind: SourceControlProviderKind;
@@ -145,5 +145,38 @@ export function parseSourceControlRemoteUrl(
     };
   } catch {
     return { kind: "unknown", host: null, owner: null, repository: null, webUrl: null };
+  }
+}
+
+function isHttpWebUrl(value: string | null | undefined): value is string {
+  if (!value) return false;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+/** Resolve the canonical browser URL without assuming every provider uses GitHub paths. */
+export function resolveChangeRequestWebUrl(
+  changeRequest: Pick<ChangeRequest, "displayNumber" | "id" | "provider" | "url">,
+): string | null {
+  if (isHttpWebUrl(changeRequest.url)) return changeRequest.url;
+
+  const baseUrl = changeRequest.provider.webUrl?.replace(/\/+$/g, "");
+  if (!isHttpWebUrl(baseUrl)) return null;
+  const identifier = encodeURIComponent(changeRequest.displayNumber || changeRequest.id);
+  switch (changeRequest.provider.kind) {
+    case "github":
+      return `${baseUrl}/pull/${identifier}`;
+    case "gitlab":
+      return `${baseUrl}/-/merge_requests/${identifier}`;
+    case "bitbucket":
+      return `${baseUrl}/pull-requests/${identifier}`;
+    case "azure-devops":
+      return `${baseUrl}/pullrequest/${identifier}`;
+    case "unknown":
+      return null;
   }
 }

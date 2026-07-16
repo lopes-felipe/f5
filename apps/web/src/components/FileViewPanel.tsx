@@ -13,6 +13,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openInPreferredEditor } from "../editorPreferences";
 import { clearFileViewSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
+import { useDiffWordWrap } from "../appSettings";
 import { useTheme } from "../hooks/useTheme";
 import { resolveDiffThemeName } from "../lib/diffRendering";
 import { looksLikeAbsoluteFilePath } from "../lib/normalizeFilePathForDiff";
@@ -81,6 +82,7 @@ export function reconcileDraftContents(input: {
 }
 
 export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelProps) {
+  const wordWrap = useDiffWordWrap();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { resolvedTheme } = useTheme();
@@ -487,6 +489,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
                   selectedLines={selectedLines}
                   options={{
                     disableFileHeader: true,
+                    overflow: wordWrap ? "wrap" : "scroll",
                     theme: resolveDiffThemeName(resolvedTheme),
                     themeType: resolvedTheme,
                     unsafeCSS: DIFF_PANEL_UNSAFE_CSS,

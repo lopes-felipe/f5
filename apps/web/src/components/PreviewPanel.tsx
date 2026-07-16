@@ -1,6 +1,8 @@
 import {
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  type DesktopPreviewBridge,
+  type DesktopPreviewWebviewConfig,
   type DiscoveredLocalServer,
   type PreviewAutomationClickInput,
   type PreviewAutomationEvaluateInput,
@@ -13,6 +15,8 @@ import {
   type PreviewAutomationStatus,
   type PreviewAutomationTypeInput,
   type PreviewAutomationWaitForInput,
+  type PreviewAutomationViewportInput,
+  type PreviewArtifact,
   type PreviewAnnotationPayload,
   type PreviewEvent,
   type PreviewNavStatus,
@@ -23,11 +27,15 @@ import {
   ArrowLeftIcon,
   ArrowRightIcon,
   BugIcon,
+  CameraIcon,
+  CircleStopIcon,
   ExternalLinkIcon,
   Globe2Icon,
   MousePointer2Icon,
   RefreshCcwIcon,
   RotateCcwIcon,
+  ScalingIcon,
+  VideoIcon,
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -40,11 +48,21 @@ import {
   readReadyWebviewValue,
   type PreviewWebviewReaderElement,
 } from "./PreviewPanel.logic";
+import { PreviewAutomationResponseCache } from "./PreviewAutomationResponseCache";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Spinner } from "./ui/spinner";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { toastManager } from "./ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import {
+  clampPreviewViewport,
+  nearestPreviewViewportPreset,
+  orientPreviewViewport,
+  PREVIEW_VIEWPORT_PRESETS,
+  type PreviewViewportDimensions,
+  type PreviewViewportPresetId,
+} from "./PreviewViewport.logic";
 
 type PreviewWebviewElement = HTMLElement &
   PreviewWebviewReaderElement & {
@@ -58,9 +76,27 @@ type PreviewWebviewElement = HTMLElement &
 interface PreviewPanelProps {
   threadId: ThreadId;
   onClose: () => void;
+  visible?: boolean;
 }
 
 const PREVIEW_AUTOMATION_ATTACHMENT_POLL_INTERVAL_MS = 100;
+const PREVIEW_RECORDING_MAX_PENDING_CHUNKS = 2;
+const PREVIEW_RECORDING_MAX_CHUNK_BYTES = 4 * 1024 * 1024;
+const PREVIEW_RECORDING_MAX_DURATION_MS = 5 * 60 * 1000;
+
+interface ActivePreviewRecording {
+  readonly recordingId: string;
+  readonly tabId: string;
+  readonly bridge: NonNullable<DesktopPreviewBridge["recording"]>;
+  readonly recorder: MediaRecorder;
+  readonly unsubscribeFrames: () => void;
+  readonly pendingUploads: Set<Promise<void>>;
+  limitTimer: number;
+  phase: "starting" | "active" | "stopping";
+  failure: Error | null;
+  droppedFrames: number;
+  stopPromise: Promise<PreviewArtifact | null> | null;
+}
 
 function navStatusUrl(navStatus: PreviewNavStatus): string {
   return navStatus._tag === "Idle" ? "" : navStatus.url;
@@ -208,7 +244,7 @@ function delay(ms: number): Promise<void> {
 }
 
 function previewAutomationErrorResponse(
-  requestId: string,
+  request: PreviewAutomationRequest,
   cause: unknown,
 ): PreviewAutomationResponse {
   const message = cause instanceof Error ? cause.message : String(cause);
@@ -217,7 +253,9 @@ function previewAutomationErrorResponse(
       ? (cause as { _tag: string; detail?: unknown })
       : null;
   return {
-    requestId,
+    requestId: request.requestId,
+    ...(request.clientId ? { clientId: request.clientId } : {}),
+    ...(request.connectionId ? { connectionId: request.connectionId } : {}),
     ok: false,
     error: {
       _tag: tagged?._tag ?? "PreviewAutomationExecutionError",
@@ -284,6 +322,142 @@ function resolveAutomationNavigateUrl(input: PreviewAutomationNavigateInput): st
   return `${protocol}://127.0.0.1:${target.port}${normalizedPath}`;
 }
 
+function PreviewBrowserWebview(props: {
+  readonly session: PreviewSessionSnapshot;
+  readonly visible: boolean;
+  readonly config: DesktopPreviewWebviewConfig;
+  readonly desktopPreview: DesktopPreviewBridge;
+  readonly dimensions: PreviewViewportDimensions | null;
+  readonly hiddenDimensions: PreviewViewportDimensions;
+  readonly onStatus: (
+    session: PreviewSessionSnapshot,
+    webview: PreviewWebviewElement,
+    navStatus: PreviewNavStatus,
+  ) => void;
+}) {
+  const webviewRef = useRef<PreviewWebviewElement | null>(null);
+  const sessionRef = useRef(props.session);
+  sessionRef.current = props.session;
+  const activeUrl = navStatusUrl(props.session.navStatus);
+  const activeTitle = navStatusTitle(props.session.navStatus);
+  const activeUrlRef = useRef(activeUrl);
+  const activeTitleRef = useRef(activeTitle);
+  activeUrlRef.current = activeUrl;
+  activeTitleRef.current = activeTitle;
+
+  useEffect(() => {
+    void props.desktopPreview.createTab(props.session.tabId);
+  }, [props.desktopPreview, props.session.tabId]);
+
+  useEffect(() => {
+    const webview = webviewRef.current;
+    if (!webview) return;
+    const register = () => {
+      const webContentsId = readReadyWebContentsId(webview);
+      if (webContentsId !== null) {
+        void props.desktopPreview.registerWebview(props.session.tabId, webContentsId);
+      }
+    };
+    const currentUrl = () =>
+      readReadyWebviewValue(() => webview.getURL?.(), activeUrlRef.current || "about:blank");
+    const currentTitle = () =>
+      readReadyWebviewValue(() => webview.getTitle?.(), activeTitleRef.current);
+    const onStart = () => {
+      const url = currentUrl();
+      if (url && url !== "about:blank") {
+        props.onStatus(sessionRef.current, webview, {
+          _tag: "Loading",
+          url,
+          title: currentTitle(),
+        });
+      }
+    };
+    const onSuccess = () => {
+      register();
+      const url = currentUrl();
+      if (url && url !== "about:blank") {
+        props.onStatus(sessionRef.current, webview, {
+          _tag: "Success",
+          url,
+          title: currentTitle(),
+        });
+      }
+    };
+    const onFail = (event: Event) => {
+      const failure = event as Event & {
+        errorCode?: number;
+        errorDescription?: string;
+        validatedURL?: string;
+      };
+      if (failure.errorCode === -3) return;
+      props.onStatus(sessionRef.current, webview, {
+        _tag: "LoadFailed",
+        url: failure.validatedURL || currentUrl(),
+        title: currentTitle(),
+        code: failure.errorCode ?? 0,
+        description: failure.errorDescription ?? "Navigation failed.",
+      });
+    };
+
+    webview.addEventListener("dom-ready", register);
+    webview.addEventListener("did-start-loading", onStart);
+    webview.addEventListener("did-finish-load", onSuccess);
+    webview.addEventListener("did-navigate", onSuccess);
+    webview.addEventListener("did-navigate-in-page", onSuccess);
+    webview.addEventListener("page-title-updated", onSuccess);
+    webview.addEventListener("did-fail-load", onFail);
+    register();
+    return () => {
+      webview.removeEventListener("dom-ready", register);
+      webview.removeEventListener("did-start-loading", onStart);
+      webview.removeEventListener("did-finish-load", onSuccess);
+      webview.removeEventListener("did-navigate", onSuccess);
+      webview.removeEventListener("did-navigate-in-page", onSuccess);
+      webview.removeEventListener("page-title-updated", onSuccess);
+      webview.removeEventListener("did-fail-load", onFail);
+    };
+  }, [props.desktopPreview, props.onStatus, props.session.tabId]);
+
+  const dimensions = props.dimensions ?? props.hiddenDimensions;
+  return (
+    <div
+      aria-hidden={!props.visible}
+      inert={!props.visible || undefined}
+      className={cn(
+        "bg-background",
+        props.visible
+          ? "relative overflow-hidden"
+          : "pointer-events-none fixed top-0 -left-[100000px] opacity-0",
+      )}
+      style={
+        props.visible && props.dimensions === null
+          ? { width: "100%", height: "100%" }
+          : { width: dimensions.width, height: dimensions.height }
+      }
+    >
+      <webview
+        ref={(node) => {
+          webviewRef.current = node as PreviewWebviewElement | null;
+        }}
+        src={activeUrl || "about:blank"}
+        partition={props.config.partition}
+        webpreferences={props.config.webPreferences}
+        className="h-full w-full bg-background"
+      />
+      {props.visible && props.session.navStatus._tag === "LoadFailed" ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/92 p-6 text-center">
+          <div className="max-w-sm">
+            <p className="text-sm font-medium text-foreground">Preview failed to load</p>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {props.session.navStatus.description}
+            </p>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PreviewUnavailable(props: { onClose: () => void }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -308,12 +482,31 @@ function PreviewUnavailable(props: { onClose: () => void }) {
   );
 }
 
-export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
+export default function PreviewPanel({ threadId, onClose, visible = true }: PreviewPanelProps) {
   const desktopPreview = window.desktopBridge?.preview;
   const api = useMemo(() => ensureNativeApi(), []);
-  const webviewRef = useRef<PreviewWebviewElement | null>(null);
   const automationClientIdRef = useRef(`preview-${randomUUID()}`);
-  const lastStatusReportKeyRef = useRef<string | null>(null);
+  const automationConnectionIdRef = useRef<string | null>(null);
+  const automationOwnerReportTailRef = useRef<Promise<void>>(Promise.resolve());
+  const lastStatusReportKeyRef = useRef(new Map<string, string>());
+  const viewportContainerRef = useRef<HTMLDivElement | null>(null);
+  const viewportRevisionRef = useRef(new Map<string, number>());
+  const viewportPersistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingViewportPersistRef = useRef<{
+    tabId: string;
+    dimensions: PreviewViewportDimensions;
+  } | null>(null);
+  const viewportDragRef = useRef<{
+    pointerId: number;
+    tabId: string;
+    startX: number;
+    startY: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const lastViewportPersistAtRef = useRef(0);
+  const activeRecordingRef = useRef<ActivePreviewRecording | null>(null);
+  const automationResponseCacheRef = useRef(new PreviewAutomationResponseCache());
   const [sessions, setSessions] = useState<PreviewSessionSnapshot[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [webviewConfig, setWebviewConfig] = useState<{
@@ -325,37 +518,173 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
   const [localServersLoading, setLocalServersLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [viewportBounds, setViewportBounds] = useState<PreviewViewportDimensions>({
+    width: 1280,
+    height: 720,
+  });
+  const [requestedViewportByTabId, setRequestedViewportByTabId] = useState<
+    Record<string, PreviewViewportDimensions | null>
+  >({});
+  const [viewportPresetByTabId, setViewportPresetByTabId] = useState<
+    Record<string, PreviewViewportPresetId | "custom">
+  >({});
+  const [recordingTabId, setRecordingTabId] = useState<string | null>(null);
 
   const activeSession =
     sessions.find((session) => session.tabId === activeTabId) ?? sessions.at(-1) ?? null;
   const activeUrl = activeSession ? navStatusUrl(activeSession.navStatus) : "";
-  const activeTitle = activeSession ? navStatusTitle(activeSession.navStatus) : "";
   const loading = activeSession?.navStatus._tag === "Loading";
   const canGoBack = activeSession?.canGoBack ?? false;
   const canGoForward = activeSession?.canGoForward ?? false;
   const previewAutomation = desktopPreview?.automation;
+  const automationOwnerStateRef = useRef({
+    tabId: null as string | null,
+    visible,
+    supportsAutomation: false,
+    supportsRecording: false,
+  });
+  automationOwnerStateRef.current = {
+    tabId: activeSession?.tabId ?? null,
+    visible,
+    supportsAutomation: Boolean(previewAutomation),
+    supportsRecording: Boolean(desktopPreview?.recording),
+  };
+  const requestedViewport = activeSession
+    ? (requestedViewportByTabId[activeSession.tabId] ?? null)
+    : null;
+  const activeViewport = useMemo(
+    () =>
+      requestedViewport
+        ? clampPreviewViewport({ requested: requestedViewport, bounds: viewportBounds })
+        : null,
+    [requestedViewport, viewportBounds],
+  );
+
+  const commitViewport = useCallback(
+    (tabId: string, dimensions: PreviewViewportDimensions) => {
+      if (!desktopPreview) return;
+      const revision = (viewportRevisionRef.current.get(tabId) ?? 0) + 1;
+      viewportRevisionRef.current.set(tabId, revision);
+      lastViewportPersistAtRef.current = Date.now();
+      void desktopPreview.setViewport(tabId, { ...dimensions, revision }).catch(() => undefined);
+    },
+    [desktopPreview],
+  );
+
+  const persistViewport = useCallback(
+    (tabId: string, dimensions: PreviewViewportDimensions, final: boolean) => {
+      pendingViewportPersistRef.current = { tabId, dimensions };
+      if (final) {
+        if (viewportPersistTimerRef.current) clearTimeout(viewportPersistTimerRef.current);
+        viewportPersistTimerRef.current = null;
+        pendingViewportPersistRef.current = null;
+        commitViewport(tabId, dimensions);
+        return;
+      }
+      const elapsed = Date.now() - lastViewportPersistAtRef.current;
+      if (elapsed >= 100) {
+        pendingViewportPersistRef.current = null;
+        commitViewport(tabId, dimensions);
+        return;
+      }
+      if (viewportPersistTimerRef.current) return;
+      viewportPersistTimerRef.current = setTimeout(() => {
+        viewportPersistTimerRef.current = null;
+        const pending = pendingViewportPersistRef.current;
+        pendingViewportPersistRef.current = null;
+        if (pending) commitViewport(pending.tabId, pending.dimensions);
+      }, 100 - elapsed);
+    },
+    [commitViewport],
+  );
 
   useEffect(() => {
-    if (!desktopPreview) return;
-    const clientId = automationClientIdRef.current;
-    return () => {
-      void api.preview.automation.clearOwner({ clientId }).catch(() => undefined);
+    const element = viewportContainerRef.current;
+    if (!element) return;
+    const updateBounds = () => {
+      setViewportBounds({
+        width: Math.max(320, element.clientWidth),
+        height: Math.max(320, element.clientHeight),
+      });
     };
-  }, [api, desktopPreview]);
+    updateBounds();
+    const observer = new ResizeObserver(updateBounds);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!activeSession || !activeViewport) return;
+    persistViewport(activeSession.tabId, activeViewport, false);
+  }, [activeSession, activeViewport, persistViewport]);
+
+  useEffect(
+    () => () => {
+      if (viewportPersistTimerRef.current) clearTimeout(viewportPersistTimerRef.current);
+    },
+    [],
+  );
+
+  const reportAutomationOwner = useCallback(() => {
+    if (!desktopPreview) return Promise.resolve();
+    const report = automationOwnerReportTailRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const state = automationOwnerStateRef.current;
+        const registration = await api.preview.automation.reportOwner({
+          clientId: automationClientIdRef.current,
+          ...(automationConnectionIdRef.current
+            ? { connectionId: automationConnectionIdRef.current }
+            : {}),
+          threadId,
+          tabId: state.tabId,
+          visible: state.visible,
+          supportsAutomation: state.supportsAutomation,
+          capabilities: [
+            ...(state.supportsAutomation ? (["automation"] as const) : []),
+            "viewport" as const,
+            "screenshot" as const,
+            ...(state.supportsRecording ? (["recording"] as const) : []),
+          ],
+          focusedAt: new Date().toISOString(),
+        });
+        const previousConnectionId = automationConnectionIdRef.current;
+        automationConnectionIdRef.current = registration.connectionId;
+        if (previousConnectionId && previousConnectionId !== registration.connectionId) {
+          automationResponseCacheRef.current.clear();
+        }
+      });
+    automationOwnerReportTailRef.current = report;
+    return report;
+  }, [api, desktopPreview, threadId]);
 
   useEffect(() => {
     if (!desktopPreview) return;
-    void api.preview.automation
-      .reportOwner({
-        clientId: automationClientIdRef.current,
-        threadId,
-        tabId: activeSession?.tabId ?? null,
-        visible: true,
-        supportsAutomation: Boolean(previewAutomation),
-        focusedAt: new Date().toISOString(),
-      })
-      .catch(() => undefined);
-  }, [activeSession?.tabId, api, desktopPreview, previewAutomation, threadId]);
+    void reportAutomationOwner().catch(() => undefined);
+    const renewInterval = window.setInterval(() => {
+      void reportAutomationOwner().catch(() => undefined);
+    }, 10_000);
+    return () => {
+      window.clearInterval(renewInterval);
+      const clearOwner = automationOwnerReportTailRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const connectionId = automationConnectionIdRef.current;
+          automationConnectionIdRef.current = null;
+          await api.preview.automation.clearOwner({
+            clientId: automationClientIdRef.current,
+            ...(connectionId ? { connectionId } : {}),
+          });
+        });
+      automationOwnerReportTailRef.current = clearOwner;
+      void clearOwner.catch(() => undefined);
+    };
+  }, [api, desktopPreview, reportAutomationOwner]);
+
+  useEffect(() => {
+    if (!desktopPreview) return;
+    void reportAutomationOwner().catch(() => undefined);
+  }, [activeSession?.tabId, desktopPreview, previewAutomation, reportAutomationOwner, visible]);
 
   const refreshLocalServers = useCallback(async () => {
     setLocalServersLoading(true);
@@ -424,91 +753,26 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
     setUrlInput(activeUrl);
   }, [activeUrl]);
 
-  useEffect(() => {
-    if (!desktopPreview || !activeSession) return;
-    void desktopPreview.createTab(activeSession.tabId);
-  }, [activeSession, desktopPreview]);
-
   const reportWebviewStatus = useCallback(
-    (navStatus: PreviewNavStatus) => {
-      if (!activeSession) return;
-      const webview = webviewRef.current;
+    (
+      session: PreviewSessionSnapshot,
+      webview: PreviewWebviewElement,
+      navStatus: PreviewNavStatus,
+    ) => {
       const report = {
         threadId,
-        tabId: activeSession.tabId,
+        tabId: session.tabId,
         navStatus,
-        canGoBack: readReadyWebviewValue(() => webview?.canGoBack?.(), false),
-        canGoForward: readReadyWebviewValue(() => webview?.canGoForward?.(), false),
+        canGoBack: readReadyWebviewValue(() => webview.canGoBack?.(), false),
+        canGoForward: readReadyWebviewValue(() => webview.canGoForward?.(), false),
       };
       const reportKey = JSON.stringify(report);
-      if (lastStatusReportKeyRef.current === reportKey) {
-        return;
-      }
-      lastStatusReportKeyRef.current = reportKey;
+      if (lastStatusReportKeyRef.current.get(session.tabId) === reportKey) return;
+      lastStatusReportKeyRef.current.set(session.tabId, reportKey);
       void api.preview.reportStatus(report);
     },
-    [activeSession, api, threadId],
+    [api, threadId],
   );
-
-  useEffect(() => {
-    const webview = webviewRef.current;
-    if (!desktopPreview || !activeSession || !webview) return;
-
-    const register = () => {
-      const webContentsId = readReadyWebContentsId(webview);
-      if (webContentsId !== null) {
-        void desktopPreview.registerWebview(activeSession.tabId, webContentsId);
-      }
-    };
-    const currentUrl = () =>
-      readReadyWebviewValue(() => webview.getURL?.(), activeUrl || "about:blank");
-    const currentTitle = () => readReadyWebviewValue(() => webview.getTitle?.(), activeTitle);
-    const onStart = () => {
-      const url = currentUrl();
-      if (!url || url === "about:blank") return;
-      reportWebviewStatus({ _tag: "Loading", url, title: currentTitle() });
-    };
-    const onSuccess = () => {
-      register();
-      const url = currentUrl();
-      if (!url || url === "about:blank") return;
-      reportWebviewStatus({ _tag: "Success", url, title: currentTitle() });
-    };
-    const onFail = (event: Event) => {
-      const failure = event as Event & {
-        errorCode?: number;
-        errorDescription?: string;
-        validatedURL?: string;
-      };
-      if (failure.errorCode === -3) return;
-      reportWebviewStatus({
-        _tag: "LoadFailed",
-        url: failure.validatedURL || currentUrl(),
-        title: currentTitle(),
-        code: failure.errorCode ?? 0,
-        description: failure.errorDescription ?? "Navigation failed.",
-      });
-    };
-
-    webview.addEventListener("dom-ready", register);
-    webview.addEventListener("did-start-loading", onStart);
-    webview.addEventListener("did-finish-load", onSuccess);
-    webview.addEventListener("did-navigate", onSuccess);
-    webview.addEventListener("did-navigate-in-page", onSuccess);
-    webview.addEventListener("page-title-updated", onSuccess);
-    webview.addEventListener("did-fail-load", onFail);
-    register();
-
-    return () => {
-      webview.removeEventListener("dom-ready", register);
-      webview.removeEventListener("did-start-loading", onStart);
-      webview.removeEventListener("did-finish-load", onSuccess);
-      webview.removeEventListener("did-navigate", onSuccess);
-      webview.removeEventListener("did-navigate-in-page", onSuccess);
-      webview.removeEventListener("page-title-updated", onSuccess);
-      webview.removeEventListener("did-fail-load", onFail);
-    };
-  }, [activeSession, activeTitle, activeUrl, desktopPreview, reportWebviewStatus]);
 
   const navigateTo = useCallback(
     async (rawUrl: string) => {
@@ -539,6 +803,198 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
     },
     [activeSession, api, desktopPreview, threadId],
   );
+
+  const captureScreenshot = useCallback(
+    async (tabId: string): Promise<PreviewArtifact> => {
+      if (!desktopPreview) throw new Error("Preview screenshots are unavailable.");
+      const artifact = await desktopPreview.captureScreenshot(tabId);
+      toastManager.add({
+        type: "success",
+        title: "Preview screenshot saved",
+        description: `Artifact ${artifact.artifactId}`,
+      });
+      return artifact;
+    },
+    [desktopPreview],
+  );
+
+  const finalizePreviewRecording = useCallback(
+    (recording: ActivePreviewRecording): Promise<PreviewArtifact | null> => {
+      if (recording.phase === "stopping" && recording.stopPromise) {
+        return recording.stopPromise;
+      }
+      recording.phase = "stopping";
+      recording.unsubscribeFrames();
+      window.clearTimeout(recording.limitTimer);
+      const stopPromise = (async () => {
+        const bridge = recording.bridge;
+        try {
+          if (recording.recorder.state !== "inactive") {
+            await new Promise<void>((resolve) => {
+              recording.recorder.addEventListener("stop", () => resolve(), { once: true });
+              recording.recorder.stop();
+            });
+          }
+          await Promise.all(recording.pendingUploads);
+          if (recording.failure) throw recording.failure;
+          if (recording.droppedFrames > 0) {
+            await api.preview
+              .reportRecordingMetrics({ droppedFrames: recording.droppedFrames })
+              .catch(() => undefined);
+          }
+          const artifact = await bridge.stop(recording.recordingId);
+          toastManager.add({
+            type: "success",
+            title: "Preview recording saved",
+            description: `Artifact ${artifact.artifactId}`,
+          });
+          return artifact;
+        } catch (cause) {
+          await bridge.discard(recording.recordingId).catch(() => undefined);
+          throw cause;
+        } finally {
+          if (activeRecordingRef.current === recording) activeRecordingRef.current = null;
+          setRecordingTabId((current) => (current === recording.tabId ? null : current));
+        }
+      })();
+      recording.stopPromise = stopPromise;
+      return stopPromise;
+    },
+    [api, desktopPreview],
+  );
+
+  const startPreviewRecording = useCallback(
+    async (tabId: string) => {
+      const bridge = desktopPreview?.recording;
+      if (!bridge) throw new Error("Preview recording is unavailable.");
+      const current = activeRecordingRef.current;
+      if (current) {
+        if (current.tabId === tabId && current.phase !== "stopping") {
+          return { recordingId: current.recordingId, tabId, startedAt: new Date().toISOString() };
+        }
+        throw new Error(`Preview tab ${current.tabId} is already recording.`);
+      }
+
+      const requested = requestedViewportByTabId[tabId];
+      const dimensions = requested
+        ? clampPreviewViewport({ requested, bounds: viewportBounds })
+        : viewportBounds;
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.floor(dimensions.width));
+      canvas.height = Math.max(1, Math.floor(dimensions.height));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Preview recording canvas is unavailable.");
+      const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+        ? "video/webm;codecs=vp9"
+        : "video/webm";
+      const recorder = new MediaRecorder(canvas.captureStream(12), {
+        mimeType,
+        videoBitsPerSecond: 6_000_000,
+      });
+      let recordingId: string | null = null;
+      let drawingFrame = false;
+      let recording: ActivePreviewRecording | null = null;
+      const unsubscribeFrames = bridge.onFrame((frame) => {
+        if (!recordingId || frame.recordingId !== recordingId || !recording) return;
+        if (drawingFrame || recording.pendingUploads.size >= PREVIEW_RECORDING_MAX_PENDING_CHUNKS) {
+          recording.droppedFrames += 1;
+          return;
+        }
+        drawingFrame = true;
+        const image = new Image();
+        image.addEventListener(
+          "load",
+          () => {
+            context.drawImage(image, 0, 0, canvas.width, canvas.height);
+            drawingFrame = false;
+          },
+          { once: true },
+        );
+        image.addEventListener("error", () => (drawingFrame = false), { once: true });
+        image.src = `data:image/jpeg;base64,${frame.data}`;
+      });
+
+      try {
+        const started = await bridge.start(tabId);
+        recordingId = started.recordingId;
+        recording = {
+          recordingId,
+          tabId,
+          bridge,
+          recorder,
+          unsubscribeFrames,
+          pendingUploads: new Set(),
+          limitTimer: 0,
+          phase: "starting",
+          failure: null,
+          droppedFrames: 0,
+          stopPromise: null,
+        };
+        const active = recording;
+        recorder.addEventListener("dataavailable", (event) => {
+          if (event.data.size === 0) return;
+          if (
+            event.data.size > PREVIEW_RECORDING_MAX_CHUNK_BYTES ||
+            active.pendingUploads.size >= PREVIEW_RECORDING_MAX_PENDING_CHUNKS
+          ) {
+            active.failure = new Error("Preview recording backpressure limit exceeded.");
+            void finalizePreviewRecording(active).catch(() => undefined);
+            return;
+          }
+          const upload = event.data
+            .arrayBuffer()
+            .then((chunk) => bridge.appendChunk(active.recordingId, chunk))
+            .catch((cause) => {
+              active.failure = cause instanceof Error ? cause : new Error(String(cause));
+            })
+            .finally(() => active.pendingUploads.delete(upload));
+          active.pendingUploads.add(upload);
+        });
+        activeRecordingRef.current = active;
+        setRecordingTabId(tabId);
+        recorder.start(1_000);
+        active.phase = "active";
+        active.limitTimer = window.setTimeout(() => {
+          void finalizePreviewRecording(active).catch(() => undefined);
+        }, PREVIEW_RECORDING_MAX_DURATION_MS);
+        return started;
+      } catch (cause) {
+        unsubscribeFrames();
+        if (recordingId) await bridge.discard(recordingId).catch(() => undefined);
+        throw cause;
+      }
+    },
+    [desktopPreview, finalizePreviewRecording, requestedViewportByTabId, viewportBounds],
+  );
+
+  const stopPreviewRecording = useCallback(
+    (tabId?: string) => {
+      const recording = activeRecordingRef.current;
+      if (!recording || (tabId && recording.tabId !== tabId)) return Promise.resolve(null);
+      return finalizePreviewRecording(recording);
+    },
+    [finalizePreviewRecording],
+  );
+
+  useEffect(
+    () => () => {
+      const recording = activeRecordingRef.current;
+      if (!recording) return;
+      recording.unsubscribeFrames();
+      window.clearTimeout(recording.limitTimer);
+      if (recording.recorder.state !== "inactive") recording.recorder.stop();
+      void recording.bridge.discard(recording.recordingId).catch(() => undefined);
+      activeRecordingRef.current = null;
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (desktopPreview?.recording) return;
+    const recording = activeRecordingRef.current;
+    if (!recording) return;
+    void finalizePreviewRecording(recording).catch(() => undefined);
+  }, [desktopPreview?.recording, finalizePreviewRecording]);
 
   const runAutomationRequest = useCallback(
     async (request: PreviewAutomationRequest): Promise<unknown> => {
@@ -717,27 +1173,81 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
             request.input as PreviewAutomationWaitForInput,
           );
           return null;
+        case "viewport": {
+          const tabId = requireTabId();
+          const input = request.input as PreviewAutomationViewportInput;
+          const dimensions = clampPreviewViewport({ requested: input, bounds: viewportBounds });
+          setRequestedViewportByTabId((current) => ({ ...current, [tabId]: dimensions }));
+          setViewportPresetByTabId((current) => ({ ...current, [tabId]: "custom" }));
+          persistViewport(tabId, dimensions, true);
+          return dimensions;
+        }
+        case "screenshot":
+          return captureScreenshot(requireTabId());
+        case "recordingStart":
+          return startPreviewRecording(requireTabId());
+        case "recordingStop":
+          return stopPreviewRecording(request.tabId ?? activeRecordingRef.current?.tabId);
       }
     },
-    [activeSession, api, desktopPreview, previewAutomation, threadId],
+    [
+      activeSession,
+      api,
+      captureScreenshot,
+      desktopPreview,
+      persistViewport,
+      previewAutomation,
+      startPreviewRecording,
+      stopPreviewRecording,
+      threadId,
+      viewportBounds,
+    ],
   );
 
   useEffect(() => {
     if (!desktopPreview) return;
     return api.preview.automation.onRequest((request) => {
       if (request.threadId !== threadId) return;
+      if (
+        request.clientId !== automationClientIdRef.current ||
+        request.connectionId !== automationConnectionIdRef.current
+      ) {
+        return;
+      }
       void (async () => {
+        const cache = automationResponseCacheRef.current;
+        const cached = cache.lookup(request);
+        if (cached.kind !== "miss") {
+          if (cached.kind === "hit") {
+            await api.preview.automation.respond(cached.response);
+          } else {
+            await api.preview.automation.respond(
+              previewAutomationErrorResponse(
+                request,
+                makePreviewAutomationError(
+                  "PreviewAutomationRequestReplayMismatchError",
+                  "A preview request id was replayed with a different payload.",
+                ),
+              ),
+            );
+          }
+          return;
+        }
         try {
           const result = await runAutomationRequest(request);
-          await api.preview.automation.respond({
+          const response: PreviewAutomationResponse = {
             requestId: request.requestId,
+            clientId: request.clientId,
+            connectionId: request.connectionId,
             ok: true,
             ...(result !== undefined ? { result } : {}),
-          });
+          };
+          cache.store(request, response);
+          await api.preview.automation.respond(response);
         } catch (cause) {
-          await api.preview.automation.respond(
-            previewAutomationErrorResponse(request.requestId, cause),
-          );
+          const response = previewAutomationErrorResponse(request, cause);
+          cache.store(request, response);
+          await api.preview.automation.respond(response);
         }
       })();
     });
@@ -745,11 +1255,12 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
 
   const closePreview = useCallback(async () => {
     if (activeSession) {
+      await stopPreviewRecording(activeSession.tabId).catch(() => undefined);
       await api.preview.close({ threadId, tabId: activeSession.tabId }).catch(() => undefined);
       await desktopPreview?.closeTab(activeSession.tabId).catch(() => undefined);
     }
     onClose();
-  }, [activeSession, api, desktopPreview, onClose, threadId]);
+  }, [activeSession, api, desktopPreview, onClose, stopPreviewRecording, threadId]);
 
   const pickElement = useCallback(async () => {
     if (!activeSession || !desktopPreview) return;
@@ -771,7 +1282,12 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
     return <PreviewUnavailable onClose={onClose} />;
   }
 
-  const webviewSrc = activeUrl || "about:blank";
+  const selectedViewportPreset = activeSession
+    ? (viewportPresetByTabId[activeSession.tabId] ??
+      (requestedViewport
+        ? (nearestPreviewViewportPreset(requestedViewport) ?? "custom")
+        : "responsive"))
+    : "responsive";
 
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
@@ -876,36 +1392,181 @@ export default function PreviewPanel({ threadId, onClose }: PreviewPanelProps) {
         </Button>
       </div>
 
+      <div className="flex h-9 shrink-0 items-center gap-1 border-b border-border/80 bg-card/35 px-2">
+        <Select
+          value={selectedViewportPreset}
+          onValueChange={(value) => {
+            if (!activeSession || value === null || value === "custom") return;
+            const preset = PREVIEW_VIEWPORT_PRESETS.find((candidate) => candidate.id === value);
+            if (!preset) return;
+            const dimensions = preset.dimensions;
+            setViewportPresetByTabId((current) => ({
+              ...current,
+              [activeSession.tabId]: preset.id,
+            }));
+            setRequestedViewportByTabId((current) => ({
+              ...current,
+              [activeSession.tabId]: dimensions,
+            }));
+            if (dimensions) {
+              persistViewport(
+                activeSession.tabId,
+                clampPreviewViewport({ requested: dimensions, bounds: viewportBounds }),
+                true,
+              );
+            }
+          }}
+        >
+          <SelectTrigger size="xs" className="w-32">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            {PREVIEW_VIEWPORT_PRESETS.map((preset) => (
+              <SelectItem key={preset.id} value={preset.id}>
+                {preset.label}
+              </SelectItem>
+            ))}
+            {selectedViewportPreset === "custom" ? (
+              <SelectItem value="custom">Custom</SelectItem>
+            ) : null}
+          </SelectPopup>
+        </Select>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          disabled={!activeSession || !requestedViewport}
+          aria-label="Rotate viewport"
+          onClick={() => {
+            if (!activeSession || !requestedViewport) return;
+            const orientation =
+              requestedViewport.width > requestedViewport.height ? "portrait" : "landscape";
+            const next = orientPreviewViewport(requestedViewport, orientation);
+            setRequestedViewportByTabId((current) => ({
+              ...current,
+              [activeSession.tabId]: next,
+            }));
+            persistViewport(
+              activeSession.tabId,
+              clampPreviewViewport({ requested: next, bounds: viewportBounds }),
+              true,
+            );
+          }}
+        >
+          <ScalingIcon />
+        </Button>
+        <span className="min-w-20 text-[11px] tabular-nums text-muted-foreground">
+          {activeViewport ? `${activeViewport.width} × ${activeViewport.height}` : "Fit panel"}
+        </span>
+        <div className="flex-1" />
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          disabled={!activeSession}
+          aria-label="Capture screenshot"
+          onClick={() => {
+            if (!activeSession) return;
+            void captureScreenshot(activeSession.tabId).catch((cause) =>
+              setError(cause instanceof Error ? cause.message : String(cause)),
+            );
+          }}
+        >
+          <CameraIcon />
+        </Button>
+        {desktopPreview.recording ? (
+          <Button
+            size="icon-xs"
+            variant={recordingTabId === activeSession?.tabId ? "destructive" : "ghost"}
+            disabled={!activeSession}
+            aria-label={
+              recordingTabId === activeSession?.tabId ? "Stop recording" : "Record preview"
+            }
+            onClick={() => {
+              if (!activeSession) return;
+              const operation =
+                recordingTabId === activeSession.tabId
+                  ? stopPreviewRecording(activeSession.tabId)
+                  : startPreviewRecording(activeSession.tabId);
+              void operation.catch((cause) =>
+                setError(cause instanceof Error ? cause.message : String(cause)),
+              );
+            }}
+          >
+            {recordingTabId === activeSession?.tabId ? <CircleStopIcon /> : <VideoIcon />}
+          </Button>
+        ) : null}
+      </div>
+
       {error && (
         <div className="border-b border-destructive/20 bg-destructive/8 px-3 py-2 text-sm text-destructive">
           {error}
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1 bg-muted/20">
-        {activeSession && webviewConfig ? (
-          <>
-            <webview
-              key={activeSession.tabId}
-              ref={(node) => {
-                webviewRef.current = node as PreviewWebviewElement | null;
-              }}
-              src={webviewSrc}
-              partition={webviewConfig.partition}
-              webpreferences={webviewConfig.webPreferences}
-              className="h-full w-full bg-background"
-            />
-            {activeSession.navStatus._tag === "LoadFailed" && (
-              <div className="absolute inset-0 flex items-center justify-center bg-background/92 p-6 text-center">
-                <div className="max-w-sm">
-                  <p className="text-sm font-medium text-foreground">Preview failed to load</p>
-                  <p className="mt-2 text-sm text-muted-foreground">
-                    {activeSession.navStatus.description}
-                  </p>
-                </div>
-              </div>
-            )}
-          </>
+      <div ref={viewportContainerRef} className="relative min-h-0 flex-1 overflow-auto bg-muted/20">
+        {sessions.length > 0 && webviewConfig ? (
+          <div className="flex min-h-full min-w-full items-center justify-center">
+            {sessions.map((session) => {
+              const isActive = session.tabId === activeSession?.tabId;
+              const requested = requestedViewportByTabId[session.tabId] ?? null;
+              const dimensions = requested
+                ? clampPreviewViewport({ requested, bounds: viewportBounds })
+                : null;
+              return (
+                <PreviewBrowserWebview
+                  key={session.tabId}
+                  session={session}
+                  visible={isActive}
+                  config={webviewConfig}
+                  desktopPreview={desktopPreview}
+                  dimensions={dimensions}
+                  hiddenDimensions={requested ?? viewportBounds}
+                  onStatus={reportWebviewStatus}
+                />
+              );
+            })}
+            {activeSession && activeViewport ? (
+              <button
+                type="button"
+                aria-label="Resize preview viewport"
+                className="absolute bottom-1 right-1 z-10 size-5 cursor-nwse-resize rounded-sm border border-border bg-background/90"
+                onPointerDown={(event) => {
+                  viewportDragRef.current = {
+                    pointerId: event.pointerId,
+                    tabId: activeSession.tabId,
+                    startX: event.clientX,
+                    startY: event.clientY,
+                    width: activeViewport.width,
+                    height: activeViewport.height,
+                  };
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                }}
+                onPointerMove={(event) => {
+                  const drag = viewportDragRef.current;
+                  if (!drag || drag.pointerId !== event.pointerId) return;
+                  const next = clampPreviewViewport({
+                    requested: {
+                      width: drag.width + event.clientX - drag.startX,
+                      height: drag.height + event.clientY - drag.startY,
+                    },
+                    bounds: viewportBounds,
+                  });
+                  setRequestedViewportByTabId((current) => ({ ...current, [drag.tabId]: next }));
+                  setViewportPresetByTabId((current) => ({ ...current, [drag.tabId]: "custom" }));
+                }}
+                onPointerUp={(event) => {
+                  const drag = viewportDragRef.current;
+                  if (!drag || drag.pointerId !== event.pointerId) return;
+                  viewportDragRef.current = null;
+                  event.currentTarget.releasePointerCapture(event.pointerId);
+                  const finalDimensions = requestedViewportByTabId[drag.tabId];
+                  if (finalDimensions) persistViewport(drag.tabId, finalDimensions, true);
+                }}
+                onPointerCancel={() => {
+                  viewportDragRef.current = null;
+                }}
+              />
+            ) : null}
+          </div>
         ) : (
           <div className="flex h-full items-center justify-center">
             <Spinner className="size-5 text-muted-foreground" />

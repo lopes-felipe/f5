@@ -45,6 +45,7 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly autoBootstrapProjectFromCwd: boolean;
   readonly logWebSocketEvents: boolean;
   readonly observabilityEnabled: boolean;
+  readonly acpHardeningEnabled: boolean;
 }
 
 export const deriveServerPaths = Effect.fn(function* (
@@ -82,7 +83,11 @@ export const deriveServerPaths = Effect.fn(function* (
 export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigShape>()(
   "t3/config/ServerConfig",
 ) {
-  static readonly layerTest = (cwd: string, stateDirOrPrefix: string | { prefix: string }) =>
+  static readonly layerTest = (
+    cwd: string,
+    stateDirOrPrefix: string | { prefix: string },
+    options?: { readonly acpHardeningEnabled?: boolean },
+  ) =>
     Layer.effect(
       ServerConfig,
       Effect.gen(function* () {
@@ -138,6 +143,7 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
           devUrl,
           noBrowser: false,
           observabilityEnabled: false,
+          acpHardeningEnabled: options?.acpHardeningEnabled ?? false,
         };
       }),
     );

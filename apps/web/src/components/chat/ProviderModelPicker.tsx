@@ -106,7 +106,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       >
         <span
           className={cn(
-            "flex min-w-0 w-full items-center gap-2 overflow-hidden",
+            "flex min-w-0 w-full items-center gap-2",
             props.compact ? "max-w-36 sm:pl-1" : undefined,
           )}
         >

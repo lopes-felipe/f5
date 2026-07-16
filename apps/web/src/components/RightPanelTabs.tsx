@@ -266,6 +266,21 @@ export function RightPanelTabs(props: {
     [props],
   );
 
+  const handleTabMouseDown = useCallback((event: ReactMouseEvent) => {
+    if (event.button !== 1) return;
+    event.preventDefault();
+  }, []);
+
+  const handleTabAuxClick = useCallback(
+    (event: ReactMouseEvent, surface: RightPanelSurface) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
+      event.stopPropagation();
+      props.onCloseSurface(surface);
+    },
+    [props],
+  );
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col bg-background">
       <div
@@ -284,6 +299,8 @@ export function RightPanelTabs(props: {
                   <div
                     key={surface.id}
                     data-active-tab={active}
+                    onMouseDown={handleTabMouseDown}
+                    onAuxClick={(event) => handleTabAuxClick(event, surface)}
                     onContextMenu={(event) => void handleTabContextMenu(event, surface)}
                     className={cn(
                       "group flex h-7 min-w-24 max-w-44 shrink-0 items-center gap-1.5 rounded-md px-2 text-sm [-webkit-app-region:no-drag]",

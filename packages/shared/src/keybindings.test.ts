@@ -11,6 +11,14 @@ import {
 } from "./keybindings";
 
 describe("shared keybinding helpers", () => {
+  it("includes the main sidebar toggle default", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+b",
+      command: "sidebar.toggle",
+      when: "!terminalFocus && !dialogFocus",
+    });
+  });
+
   it("matches equivalent shortcut aliases and canonical when expressions", () => {
     expect(
       matchesKeybindingTarget(

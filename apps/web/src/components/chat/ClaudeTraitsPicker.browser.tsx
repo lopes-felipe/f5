@@ -176,7 +176,6 @@ async function mountPicker(props?: {
   });
   const host = document.createElement("div");
   document.body.append(host);
-  const onPromptChange = vi.fn();
   const PickerHarness = () => {
     const draft = useComposerThreadDraft(threadId);
     return (
@@ -185,8 +184,6 @@ async function mountPicker(props?: {
         model={model}
         models={CLAUDE_MODELS}
         modelOptions={providerModelOptionsToSelections("claudeAgent", draft.modelOptions)}
-        prompt={draft.prompt}
-        onPromptChange={onPromptChange}
       />
     );
   };
@@ -194,7 +191,6 @@ async function mountPicker(props?: {
 
   return {
     threadId,
-    onPromptChange,
     cleanup: async () => {
       await screen.unmount();
       host.remove();
@@ -349,7 +345,7 @@ describe("ClaudeTraitsPicker", () => {
     }
   });
 
-  it("shows prompt-controlled Ultrathink state with disabled effort controls", async () => {
+  it("keeps prompt text independent from the selected effort", async () => {
     const mounted = await mountPicker({
       effort: "high",
       model: "claude-opus-4-6",
@@ -359,16 +355,37 @@ describe("ClaudeTraitsPicker", () => {
 
     try {
       await vi.waitFor(() => {
-        expect(document.body.textContent ?? "").toContain("Ultrathink");
-        expect(document.body.textContent ?? "").not.toContain("Ultrathink · Prompt");
+        expect(document.body.textContent ?? "").toContain("High · 200k");
       });
       await page.getByRole("button").click();
+      await page.getByText("Medium").click();
 
       await vi.waitFor(() => {
-        const text = document.body.textContent ?? "";
-        expect(text).toContain("Reasoning");
-        expect(text).toContain("Ultrathink");
-        expect(text).not.toContain("Fallback Effort");
+        const draft = useComposerDraftStore.getState().draftsByThreadId[mounted.threadId];
+        expect(draft?.prompt).toBe("Ultrathink:\nInvestigate this");
+        expect(draft?.modelOptions?.claudeAgent?.effort).toBe("medium");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("stores Ultrathink as an explicit effort without changing the prompt", async () => {
+    const mounted = await mountPicker({
+      effort: "high",
+      model: "claude-opus-4-6",
+      prompt: "Investigate this",
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByText("Ultrathink").click();
+
+      await vi.waitFor(() => {
+        const draft = useComposerDraftStore.getState().draftsByThreadId[mounted.threadId];
+        expect(draft?.prompt).toBe("Investigate this");
+        expect(draft?.modelOptions?.claudeAgent?.effort).toBe("ultrathink");
+        expect(document.body.textContent ?? "").toContain("Ultrathink · 200k");
       });
     } finally {
       await mounted.cleanup();

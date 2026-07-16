@@ -41,6 +41,7 @@ vi.mock("@legendapp/list/react", () => ({
 }));
 
 vi.mock("../../appSettings", () => ({
+  useDiffWordWrap: () => false,
   useAppSettings: () => ({
     settings: {
       expandMcpToolCalls: false,

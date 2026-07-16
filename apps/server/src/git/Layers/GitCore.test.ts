@@ -77,6 +77,55 @@ const argsEqual = (input: ExecuteGitInput, args: ReadonlyArray<string>) =>
   input.args.length === args.length && input.args.every((value, index) => value === args[index]);
 
 describe("GitCore unit", () => {
+  it("preserves the process environment for authenticated remote fetches", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const scripted = makeScriptedGitService((input) =>
+      input.args[0] === "rev-parse" ? { stdout: `${commit}\n` } : {},
+    );
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.fetchRemoteBranchCommit({
+          cwd: process.cwd(),
+          remoteName: "origin",
+          branch: "main",
+        }),
+      ),
+    ).resolves.toMatchObject({ commit, remoteName: "origin", branch: "main" });
+
+    const fetch = scripted.calls.find((call) => call.args[0] === "fetch");
+    expect(fetch?.args).toEqual([
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--",
+      "origin",
+      "+refs/heads/main:refs/remotes/origin/main",
+    ]);
+    expect(fetch?.env).toMatchObject({
+      PATH: process.env.PATH,
+      GIT_TERMINAL_PROMPT: "0",
+      GCM_INTERACTIVE: "never",
+    });
+  });
+
+  it("rejects option-like remote names before invoking git fetch", async () => {
+    const scripted = makeScriptedGitService();
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(
+        core.fetchRemoteBranchCommit({
+          cwd: process.cwd(),
+          remoteName: "--upload-pack=malicious",
+          branch: "main",
+        }),
+      ),
+    ).rejects.toThrow("Invalid remote name");
+    expect(scripted.calls.some((call) => call.args[0] === "fetch")).toBe(false);
+  });
+
   it("records observability metrics for git command execution", async () => {
     const before = await Effect.runPromise(Metric.snapshot);
     const scripted = makeScriptedGitService(() => ({ stdout: "test@example.com\n" }));

@@ -31,6 +31,7 @@ import { useSettings as useUnifiedSettings, useUpdateSettings } from "../../../h
 import { serverConfigQueryOptions, serverQueryKeys } from "../../../lib/serverReactQuery";
 import { ensureNativeApi } from "../../../nativeApi";
 import { Button } from "../../ui/button";
+import { Switch } from "../../ui/switch";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
@@ -362,6 +363,22 @@ export function ProvidersSettings() {
               Add
             </Button>
           </div>
+        </div>
+
+        <div className="flex items-center justify-between gap-4 border-b border-border px-5 py-3">
+          <div>
+            <p className="text-sm font-medium text-foreground">Check for provider updates</p>
+            <p className="text-xs text-muted-foreground">
+              Periodically check installed provider CLIs for newer versions.
+            </p>
+          </div>
+          <Switch
+            checked={unifiedSettings.enableProviderUpdateChecks}
+            onCheckedChange={(checked) =>
+              updateUnifiedSettings({ enableProviderUpdateChecks: Boolean(checked) })
+            }
+            aria-label="Check for provider updates"
+          />
         </div>
 
         <div>

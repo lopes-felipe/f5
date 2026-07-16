@@ -15,6 +15,7 @@ import { useAppSettings } from "../appSettings";
 import ChatView from "../components/ChatView";
 import { DiffSurfaceBoundary } from "../components/DiffSurfaceBoundary";
 import PlanSidebar from "../components/PlanSidebar";
+import { PreviewPanelProjection } from "../components/PreviewBrowserHost";
 import { RightPanelHost } from "../components/RightPanelHost";
 import { RightPanelSheet } from "../components/RightPanelSheet";
 import { StartupThreadRouteSkeleton } from "../components/StartupLoadingState";
@@ -65,7 +66,6 @@ import {
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
 const FileBrowserPanel = lazy(() => import("../components/FileBrowserPanel"));
 const FileViewPanel = lazy(() => import("../components/FileViewPanel"));
-const PreviewPanel = lazy(() => import("../components/PreviewPanel"));
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
 const RIGHT_PANEL_INLINE_DEFAULT_WIDTH = "clamp(28rem,48vw,44rem)";
 const RIGHT_PANEL_INLINE_SIDEBAR_MIN_WIDTH = 26 * 16;
@@ -125,14 +125,6 @@ const LazyFileBrowserPanel = (props: {
   );
 };
 
-const LazyPreviewPanel = (props: { threadId: ThreadId; onClose: () => void }) => {
-  return (
-    <Suspense fallback={<DiffPanelLoadingState label="Loading preview..." />}>
-      <PreviewPanel threadId={props.threadId} onClose={props.onClose} />
-    </Suspense>
-  );
-};
-
 function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
   return [
     threadId,
@@ -141,6 +133,8 @@ function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
     search.diffTurnId ?? "",
     search.diffFileChangeId ?? "",
     search.diffFilePath ?? "",
+    search.diffScope ?? "",
+    search.diffBaseRef ?? "",
     search.fileViewPath ?? "",
     search.fileLine ?? "",
     search.fileEndLine ?? "",
@@ -401,6 +395,8 @@ function ChatThreadRouteView() {
     search.diff,
     search.diffFileChangeId,
     search.diffFilePath,
+    search.diffScope,
+    search.diffBaseRef,
     search.diffTurnId,
     search.fileColumn,
     search.fileEndLine,
@@ -630,8 +626,9 @@ function ChatThreadRouteView() {
             return loadingOnly ? (
               <DiffPanelLoadingState label="Loading preview..." />
             ) : (
-              <LazyPreviewPanel
+              <PreviewPanelProjection
                 threadId={threadId}
+                visible={rightPanelState.isOpen && rightPanelState.activeSurfaceId === surface.id}
                 onClose={() => closeRightPanelSurface(surface)}
               />
             );
@@ -643,6 +640,8 @@ function ChatThreadRouteView() {
       closeRightPanelSurface,
       markdownCwd,
       openWorkspaceFile,
+      rightPanelState.activeSurfaceId,
+      rightPanelState.isOpen,
       settings.timestampFormat,
       threadId,
       workspaceBrowserName,
@@ -791,6 +790,8 @@ export const Route = createFileRoute("/_chat/$threadId")({
         "diffTurnId",
         "diffFileChangeId",
         "diffFilePath",
+        "diffScope",
+        "diffBaseRef",
         "fileViewPath",
         "fileLine",
         "fileEndLine",

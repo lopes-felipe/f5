@@ -684,12 +684,13 @@ describe("getAppModelOptions", () => {
   it("lists Claude Fable 5 and Opus models before Sonnet and Haiku in built-in Claude options", () => {
     const options = getAppModelOptions("claudeAgent", []);
 
-    expect(options.slice(0, 7).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 8).map((option) => option.slug)).toEqual([
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
       "claude-opus-4-6",
       "claude-opus-4-5",
+      "claude-sonnet-5",
       "claude-sonnet-4-6",
       "claude-haiku-4-5",
     ]);

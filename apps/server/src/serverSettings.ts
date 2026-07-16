@@ -148,6 +148,7 @@ export class ServerSettingsService extends ServiceMap.Service<
         const currentSettingsRef = yield* Ref.make<ServerSettings>(
           deepMerge(DEFAULT_SERVER_SETTINGS, overrides),
         );
+        const changes = yield* PubSub.unbounded<ServerSettings>();
 
         return {
           start: Effect.void,
@@ -170,8 +171,9 @@ export class ServerSettingsService extends ServiceMap.Service<
                 ),
               ),
               Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
+              Effect.tap((nextSettings) => PubSub.publish(changes, nextSettings)),
             ),
-          streamChanges: Stream.empty,
+          streamChanges: Stream.fromPubSub(changes),
         } satisfies ServerSettingsShape;
       }),
     );

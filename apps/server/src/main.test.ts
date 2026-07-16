@@ -122,6 +122,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.autoBootstrapProjectFromCwd, false);
       assert.equal(resolvedConfig?.logWebSocketEvents, true);
       assert.equal(resolvedConfig?.observabilityEnabled, false);
+      assert.equal(resolvedConfig?.acpHardeningEnabled, false);
       assert.equal(stop.mock.calls.length, 1);
     }),
   );
@@ -408,6 +409,18 @@ it.layer(testLayer)("server CLI command", (it) => {
 
       assert.equal(start.mock.calls.length, 1);
       assert.equal(resolvedConfig?.observabilityEnabled, true);
+    }),
+  );
+
+  it.effect("reads ACP hardening enablement from the F5 environment flag", () =>
+    Effect.gen(function* () {
+      yield* runCli([], {
+        T3CODE_NO_BROWSER: "true",
+        F5_ACP_HARDENING_ENABLED: "true",
+      });
+
+      assert.equal(start.mock.calls.length, 1);
+      assert.equal(resolvedConfig?.acpHardeningEnabled, true);
     }),
   );
 

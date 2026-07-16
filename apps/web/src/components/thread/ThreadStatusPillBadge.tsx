@@ -24,7 +24,7 @@ export function ThreadStatusPillBadge(props: {
         aria-label={pill.label}
         className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide ${pill.chipClass}`}
       >
-        <Icon className={`size-3 ${pill.pulse ? "animate-pulse" : ""}`} aria-hidden="true" />
+        <Icon className={`size-3 ${pill.pulse ? "animate-status-pulse" : ""}`} aria-hidden="true" />
         <span className={hideLabelBelowMd ? "hidden md:inline" : undefined}>{pill.label}</span>
       </span>
     );
@@ -37,7 +37,7 @@ export function ThreadStatusPillBadge(props: {
       className={`inline-flex items-center gap-1 text-[10px] ${pill.colorClass}`}
     >
       <span
-        className={`h-1.5 w-1.5 rounded-full ${pill.dotClass} ${pill.pulse ? "animate-pulse" : ""}`}
+        className={`h-1.5 w-1.5 rounded-full ${pill.dotClass} ${pill.pulse ? "animate-status-pulse" : ""}`}
         aria-hidden="true"
       />
       <span className={hideLabelBelowMd ? "hidden md:inline" : undefined}>{pill.label}</span>

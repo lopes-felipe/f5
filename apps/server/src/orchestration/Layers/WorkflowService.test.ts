@@ -487,6 +487,7 @@ async function createHarness(initialSnapshot: OrchestrationReadModel) {
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     observabilityEnabled: false,
+    acpHardeningEnabled: false,
   } satisfies ServerConfigShape;
 
   const engine: OrchestrationEngineShape = {

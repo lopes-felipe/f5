@@ -49,7 +49,6 @@ import {
   Path,
   Ref,
   Result,
-  Schedule,
   Schema,
   Scope,
   ServiceMap,
@@ -137,7 +136,11 @@ import {
 import { parseBase64DataUrl } from "./imageMime.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
-import { increment, websocketConnectionsTotal } from "./observability/Metrics.ts";
+import {
+  increment,
+  previewRecordingFramesDroppedTotal,
+  websocketConnectionsTotal,
+} from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
 import { dispatchBootstrapTurnStart } from "./wsServer/bootstrapTurnStart.ts";
 import { makeServerPushBus } from "./wsServer/pushBus.ts";
@@ -147,6 +150,7 @@ import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
 import { withStartupPhaseTiming } from "./startupTiming.ts";
 import { isPrivateHttpPath, makeServerAuth } from "./serverAuth.ts";
 import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
+import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
@@ -784,14 +788,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     return next;
   };
 
-  const clearPreviewAutomationClient = (ws: WebSocket, rendererClientId: string) => {
-    const clientIds = previewAutomationClientIdsByWs.get(ws);
-    const serverClientId = clientIds?.get(rendererClientId);
-    if (!serverClientId) return Effect.void;
-    clientIds?.delete(rendererClientId);
-    return previewAutomationBroker.clearOwner(serverClientId);
-  };
-
   const authorizedPreviewAutomationClientIds = (ws: WebSocket): ReadonlySet<string> =>
     new Set(previewAutomationClientIdsByWs.get(ws)?.values() ?? []);
 
@@ -1332,18 +1328,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Stream.runForEach(prHubAdvisory.streamAdvisories, (snapshot) =>
     pushBus.publishAll(PR_HUB_WS_CHANNELS.advisoriesUpdated, snapshot),
   ).pipe(Effect.forkIn(subscriptionsScope));
-  const providerAdvisoryRefreshSchedule = Schedule.spaced(Duration.hours(6)).pipe(
-    Schedule.modifyDelay((_, delay) =>
-      Effect.sync(() => Duration.millis(Duration.toMillis(delay) * (0.95 + Math.random() * 0.1))),
-    ),
-  );
-  const providerAdvisoryRefreshLoop = Effect.sleep(Duration.seconds(5)).pipe(
-    Effect.andThen(
-      providerUpdateAdvisor
-        .refreshAdvisories()
-        .pipe(Effect.repeat(providerAdvisoryRefreshSchedule)),
-    ),
-  );
   yield* Stream.runForEach(codexMcpEventBus.streamStatusUpdates, (event) =>
     pushBus.publishAll(WS_CHANNELS.mcpStatusUpdated, event),
   ).pipe(Effect.forkIn(subscriptionsScope));
@@ -1622,7 +1606,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
   yield* readiness.markHttpListening;
-  yield* providerAdvisoryRefreshLoop.pipe(Effect.forkIn(subscriptionsScope));
   yield* Effect.sleep(Duration.seconds(5)).pipe(
     Effect.andThen(
       Effect.forever(
@@ -2362,6 +2345,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* git.initRepo(body);
       }
 
+      case WS_METHODS.reviewPreviewDiff: {
+        const body = stripRequestTag(request.body);
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForBootstrap;
+        const readModel = yield* orchestrationEngine.getReadModel();
+        return yield* getReviewPreviewDiff({ request: body, readModel });
+      }
+
       case PR_HUB_WS_METHODS.getSnapshot:
         return yield* prHub.getSnapshot;
 
@@ -2509,6 +2499,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case WS_METHODS.previewReportRecordingMetrics: {
+        const body = stripRequestTag(request.body);
+        yield* increment(previewRecordingFramesDroppedTotal, {}, body.droppedFrames);
+        return undefined;
+      }
+
       case WS_METHODS.previewRefresh: {
         const body = stripRequestTag(request.body);
         return yield* previewManager.refresh(body).pipe(
@@ -2524,6 +2520,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.previewClose: {
         const body = stripRequestTag(request.body);
         return yield* previewManager.close(body).pipe(
+          Effect.tap(() => previewAutomationBroker.clearTargets(body.threadId, body.tabId)),
           Effect.mapError(
             (error) =>
               new RouteRequestError({
@@ -2555,18 +2552,26 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         const clientId = getServerPreviewAutomationClientId(ws, body.clientId);
         if (!body.supportsAutomation) {
-          yield* previewAutomationBroker.clearOwner(clientId);
-          return undefined;
+          yield* previewAutomationBroker.clearOwner(clientId, body.connectionId);
+          return {
+            clientId: body.clientId,
+            connectionId: body.connectionId ?? "preview-disabled",
+            leaseExpiresAt: new Date().toISOString(),
+          };
         }
         if (body.tabId) {
           const previewList = yield* previewManager.list({ threadId: body.threadId });
           const ownsTab = previewList.sessions.some((session) => session.tabId === body.tabId);
           if (!ownsTab) {
-            yield* previewAutomationBroker.clearOwner(clientId);
-            return undefined;
+            yield* previewAutomationBroker.clearOwner(clientId, body.connectionId);
+            return {
+              clientId: body.clientId,
+              connectionId: body.connectionId ?? "preview-invalid-tab",
+              leaseExpiresAt: new Date().toISOString(),
+            };
           }
         }
-        yield* previewAutomationBroker.reportOwner(
+        return yield* previewAutomationBroker.reportOwner(
           {
             ...body,
             clientId,
@@ -2575,16 +2580,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           },
           {
             clientId,
+            rendererClientId: body.clientId,
             send: (automationRequest) =>
               pushBus.publishClient(ws, WS_CHANNELS.previewAutomationRequest, automationRequest),
           },
         );
-        return undefined;
       }
 
       case WS_METHODS.previewAutomationClearOwner: {
         const body = stripRequestTag(request.body);
-        yield* clearPreviewAutomationClient(ws, body.clientId);
+        const clientIds = previewAutomationClientIdsByWs.get(ws);
+        const serverClientId = clientIds?.get(body.clientId);
+        if (serverClientId) {
+          yield* previewAutomationBroker.clearOwner(serverClientId, body.connectionId);
+          clientIds?.delete(body.clientId);
+        }
         return undefined;
       }
 

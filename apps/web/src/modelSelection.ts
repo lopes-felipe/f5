@@ -301,7 +301,6 @@ export function resolveAppModelSelectionState(
       provider,
       model,
       models: entry.models,
-      prompt: "",
       modelOptions: selectedEntry ? selection.options : undefined,
     });
 
@@ -319,7 +318,6 @@ export function resolveAppModelSelectionState(
     provider,
     model,
     models: getProviderModels(providers, provider),
-    prompt: "",
     modelOptions: keptSelectedProvider ? selection.options : undefined,
   });
 

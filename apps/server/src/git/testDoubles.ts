@@ -34,6 +34,8 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "listBranches",
       "pullCurrentBranch",
       "createWorktree",
+      "hasRemote",
+      "fetchRemoteBranchCommit",
       "fetchPullRequestBranch",
       "ensureRemote",
       "fetchRemoteBranch",
@@ -81,6 +83,14 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
           path: input.path ?? "/tmp/f5-test-worktree",
           branch: input.newBranch ?? input.branch,
         },
+      }),
+    hasRemote: () => Effect.succeed(true),
+    fetchRemoteBranchCommit: (input) =>
+      Effect.succeed({
+        remoteName: input.remoteName ?? "origin",
+        branch: input.branch,
+        refName: `${input.remoteName ?? "origin"}/${input.branch}`,
+        commit: "0123456789abcdef0123456789abcdef01234567",
       }),
     fetchPullRequestBranch: () => Effect.void,
     ensureRemote: (input) => Effect.succeed(input.preferredName),
@@ -139,6 +149,14 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     createWorktree: (input) => {
       record("createWorktree", [input]);
       return implementations.createWorktree(input);
+    },
+    hasRemote: (cwd) => {
+      record("hasRemote", [cwd]);
+      return implementations.hasRemote(cwd);
+    },
+    fetchRemoteBranchCommit: (input) => {
+      record("fetchRemoteBranchCommit", [input]);
+      return implementations.fetchRemoteBranchCommit(input);
     },
     fetchPullRequestBranch: (input) => {
       record("fetchPullRequestBranch", [input]);

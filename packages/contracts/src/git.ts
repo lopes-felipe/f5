@@ -96,6 +96,7 @@ export type GitListBranchesInput = typeof GitListBranchesInput.Type;
 export const GitCreateWorktreeInput = Schema.Struct({
   cwd: TrimmedNonEmptyStringSchema,
   branch: TrimmedNonEmptyStringSchema,
+  baseRefName: Schema.optional(TrimmedNonEmptyStringSchema),
   newBranch: Schema.optional(TrimmedNonEmptyStringSchema),
   path: Schema.NullOr(TrimmedNonEmptyStringSchema),
 });

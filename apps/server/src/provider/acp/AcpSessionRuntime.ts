@@ -1,8 +1,10 @@
 import {
   Cause,
+  Clock,
   Deferred,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Queue,
   Ref,
@@ -15,6 +17,13 @@ import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
+
+import {
+  acpEventBarrierTotal,
+  acpResumeTotal,
+  providerMetricAttributes,
+  withMetrics,
+} from "../../observability/Metrics.ts";
 
 import {
   collectSessionConfigOptionValues,
@@ -50,6 +59,14 @@ export interface AcpSessionRuntimeOptions {
     readonly logIncoming?: boolean;
     readonly logOutgoing?: boolean;
     readonly logger?: (event: EffectAcpProtocol.AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  };
+  readonly hardening?: {
+    readonly enabled: boolean;
+    readonly provider: string;
+    readonly resumeLoadDeadlineMs?: number;
+    readonly replayIdleMs?: number;
+    readonly retryDelayMs?: number;
+    readonly eventBarrierTimeoutMs?: number;
   };
 }
 
@@ -89,6 +106,7 @@ export interface AcpSessionRuntimeShape {
   readonly handleExtNotification: EffectAcpClient.AcpClientShape["handleExtNotification"];
   readonly start: () => Effect.Effect<AcpSessionRuntimeStartResult, EffectAcpErrors.AcpError>;
   readonly getEvents: () => Stream.Stream<AcpParsedSessionEvent, never>;
+  readonly awaitEventBarrier: Effect.Effect<void>;
   readonly getModeState: Effect.Effect<AcpSessionModeState | undefined>;
   readonly getConfigOptions: Effect.Effect<ReadonlyArray<EffectAcpSchema.SessionConfigOption>>;
   readonly prompt: (
@@ -136,6 +154,56 @@ interface EnsureActiveAssistantSegmentResult {
   readonly startedEvent?: Extract<AcpParsedSessionEvent, { readonly _tag: "AssistantItemStarted" }>;
 }
 
+interface AcpEventBarrierEntry {
+  readonly _tag: "EventBarrier";
+  readonly acknowledgement: Deferred.Deferred<void>;
+}
+
+type AcpRuntimeQueueEntry = AcpParsedSessionEvent | AcpEventBarrierEntry;
+
+interface AcpResumeReplayState {
+  readonly generation: number;
+  readonly active: boolean;
+  readonly eventCount: number;
+  readonly lastActivityAt: number;
+}
+
+type AcpHardenedLoadDecision =
+  | {
+      readonly _tag: "Loaded";
+      readonly response: EffectAcpSchema.LoadSessionResponse;
+    }
+  | { readonly _tag: "AdoptedAfterReplay" }
+  | { readonly _tag: "NewImmediate" }
+  | { readonly _tag: "NewAfterTimeout" };
+
+const DEFAULT_RESUME_LOAD_DEADLINE_MS = 5_000;
+const DEFAULT_REPLAY_IDLE_MS = 250;
+const DEFAULT_RESUME_RETRY_DELAY_MS = 100;
+const DEFAULT_EVENT_BARRIER_TIMEOUT_MS = 5_000;
+const MAX_TRANSIENT_RESUME_ATTEMPTS = 3;
+
+function isDefiniteResumeLoadFailure(cause: Cause.Cause<EffectAcpErrors.AcpError>): boolean {
+  const error = Cause.squash(cause);
+  if (typeof error !== "object" || error === null) {
+    return false;
+  }
+  const candidate = error as {
+    readonly _tag?: unknown;
+    readonly code?: unknown;
+    message?: unknown;
+  };
+  if (
+    candidate._tag === "AcpRequestError" &&
+    (candidate.code === -32_002 || candidate.code === -32_601)
+  ) {
+    return true;
+  }
+  return typeof candidate.message === "string"
+    ? /(?:session|resource).*(?:not found|does not exist|unknown)/i.test(candidate.message)
+    : false;
+}
+
 export class AcpSessionRuntime extends ServiceMap.Service<
   AcpSessionRuntime,
   AcpSessionRuntimeShape
@@ -161,13 +229,23 @@ const makeAcpSessionRuntime = (
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const runtimeScope = yield* Scope.Scope;
-    const eventQueue = yield* Queue.unbounded<AcpParsedSessionEvent>();
+    const hardeningEnabled = options.hardening?.enabled === true;
+    const hardeningProvider = options.hardening?.provider ?? "unknown";
+    const eventQueue = yield* Queue.unbounded<AcpRuntimeQueueEntry>();
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
-
+    const acceptedSessionIdRef = yield* Ref.make<string | null>(
+      hardeningEnabled ? (options.resumeSessionId ?? null) : null,
+    );
+    const resumeReplayRef = yield* Ref.make<AcpResumeReplayState>({
+      generation: 0,
+      active: false,
+      eventCount: 0,
+      lastActivityAt: 0,
+    });
     const logRequest = (event: AcpSessionRequestLogEvent) =>
       options.requestLogger ? options.requestLogger(event) : Effect.void;
 
@@ -233,12 +311,37 @@ const makeAcpSessionRuntime = (
     const acp = yield* Effect.service(EffectAcpClient.AcpClient).pipe(Effect.provide(acpContext));
 
     yield* acp.handleSessionUpdate((notification) =>
-      handleSessionUpdate({
-        queue: eventQueue,
-        modeStateRef,
-        toolCallsRef,
-        assistantSegmentRef,
-        params: notification,
+      Effect.gen(function* () {
+        if (hardeningEnabled) {
+          const acceptedSessionId = yield* Ref.get(acceptedSessionIdRef);
+          if (acceptedSessionId === null || String(notification.sessionId) !== acceptedSessionId) {
+            return;
+          }
+        }
+        yield* handleSessionUpdate({
+          queue: eventQueue,
+          modeStateRef,
+          toolCallsRef,
+          assistantSegmentRef,
+          params: notification,
+          ...(hardeningEnabled
+            ? {
+                onActivity: Clock.currentTimeMillis.pipe(
+                  Effect.flatMap((now) =>
+                    Ref.update(resumeReplayRef, (current) =>
+                      current.active
+                        ? {
+                            ...current,
+                            eventCount: current.eventCount + 1,
+                            lastActivityAt: now,
+                          }
+                        : current,
+                    ),
+                  ),
+                ),
+              }
+            : {}),
+        });
       }),
     );
 
@@ -367,6 +470,148 @@ const makeAcpSessionRuntime = (
         ),
       );
 
+    const recordResumeOutcome = (reason: "loaded" | "new-immediate" | "new-after-timeout") =>
+      Effect.void.pipe(
+        withMetrics({
+          counter: acpResumeTotal,
+          attributes: providerMetricAttributes(hardeningProvider, { reason }),
+        }),
+      );
+
+    const runHardenedSessionLoad = (
+      loadPayload: EffectAcpSchema.LoadSessionRequest,
+    ): Effect.Effect<AcpHardenedLoadDecision> =>
+      Effect.gen(function* () {
+        const deadlineMs = Math.max(
+          1,
+          options.hardening?.resumeLoadDeadlineMs ?? DEFAULT_RESUME_LOAD_DEADLINE_MS,
+        );
+        const replayIdleMs = Math.max(0, options.hardening?.replayIdleMs ?? DEFAULT_REPLAY_IDLE_MS);
+        const retryDelayMs = Math.max(
+          1,
+          options.hardening?.retryDelayMs ?? DEFAULT_RESUME_RETRY_DELAY_MS,
+        );
+        const startedAt = yield* Clock.currentTimeMillis;
+        const generation = yield* Ref.modify(resumeReplayRef, (current) => {
+          const nextGeneration = current.generation + 1;
+          return [
+            nextGeneration,
+            {
+              generation: nextGeneration,
+              active: true,
+              eventCount: 0,
+              lastActivityAt: startedAt,
+            } satisfies AcpResumeReplayState,
+          ] as const;
+        });
+
+        const waitForReplayIdleOrDeadline = (): Effect.Effect<"ReplayIdle" | "Deadline"> =>
+          Effect.gen(function* () {
+            const now = yield* Clock.currentTimeMillis;
+            const replay = yield* Ref.get(resumeReplayRef);
+            if (
+              replay.generation === generation &&
+              replay.eventCount > 0 &&
+              now - replay.lastActivityAt >= replayIdleMs
+            ) {
+              return "ReplayIdle" as const;
+            }
+            if (now - startedAt >= deadlineMs) {
+              return "Deadline" as const;
+            }
+            const untilReplayIdle =
+              replay.generation === generation && replay.eventCount > 0
+                ? replayIdleMs - (now - replay.lastActivityAt)
+                : Number.POSITIVE_INFINITY;
+            const untilDeadline = deadlineMs - (now - startedAt);
+            yield* Effect.sleep(
+              `${Math.max(1, Math.min(25, untilReplayIdle, untilDeadline))} millis`,
+            );
+            return yield* waitForReplayIdleOrDeadline();
+          });
+
+        const runAttempt = (attempt: number): Effect.Effect<AcpHardenedLoadDecision> =>
+          Effect.gen(function* () {
+            const loadFiber = yield* runLoggedRequest(
+              "session/load",
+              loadPayload,
+              acp.agent.loadSession(loadPayload),
+            ).pipe(Effect.forkChild);
+            let outcome = yield* Effect.raceFirst(
+              Fiber.await(loadFiber).pipe(
+                Effect.map((exit) => ({ _tag: "LoadExit" as const, exit })),
+              ),
+              waitForReplayIdleOrDeadline().pipe(
+                Effect.map((reason) => ({ _tag: "Watchdog" as const, reason })),
+              ),
+            );
+
+            if (outcome._tag === "Watchdog" && outcome.reason === "ReplayIdle") {
+              // Replay proves the agent adopted the session, but a successful load response
+              // still carries modes and model configuration. Give it the rest of the bounded
+              // deadline instead of replacing that response with an empty object.
+              const now = yield* Clock.currentTimeMillis;
+              const remainingMs = Math.max(1, deadlineMs - (now - startedAt));
+              outcome = yield* Effect.raceFirst(
+                Fiber.await(loadFiber).pipe(
+                  Effect.map((exit) => ({ _tag: "LoadExit" as const, exit })),
+                ),
+                Effect.sleep(`${remainingMs} millis`).pipe(
+                  Effect.as({ _tag: "Watchdog" as const, reason: "Deadline" as const }),
+                ),
+              );
+            }
+
+            if (outcome._tag === "Watchdog") {
+              // Await interruption before creating a replacement, so the abandoned request
+              // cannot keep enqueueing replay events into the new session's runtime.
+              yield* Fiber.interrupt(loadFiber);
+              const replay = yield* Ref.get(resumeReplayRef);
+              if (replay.generation === generation && replay.eventCount > 0) {
+                return { _tag: "AdoptedAfterReplay" };
+              }
+              return { _tag: "NewAfterTimeout" };
+            }
+
+            if (Exit.isSuccess(outcome.exit)) {
+              return { _tag: "Loaded", response: outcome.exit.value };
+            }
+
+            const replay = yield* Ref.get(resumeReplayRef);
+            if (replay.generation === generation && replay.eventCount > 0) {
+              // Replay proves that the requested session was adopted. Never create a second
+              // session merely because the load RPC reported a late failure.
+              return { _tag: "AdoptedAfterReplay" };
+            }
+            if (isDefiniteResumeLoadFailure(outcome.exit.cause)) {
+              return { _tag: "NewImmediate" };
+            }
+
+            const now = yield* Clock.currentTimeMillis;
+            if (now - startedAt >= deadlineMs) {
+              return { _tag: "NewAfterTimeout" };
+            }
+            if (attempt + 1 >= MAX_TRANSIENT_RESUME_ATTEMPTS) {
+              const remainingMs = Math.max(1, deadlineMs - (now - startedAt));
+              yield* Effect.sleep(`${remainingMs} millis`);
+              return { _tag: "NewAfterTimeout" };
+            }
+
+            yield* Effect.sleep(
+              `${Math.max(1, Math.min(retryDelayMs, deadlineMs - (now - startedAt)))} millis`,
+            );
+            return yield* runAttempt(attempt + 1);
+          });
+
+        return yield* runAttempt(0).pipe(
+          Effect.ensuring(
+            Ref.update(resumeReplayRef, (current) =>
+              current.generation === generation ? { ...current, active: false } : current,
+            ),
+          ),
+        );
+      });
+
     const startOnce = Effect.gen(function* () {
       const initializePayload = {
         protocolVersion: 1,
@@ -401,26 +646,63 @@ const makeAcpSessionRuntime = (
           cwd: options.cwd,
           mcpServers: [],
         } satisfies EffectAcpSchema.LoadSessionRequest;
-        const resumed = yield* runLoggedRequest(
-          "session/load",
-          loadPayload,
-          acp.agent.loadSession(loadPayload),
-        ).pipe(Effect.exit);
-        if (Exit.isSuccess(resumed)) {
-          sessionId = options.resumeSessionId;
-          sessionSetupResult = resumed.value;
+        if (hardeningEnabled) {
+          const decision = yield* runHardenedSessionLoad(loadPayload);
+          if (decision._tag === "Loaded" || decision._tag === "AdoptedAfterReplay") {
+            sessionId = options.resumeSessionId;
+            if (decision._tag === "Loaded") {
+              sessionSetupResult = decision.response;
+            } else {
+              const [modes, configOptions] = yield* Effect.all([
+                Ref.get(modeStateRef),
+                Ref.get(configOptionsRef),
+              ]);
+              sessionSetupResult = {
+                ...(modes ? { modes } : {}),
+                ...(configOptions.length > 0 ? { configOptions } : {}),
+              };
+            }
+            yield* recordResumeOutcome("loaded");
+          } else {
+            yield* Ref.set(acceptedSessionIdRef, null);
+            const createPayload = {
+              cwd: options.cwd,
+              mcpServers: [],
+            } satisfies EffectAcpSchema.NewSessionRequest;
+            const created = yield* runLoggedRequest(
+              "session/new",
+              createPayload,
+              acp.agent.createSession(createPayload),
+            );
+            sessionId = created.sessionId;
+            yield* Ref.set(acceptedSessionIdRef, created.sessionId);
+            sessionSetupResult = created;
+            yield* recordResumeOutcome(
+              decision._tag === "NewImmediate" ? "new-immediate" : "new-after-timeout",
+            );
+          }
         } else {
-          const createPayload = {
-            cwd: options.cwd,
-            mcpServers: [],
-          } satisfies EffectAcpSchema.NewSessionRequest;
-          const created = yield* runLoggedRequest(
-            "session/new",
-            createPayload,
-            acp.agent.createSession(createPayload),
-          );
-          sessionId = created.sessionId;
-          sessionSetupResult = created;
+          const resumed = yield* runLoggedRequest(
+            "session/load",
+            loadPayload,
+            acp.agent.loadSession(loadPayload),
+          ).pipe(Effect.exit);
+          if (Exit.isSuccess(resumed)) {
+            sessionId = options.resumeSessionId;
+            sessionSetupResult = resumed.value;
+          } else {
+            const createPayload = {
+              cwd: options.cwd,
+              mcpServers: [],
+            } satisfies EffectAcpSchema.NewSessionRequest;
+            const created = yield* runLoggedRequest(
+              "session/new",
+              createPayload,
+              acp.agent.createSession(createPayload),
+            );
+            sessionId = created.sessionId;
+            sessionSetupResult = created;
+          }
         }
       } else {
         const createPayload = {
@@ -433,6 +715,7 @@ const makeAcpSessionRuntime = (
           acp.agent.createSession(createPayload),
         );
         sessionId = created.sessionId;
+        if (hardeningEnabled) yield* Ref.set(acceptedSessionIdRef, created.sessionId);
         sessionSetupResult = created;
       }
 
@@ -480,6 +763,50 @@ const makeAcpSessionRuntime = (
       return yield* effect;
     });
 
+    const getEvents = hardeningEnabled
+      ? () =>
+          Stream.fromQueue(eventQueue).pipe(
+            Stream.mapEffect((entry) => {
+              if (entry._tag !== "EventBarrier") {
+                return Effect.succeed<AcpParsedSessionEvent | undefined>(entry);
+              }
+              return Deferred.succeed(entry.acknowledgement, undefined).pipe(
+                Effect.as<AcpParsedSessionEvent | undefined>(undefined),
+              );
+            }),
+            Stream.filter((entry): entry is AcpParsedSessionEvent => entry !== undefined),
+          )
+      : () => Stream.fromQueue(eventQueue as unknown as Queue.Queue<AcpParsedSessionEvent>);
+
+    const awaitEventBarrier = hardeningEnabled
+      ? Effect.gen(function* () {
+          const acknowledgement = yield* Deferred.make<void>();
+          yield* Queue.offer(eventQueue, {
+            _tag: "EventBarrier",
+            acknowledgement,
+          });
+          const timeoutMs = Math.max(
+            1,
+            options.hardening?.eventBarrierTimeoutMs ?? DEFAULT_EVENT_BARRIER_TIMEOUT_MS,
+          );
+          const acknowledged = yield* Effect.raceFirst(
+            Deferred.await(acknowledgement).pipe(Effect.as(true)),
+            Effect.sleep(`${timeoutMs} millis`).pipe(Effect.as(false)),
+          );
+          if (!acknowledged) {
+            yield* Effect.logWarning("ACP event barrier timed out; notification drain is stalled", {
+              provider: hardeningProvider,
+              timeoutMs,
+            });
+          }
+        }).pipe(
+          withMetrics({
+            counter: acpEventBarrierTotal,
+            attributes: providerMetricAttributes(hardeningProvider),
+          }),
+        )
+      : Effect.void;
+
     return {
       handleRequestPermission: acp.handleRequestPermission,
       handleElicitation: acp.handleElicitation,
@@ -497,7 +824,8 @@ const makeAcpSessionRuntime = (
       handleExtRequest: acp.handleExtRequest,
       handleExtNotification: acp.handleExtNotification,
       start: () => start,
-      getEvents: () => Stream.fromQueue(eventQueue),
+      getEvents,
+      awaitEventBarrier,
       getModeState: Ref.get(modeStateRef),
       getConfigOptions: Ref.get(configOptionsRef),
       prompt: (payload) =>
@@ -598,14 +926,17 @@ const handleSessionUpdate = ({
   toolCallsRef,
   assistantSegmentRef,
   params,
+  onActivity,
 }: {
-  readonly queue: Queue.Queue<AcpParsedSessionEvent>;
+  readonly queue: Queue.Queue<AcpRuntimeQueueEntry>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly params: EffectAcpSchema.SessionNotification;
+  readonly onActivity?: Effect.Effect<void>;
 }): Effect.Effect<void> =>
   Effect.gen(function* () {
+    if (onActivity) yield* onActivity;
     const parsed = parseSessionUpdateEvent(params);
     if (parsed.modeId) {
       yield* Ref.update(modeStateRef, (current) =>
@@ -695,7 +1026,7 @@ const ensureActiveAssistantSegment = ({
   assistantSegmentRef,
   sessionId,
 }: {
-  readonly queue: Queue.Queue<AcpParsedSessionEvent>;
+  readonly queue: Queue.Queue<AcpRuntimeQueueEntry>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly sessionId: string;
 }) =>
@@ -732,7 +1063,7 @@ const closeActiveAssistantSegment = ({
   queue,
   assistantSegmentRef,
 }: {
-  readonly queue: Queue.Queue<AcpParsedSessionEvent>;
+  readonly queue: Queue.Queue<AcpRuntimeQueueEntry>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
 }) =>
   Ref.modify(assistantSegmentRef, (current) => {

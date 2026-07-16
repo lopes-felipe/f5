@@ -137,6 +137,7 @@ const CliEnvConfig = Config.all({
     Config.option,
     Config.map(Option.getOrUndefined),
   ),
+  acpHardeningEnabled: Config.boolean("F5_ACP_HARDENING_ENABLED").pipe(Config.withDefault(false)),
 });
 
 const resolveBooleanFlag = (flag: Option.Option<boolean>, envValue: boolean) =>
@@ -260,6 +261,7 @@ const ServerConfigLive = (input: CliInput) =>
         autoBootstrapProjectFromCwd,
         logWebSocketEvents,
         observabilityEnabled: env.observabilityEnabled ?? false,
+        acpHardeningEnabled: env.acpHardeningEnabled,
       } satisfies ServerConfigShape;
 
       const legacyT3StateDir = legacyT3UserdataStateDir();

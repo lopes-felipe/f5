@@ -38,11 +38,9 @@ import {
   createModelSelection,
   getDefaultModel,
   inferProviderForModel,
-  isClaudeUltrathinkPrompt,
   normalizeCodexModelOptions,
   normalizeModelSlug,
   resolveSelectableModel,
-  supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import {
   readMcpStatusActivityPayload,
@@ -782,6 +780,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     LastInvokedScriptByProjectSchema,
   );
   const legendListRef = useRef<LegendListRef | null>(null);
+  const timelineEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
   const isAtEndRef = useRef(true);
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
@@ -858,13 +857,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
   const setPrompt = useCallback(
     (nextPrompt: string) => {
-      setComposerDraftPrompt(threadId, nextPrompt);
-    },
-    [setComposerDraftPrompt, threadId],
-  );
-  const setPromptFromTraits = useCallback(
-    (nextPrompt: string) => {
-      promptRef.current = nextPrompt;
       setComposerDraftPrompt(threadId, nextPrompt);
     },
     [setComposerDraftPrompt, threadId],
@@ -1274,16 +1266,9 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         provider: selectedProviderDriver,
         model: selectedModel,
         models: selectedProviderModels,
-        prompt,
         modelOptions: selectedProviderModelOptions,
       }),
-    [
-      prompt,
-      selectedModel,
-      selectedProviderDriver,
-      selectedProviderModelOptions,
-      selectedProviderModels,
-    ],
+    [selectedModel, selectedProviderDriver, selectedProviderModelOptions, selectedProviderModels],
   );
   const selectedProviderModelOptionsForDispatch =
     genericComposerProviderState.modelOptionsForDispatch ?? selectedProviderModelOptions;
@@ -1303,17 +1288,13 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       model: selectedModel,
       models: selectedProviderModels,
       modelOptions: selectedProviderModelOptions,
-      prompt,
-      onPromptChange: setPromptFromTraits,
     });
   }, [
-    prompt,
     selectedModel,
     selectedProvider,
     selectedProviderDriver,
     selectedProviderModelOptions,
     selectedProviderModels,
-    setPromptFromTraits,
     threadId,
   ]);
   const genericProviderTraitsPicker = useMemo(() => {
@@ -1326,23 +1307,18 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       model: selectedModel,
       models: selectedProviderModels,
       modelOptions: selectedProviderModelOptions,
-      prompt,
-      onPromptChange: setPromptFromTraits,
     });
   }, [
-    prompt,
     selectedModel,
     selectedProvider,
     selectedProviderDriver,
     selectedProviderModelOptions,
     selectedProviderModels,
-    setPromptFromTraits,
     threadId,
   ]);
   const isClaudeUltrathink =
     selectedProvider === "claudeAgent" &&
-    supportsClaudeUltrathinkKeyword(selectedModel) &&
-    isClaudeUltrathinkPrompt(prompt);
+    genericComposerProviderState.promptEffort === "ultrathink";
   const showClaudeTraitsControls = useMemo(
     () =>
       selectedProvider === "claudeAgent" &&
@@ -1350,9 +1326,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         model: selectedModel,
         models: selectedProviderModels,
         modelOptions: selectedProviderModelOptions,
-        prompt,
       }),
-    [prompt, selectedModel, selectedProvider, selectedProviderModelOptions, selectedProviderModels],
+    [selectedModel, selectedProvider, selectedProviderModelOptions, selectedProviderModels],
   );
   const selectedModelOptionsForDispatch = useMemo(() => {
     if (selectedProvider === "codex") {
@@ -2038,9 +2013,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     if (!focusTimelineEntryId || lastFocusedTimelineEntryIdRef.current === focusTimelineEntryId) {
       return;
     }
-    const index = timelineEntries.findIndex((entry) => entry.id === focusTimelineEntryId);
-    if (index < 0) return;
     const frame = window.requestAnimationFrame(() => {
+      const index = timelineEntryRowIndexMapRef.current?.get(focusTimelineEntryId);
+      if (index === undefined) return;
+      onIsAtEndChange(false);
       void legendListRef.current?.scrollToIndex({
         index,
         animated: true,
@@ -2049,7 +2025,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       lastFocusedTimelineEntryIdRef.current = focusTimelineEntryId;
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [focusTimelineEntryId, timelineEntries]);
+  }, [focusTimelineEntryId, onIsAtEndChange, timelineEntries]);
   const shouldRenderTimeline = shouldRenderTimelineContent({
     detailsLoaded: activeThread?.detailsLoaded ?? false,
     hasRenderableMessage: timelineMessages.length > 0,
@@ -5398,6 +5374,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                   isWorking={isWorking}
                   activeTurnStartedAt={activeWorkStartedAt}
                   listRef={legendListRef}
+                  entryRowIndexMapRef={timelineEntryRowIndexMapRef}
                   onIsAtEndChange={onIsAtEndChange}
                   timelineEntries={timelineEntries}
                   completionDividerBeforeEntryId={completionDividerBeforeEntryId}
@@ -5769,8 +5746,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                     model={selectedModel}
                                     models={selectedProviderModels}
                                     modelOptions={selectedProviderModelOptions}
-                                    prompt={prompt}
-                                    onPromptChange={setPromptFromTraits}
                                   />
                                 ) : (
                                   genericProviderTraitsMenuContent
@@ -5802,8 +5777,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                     model={selectedModel}
                                     models={selectedProviderModels}
                                     modelOptions={selectedProviderModelOptions}
-                                    prompt={prompt}
-                                    onPromptChange={setPromptFromTraits}
                                   />
                                 </>
                               ) : genericProviderTraitsPicker ? (

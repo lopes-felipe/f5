@@ -1,7 +1,6 @@
 import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
 
-import { defaultF5BaseDir } from "@t3tools/shared/appStatePaths";
-import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Path, Ref } from "effect";
+import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref } from "effect";
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
 import { GitCommandError } from "../Errors.ts";
@@ -12,7 +11,7 @@ import {
   parseRemoteNamesInGitOrder,
   parseRemoteRefWithRemoteNames,
 } from "../remoteRefs.ts";
-import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
+import { resolveDefaultWorktreePath, resolveDefaultWorktreesDir } from "../worktreePaths.ts";
 
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
@@ -210,7 +209,6 @@ function missingCwdErrorDetail(cwd: string): string {
 const makeGitCore = Effect.gen(function* () {
   const git = yield* GitService;
   const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
 
   // Fail-fast guard: if the working directory no longer exists on disk, short-circuit
   // with a clear error instead of paying a child-process spawn + ENOENT per call.
@@ -525,6 +523,9 @@ const makeGitCore = Effect.gen(function* () {
       Effect.map((stdout) => parseRemoteNamesInGitOrder(stdout)),
     );
 
+  const hasRemote: GitCoreShape["hasRemote"] = (cwd) =>
+    listRemoteNames(cwd).pipe(Effect.map((remotes) => remotes.length > 0));
+
   const resolveGitCommonDir = (cwd: string): Effect.Effect<string, GitCommandError> =>
     runGitStdout("GitCore.resolveGitCommonDir", cwd, ["rev-parse", "--git-common-dir"]).pipe(
       Effect.map((stdout) => {
@@ -681,6 +682,9 @@ const makeGitCore = Effect.gen(function* () {
       const result = yield* executeGit(
         "GitCore.computeAheadCountAgainstBase",
         cwd,
+        // Ahead count intentionally uses two-dot semantics: count commits reachable from HEAD
+        // that are not reachable from the base. Three-dot would include commits unique to both
+        // sides and would no longer mean "ahead".
         ["rev-list", "--count", `${baseBranch}..HEAD`],
         { allowNonZeroExit: true },
       );
@@ -1049,16 +1053,30 @@ const makeGitCore = Effect.gen(function* () {
 
   const readRangeContext: GitCoreShape["readRangeContext"] = (cwd, baseBranch) =>
     Effect.gen(function* () {
-      const range = `${baseBranch}..HEAD`;
+      const primaryRemoteName = yield* resolvePrimaryRemoteName(cwd).pipe(
+        Effect.catch(() => Effect.succeed(null)),
+      );
+      const remoteRangeBase =
+        primaryRemoteName &&
+        !baseBranch.startsWith(`${primaryRemoteName}/`) &&
+        (yield* remoteBranchExists(cwd, primaryRemoteName, baseBranch).pipe(
+          Effect.catch(() => Effect.succeed(false)),
+        ))
+          ? `${primaryRemoteName}/${baseBranch}`
+          : baseBranch;
+      const commitRange = `${remoteRangeBase}..HEAD`;
+      // PR content is the change introduced since the merge base. A two-dot tree diff also
+      // includes changes made only on a base branch that moved after the feature branched.
+      const diffRange = `${remoteRangeBase}...HEAD`;
       const [commitSummary, diffSummary, diffPatch] = yield* Effect.all(
         [
-          runGitStdout("GitCore.readRangeContext.log", cwd, ["log", "--oneline", range]),
-          runGitStdout("GitCore.readRangeContext.diffStat", cwd, ["diff", "--stat", range]),
+          runGitStdout("GitCore.readRangeContext.log", cwd, ["log", "--oneline", commitRange]),
+          runGitStdout("GitCore.readRangeContext.diffStat", cwd, ["diff", "--stat", diffRange]),
           runGitStdout("GitCore.readRangeContext.diffPatch", cwd, [
             "diff",
             "--patch",
             "--minimal",
-            range,
+            diffRange,
           ]),
         ],
         { concurrency: "unbounded" },
@@ -1270,17 +1288,34 @@ const makeGitCore = Effect.gen(function* () {
     Effect.gen(function* () {
       const targetBranch = input.newBranch ?? input.branch;
       const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? "/tmp";
-      const defaultBaseDir = defaultF5BaseDir(homeDir);
       const worktreePath =
         input.path ??
         resolveDefaultWorktreePath({
-          worktreesDir: path.join(defaultBaseDir, "worktrees"),
+          worktreesDir: resolveDefaultWorktreesDir(homeDir),
           cwd: input.cwd,
           branch: targetBranch,
         });
+      const baseRefName = input.baseRefName ?? input.branch;
+      yield* runGitStdout(
+        "GitCore.createWorktree.verifyBaseRef",
+        input.cwd,
+        ["rev-parse", "--verify", "--end-of-options", `${baseRefName}^{commit}`],
+        true,
+      ).pipe(
+        Effect.filterOrFail(
+          (stdout) => /^[0-9a-f]{40,64}$/iu.test(stdout.trim()),
+          () =>
+            createGitCommandError(
+              "GitCore.createWorktree.verifyBaseRef",
+              input.cwd,
+              ["rev-parse", "--verify", "--end-of-options", `${baseRefName}^{commit}`],
+              `Cannot resolve worktree base ref '${baseRefName}'.`,
+            ),
+        ),
+      );
       const args = input.newBranch
-        ? ["worktree", "add", "-b", input.newBranch, worktreePath, input.branch]
-        : ["worktree", "add", worktreePath, input.branch];
+        ? ["worktree", "add", "-b", input.newBranch, worktreePath, baseRefName]
+        : ["worktree", "add", worktreePath, baseRefName];
 
       yield* executeGit("GitCore.createWorktree", input.cwd, args, {
         fallbackErrorMessage: "git worktree add failed",
@@ -1291,6 +1326,65 @@ const makeGitCore = Effect.gen(function* () {
           path: worktreePath,
           branch: targetBranch,
         },
+      };
+    });
+
+  const fetchRemoteBranchCommit: GitCoreShape["fetchRemoteBranchCommit"] = (input) =>
+    Effect.gen(function* () {
+      const remoteName = input.remoteName?.trim() || (yield* resolvePrimaryRemoteName(input.cwd));
+      if (remoteName.startsWith("-") || remoteName.includes("\0")) {
+        return yield* createGitCommandError(
+          "GitCore.fetchRemoteBranchCommit.validateRemote",
+          input.cwd,
+          ["fetch", remoteName],
+          `Invalid remote name '${remoteName}'.`,
+        );
+      }
+      const branch = input.branch.startsWith(`${remoteName}/`)
+        ? input.branch.slice(remoteName.length + 1)
+        : input.branch;
+      yield* executeGit(
+        "GitCore.fetchRemoteBranchCommit.validateBranch",
+        input.cwd,
+        ["check-ref-format", `refs/heads/${branch}`],
+        { fallbackErrorMessage: `Invalid remote branch '${input.branch}'` },
+      );
+
+      const fullRefName = `refs/remotes/${remoteName}/${branch}`;
+      yield* executeGit(
+        "GitCore.fetchRemoteBranchCommit.fetch",
+        input.cwd,
+        ["fetch", "--quiet", "--no-tags", "--", remoteName, `+refs/heads/${branch}:${fullRefName}`],
+        {
+          timeoutMs: 30_000,
+          env: {
+            ...process.env,
+            ...BACKGROUND_GIT_FETCH_ENV,
+          },
+          fallbackErrorMessage: `Failed to fetch ${remoteName}/${branch}`,
+        },
+      );
+
+      const commit = yield* runGitStdout("GitCore.fetchRemoteBranchCommit.resolve", input.cwd, [
+        "rev-parse",
+        "--verify",
+        "--end-of-options",
+        `${fullRefName}^{commit}`,
+      ]).pipe(Effect.map((stdout) => stdout.trim()));
+      if (!/^[0-9a-f]{40,64}$/iu.test(commit)) {
+        return yield* createGitCommandError(
+          "GitCore.fetchRemoteBranchCommit.resolve",
+          input.cwd,
+          ["rev-parse", "--verify", "--end-of-options", `${fullRefName}^{commit}`],
+          `Fetched remote branch '${remoteName}/${branch}' did not resolve to a commit.`,
+        );
+      }
+
+      return {
+        remoteName,
+        branch,
+        refName: `${remoteName}/${branch}`,
+        commit,
       };
     });
 
@@ -1501,6 +1595,8 @@ const makeGitCore = Effect.gen(function* () {
     readConfigValue,
     listBranches,
     createWorktree,
+    hasRemote,
+    fetchRemoteBranchCommit,
     fetchPullRequestBranch,
     ensureRemote,
     fetchRemoteBranch,

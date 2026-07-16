@@ -103,6 +103,7 @@ function modelSlugs(snapshot: Awaited<ReturnType<typeof runStatusForVersion>>) {
 
 function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
   expect(slugs).toContain("claude-fable-5");
+  expect(slugs).toContain("claude-sonnet-5");
   expect(slugs).toContain("claude-opus-4-8");
   expect(slugs).toContain("claude-opus-4-7");
 }
@@ -168,7 +169,11 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.170");
 
     expect(snapshot.message).toBeUndefined();
-    expect(modelSlugs(snapshot).slice(0, 2)).toEqual(["claude-fable-5", "claude-opus-4-8"]);
+    expect(modelSlugs(snapshot).slice(0, 3)).toEqual([
+      "claude-fable-5",
+      "claude-sonnet-5",
+      "claude-opus-4-8",
+    ]);
   });
 
   it("keeps gated models visible in disabled provider snapshots when the version is unknown", async () => {
@@ -226,6 +231,19 @@ describe("makePendingClaudeProvider", () => {
 });
 
 describe("getClaudeModelCapabilities", () => {
+  it("keeps Sonnet 5 server effort options aligned with shared metadata", () => {
+    const caps = getClaudeModelCapabilities("claude-sonnet-5");
+    const descriptors = caps.optionDescriptors ?? [];
+    const effortDescriptor = descriptors.find((descriptor) => descriptor.id === "effort");
+
+    expect(descriptors.map((descriptor) => descriptor.id)).toEqual(["effort", "contextWindow"]);
+    expect(
+      effortDescriptor?.type === "select"
+        ? effortDescriptor.options.map((option) => option.id)
+        : [],
+    ).toEqual(getReasoningEffortOptions("claudeAgent", "claude-sonnet-5"));
+  });
+
   it("keeps Fable 5 server effort options aligned with shared metadata", () => {
     const caps = getClaudeModelCapabilities("claude-fable-5");
     const descriptors = caps.optionDescriptors ?? [];

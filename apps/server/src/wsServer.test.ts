@@ -815,6 +815,7 @@ describe("WebSocket Server", () => {
       autoBootstrapProjectFromCwd: options.autoBootstrapProjectFromCwd ?? false,
       logWebSocketEvents: options.logWebSocketEvents ?? Boolean(options.devUrl),
       observabilityEnabled: options.observabilityEnabled ?? false,
+      acpHardeningEnabled: false,
     } satisfies ServerConfigShape);
     const infrastructureLayer = providerLayer.pipe(Layer.provideMerge(persistenceLayer));
     const runtimeOverrides = Layer.mergeAll(

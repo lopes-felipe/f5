@@ -20,6 +20,19 @@ const emitAskQuestion = process.env.T3_ACP_EMIT_ASK_QUESTION === "1";
 const failSetConfigOption = process.env.T3_ACP_FAIL_SET_CONFIG_OPTION === "1";
 const exitOnSetConfigOption = process.env.T3_ACP_EXIT_ON_SET_CONFIG_OPTION === "1";
 const promptResponseText = process.env.T3_ACP_PROMPT_RESPONSE_TEXT;
+const promptDelayMs = Math.max(
+  0,
+  Number.parseInt(process.env.T3_ACP_PROMPT_DELAY_MS ?? "0", 10) || 0,
+);
+const loadDelayMs = Math.max(0, Number.parseInt(process.env.T3_ACP_LOAD_DELAY_MS ?? "0", 10) || 0);
+const loadResponseDelayMs = Math.max(
+  0,
+  Number.parseInt(process.env.T3_ACP_LOAD_RESPONSE_DELAY_MS ?? "0", 10) || 0,
+);
+const failLoadNotFound = process.env.T3_ACP_LOAD_FAIL_NOT_FOUND === "1";
+const failLoadAfterReplay = process.env.T3_ACP_LOAD_FAIL_AFTER_REPLAY === "1";
+const hangLoad = process.env.T3_ACP_LOAD_HANG === "1";
+const replayBeforeLoadHang = process.env.T3_ACP_LOAD_REPLAY_BEFORE_HANG === "1";
 const sessionId = "mock-session-1";
 
 let currentModeId = "ask";
@@ -232,20 +245,37 @@ const program = Effect.gen(function* () {
   );
 
   yield* agent.handleLoadSession((request) =>
-    agent.client
-      .sessionUpdate({
-        sessionId: String(request.sessionId ?? sessionId),
-        update: {
-          sessionUpdate: "user_message_chunk",
-          content: { type: "text", text: "replay" },
-        },
-      })
-      .pipe(
-        Effect.as({
-          modes: modeState(),
-          configOptions: configOptions(),
-        }),
-      ),
+    Effect.gen(function* () {
+      if (loadDelayMs > 0) {
+        yield* Effect.sleep(`${loadDelayMs} millis`);
+      }
+      if (failLoadNotFound) {
+        return yield* AcpError.AcpRequestError.resourceNotFound("Mock session not found");
+      }
+
+      if (!hangLoad || replayBeforeLoadHang) {
+        yield* agent.client.sessionUpdate({
+          sessionId: String(request.sessionId ?? sessionId),
+          update: {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: "replay" },
+          },
+        });
+      }
+      if (failLoadAfterReplay) {
+        return yield* AcpError.AcpRequestError.internalError("Mock late load failure");
+      }
+      if (hangLoad) {
+        return yield* Effect.never;
+      }
+      if (loadResponseDelayMs > 0) {
+        yield* Effect.sleep(`${loadResponseDelayMs} millis`);
+      }
+      return {
+        modes: modeState(),
+        configOptions: configOptions(),
+      };
+    }),
   );
 
   yield* agent.handleSetSessionConfigOption((request) =>
@@ -285,6 +315,13 @@ const program = Effect.gen(function* () {
     }),
   );
 
+  yield* agent.handleSetSessionModel((request) =>
+    Effect.sync(() => {
+      currentModelId = request.modelId;
+      return {};
+    }),
+  );
+
   yield* agent.handleCancel(({ sessionId }) =>
     Effect.sync(() => {
       cancelledSessions.add(String(sessionId ?? "mock-session-1"));
@@ -294,6 +331,10 @@ const program = Effect.gen(function* () {
   yield* agent.handlePrompt((request) =>
     Effect.gen(function* () {
       const requestedSessionId = String(request.sessionId ?? sessionId);
+
+      if (promptDelayMs > 0) {
+        yield* Effect.sleep(`${promptDelayMs} millis`);
+      }
 
       if (emitInterleavedAssistantToolCalls) {
         const toolCallId = "tool-call-1";

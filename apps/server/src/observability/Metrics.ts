@@ -63,6 +63,21 @@ export const providerRuntimeEventsDroppedTotal = Metric.counter(
   },
 );
 
+export const acpResumeTotal = Metric.counter("t3_acp_resume_total", {
+  description: "Total ACP resume outcomes while hardening is enabled.",
+});
+
+export const acpEventBarrierTotal = Metric.counter("t3_acp_event_barrier_total", {
+  description: "Total ACP event-stream barriers drained before turn completion.",
+});
+
+export const acpCursorSerializationWaitsTotal = Metric.counter(
+  "t3_acp_cursor_serialization_waits_total",
+  {
+    description: "Total Cursor sends that waited behind another send for the same thread.",
+  },
+);
+
 export const gitCommandsTotal = Metric.counter("t3_git_commands_total", {
   description: "Total git commands executed by the server runtime.",
 });
@@ -98,6 +113,13 @@ export const editorLaunchTotal = Metric.counter("t3_editor_launch_total", {
 export const websocketConnectionsTotal = Metric.counter("t3_websocket_connections_total", {
   description: "WebSocket connection lifecycle events.",
 });
+
+export const previewRecordingFramesDroppedTotal = Metric.counter(
+  "t3_preview_recording_frames_dropped_total",
+  {
+    description: "Total preview recording frames dropped under renderer backpressure.",
+  },
+);
 
 export const metricAttributes = (attributes: Readonly<Record<string, unknown>>): MetricAttributes =>
   compactMetricAttributes(attributes);

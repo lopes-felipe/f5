@@ -45,6 +45,11 @@ import type * as EffectAcpSchema from "effect-acp/schema";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import {
+  acpCursorSerializationWaitsTotal,
+  providerMetricAttributes,
+  withMetrics,
+} from "../../observability/Metrics.ts";
+import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
   ProviderAdapterSessionNotFoundError,
@@ -390,6 +395,7 @@ export function makeCursorAdapter(
       options?.nativeEventLogger === undefined ? nativeEventLogger : undefined;
 
     const sessions = new Map<ThreadId, CursorSessionContext>();
+    const sendsInFlight = new Map<ThreadId, number>();
     const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
@@ -578,6 +584,10 @@ export function makeCursorAdapter(
             cwd,
             ...(resumeSessionId ? { resumeSessionId } : {}),
             clientInfo: { name: "t3-code", version: "0.0.0" },
+            hardening: {
+              enabled: serverConfig.acpHardeningEnabled,
+              provider: PROVIDER,
+            },
             ...acpNativeLoggers,
           }).pipe(
             Effect.provideService(Scope.Scope, sessionScope),
@@ -921,7 +931,7 @@ export function makeCursorAdapter(
         }).pipe(Effect.scoped),
       );
 
-    const sendTurn: CursorAdapterShape["sendTurn"] = (input) =>
+    const sendTurnUnlocked: CursorAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const ctx = yield* requireSession(input.threadId);
         const turnId = TurnId.make(crypto.randomUUID());
@@ -1034,6 +1044,8 @@ export function makeCursorAdapter(
             ),
           );
 
+        yield* ctx.acp.awaitEventBarrier;
+
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
         ctx.session = {
           ...ctx.session,
@@ -1060,6 +1072,39 @@ export function makeCursorAdapter(
           resumeCursor: ctx.session.resumeCursor,
         };
       });
+
+    const sendTurn: CursorAdapterShape["sendTurn"] = (input) => {
+      if (!serverConfig.acpHardeningEnabled) {
+        return sendTurnUnlocked(input);
+      }
+
+      return Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previousInFlight = sendsInFlight.get(input.threadId) ?? 0;
+          sendsInFlight.set(input.threadId, previousInFlight + 1);
+          return previousInFlight;
+        }),
+        (previousInFlight) =>
+          (previousInFlight > 0
+            ? Effect.void.pipe(
+                withMetrics({
+                  counter: acpCursorSerializationWaitsTotal,
+                  attributes: providerMetricAttributes(PROVIDER),
+                }),
+              )
+            : Effect.void
+          ).pipe(Effect.andThen(withThreadLock(input.threadId, sendTurnUnlocked(input)))),
+        () =>
+          Effect.sync(() => {
+            const next = Math.max(0, (sendsInFlight.get(input.threadId) ?? 1) - 1);
+            if (next === 0) {
+              sendsInFlight.delete(input.threadId);
+            } else {
+              sendsInFlight.set(input.threadId, next);
+            }
+          }),
+      );
+    };
 
     const interruptTurn: CursorAdapterShape["interruptTurn"] = (threadId) =>
       Effect.gen(function* () {

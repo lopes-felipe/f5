@@ -23,7 +23,6 @@ import { Tooltip, TooltipPopup, TooltipProvider, TooltipTrigger } from "../ui/to
 import { cn } from "~/lib/utils";
 import { ModelPickerSidebarRail, type ModelPickerSidebarRailItem } from "./ModelPickerSidebar";
 import {
-  COMING_SOON_PROVIDER_OPTIONS,
   getDisplayModelName,
   getTriggerDisplayModelLabel,
   getTriggerDisplayModelName,
@@ -207,31 +206,21 @@ export const ProviderInstanceModelPicker = memo(function ProviderInstanceModelPi
     ? PROVIDER_ICON_BY_PROVIDER[selectedInstance.driverKind]
     : undefined;
   const sidebarItems = useMemo<ModelPickerSidebarRailItem[]>(
-    () => [
-      ...visibleEntries.map((instance) => {
+    () =>
+      visibleEntries.flatMap((instance) => {
         const reason = unavailableReason(instance);
-        return {
-          id: instanceSidebarId(instance.instanceId),
-          label: reason ? `${instance.displayName}. ${reason}` : instance.displayName,
-          icon: PROVIDER_ICON_BY_PROVIDER[instance.driverKind] ?? BoxIcon,
-          iconClassName: providerIconClassName(instance.driverKind),
-          disabled: reason !== null,
-          isCustom: !instance.isDefault,
-          accentColor: instance.accentColor,
-        } satisfies ModelPickerSidebarRailItem;
+        if (reason !== null) return [];
+        return [
+          {
+            id: instanceSidebarId(instance.instanceId),
+            label: instance.displayName,
+            icon: PROVIDER_ICON_BY_PROVIDER[instance.driverKind] ?? BoxIcon,
+            iconClassName: providerIconClassName(instance.driverKind),
+            isCustom: !instance.isDefault,
+            accentColor: instance.accentColor,
+          } satisfies ModelPickerSidebarRailItem,
+        ];
       }),
-      ...COMING_SOON_PROVIDER_OPTIONS.map(
-        (option) =>
-          ({
-            id: `coming-soon:${option.id}`,
-            label: `${option.label} · Coming soon`,
-            icon: option.icon,
-            iconClassName: "text-muted-foreground/85",
-            disabled: true,
-            comingSoon: true,
-          }) satisfies ModelPickerSidebarRailItem,
-      ),
-    ],
     [visibleEntries],
   );
 

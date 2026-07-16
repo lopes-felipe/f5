@@ -558,6 +558,7 @@ function makeManager(input?: {
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
       observabilityEnabled: false,
+      acpHardeningEnabled: false,
     } satisfies ServerConfigShape;
 
     const gitCoreLayer = GitCoreLive.pipe(

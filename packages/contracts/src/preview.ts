@@ -59,6 +59,14 @@ export const PreviewReportStatusInput = Schema.Struct({
 });
 export type PreviewReportStatusInput = typeof PreviewReportStatusInput.Type;
 
+export const PreviewRecordingMetricsInput = Schema.Struct({
+  droppedFrames: Schema.Int.pipe(
+    Schema.check(Schema.isGreaterThan(0)),
+    Schema.check(Schema.isLessThanOrEqualTo(1_000_000)),
+  ),
+});
+export type PreviewRecordingMetricsInput = typeof PreviewRecordingMetricsInput.Type;
+
 export const PreviewRefreshInput = Schema.Struct({
   threadId: ThreadId,
   tabId: PreviewTabId,

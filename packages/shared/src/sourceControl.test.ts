@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSourceControlRemoteUrl } from "./sourceControl";
+import { parseSourceControlRemoteUrl, resolveChangeRequestWebUrl } from "./sourceControl";
 
 describe("parseSourceControlRemoteUrl", () => {
   it("parses GitHub SSH remotes", () => {
@@ -76,5 +76,35 @@ describe("parseSourceControlRemoteUrl", () => {
       repository: null,
       webUrl: null,
     });
+  });
+});
+
+describe("resolveChangeRequestWebUrl", () => {
+  const base = {
+    id: "42",
+    displayNumber: "42",
+    provider: {
+      kind: "gitlab" as const,
+      webUrl: "https://gitlab.example.com/platform/f5",
+    },
+  };
+
+  it("prefers the provider-supplied change request URL", () => {
+    expect(
+      resolveChangeRequestWebUrl({ ...base, url: "https://reviews.example.test/change/42" }),
+    ).toBe("https://reviews.example.test/change/42");
+  });
+
+  it("builds a provider-specific fallback and rejects unsafe schemes", () => {
+    expect(resolveChangeRequestWebUrl({ ...base, url: "" })).toBe(
+      "https://gitlab.example.com/platform/f5/-/merge_requests/42",
+    );
+    expect(
+      resolveChangeRequestWebUrl({
+        ...base,
+        url: "javascript:alert(1)",
+        provider: { ...base.provider, webUrl: "file:///tmp/f5" },
+      }),
+    ).toBeNull();
   });
 });

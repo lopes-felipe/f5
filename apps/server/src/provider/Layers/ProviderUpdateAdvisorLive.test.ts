@@ -2,6 +2,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Layer, Stream } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 import { ProviderRegistry, type ProviderRegistryShape } from "../Services/ProviderRegistry.ts";
 import { ProviderUpdateAdvisor } from "../Services/ProviderUpdateAdvisor.ts";
@@ -103,6 +104,7 @@ describe("ProviderUpdateAdvisorLive", () => {
     () => {
       const calls = { count: 0 };
       const layer = ProviderUpdateAdvisorLive.pipe(
+        Layer.provide(ServerSettingsService.layerTest()),
         Layer.provide(
           registryLayer([
             makeProvider({ instanceId: "codex-old", version: "0.1.0" }),
@@ -144,6 +146,7 @@ describe("ProviderUpdateAdvisorLive", () => {
   it.effect("does not call the registry for cursor latest-version checks", () => {
     const calls = { count: 0 };
     const layer = ProviderUpdateAdvisorLive.pipe(
+      Layer.provide(ServerSettingsService.layerTest()),
       Layer.provide(
         registryLayer([makeProvider({ instanceId: "cursor", driver: "cursor", version: "1.0.0" })]),
       ),
@@ -162,6 +165,40 @@ describe("ProviderUpdateAdvisorLive", () => {
       assert.strictEqual(calls.count, 0);
       assert.strictEqual(advisory.status, "unknown");
       assert.strictEqual(advisory.latestVersion, null);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect("stops checks while disabled and refreshes immediately when re-enabled", () => {
+    const calls = { count: 0 };
+    const settingsLayer = ServerSettingsService.layerTest({ enableProviderUpdateChecks: false });
+    const advisorLayer = ProviderUpdateAdvisorLive.pipe(
+      Layer.provide(settingsLayer),
+      Layer.provide(registryLayer([makeProvider({ instanceId: "codex", version: "0.1.0" })])),
+      Layer.provide(httpClientLayer("0.2.0", calls)),
+    );
+    const layer = Layer.merge(settingsLayer, advisorLayer);
+
+    return Effect.gen(function* () {
+      const advisor = yield* ProviderUpdateAdvisor;
+      const settings = yield* ServerSettingsService;
+
+      yield* advisor.refreshAdvisories({ force: true });
+      yield* advisor.noteRegistryChanged;
+      yield* Effect.yieldNow;
+      assert.strictEqual(calls.count, 0);
+
+      yield* settings.updateSettings({ enableProviderUpdateChecks: true });
+      for (let index = 0; index < 10 && calls.count === 0; index += 1) {
+        yield* Effect.yieldNow;
+      }
+      assert.strictEqual(calls.count, 1);
+
+      yield* settings.updateSettings({ enableProviderUpdateChecks: false });
+      yield* Effect.yieldNow;
+      yield* advisor.refreshAdvisories({ force: true });
+      yield* advisor.noteRegistryChanged;
+      yield* Effect.yieldNow;
+      assert.strictEqual(calls.count, 1);
     }).pipe(Effect.provide(layer));
   });
 });

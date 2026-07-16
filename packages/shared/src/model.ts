@@ -31,6 +31,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
 };
 
 const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
+const CLAUDE_SONNET_5_MODEL = "claude-sonnet-5";
 const CLAUDE_OPUS_4_8_MODEL = "claude-opus-4-8";
 const CLAUDE_OPUS_4_7_MODEL = "claude-opus-4-7";
 const CLAUDE_OPUS_4_6_MODEL = "claude-opus-4-6";
@@ -59,6 +60,12 @@ const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
     defaultEffort: "max",
+    supportsContextWindow: true,
+  },
+  [CLAUDE_SONNET_5_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
+    defaultEffort: "high",
     supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_8_MODEL]: {
@@ -417,10 +424,6 @@ export function supportsClaudeThinkingToggle(model: string | null | undefined): 
 
 export function supportsClaudeContextWindow(model: string | null | undefined): boolean {
   return getClaudeModelMetadata(model)?.supportsContextWindow === true;
-}
-
-export function isClaudeUltrathinkPrompt(text: string | null | undefined): boolean {
-  return typeof text === "string" && /\bultrathink\b/i.test(text);
 }
 
 function stripClaudeContextWindowSuffix(model: string): string {

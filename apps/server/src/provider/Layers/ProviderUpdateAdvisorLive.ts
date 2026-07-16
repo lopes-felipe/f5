@@ -7,6 +7,7 @@ import {
   type ServerProviderVersionAdvisory,
 } from "@t3tools/contracts";
 import { Duration, Effect, Fiber, Layer, PubSub, Ref, Stream } from "effect";
+import * as Semaphore from "effect/Semaphore";
 
 import { compareCliVersions, normalizeCliVersion } from "../cliVersion.ts";
 import { ProviderRegistry } from "../Services/ProviderRegistry.ts";
@@ -22,6 +23,7 @@ import {
   type LatestVersionLookupFailure,
 } from "../providerUpdateLookup.ts";
 import { HttpClient } from "effect/unstable/http";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const SUCCESS_REFRESH_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const NETWORK_RETRY_MS = 30 * 60 * 1000;
@@ -30,6 +32,13 @@ const RATE_LIMIT_MAX_RETRY_MS = 24 * 60 * 60 * 1000;
 const NOT_FOUND_RETRY_MS = 24 * 60 * 60 * 1000;
 const PARSE_RETRY_MS = 6 * 60 * 60 * 1000;
 const REGISTRY_CHANGE_DEBOUNCE = Duration.seconds(5);
+const INITIAL_REFRESH_DELAY = Duration.seconds(5);
+
+interface AdvisorGenerationState {
+  readonly generation: number;
+  readonly enabled: boolean;
+  readonly fiber: Fiber.Fiber<void, never> | null;
+}
 
 interface DriverCacheEntry {
   readonly latestVersion: string | null;
@@ -165,6 +174,7 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
   ProviderUpdateAdvisor,
   Effect.gen(function* () {
     const providerRegistry = yield* ProviderRegistry;
+    const serverSettings = yield* ServerSettingsService;
     const httpClient = yield* HttpClient.HttpClient;
     const driverCacheRef = yield* Ref.make<ReadonlyMap<ProviderDriverKind, DriverCacheEntry>>(
       new Map(),
@@ -172,13 +182,23 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
     const lastPublishedRef = yield* Ref.make<
       ReadonlyMap<ProviderInstanceId, ServerProviderVersionAdvisory>
     >(new Map());
-    const inFlightRef = yield* Ref.make(false);
+    const generationRef = yield* Ref.make<AdvisorGenerationState>({
+      generation: 0,
+      enabled: false,
+      fiber: null,
+    });
+    const refreshSemaphore = yield* Semaphore.make(1);
     const debounceFiberRef = yield* Ref.make<Fiber.Fiber<void, unknown> | null>(null);
     const scope = yield* Effect.scope;
     const changesPubSub = yield* Effect.acquireRelease(
       PubSub.unbounded<ReadonlyArray<ServerProviderAdvisoryEntry>>(),
       PubSub.shutdown,
     );
+
+    const isActiveGeneration = (generation: number) =>
+      Ref.get(generationRef).pipe(
+        Effect.map((state) => state.enabled && state.generation === generation),
+      );
 
     const getAdvisoryFor: ProviderUpdateAdvisorShape["getAdvisoryFor"] = (input) =>
       Ref.get(driverCacheRef).pipe(
@@ -191,7 +211,10 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
         ),
       );
 
-    const reconcileAndPublish = Effect.fn("reconcileProviderUpdateAdvisories")(function* () {
+    const reconcileAndPublish = Effect.fn("reconcileProviderUpdateAdvisories")(function* (
+      generation: number,
+    ) {
+      if (!(yield* isActiveGeneration(generation))) return;
       const providers = advisoryEligibleProviders(yield* providerRegistry.getProviders);
       const entries = yield* Effect.forEach(
         providers,
@@ -227,7 +250,7 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
         ) ||
         [...previousByInstance.keys()].some((instanceId) => !nextByInstance.has(instanceId));
 
-      if (!changed) return;
+      if (!changed || !(yield* isActiveGeneration(generation))) return;
       yield* Ref.set(lastPublishedRef, nextByInstance);
       yield* PubSub.publish(changesPubSub, publishableEntries).pipe(Effect.asVoid);
     });
@@ -235,7 +258,9 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
     const refreshDriver = Effect.fn("refreshProviderUpdateDriver")(function* (
       driver: ProviderDriverKind,
       force: boolean,
+      generation: number,
     ) {
+      if (!(yield* isActiveGeneration(generation))) return;
       const source = getProviderUpdateSource(driver);
       if (!source) return;
 
@@ -248,6 +273,7 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
       const result = yield* lookupLatestVersionForDriver(driver).pipe(
         Effect.provideService(HttpClient.HttpClient, httpClient),
       );
+      if (!(yield* isActiveGeneration(generation))) return;
       if (result === null) return;
 
       if (result._tag === "success") {
@@ -288,27 +314,34 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
       });
     });
 
-    const refreshAdvisories: ProviderUpdateAdvisorShape["refreshAdvisories"] = (opts) =>
-      Effect.gen(function* () {
-        const shouldRun = yield* Ref.modify(inFlightRef, (inFlight) => [!inFlight, true] as const);
-        if (!shouldRun) return;
-        yield* Effect.gen(function* () {
+    const refreshGeneration = (generation: number, force: boolean) =>
+      refreshSemaphore.withPermits(1)(
+        Effect.gen(function* () {
+          if (!(yield* isActiveGeneration(generation))) return;
           const providers = advisoryEligibleProviders(yield* providerRegistry.getProviders);
           const drivers = [...new Set(providers.map((provider) => provider.driver))];
-          yield* Effect.forEach(drivers, (driver) => refreshDriver(driver, opts?.force === true), {
+          yield* Effect.forEach(drivers, (driver) => refreshDriver(driver, force, generation), {
             concurrency: "unbounded",
             discard: true,
           });
-          yield* reconcileAndPublish();
+          yield* reconcileAndPublish(generation);
         }).pipe(
-          Effect.ensuring(Ref.set(inFlightRef, false)),
           Effect.catchCause((cause) =>
             Effect.logError("provider update advisory refresh failed", { cause }),
           ),
-        );
-      });
+        ),
+      );
+
+    const refreshAdvisories: ProviderUpdateAdvisorShape["refreshAdvisories"] = (opts) =>
+      Ref.get(generationRef).pipe(
+        Effect.flatMap((state) =>
+          state.enabled ? refreshGeneration(state.generation, opts?.force === true) : Effect.void,
+        ),
+      );
 
     const noteRegistryChanged = Effect.gen(function* () {
+      const state = yield* Ref.get(generationRef);
+      if (!state.enabled) return;
       const previousFiber = yield* Ref.getAndSet(debounceFiberRef, null);
       if (previousFiber) {
         yield* Fiber.interrupt(previousFiber).pipe(Effect.ignore);
@@ -321,6 +354,62 @@ export const ProviderUpdateAdvisorLive = Layer.effect(
       );
       yield* Ref.set(debounceFiberRef, fiber);
     });
+
+    const clearPublishedAdvisories = Effect.gen(function* () {
+      yield* Ref.set(lastPublishedRef, new Map());
+      yield* PubSub.publish(changesPubSub, []).pipe(Effect.asVoid);
+    });
+
+    const runGeneration = (generation: number, refreshImmediately: boolean) =>
+      Effect.gen(function* () {
+        if (!refreshImmediately) yield* Effect.sleep(INITIAL_REFRESH_DELAY);
+        yield* refreshGeneration(generation, true);
+        while (yield* isActiveGeneration(generation)) {
+          const jitter = 0.95 + Math.random() * 0.1;
+          yield* Effect.sleep(Duration.millis(SUCCESS_REFRESH_INTERVAL_MS * jitter));
+          yield* refreshGeneration(generation, false);
+        }
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logDebug("provider update advisory generation stopped", { cause }),
+        ),
+      );
+
+    const setEnabled = (enabled: boolean, refreshImmediately: boolean) =>
+      Effect.gen(function* () {
+        const previous = yield* Ref.get(generationRef);
+        if (previous.enabled === enabled) return;
+
+        const generation = previous.generation + 1;
+        yield* Ref.set(generationRef, { generation, enabled, fiber: null });
+        if (previous.fiber) yield* Fiber.interrupt(previous.fiber).pipe(Effect.ignore);
+
+        if (!enabled) {
+          const debounceFiber = yield* Ref.getAndSet(debounceFiberRef, null);
+          if (debounceFiber) yield* Fiber.interrupt(debounceFiber).pipe(Effect.ignore);
+          yield* clearPublishedAdvisories;
+          return;
+        }
+
+        const fiber = yield* runGeneration(generation, refreshImmediately).pipe(
+          Effect.forkIn(scope),
+        );
+        yield* Ref.update(generationRef, (state) =>
+          state.generation === generation && state.enabled ? { ...state, fiber } : state,
+        );
+      });
+
+    const initialSettings = yield* serverSettings.getSettings.pipe(
+      Effect.catch((error) =>
+        Effect.logWarning("failed to read provider update-check setting; using enabled default", {
+          error,
+        }).pipe(Effect.as({ enableProviderUpdateChecks: true })),
+      ),
+    );
+    yield* setEnabled(initialSettings.enableProviderUpdateChecks, false);
+    yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
+      setEnabled(settings.enableProviderUpdateChecks, settings.enableProviderUpdateChecks),
+    ).pipe(Effect.forkIn(scope));
 
     return {
       getAdvisoryFor,

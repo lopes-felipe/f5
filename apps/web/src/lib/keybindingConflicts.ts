@@ -160,6 +160,8 @@ export function formatKeybindingCommandLabel(
 
   const staticCommand = command as StaticKeybindingCommand;
   switch (staticCommand) {
+    case "sidebar.toggle":
+      return "Toggle main sidebar";
     case "terminal.toggle":
       return "Toggle terminal";
     case "terminal.split":

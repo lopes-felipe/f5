@@ -1,25 +1,21 @@
 import { type ProviderKind, type ServerProvider } from "@t3tools/contracts";
 import { memo } from "react";
-import { Clock3Icon, StarIcon } from "lucide-react";
+import { StarIcon } from "lucide-react";
 import type { Icon } from "../Icons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { cn } from "~/lib/utils";
 import {
   AVAILABLE_PROVIDER_OPTIONS,
-  COMING_SOON_PROVIDER_OPTIONS,
   describeProviderStatus,
   findProviderStatus,
   isProviderSelectable,
   providerIconClassName,
   PROVIDER_ICON_BY_PICKER_KIND,
-  UNAVAILABLE_PROVIDER_OPTIONS,
 } from "./providerIconUtils";
 
 const SELECTED_BUTTON_CLASS = "bg-background text-foreground shadow-sm";
 const SELECTED_INDICATOR_CLASS =
   "pointer-events-none absolute -right-1 top-1/2 z-10 h-5 w-0.5 -translate-y-1/2 rounded-l-full bg-primary";
-const SOON_BADGE_CLASS =
-  "pointer-events-none absolute -right-0.5 top-0.5 z-10 flex size-3.5 items-center justify-center rounded-full bg-transparent text-muted-foreground shadow-sm";
 
 export interface ModelPickerSidebarRailItem {
   readonly id: string;
@@ -27,7 +23,6 @@ export interface ModelPickerSidebarRailItem {
   readonly icon: Icon;
   readonly iconClassName?: string | undefined;
   readonly disabled?: boolean | undefined;
-  readonly comingSoon?: boolean | undefined;
   readonly isCustom?: boolean | undefined;
   readonly accentColor?: string | undefined;
 }
@@ -93,11 +88,7 @@ export const ModelPickerSidebarRail = memo(function ModelPickerSidebarRail(props
             aria-label={item.label}
           >
             <ItemIcon className={cn("size-5 shrink-0", item.iconClassName)} aria-hidden />
-            {item.comingSoon ? (
-              <span className={SOON_BADGE_CLASS} aria-hidden>
-                <Clock3Icon className="size-2" />
-              </span>
-            ) : item.isCustom ? (
+            {item.isCustom ? (
               <span
                 className="pointer-events-none absolute right-1 bottom-1 size-1.5 rounded-full border border-background bg-foreground/50"
                 style={item.accentColor ? { backgroundColor: item.accentColor } : undefined}
@@ -132,40 +123,18 @@ export const ModelPickerSidebar = memo(function ModelPickerSidebar(props: {
   providers?: ReadonlyArray<ServerProvider> | undefined;
   onSelectProvider: (provider: ProviderKind | "favorites") => void;
 }) {
-  const items: ModelPickerSidebarRailItem[] = [
-    ...AVAILABLE_PROVIDER_OPTIONS.map((option) => {
-      const status = findProviderStatus(props.providers, option.value);
-      return {
+  const items: ModelPickerSidebarRailItem[] = AVAILABLE_PROVIDER_OPTIONS.flatMap((option) => {
+    const status = findProviderStatus(props.providers, option.value);
+    if (!isProviderSelectable(status)) return [];
+    return [
+      {
         id: option.value,
         label: describeProviderStatus(option.label, status),
         icon: PROVIDER_ICON_BY_PICKER_KIND[option.value],
         iconClassName: providerIconClassName(option.value),
-        disabled: !isProviderSelectable(status),
-      } satisfies ModelPickerSidebarRailItem;
-    }),
-    ...UNAVAILABLE_PROVIDER_OPTIONS.map(
-      (option) =>
-        ({
-          id: `${option.value}-unavailable`,
-          label: `${option.label} · Coming soon`,
-          icon: PROVIDER_ICON_BY_PICKER_KIND[option.value],
-          iconClassName: cn("text-muted-foreground/85", providerIconClassName(option.value)),
-          disabled: true,
-          comingSoon: true,
-        }) satisfies ModelPickerSidebarRailItem,
-    ),
-    ...COMING_SOON_PROVIDER_OPTIONS.map(
-      (option) =>
-        ({
-          id: `${option.id}-coming-soon`,
-          label: `${option.label} · Coming soon`,
-          icon: option.icon,
-          iconClassName: "text-muted-foreground/85",
-          disabled: true,
-          comingSoon: true,
-        }) satisfies ModelPickerSidebarRailItem,
-    ),
-  ];
+      } satisfies ModelPickerSidebarRailItem,
+    ];
+  });
 
   return (
     <ModelPickerSidebarRail

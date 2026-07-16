@@ -6,10 +6,20 @@ import {
   type TurnId,
   type UserMessageSkillCall,
 } from "@t3tools/contracts";
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+  type ReactNode,
+} from "react";
 import type { InlineExactFileChangeDiffProps } from "./InlineExactFileChangeDiff";
 import type { InlineFileChangeDiffProps } from "./InlineFileChangeDiff";
-import { LegendList, type LegendListRef } from "@legendapp/list/react";
+import { LegendList, type LegendListRef, type OnViewableItemsChanged } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatDuration, formatElapsed } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
 import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
@@ -44,7 +54,13 @@ import { ChangedFilesTree } from "./ChangedFilesTree";
 import { DiffStatLabel, hasNonZeroStat } from "./DiffStatLabel";
 import { MessageCopyButton } from "./MessageCopyButton";
 import { AssistantMessageActions } from "./AssistantMessageActions";
-import { computeMessageDurationStart, normalizeCompactToolLabel } from "./MessagesTimeline.logic";
+import {
+  buildTimelineEntryRowIndexMap,
+  computeMessageDurationStart,
+  findNearestMinimapMarkerIndex,
+  normalizeCompactToolLabel,
+  sampleTimelineMinimapRowIndices,
+} from "./MessagesTimeline.logic";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { SkillInlineChip } from "./SkillInlineChip";
 import {
@@ -122,6 +138,7 @@ interface MessagesTimelineProps {
   isWorking: boolean;
   activeTurnStartedAt: string | null;
   listRef: React.RefObject<LegendListRef | null>;
+  entryRowIndexMapRef?: MutableRefObject<ReadonlyMap<string, number> | null>;
   onIsAtEndChange: (isAtEnd: boolean) => void;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
@@ -208,6 +225,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   isWorking,
   activeTurnStartedAt,
   listRef,
+  entryRowIndexMapRef,
   onIsAtEndChange,
   timelineEntries,
   completionDividerBeforeEntryId,
@@ -234,6 +252,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   chatDiffContext = EMPTY_CHAT_DIFF_CONTEXT,
 }: MessagesTimelineProps) {
   const { settings } = useAppSettings();
+  const ownedEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
+  const resolvedEntryRowIndexMapRef = entryRowIndexMapRef ?? ownedEntryRowIndexMapRef;
   const [initialScrollAtEndEnabled, setInitialScrollAtEndEnabled] = useState(true);
   const isAtEndRef = useRef(true);
 
@@ -351,6 +371,64 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   const rowCount = rows.length;
   const lastRowId = rowCount > 0 ? (rows[rowCount - 1]?.id ?? null) : null;
+  const entryRowIndexMap = useMemo(
+    () =>
+      buildTimelineEntryRowIndexMap(
+        rows.map((row) => ({
+          id: row.id,
+          ...(row.kind === "work"
+            ? { groupedEntryIds: row.groupedEntries.map((entry) => entry.id) }
+            : {}),
+        })),
+      ),
+    [rows],
+  );
+  useLayoutEffect(() => {
+    resolvedEntryRowIndexMapRef.current = entryRowIndexMap;
+    return () => {
+      if (resolvedEntryRowIndexMapRef.current === entryRowIndexMap) {
+        resolvedEntryRowIndexMapRef.current = null;
+      }
+    };
+  }, [entryRowIndexMap, resolvedEntryRowIndexMapRef]);
+  const [activeMinimapRowIndex, setActiveMinimapRowIndex] = useState(0);
+  const pendingViewableRowIndexRef = useRef(0);
+  const viewabilityFrameRef = useRef(0);
+  const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<TimelineRow>>>(
+    ({ viewableItems }) => {
+      const firstVisibleIndex = viewableItems.reduce(
+        (minimum, item) => (item.isViewable ? Math.min(minimum, item.index) : minimum),
+        Number.POSITIVE_INFINITY,
+      );
+      if (!Number.isFinite(firstVisibleIndex)) return;
+      pendingViewableRowIndexRef.current = firstVisibleIndex;
+      if (viewabilityFrameRef.current !== 0) return;
+      viewabilityFrameRef.current = window.requestAnimationFrame(() => {
+        viewabilityFrameRef.current = 0;
+        setActiveMinimapRowIndex(pendingViewableRowIndexRef.current);
+      });
+    },
+    [],
+  );
+  useEffect(
+    () => () => {
+      if (viewabilityFrameRef.current !== 0) {
+        window.cancelAnimationFrame(viewabilityFrameRef.current);
+      }
+    },
+    [],
+  );
+  const minimapRowIndices = useMemo(
+    () =>
+      sampleTimelineMinimapRowIndices({
+        rowCount,
+        boundaryIndices: rows.flatMap((row, index) =>
+          row.kind === "work" ? [entryRowIndexMap.get(row.id) ?? index] : [],
+        ),
+        activeRowIndex: activeMinimapRowIndex,
+      }),
+    [activeMinimapRowIndex, entryRowIndexMap, rowCount, rows],
+  );
 
   // Upstream fix 33dadb5a:
   // once a brand-new thread receives its first message, LegendList's
@@ -931,9 +1009,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         <div className="py-0.5 pl-1.5">
           <div className="flex items-center gap-2 pt-1 text-[11px] text-muted-foreground/70">
             <span className="inline-flex items-center gap-[3px]">
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:200ms]" />
-              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-pulse [animation-delay:400ms]" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:200ms]" />
+              <span className="h-1 w-1 rounded-full bg-muted-foreground/30 animate-status-pulse [animation-delay:400ms]" />
             </span>
             <span>
               {row.createdAt
@@ -978,55 +1056,160 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }
 
   return (
-    <LegendList<TimelineRow>
-      ref={listRef}
-      data={rows}
-      // LegendList's internal dataset tracking can miss row-shape changes
-      // during sequential live updates unless we provide an explicit version.
-      // That includes both mid-stream insertions and later layout-affecting
-      // changes like response dividers or inline file diffs becoming eligible.
-      dataVersion={legendListDataVersion}
-      keyExtractor={keyExtractor}
-      renderItem={renderItem}
-      // LegendList caches row renders until either the backing data or
-      // extraData changes, so closure-only UI state must flow through here.
-      extraData={legendListExtraData}
-      estimatedItemSize={90}
-      drawDistance={336}
-      // Keep LegendList's bootstrap "start at end" behavior for the initial
-      // mount only. Leaving this enabled on later data updates causes the web
-      // implementation to re-arm its initial-scroll logic and jump away from
-      // historical file-change rows during optimistic sends.
-      initialScrollAtEnd={initialScrollAtEndEnabled}
-      // Do not auto-pin on raw data appends. When the user is looking at a
-      // historical file-change diff near the tail of the thread, a new user
-      // turn and its first assistant progress messages should preserve that
-      // viewport instead of snapping to the latest row. We still keep
-      // size/layout-based pinning so streaming growth at the tail continues to
-      // follow when the user is already at the end.
-      maintainScrollAtEnd={{ on: { itemLayout: true, layout: true } }}
-      maintainScrollAtEndThreshold={LEGEND_LIST_IS_AT_END_THRESHOLD}
-      // Stabilize the visible window both when rows resize and when a new user
-      // turn appends data. Without `data: true`, historical work rows can drop
-      // out of the rendered window during live chat updates even though the
-      // row data itself is still present.
-      maintainVisibleContentPosition={{ size: true, data: true }}
-      onScroll={handleScroll}
-      // Stable hook for browser tests
-      // queries — the LegendList's overflow container has inline styles that
-      // make class-based selectors fragile.
-      data-slot="messages-scroll-container"
-      className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
-      ListHeaderComponent={
-        <>
-          <div className="h-3 sm:h-4" />
-          {listHeaderContent}
-        </>
-      }
-      ListFooterComponent={<div className="h-3 sm:h-4" />}
-    />
+    <div className="relative h-full min-h-0">
+      <LegendList<TimelineRow>
+        ref={listRef}
+        data={rows}
+        // LegendList's internal dataset tracking can miss row-shape changes
+        // during sequential live updates unless we provide an explicit version.
+        // That includes both mid-stream insertions and later layout-affecting
+        // changes like response dividers or inline file diffs becoming eligible.
+        dataVersion={legendListDataVersion}
+        keyExtractor={keyExtractor}
+        renderItem={renderItem}
+        // LegendList caches row renders until either the backing data or
+        // extraData changes, so closure-only UI state must flow through here.
+        extraData={legendListExtraData}
+        estimatedItemSize={90}
+        drawDistance={336}
+        // Keep LegendList's bootstrap "start at end" behavior for the initial
+        // mount only. Leaving this enabled on later data updates causes the web
+        // implementation to re-arm its initial-scroll logic and jump away from
+        // historical file-change rows during optimistic sends.
+        initialScrollAtEnd={initialScrollAtEndEnabled}
+        // Do not auto-pin on raw data appends. When the user is looking at a
+        // historical file-change diff near the tail of the thread, a new user
+        // turn and its first assistant progress messages should preserve that
+        // viewport instead of snapping to the latest row. We still keep
+        // size/layout-based pinning so streaming growth at the tail continues to
+        // follow when the user is already at the end.
+        maintainScrollAtEnd={{ on: { itemLayout: true, layout: true } }}
+        maintainScrollAtEndThreshold={LEGEND_LIST_IS_AT_END_THRESHOLD}
+        // Stabilize the visible window both when rows resize and when a new user
+        // turn appends data. Without `data: true`, historical work rows can drop
+        // out of the rendered window during live chat updates even though the
+        // row data itself is still present.
+        maintainVisibleContentPosition={{ size: true, data: true }}
+        onScroll={handleScroll}
+        onViewableItemsChanged={handleViewableItemsChanged}
+        // Stable hook for browser tests
+        // queries — the LegendList's overflow container has inline styles that
+        // make class-based selectors fragile.
+        data-slot="messages-scroll-container"
+        className="h-full overflow-x-hidden overscroll-y-contain px-3 sm:px-5"
+        ListHeaderComponent={
+          <>
+            <div className="h-3 sm:h-4" />
+            {listHeaderContent}
+          </>
+        }
+        ListFooterComponent={<div className="h-3 sm:h-4" />}
+      />
+      {minimapRowIndices.length > 1 ? (
+        <TimelineMinimap
+          rows={rows}
+          markerRowIndices={minimapRowIndices}
+          activeRowIndex={activeMinimapRowIndex}
+          onNavigate={(rowIndex) => {
+            isAtEndRef.current = false;
+            onIsAtEndChange(false);
+            void listRef.current?.scrollToIndex({
+              index: rowIndex,
+              animated: false,
+              viewPosition: 0.3,
+            });
+          }}
+        />
+      ) : null}
+    </div>
   );
 });
+
+function TimelineMinimap(props: {
+  rows: ReadonlyArray<TimelineRow>;
+  markerRowIndices: ReadonlyArray<number>;
+  activeRowIndex: number;
+  onNavigate: (rowIndex: number) => void;
+}) {
+  const trackRef = useRef<HTMLDivElement>(null);
+  const activeMarkerIndex = findNearestMinimapMarkerIndex(
+    props.markerRowIndices,
+    props.activeRowIndex,
+  );
+  const navigateFromClientY = useCallback(
+    (clientY: number) => {
+      const track = trackRef.current;
+      if (!track) return;
+      const rect = track.getBoundingClientRect();
+      const ratio = Math.min(1, Math.max(0, (clientY - rect.top) / Math.max(1, rect.height)));
+      const targetRow = Math.round(ratio * Math.max(0, props.rows.length - 1));
+      const markerIndex = findNearestMinimapMarkerIndex(props.markerRowIndices, targetRow);
+      const rowIndex = props.markerRowIndices[markerIndex];
+      if (rowIndex !== undefined) props.onNavigate(rowIndex);
+    },
+    [props],
+  );
+
+  return (
+    <div
+      ref={trackRef}
+      className="absolute top-3 right-1 bottom-3 z-10 w-3 touch-none rounded-full bg-background/70 opacity-45 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
+      role="slider"
+      tabIndex={0}
+      aria-label="Conversation minimap"
+      aria-valuemin={0}
+      aria-valuemax={Math.max(0, props.rows.length - 1)}
+      aria-valuenow={props.activeRowIndex}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        navigateFromClientY(event.clientY);
+      }}
+      onPointerMove={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          navigateFromClientY(event.clientY);
+        }
+      }}
+      onPointerCancel={(event) => event.currentTarget.releasePointerCapture(event.pointerId)}
+      onKeyDown={(event) => {
+        let markerIndex = activeMarkerIndex;
+        if (event.key === "ArrowDown" || event.key === "PageDown") markerIndex += 1;
+        else if (event.key === "ArrowUp" || event.key === "PageUp") markerIndex -= 1;
+        else if (event.key === "Home") markerIndex = 0;
+        else if (event.key === "End") markerIndex = props.markerRowIndices.length - 1;
+        else return;
+        event.preventDefault();
+        const rowIndex =
+          props.markerRowIndices[
+            Math.min(props.markerRowIndices.length - 1, Math.max(0, markerIndex))
+          ];
+        if (rowIndex !== undefined) props.onNavigate(rowIndex);
+      }}
+    >
+      {props.markerRowIndices.map((rowIndex, markerIndex) => {
+        const row = props.rows[rowIndex];
+        if (!row) return null;
+        const isActive = markerIndex === activeMarkerIndex;
+        return (
+          <span
+            key={row.id}
+            className={cn(
+              "pointer-events-none absolute left-1/2 h-px -translate-x-1/2 rounded-full",
+              row.kind === "message"
+                ? row.message.role === "user"
+                  ? "bg-primary/80"
+                  : "bg-foreground/55"
+                : row.kind === "work"
+                  ? "bg-amber-500/70"
+                  : "bg-muted-foreground/50",
+              isActive ? "w-3 h-0.5 opacity-100" : "w-1.5",
+            )}
+            style={{ top: `${(rowIndex / Math.max(1, props.rows.length - 1)) * 100}%` }}
+          />
+        );
+      })}
+    </div>
+  );
+}
 
 // Wraps each row with the DOM attributes that tests and selectors depend on
 // (data-timeline-row-id, data-timeline-row-kind, data-message-id, data-message-role).
@@ -1147,7 +1330,7 @@ function resolveWorkGroupRenderState(
   const hiddenCount = paginatedEntries.length - visiblePaginatedEntries.length;
   const onlyToolEntries = groupedEntries.every((entry) => entry.tone === "tool");
   return {
-    groupLabel: onlyToolEntries ? "Tool calls" : "Work log",
+    groupLabel: onlyToolEntries ? "Tool calls" : "Work Log",
     hasOverflow,
     hiddenCount,
     isExpanded: hasOverflow && hiddenCount === 0,

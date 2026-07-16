@@ -16,6 +16,7 @@ import {
   PreviewAutomationTabNotFoundError,
   type PreviewAutomationSnapshot,
   PreviewAutomationTypeInput,
+  PreviewAutomationViewportInput,
   PreviewAutomationWaitForInput,
   type ProviderInstanceId,
   type ThreadId,
@@ -353,6 +354,66 @@ const PREVIEW_MCP_TOOLS: ReadonlyArray<McpToolDefinition> = [
       title: "Wait for preview page condition",
     },
   },
+  {
+    name: "preview_viewport",
+    title: "Resize browser preview",
+    description: "Set the active preview viewport in CSS pixels.",
+    inputSchema: {
+      type: "object",
+      required: ["width", "height"],
+      additionalProperties: false,
+      properties: {
+        width: { type: "integer", minimum: 320 },
+        height: { type: "integer", minimum: 320 },
+      },
+    },
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+      title: "Resize browser preview",
+    },
+  },
+  {
+    name: "preview_screenshot",
+    title: "Capture preview screenshot",
+    description: "Capture the active preview as an opaque PNG artifact.",
+    inputSchema: emptyInputSchema,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: false,
+      openWorldHint: false,
+      title: "Capture preview screenshot",
+    },
+  },
+  {
+    name: "preview_recording_start",
+    title: "Start preview recording",
+    description: "Start a capability-gated WebM recording of the active preview tab.",
+    inputSchema: emptyInputSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+      title: "Start preview recording",
+    },
+  },
+  {
+    name: "preview_recording_stop",
+    title: "Stop preview recording",
+    description: "Stop the active preview recording and return its opaque artifact metadata.",
+    inputSchema: emptyInputSchema,
+    annotations: {
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+      title: "Stop preview recording",
+    },
+  },
 ];
 
 const toolByName = new Map(PREVIEW_MCP_TOOLS.map((tool) => [tool.name, tool]));
@@ -605,7 +666,12 @@ function makeToolCallHandler(
           try {
             return toolResult(
               await runBrokerEffect(
-                broker.invoke({ threadId: scope.threadId, operation: "status", input: {} }),
+                broker.invoke({
+                  threadId: scope.threadId,
+                  automationSessionId: token,
+                  operation: "status",
+                  input: {},
+                }),
               ),
             );
           } catch (cause) {
@@ -626,6 +692,7 @@ function makeToolCallHandler(
             await runBrokerEffect(
               broker.invoke({
                 threadId: scope.threadId,
+                automationSessionId: token,
                 operation: "open",
                 input: {
                   ...input,
@@ -644,6 +711,7 @@ function makeToolCallHandler(
             await runBrokerEffect(
               invokeWithOptionalTimeout(broker, {
                 threadId: scope.threadId,
+                automationSessionId: token,
                 operation: "navigate",
                 input,
                 timeoutMs: input.timeoutMs,
@@ -656,6 +724,7 @@ function makeToolCallHandler(
             await runBrokerEffect(
               broker.invoke<PreviewAutomationSnapshot>({
                 threadId: scope.threadId,
+                automationSessionId: token,
                 operation: "snapshot",
                 input: {},
               }),
@@ -666,6 +735,7 @@ function makeToolCallHandler(
           await runBrokerEffect(
             invokeWithOptionalTimeout(broker, {
               threadId: scope.threadId,
+              automationSessionId: token,
               operation: "click",
               input,
               timeoutMs: input.timeoutMs,
@@ -678,6 +748,7 @@ function makeToolCallHandler(
           await runBrokerEffect(
             invokeWithOptionalTimeout(broker, {
               threadId: scope.threadId,
+              automationSessionId: token,
               operation: "type",
               input,
               timeoutMs: input.timeoutMs,
@@ -688,14 +759,24 @@ function makeToolCallHandler(
         case "preview_press": {
           const input = decodeToolInput(PreviewAutomationPressInput, rawArguments);
           await runBrokerEffect(
-            broker.invoke({ threadId: scope.threadId, operation: "press", input }),
+            broker.invoke({
+              threadId: scope.threadId,
+              automationSessionId: token,
+              operation: "press",
+              input,
+            }),
           );
           return toolResult(null);
         }
         case "preview_scroll": {
           const input = decodeToolInput(PreviewAutomationScrollInput, rawArguments);
           await runBrokerEffect(
-            broker.invoke({ threadId: scope.threadId, operation: "scroll", input }),
+            broker.invoke({
+              threadId: scope.threadId,
+              automationSessionId: token,
+              operation: "scroll",
+              input,
+            }),
           );
           return toolResult(null);
         }
@@ -705,6 +786,7 @@ function makeToolCallHandler(
             await runBrokerEffect(
               invokeWithOptionalTimeout(broker, {
                 threadId: scope.threadId,
+                automationSessionId: token,
                 operation: "evaluate",
                 input,
                 timeoutMs: input.timeoutMs,
@@ -717,6 +799,7 @@ function makeToolCallHandler(
           await runBrokerEffect(
             invokeWithOptionalTimeout(broker, {
               threadId: scope.threadId,
+              automationSessionId: token,
               operation: "waitFor",
               input,
               timeoutMs: input.timeoutMs,
@@ -724,6 +807,52 @@ function makeToolCallHandler(
           );
           return toolResult(null);
         }
+        case "preview_viewport": {
+          const input = decodeToolInput(PreviewAutomationViewportInput, rawArguments);
+          return toolResult(
+            await runBrokerEffect(
+              broker.invoke({
+                threadId: scope.threadId,
+                automationSessionId: token,
+                operation: "viewport",
+                input,
+              }),
+            ),
+          );
+        }
+        case "preview_screenshot":
+          return toolResult(
+            await runBrokerEffect(
+              broker.invoke({
+                threadId: scope.threadId,
+                automationSessionId: token,
+                operation: "screenshot",
+                input: {},
+              }),
+            ),
+          );
+        case "preview_recording_start":
+          return toolResult(
+            await runBrokerEffect(
+              broker.invoke({
+                threadId: scope.threadId,
+                automationSessionId: token,
+                operation: "recordingStart",
+                input: {},
+              }),
+            ),
+          );
+        case "preview_recording_stop":
+          return toolResult(
+            await runBrokerEffect(
+              broker.invoke({
+                threadId: scope.threadId,
+                automationSessionId: token,
+                operation: "recordingStop",
+                input: {},
+              }),
+            ),
+          );
         default:
           return toolErrorResult(
             new PreviewAutomationExecutionError({ message: `Unknown preview tool: ${name}` }),

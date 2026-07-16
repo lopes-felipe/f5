@@ -4,10 +4,17 @@ import { useEffect, useLayoutEffect, useState, type CSSProperties } from "react"
 import { CommandPalette } from "../components/CommandPalette";
 import ThreadStatusNotificationController from "../components/ThreadStatusNotificationController";
 import PrAttentionNotificationController from "../components/prHub/PrAttentionNotificationController";
+import { PreviewBrowserHost } from "../components/PreviewBrowserHost";
 import ModelRecencyController from "../components/ModelRecencyController";
 import ThreadRecencyController from "../components/ThreadRecencyController";
 import ThreadSidebar from "../components/Sidebar";
-import { Sidebar, SidebarProvider, SidebarRail } from "~/components/ui/sidebar";
+import {
+  Sidebar,
+  SidebarProvider,
+  SidebarRail,
+  SidebarTrigger,
+  useSidebar,
+} from "~/components/ui/sidebar";
 import { resolveSettingsNavigationSearch } from "~/components/settings/settingsCategories";
 import {
   canAcceptThreadSidebarWidth,
@@ -18,13 +25,26 @@ import {
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
 
+function CollapsedSidebarControl() {
+  const { isMobile, open, openMobile } = useSidebar();
+  if (isMobile ? openMobile : open) {
+    return null;
+  }
+
+  return (
+    <SidebarTrigger
+      aria-label="Toggle main sidebar"
+      className="fixed top-1.5 left-2 z-50 size-7 border border-border/60 bg-background/85 shadow-sm backdrop-blur"
+    />
+  );
+}
+
 function ChatRouteLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [initialThreadSidebarWidth, setInitialThreadSidebarWidth] = useState(() =>
     readInitialThreadSidebarWidth(),
   );
-
   useLayoutEffect(() => {
     const wrapper = document.querySelector<HTMLElement>("[data-thread-sidebar-layout='true']");
     if (!wrapper) {
@@ -69,6 +89,7 @@ function ChatRouteLayout() {
   return (
     <SidebarProvider
       defaultOpen
+      keyboardShortcut
       data-thread-sidebar-layout="true"
       style={{ "--sidebar-width": `${initialThreadSidebarWidth}px` } as CSSProperties}
     >
@@ -91,7 +112,10 @@ function ChatRouteLayout() {
         <ModelRecencyController />
         <ThreadStatusNotificationController />
         <PrAttentionNotificationController />
-        <Outlet />
+        <PreviewBrowserHost>
+          <Outlet />
+        </PreviewBrowserHost>
+        <CollapsedSidebarControl />
       </CommandPalette>
     </SidebarProvider>
   );

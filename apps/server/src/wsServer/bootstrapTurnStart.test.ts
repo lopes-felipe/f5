@@ -115,6 +115,8 @@ function makeDependencies(input?: {
   dispatch?: OrchestrationEngineShape["dispatch"];
   getReadModel?: OrchestrationEngineShape["getReadModel"];
   createWorktree?: GitCoreShape["createWorktree"];
+  fetchRemoteBranchCommit?: GitCoreShape["fetchRemoteBranchCommit"];
+  hasRemote?: GitCoreShape["hasRemote"];
   removeWorktree?: GitCoreShape["removeWorktree"];
   runForThread?: ProjectSetupScriptRunnerShape["runForThread"];
 }) {
@@ -127,7 +129,10 @@ function makeDependencies(input?: {
         })),
     getReadModel: input?.getReadModel ?? (() => Effect.succeed(makeReadModel())),
   };
-  const git: Pick<GitCoreShape, "createWorktree" | "removeWorktree"> = {
+  const git: Pick<
+    GitCoreShape,
+    "createWorktree" | "fetchRemoteBranchCommit" | "hasRemote" | "removeWorktree"
+  > = {
     createWorktree:
       input?.createWorktree ??
       (() =>
@@ -137,6 +142,16 @@ function makeDependencies(input?: {
             path: "/repo/project/.worktrees/thread-1",
           },
         } satisfies GitCreateWorktreeResult)),
+    fetchRemoteBranchCommit:
+      input?.fetchRemoteBranchCommit ??
+      ((request) =>
+        Effect.succeed({
+          remoteName: request.remoteName ?? "origin",
+          branch: request.branch,
+          refName: `${request.remoteName ?? "origin"}/${request.branch}`,
+          commit: "0123456789abcdef0123456789abcdef01234567",
+        })),
+    hasRemote: input?.hasRemote ?? (() => Effect.succeed(true)),
     removeWorktree: input?.removeWorktree ?? (() => Effect.void),
   };
   const projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread"> = {
@@ -207,7 +222,7 @@ describe("dispatchBootstrapTurnStart", () => {
 
   it("prepares a worktree for existing threads before dispatching the final turn start", async () => {
     const dispatchedCommands: OrchestrationCommand[] = [];
-    const createWorktree = vi.fn(() =>
+    const createWorktree = vi.fn((_input: Parameters<GitCoreShape["createWorktree"]>[0]) =>
       Effect.succeed({
         worktree: {
           branch: "t3code/bootstrap-branch",
@@ -247,6 +262,7 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(createWorktree).toHaveBeenCalledWith({
       cwd: "/repo/project",
       branch: "main",
+      baseRefName: "0123456789abcdef0123456789abcdef01234567",
       newBranch: "t3code/bootstrap-branch",
       path: null,
     });
@@ -339,6 +355,7 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(createWorktree).toHaveBeenCalledWith({
       cwd: "/repo/project",
       branch: "main",
+      baseRefName: "0123456789abcdef0123456789abcdef01234567",
       newBranch: "t3code/1234abcd",
       path: null,
     });
@@ -902,6 +919,123 @@ describe("dispatchBootstrapTurnStart", () => {
       "thread.create",
       "thread.delete",
     ]);
+  });
+
+  it("rolls back a bootstrap-created thread when fetching the origin base fails", async () => {
+    const dispatchedCommands: OrchestrationCommand[] = [];
+    const createWorktree = vi.fn(() =>
+      Effect.succeed({
+        worktree: {
+          branch: "t3code/bootstrap-branch",
+          path: "/repo/project/.worktrees/thread-1",
+        },
+      } satisfies GitCreateWorktreeResult),
+    );
+    const removeWorktree = vi.fn(() => Effect.void);
+    const dependencies = makeDependencies({
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatchedCommands.push(command);
+          return { sequence: dispatchedCommands.length };
+        }),
+      fetchRemoteBranchCommit: () =>
+        Effect.fail(
+          new GitCommandError({
+            operation: "GitCore.fetchRemoteBranchCommit.fetch",
+            command: "git fetch origin main",
+            cwd: "/repo/project",
+            detail: "origin unavailable",
+          }),
+        ),
+      createWorktree,
+      removeWorktree,
+    });
+
+    await expect(
+      Effect.runPromise(
+        dispatchBootstrapTurnStart({
+          ...dependencies,
+          command: makeTurnStartCommand({
+            bootstrap: {
+              createThread: {
+                projectId: PROJECT_ID,
+                title: "New thread",
+                model: "gpt-5-codex",
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+              prepareWorktree: {
+                projectCwd: "/repo/project",
+                baseBranch: "main",
+                branch: "t3code/bootstrap-branch",
+              },
+            },
+          }),
+        }),
+      ),
+    ).rejects.toThrow("origin unavailable");
+
+    expect(dispatchedCommands.map((command) => command.type)).toEqual([
+      "thread.create",
+      "thread.delete",
+    ]);
+    expect(createWorktree).not.toHaveBeenCalled();
+    expect(removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("creates from the local base when the repository has no configured remote", async () => {
+    const fetchRemoteBranchCommit = vi.fn(() => Effect.die("unexpected remote base fetch"));
+    const createWorktree = vi.fn((_input: Parameters<GitCoreShape["createWorktree"]>[0]) =>
+      Effect.succeed({
+        worktree: {
+          branch: "t3code/bootstrap-branch",
+          path: "/repo/project/.worktrees/thread-1",
+        },
+      } satisfies GitCreateWorktreeResult),
+    );
+    const dependencies = makeDependencies({
+      hasRemote: () => Effect.succeed(false),
+      fetchRemoteBranchCommit,
+      createWorktree,
+    });
+
+    await Effect.runPromise(
+      dispatchBootstrapTurnStart({
+        ...dependencies,
+        command: makeTurnStartCommand({
+          bootstrap: {
+            createThread: {
+              projectId: PROJECT_ID,
+              title: "New thread",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: "main",
+              worktreePath: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            prepareWorktree: {
+              projectCwd: "/repo/project",
+              baseBranch: "main",
+              branch: "t3code/bootstrap-branch",
+            },
+          },
+        }),
+      }),
+    );
+
+    expect(fetchRemoteBranchCommit).not.toHaveBeenCalled();
+    expect(createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/repo/project",
+        branch: "main",
+        newBranch: "t3code/bootstrap-branch",
+      }),
+    );
+    expect(createWorktree.mock.calls[0]?.[0]).not.toHaveProperty("baseRefName");
   });
 
   it("appends cleanup failure detail onto the original bootstrap error", async () => {

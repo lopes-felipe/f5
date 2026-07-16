@@ -75,6 +75,19 @@ export interface GitFetchRemoteBranchInput {
   localBranch: string;
 }
 
+export interface GitFetchRemoteBranchCommitInput {
+  cwd: string;
+  branch: string;
+  remoteName?: string;
+}
+
+export interface GitRemoteBranchCommit {
+  remoteName: string;
+  branch: string;
+  refName: string;
+  commit: string;
+}
+
 export interface GitSetBranchUpstreamInput {
   cwd: string;
   branch: string;
@@ -155,6 +168,18 @@ export interface GitCoreShape {
   readonly createWorktree: (
     input: GitCreateWorktreeInput,
   ) => Effect.Effect<GitCreateWorktreeResult, GitCommandError>;
+
+  /**
+   * Report whether the repository has at least one configured remote.
+   */
+  readonly hasRemote: (cwd: string) => Effect.Effect<boolean, GitCommandError>;
+
+  /**
+   * Fetch a remote-tracking branch and resolve its commit without mutating local branches.
+   */
+  readonly fetchRemoteBranchCommit: (
+    input: GitFetchRemoteBranchCommitInput,
+  ) => Effect.Effect<GitRemoteBranchCommit, GitCommandError>;
 
   /**
    * Materialize a GitHub pull request head as a local branch without switching checkout.

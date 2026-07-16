@@ -6,6 +6,8 @@ export interface DiffRouteSearch {
   diffTurnId?: TurnId | undefined;
   diffFileChangeId?: OrchestrationFileChangeId | undefined;
   diffFilePath?: string | undefined;
+  diffScope?: "working-tree" | "branch-range" | undefined;
+  diffBaseRef?: string | undefined;
   fileViewPath?: string | undefined;
   fileLine?: number | undefined;
   fileEndLine?: number | undefined;
@@ -47,6 +49,8 @@ export function stripDiffSearchParams<T extends Record<string, unknown>>(
   | "diffTurnId"
   | "diffFileChangeId"
   | "diffFilePath"
+  | "diffScope"
+  | "diffBaseRef"
   | "fileViewPath"
   | "fileLine"
   | "fileEndLine"
@@ -57,6 +61,8 @@ export function stripDiffSearchParams<T extends Record<string, unknown>>(
     diffTurnId: _diffTurnId,
     diffFileChangeId: _diffFileChangeId,
     diffFilePath: _diffFilePath,
+    diffScope: _diffScope,
+    diffBaseRef: _diffBaseRef,
     fileViewPath: _fileViewPath,
     fileLine: _fileLine,
     fileEndLine: _fileEndLine,
@@ -69,6 +75,8 @@ export function stripDiffSearchParams<T extends Record<string, unknown>>(
     | "diffTurnId"
     | "diffFileChangeId"
     | "diffFilePath"
+    | "diffScope"
+    | "diffBaseRef"
     | "fileViewPath"
     | "fileLine"
     | "fileEndLine"
@@ -84,6 +92,8 @@ export function clearDiffSearchParams<T extends Record<string, unknown>>(
   | "diffTurnId"
   | "diffFileChangeId"
   | "diffFilePath"
+  | "diffScope"
+  | "diffBaseRef"
   | "fileViewPath"
   | "fileLine"
   | "fileEndLine"
@@ -97,6 +107,8 @@ export function clearDiffSearchParams<T extends Record<string, unknown>>(
     diffTurnId: undefined,
     diffFileChangeId: undefined,
     diffFilePath: undefined,
+    diffScope: undefined,
+    diffBaseRef: undefined,
     fileViewPath: undefined,
     fileLine: undefined,
     fileEndLine: undefined,
@@ -106,13 +118,21 @@ export function clearDiffSearchParams<T extends Record<string, unknown>>(
 
 export function clearTurnDiffSearchParams<T extends Record<string, unknown>>(
   params: T,
-): Omit<T, "diff" | "diffTurnId" | "diffFileChangeId" | "diffFilePath"> &
-  Pick<DiffRouteSearch, "diff" | "diffTurnId" | "diffFileChangeId" | "diffFilePath"> {
+): Omit<
+  T,
+  "diff" | "diffTurnId" | "diffFileChangeId" | "diffFilePath" | "diffScope" | "diffBaseRef"
+> &
+  Pick<
+    DiffRouteSearch,
+    "diff" | "diffTurnId" | "diffFileChangeId" | "diffFilePath" | "diffScope" | "diffBaseRef"
+  > {
   const {
     diff: _diff,
     diffTurnId: _diffTurnId,
     diffFileChangeId: _diffFileChangeId,
     diffFilePath: _diffFilePath,
+    diffScope: _diffScope,
+    diffBaseRef: _diffBaseRef,
     ...rest
   } = params;
   return {
@@ -121,6 +141,8 @@ export function clearTurnDiffSearchParams<T extends Record<string, unknown>>(
     diffTurnId: undefined,
     diffFileChangeId: undefined,
     diffFilePath: undefined,
+    diffScope: undefined,
+    diffBaseRef: undefined,
   };
 }
 
@@ -154,6 +176,12 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ? OrchestrationFileChangeId.makeUnsafe(diffFileChangeIdRaw)
     : undefined;
   const diffFilePath = diff ? normalizeSearchString(search.diffFilePath) : undefined;
+  const diffScope =
+    diff && (search.diffScope === "working-tree" || search.diffScope === "branch-range")
+      ? search.diffScope
+      : undefined;
+  const diffBaseRef =
+    diffScope === "branch-range" ? normalizeSearchString(search.diffBaseRef) : undefined;
   const fileViewPath = normalizeSearchString(search.fileViewPath);
   const fileLine = fileViewPath ? normalizeSearchPositiveInt(search.fileLine) : undefined;
   const normalizedFileEndLine = fileLine
@@ -171,6 +199,8 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFileChangeId ? { diffFileChangeId } : {}),
     ...(diffFilePath ? { diffFilePath } : {}),
+    ...(diffScope ? { diffScope } : {}),
+    ...(diffBaseRef ? { diffBaseRef } : {}),
     ...(fileViewPath ? { fileViewPath } : {}),
     ...(fileLine ? { fileLine } : {}),
     ...(fileEndLine ? { fileEndLine } : {}),

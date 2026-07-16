@@ -322,6 +322,8 @@ export function createWsNativeApi(): NativeApi {
       open: (input) => transport.request(WS_METHODS.previewOpen, input),
       navigate: (input) => transport.request(WS_METHODS.previewNavigate, input),
       reportStatus: (input) => transport.request(WS_METHODS.previewReportStatus, input),
+      reportRecordingMetrics: (input) =>
+        transport.request(WS_METHODS.previewReportRecordingMetrics, input),
       refresh: (input) => transport.request(WS_METHODS.previewRefresh, input),
       close: (input) => transport.request(WS_METHODS.previewClose, input),
       list: (input) => transport.request(WS_METHODS.previewList, input),
@@ -403,6 +405,9 @@ export function createWsNativeApi(): NativeApi {
           gitStatusInvalidatedListeners.delete(callback);
         };
       },
+    },
+    review: {
+      previewDiff: (input) => transport.request(WS_METHODS.reviewPreviewDiff, input),
     },
     contextMenu: {
       show: async <T extends string>(

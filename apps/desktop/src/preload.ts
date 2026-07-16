@@ -31,6 +31,13 @@ const PREVIEW_AUTOMATION_PRESS_CHANNEL = "desktop-preview:automation-press";
 const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop-preview:automation-scroll";
 const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop-preview:automation-evaluate";
 const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for";
+const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop-preview:set-viewport";
+const PREVIEW_CAPTURE_SCREENSHOT_CHANNEL = "desktop-preview:capture-screenshot";
+const PREVIEW_RECORDING_START_CHANNEL = "desktop-preview:recording-start";
+const PREVIEW_RECORDING_APPEND_CHANNEL = "desktop-preview:recording-append";
+const PREVIEW_RECORDING_STOP_CHANNEL = "desktop-preview:recording-stop";
+const PREVIEW_RECORDING_DISCARD_CHANNEL = "desktop-preview:recording-discard";
+const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
 
@@ -84,6 +91,24 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     openDevTools: (tabId) => ipcRenderer.invoke(PREVIEW_OPEN_DEVTOOLS_CHANNEL, tabId),
     pickElement: (tabId) => ipcRenderer.invoke(PREVIEW_PICK_ELEMENT_CHANNEL, tabId),
     cancelPickElement: (tabId) => ipcRenderer.invoke(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, tabId),
+    setViewport: (tabId, viewport) =>
+      ipcRenderer.invoke(PREVIEW_SET_VIEWPORT_CHANNEL, tabId, viewport),
+    captureScreenshot: (tabId) => ipcRenderer.invoke(PREVIEW_CAPTURE_SCREENSHOT_CHANNEL, tabId),
+    recording: {
+      start: (tabId) => ipcRenderer.invoke(PREVIEW_RECORDING_START_CHANNEL, tabId),
+      appendChunk: (recordingId, chunk) =>
+        ipcRenderer.invoke(PREVIEW_RECORDING_APPEND_CHANNEL, recordingId, chunk),
+      stop: (recordingId) => ipcRenderer.invoke(PREVIEW_RECORDING_STOP_CHANNEL, recordingId),
+      discard: (recordingId) => ipcRenderer.invoke(PREVIEW_RECORDING_DISCARD_CHANNEL, recordingId),
+      onFrame: (listener) => {
+        const wrappedListener = (_event: Electron.IpcRendererEvent, frame: unknown) => {
+          if (typeof frame !== "object" || frame === null) return;
+          listener(frame as Parameters<typeof listener>[0]);
+        };
+        ipcRenderer.on(PREVIEW_RECORDING_FRAME_CHANNEL, wrappedListener);
+        return () => ipcRenderer.removeListener(PREVIEW_RECORDING_FRAME_CHANNEL, wrappedListener);
+      },
+    },
     automation: {
       status: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_STATUS_CHANNEL, tabId),
       snapshot: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, tabId),

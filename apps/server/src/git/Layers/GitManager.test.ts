@@ -67,6 +67,7 @@ function makeServerConfig(): ServerConfigShape {
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     observabilityEnabled: false,
+    acpHardeningEnabled: false,
   };
 }
 

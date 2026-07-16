@@ -75,6 +75,8 @@ it.effect("serves preview MCP tools and routes calls through the broker", () =>
                 broker.respond(
                   {
                     requestId: request.requestId,
+                    clientId: request.clientId,
+                    connectionId: request.connectionId,
                     ok: true,
                     result: {
                       available: true,

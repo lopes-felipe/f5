@@ -48,7 +48,7 @@ export const removeLocalStorageItem = (key: string) => {
   getIsomorphicLocalStorage().removeItem(key);
 };
 
-const LOCAL_STORAGE_CHANGE_EVENT = "t3code:local_storage_change";
+export const LOCAL_STORAGE_CHANGE_EVENT = "t3code:local_storage_change";
 
 interface LocalStorageChangeDetail {
   key: string;
@@ -61,6 +61,33 @@ function dispatchLocalStorageChange(key: string) {
       detail: { key },
     }),
   );
+}
+
+export function readLocalStorageRawItem(key: string): string | null {
+  return getIsomorphicLocalStorage().getItem(key);
+}
+
+export function subscribeLocalStorageKey(key: string, listener: () => void): () => void {
+  if (typeof window === "undefined") return () => undefined;
+
+  const handleStorageChange = (event: StorageEvent) => {
+    if (event.key === key) listener();
+  };
+  const handleLocalChange = (event: Event) => {
+    if (
+      event instanceof CustomEvent &&
+      (event as CustomEvent<LocalStorageChangeDetail>).detail.key === key
+    ) {
+      listener();
+    }
+  };
+
+  window.addEventListener("storage", handleStorageChange);
+  window.addEventListener(LOCAL_STORAGE_CHANGE_EVENT, handleLocalChange);
+  return () => {
+    window.removeEventListener("storage", handleStorageChange);
+    window.removeEventListener(LOCAL_STORAGE_CHANGE_EVENT, handleLocalChange);
+  };
 }
 
 export function useLocalStorage<T, E>(

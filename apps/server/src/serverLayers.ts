@@ -175,6 +175,7 @@ export function makeServerProviderLayer(): Layer.Layer<
     );
     const providerUpdateAdvisorLayer = ProviderUpdateAdvisorLive.pipe(
       Layer.provide(providerRegistryLayer),
+      Layer.provide(serverSettingsLayer),
     );
     const providerAdvisoryProjectionLayer = ProviderAdvisoryProjectionLive.pipe(
       Layer.provide(providerRegistryLayer),

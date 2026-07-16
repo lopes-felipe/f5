@@ -14,6 +14,7 @@ export * from "./keybindings";
 export * from "./server";
 export * from "./settings";
 export * from "./git";
+export * from "./review";
 export * from "./sourceControl";
 export * from "./preview";
 export * from "./previewAutomation";

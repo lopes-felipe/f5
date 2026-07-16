@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { Effect, Option, Schema, SchemaTransformation } from "effect";
 import {
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
@@ -10,9 +10,13 @@ import {
   type ProviderKind,
 } from "@t3tools/contracts";
 import { getDefaultModel, getModelOptions, normalizeModelSlug } from "@t3tools/shared/model";
-import { useLocalStorage } from "./hooks/useLocalStorage";
+import {
+  readLocalStorageRawItem,
+  subscribeLocalStorageKey,
+  useLocalStorage,
+} from "./hooks/useLocalStorage";
 
-const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
+export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 export const CLAUDE_SUBAGENT_MODEL_INHERIT = "inherit";
@@ -864,4 +868,17 @@ export function useAppSettings() {
     resetSettings,
     defaults: DEFAULT_APP_SETTINGS,
   } as const;
+}
+
+/** Primitive selector for hot rendering paths; unrelated setting writes keep the same snapshot. */
+export function useDiffWordWrap(): boolean {
+  const subscribe = useCallback(
+    (listener: () => void) => subscribeLocalStorageKey(APP_SETTINGS_STORAGE_KEY, listener),
+    [],
+  );
+  const getSnapshot = useCallback(
+    () => parsePersistedAppSettings(readLocalStorageRawItem(APP_SETTINGS_STORAGE_KEY)).diffWordWrap,
+    [],
+  );
+  return useSyncExternalStore(subscribe, getSnapshot, () => DEFAULT_APP_SETTINGS.diffWordWrap);
 }

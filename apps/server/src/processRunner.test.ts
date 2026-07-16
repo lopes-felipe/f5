@@ -36,4 +36,20 @@ describe("runProcess", () => {
     expect(result.timedOut).toBe(true);
     expect(Date.now() - startedAt).toBeLessThan(3_000);
   });
+
+  it("terminates the process group when its abort signal is cancelled", async () => {
+    const controller = new AbortController();
+    const startedAt = Date.now();
+    const pending = runProcess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      timeoutMs: 10_000,
+      allowNonZeroExit: true,
+      signal: controller.signal,
+    });
+
+    setTimeout(() => controller.abort(), 50);
+    const result = await pending;
+
+    expect(result.aborted).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+  });
 });

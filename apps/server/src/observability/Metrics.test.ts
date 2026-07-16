@@ -5,7 +5,13 @@ import path from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import { Effect, Metric } from "effect";
 
-import { makeMetricSnapshotWriter, serializeMetricSnapshot, withMetrics } from "./Metrics.ts";
+import {
+  increment,
+  makeMetricSnapshotWriter,
+  previewRecordingFramesDroppedTotal,
+  serializeMetricSnapshot,
+  withMetrics,
+} from "./Metrics.ts";
 
 const hasMetricSnapshot = (
   snapshots: ReadonlyArray<Metric.Metric.Snapshot>,
@@ -154,6 +160,20 @@ describe("metric snapshot writer", () => {
       } finally {
         fs.rmSync(tempDir, { recursive: true, force: true });
       }
+    }),
+  );
+});
+
+describe("preview metrics", () => {
+  it.effect("records dropped preview recording frames in the server metrics stream", () =>
+    Effect.gen(function* () {
+      yield* increment(previewRecordingFramesDroppedTotal, {}, 3);
+
+      const snapshots = yield* Metric.snapshot;
+      assert.equal(
+        hasMetricSnapshot(snapshots, "t3_preview_recording_frames_dropped_total", {}),
+        true,
+      );
     }),
   );
 });

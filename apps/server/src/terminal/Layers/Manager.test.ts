@@ -213,6 +213,7 @@ function makeServerConfig(logsDir: string): ServerConfigShape {
     autoBootstrapProjectFromCwd: false,
     logWebSocketEvents: false,
     observabilityEnabled: false,
+    acpHardeningEnabled: false,
   };
 }
 

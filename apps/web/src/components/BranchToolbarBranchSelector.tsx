@@ -1,7 +1,8 @@
-import type { GitBranch } from "@t3tools/contracts";
+import type { ChangeRequest, GitBranch } from "@t3tools/contracts";
+import { resolveChangeRequestWebUrl } from "@t3tools/shared/sourceControl";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, GitPullRequestIcon } from "lucide-react";
 import {
   useCallback,
   useDeferredValue,
@@ -44,6 +45,7 @@ import {
   ComboboxTrigger,
 } from "./ui/combobox";
 import { toastManager } from "./ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 interface BranchToolbarBranchSelectorProps {
   activeProjectCwd: string;
@@ -75,6 +77,17 @@ function getBranchTriggerLabel(input: {
   }
   return resolvedActiveBranch;
 }
+
+const CHANGE_REQUEST_STATE_PRESENTATION: Record<
+  ChangeRequest["state"],
+  { label: string; className: string }
+> = {
+  draft: { label: "Draft", className: "text-amber-600 dark:text-amber-300" },
+  open: { label: "Open", className: "text-emerald-600 dark:text-emerald-300" },
+  closed: { label: "Closed", className: "text-zinc-500 dark:text-zinc-400" },
+  merged: { label: "Merged", className: "text-violet-600 dark:text-violet-300" },
+  unknown: { label: "Change request", className: "text-muted-foreground" },
+};
 
 export function BranchToolbarBranchSelector({
   activeProjectCwd,
@@ -121,6 +134,12 @@ export function BranchToolbarBranchSelector({
     activeThreadBranch,
     currentGitBranch,
   });
+  const branchMatchesStatus =
+    canonicalActiveBranch !== null && branchStatusQuery.data?.branch === canonicalActiveBranch;
+  const changeRequest = branchMatchesStatus
+    ? (branchStatusQuery.data?.changeRequest ?? null)
+    : null;
+  const changeRequestUrl = changeRequest ? resolveChangeRequestWebUrl(changeRequest) : null;
   const branchNames = useMemo(() => branches.map((branch) => branch.name), [branches]);
   const branchByName = useMemo(
     () => new Map(branches.map((branch) => [branch.name, branch] as const)),
@@ -408,72 +427,108 @@ export function BranchToolbarBranchSelector({
   }
 
   return (
-    <Combobox
-      items={branchPickerItems}
-      filteredItems={filteredBranchPickerItems}
-      autoHighlight
-      virtualized={shouldVirtualizeBranchList}
-      onItemHighlighted={(_value, eventDetails) => {
-        if (
-          !shouldScrollHighlightedBranchIntoView({
-            isMenuOpen: isBranchMenuOpen,
-            highlightedIndex: eventDetails.index,
-            highlightReason: eventDetails.reason,
-          })
-        ) {
-          return;
-        }
-        branchListRef.current?.scrollIndexIntoView?.({
-          index: eventDetails.index,
-          animated: false,
-        });
-      }}
-      onOpenChange={handleOpenChange}
-      open={isBranchMenuOpen}
-      value={resolvedActiveBranch}
-    >
-      <ComboboxTrigger
-        render={<Button variant="ghost" size="xs" />}
-        className="text-muted-foreground/70 hover:text-foreground/80"
-        disabled={(branchesQuery.isLoading && branches.length === 0) || isBranchActionPending}
-      >
-        <span className="max-w-[240px] truncate">{triggerLabel}</span>
-        <ChevronDownIcon />
-      </ComboboxTrigger>
-      <ComboboxPopup align="end" side="top" className="w-80">
-        <div className="border-b p-1">
-          <ComboboxInput
-            className="[&_input]:font-sans rounded-md"
-            inputClassName="ring-0"
-            placeholder="Search branches..."
-            showTrigger={false}
-            size="sm"
-            value={branchQuery}
-            onChange={(event) => setBranchQuery(event.target.value)}
+    <div className="flex min-w-0 items-center gap-1">
+      {changeRequest && changeRequestUrl ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="xs"
+                className={CHANGE_REQUEST_STATE_PRESENTATION[changeRequest.state].className}
+                aria-label={`Open change request ${changeRequest.displayNumber}`}
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const api = readNativeApi();
+                  if (!api) return;
+                  void api.shell.openExternal(changeRequestUrl).catch((error) => {
+                    toastManager.add({
+                      type: "error",
+                      title: "Unable to open change request",
+                      description: toBranchActionErrorMessage(error),
+                    });
+                  });
+                }}
+              >
+                <GitPullRequestIcon className="size-3" />
+                <span>{changeRequest.displayNumber}</span>
+              </Button>
+            }
           />
-        </div>
-        <ComboboxEmpty>No branches found.</ComboboxEmpty>
-
-        {shouldVirtualizeBranchList ? (
-          <ComboboxListVirtualized>
-            <LegendList<string>
-              ref={branchListRef}
-              data={filteredBranchPickerItems}
-              keyExtractor={(item) => item}
-              renderItem={({ item, index }) => renderPickerItem(item, index)}
-              estimatedItemSize={28}
-              drawDistance={336}
-              style={{ maxHeight: "14rem" }}
+          <TooltipPopup side="top">
+            {CHANGE_REQUEST_STATE_PRESENTATION[changeRequest.state].label}: {changeRequest.title}
+          </TooltipPopup>
+        </Tooltip>
+      ) : null}
+      <Combobox
+        items={branchPickerItems}
+        filteredItems={filteredBranchPickerItems}
+        autoHighlight
+        virtualized={shouldVirtualizeBranchList}
+        onItemHighlighted={(_value, eventDetails) => {
+          if (
+            !shouldScrollHighlightedBranchIntoView({
+              isMenuOpen: isBranchMenuOpen,
+              highlightedIndex: eventDetails.index,
+              highlightReason: eventDetails.reason,
+            })
+          ) {
+            return;
+          }
+          branchListRef.current?.scrollIndexIntoView?.({
+            index: eventDetails.index,
+            animated: false,
+          });
+        }}
+        onOpenChange={handleOpenChange}
+        open={isBranchMenuOpen}
+        value={resolvedActiveBranch}
+      >
+        <ComboboxTrigger
+          render={<Button variant="ghost" size="xs" />}
+          className="text-muted-foreground/70 hover:text-foreground/80"
+          disabled={(branchesQuery.isLoading && branches.length === 0) || isBranchActionPending}
+        >
+          <span className="max-w-[240px] truncate">{triggerLabel}</span>
+          <ChevronDownIcon />
+        </ComboboxTrigger>
+        <ComboboxPopup align="end" side="top" className="w-80">
+          <div className="border-b p-1">
+            <ComboboxInput
+              className="[&_input]:font-sans rounded-md"
+              inputClassName="ring-0"
+              placeholder="Search branches..."
+              showTrigger={false}
+              size="sm"
+              value={branchQuery}
+              onChange={(event) => setBranchQuery(event.target.value)}
             />
-          </ComboboxListVirtualized>
-        ) : (
-          <ComboboxList ref={setBranchListRef} className="max-h-56">
-            {filteredBranchPickerItems.map((itemValue, index) =>
-              renderPickerItem(itemValue, index),
-            )}
-          </ComboboxList>
-        )}
-      </ComboboxPopup>
-    </Combobox>
+          </div>
+          <ComboboxEmpty>No branches found.</ComboboxEmpty>
+
+          {shouldVirtualizeBranchList ? (
+            <ComboboxListVirtualized>
+              <LegendList<string>
+                ref={branchListRef}
+                data={filteredBranchPickerItems}
+                keyExtractor={(item) => item}
+                renderItem={({ item, index }) => renderPickerItem(item, index)}
+                estimatedItemSize={28}
+                drawDistance={336}
+                style={{ maxHeight: "14rem" }}
+              />
+            </ComboboxListVirtualized>
+          ) : (
+            <ComboboxList ref={setBranchListRef} className="max-h-56">
+              {filteredBranchPickerItems.map((itemValue, index) =>
+                renderPickerItem(itemValue, index),
+              )}
+            </ComboboxList>
+          )}
+        </ComboboxPopup>
+      </Combobox>
+    </div>
   );
 }

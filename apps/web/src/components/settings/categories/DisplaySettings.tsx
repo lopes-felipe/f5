@@ -21,6 +21,7 @@ import { Switch } from "../../ui/switch";
 const RESPONSE_AUXILIARY_KEYS = [
   "enableAssistantStreaming",
   "openFileLinksInPanel",
+  "diffWordWrap",
   "workspaceFileTreeEntryLimit",
   "workLogMode",
   "workLogFilter",
@@ -111,6 +112,20 @@ export function DisplaySettings() {
               })
             }
             aria-label="Open file links in code panel"
+          />
+        </div>
+
+        <div className="flex items-center justify-between rounded-lg border border-border bg-background px-3 py-2">
+          <div>
+            <p className="text-sm font-medium text-foreground">Wrap long code and table lines</p>
+            <p className="text-xs text-muted-foreground">
+              Wrap chat code blocks, tables, diffs, and file previews instead of scrolling sideways.
+            </p>
+          </div>
+          <Switch
+            checked={settings.diffWordWrap}
+            onCheckedChange={(checked) => updateSettings({ diffWordWrap: Boolean(checked) })}
+            aria-label="Wrap long code and table lines"
           />
         </div>
 

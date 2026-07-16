@@ -19,6 +19,7 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
 
 ```json
 [
+  { "key": "mod+b", "command": "sidebar.toggle", "when": "!terminalFocus && !dialogFocus" },
   { "key": "mod+j", "command": "terminal.toggle" },
   { "key": "mod+d", "command": "terminal.split", "when": "terminalFocus" },
   { "key": "mod+n", "command": "terminal.new", "when": "terminalFocus" },
@@ -39,6 +40,7 @@ For most up to date defaults, see [`DEFAULT_KEYBINDINGS` in `apps/server/src/key
 
 ## Recent Changes
 
+- `mod+b` toggles the main sidebar, except while a terminal or dialog has focus.
 - `mod+shift+n` now opens a new workflow by default.
 - `mod+enter` now scrolls to the bottom instead of sending a message.
 - `chat.newLocal` is still configurable, but it no longer has a default binding.

@@ -4,6 +4,7 @@
 
 @theme inline {
   --animate-skeleton: skeleton 2s -1s infinite linear;
+  --animate-status-pulse: status-pulse 2s infinite;
   --font-sans:
     "DM Sans Variable", "DM Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
     sans-serif;
@@ -44,6 +45,21 @@
   @keyframes skeleton {
     to {
       background-position: -200% 0;
+    }
+  }
+  @keyframes status-pulse {
+    0%,
+    40% {
+      opacity: 1;
+      animation-timing-function: steps(6);
+    }
+    50%,
+    90% {
+      opacity: 0.5;
+      animation-timing-function: steps(6);
+    }
+    100% {
+      opacity: 1;
     }
   }
 }
@@ -458,6 +474,13 @@ label:has(> select#reasoning-effort) select {
   padding-right: calc(0.9rem + var(--chat-markdown-codeblock-copy-button-space));
 }
 
+.chat-markdown .chat-markdown-codeblock-wrap pre,
+.chat-markdown .chat-markdown-codeblock-wrap code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .chat-markdown .chat-markdown-copy-button {
   position: absolute;
   top: 0.5rem;
@@ -496,6 +519,26 @@ label:has(> select#reasoning-effort) select {
   background: color-mix(in srgb, var(--muted) 78%, var(--background)) !important;
 }
 
+.chat-markdown .chat-markdown-table-container {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.chat-markdown .chat-markdown-table-container:not(.chat-markdown-table-wrap) table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.chat-markdown .chat-markdown-table-wrap {
+  overflow-x: hidden;
+}
+
+.chat-markdown .chat-markdown-table-wrap th,
+.chat-markdown .chat-markdown-table-wrap td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .chat-markdown table {
   width: 100%;
   border-collapse: collapse;
@@ -506,6 +549,75 @@ label:has(> select#reasoning-effort) select {
   border: 1px solid var(--border);
   padding: 0.35rem 0.45rem;
   text-align: left;
+}
+
+@keyframes ultrathink-rainbow {
+  from {
+    background-position: 0% 50%;
+  }
+  to {
+    background-position: 200% 50%;
+  }
+}
+
+@keyframes ultrathink-chroma-shift {
+  from {
+    filter: hue-rotate(0deg) saturate(1.2);
+  }
+  to {
+    filter: hue-rotate(360deg) saturate(1.2);
+  }
+}
+
+.ultrathink-frame {
+  --ultrathink-spectrum: linear-gradient(
+    120deg,
+    #ff6b6b 0%,
+    #f59e0b 18%,
+    #22c55e 36%,
+    #14b8a6 54%,
+    #3b82f6 72%,
+    #ec4899 90%,
+    #ff6b6b 100%
+  );
+  position: relative;
+  background: transparent;
+}
+
+.ultrathink-frame::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 2px;
+  background-image: var(--ultrathink-spectrum);
+  background-size: 220% 220%;
+  pointer-events: none;
+  filter: saturate(0.82) brightness(0.92);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: ultrathink-rainbow 10s linear infinite;
+}
+
+.ultrathink-frame > * {
+  position: relative;
+}
+
+.ultrathink-chroma {
+  animation: ultrathink-chroma-shift 10s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ultrathink-frame::before,
+  .ultrathink-chroma {
+    animation: none;
+  }
 }
 
 /* Diffs theme bridge (match diff surfaces to app palette) */

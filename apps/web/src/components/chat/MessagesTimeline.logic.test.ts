@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { computeMessageDurationStart, normalizeCompactToolLabel } from "./MessagesTimeline.logic";
+import {
+  buildTimelineEntryRowIndexMap,
+  computeMessageDurationStart,
+  findNearestMinimapMarkerIndex,
+  normalizeCompactToolLabel,
+  sampleTimelineMinimapRowIndices,
+} from "./MessagesTimeline.logic";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -141,5 +147,65 @@ describe("normalizeCompactToolLabel", () => {
 
   it("removes trailing completion wording from other labels", () => {
     expect(normalizeCompactToolLabel("Read file completed")).toBe("Read file");
+  });
+});
+
+describe("timeline row navigation mapping", () => {
+  it("maps grouped entry ids onto their rendered row", () => {
+    expect(
+      buildTimelineEntryRowIndexMap([
+        { id: "message-1" },
+        { id: "work-group", groupedEntryIds: ["tool-1", "tool-2"] },
+        { id: "message-2" },
+      ]),
+    ).toEqual(
+      new Map([
+        ["message-1", 0],
+        ["work-group", 1],
+        ["tool-1", 1],
+        ["tool-2", 1],
+        ["message-2", 2],
+      ]),
+    );
+  });
+
+  it("caps large timelines while preserving the ends and active row", () => {
+    const markers = sampleTimelineMinimapRowIndices({
+      rowCount: 1_000,
+      boundaryIndices: Array.from({ length: 300 }, (_, index) => index * 3),
+      activeRowIndex: 777,
+    });
+    expect(markers.length).toBeLessThanOrEqual(200);
+    expect(markers[0]).toBe(0);
+    expect(markers.at(-1)).toBe(999);
+    expect(markers).toContain(777);
+  });
+
+  it("binary-searches the nearest marker", () => {
+    expect(findNearestMinimapMarkerIndex([0, 20, 40, 90], 34)).toBe(2);
+    expect(findNearestMinimapMarkerIndex([0, 20, 40, 90], 25)).toBe(1);
+  });
+
+  it("keeps minimap markers bounded for a 1,000-turn grouped timeline fixture", () => {
+    const rows = Array.from({ length: 1_000 }, (_, turnIndex) => ({
+      id: `turn-${turnIndex}`,
+      groupedEntryIds: Array.from(
+        { length: 5 },
+        (_, entryIndex) => `turn-${turnIndex}-entry-${entryIndex}`,
+      ),
+    }));
+    const entryRowIndices = buildTimelineEntryRowIndexMap(rows);
+    const markers = sampleTimelineMinimapRowIndices({
+      rowCount: rows.length,
+      boundaryIndices: rows.map((_, index) => index),
+      activeRowIndex: 843,
+    });
+
+    expect(entryRowIndices.size).toBe(6_000);
+    expect(entryRowIndices.get("turn-843-entry-4")).toBe(843);
+    expect(markers).toHaveLength(200);
+    expect(markers[0]).toBe(0);
+    expect(markers.at(-1)).toBe(999);
+    expect(markers).toContain(843);
   });
 });

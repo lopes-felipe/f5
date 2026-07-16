@@ -106,6 +106,7 @@ import {
 } from "./desktopUpdate.logic";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
+import { ThreadWorktreeIndicator } from "./ThreadWorktreeIndicator";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 import {
@@ -471,6 +472,7 @@ function resolveThreadRecencyTextClassName(input: {
 }
 
 function ThreadRowTrailingMeta(props: {
+  thread: Pick<Thread, "id" | "branch" | "worktreePath">;
   lastInteractionAt: string;
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
@@ -488,6 +490,7 @@ function ThreadRowTrailingMeta(props: {
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      <ThreadWorktreeIndicator thread={props.thread} />
       {props.terminalStatus ? (
         <span
           role="img"
@@ -495,7 +498,9 @@ function ThreadRowTrailingMeta(props: {
           title={props.terminalStatus.label}
           className={`inline-flex items-center justify-center ${props.terminalStatus.colorClass}`}
         >
-          <TerminalIcon className={`size-3 ${props.terminalStatus.pulse ? "animate-pulse" : ""}`} />
+          <TerminalIcon
+            className={`size-3 ${props.terminalStatus.pulse ? "animate-status-pulse" : ""}`}
+          />
         </span>
       ) : null}
       <div className="shrink-0 text-right">
@@ -2774,6 +2779,7 @@ export default function Sidebar() {
                                                       </Tooltip>
                                                     </div>
                                                     <ThreadRowTrailingMeta
+                                                      thread={thread}
                                                       lastInteractionAt={thread.lastInteractionAt}
                                                       terminalStatus={terminalStatus}
                                                       isHighlighted={isActive || isSelected}
@@ -2936,6 +2942,7 @@ export default function Sidebar() {
                                               )}
                                             </div>
                                             <ThreadRowTrailingMeta
+                                              thread={thread}
                                               lastInteractionAt={thread.lastInteractionAt}
                                               terminalStatus={terminalStatus}
                                               isHighlighted={isHighlighted}
@@ -3257,6 +3264,7 @@ export default function Sidebar() {
                                                 )}
                                               </div>
                                               <ThreadRowTrailingMeta
+                                                thread={thread}
                                                 lastInteractionAt={thread.lastInteractionAt}
                                                 terminalStatus={terminalStatus}
                                                 isHighlighted={isHighlighted}
