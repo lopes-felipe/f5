@@ -12,6 +12,7 @@ import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { normalizeModelSlug } from "@t3tools/shared/model";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
+import { CommandNotFoundError } from "../spawn/resolveCommand.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
 // Auth status checks involve disk/network lookups and can be slow on first run (especially Windows)
@@ -45,9 +46,32 @@ export function nonEmptyTrimmed(value: string | undefined): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-export function isCommandMissingCause(error: Error): boolean {
-  const lower = error.message.toLowerCase();
-  return lower.includes("enoent") || lower.includes("notfound");
+export function isCommandMissingCause(cause: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current = cause;
+  for (let depth = 0; depth < 8 && current !== undefined && current !== null; depth += 1) {
+    if (seen.has(current)) return false;
+    seen.add(current);
+    if (
+      current instanceof CommandNotFoundError ||
+      (current instanceof Error && current.name === "CommandNotFoundError")
+    ) {
+      return true;
+    }
+    if (current instanceof Error) {
+      const lower = current.message.toLowerCase();
+      if (
+        lower.includes("enoent") ||
+        lower.includes("notfound") ||
+        lower.includes("command not found")
+      ) {
+        return true;
+      }
+    }
+    if (typeof current !== "object" || !("cause" in current)) return false;
+    current = current.cause;
+  }
+  return false;
 }
 
 export const spawnAndCollect = (binaryPath: string, command: ChildProcess.Command) =>

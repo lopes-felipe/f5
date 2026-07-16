@@ -550,7 +550,8 @@ export function ProvidersSettings() {
               spellCheck={false}
             />
             <span className="text-xs text-muted-foreground">
-              Leave blank to use <code>claude</code> from your PATH.
+              Leave blank to use the Claude executable bundled with the Agent SDK. Custom values
+              must point to a directly runnable binary or JavaScript CLI entry.
             </span>
           </label>
 

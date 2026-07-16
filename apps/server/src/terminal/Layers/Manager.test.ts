@@ -89,6 +89,7 @@ class FakePtyAdapter implements PtyAdapterShape {
         new PtySpawnError({
           adapter: "fake",
           message: "Failed to spawn PTY process",
+          reason: (failure as NodeJS.ErrnoException).code === "ENOENT" ? "notFound" : "unknown",
           cause: failure,
         }),
       );
@@ -102,6 +103,7 @@ class FakePtyAdapter implements PtyAdapterShape {
           new PtySpawnError({
             adapter: "fake",
             message: "Failed to spawn PTY process",
+            reason: "unknown",
             cause,
           }),
       });
@@ -666,7 +668,9 @@ describe("TerminalManager", () => {
     const { manager, ptyAdapter } = makeManager(5, {
       shellResolver: () => "/definitely/missing-shell -l",
     });
-    ptyAdapter.spawnFailures.push(new Error("posix_spawnp failed."));
+    ptyAdapter.spawnFailures.push(
+      Object.assign(new Error("localized missing-shell message"), { code: "ENOENT" }),
+    );
 
     const snapshot = await manager.open(openInput());
 
@@ -758,19 +762,21 @@ describe("TerminalManager", () => {
     manager.dispose();
   });
 
-  it("starts zsh with prompt spacer disabled to avoid `%` end markers", async () => {
-    if (process.platform === "win32") return;
-    const { manager, ptyAdapter } = makeManager(5, {
-      shellResolver: () => "/bin/zsh",
-    });
-    await manager.open(openInput());
-    const spawnInput = ptyAdapter.spawnInputs[0];
-    expect(spawnInput).toBeDefined();
-    if (!spawnInput) return;
+  it.skipIf(process.platform === "win32")(
+    "starts zsh with prompt spacer disabled to avoid `%` end markers",
+    async () => {
+      const { manager, ptyAdapter } = makeManager(5, {
+        shellResolver: () => "/bin/zsh",
+      });
+      await manager.open(openInput());
+      const spawnInput = ptyAdapter.spawnInputs[0];
+      expect(spawnInput).toBeDefined();
+      if (!spawnInput) return;
 
-    expect(spawnInput.shell).toBe("/bin/zsh");
-    expect(spawnInput.args).toEqual(["-o", "nopromptsp"]);
+      expect(spawnInput.shell).toBe("/bin/zsh");
+      expect(spawnInput.args).toEqual(["-o", "nopromptsp"]);
 
-    manager.dispose();
-  });
+      manager.dispose();
+    },
+  );
 });

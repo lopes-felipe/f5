@@ -10,7 +10,7 @@
 
 F5 is a desktop and web GUI for coding agents with a twist: every step of a workflow picks its own model. Mix **Codex** and **Claude Code** in a single feature-development run — two authors draft competing plans, each cross-reviews the other, a merge agent picks the winner, and an implementer executes it — each role on the provider and model you choose. The same per-slot model selection powers a dual-reviewer code-review workflow with a consolidation pass.
 
-It is for developers who already use `codex` or `claude` on the command line and want a multi-agent, multi-model surface on top.
+It is for developers who use Codex or Claude Code and want a multi-agent, multi-model surface on top.
 
 > [!WARNING]
 > This project is very early. Expect bugs, breaking changes, and rough edges.
@@ -84,6 +84,8 @@ bun run build:desktop
 bun run start:desktop
 ```
 
+Desktop builds target macOS (arm64/x64), Linux (x64), and Windows 11 (x64).
+
 Full source-build recipes: [`docs/quick-start.md`](./docs/quick-start.md).
 
 ### From npm (web UI)
@@ -104,9 +106,9 @@ Work in progress
 
 - [Bun](https://bun.sh/) ≥ 1.3.9
 - [Node.js](https://nodejs.org/) ≥ 24.13.1
-- At least one authenticated provider CLI:
-  - [Codex CLI](https://github.com/openai/codex) — `codex login`
-  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — `claude login`
+- At least one authenticated provider:
+  - [Codex CLI](https://github.com/openai/codex), installed on `PATH` — `codex login`
+  - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) — F5 bundles the Claude Agent SDK runtime; authenticate once with `claude auth login`
 
 See [`docs/provider-prerequisites.md`](./docs/provider-prerequisites.md) for provider-specific setup.
 
@@ -141,7 +143,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) and [`docs/architecture.md`](./docs/a
 
 ## Configuration
 
-F5 stores persistent state under `~/.f5` by default. Prefer `F5_HOME` and `F5_STATE_DIR` for overrides; the inherited `T3CODE_*` variables remain supported for backwards compatibility — see [`NOTICE.md`](./NOTICE.md). Full reference: [`docs/environment.md`](./docs/environment.md).
+F5 stores persistent state under `~/.f5` by default (`%USERPROFILE%\.f5` on Windows). Prefer `F5_HOME` and `F5_STATE_DIR` for overrides; the inherited `T3CODE_*` variables remain supported for backwards compatibility — see [`NOTICE.md`](./NOTICE.md). Full reference: [`docs/environment.md`](./docs/environment.md).
 
 ## Documentation
 

@@ -723,14 +723,29 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   yield* Effect.log(
     `[desktop-artifact] Building ${options.platform}/${options.target} (arch=${options.arch}, version=${appVersion})...`,
   );
+  const electronBuilderExecutable = path.join(
+    repoRoot,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "electron-builder.cmd" : "electron-builder",
+  );
+  if (!(yield* fs.exists(electronBuilderExecutable))) {
+    return yield* new BuildScriptError({
+      message: `Pinned electron-builder executable was not found at ${electronBuilderExecutable}. Run bun install first.`,
+    });
+  }
   yield* runCommand(
-    ChildProcess.make({
-      cwd: stageAppDir,
-      env: buildEnv,
-      ...commandOutputOptions(options.verbose),
-      // Windows needs shell mode to resolve .cmd shims.
-      shell: process.platform === "win32",
-    })`bunx electron-builder ${platformConfig.cliFlag} --${options.arch} --publish never`,
+    ChildProcess.make(
+      electronBuilderExecutable,
+      [platformConfig.cliFlag, `--${options.arch}`, "--publish", "never"],
+      {
+        cwd: stageAppDir,
+        env: buildEnv,
+        ...commandOutputOptions(options.verbose),
+        // This is a repository-pinned, input-free .cmd shim on Windows.
+        shell: process.platform === "win32",
+      },
+    ),
   );
 
   const stageDistDir = path.join(stageAppDir, "dist");

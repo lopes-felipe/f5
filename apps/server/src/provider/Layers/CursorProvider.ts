@@ -13,6 +13,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { Cause, Effect, FileSystem, Layer, Option, Path, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 import {
   createModelCapabilities,
   getProviderOptionBooleanSelectionValue,
@@ -1073,7 +1074,8 @@ const runCursorCommand = (
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const command = ChildProcess.make(cursorSettings.binaryPath, [...args], {
+    const invocation = yield* resolveInvocationEffect(cursorSettings.binaryPath, args, environment);
+    const command = ChildProcess.make(invocation.file, [...invocation.args], {
       env: environment,
     });
 

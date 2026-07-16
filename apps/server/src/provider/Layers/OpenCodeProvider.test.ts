@@ -14,6 +14,7 @@ import {
 } from "../opencodeRuntime.ts";
 import { checkOpenCodeProviderStatus } from "./OpenCodeProvider.ts";
 import type { OpenCodeInventory } from "../opencodeRuntime.ts";
+import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 
 const DEFAULT_VERSION_STDOUT = "opencode 1.14.19\n";
 
@@ -116,7 +117,7 @@ const makeOpenCodeSettings = (overrides?: Partial<OpenCodeSettings>): OpenCodeSe
 it.layer(testLayer)("checkOpenCodeProviderStatus", (it) => {
   it.effect("shows a codex-style missing binary message", () =>
     Effect.gen(function* () {
-      runtimeMock.state.runVersionError = new Error("spawn opencode ENOENT");
+      runtimeMock.state.runVersionError = new CommandNotFoundError("opencode");
       const snapshot = yield* checkOpenCodeProviderStatus(makeOpenCodeSettings(), process.cwd());
 
       assert.equal(snapshot.status, "error");

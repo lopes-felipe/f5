@@ -71,9 +71,21 @@ describe("extractTerminalLinks", () => {
     ]);
   });
 
-  it("does not treat file URIs as filesystem path links", () => {
-    expect(extractTerminalLinks("file:///etc/passwd")).toEqual([]);
-    expect(extractTerminalLinks("file:/Users/julius/project/src/main.ts")).toEqual([]);
+  it("treats local file URIs as filesystem path links", () => {
+    expect(extractTerminalLinks("file:///etc/passwd")).toEqual([
+      { kind: "path", text: "file:///etc/passwd", start: 0, end: 18 },
+    ]);
+    expect(extractTerminalLinks("file://localhost/C:/repo/main.ts:4")).toHaveLength(1);
+    expect(extractTerminalLinks("file://remote-host/share/main.ts:4")).toEqual([]);
+    expect(extractTerminalLinks("file://%/C:/repo/main.ts:4")).toEqual([]);
+  });
+
+  it("finds quoted Windows and UNC paths containing spaces", () => {
+    const line = 'open "C:\\Program Files\\repo\\main.ts:12:3" and "\\\\server\\my share\\a.ts:4"';
+    expect(extractTerminalLinks(line).map((match) => match.text)).toEqual([
+      "C:\\Program Files\\repo\\main.ts:12:3",
+      "\\\\server\\my share\\a.ts:4",
+    ]);
   });
 });
 
@@ -91,6 +103,21 @@ describe("resolvePathLinkTarget", () => {
     expect(
       resolvePathLinkTarget("/Users/julius/project/src/main.ts:12", "/Users/julius/project"),
     ).toBe("/Users/julius/project/src/main.ts:12");
+  });
+
+  it("normalizes localhost file URLs and keeps their position", () => {
+    expect(resolvePathLinkTarget("file://localhost/C:/repo/main.ts:12:3", "C:\\repo")).toBe(
+      "C:/repo/main.ts:12:3",
+    );
+    expect(resolvePathLinkTarget("file:///C:/repo/main.ts#L12C4", "C:\\repo")).toBe(
+      "C:/repo/main.ts:12:4",
+    );
+    expect(resolvePathLinkTarget("file://remote-host/share/main.ts", "C:\\repo")).toBe(
+      "file://remote-host/share/main.ts",
+    );
+    expect(resolvePathLinkTarget("file://%/C:/repo/main.ts", "C:\\repo")).toBe(
+      "file://%/C:/repo/main.ts",
+    );
   });
 });
 

@@ -41,6 +41,7 @@ import type { ContextMenuItem } from "@t3tools/contracts";
 import { NetService } from "@t3tools/shared/Net";
 import { RotatingFileSink } from "@t3tools/shared/logging";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
+import { killProcessTree } from "@t3tools/shared/processTree";
 import { buildDesktopBackendEnv, resolveDesktopStateDirConfig } from "./backendEnv";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
@@ -1934,10 +1935,10 @@ function stopBackend(): void {
   if (!child) return;
 
   if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGTERM");
+    killProcessTree(child, { isGroupLeader: false, graceful: true });
     setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
+        killProcessTree(child, { isGroupLeader: false, graceful: false });
       }
     }, 2_000).unref();
   }
@@ -1978,11 +1979,11 @@ async function stopBackendAndWaitForExit(timeoutMs = 5_000): Promise<void> {
     }
 
     backendChild.once("exit", onExit);
-    backendChild.kill("SIGTERM");
+    killProcessTree(backendChild, { isGroupLeader: false, graceful: true });
 
     forceKillTimer = setTimeout(() => {
       if (backendChild.exitCode === null && backendChild.signalCode === null) {
-        backendChild.kill("SIGKILL");
+        killProcessTree(backendChild, { isGroupLeader: false, graceful: false });
       }
     }, 2_000);
     forceKillTimer.unref();

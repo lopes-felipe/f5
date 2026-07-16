@@ -4,8 +4,10 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { CodexSettings } from "@t3tools/contracts";
 import {
+  CODEX_SHADOW_MANAGED_FILES_MANIFEST,
   CodexShadowHomeError,
   materializeCodexShadowHome,
+  normalizeWindowsLinkPath,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
 
@@ -33,6 +35,16 @@ const writeTextFile = Effect.fn("CodexHomeLayout.test.writeTextFile")(function* 
 });
 
 it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
+  it("normalizes Windows junction targets for stable drift checks", () => {
+    expect(normalizeWindowsLinkPath("\\\\?\\C:\\Users\\Test\\Codex\\")).toBe(
+      "c:\\users\\test\\codex",
+    );
+    expect(normalizeWindowsLinkPath("c:/users/test/codex")).toBe("c:\\users\\test\\codex");
+    expect(normalizeWindowsLinkPath("\\\\?\\UNC\\Server\\Share\\Codex\\")).toBe(
+      "\\\\server\\share\\codex",
+    );
+  });
+
   describe("resolveCodexHomeLayout", () => {
     it.effect("uses direct CODEX_HOME when no shadow home is configured", () =>
       Effect.gen(function* () {
@@ -92,10 +104,12 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         yield* writeTextFile(path.join(sharedHome, "auth.json"), '{"shared":true}\n');
         yield* fileSystem.makeDirectory(shadowHome, { recursive: true });
         yield* writeTextFile(path.join(shadowHome, "auth.json"), '{"shadow":true}\n');
-        yield* fileSystem.symlink(
-          path.join(sharedHome, "models_cache.json"),
-          path.join(shadowHome, "models_cache.json"),
-        );
+        if (process.platform !== "win32") {
+          yield* fileSystem.symlink(
+            path.join(sharedHome, "models_cache.json"),
+            path.join(shadowHome, "models_cache.json"),
+          );
+        }
 
         const layout = yield* resolveCodexHomeLayout(
           decodeCodexSettings({
@@ -105,9 +119,11 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
         );
 
         yield* materializeCodexShadowHome(layout);
+        yield* materializeCodexShadowHome(layout);
 
         const sessionsTarget = yield* fileSystem.readLink(path.join(shadowHome, "sessions"));
-        const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
+        const configPath = path.join(shadowHome, "config.toml");
+        const sharedConfigPath = path.join(sharedHome, "config.toml");
         const modelsCacheExists = yield* fileSystem.exists(
           path.join(shadowHome, "models_cache.json"),
         );
@@ -116,8 +132,21 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           .pipe(Effect.result);
         const authContents = yield* fileSystem.readFileString(path.join(shadowHome, "auth.json"));
 
-        expect(sessionsTarget).toBe(path.join(sharedHome, "sessions"));
-        expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+        if (process.platform === "win32") {
+          expect(normalizeWindowsLinkPath(sessionsTarget)).toBe(
+            normalizeWindowsLinkPath(path.join(sharedHome, "sessions")),
+          );
+          const [configStat, sharedConfigStat] = yield* Effect.all([
+            fileSystem.stat(configPath),
+            fileSystem.stat(sharedConfigPath),
+          ]);
+          expect(configStat.ino).toBe(sharedConfigStat.ino);
+          yield* fileSystem.writeFileString(sharedConfigPath, 'model = "gpt-5.1-codex"\n');
+          expect(yield* fileSystem.readFileString(configPath)).toContain("gpt-5.1-codex");
+        } else {
+          expect(sessionsTarget).toBe(path.join(sharedHome, "sessions"));
+          expect(yield* fileSystem.readLink(configPath)).toBe(sharedConfigPath);
+        }
         expect(modelsCacheExists).toBe(false);
         expect(authLinkResult._tag).toBe("Failure");
         expect(authContents).toContain("shadow");
@@ -150,7 +179,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         yield* materializeCodexShadowHome(layout);
 
-        const configTarget = yield* fileSystem.readLink(path.join(shadowHome, "config.toml"));
+        const configPath = path.join(shadowHome, "config.toml");
         const logLinkResult = yield* fileSystem
           .readLink(path.join(shadowHome, "log"))
           .pipe(Effect.result);
@@ -161,10 +190,76 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
           .readLink(path.join(shadowHome, "tmp"))
           .pipe(Effect.result);
 
-        expect(configTarget).toBe(path.join(sharedHome, "config.toml"));
+        if (process.platform === "win32") {
+          const [configStat, sharedConfigStat] = yield* Effect.all([
+            fileSystem.stat(configPath),
+            fileSystem.stat(path.join(sharedHome, "config.toml")),
+          ]);
+          expect(configStat.ino).toBe(sharedConfigStat.ino);
+        } else {
+          expect(yield* fileSystem.readLink(configPath)).toBe(path.join(sharedHome, "config.toml"));
+        }
         expect(logLinkResult._tag).toBe("Failure");
         expect(memoriesLinkResult._tag).toBe("Failure");
         expect(tmpLinkResult._tag).toBe("Failure");
+      }),
+    );
+
+    it.effect("refreshes an F5-managed cross-volume copy on later materializations", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const shadowHome = path.join(shadowRoot, "shadow");
+        const sharedConfig = path.join(sharedHome, "config.toml");
+        const shadowConfig = path.join(shadowHome, "config.toml");
+        yield* writeTextFile(sharedConfig, 'model = "first"\n');
+
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+        );
+        const copyOptions = { platform: "win32", forceWindowsFileCopy: true } as const;
+
+        yield* materializeCodexShadowHome(layout, copyOptions);
+        expect(yield* fileSystem.readFileString(shadowConfig)).toContain("first");
+        expect(
+          yield* fileSystem.exists(path.join(shadowHome, CODEX_SHADOW_MANAGED_FILES_MANIFEST)),
+        ).toBe(true);
+
+        yield* fileSystem.writeFileString(sharedConfig, 'model = "second"\n');
+        yield* materializeCodexShadowHome(layout, copyOptions);
+        expect(yield* fileSystem.readFileString(shadowConfig)).toContain("second");
+      }),
+    );
+
+    it.effect("relinks an owned Windows hard link when the shared file inode changes", () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const sharedHome = yield* makeTempDir("t3code-codex-shared-");
+        const shadowRoot = yield* makeTempDir("t3code-codex-shadow-root-");
+        const shadowHome = path.join(shadowRoot, "shadow");
+        const sharedConfig = path.join(sharedHome, "config.toml");
+        const shadowConfig = path.join(shadowHome, "config.toml");
+        yield* writeTextFile(sharedConfig, 'model = "first"\n');
+
+        const layout = yield* resolveCodexHomeLayout(
+          decodeCodexSettings({ homePath: sharedHome, shadowHomePath: shadowHome }),
+        );
+        const windowsOptions = { platform: "win32" } as const;
+        yield* materializeCodexShadowHome(layout, windowsOptions);
+
+        yield* fileSystem.remove(sharedConfig);
+        yield* fileSystem.writeFileString(sharedConfig, 'model = "replacement"\n');
+        yield* materializeCodexShadowHome(layout, windowsOptions);
+
+        const [sharedStat, shadowStat] = yield* Effect.all([
+          fileSystem.stat(sharedConfig),
+          fileSystem.stat(shadowConfig),
+        ]);
+        expect(shadowStat.ino).toBe(sharedStat.ino);
+        expect(yield* fileSystem.readFileString(shadowConfig)).toContain("replacement");
       }),
     );
 
@@ -202,7 +297,7 @@ it.layer(NodeServices.layer)("CodexHomeLayout", (it) => {
 
         const error = yield* materializeCodexShadowHome(layout).pipe(Effect.flip);
 
-        expect(error.detail).toContain("already exists and is not a symlink");
+        expect(error.detail).toContain("already exists and is not an F5-managed link or copy");
       }),
     );
   });

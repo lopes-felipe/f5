@@ -3,6 +3,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 import { Cause, Effect, Exit, Option, Result } from "effect";
 import type * as EffectAcpSchema from "effect-acp/schema";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 
 import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
 import {
@@ -126,9 +127,10 @@ const runGrokVersionCommand = (
 ) =>
   Effect.gen(function* () {
     const command = grokSettings.binaryPath || "grok";
+    const invocation = yield* resolveInvocationEffect(command, ["--version"], environment);
     return yield* spawnAndCollect(
       command,
-      ChildProcess.make(command, ["--version"], {
+      ChildProcess.make(invocation.file, [...invocation.args], {
         env: environment,
       }),
     );

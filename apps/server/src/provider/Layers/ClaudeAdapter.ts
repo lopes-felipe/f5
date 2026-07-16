@@ -118,6 +118,7 @@ import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.
 import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveClaudeApiModelId } from "./ClaudeProvider.ts";
+import { resolveClaudeSdkExecutableOptions } from "../claudeSdkExecutable.ts";
 
 const PROVIDER = "claudeAgent" as const;
 const COMPACTION_QUERY_TIMEOUT = Duration.minutes(3);
@@ -3667,6 +3668,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         })();
         const providerOptions = input.providerOptions?.claudeAgent;
         const permissionMode = toPermissionMode(providerOptions?.permissionMode);
+        const queryEnvironment = buildClaudeQueryEnv(providerOptions);
         // One-off prompts intentionally exclude MCP so the output stays
         // deterministic and tool-free. Even when the saved session config uses
         // bypass permissions, we keep the explicit tool-deny gate active here.
@@ -3678,7 +3680,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               options: {
                 ...(input.cwd ? { cwd: input.cwd } : {}),
                 ...(input.model ? { model: input.model } : {}),
-                pathToClaudeCodeExecutable: providerOptions?.binaryPath ?? "claude",
+                ...resolveClaudeSdkExecutableOptions(
+                  providerOptions?.binaryPath,
+                  queryEnvironment,
+                  process.platform,
+                  input.cwd,
+                ),
                 settingSources: [...CLAUDE_SETTING_SOURCES],
                 ...(permissionMode ? { permissionMode } : {}),
                 ...(providerOptions?.maxThinkingTokens !== undefined
@@ -3695,7 +3702,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     message:
                       "This one-off prompt requires plain-text output only. Tool calls are not allowed.",
                   }) satisfies PermissionResult,
-                env: buildClaudeQueryEnv(providerOptions),
+                env: queryEnvironment,
               },
             }),
           catch: (cause) =>
@@ -4227,10 +4234,27 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // Resume flows must not append again, or the shared host prompt would
         // be duplicated across reconnects for the same Claude session.
 
+        const queryEnvironment = buildClaudeQueryEnv(providerOptions);
+        const sdkExecutableOptions = yield* Effect.try({
+          try: () =>
+            resolveClaudeSdkExecutableOptions(
+              providerOptions?.binaryPath,
+              queryEnvironment,
+              process.platform,
+              input.cwd,
+            ),
+          catch: (cause) =>
+            new ProviderAdapterProcessError({
+              provider: PROVIDER,
+              threadId,
+              detail: toMessage(cause, "Failed to resolve the Claude runtime executable."),
+              cause,
+            }),
+        });
         const queryOptions: ClaudeQueryOptionsWithAppend = {
           ...(input.cwd ? { cwd: input.cwd } : {}),
           ...(runtimeModelSelection.apiModel ? { model: runtimeModelSelection.apiModel } : {}),
-          pathToClaudeCodeExecutable: providerOptions?.binaryPath ?? "claude",
+          ...sdkExecutableOptions,
           settingSources: [...CLAUDE_SETTING_SOURCES],
           ...(effectiveEffort ? { effort: effectiveEffort } : {}),
           ...(permissionMode ? { permissionMode } : {}),
@@ -4257,7 +4281,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
-          env: buildClaudeQueryEnv(providerOptions),
+          env: queryEnvironment,
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
           ...(appendSystemPrompt ? { appendSystemPrompt } : {}),
         };

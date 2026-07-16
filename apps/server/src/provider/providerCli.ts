@@ -6,6 +6,8 @@ import type { CodexMcpServerEntry } from "@t3tools/contracts";
 import { prependCodexCliTelemetryDisabledConfig } from "./codexCliConfig.ts";
 import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
+import { CommandNotFoundError, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
+import { resolveClaudeCliInvocation } from "./claudeSdkExecutable.ts";
 
 export interface ProviderCliCommandResult {
   readonly stdout: string;
@@ -24,6 +26,7 @@ export interface ProviderCliCommandOptions {
 export interface ClaudeCliCommandOptions {
   readonly binaryPath?: string | undefined;
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
+  readonly cwd?: string | undefined;
 }
 
 const collectStreamAsString = <E>(stream: Stream.Stream<Uint8Array, E>): Effect.Effect<string, E> =>
@@ -56,8 +59,10 @@ export function runProviderCliCommand(
             mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
           })
         : [...args];
-    const command = ChildProcess.make(resolvedBinary, [...commandArgs], {
-      env: buildProviderChildProcessEnv(process.env, options?.envOverrides),
+    const environment = buildProviderChildProcessEnv(process.env, options?.envOverrides);
+    const invocation = yield* resolveInvocationEffect(resolvedBinary, commandArgs, environment);
+    const command = ChildProcess.make(invocation.file, [...invocation.args], {
+      env: environment,
       stdin: "ignore",
     });
 
@@ -83,4 +88,30 @@ export const runCodexCliCommand = (
 export const runClaudeCliCommand = (
   args: ReadonlyArray<string>,
   options?: ClaudeCliCommandOptions,
-) => runProviderCliCommand("claude", args, options);
+) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const environment = buildProviderChildProcessEnv(process.env, options?.envOverrides);
+    const invocation = yield* Effect.try({
+      try: () =>
+        resolveClaudeCliInvocation(options?.binaryPath, args, environment, { cwd: options?.cwd }),
+      catch: (cause) =>
+        cause instanceof CommandNotFoundError
+          ? cause
+          : new CommandNotFoundError(options?.binaryPath ?? "claude", String(cause)),
+    });
+    const command = ChildProcess.make(invocation.file, [...invocation.args], {
+      env: environment,
+      stdin: "ignore",
+    });
+    const child = yield* spawner.spawn(command);
+    const [stdout, stderr, exitCode] = yield* Effect.all(
+      [
+        collectStreamAsString(child.stdout),
+        collectStreamAsString(child.stderr),
+        child.exitCode.pipe(Effect.map(Number)),
+      ],
+      { concurrency: "unbounded" },
+    );
+    return { stdout, stderr, code: exitCode } satisfies ProviderCliCommandResult;
+  }).pipe(Effect.scoped);

@@ -36,6 +36,11 @@ import {
 } from "../providerSnapshot.ts";
 import { compareCliVersions } from "../cliVersion.ts";
 import { makeClaudeEnvironment } from "../Drivers/ClaudeHome.ts";
+import {
+  resolveClaudeCliInvocation,
+  resolveClaudeSdkExecutableOptions,
+} from "../claudeSdkExecutable.ts";
+import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
   optionDescriptors: [],
@@ -599,7 +604,7 @@ const probeClaudeCapabilities = (
         })(),
         options: {
           persistSession: false,
-          pathToClaudeCodeExecutable: claudeSettings.binaryPath,
+          ...resolveClaudeSdkExecutableOptions(claudeSettings.binaryPath, claudeEnvironment),
           abortController: abort,
           settingSources: ["user", "project", "local"],
           allowedTools: [],
@@ -643,9 +648,15 @@ const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   environment: NodeJS.ProcessEnv = process.env,
 ) {
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-  const command = ChildProcess.make(claudeSettings.binaryPath, [...args], {
+  const invocation = yield* Effect.try({
+    try: () => resolveClaudeCliInvocation(claudeSettings.binaryPath, args, claudeEnvironment),
+    catch: (cause) =>
+      cause instanceof CommandNotFoundError
+        ? cause
+        : new CommandNotFoundError(claudeSettings.binaryPath, String(cause)),
+  });
+  const command = ChildProcess.make(invocation.file, [...invocation.args], {
     env: claudeEnvironment,
-    shell: process.platform === "win32",
   });
   return yield* spawnAndCollect(claudeSettings.binaryPath, command);
 });

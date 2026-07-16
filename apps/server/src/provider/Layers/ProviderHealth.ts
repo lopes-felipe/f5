@@ -33,6 +33,7 @@ import {
   runProviderCliCommand,
 } from "../providerCli.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { isDefaultClaudeBinary } from "../claudeSdkExecutable.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
 export const AUTH_TIMEOUT_MS = 10_000;
@@ -52,6 +53,13 @@ function nonEmptyTrimmed(value: string | undefined): string | undefined {
   if (!value) return undefined;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function claudeMissingExecutableMessage(binaryPath: string): string {
+  if (isDefaultClaudeBinary(binaryPath)) {
+    return "The Claude executable bundled with the Agent SDK is unavailable. Reinstall F5 or its dependencies with optional packages enabled.";
+  }
+  return `The configured Claude executable '${binaryPath}' is unavailable or not executable.`;
 }
 
 function parseSimpleCommandVersion(stdout: string, stderr: string): string | undefined {
@@ -525,17 +533,16 @@ export const checkClaudeProviderPreflight = (input?: {
 
     if (Result.isFailure(versionProbe)) {
       const error = versionProbe.failure;
+      const missing = isCommandMissingCause(error, binaryPath);
       return {
         provider: CLAUDE_AGENT_PROVIDER,
         status: "error" as const,
         available: false,
         authStatus: "unknown" as const,
         checkedAt,
-        failureReason: isCommandMissingCause(error, binaryPath)
-          ? "notInstalled"
-          : "versionProbeFailed",
-        message: isCommandMissingCause(error, binaryPath)
-          ? "Claude Agent CLI (`claude`) is not installed or not on PATH."
+        failureReason: missing ? "notInstalled" : "versionProbeFailed",
+        message: missing
+          ? claudeMissingExecutableMessage(binaryPath)
           : `Failed to execute Claude Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
       };
     }

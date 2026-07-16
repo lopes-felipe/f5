@@ -1,4 +1,7 @@
-import { type ChildProcess as ChildProcessHandle, spawn, spawnSync } from "node:child_process";
+import { type ChildProcess as ChildProcessHandle, spawn } from "node:child_process";
+import { killProcessTree } from "@t3tools/shared/processTree";
+
+import { resolveInvocation } from "./spawn/resolveCommand.ts";
 
 export interface ProcessRunOptions {
   cwd?: string | undefined;
@@ -99,26 +102,7 @@ const DEFAULT_MAX_BUFFER_BYTES = 8 * 1024 * 1024;
 
 /** Terminate the command and every subprocess that inherited its stdio. */
 function killChild(child: ChildProcessHandle, signal: NodeJS.Signals = "SIGTERM"): void {
-  if (process.platform === "win32" && child.pid !== undefined) {
-    try {
-      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-      return;
-    } catch {
-      // fallback to direct kill
-    }
-  }
-  if (process.platform !== "win32" && child.pid !== undefined) {
-    try {
-      // POSIX children are spawned as process-group leaders below. Killing the
-      // group prevents a wrapper's grandchild from keeping stdout/stderr pipes
-      // open after the wrapper itself has timed out.
-      process.kill(-child.pid, signal);
-      return;
-    } catch {
-      // The group may already be gone; fall through to the direct handle.
-    }
-  }
-  child.kill(signal);
+  killProcessTree(child, { isGroupLeader: process.platform !== "win32", signal });
 }
 
 function appendChunkWithinLimit(
@@ -159,13 +143,14 @@ export async function runProcess(
   const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
   const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
   const outputMode = options.outputMode ?? "error";
+  const environment = options.env ?? process.env;
+  const invocation = resolveInvocation(command, args, environment, { cwd: options.cwd });
 
   return new Promise<ProcessRunResult>((resolve, reject) => {
-    const child = spawn(command, args, {
+    const child = spawn(invocation.file, [...invocation.args], {
       cwd: options.cwd,
-      env: options.env,
+      env: environment,
       stdio: "pipe",
-      shell: process.platform === "win32",
       detached: process.platform !== "win32",
     });
 

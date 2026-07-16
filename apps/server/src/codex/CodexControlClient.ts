@@ -13,6 +13,7 @@ import { createJsonRpcStdinWriter, type JsonRpcStdinWriter } from "./JsonRpcStdi
 import { prependCodexCliTelemetryDisabledConfig } from "../provider/codexCliConfig.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { resolveCodexHome } from "../os-jank.ts";
+import { resolveInvocation } from "../spawn/resolveCommand.ts";
 
 interface PendingRequest {
   readonly method: string;
@@ -224,28 +225,28 @@ export class CodexControlClient extends EventEmitter<{
       cwd: environment.cwd,
       ...(codexHomePath ? { homePath: codexHomePath } : {}),
     });
-
-    const child = spawn(
-      binaryPath,
-      prependCodexCliTelemetryDisabledConfig(["app-server"], {
-        mcpServers: environment.mcpServers ?? {},
-        ...(environment.mcpOAuthCallbackPort
-          ? { mcpOAuthCallbackPort: environment.mcpOAuthCallbackPort }
-          : {}),
-        ...(environment.mcpOAuthCallbackUrl
-          ? { mcpOAuthCallbackUrl: environment.mcpOAuthCallbackUrl }
-          : {}),
-      }),
-      {
-        cwd: environment.cwd,
-        env: buildProviderChildProcessEnv(
-          process.env,
-          codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
-        ),
-        stdio: ["pipe", "pipe", "pipe"],
-        shell: process.platform === "win32",
-      },
+    const childEnvironment = buildProviderChildProcessEnv(
+      process.env,
+      codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
     );
+    const childArgs = prependCodexCliTelemetryDisabledConfig(["app-server"], {
+      mcpServers: environment.mcpServers ?? {},
+      ...(environment.mcpOAuthCallbackPort
+        ? { mcpOAuthCallbackPort: environment.mcpOAuthCallbackPort }
+        : {}),
+      ...(environment.mcpOAuthCallbackUrl
+        ? { mcpOAuthCallbackUrl: environment.mcpOAuthCallbackUrl }
+        : {}),
+    });
+    const invocation = resolveInvocation(binaryPath, childArgs, childEnvironment, {
+      cwd: environment.cwd,
+    });
+
+    const child = spawn(invocation.file, [...invocation.args], {
+      cwd: environment.cwd,
+      env: childEnvironment,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
     const output = readline.createInterface({ input: child.stdout });
     const writer = createJsonRpcStdinWriter({
       stdin: child.stdin,

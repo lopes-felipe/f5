@@ -1,9 +1,15 @@
 import { formatWorkspaceRelativePath } from "./filePathDisplay";
 import { resolvePathLinkTarget, splitPathAndPosition } from "./terminal-links";
 import { basenameOfPath } from "./vscode-icons";
+import {
+  appendLocalFileUrlPosition,
+  isWindowsAbsolutePath,
+  parseLocalFileUrl,
+  safeDecodeLocalPath,
+  WINDOWS_DRIVE_PATH_PATTERN,
+  WINDOWS_UNC_PATH_PATTERN,
+} from "./local-paths";
 
-const WINDOWS_DRIVE_PATH_PATTERN = /^[A-Za-z]:[\\/]/;
-const WINDOWS_UNC_PATH_PATTERN = /^\\\\/;
 const EXTERNAL_SCHEME_PATTERN = /^([A-Za-z][A-Za-z0-9+.-]*):(.*)$/;
 const RELATIVE_PATH_PREFIX_PATTERN = /^(~\/|\.{1,2}\/)/;
 const RELATIVE_FILE_PATH_PATTERN = /^[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}$/;
@@ -23,14 +29,6 @@ const POSIX_FILE_ROOT_PREFIXES = [
   "/root/",
 ] as const;
 
-function safeDecode(value: string): string {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
 function stripSearchAndHash(value: string): { path: string; hash: string } {
   const hashIndex = value.indexOf("#");
   const pathWithSearch = hashIndex >= 0 ? value.slice(0, hashIndex) : value;
@@ -38,25 +36,6 @@ function stripSearchAndHash(value: string): { path: string; hash: string } {
   const queryIndex = pathWithSearch.indexOf("?");
   const path = queryIndex >= 0 ? pathWithSearch.slice(0, queryIndex) : pathWithSearch;
   return { path, hash: rawHash };
-}
-
-function parseFileUrlHref(href: string): { path: string; hash: string } | null {
-  try {
-    const parsed = new URL(href);
-    if (parsed.protocol.toLowerCase() !== "file:") return null;
-
-    const decodedPath = safeDecode(parsed.pathname);
-    if (decodedPath.length === 0) return null;
-
-    // Browser URL parser encodes "C:/foo" as "/C:/foo" for file URLs.
-    const normalizedPath = /^\/[A-Za-z]:[\\/]/.test(decodedPath)
-      ? decodedPath.slice(1)
-      : decodedPath;
-
-    return { path: normalizedPath, hash: parsed.hash };
-  } catch {
-    return null;
-  }
 }
 
 function looksLikePosixFilesystemPath(path: string): boolean {
@@ -67,17 +46,8 @@ function looksLikePosixFilesystemPath(path: string): boolean {
   return /\.[A-Za-z0-9_-]+$/.test(basename);
 }
 
-function appendLineColumnFromHash(path: string, hash: string): string {
-  if (!hash || POSITION_SUFFIX_PATTERN.test(path)) return path;
-  const match = hash.match(/^#L(\d+)(?:C(\d+))?$/i);
-  if (!match?.[1]) return path;
-  const line = match[1];
-  const column = match[2];
-  return `${path}:${line}${column ? `:${column}` : ""}`;
-}
-
 function isLikelyPathCandidate(path: string): boolean {
-  if (WINDOWS_DRIVE_PATH_PATTERN.test(path) || WINDOWS_UNC_PATH_PATTERN.test(path)) return true;
+  if (isWindowsAbsolutePath(path)) return true;
   if (RELATIVE_PATH_PREFIX_PATTERN.test(path)) return true;
   if (path.startsWith("/")) return looksLikePosixFilesystemPath(path);
   return RELATIVE_FILE_PATH_PATTERN.test(path) || RELATIVE_FILE_NAME_PATTERN.test(path);
@@ -109,11 +79,11 @@ export function resolveMarkdownFileLinkTarget(
   if (rawHref.length === 0 || rawHref.startsWith("#")) return null;
 
   const fileUrlTarget = rawHref.toLowerCase().startsWith("file:")
-    ? parseFileUrlHref(rawHref)
+    ? parseLocalFileUrl(rawHref)
     : null;
   const source = fileUrlTarget ?? stripSearchAndHash(rawHref);
-  const decodedPath = fileUrlTarget ? source.path.trim() : safeDecode(source.path.trim());
-  const decodedHash = safeDecode(source.hash.trim());
+  const decodedPath = fileUrlTarget ? source.path.trim() : safeDecodeLocalPath(source.path.trim());
+  const decodedHash = safeDecodeLocalPath(source.hash.trim());
 
   if (decodedPath.length === 0) return null;
   if (
@@ -126,7 +96,7 @@ export function resolveMarkdownFileLinkTarget(
 
   if (!isLikelyPathCandidate(decodedPath)) return null;
 
-  const pathWithPosition = appendLineColumnFromHash(decodedPath, decodedHash);
+  const pathWithPosition = appendLocalFileUrlPosition(decodedPath, decodedHash);
   if (!isRelativePath(pathWithPosition)) {
     return pathWithPosition;
   }
@@ -189,9 +159,9 @@ export function resolveMarkdownFileLinkMeta(
 export function rewriteMarkdownFileUriHref(href: string): string {
   if (!href) return href;
   if (!href.toLowerCase().startsWith("file:")) return href;
-  const parsed = parseFileUrlHref(href);
+  const parsed = parseLocalFileUrl(href);
   if (!parsed) return href;
   const base = parsed.path;
-  const withPosition = appendLineColumnFromHash(base, parsed.hash);
+  const withPosition = appendLocalFileUrlPosition(base, parsed.hash);
   return withPosition;
 }

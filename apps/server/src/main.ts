@@ -156,6 +156,9 @@ const ServerConfigLive = (input: CliInput) =>
     ServerConfig,
     Effect.gen(function* () {
       const cliConfig = yield* CliConfig;
+      // This layer is acquired before provider layers. Hydrate PATH here so
+      // their initial availability probes use the effective child environment.
+      yield* cliConfig.fixPath;
       const { findAvailablePort } = yield* NetService;
       const env = yield* CliEnvConfig.asEffect().pipe(
         Effect.mapError(
@@ -409,10 +412,8 @@ export const recordStartupHeartbeat = Effect.gen(function* () {
 
 const makeServerProgram = (input: CliInput) =>
   Effect.gen(function* () {
-    const cliConfig = yield* CliConfig;
     const { start, stopSignal } = yield* Server;
     const openDeps = yield* Open;
-    yield* cliConfig.fixPath;
 
     const config = yield* withStartupPhaseTiming("config.resolve", ServerConfig.asEffect());
     yield* Effect.logInfo("server instrumentation flags", {

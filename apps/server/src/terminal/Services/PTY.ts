@@ -14,6 +14,7 @@ import { Effect, Schema, ServiceMap } from "effect";
 export class PtySpawnError extends Schema.TaggedErrorClass<PtySpawnError>()("PtySpawnError", {
   adapter: Schema.String,
   message: Schema.String,
+  reason: Schema.Literals(["notFound", "unknown"]),
   cause: Schema.optional(Schema.Defect),
 }) {}
 

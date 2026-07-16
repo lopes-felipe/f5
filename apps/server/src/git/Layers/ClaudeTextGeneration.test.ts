@@ -59,7 +59,7 @@ function makeFakeClaudeBinary(dir: string) {
       ].join("\n"),
     );
     yield* fs.chmod(claudePath, 0o755);
-    return binDir;
+    return { binDir, claudePath };
   });
 }
 
@@ -79,7 +79,7 @@ function withFakeClaudeEnv<A, E, R>(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
-    const binDir = yield* makeFakeClaudeBinary(tempDir);
+    const { binDir, claudePath } = yield* makeFakeClaudeBinary(tempDir);
     const previousPath = process.env.PATH;
     const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
     const previousExitCode = process.env.T3_FAKE_CLAUDE_EXIT_CODE;
@@ -178,7 +178,10 @@ function withFakeClaudeEnv<A, E, R>(
         }),
     );
 
-    const config = Schema.decodeSync(ClaudeSettings)(input.claudeConfig ?? {});
+    const config = Schema.decodeSync(ClaudeSettings)({
+      binaryPath: claudePath,
+      ...input.claudeConfig,
+    });
     const textGeneration = yield* makeClaudeTextGeneration(config);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);

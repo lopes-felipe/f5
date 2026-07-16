@@ -82,4 +82,22 @@ describe("syncShellEnvironment", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/inherited.sock");
   });
+
+  it("hydrates Windows PATH before the backend process starts", () => {
+    const env: NodeJS.ProcessEnv = {
+      Path: "C:\\Inherited",
+      APPDATA: "C:\\Users\\Test\\AppData\\Roaming",
+    };
+
+    syncShellEnvironment(env, {
+      platform: "win32",
+      readWindowsRegistryPaths: () => ({ machine: "C:\\Windows\\System32" }),
+      windowsPathExists: (candidate) => candidate.endsWith("\\npm"),
+    });
+
+    expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["PATH"]);
+    expect(env.PATH).toBe(
+      "C:\\Inherited;C:\\Windows\\System32;C:\\Users\\Test\\AppData\\Roaming\\npm",
+    );
+  });
 });

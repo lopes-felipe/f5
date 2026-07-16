@@ -1,5 +1,12 @@
 import { Effect, Layer } from "effect";
-import { PtyAdapter, PtyAdapterShape, PtyExitEvent, PtyProcess } from "../Services/PTY";
+import {
+  PtyAdapter,
+  PtyAdapterShape,
+  PtyExitEvent,
+  PtyProcess,
+  PtySpawnError,
+} from "../Services/PTY";
+import { isPtyShellNotFoundError, resolvePtyShell } from "../resolvePtyShell.ts";
 
 class BunPtyProcess implements PtyProcess {
   private readonly dataListeners = new Set<(data: string) => void>();
@@ -94,22 +101,41 @@ export const BunPtyAdapterLive = Layer.effect(
     }
     return {
       spawn: (input) =>
-        Effect.sync(() => {
-          let processHandle: BunPtyProcess | null = null;
-          const command = [input.shell, ...(input.args ?? [])];
-          const subprocess = Bun.spawn(command, {
-            cwd: input.cwd,
-            env: input.env,
-            terminal: {
-              cols: input.cols,
-              rows: input.rows,
-              data: (_terminal, data) => {
-                processHandle?.emitData(data);
-              },
+        Effect.gen(function* () {
+          const shell = resolvePtyShell(input);
+          if (!shell) {
+            return yield* new PtySpawnError({
+              adapter: "bun",
+              message: `Terminal shell '${input.shell}' was not found.`,
+              reason: "notFound",
+            });
+          }
+          return yield* Effect.try({
+            try: () => {
+              let processHandle: BunPtyProcess | null = null;
+              const command = [shell, ...(input.args ?? [])];
+              const subprocess = Bun.spawn(command, {
+                cwd: input.cwd,
+                env: input.env,
+                terminal: {
+                  cols: input.cols,
+                  rows: input.rows,
+                  data: (_terminal, data) => {
+                    processHandle?.emitData(data);
+                  },
+                },
+              });
+              processHandle = new BunPtyProcess(subprocess);
+              return processHandle;
             },
+            catch: (cause) =>
+              new PtySpawnError({
+                adapter: "bun",
+                message: `Failed to spawn terminal shell '${input.shell}'.`,
+                reason: isPtyShellNotFoundError(cause) ? "notFound" : "unknown",
+                cause,
+              }),
           });
-          processHandle = new BunPtyProcess(subprocess);
-          return processHandle;
         }),
     } satisfies PtyAdapterShape;
   }),

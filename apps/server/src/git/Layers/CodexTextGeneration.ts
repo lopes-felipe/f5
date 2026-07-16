@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import { Effect, FileSystem, Layer, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 
 import {
   CODEX_REASONING_EFFORT_OPTIONS,
@@ -235,34 +236,36 @@ export const makeCodexTextGeneration = Effect.gen(function* () {
       const outputPath = yield* writeTempFile(operation, "codex-output", "");
 
       const runCodexCommand = Effect.gen(function* () {
-        const command = ChildProcess.make(
-          "codex",
-          prependCodexCliTelemetryDisabledConfig([
-            "exec",
-            "--ephemeral",
-            "--skip-git-repo-check",
-            "-s",
-            "read-only",
-            "--model",
-            selectedModel,
-            "--config",
-            `model_reasoning_effort="${selectedReasoningEffort}"`,
-            "--output-schema",
-            schemaPath,
-            "--output-last-message",
-            outputPath,
-            ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
-            "-",
-          ]),
-          {
-            cwd,
-            env: buildProviderChildProcessEnv(),
-            shell: process.platform === "win32",
-            stdin: {
-              stream: Stream.make(new TextEncoder().encode(prompt)),
-            },
-          },
+        const environment = buildProviderChildProcessEnv();
+        const args = prependCodexCliTelemetryDisabledConfig([
+          "exec",
+          "--ephemeral",
+          "--skip-git-repo-check",
+          "-s",
+          "read-only",
+          "--model",
+          selectedModel,
+          "--config",
+          `model_reasoning_effort="${selectedReasoningEffort}"`,
+          "--output-schema",
+          schemaPath,
+          "--output-last-message",
+          outputPath,
+          ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
+          "-",
+        ]);
+        const invocation = yield* resolveInvocationEffect("codex", args, environment, { cwd }).pipe(
+          Effect.mapError((cause) =>
+            normalizeCodexError(operation, cause, "Failed to resolve Codex CLI process"),
+          ),
         );
+        const command = ChildProcess.make(invocation.file, [...invocation.args], {
+          cwd,
+          env: environment,
+          stdin: {
+            stream: Stream.make(new TextEncoder().encode(prompt)),
+          },
+        });
 
         const child = yield* commandSpawner
           .spawn(command)

@@ -143,6 +143,14 @@
     "./byteSize": {
       "types": "./src/byteSize.ts",
       "import": "./src/byteSize.ts"
+    },
+    "./processTree": {
+      "types": "./src/processTree.ts",
+      "import": "./src/processTree.ts"
+    },
+    "./windowsPath": {
+      "types": "./src/windowsPath.ts",
+      "import": "./src/windowsPath.ts"
     }
   },
   "scripts": {

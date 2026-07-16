@@ -82,6 +82,12 @@ Shadow home path: ~/.codex_p
 The important part is that both providers use the same `CODEX_HOME path`, but only the second one
 has a `Shadow home path`.
 
+On Windows, keep the shared and shadow homes on the same drive. F5 uses junctions for shared
+directories and hard links for shared files so shadow homes work without Developer Mode or an
+elevated process. Windows cannot hard-link files across drives; in that case F5 copies the file and
+logs a warning. The copy cannot reflect changes during a running session, but F5 refreshes its
+managed copy the next time it materializes that shadow home.
+
 ## Which Account Am I Using?
 
 Open Settings and look at the provider row.

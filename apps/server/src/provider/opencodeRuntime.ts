@@ -1,5 +1,3 @@
-import { constants as FsConstants, accessSync } from "node:fs";
-import * as NodePath from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
@@ -34,50 +32,20 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import { NetService } from "@t3tools/shared/Net";
+import { resolveInvocation, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
 const DEFAULT_OPENCODE_SERVER_TIMEOUT_MS = 5_000;
 const DEFAULT_HOSTNAME = "127.0.0.1";
 
-export function resolveOpenCodeBinaryPath(binaryPath: string): string {
-  if (
-    NodePath.isAbsolute(binaryPath) ||
-    binaryPath.startsWith(".") ||
-    binaryPath.includes("/") ||
-    binaryPath.includes("\\")
-  ) {
-    return binaryPath;
-  }
-  const pathEntries = (process.env.PATH ?? "")
-    .split(NodePath.delimiter)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  const extensions =
-    process.platform === "win32"
-      ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM")
-          .split(";")
-          .map((extension) => extension.trim())
-          .filter((extension) => extension.length > 0)
-      : [""];
-  const candidateNames =
-    process.platform === "win32" && NodePath.extname(binaryPath).length === 0
-      ? extensions.map((extension) => `${binaryPath}${extension}`)
-      : [binaryPath];
-
-  for (const entry of pathEntries) {
-    for (const candidateName of candidateNames) {
-      const candidate = NodePath.join(entry, candidateName);
-      try {
-        accessSync(candidate, FsConstants.X_OK);
-        return candidate;
-      } catch {
-        // Keep walking PATH. If nothing matches, return the original binary
-        // and let the spawn path surface the executable error.
-      }
-    }
-  }
-  return binaryPath;
+export function resolveOpenCodeInvocation(
+  binaryPath: string,
+  args: ReadonlyArray<string>,
+  environment: NodeJS.ProcessEnv,
+) {
+  return resolveInvocation(binaryPath, args, environment);
 }
+
 export interface OpenCodeServerProcess {
   readonly url: string;
   readonly exitCode: Effect.Effect<number, never>;
@@ -316,9 +284,11 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
 
   const runOpenCodeCommand: OpenCodeRuntimeShape["runOpenCodeCommand"] = (input) =>
     Effect.gen(function* () {
+      const environment = input.environment ?? process.env;
+      const invocation = yield* resolveInvocationEffect(input.binaryPath, input.args, environment);
       const child = yield* spawner.spawn(
-        ChildProcess.make(input.binaryPath, [...input.args], {
-          env: input.environment ?? process.env,
+        ChildProcess.make(invocation.file, [...invocation.args], {
+          env: environment,
         }),
       );
       const [stdout, stderr, code] = yield* Effect.all(
@@ -370,15 +340,25 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
         ));
       const timeoutMs = input.timeoutMs ?? DEFAULT_OPENCODE_SERVER_TIMEOUT_MS;
       const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
+      const environment = {
+        ...(input.environment ?? process.env),
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({}),
+      };
+      const invocation = yield* resolveInvocationEffect(input.binaryPath, args, environment).pipe(
+        Effect.mapError((cause) =>
+          ensureRuntimeError(
+            "startOpenCodeServerProcess",
+            `Failed to resolve OpenCode CLI '${input.binaryPath}': ${openCodeRuntimeErrorDetail(cause)}`,
+            cause,
+          ),
+        ),
+      );
 
       const child = yield* spawner
         .spawn(
-          ChildProcess.make(input.binaryPath, args, {
+          ChildProcess.make(invocation.file, [...invocation.args], {
             detached: process.platform !== "win32",
-            env: {
-              ...(input.environment ?? process.env),
-              OPENCODE_CONFIG_CONTENT: JSON.stringify({}),
-            },
+            env: environment,
           }),
         )
         .pipe(

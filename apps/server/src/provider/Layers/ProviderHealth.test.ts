@@ -682,7 +682,9 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
               throw new Error(`Unexpected args: ${joined}`);
             },
             (command) => {
-              const cmd = command as { options?: { stdin?: unknown } };
+              const cmd = command as { command?: string; options?: { stdin?: unknown } };
+              assert.notStrictEqual(cmd.command, "claude");
+              assert.match(cmd.command ?? "", /claude(?:\.exe)?$/);
               assert.strictEqual(cmd.options?.stdin, "ignore");
             },
           ),
@@ -723,7 +725,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.authStatus, "unknown");
         assert.strictEqual(
           status.message,
-          "Claude Agent CLI (`claude`) is not installed or not on PATH.",
+          "The Claude executable bundled with the Agent SDK is unavailable. Reinstall F5 or its dependencies with optional packages enabled.",
         );
       }).pipe(Effect.provide(failingSpawnerLayer("spawn claude ENOENT"))),
     );

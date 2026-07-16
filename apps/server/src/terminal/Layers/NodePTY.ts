@@ -1,7 +1,14 @@
 import { createRequire } from "node:module";
 
 import { Effect, FileSystem, Layer, Path } from "effect";
-import { PtyAdapter, PtyAdapterShape, PtyExitEvent, PtyProcess } from "../Services/PTY";
+import {
+  PtyAdapter,
+  PtyAdapterShape,
+  PtyExitEvent,
+  PtyProcess,
+  PtySpawnError,
+} from "../Services/PTY";
+import { isPtyShellNotFoundError, resolvePtyShell } from "../resolvePtyShell.ts";
 
 let didEnsureSpawnHelperExecutable = false;
 
@@ -103,12 +110,30 @@ export const NodePtyAdapterLive = Layer.effect(
     return {
       spawn: Effect.fn(function* (input) {
         yield* ensureNodePtySpawnHelperExecutableCached;
-        const ptyProcess = nodePty.spawn(input.shell, input.args ?? [], {
-          cwd: input.cwd,
-          cols: input.cols,
-          rows: input.rows,
-          env: input.env,
-          name: globalThis.process.platform === "win32" ? "xterm-color" : "xterm-256color",
+        const shell = resolvePtyShell(input);
+        if (!shell) {
+          return yield* new PtySpawnError({
+            adapter: "node-pty",
+            message: `Terminal shell '${input.shell}' was not found.`,
+            reason: "notFound",
+          });
+        }
+        const ptyProcess = yield* Effect.try({
+          try: () =>
+            nodePty.spawn(shell, input.args ?? [], {
+              cwd: input.cwd,
+              cols: input.cols,
+              rows: input.rows,
+              env: input.env,
+              name: globalThis.process.platform === "win32" ? "xterm-color" : "xterm-256color",
+            }),
+          catch: (cause) =>
+            new PtySpawnError({
+              adapter: "node-pty",
+              message: `Failed to spawn terminal shell '${input.shell}'.`,
+              reason: isPtyShellNotFoundError(cause) ? "notFound" : "unknown",
+              cause,
+            }),
         });
         return new NodePtyProcess(ptyProcess);
       }),

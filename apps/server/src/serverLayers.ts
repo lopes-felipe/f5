@@ -100,9 +100,16 @@ const runtimePtyAdapterLoaders = {
   node: async () => ({ layer: (await import("./terminal/Layers/NodePTY")).NodePtyAdapterLive }),
 } satisfies Record<string, () => Promise<RuntimePtyAdapterLoader>>;
 
+export function selectRuntimePtyAdapter(
+  platform: NodeJS.Platform = process.platform,
+  hasBunRuntime: boolean = process.versions.bun !== undefined,
+): keyof typeof runtimePtyAdapterLoaders {
+  return platform === "win32" || !hasBunRuntime ? "node" : "bun";
+}
+
 const makeRuntimePtyAdapterLayer = () =>
   Effect.gen(function* () {
-    const runtime = process.versions.bun !== undefined ? "bun" : "node";
+    const runtime = selectRuntimePtyAdapter();
     const loader = runtimePtyAdapterLoaders[runtime];
     const ptyAdapterModule = yield* Effect.promise<RuntimePtyAdapterLoader>(loader);
     return ptyAdapterModule.layer;

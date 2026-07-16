@@ -6,6 +6,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertSuccess } from "@effect/vitest/utils";
 import { Effect, FileSystem, Metric, Path } from "effect";
+import { expect, it as vitestIt } from "vitest";
 
 import {
   Open,
@@ -282,6 +283,34 @@ it.layer(NodeServices.layer)("launchDetached", (it) => {
     }),
   );
 });
+
+vitestIt.skipIf(process.platform !== "win32")(
+  "launchDetached preserves metacharacters when launching a Windows cmd shim",
+  async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "f5-editor-launch & "));
+    const outputPath = path.join(tempDir, "argv.json");
+    const injectedPath = path.join(tempDir, "injected.txt");
+    const scriptPath = path.join(tempDir, "capture.cjs");
+    const shimPath = path.join(tempDir, "editor.cmd");
+    fs.writeFileSync(
+      scriptPath,
+      `require("node:fs").writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify(process.argv.slice(2)))\n`,
+    );
+    fs.writeFileSync(shimPath, '@echo off\r\nnode "%~dp0\\capture.cjs" %*\r\n');
+    const target = `C:\\repo & echo INJECTED > "${injectedPath}" %PATH% !bang! ^caret "quoted"`;
+
+    try {
+      await Effect.runPromise(launchDetached({ command: shimPath, args: [target] }));
+      for (let attempt = 0; attempt < 40 && !fs.existsSync(outputPath); attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(JSON.parse(fs.readFileSync(outputPath, "utf8"))).toEqual([target]);
+      expect(fs.existsSync(injectedPath)).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  },
+);
 
 it.layer(NodeServices.layer)("OpenLive observability", (it) => {
   it.effect("records editor success and failure counts by editor id", () =>

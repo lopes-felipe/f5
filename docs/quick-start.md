@@ -17,6 +17,12 @@ bun run start
 # Build a shareable macOS .dmg (arm64 by default)
 bun run dist:desktop:dmg
 
+# Build a Linux x64 AppImage
+bun run dist:desktop:linux
+
+# Build a Windows x64 NSIS installer
+bun run dist:desktop:win
+
 # Or from any project directory after publishing:
-npx f5
+npx t3
 ```

@@ -13,6 +13,7 @@ import {
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 import * as EffectAcpClient from "effect-acp/client";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -277,12 +278,24 @@ const makeAcpSessionRuntime = (
         ),
       );
 
+    const spawnEnvironment = options.spawn.env
+      ? { ...process.env, ...options.spawn.env }
+      : process.env;
+    const invocation = yield* resolveInvocationEffect(
+      options.spawn.command,
+      options.spawn.args,
+      spawnEnvironment,
+      { cwd: options.spawn.cwd },
+    ).pipe(
+      Effect.mapError(
+        (cause) => new EffectAcpErrors.AcpSpawnError({ command: options.spawn.command, cause }),
+      ),
+    );
     const child = yield* spawner
       .spawn(
-        ChildProcess.make(options.spawn.command, [...options.spawn.args], {
+        ChildProcess.make(invocation.file, [...invocation.args], {
           ...(options.spawn.cwd ? { cwd: options.spawn.cwd } : {}),
-          ...(options.spawn.env ? { env: { ...process.env, ...options.spawn.env } } : {}),
-          shell: process.platform === "win32",
+          env: spawnEnvironment,
         }),
       )
       .pipe(

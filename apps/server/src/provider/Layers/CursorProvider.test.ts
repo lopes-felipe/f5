@@ -540,6 +540,24 @@ describe("buildCursorDiscoveredModelsFromConfigOptions", () => {
 });
 
 describe("checkCursorProviderStatus", () => {
+  it("reports a missing binary as unavailable instead of ready", async () => {
+    const provider = await Effect.runPromise(
+      checkCursorProviderStatus(
+        {
+          enabled: true,
+          binaryPath: "/definitely/missing/f5-cursor-agent",
+          apiEndpoint: "",
+          customModels: [],
+        },
+        { PATH: "" },
+      ).pipe(Effect.provide(NodeServices.layer)),
+    );
+
+    expect(provider.status).toBe("error");
+    expect(provider.installed).toBe(false);
+    expect(provider.message).toBe("Cursor Agent CLI (`agent`) is not installed or not on PATH.");
+  });
+
   it("keeps provider status passive and does not start ACP", async () => {
     const { requestLogPath, wrapperPath } = await runNode(makeProviderStatusEnvFixture());
 

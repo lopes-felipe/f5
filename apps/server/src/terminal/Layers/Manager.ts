@@ -21,9 +21,16 @@ import {
   terminalRestartsTotal,
   terminalSessionsTotal,
 } from "../../observability/Metrics.ts";
-import { PtyAdapter, PtyAdapterShape, type PtyExitEvent, type PtyProcess } from "../Services/PTY";
+import {
+  PtyAdapter,
+  PtyAdapterShape,
+  PtySpawnError,
+  type PtyExitEvent,
+  type PtyProcess,
+} from "../Services/PTY";
 import { runProcess } from "../../processRunner";
 import { ServerConfig } from "../../config";
+import { resolveExecutable } from "../../spawn/resolveCommand.ts";
 import {
   ShellCandidate,
   TerminalError,
@@ -51,9 +58,34 @@ const decodeTerminalCloseInput = Schema.decodeUnknownSync(TerminalCloseInput);
 
 type TerminalSubprocessChecker = (terminalPid: number) => Promise<boolean>;
 
+let cachedDefaultWindowsShell: string | undefined;
+
+export function resolveDefaultWindowsShell(environment: NodeJS.ProcessEnv = process.env): string {
+  const pwsh = resolveExecutable("pwsh.exe", environment, { platform: "win32" });
+  if (pwsh) return pwsh;
+
+  const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? "C:\\Windows";
+  const windowsPowerShell = path.win32.join(
+    systemRoot,
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  if (fs.existsSync(windowsPowerShell)) return windowsPowerShell;
+
+  return (
+    resolveExecutable("powershell.exe", environment, { platform: "win32" }) ??
+    environment.ComSpec ??
+    environment.COMSPEC ??
+    "cmd.exe"
+  );
+}
+
 function defaultShellResolver(): string {
   if (process.platform === "win32") {
-    return process.env.ComSpec ?? "cmd.exe";
+    cachedDefaultWindowsShell ??= resolveDefaultWindowsShell();
+    return cachedDefaultWindowsShell;
   }
   return process.env.SHELL ?? "bash";
 }
@@ -103,10 +135,15 @@ function resolveShellCandidates(shellResolver: () => string): ShellCandidate[] {
   const requested = shellCandidateFromCommand(normalizeShellCommand(shellResolver()));
 
   if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
     return uniqueShellCandidates([
       requested,
-      shellCandidateFromCommand(process.env.ComSpec ?? null),
+      shellCandidateFromCommand(resolveExecutable("pwsh.exe", process.env)),
+      shellCandidateFromCommand(
+        path.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ),
       shellCandidateFromCommand("powershell.exe"),
+      shellCandidateFromCommand(process.env.ComSpec ?? process.env.COMSPEC ?? null),
       shellCandidateFromCommand("cmd.exe"),
     ]);
   }
@@ -124,50 +161,7 @@ function resolveShellCandidates(shellResolver: () => string): ShellCandidate[] {
 }
 
 function isRetryableShellSpawnError(error: unknown): boolean {
-  const queue: unknown[] = [error];
-  const seen = new Set<unknown>();
-  const messages: string[] = [];
-
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current || seen.has(current)) {
-      continue;
-    }
-    seen.add(current);
-
-    if (typeof current === "string") {
-      messages.push(current);
-      continue;
-    }
-
-    if (current instanceof Error) {
-      messages.push(current.message);
-      const cause = (current as { cause?: unknown }).cause;
-      if (cause) {
-        queue.push(cause);
-      }
-      continue;
-    }
-
-    if (typeof current === "object") {
-      const value = current as { message?: unknown; cause?: unknown };
-      if (typeof value.message === "string") {
-        messages.push(value.message);
-      }
-      if (value.cause) {
-        queue.push(value.cause);
-      }
-    }
-  }
-
-  const message = messages.join(" ").toLowerCase();
-  return (
-    message.includes("posix_spawnp failed") ||
-    message.includes("enoent") ||
-    message.includes("not found") ||
-    message.includes("file not found") ||
-    message.includes("no such file")
-  );
+  return Schema.is(PtySpawnError)(error) && error.reason === "notFound";
 }
 
 async function checkWindowsSubprocessActivity(terminalPid: number): Promise<boolean> {

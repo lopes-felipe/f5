@@ -10,6 +10,7 @@ import { createModelCapabilities } from "@t3tools/shared/model";
 
 import {
   buildServerProvider,
+  isCommandMissingCause,
   nonEmptyTrimmed,
   parseGenericCliVersion,
   providerModelsFromSettings,
@@ -103,7 +104,7 @@ function formatOpenCodeProbeError(input: {
     };
   }
 
-  if (lower.includes("enoent") || lower.includes("notfound")) {
+  if (isCommandMissingCause(input.cause)) {
     return {
       installed: false,
       message: "OpenCode CLI (`opencode`) is not installed or not on PATH.",

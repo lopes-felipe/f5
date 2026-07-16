@@ -304,8 +304,9 @@ describe("getReviewPreviewDiff", () => {
     git(cwd, ["add", "feature.txt"]);
     git(cwd, ["commit", "-m", "feature"]);
 
+    // The injected runner supplies the terminal timeout result deterministically;
+    // a tiny wall-clock deadline here also races the setup Git probes.
     const result = await preview(cwd, "branch-range", "main", {
-      commandTimeoutMs: 17,
       processRunner: terminalDiffRunner({ timedOut: true, aborted: false }),
     });
 

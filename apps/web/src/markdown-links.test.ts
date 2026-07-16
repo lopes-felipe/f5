@@ -47,6 +47,13 @@ describe("resolveMarkdownFileLinkTarget", () => {
     );
   });
 
+  it("accepts localhost file URLs but rejects remote hosts", () => {
+    expect(resolveMarkdownFileLinkTarget("file://localhost/C:/repo/main.ts#L4")).toBe(
+      "C:/repo/main.ts:4",
+    );
+    expect(resolveMarkdownFileLinkTarget("file://server/share/main.ts")).toBeNull();
+  });
+
   it("does not treat app routes as file links", () => {
     expect(resolveMarkdownFileLinkTarget("/chat/settings")).toBeNull();
   });

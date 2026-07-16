@@ -27,7 +27,9 @@ Binary path: claude
 Claude HOME path: empty
 ```
 
-An empty `Claude HOME path` means T3 Code uses your normal home directory.
+The default `claude` binary setting selects the executable bundled with the Claude Agent SDK; it
+does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
+your normal home directory.
 
 ## I Want Work And Personal Claude Accounts
 

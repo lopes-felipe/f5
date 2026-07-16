@@ -28,6 +28,23 @@
     "T3CODE_AUTH_TOKEN",
     "T3CODE_DESKTOP_WS_URL"
   ],
+  "globalPassThroughEnv": [
+    "PATH",
+    "Path",
+    "PATHEXT",
+    "SystemRoot",
+    "ComSpec",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramFiles",
+    "PNPM_HOME",
+    "BUN_INSTALL",
+    "VOLTA_HOME",
+    "FNM_DIR",
+    "NVM_HOME",
+    "NVM_SYMLINK"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],

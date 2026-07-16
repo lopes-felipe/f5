@@ -26,6 +26,7 @@ import {
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import { killProcessTree } from "@t3tools/shared/processTree";
 import { Effect, ServiceMap } from "effect";
 
 import {
@@ -52,6 +53,7 @@ import {
 } from "./provider/supportedSlashCommands";
 import { createJsonRpcStdinWriter, type JsonRpcStdinWriter } from "./codex/JsonRpcStdinWriter.ts";
 import { resolveCodexHome } from "./os-jank.ts";
+import { resolveInvocation } from "./spawn/resolveCommand.ts";
 
 type PendingRequestKey = string;
 
@@ -436,21 +438,8 @@ export function resolveCodexModelForAccount(
   return CODEX_SPARK_FALLBACK_MODEL;
 }
 
-/**
- * On Windows with `shell: true`, `child.kill()` only terminates the `cmd.exe`
- * wrapper, leaving the actual command running. Use `taskkill /T` to kill the
- * entire process tree instead.
- */
 export function killChildTree(child: ChildProcessWithoutNullStreams): void {
-  if (process.platform === "win32" && child.pid !== undefined) {
-    try {
-      spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-      return;
-    } catch {
-      // fallback to direct kill
-    }
-  }
-  child.kill();
+  killProcessTree(child, { isGroupLeader: false, graceful: true });
 }
 
 export function normalizeCodexModelSlug(
@@ -685,25 +674,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const child = spawn(
-        codexBinaryPath,
-        prependCodexCliTelemetryDisabledConfig(["app-server"], {
-          mcpServers: input.mcpServers ?? {},
-          ...(input.mcpOAuthCallbackPort
-            ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort }
-            : {}),
-          ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
-        }),
-        {
-          cwd: resolvedCwd,
-          env: buildProviderChildProcessEnv(process.env, {
-            ...input.mcpEnvironment,
-            ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
-          }),
-          stdio: ["pipe", "pipe", "pipe"],
-          shell: process.platform === "win32",
-        },
-      );
+      const childEnvironment = buildProviderChildProcessEnv(process.env, {
+        ...input.mcpEnvironment,
+        ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
+      });
+      const childArgs = prependCodexCliTelemetryDisabledConfig(["app-server"], {
+        mcpServers: input.mcpServers ?? {},
+        ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
+        ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
+      });
+      const invocation = resolveInvocation(codexBinaryPath, childArgs, childEnvironment, {
+        cwd: resolvedCwd,
+      });
+      const child = spawn(invocation.file, [...invocation.args], {
+        cwd: resolvedCwd,
+        env: childEnvironment,
+        stdio: ["pipe", "pipe", "pipe"],
+      });
       const output = readline.createInterface({ input: child.stdout });
       const writer = createJsonRpcStdinWriter({
         stdin: child.stdin,
@@ -2323,22 +2310,24 @@ export function assertSupportedCodexCliVersion(input: {
   readonly homePath?: string;
 }): void {
   const codexHomePath = resolveCodexHome(input);
-  const result = spawnSync(
+  const environment = buildProviderChildProcessEnv(
+    process.env,
+    codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
+  );
+  const invocation = resolveInvocation(
     input.binaryPath,
     prependCodexCliTelemetryDisabledConfig(["--version"]),
-    {
-      cwd: input.cwd,
-      env: buildProviderChildProcessEnv(
-        process.env,
-        codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
-      ),
-      encoding: "utf8",
-      shell: process.platform === "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout: CODEX_VERSION_CHECK_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-    },
+    environment,
+    { cwd: input.cwd },
   );
+  const result = spawnSync(invocation.file, [...invocation.args], {
+    cwd: input.cwd,
+    env: environment,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: CODEX_VERSION_CHECK_TIMEOUT_MS,
+    maxBuffer: 1024 * 1024,
+  });
 
   if (result.error) {
     const lower = result.error.message.toLowerCase();

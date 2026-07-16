@@ -9,6 +9,7 @@
  */
 import { Effect, Option, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
 
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
@@ -134,29 +135,31 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     };
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
-      const command = ChildProcess.make(
-        claudeSettings.binaryPath || "claude",
-        [
-          "-p",
-          "--output-format",
-          "json",
-          "--json-schema",
-          jsonSchemaStr,
-          "--model",
-          resolveClaudeApiModelId(modelSelection),
-          ...(cliEffort ? ["--effort", cliEffort] : []),
-          ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
-          "--dangerously-skip-permissions",
-        ],
-        {
-          env: claudeEnvironment,
-          cwd,
-          shell: process.platform === "win32",
-          stdin: {
-            stream: Stream.encodeText(Stream.make(prompt)),
-          },
+      const binaryPath = claudeSettings.binaryPath || "claude";
+      const args = [
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        jsonSchemaStr,
+        "--model",
+        resolveClaudeApiModelId(modelSelection),
+        ...(cliEffort ? ["--effort", cliEffort] : []),
+        ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
+        "--dangerously-skip-permissions",
+      ];
+      const invocation = yield* Effect.try({
+        try: () => resolveClaudeCliInvocation(binaryPath, args, claudeEnvironment, { cwd }),
+        catch: (cause) =>
+          normalizeCliError("claude", operation, cause, "Failed to resolve Claude CLI process"),
+      });
+      const command = ChildProcess.make(invocation.file, [...invocation.args], {
+        env: claudeEnvironment,
+        cwd,
+        stdin: {
+          stream: Stream.encodeText(Stream.make(prompt)),
         },
-      );
+      });
 
       const child = yield* commandSpawner
         .spawn(command)

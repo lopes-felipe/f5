@@ -1,4 +1,10 @@
 import { isMacPlatform } from "./lib/utils";
+import {
+  appendLocalFileUrlPosition,
+  isWindowsAbsolutePath,
+  looksLikeQuotedLocalPath,
+  parseLocalFileUrl,
+} from "./local-paths";
 
 export type TerminalLinkKind = "url" | "path";
 
@@ -10,8 +16,11 @@ export interface TerminalLinkMatch {
 }
 
 const URL_PATTERN = /https?:\/\/[^\s"'`<>]+/g;
+const FILE_URL_PATTERN = /file:\/\/[^\s"'`<>]+/gi;
 const FILE_PATH_PATTERN =
-  /(?:~\/|\.{1,2}\/|\/|[A-Za-z]:\\|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:\/[A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
+  /(?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/]|\\\\)[^\s"'`<>]+|[A-Za-z0-9._-]+(?:[\\/][A-Za-z0-9._-]+)+(?::\d+){0,2}/g;
+const QUOTED_FILE_PATH_PATTERN =
+  /(["'])((?:~\/|\.{1,2}[\\/]|\/|[A-Za-z]:[\\/]|\\\\)[^"'`\r\n]+)\1/g;
 const TRAILING_PUNCTUATION_PATTERN = /[.,;!?]+$/;
 
 function trimClosingDelimiters(value: string): string {
@@ -46,6 +55,7 @@ function collectMatches(
   kind: TerminalLinkKind,
   pattern: RegExp,
   existing: TerminalLinkMatch[],
+  allowFileUri = false,
 ): TerminalLinkMatch[] {
   const matches: TerminalLinkMatch[] = [];
   pattern.lastIndex = 0;
@@ -58,8 +68,8 @@ function collectMatches(
     const trimmed = trimClosingDelimiters(raw);
     if (trimmed.length === 0) continue;
     if (kind === "path" && /^https?:\/\//i.test(trimmed)) continue;
-    if (kind === "path" && /^file:/i.test(trimmed)) continue;
-    if (kind === "path" && isFileUriPathMatch(line, start)) continue;
+    if (kind === "path" && !allowFileUri && /^file:/i.test(trimmed)) continue;
+    if (kind === "path" && !allowFileUri && isFileUriPathMatch(line, start)) continue;
 
     const candidate: TerminalLinkMatch = {
       kind,
@@ -77,8 +87,26 @@ function collectMatches(
   return matches;
 }
 
-function isWindowsAbsolutePath(value: string): boolean {
-  return /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\");
+function collectQuotedPathMatches(
+  line: string,
+  existing: TerminalLinkMatch[],
+): TerminalLinkMatch[] {
+  const matches: TerminalLinkMatch[] = [];
+  QUOTED_FILE_PATH_PATTERN.lastIndex = 0;
+  for (const rawMatch of line.matchAll(QUOTED_FILE_PATH_PATTERN)) {
+    const path = rawMatch[2];
+    const rawStart = rawMatch.index;
+    if (!path || rawStart === undefined || !looksLikeQuotedLocalPath(path)) continue;
+    const candidate = {
+      kind: "path" as const,
+      text: path,
+      start: rawStart + 1,
+      end: rawStart + 1 + path.length,
+    };
+    if ([...existing, ...matches].some((other) => overlaps(candidate, other))) continue;
+    matches.push(candidate);
+  }
+  return matches;
 }
 
 function isAbsolutePath(value: string): boolean {
@@ -147,8 +175,21 @@ export function splitPathAndPosition(value: string): {
 
 export function extractTerminalLinks(line: string): TerminalLinkMatch[] {
   const urlMatches = collectMatches(line, "url", URL_PATTERN, []);
-  const pathMatches = collectMatches(line, "path", FILE_PATH_PATTERN, urlMatches);
-  return [...urlMatches, ...pathMatches].toSorted((a, b) => a.start - b.start);
+  const fileUrlCandidates = collectMatches(line, "path", FILE_URL_PATTERN, urlMatches, true);
+  const fileUrlMatches = fileUrlCandidates.filter((match) =>
+    Boolean(parseLocalFileUrl(match.text)),
+  );
+  // Invalid or remote file URIs are not actionable, but reserve their full
+  // range so the generic path regex cannot register a suffix as a local path.
+  const quotedPathMatches = collectQuotedPathMatches(line, [...urlMatches, ...fileUrlCandidates]);
+  const pathMatches = collectMatches(line, "path", FILE_PATH_PATTERN, [
+    ...urlMatches,
+    ...fileUrlCandidates,
+    ...quotedPathMatches,
+  ]);
+  return [...urlMatches, ...fileUrlMatches, ...quotedPathMatches, ...pathMatches].toSorted(
+    (a, b) => a.start - b.start,
+  );
 }
 
 export function isTerminalLinkActivation(
@@ -162,7 +203,11 @@ export function isTerminalLinkActivation(
 }
 
 export function resolvePathLinkTarget(rawPath: string, cwd: string): string {
-  const { path, line, column } = splitPathAndPosition(rawPath);
+  const isFileUrl = rawPath.toLowerCase().startsWith("file:");
+  const fileUrl = isFileUrl ? parseLocalFileUrl(rawPath) : null;
+  if (isFileUrl && !fileUrl) return rawPath;
+  const parsedPath = fileUrl ? appendLocalFileUrlPosition(fileUrl.path, fileUrl.hash) : rawPath;
+  const { path, line, column } = splitPathAndPosition(parsedPath);
 
   let resolvedPath = path;
   if (path.startsWith("~/")) {
