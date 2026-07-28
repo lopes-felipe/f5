@@ -58,6 +58,7 @@ describe("instance-scoped model selection", () => {
   it("keeps custom models on the provider instance that declared them", () => {
     const providers = [
       provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
         instanceId: "claudeAgent",
         models: ["claude-sonnet-4-6"],
       }),
@@ -104,6 +105,7 @@ describe("instance-scoped model selection", () => {
   it("does not inject an unknown selected slug into the stock instance list", () => {
     const providers = [
       provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
         instanceId: "claudeAgent",
         models: ["claude-sonnet-4-6"],
       }),
@@ -121,6 +123,78 @@ describe("instance-scoped model selection", () => {
         (option) => option.slug,
       ),
     ).not.toContain("openai/gpt-5.5");
+  });
+
+  it("keeps gated Opus 5 aliases from re-entering as custom stock models", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-fable-5", "claude-opus-4-8"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      providerInstances: {
+        ...settingsWithProviderInstances().providerInstances,
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: {
+            customModels: [
+              "opus",
+              "opus-5",
+              "claude-opus-5",
+              "claude-opus-5[1m]",
+              "custom/claude-model",
+            ],
+          },
+        },
+      },
+    };
+    const stock = deriveProviderInstanceEntries(providers)[0]!;
+    const slugs = getAppModelOptionsForInstance(settings, stock).map((option) => option.slug);
+
+    expect(slugs).toEqual(["claude-fable-5", "claude-opus-4-8", "custom/claude-model"]);
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("claudeAgent"),
+        settings,
+        providers,
+        "opus-5",
+      ),
+    ).toBe("claude-fable-5");
+  });
+
+  it("shows live Opus 5 exactly once after the provider snapshot exposes it", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-opus-5", "claude-fable-5"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      providerInstances: {
+        ...settingsWithProviderInstances().providerInstances,
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { customModels: ["opus", "opus-5", "claude-opus-5[1m]"] },
+        },
+      },
+    };
+    const stock = deriveProviderInstanceEntries(providers)[0]!;
+    const slugs = getAppModelOptionsForInstance(settings, stock).map((option) => option.slug);
+
+    expect(slugs).toEqual(["claude-opus-5", "claude-fable-5"]);
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("claudeAgent"),
+        settings,
+        providers,
+        "opus-5[1m]",
+      ),
+    ).toBe("claude-opus-5");
   });
 
   it("hides server models from the instance option list", () => {

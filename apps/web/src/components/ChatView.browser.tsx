@@ -18,6 +18,7 @@ import {
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
+  ProviderInstanceId,
   type ServerConfig,
   ThreadId,
   TurnId,
@@ -2953,7 +2954,171 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
+  it.each([
+    {
+      label: "falls back to inherit before Claude Code 2.1.220",
+      version: "2.1.219",
+      includeOpus5: false,
+      selectedInstanceId: "claudeAgent",
+      defaultIncludesOpus5: false,
+      expectedSubagentModel: "inherit",
+    },
+    {
+      label: "canonicalizes the alias once Opus 5 is available",
+      version: "2.1.220",
+      includeOpus5: true,
+      selectedInstanceId: "claudeAgent",
+      defaultIncludesOpus5: true,
+      expectedSubagentModel: "claude-opus-5",
+    },
+    {
+      label: "uses the selected older Claude instance instead of the upgraded default",
+      version: "2.1.219",
+      includeOpus5: false,
+      selectedInstanceId: "claude_legacy",
+      defaultIncludesOpus5: true,
+      expectedSubagentModel: "inherit",
+    },
+  ])("dispatches a safe Claude subagent model: $label", async (testCase) => {
+    persistAppSettings({
+      claudeProjectSettings: {
+        [PROJECT_ID]: {
+          subagentsEnabled: true,
+          subagentModel: "opus-5[1m]",
+        },
+      },
+      providerModelPreferences: {
+        claudeAgent: {
+          hiddenModels: ["claude-opus-5"],
+          modelOrder: [],
+        },
+      },
+    });
+    useComposerDraftStore.setState({
+      draftThreadsByThreadId: {
+        [THREAD_ID]: {
+          projectId: PROJECT_ID,
+          createdAt: NOW_ISO,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: "main",
+          worktreePath: null,
+          envMode: "local",
+        },
+      },
+      projectDraftThreadIdByProjectId: {
+        [PROJECT_ID]: THREAD_ID,
+      },
+    });
+
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createDraftOnlySnapshot(),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          providers: [
+            createTestServerProvider("claudeAgent", {
+              version: testCase.defaultIncludesOpus5 ? "2.1.220" : testCase.version,
+              models: [
+                ...(testCase.defaultIncludesOpus5
+                  ? [
+                      {
+                        slug: "claude-opus-5",
+                        name: "Claude Opus 5",
+                        isCustom: false,
+                        capabilities: null,
+                      },
+                    ]
+                  : []),
+                {
+                  slug: "claude-fable-5",
+                  name: "Claude Fable 5",
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+            }),
+            ...(testCase.selectedInstanceId === "claudeAgent"
+              ? []
+              : [
+                  createTestServerProvider("claudeAgent", {
+                    instanceId: ProviderInstanceId.make(testCase.selectedInstanceId),
+                    version: testCase.version,
+                    models: [
+                      ...(testCase.includeOpus5
+                        ? [
+                            {
+                              slug: "claude-opus-5",
+                              name: "Claude Opus 5",
+                              isCustom: false,
+                              capabilities: null,
+                            },
+                          ]
+                        : []),
+                      {
+                        slug: "claude-fable-5",
+                        name: "Claude Fable 5",
+                        isCustom: false,
+                        capabilities: null,
+                      },
+                    ],
+                  }),
+                ]),
+          ],
+        };
+      },
+    });
+
+    try {
+      const composerDraftStore = useComposerDraftStore.getState();
+      composerDraftStore.setProvider(THREAD_ID, "claudeAgent");
+      composerDraftStore.setProviderInstance(
+        THREAD_ID,
+        ProviderInstanceId.make(testCase.selectedInstanceId),
+      );
+      composerDraftStore.setModel(THREAD_ID, "claude-fable-5");
+      composerDraftStore.setPrompt(THREAD_ID, "Dispatch with safe subagents");
+
+      const sendButton = await waitForSendButton();
+      await vi.waitFor(() => {
+        expect(sendButton.disabled).toBe(false);
+      });
+      sendButton.click();
+
+      await vi.waitFor(
+        () => {
+          const dispatchRequest = wsRequests.find(
+            (request) => request._tag === ORCHESTRATION_WS_METHODS.dispatchCommand,
+          );
+          const command = dispatchRequest?.command as
+            | {
+                type?: unknown;
+                provider?: unknown;
+                providerOptions?: {
+                  claudeAgent?: {
+                    subagentsEnabled?: unknown;
+                    subagentModel?: unknown;
+                  };
+                };
+              }
+            | undefined;
+          expect(command?.type).toBe("thread.turn.start");
+          expect(command?.provider).toBe("claudeAgent");
+          expect(command?.providerOptions?.claudeAgent).toMatchObject({
+            subagentsEnabled: true,
+            subagentModel: testCase.expectedSubagentModel,
+          });
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders a collapsible task panel when the thread has tracked tasks", async () => {
+    persistAppSettings({ tasksPanelAutoOpen: true });
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({

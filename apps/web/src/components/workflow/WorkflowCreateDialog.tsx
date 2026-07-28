@@ -2,6 +2,7 @@ import {
   type ClipboardEvent as ReactClipboardEvent,
   type DragEvent as ReactDragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -14,6 +15,7 @@ import type {
   ProviderKind,
   ProviderModelOptions,
 } from "@t3tools/contracts";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import {
   getDefaultModel,
@@ -21,16 +23,13 @@ import {
   getReasoningEffortOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizeModelSlug,
   resolveReasoningEffortForProvider,
   supportsClaudeFastMode,
   supportsClaudeThinkingToggle,
 } from "@t3tools/shared/model";
 
-import {
-  resolveAppModelSelection,
-  resolveThreadTitleModel,
-  useAppSettings,
-} from "../../appSettings";
+import { resolveThreadTitleModel, useAppSettings } from "../../appSettings";
 import { isElectron } from "../../env";
 import { useTheme } from "../../hooks/useTheme";
 import {
@@ -44,6 +43,7 @@ import {
   relativePathForDisplay,
   sanitizeAttachedFileReferencePaths,
 } from "../../lib/attachedFiles";
+import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import {
   WORKFLOW_TYPE_DIALOG_LABEL,
@@ -64,6 +64,7 @@ import {
   createCachedAbsolutePathComparisonNormalizer,
   getCustomModelOptionsByProvider,
   identityAbsolutePathNormalizer,
+  resolveComposerPickerModel,
   resolveAttachedFileReferencePaths,
 } from "../ChatView.logic";
 import { ProviderModelPicker } from "../chat/ProviderModelPicker";
@@ -349,6 +350,11 @@ function getSingleProviderModelOptions(
 function getWorkflowSlotDefaults(
   slot: WorkflowCreatePreferenceSlot,
   fallbackProvider: ProviderKind,
+  modelOptionsByProvider: Record<
+    ProviderKind,
+    ReadonlyArray<{ readonly slug: string; readonly name: string }>
+  >,
+  providers: Parameters<typeof resolveComposerPickerModel>[0]["providers"],
 ): {
   provider: ProviderKind;
   model: string;
@@ -356,10 +362,20 @@ function getWorkflowSlotDefaults(
 } {
   const preferences = getModelPreferences();
   const provider = preferences.lastWorkflowProviderBySlot[slot] ?? fallbackProvider;
+  const preferredModel = preferences.lastModelByProvider[provider] ?? getDefaultModel(provider);
+  const model = resolveComposerPickerModel({
+    provider,
+    rawModel: preferredModel,
+    pickerOptions: modelOptionsByProvider[provider],
+    providers: providers ?? null,
+  });
   return {
     provider,
-    model: preferences.lastModelByProvider[provider] ?? getDefaultModel(provider),
-    modelOptions: getSingleProviderModelOptions(provider, preferences.lastModelOptions),
+    model,
+    modelOptions:
+      normalizeModelSlug(preferredModel, provider) === model
+        ? getSingleProviderModelOptions(provider, preferences.lastModelOptions)
+        : undefined,
   };
 }
 
@@ -404,14 +420,39 @@ export function ProviderFields(props: {
 export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const navigate = useNavigate();
   const { settings } = useAppSettings();
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const { resolvedTheme } = useTheme();
   const keybindings = useServerKeybindings();
   const project = useStore(
     (store) => store.projects.find((entry) => entry.id === props.projectId) ?? null,
   );
-  const initialBranchADefaults = getWorkflowSlotDefaults("branchA", "codex");
-  const initialBranchBDefaults = getWorkflowSlotDefaults("branchB", "claudeAgent");
-  const initialMergeDefaults = getWorkflowSlotDefaults("merge", "codex");
+  const modelOptionsByProvider = useMemo(
+    () =>
+      getCustomModelOptionsByProvider(
+        settings,
+        serverConfigQuery.data?.providers,
+        serverConfigQuery.data?.settings,
+      ),
+    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
+  );
+  const initialBranchADefaults = getWorkflowSlotDefaults(
+    "branchA",
+    "codex",
+    modelOptionsByProvider,
+    serverConfigQuery.data?.providers,
+  );
+  const initialBranchBDefaults = getWorkflowSlotDefaults(
+    "branchB",
+    "claudeAgent",
+    modelOptionsByProvider,
+    serverConfigQuery.data?.providers,
+  );
+  const initialMergeDefaults = getWorkflowSlotDefaults(
+    "merge",
+    "codex",
+    modelOptionsByProvider,
+    serverConfigQuery.data?.providers,
+  );
   const [workflowType, setWorkflowType] = useState<WorkflowTypeValue>("planning");
   const [requirementPrompt, setRequirementPrompt] = useState("");
   const [attachedFilePaths, setAttachedFilePaths] = useState<string[]>([]);
@@ -445,25 +486,49 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const promptTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const submittingRef = useRef(false);
   const dragDepthRef = useRef(0);
-  const modelOptionsByProvider = useMemo(
-    () => getCustomModelOptionsByProvider(settings),
-    [settings],
-  );
-
   const resolveWorkflowModelSelection = (provider: ProviderKind, model: string): ModelSlug =>
-    resolveAppModelSelection(
+    resolveComposerPickerModel({
       provider,
-      provider === "codex"
-        ? settings.customCodexModels
-        : provider === "claudeAgent"
-          ? settings.customClaudeModels
-          : [],
-      model,
-    ) as ModelSlug;
+      rawModel: model,
+      pickerOptions: modelOptionsByProvider[provider],
+      providers: serverConfigQuery.data?.providers ?? null,
+    }) as ModelSlug;
 
   const branchASelection = resolveWorkflowModelSelection(branchAProvider, branchAModel);
   const branchBSelection = resolveWorkflowModelSelection(branchBProvider, branchBModel);
   const mergeSelection = resolveWorkflowModelSelection(mergeProvider, mergeModel);
+  useEffect(() => {
+    if (!serverConfigQuery.data) return;
+
+    if (branchAModel !== branchASelection) {
+      const preservesOptions =
+        normalizeModelSlug(branchAModel, branchAProvider) === branchASelection;
+      setBranchAModel(branchASelection);
+      if (!preservesOptions) setBranchAModelOptions(undefined);
+    }
+    if (branchBModel !== branchBSelection) {
+      const preservesOptions =
+        normalizeModelSlug(branchBModel, branchBProvider) === branchBSelection;
+      setBranchBModel(branchBSelection);
+      if (!preservesOptions) setBranchBModelOptions(undefined);
+    }
+    if (mergeModel !== mergeSelection) {
+      const preservesOptions = normalizeModelSlug(mergeModel, mergeProvider) === mergeSelection;
+      setMergeModel(mergeSelection);
+      if (!preservesOptions) setMergeModelOptions(undefined);
+    }
+  }, [
+    branchAModel,
+    branchAProvider,
+    branchASelection,
+    branchBModel,
+    branchBProvider,
+    branchBSelection,
+    mergeModel,
+    mergeProvider,
+    mergeSelection,
+    serverConfigQuery.data,
+  ]);
   const titleGenerationModel = resolveThreadTitleModel(settings);
   const workspaceRoots = [project?.cwd];
   const sameInvestigationInvestigatorModel =
@@ -474,6 +539,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   const validMaxCostUsd =
     parsedMaxCostUsd === null || (Number.isFinite(parsedMaxCostUsd) && parsedMaxCostUsd > 0);
   const canSubmit =
+    serverConfigQuery.data !== undefined &&
     (requirementPrompt.trim().length > 0 || attachedFilePaths.length > 0) &&
     !sameInvestigationInvestigatorModel &&
     validMaxCostUsd;
@@ -524,9 +590,24 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
   };
 
   const reset = () => {
-    const branchADefaults = getWorkflowSlotDefaults("branchA", "codex");
-    const branchBDefaults = getWorkflowSlotDefaults("branchB", "claudeAgent");
-    const mergeDefaults = getWorkflowSlotDefaults("merge", "codex");
+    const branchADefaults = getWorkflowSlotDefaults(
+      "branchA",
+      "codex",
+      modelOptionsByProvider,
+      serverConfigQuery.data?.providers,
+    );
+    const branchBDefaults = getWorkflowSlotDefaults(
+      "branchB",
+      "claudeAgent",
+      modelOptionsByProvider,
+      serverConfigQuery.data?.providers,
+    );
+    const mergeDefaults = getWorkflowSlotDefaults(
+      "merge",
+      "codex",
+      modelOptionsByProvider,
+      serverConfigQuery.data?.providers,
+    );
 
     setWorkflowType("planning");
     setRequirementPrompt("");

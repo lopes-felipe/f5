@@ -62,6 +62,8 @@ function renderCard(
   overrides: {
     readonly instance?: ProviderInstanceConfig;
     readonly liveProvider?: ServerProvider;
+    readonly isExpanded?: boolean;
+    readonly onUpdate?: (instance: ProviderInstanceConfig) => void;
     readonly dismissedProviderUpdateAdvisory?: string;
     readonly onDismissProviderUpdateAdvisory?: (latestVersion: string) => void;
   } = {},
@@ -72,9 +74,9 @@ function renderCard(
       instance={overrides.instance ?? makeInstance()}
       driverOption={CODEX_DRIVER_OPTION}
       liveProvider={overrides.liveProvider ?? makeLiveProvider()}
-      isExpanded={false}
+      isExpanded={overrides.isExpanded ?? false}
       onExpandedChange={noop}
-      onUpdate={noop}
+      onUpdate={overrides.onUpdate ?? noop}
       dismissedProviderUpdateAdvisory={overrides.dismissedProviderUpdateAdvisory}
       onDismissProviderUpdateAdvisory={overrides.onDismissProviderUpdateAdvisory}
       hiddenModels={[]}
@@ -224,6 +226,34 @@ describe("ProviderInstanceCard advisory", () => {
       expect(
         page.getByRole("button", { name: "Update available - view details" }).query(),
       ).not.toBeNull();
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("removes normalized duplicate legacy custom models in one action", async () => {
+    const onUpdate = vi.fn();
+    const screen = await renderCard({
+      instance: makeInstance({
+        config: {
+          customModels: [" custom-model ", "custom-model"],
+        },
+      }),
+      liveProvider: makeLiveProvider({ models: [] }),
+      isExpanded: true,
+      onUpdate,
+    });
+
+    try {
+      await page.getByRole("button", { name: "Remove custom-model" }).click();
+      expect(onUpdate).toHaveBeenCalledTimes(1);
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          config: {
+            customModels: [],
+          },
+        }),
+      );
     } finally {
       await screen.unmount();
     }

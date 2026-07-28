@@ -3,6 +3,7 @@ import "../index.css";
 import {
   type DesktopBridge,
   ORCHESTRATION_WS_METHODS,
+  PR_HUB_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
   type ProjectId,
@@ -352,6 +353,16 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       oldestLoadedCheckpointTurnCount: null,
       oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
+    };
+  }
+  if (tag === PR_HUB_WS_METHODS.getSnapshot) {
+    return {
+      status: "ok",
+      viewerLogin: null,
+      host: "github.com",
+      pullRequests: [],
+      recentlyResolved: [],
+      lastPolledAt: null,
     };
   }
   if (tag === WS_METHODS.serverGetConfig) {
@@ -1295,10 +1306,7 @@ describe("Thread sidebar", () => {
         "Command palette should open from the sidebar search button.",
       );
       await waitForElement(
-        () =>
-          document.querySelector<HTMLInputElement>(
-            'input[placeholder="Search commands, projects, and threads..."]',
-          ),
+        () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
         "Command palette root search input should render.",
       );
     } finally {

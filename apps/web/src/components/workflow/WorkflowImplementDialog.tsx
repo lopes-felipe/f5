@@ -5,15 +5,17 @@ import type {
   ProviderKind,
   ProviderModelOptions,
 } from "@t3tools/contracts";
+import { normalizeModelSlug } from "@t3tools/shared/model";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
 
-import { resolveAppModelSelection, useAppSettings } from "../../appSettings";
+import { useAppSettings } from "../../appSettings";
 import { gitBranchesQueryOptions } from "../../lib/gitReactQuery";
+import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { getModelPreferences, recordModelSelection } from "../../modelPreferencesStore";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
-import { getCustomModelOptionsByProvider } from "../ChatView.logic";
+import { getCustomModelOptionsByProvider, resolveComposerPickerModel } from "../ChatView.logic";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import {
@@ -166,6 +168,7 @@ export function WorkflowImplementDialog(props: {
   onOpenChange: (open: boolean) => void;
 }) {
   const { settings } = useAppSettings();
+  const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const initialDefaults = resolveImplementationDefaults(props.workflow);
   const [provider, setProvider] = useState<ProviderKind>(initialDefaults.provider);
   const [model, setModel] = useState(initialDefaults.model);
@@ -179,8 +182,13 @@ export function WorkflowImplementDialog(props: {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const modelOptionsByProvider = useMemo(
-    () => getCustomModelOptionsByProvider(settings),
-    [settings],
+    () =>
+      getCustomModelOptionsByProvider(
+        settings,
+        serverConfigQuery.data?.providers,
+        serverConfigQuery.data?.settings,
+      ),
+    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
   );
   const wasOpenRef = useRef(false);
 
@@ -209,20 +217,23 @@ export function WorkflowImplementDialog(props: {
     nextProvider: ProviderKind,
     nextModel: string,
   ): ModelSlug =>
-    resolveAppModelSelection(
-      nextProvider,
-      nextProvider === "codex"
-        ? settings.customCodexModels
-        : nextProvider === "claudeAgent"
-          ? settings.customClaudeModels
-          : [],
-      nextModel,
-    ) as ModelSlug;
+    resolveComposerPickerModel({
+      provider: nextProvider,
+      rawModel: nextModel,
+      pickerOptions: modelOptionsByProvider[nextProvider],
+      providers: serverConfigQuery.data?.providers ?? null,
+    }) as ModelSlug;
 
   const selection = resolveWorkflowModelSelection(provider, model);
+  useEffect(() => {
+    if (!serverConfigQuery.data || model === selection) return;
+    const preservesOptions = normalizeModelSlug(model, provider) === selection;
+    setModel(selection);
+    if (!preservesOptions) setModelOptions(undefined);
+  }, [model, provider, selection, serverConfigQuery.data]);
 
   const needsBaseBranch = envMode === "worktree" && !baseBranch;
-  const submitDisabled = submitting || needsBaseBranch;
+  const submitDisabled = submitting || needsBaseBranch || serverConfigQuery.data === undefined;
 
   const onSubmit = async () => {
     const api = readNativeApi();

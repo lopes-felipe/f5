@@ -261,6 +261,7 @@ import {
   createCachedAbsolutePathComparisonNormalizer,
   deriveComposerSendState,
   getCustomModelOptionsByProvider,
+  resolveClaudeSubagentModel,
   identityAbsolutePathNormalizer,
   DISMISSED_PROVIDER_STATUS_KEY,
   DismissedProviderStatusSchema,
@@ -290,6 +291,7 @@ const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const EMPTY_AVAILABLE_EDITORS: EditorId[] = [];
 const EMPTY_PROVIDER_STATUSES: ServerProvider[] = [];
+const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
@@ -1244,14 +1246,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     () => providerModelOptionsToSelections(selectedProvider, draftModelOptions),
     [draftModelOptions, selectedProvider],
   );
-  const selectedProviderModels = useMemo(() => {
-    const providers = serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES;
-    return (
-      providers.find((provider) => provider.instanceId === selectedProviderInstanceId)?.models ??
-      providers.find((provider) => provider.driver === selectedProviderDriver)?.models ??
-      []
-    );
-  }, [selectedProviderDriver, selectedProviderInstanceId, serverConfigQuery.data?.providers]);
   const selectedProviderSnapshot = useMemo(
     () =>
       (serverConfigQuery.data?.providers ?? EMPTY_PROVIDER_STATUSES).find(
@@ -1259,6 +1253,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       ) ?? null,
     [selectedProviderInstanceId, serverConfigQuery.data?.providers],
   );
+  const selectedProviderModels = selectedProviderSnapshot?.models ?? EMPTY_PROVIDER_MODELS;
   const showInteractionModeToggle = selectedProviderSnapshot?.showInteractionModeToggle ?? true;
   const genericComposerProviderState = useMemo(
     () =>
@@ -1355,6 +1350,14 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       ),
     [activeProject?.id, settings.claudeProjectSettings],
   );
+  const effectiveProjectClaudeSubagentModel = useMemo(
+    () =>
+      resolveClaudeSubagentModel(
+        activeProjectClaudeSettings.subagentModel,
+        selectedProvider === "claudeAgent" ? selectedProviderModels : EMPTY_PROVIDER_MODELS,
+      ),
+    [activeProjectClaudeSettings.subagentModel, selectedProvider, selectedProviderModels],
+  );
   const providerOptionsForDispatch = useMemo(() => {
     if (selectedProvider === "codex") {
       if (!settings.codexBinaryPath && !settings.codexHomePath) {
@@ -1389,7 +1392,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         claudeAgent: {
           ...(settings.claudeBinaryPath ? { binaryPath: settings.claudeBinaryPath } : {}),
           subagentsEnabled: activeProjectClaudeSettings.subagentsEnabled,
-          subagentModel: activeProjectClaudeSettings.subagentModel,
+          subagentModel: effectiveProjectClaudeSubagentModel,
           ...(launchArgs ? { launchArgs } : {}),
         },
       };
@@ -1398,8 +1401,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     return undefined;
   }, [
     activeProject?.id,
-    activeProjectClaudeSettings.subagentModel,
     activeProjectClaudeSettings.subagentsEnabled,
+    effectiveProjectClaudeSubagentModel,
     selectedProvider,
     settings.claudeBinaryPath,
     settings.claudeLaunchArgs,

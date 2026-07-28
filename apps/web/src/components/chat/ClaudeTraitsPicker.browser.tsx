@@ -1,7 +1,7 @@
 import "../../index.css";
 
 import { ThreadId, type ServerProviderModel } from "@t3tools/contracts";
-import { createModelCapabilities } from "@t3tools/shared/model";
+import { createClaudeModelCapabilities, createModelCapabilities } from "@t3tools/shared/model";
 import { page } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
@@ -12,6 +12,12 @@ import { useModelPreferencesStore } from "../../modelPreferencesStore";
 import { providerModelOptionsToSelections } from "../../providerModelOptions";
 
 const CLAUDE_MODELS: ReadonlyArray<ServerProviderModel> = [
+  {
+    slug: "claude-opus-5",
+    name: "Claude Opus 5",
+    isCustom: false,
+    capabilities: createClaudeModelCapabilities("claude-opus-5"),
+  },
   {
     slug: "claude-fable-5",
     name: "Claude Fable 5",
@@ -65,11 +71,6 @@ const CLAUDE_MODELS: ReadonlyArray<ServerProviderModel> = [
             { id: "max", label: "Max" },
             { id: "ultrathink", label: "Ultrathink" },
           ],
-        },
-        {
-          id: "fastMode",
-          label: "Fast Mode",
-          type: "boolean",
         },
         {
           id: "contextWindow",
@@ -218,17 +219,23 @@ describe("ClaudeTraitsPicker", () => {
     });
   });
 
-  it("shows fast mode controls for Claude Opus 4.6", async () => {
-    const mounted = await mountPicker({ model: "claude-opus-4-6" });
+  it("shows Opus 5 reasoning and Fast Mode without context or thinking controls", async () => {
+    const mounted = await mountPicker({ model: "claude-opus-5" });
 
     try {
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("High");
+      });
       await page.getByRole("button").click();
 
       await vi.waitFor(() => {
         const text = document.body.textContent ?? "";
+        expect(text).toContain("Reasoning");
         expect(text).toContain("Fast Mode");
         expect(text).toContain("Off");
         expect(text).toContain("On");
+        expect(text).not.toContain("Context Window");
+        expect(text).not.toContain("Thinking");
       });
     } finally {
       await mounted.cleanup();

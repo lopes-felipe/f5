@@ -26,6 +26,7 @@ export function ProjectsSettings() {
     handleSelectedProjectChange,
     selectedProjectMemories,
     selectedProjectClaudeSettings,
+    effectiveClaudeSubagentModel,
     claudeSubagentModelOptions,
     selectedClaudeSubagentModelLabel,
     updateSelectedProjectClaudeSettings,
@@ -166,7 +167,7 @@ export function ProjectsSettings() {
                     Default sub-agent model
                   </span>
                   <Select
-                    value={selectedProjectClaudeSettings.subagentModel}
+                    value={effectiveClaudeSubagentModel}
                     onValueChange={(value) =>
                       value
                         ? updateSelectedProjectClaudeSettings({

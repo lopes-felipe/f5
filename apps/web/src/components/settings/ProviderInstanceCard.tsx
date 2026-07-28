@@ -19,8 +19,10 @@ import {
   type ServerProvider,
   type ServerProviderModel,
 } from "@t3tools/contracts";
+import { normalizeModelSlug } from "@t3tools/shared/model";
 
 import { cn } from "../../lib/utils";
+import { normalizeCustomModelSlugs } from "../../modelSelection";
 import { normalizeProviderAccentColor } from "../../providerInstances";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
@@ -174,14 +176,24 @@ function nextConfigBlobWithValue(
 export function deriveProviderModelsForDisplay(input: {
   readonly liveModels: ReadonlyArray<ServerProviderModel> | undefined;
   readonly customModels: ReadonlyArray<string>;
+  readonly driverKind?: ProviderDriverKind | null;
 }): ReadonlyArray<ServerProviderModel> {
+  const normalizeSlug = (slug: string) =>
+    input.driverKind ? normalizeModelSlug(slug, input.driverKind) : slug.trim() || null;
   const liveCustomModelsBySlug = new Map(
     (input.liveModels ?? [])
       .filter((model) => model.isCustom)
-      .map((model) => [model.slug, model] as const),
+      .flatMap((model) => {
+        const slug = normalizeSlug(model.slug);
+        return slug ? [[slug, { ...model, slug }] as const] : [];
+      }),
   );
   const serverModels = input.liveModels?.filter((model) => !model.isCustom) ?? [];
-  const customModels = input.customModels.map(
+  const builtInModelSlugs = new Set(serverModels.map((model) => model.slug));
+  const normalizedCustomModelSlugs = input.driverKind
+    ? normalizeCustomModelSlugs(input.customModels, builtInModelSlugs, input.driverKind)
+    : Array.from(new Set(input.customModels.map((slug) => slug.trim()).filter(Boolean)));
+  const customModels = normalizedCustomModelSlugs.map(
     (slug) =>
       liveCustomModelsBySlug.get(slug) ?? {
         slug,
@@ -583,7 +595,11 @@ export function ProviderInstanceCard({
   const modelsForDisplay = deriveProviderModelsForDisplay({
     liveModels: liveProvider?.models,
     customModels,
+    driverKind,
   });
+  const normalizedCustomModels = modelsForDisplay
+    .filter((model) => model.isCustom)
+    .map((model) => model.slug);
 
   const updateDisplayName = (value: string) => {
     const trimmed = value.trim();
@@ -620,7 +636,14 @@ export function ProviderInstanceCard({
   };
 
   const updateCustomModels = (next: ReadonlyArray<string>) => {
-    const nextConfig = nextConfigBlobWithValue(instance.config, "customModels", [...next]);
+    const builtInModelSlugs = new Set(
+      (liveProvider?.models ?? []).filter((model) => !model.isCustom).map((model) => model.slug),
+    );
+    const normalized =
+      driverKind !== null
+        ? normalizeCustomModelSlugs(next, builtInModelSlugs, driverKind)
+        : Array.from(new Set(next.map((slug) => slug.trim()).filter(Boolean)));
+    const nextConfig = nextConfigBlobWithValue(instance.config, "customModels", normalized);
     const { config: _omit, ...rest } = instance;
     onUpdate({ ...rest, config: nextConfig } as ProviderInstanceConfig);
   };
@@ -901,7 +924,7 @@ export function ProviderInstanceCard({
                 instanceId={instanceId}
                 driverKind={driverKind}
                 models={modelsForDisplay}
-                customModels={customModels}
+                customModels={normalizedCustomModels}
                 hiddenModels={hiddenModels}
                 favoriteModels={favoriteModels}
                 modelOrder={modelOrder}

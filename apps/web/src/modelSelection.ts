@@ -1,6 +1,7 @@
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  MODEL_OPTIONS_BY_PROVIDER,
   defaultInstanceIdForDriver,
   type ModelSelection,
   ProviderDriverKind,
@@ -121,13 +122,23 @@ export function normalizeCustomModelSlugs(
 ): string[] {
   const normalizedModels: string[] = [];
   const seen = new Set<string>();
+  const staticBuiltInModels = (
+    MODEL_OPTIONS_BY_PROVIDER as Record<
+      string,
+      ReadonlyArray<{ readonly slug: string; readonly name: string }> | undefined
+    >
+  )[provider];
+  const reservedBuiltInModelSlugs = new Set([
+    ...builtInModelSlugs,
+    ...(staticBuiltInModels?.map((model) => model.slug) ?? []),
+  ]);
 
   for (const candidate of models) {
     const normalized = normalizeModelSlug(candidate, provider);
     if (
       !normalized ||
       normalized.length > MAX_CUSTOM_MODEL_LENGTH ||
-      builtInModelSlugs.has(normalized) ||
+      reservedBuiltInModelSlugs.has(normalized) ||
       seen.has(normalized)
     ) {
       continue;

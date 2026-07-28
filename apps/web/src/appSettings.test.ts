@@ -681,10 +681,11 @@ describe("getAppModelOptions", () => {
     });
   });
 
-  it("lists Claude Fable 5 and Opus models before Sonnet and Haiku in built-in Claude options", () => {
+  it("lists Claude Opus 5 first in built-in Claude options", () => {
     const options = getAppModelOptions("claudeAgent", []);
 
-    expect(options.slice(0, 8).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 9).map((option) => option.slug)).toEqual([
+      "claude-opus-5",
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",

@@ -3,6 +3,7 @@ import "../index.css";
 import {
   CodeReviewWorkflowId,
   ORCHESTRATION_WS_METHODS,
+  PR_HUB_WS_METHODS,
   type MessageId,
   type OrchestrationReadModel,
   PlanningWorkflowId,
@@ -441,6 +442,16 @@ function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
       oldestLoadedCheckpointTurnCount: null,
       oldestLoadedCommandExecutionCursor: null,
       detailSequence: fixture.snapshot.snapshotSequence,
+    };
+  }
+  if (tag === PR_HUB_WS_METHODS.getSnapshot) {
+    return {
+      status: "ok",
+      viewerLogin: null,
+      host: "github.com",
+      pullRequests: [],
+      recentlyResolved: [],
+      lastPolledAt: null,
     };
   }
   if (tag === WS_METHODS.serverGetConfig) {

@@ -6,13 +6,17 @@ import { DEFAULT_RESOLVED_KEYBINDINGS } from "@t3tools/shared/keybindings";
 import { page, userEvent } from "vitest/browser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render } from "vitest-browser-react";
-import type {
+import {
+  defaultInstanceIdForDriver,
   DesktopBridge,
   OrchestrationCreateCodeReviewWorkflowInput,
   OrchestrationCreateInvestigationWorkflowInput,
   OrchestrationCreateWorkflowInput,
   ProjectId,
+  ProviderDriverKind,
   ResolvedKeybindingsConfig,
+  ServerProvider,
+  WorkflowPlatformCreateRunInput,
 } from "@t3tools/contracts";
 
 import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
@@ -40,11 +44,40 @@ const nativeApiMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../nativeApi", () => {
+  const createRun = async (input: WorkflowPlatformCreateRunInput) => {
+    const request = {
+      ...input.input,
+      ...(input.maxCostUsd ? { maxCostUsd: input.maxCostUsd } : {}),
+    };
+    switch (input.templateId) {
+      case "builtin.planning.dual": {
+        const result = await nativeApiMocks.createWorkflow(
+          request as OrchestrationCreateWorkflowInput,
+        );
+        return { runKind: "planning" as const, workflowId: result.workflowId };
+      }
+      case "builtin.code-review.dual": {
+        const result = await nativeApiMocks.createCodeReviewWorkflow(
+          request as OrchestrationCreateCodeReviewWorkflowInput,
+        );
+        return { runKind: "codeReview" as const, workflowId: result.workflowId };
+      }
+      case "builtin.investigation.dual": {
+        const result = await nativeApiMocks.createInvestigationWorkflow(
+          request as OrchestrationCreateInvestigationWorkflowInput,
+        );
+        return { runKind: "investigation" as const, workflowId: result.workflowId };
+      }
+    }
+  };
   const api = {
     orchestration: {
       createWorkflow: nativeApiMocks.createWorkflow,
       createCodeReviewWorkflow: nativeApiMocks.createCodeReviewWorkflow,
       createInvestigationWorkflow: nativeApiMocks.createInvestigationWorkflow,
+    },
+    workflowPlatform: {
+      createRun,
     },
     server: {
       getConfig: nativeApiMocks.getConfig,
@@ -98,6 +131,7 @@ const desktopBridgePathByFileName = new Map<string, string>();
 
 function createTestQueryClient(
   keybindings: ResolvedKeybindingsConfig = DEFAULT_RESOLVED_KEYBINDINGS,
+  providers?: ReadonlyArray<ServerProvider>,
 ): QueryClient {
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -109,15 +143,19 @@ function createTestQueryClient(
       },
     },
   });
-  queryClient.setQueryData(serverQueryKeys.config(), { keybindings });
+  queryClient.setQueryData(serverQueryKeys.config(), { keybindings, providers });
   return queryClient;
 }
 
 async function renderWithQueryClient(
   element: ReactElement,
-  options: { container?: HTMLElement; keybindings?: ResolvedKeybindingsConfig } = {},
+  options: {
+    container?: HTMLElement;
+    keybindings?: ResolvedKeybindingsConfig;
+    providers?: ReadonlyArray<ServerProvider>;
+  } = {},
 ) {
-  const queryClient = createTestQueryClient(options.keybindings);
+  const queryClient = createTestQueryClient(options.keybindings, options.providers);
   const renderOptions = options.container ? { container: options.container } : undefined;
   const screen = await render(
     <QueryClientProvider client={queryClient}>{element}</QueryClientProvider>,
@@ -129,6 +167,33 @@ async function renderWithQueryClient(
       await screen.unmount();
       queryClient.clear();
     },
+  };
+}
+
+function claudeProvider(version: string, models: ReadonlyArray<string>): ServerProvider {
+  const driver = ProviderDriverKind.make("claudeAgent");
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-07-28T00:00:00.000Z",
+    models: models.map((slug) => ({
+      slug,
+      name:
+        slug === "claude-opus-5"
+          ? "Claude Opus 5"
+          : slug === "claude-fable-5"
+            ? "Claude Fable 5"
+            : slug,
+      isCustom: false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
   };
 }
 
@@ -461,6 +526,83 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("falls back from remembered Opus 5 when the live Claude snapshot gates it out", async () => {
+    await seedModelPreferences({
+      lastProvider: "claudeAgent",
+      lastModelByProvider: { claudeAgent: "opus-5[1m]" },
+      lastModelOptions: { claudeAgent: { fastMode: true } },
+      lastWorkflowProviderBySlot: { branchB: "claudeAgent" },
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      {
+        container: host,
+        providers: [claudeProvider("2.1.219", ["claude-fable-5"])],
+      },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Fable 5");
+      });
+      await page
+        .getByPlaceholder("Describe the feature or requirement to plan.")
+        .fill("Plan the gated workflow");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("selects and submits canonical Opus 5 with Fast Mode when supported", async () => {
+    await seedModelPreferences({
+      lastProvider: "claudeAgent",
+      lastModelByProvider: { claudeAgent: "opus-5[1m]" },
+      lastModelOptions: { claudeAgent: { fastMode: true } },
+      lastWorkflowProviderBySlot: { branchB: "claudeAgent" },
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      {
+        container: host,
+        providers: [claudeProvider("2.1.220", ["claude-opus-5", "claude-fable-5"])],
+      },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(findProviderFieldButton("Author B").textContent ?? "").toContain("Opus 5");
+      });
+      await page
+        .getByPlaceholder("Describe the feature or requirement to plan.")
+        .fill("Plan the Opus workflow");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        modelOptions: { claudeAgent: { fastMode: true } },
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("remembers the merge provider when reopening the workflow dialog", async () => {
     const firstHost = document.createElement("div");
     document.body.append(firstHost);
@@ -693,7 +835,9 @@ describe("WorkflowCreateDialog", () => {
         requirementPrompt: "Plan the new workflow behavior",
         titleGenerationModel: "custom/thread-title-model",
       });
-      expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
+      await vi.waitFor(() => {
+        expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
+      });
     } finally {
       await screen.unmount();
       host.remove();
@@ -811,7 +955,9 @@ describe("WorkflowCreateDialog", () => {
         titleGenerationModel: "custom/thread-title-model",
       });
       expect("title" in payload).toBe(false);
-      expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
+      await vi.waitFor(() => {
+        expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
+      });
       expect(onOpenChange).toHaveBeenCalledWith(false);
     } finally {
       await screen.unmount();
@@ -863,7 +1009,9 @@ describe("WorkflowCreateDialog", () => {
         titleGenerationModel: "custom/thread-title-model",
       });
       expect("title" in payload).toBe(false);
-      expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-2");
+      await vi.waitFor(() => {
+        expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-2");
+      });
     } finally {
       await screen.unmount();
       host.remove();
@@ -914,7 +1062,9 @@ describe("WorkflowCreateDialog", () => {
         titleGenerationModel: "custom/thread-title-model",
         selfReviewEnabled: true,
       });
-      expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-3");
+      await vi.waitFor(() => {
+        expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-3");
+      });
     } finally {
       await screen.unmount();
       host.remove();

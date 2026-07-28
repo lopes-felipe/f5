@@ -1,17 +1,20 @@
 import {
   CheckpointRef,
   CommandId,
+  defaultInstanceIdForDriver,
   EventId,
   MessageId,
   OrchestrationProposedPlanId,
   PlanningWorkflowId,
   ProjectId,
+  ProviderDriverKind,
   ThreadId,
   TurnId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type PlanningWorkflow,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Effect, Exit, Layer, ManagedRuntime, Queue, Scope, Stream } from "effect";
@@ -21,6 +24,10 @@ import { TextGenerationError } from "../../git/Errors.ts";
 import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
 import { TextGeneration, type TextGenerationShape } from "../../git/Services/TextGeneration.ts";
 import {
+  ProviderRegistry,
+  type ProviderRegistryShape,
+} from "../../provider/Services/ProviderRegistry.ts";
+import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
@@ -29,6 +36,28 @@ import { WorkflowService } from "../Services/WorkflowService.ts";
 import { WorkflowServiceLive } from "./WorkflowService.ts";
 
 const NOW = "2026-03-26T12:00:00.000Z";
+
+function claudeProvider(models: ReadonlyArray<string>): ServerProvider {
+  const driver = ProviderDriverKind.make("claudeAgent");
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version: models.includes("claude-opus-5") ? "2.1.220" : "2.1.219",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: NOW,
+    models: models.map((slug) => ({
+      slug,
+      name: slug,
+      isCustom: false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
+  };
+}
 
 function makeThread(
   overrides: Partial<OrchestrationReadModel["threads"][number]>,
@@ -440,7 +469,12 @@ function applyWorkflowEventToSnapshot(
   }
 }
 
-async function createHarness(initialSnapshot: OrchestrationReadModel) {
+async function createHarness(
+  initialSnapshot: OrchestrationReadModel,
+  options?: {
+    readonly getProviders?: () => ReadonlyArray<ServerProvider>;
+  },
+) {
   let snapshot = initialSnapshot;
   let projectionSnapshotsFailing = false;
   let projectionSnapshotCallCount = 0;
@@ -583,6 +617,14 @@ async function createHarness(initialSnapshot: OrchestrationReadModel) {
         } as unknown as GitCoreShape),
       ),
       Layer.provideMerge(Layer.succeed(ServerConfig, serverConfig)),
+      Layer.provideMerge(
+        Layer.succeed(ProviderRegistry, {
+          getProviders: Effect.sync(() => options?.getProviders?.() ?? []),
+          refresh: () => Effect.sync(() => options?.getProviders?.() ?? []),
+          refreshInstance: () => Effect.sync(() => options?.getProviders?.() ?? []),
+          streamChanges: Stream.empty,
+        } satisfies ProviderRegistryShape),
+      ),
     ),
   );
 
@@ -5998,6 +6040,69 @@ describe("WorkflowService", () => {
     );
   });
 
+  it("revalidates a persisted Opus 5 slot after a CLI downgrade before an automatic retry", async () => {
+    vi.useFakeTimers();
+    let providers: ReadonlyArray<ServerProvider> = [
+      claudeProvider(["claude-opus-5", "claude-fable-5"]),
+    ];
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        authorSlot: {
+          provider: "claudeAgent",
+          model: "claude-opus-5",
+          modelOptions: { claudeAgent: { effort: "high", fastMode: true } },
+        },
+        status: "authoring",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "running",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.makeUnsafe("author-turn"),
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+      { getProviders: () => providers },
+    );
+    await harness.start();
+
+    providers = [claudeProvider(["claude-fable-5", "claude-opus-4-8"])];
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: ThreadId.makeUnsafe("author-a"),
+        session: {
+          threadId: ThreadId.makeUnsafe("author-a"),
+          status: "error",
+          providerName: "claudeAgent",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "429 too many requests for api key pool",
+          updatedAt: NOW,
+        },
+      }),
+    );
+
+    await vi.advanceTimersByTimeAsync(5_001);
+    const retry = turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a")).at(-1);
+    expect(retry).toMatchObject({
+      provider: "claudeAgent",
+      model: "claude-fable-5",
+    });
+    expect(retry?.modelOptions).toBeUndefined();
+  });
+
   it("marks authoring errors once automatic retries are exhausted", async () => {
     vi.useFakeTimers();
     const workflow = makeWorkflow({
@@ -6487,6 +6592,55 @@ describe("WorkflowService", () => {
     );
 
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.status).toBe("authoring");
+  });
+
+  it("revalidates persisted Opus 5 slots during startup reconciliation", async () => {
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        authorSlot: {
+          provider: "claudeAgent",
+          model: "claude-opus-5",
+          modelOptions: { claudeAgent: { effort: "high", fastMode: true } },
+        },
+        status: "pending",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            session: {
+              threadId: ThreadId.makeUnsafe("author-a"),
+              status: "running",
+              providerName: "claudeAgent",
+              runtimeMode: "full-access",
+              activeTurnId: TurnId.makeUnsafe("author-turn"),
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+      {
+        getProviders: () => [claudeProvider(["claude-fable-5", "claude-opus-4-8"])],
+      },
+    );
+
+    await harness.start();
+    await waitFor(
+      () => turnStartsForThread(harness!.dispatched, ThreadId.makeUnsafe("author-a")).length === 1,
+      100,
+    );
+
+    const restarted = turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))[0];
+    expect(restarted).toMatchObject({
+      provider: "claudeAgent",
+      model: "claude-fable-5",
+    });
+    expect(restarted?.modelOptions).toBeUndefined();
   });
 
   it("reconciles completed revision output into a merge on startup", async () => {

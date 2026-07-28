@@ -18,14 +18,14 @@ import {
   type ModelSelection,
   type UserMessageSkillCall,
 } from "@t3tools/contracts";
-import { resolveSelectableModel } from "@t3tools/shared/model";
+import { normalizeModelSlug, resolveSelectableModel } from "@t3tools/shared/model";
 import {
   isReservedHostLocalSlashCommandName,
   normalizeHostCompatibleRuntimeSlashCommandName,
 } from "@t3tools/shared/slashCommands";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { type ChatMessage } from "../types";
-import { getAppModelOptions } from "../appSettings";
+import { CLAUDE_SUBAGENT_MODEL_INHERIT, getAppModelOptions } from "../appSettings";
 import { type ComposerImageAttachment } from "../composerDraftStore";
 import { Schema } from "effect";
 import { sortModelsForProviderInstance } from "../modelOrdering";
@@ -630,6 +630,19 @@ export function resolveComposerPickerModel(input: {
   return (
     resolveSelectableModel(providerDriver, serverDefault, input.pickerOptions) ?? serverDefault
   );
+}
+
+export function resolveClaudeSubagentModel(
+  rawModel: string | null | undefined,
+  availableModels: ReadonlyArray<{ readonly slug: string }>,
+): string {
+  if (rawModel === CLAUDE_SUBAGENT_MODEL_INHERIT) {
+    return CLAUDE_SUBAGENT_MODEL_INHERIT;
+  }
+  const normalizedModel = normalizeModelSlug(rawModel, "claudeAgent");
+  return normalizedModel && availableModels.some((model) => model.slug === normalizedModel)
+    ? normalizedModel
+    : CLAUDE_SUBAGENT_MODEL_INHERIT;
 }
 
 function readRerouteString(payload: Record<string, unknown> | null, key: string): string | null {

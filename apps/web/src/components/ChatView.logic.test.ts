@@ -20,6 +20,7 @@ import {
   getCustomModelOptionsByProvider,
   identityAbsolutePathNormalizer,
   readAttachedFileAbsolutePath,
+  resolveClaudeSubagentModel,
   resolveComposerPickerModel,
   resolveAttachedFileReferencePaths,
   rewriteComposerRuntimeSkillInvocationForSend,
@@ -69,6 +70,32 @@ function provider(input: {
 }
 
 describe("getCustomModelOptionsByProvider", () => {
+  it("treats the live Claude catalog as authoritative over gated raw custom settings", () => {
+    const providers = [
+      provider({
+        provider: "claudeAgent",
+        models: [
+          { slug: "claude-fable-5", name: "Claude Fable 5" },
+          { slug: "claude-opus-4-8", name: "Claude Opus 4.8" },
+        ],
+      }),
+    ];
+    const options = getCustomModelOptionsByProvider(
+      {
+        customCodexModels: [],
+        customClaudeModels: ["opus", "opus-5", "claude-opus-5[1m]"],
+        customGrokModels: [],
+        providerModelPreferences: {},
+      },
+      providers,
+    );
+
+    expect(options.claudeAgent.map((option) => option.slug)).toEqual([
+      "claude-fable-5",
+      "claude-opus-4-8",
+    ]);
+  });
+
   it("uses live Cursor-discovered models instead of the static fallback list", () => {
     const options = getCustomModelOptionsByProvider(
       {
@@ -197,6 +224,19 @@ describe("resolveComposerPickerModel", () => {
         providers,
       }),
     ).toBe("claude-opus-4-8");
+  });
+});
+
+describe("resolveClaudeSubagentModel", () => {
+  const pickerOptions = [
+    { slug: "claude-fable-5", name: "Claude Fable 5" },
+    { slug: "claude-opus-4-8", name: "Claude Opus 4.8" },
+  ];
+
+  it("falls back to inherit for gated stored models without overwriting available aliases", () => {
+    expect(resolveClaudeSubagentModel("opus-5", pickerOptions)).toBe("inherit");
+    expect(resolveClaudeSubagentModel("opus-4.8", pickerOptions)).toBe("claude-opus-4-8");
+    expect(resolveClaudeSubagentModel("inherit", pickerOptions)).toBe("inherit");
   });
 });
 

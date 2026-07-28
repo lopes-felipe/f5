@@ -6,6 +6,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Claude Opus 5 support as the new Claude default (custom Claude binaries require Claude Code
+  v2.1.220+).
 - Claude Fable 5 support (requires Claude Code v2.1.170+).
 - Add Claude Opus 4.8 to the Claude provider model list.
 - `NOTICE.md`, `ARCHITECTURE.md` (root stub), `SECURITY.md`, `CODE_OF_CONDUCT.md`, and `THIRD_PARTY_LICENSES.md` at the repository root.
@@ -15,6 +17,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- Correct Claude Fast Mode availability: enabled for Opus 5 and Opus 4.8, and disabled for Opus
+  4.7, 4.6, and 4.5.
 - **Breaking:** the web server now binds to `127.0.0.1` by default. Remote deployments must set an
   explicit non-loopback `--host`, use an authentication token of at least 24 bytes, and provide
   encrypted transport through a private network or HTTPS/WSS reverse proxy.

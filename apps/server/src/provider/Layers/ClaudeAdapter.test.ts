@@ -52,6 +52,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
+  public readonly applyFlagSettingsCalls: Array<Record<string, unknown>> = [];
   public closeCalls = 0;
   public initializationResultValue: unknown = {
     commands: [],
@@ -136,6 +137,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly setMaxThinkingTokens = async (maxThinkingTokens: number | null): Promise<void> => {
     this.setMaxThinkingTokensCalls.push(maxThinkingTokens);
+  };
+
+  readonly applyFlagSettings = async (settings: Record<string, unknown>): Promise<void> => {
+    this.applyFlagSettingsCalls.push(settings);
   };
 
   readonly initializationResult = async (): Promise<unknown> => this.initializationResultValue;
@@ -584,7 +589,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("passes a concrete subagent model override through the Claude query env", () => {
+  it.effect("canonicalizes a concrete subagent model override in the Claude query env", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -594,13 +599,13 @@ describe("ClaudeAdapterLive", () => {
         runtimeMode: "full-access",
         providerOptions: {
           claudeAgent: {
-            subagentModel: "claude-haiku-4-5",
+            subagentModel: "opus-5[1m]",
           },
         },
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, "claude-haiku-4-5");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, "claude-opus-5");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -638,6 +643,7 @@ describe("ClaudeAdapterLive", () => {
           {
             signal: new AbortController().signal,
             toolUseID: "tool-disabled-agent-1",
+            requestId: "request-disabled-agent-1",
           },
         ),
       );
@@ -659,6 +665,7 @@ describe("ClaudeAdapterLive", () => {
           {
             signal: new AbortController().signal,
             toolUseID: "tool-disabled-agent-grep-1",
+            requestId: "request-disabled-agent-grep-1",
           },
         ),
       );
@@ -850,6 +857,36 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, "max");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts canonical Opus 5 sessions with high effort, Fast Mode, and a bare id", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "opus-5[1m]",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5[1m]",
+          [
+            { id: "contextWindow", value: "1m" },
+            { id: "fastMode", value: true },
+          ],
+        ),
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(session.model, "claude-opus-5");
+      assert.equal(createInput?.options.model, "claude-opus-5");
+      assert.equal(createInput?.options.effort, "high");
+      assert.deepEqual(createInput?.options.settings, { fastMode: true });
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -1380,14 +1417,14 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("forwards claude fast mode into SDK settings", () => {
+  it.effect("forwards Claude Opus 4.8 Fast Mode into SDK settings", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: "claudeAgent",
-        model: "claude-opus-4-6",
+        model: "claude-opus-4-8",
         runtimeMode: "full-access",
         modelOptions: {
           claudeAgent: {
@@ -1414,6 +1451,30 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         model: "claude-opus-4-7",
+        runtimeMode: "full-access",
+        modelOptions: {
+          claudeAgent: {
+            fastMode: true,
+          },
+        },
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.settings, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ignores claude fast mode for Claude Opus 4.6", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
         runtimeMode: "full-access",
         modelOptions: {
           claudeAgent: {
@@ -1485,7 +1546,46 @@ describe("ClaudeAdapterLive", () => {
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.effort, undefined);
       const promptText = yield* Effect.promise(() => readFirstPromptText(createInput));
-      assert.equal(promptText, "Ultrathink:\nInvestigate the edge cases");
+      assert.equal(
+        promptText,
+        [
+          "<f3-runtime-context>",
+          'Active model: "claude-sonnet-4-6"',
+          "This host-reported value is authoritative for model identity.",
+          "</f3-runtime-context>",
+          "",
+          "Ultrathink:",
+          "Investigate the edge cases",
+        ].join("\n"),
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps Claude slash commands at the start of the prompt", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "/compact",
+        attachments: [],
+        model: "claude-opus-5",
+      });
+
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.equal(promptText, "/compact");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -4375,6 +4475,7 @@ describe("ClaudeAdapterLive", () => {
             },
           ],
           toolUseID: "tool-use-1",
+          requestId: "request-tool-use-1",
         },
       );
 
@@ -4451,6 +4552,7 @@ describe("ClaudeAdapterLive", () => {
         {
           signal: new AbortController().signal,
           toolUseID: "tool-agent-1",
+          requestId: "request-tool-agent-1",
         },
       );
 
@@ -4475,6 +4577,7 @@ describe("ClaudeAdapterLive", () => {
         {
           signal: new AbortController().signal,
           toolUseID: "tool-grep-approval-1",
+          requestId: "request-tool-grep-approval-1",
         },
       );
 
@@ -4673,6 +4776,115 @@ describe("ClaudeAdapterLive", () => {
       });
 
       assert.deepEqual(harness.query.setModelCalls, ["claude-opus-4-6"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("canonicalizes Opus 5 aliases on follow-up setModel calls", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        model: "opus-5[1m]",
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-5"]);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies Opus 5 effort and Fast Mode when switching an active session", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "switch",
+        modelSelection: createModelSelection(ProviderInstanceId.make("claudeAgent"), "opus-5[1m]", [
+          { id: "effort", value: "high" },
+          { id: "fastMode", value: true },
+        ]),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-5"]);
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        {
+          effortLevel: "high",
+          fastMode: true,
+          alwaysThinkingEnabled: null,
+        },
+      ]);
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.match(promptText ?? "", /Active model: "claude-opus-5"/);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("applies trait-only changes without restarting or resetting the model", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+          [
+            { id: "effort", value: "high" },
+            { id: "fastMode", value: true },
+          ],
+        ),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "change traits",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          "claude-opus-5",
+          [
+            { id: "effort", value: "low" },
+            { id: "fastMode", value: false },
+          ],
+        ),
+        attachments: [],
+      });
+
+      assert.deepEqual(harness.query.setModelCalls, []);
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        {
+          effortLevel: "low",
+          fastMode: false,
+          alwaysThinkingEnabled: null,
+        },
+      ]);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -5008,6 +5220,7 @@ describe("ClaudeAdapterLive", () => {
         {
           signal: new AbortController().signal,
           toolUseID: "tool-exit-1",
+          requestId: "request-tool-exit-1",
         },
       );
 
@@ -5174,6 +5387,7 @@ describe("ClaudeAdapterLive", () => {
       const permissionPromise = canUseTool("AskUserQuestion", askInput, {
         signal: new AbortController().signal,
         toolUseID: "tool-ask-1",
+        requestId: "request-tool-ask-1",
       });
 
       // The adapter should emit a user-input.requested event.
@@ -5296,6 +5510,7 @@ describe("ClaudeAdapterLive", () => {
       const permissionPromise = canUseTool("AskUserQuestion", askInput, {
         signal: new AbortController().signal,
         toolUseID: "tool-ask-2",
+        requestId: "request-tool-ask-2",
       });
 
       // Should still get user-input.requested even in full-access mode.
@@ -5363,6 +5578,7 @@ describe("ClaudeAdapterLive", () => {
         {
           signal: controller.signal,
           toolUseID: "tool-ask-abort",
+          requestId: "request-tool-ask-abort",
         },
       );
 
@@ -5585,7 +5801,11 @@ describe("ClaudeAdapterLive", () => {
         const permissionPromise = canUseTool(
           "Bash",
           { command: "pwd" },
-          { signal: controller.signal, toolUseID: "tool-interrupt-approval" },
+          {
+            signal: controller.signal,
+            toolUseID: "tool-interrupt-approval",
+            requestId: "request-tool-interrupt-approval",
+          },
         );
 
         const requestedEvent = yield* Stream.runHead(adapter.streamEvents);
@@ -5658,6 +5878,7 @@ describe("ClaudeAdapterLive", () => {
         const permissionPromise = canUseTool("AskUserQuestion", askInput, {
           signal: new AbortController().signal,
           toolUseID: "tool-interrupt-ask",
+          requestId: "request-tool-interrupt-ask",
         });
 
         const requestedEvent = yield* Stream.runHead(adapter.streamEvents);

@@ -38,6 +38,11 @@ import {
   slotLabel,
 } from "../workflowSharedUtils.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
+import {
+  resolveAvailableWorkflowModelSlot,
+  withWorkflowModelSelectionGuard,
+} from "../workflowModelSelection.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 
 type CodeReviewWorkflowTitleGenerationWorkItem = {
   readonly workflowId: CodeReviewWorkflowId;
@@ -485,8 +490,15 @@ function startConsolidationTurn(input: {
 }
 
 export const makeCodeReviewWorkflowService = Effect.gen(function* () {
-  const orchestrationEngine = yield* OrchestrationEngineService;
+  const baseOrchestrationEngine = yield* OrchestrationEngineService;
   const textGeneration = yield* TextGeneration;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  const getWorkflowProviders =
+    providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
+  const orchestrationEngine = withWorkflowModelSelectionGuard(
+    baseOrchestrationEngine,
+    getWorkflowProviders,
+  );
 
   const titleGenerationWorker = yield* makeDrainableWorker(
     (item: CodeReviewWorkflowTitleGenerationWorkItem) =>
@@ -1013,8 +1025,15 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     ),
   );
 
-  const createWorkflow: CodeReviewWorkflowServiceShape["createWorkflow"] = (input) =>
+  const createWorkflow: CodeReviewWorkflowServiceShape["createWorkflow"] = (rawInput) =>
     Effect.gen(function* () {
+      const providers = yield* getWorkflowProviders;
+      const input = {
+        ...rawInput,
+        reviewerA: resolveAvailableWorkflowModelSlot(rawInput.reviewerA, providers),
+        reviewerB: resolveAvailableWorkflowModelSlot(rawInput.reviewerB, providers),
+        consolidation: resolveAvailableWorkflowModelSlot(rawInput.consolidation, providers),
+      };
       const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.codeReviewWorkflows

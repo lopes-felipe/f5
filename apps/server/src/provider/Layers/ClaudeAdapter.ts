@@ -55,6 +55,7 @@ import {
   getProviderOptionStringSelectionValue,
   getReasoningEffortOptions,
   normalizeClaudeContextWindow,
+  normalizeModelSlug,
   resolveReasoningEffortForProvider,
   supportsClaudeContextWindow,
   supportsClaudeFastMode,
@@ -128,6 +129,11 @@ type ClaudeToolResultStreamKind = Extract<
   "command_output" | "file_change_output"
 >;
 type ClaudeSdkEffort = Exclude<ClaudeCodeEffort, "ultrathink">;
+type ClaudeRuntimeFlagSettings = {
+  readonly effortLevel?: ClaudeSdkEffort | null;
+  readonly fastMode?: boolean | null;
+  readonly alwaysThinkingEnabled?: boolean | null;
+};
 type ClaudeContextWindow = "200k" | "1m";
 
 type PromptQueueItem =
@@ -283,10 +289,11 @@ interface ClaudeSessionContext {
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
-  readonly interrupt: () => Promise<void>;
+  readonly interrupt: () => Promise<unknown>;
   readonly setModel: (model?: string) => Promise<void>;
   readonly setPermissionMode: (mode: PermissionMode) => Promise<void>;
   readonly setMaxThinkingTokens: (maxThinkingTokens: number | null) => Promise<void>;
+  readonly applyFlagSettings: (settings: ClaudeRuntimeFlagSettings) => Promise<void>;
   readonly initializationResult?: () => Promise<unknown>;
   readonly supportedModels?: () => Promise<ReadonlyArray<unknown>>;
   readonly supportedCommands?: () => Promise<
@@ -803,10 +810,11 @@ function resolveClaudeRuntimeModelSelection(input: {
     modelSelection: input.modelSelection,
     providerInstanceId,
   });
-  const baseModel = matchingModelSelection?.model ?? input.model ?? input.fallbackModel;
-  if (!baseModel) {
+  const rawBaseModel = matchingModelSelection?.model ?? input.model ?? input.fallbackModel;
+  if (!rawBaseModel) {
     return {};
   }
+  const baseModel = normalizeModelSlug(rawBaseModel, "claudeAgent") ?? rawBaseModel;
 
   const options =
     matchingModelSelection?.options ??
@@ -840,6 +848,54 @@ function resolveClaudeRuntimeModelSelection(input: {
   };
 }
 
+function resolveClaudeRuntimeTraits(
+  selection: ReturnType<typeof resolveClaudeRuntimeModelSelection>,
+  fallbackModel?: string,
+): {
+  readonly selectedModel?: string;
+  readonly effectiveEffort?: ClaudeSdkEffort;
+  readonly fastMode: boolean;
+  readonly thinking?: boolean;
+} {
+  const selectedModel = selection.baseModel ?? fallbackModel;
+  if (!selectedModel) {
+    return {
+      fastMode: false,
+    };
+  }
+
+  const requestedEffort = resolveReasoningEffortForProvider(
+    "claudeAgent",
+    getProviderOptionStringSelectionValue(selection.options, "effort") ?? null,
+  );
+  const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", selectedModel);
+  const defaultEffort = requestedEffort
+    ? null
+    : getDefaultReasoningEffort("claudeAgent", selectedModel);
+  const effort =
+    requestedEffort && supportedEffortOptions.includes(requestedEffort)
+      ? requestedEffort
+      : defaultEffort && supportedEffortOptions.includes(defaultEffort)
+        ? defaultEffort
+        : null;
+  const fastMode =
+    getProviderOptionBooleanSelectionValue(selection.options, "fastMode") === true &&
+    supportsClaudeFastMode(selectedModel);
+  const thinkingSelection = getProviderOptionBooleanSelectionValue(selection.options, "thinking");
+  const thinking =
+    typeof thinkingSelection === "boolean" && supportsClaudeThinkingToggle(selectedModel)
+      ? thinkingSelection
+      : undefined;
+  const effectiveEffort = getEffectiveClaudeCodeEffort(effort);
+
+  return {
+    selectedModel,
+    ...(effectiveEffort ? { effectiveEffort } : {}),
+    fastMode,
+    ...(typeof thinking === "boolean" ? { thinking } : {}),
+  };
+}
+
 function withClaudeRuntimeSelectionConfig(
   config: Record<string, unknown>,
   selection: {
@@ -852,6 +908,24 @@ function withClaudeRuntimeSelectionConfig(
     ...rest,
     ...(selection.baseModel ? { model: selection.baseModel } : {}),
     ...(selection.contextWindow ? { context_window: selection.contextWindow } : {}),
+  };
+}
+
+function withClaudeRuntimeTraitsConfig(
+  config: Record<string, unknown>,
+  traits: ReturnType<typeof resolveClaudeRuntimeTraits>,
+): Record<string, unknown> {
+  const {
+    effort: _discardedEffort,
+    fastMode: _discardedFastMode,
+    alwaysThinkingEnabled: _discardedThinking,
+    ...rest
+  } = config;
+  return {
+    ...rest,
+    ...(traits.effectiveEffort ? { effort: traits.effectiveEffort } : {}),
+    ...(traits.fastMode ? { fastMode: true } : {}),
+    ...(typeof traits.thinking === "boolean" ? { alwaysThinkingEnabled: traits.thinking } : {}),
   };
 }
 
@@ -1053,23 +1127,38 @@ const CLAUDE_SETTING_SOURCES = [
 function buildClaudeQueryEnv(providerOptions?: {
   readonly subagentModel?: string | undefined;
 }): NodeJS.ProcessEnv {
-  const subagentModel = normalizeOptionalString(providerOptions?.subagentModel);
-  if (!subagentModel) {
+  const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
+  if (!rawSubagentModel) {
     return buildProviderChildProcessEnv();
   }
 
-  if (subagentModel === "inherit") {
+  if (rawSubagentModel === "inherit") {
     return buildProviderChildProcessEnv(process.env, {
       CLAUDE_CODE_SUBAGENT_MODEL: undefined,
     });
   }
 
   return buildProviderChildProcessEnv(process.env, {
-    CLAUDE_CODE_SUBAGENT_MODEL: subagentModel,
+    CLAUDE_CODE_SUBAGENT_MODEL:
+      normalizeModelSlug(rawSubagentModel, "claudeAgent") ?? rawSubagentModel,
   });
 }
 
-function buildPromptText(input: ProviderSendTurnInput): string {
+function buildClaudeTurnRuntimeContext(model: string | undefined): string | undefined {
+  const normalizedModel = normalizeOptionalString(model);
+  if (!normalizedModel) {
+    return undefined;
+  }
+
+  return [
+    "<f3-runtime-context>",
+    `Active model: ${JSON.stringify(normalizeModelSlug(normalizedModel, "claudeAgent") ?? normalizedModel)}`,
+    "This host-reported value is authoritative for model identity.",
+    "</f3-runtime-context>",
+  ].join("\n");
+}
+
+function buildPromptText(input: ProviderSendTurnInput, activeModel?: string): string {
   const requestedEffort = resolveReasoningEffortForProvider(
     "claudeAgent",
     input.modelOptions?.claudeAgent?.effort ?? null,
@@ -1081,7 +1170,13 @@ function buildPromptText(input: ProviderSendTurnInput): string {
       : requestedEffort && supportedEffortOptions.includes(requestedEffort)
         ? requestedEffort
         : null;
-  return applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+  const userPrompt = applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+  // Claude Code slash commands must remain the leading prompt text so the CLI
+  // can recognize them before normal model dispatch.
+  const runtimeContext = userPrompt.startsWith("/")
+    ? undefined
+    : buildClaudeTurnRuntimeContext(activeModel);
+  return runtimeContext ? `${runtimeContext}\n\n${userPrompt}` : userPrompt;
 }
 
 function buildUserMessage(input: {
@@ -1117,10 +1212,11 @@ function buildUserMessageEffect(
   dependencies: {
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
+    readonly activeModel?: string;
   },
 ): Effect.Effect<SDKUserMessage, ProviderAdapterRequestError> {
   return Effect.gen(function* () {
-    const text = buildPromptText(input);
+    const text = buildPromptText(input, dependencies.activeModel);
     const sdkContent: Array<Record<string, unknown>> = [];
 
     if (text.length > 0) {
@@ -4142,33 +4238,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           modelOptions: input.modelOptions,
           modelSelection: input.modelSelection,
         });
-        const selectedModel = runtimeModelSelection.baseModel ?? input.model;
-        const requestedEffort = resolveReasoningEffortForProvider(
-          "claudeAgent",
-          getProviderOptionStringSelectionValue(runtimeModelSelection.options, "effort") ?? null,
+        const { selectedModel, effectiveEffort, fastMode, thinking } = resolveClaudeRuntimeTraits(
+          runtimeModelSelection,
+          input.model,
         );
-        const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", selectedModel);
-        const defaultEffort = requestedEffort
-          ? null
-          : getDefaultReasoningEffort("claudeAgent", selectedModel);
-        const effort =
-          requestedEffort && supportedEffortOptions.includes(requestedEffort)
-            ? requestedEffort
-            : defaultEffort && supportedEffortOptions.includes(defaultEffort)
-              ? defaultEffort
-              : null;
-        const fastMode =
-          getProviderOptionBooleanSelectionValue(runtimeModelSelection.options, "fastMode") ===
-            true && supportsClaudeFastMode(selectedModel);
-        const thinkingSelection = getProviderOptionBooleanSelectionValue(
-          runtimeModelSelection.options,
-          "thinking",
-        );
-        const thinking =
-          typeof thinkingSelection === "boolean" && supportsClaudeThinkingToggle(selectedModel)
-            ? thinkingSelection
-            : undefined;
-        const effectiveEffort = getEffectiveClaudeCodeEffort(effort);
         const permissionMode =
           toPermissionMode(providerOptions?.permissionMode) ??
           (input.runtimeMode === "full-access" ? "bypassPermissions" : undefined);
@@ -4189,6 +4262,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
             : {}),
           ...(fastMode ? { fastMode: true } : {}),
+          ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
           [INSTRUCTION_PROFILE_CONFIG_KEY]: buildInstructionProfile({
             provider: "claudeAgent",
           }),
@@ -4441,6 +4515,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           if (runtimeModelSelection.apiModel && runtimeModelSelection.baseModel) {
             const previousModel = getClaudeSessionModel(context);
             const previousContextWindow = getConfiguredClaudeContextWindow(context.configuredBase);
+            const runtimeTraits = resolveClaudeRuntimeTraits(
+              runtimeModelSelection,
+              context.session.model,
+            );
             const shouldSetModel =
               runtimeModelSelection.baseModel !== previousModel ||
               runtimeModelSelection.contextWindow !== previousContextWindow;
@@ -4450,13 +4528,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
               });
             }
+            yield* Effect.tryPromise({
+              try: () =>
+                context.query.applyFlagSettings({
+                  effortLevel: runtimeTraits.effectiveEffort ?? null,
+                  fastMode: runtimeTraits.fastMode,
+                  alwaysThinkingEnabled: runtimeTraits.thinking ?? null,
+                }),
+              catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
+            });
             context.session = {
               ...context.session,
               model: runtimeModelSelection.baseModel,
             };
-            context.configuredBase = withClaudeRuntimeSelectionConfig(
-              context.configuredBase,
-              runtimeModelSelection,
+            context.configuredBase = withClaudeRuntimeTraitsConfig(
+              withClaudeRuntimeSelectionConfig(context.configuredBase, runtimeModelSelection),
+              runtimeTraits,
             );
             context.modelContextWindowTokens =
               runtimeModelSelection.contextWindowTokens ??
@@ -4537,9 +4624,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerRefs: {},
         });
 
+        const activeModel = getClaudeSessionModel(context);
         const message = yield* buildUserMessageEffect(input, {
           fileSystem,
           attachmentsDir: serverConfig.attachmentsDir,
+          ...(activeModel ? { activeModel } : {}),
         });
 
         yield* Queue.offer(context.promptQueue, {

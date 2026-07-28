@@ -6,6 +6,7 @@ import {
   MODEL_OPTIONS_BY_PROVIDER,
   MODEL_SLUG_ALIASES_BY_PROVIDER,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
+  type ClaudeBuiltInModelSlug,
   type ClaudeModelOptions,
   type ClaudeCodeEffort,
   type CodexModelOptions,
@@ -32,6 +33,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
 
 const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
 const CLAUDE_SONNET_5_MODEL = "claude-sonnet-5";
+const CLAUDE_OPUS_5_MODEL = "claude-opus-5";
 const CLAUDE_OPUS_4_8_MODEL = "claude-opus-4-8";
 const CLAUDE_OPUS_4_7_MODEL = "claude-opus-4-7";
 const CLAUDE_OPUS_4_6_MODEL = "claude-opus-4-6";
@@ -55,7 +57,13 @@ interface ClaudeModelMetadata {
   readonly supportsContextWindow?: boolean;
 }
 
-const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
+const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata> = {
+  [CLAUDE_OPUS_5_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "high",
+    supportsFastMode: true,
+  },
   [CLAUDE_FABLE_5_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
@@ -72,6 +80,7 @@ const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "xhigh", "max", "ultrathink"],
     defaultEffort: "xhigh",
+    supportsFastMode: true,
     supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_7_MODEL]: {
@@ -84,14 +93,12 @@ const CLAUDE_MODEL_METADATA: Record<string, ClaudeModelMetadata> = {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "max", "ultrathink"],
     defaultEffort: "high",
-    supportsFastMode: true,
     supportsContextWindow: true,
   },
   [CLAUDE_OPUS_4_5_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: ["low", "medium", "high", "max", "ultrathink"],
     defaultEffort: "high",
-    supportsFastMode: true,
   },
   [CLAUDE_SONNET_4_6_MODEL]: {
     contextWindowTokens: 1_000_000,
@@ -274,6 +281,74 @@ export function createModelCapabilities(input: {
   };
 }
 
+const CLAUDE_EFFORT_LABELS: Record<ClaudeCodeEffort, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra High",
+  max: "Max",
+  ultrathink: "Ultrathink",
+};
+
+/**
+ * Build the provider-facing Claude option descriptors from the canonical
+ * model metadata. Keeping this derivation shared prevents server snapshots
+ * from drifting from the runtime capability predicates.
+ */
+export function createClaudeModelCapabilities(model: string | null | undefined): ModelCapabilities {
+  const metadata = getClaudeModelMetadata(model);
+  if (!metadata) {
+    return createModelCapabilities({ optionDescriptors: [] });
+  }
+
+  const optionDescriptors: ProviderOptionDescriptor[] = [];
+  if (metadata.effortOptions && metadata.effortOptions.length > 0) {
+    optionDescriptors.push({
+      id: "effort",
+      label: "Reasoning",
+      type: "select",
+      options: metadata.effortOptions.map((effort) => ({
+        id: effort,
+        label: CLAUDE_EFFORT_LABELS[effort],
+        ...(effort === metadata.defaultEffort ? { isDefault: true } : {}),
+      })),
+      ...(metadata.defaultEffort ? { currentValue: metadata.defaultEffort } : {}),
+      ...(metadata.effortOptions.includes("ultrathink")
+        ? { promptInjectedValues: ["ultrathink"] }
+        : {}),
+    });
+  }
+  if (metadata.supportsFastMode) {
+    optionDescriptors.push({
+      id: "fastMode",
+      label: "Fast Mode",
+      type: "boolean",
+    });
+  }
+  if (metadata.supportsContextWindow) {
+    optionDescriptors.push({
+      id: "contextWindow",
+      label: "Context Window",
+      type: "select",
+      options: [
+        { id: "200k", label: "200k", isDefault: true },
+        { id: "1m", label: "1M" },
+      ],
+      currentValue: "200k",
+    });
+  }
+  if (metadata.supportsThinkingToggle) {
+    optionDescriptors.push({
+      id: "thinking",
+      label: "Thinking",
+      type: "boolean",
+      currentValue: true,
+    });
+  }
+
+  return createModelCapabilities({ optionDescriptors });
+}
+
 function cloneProviderOptionDescriptor(
   descriptor: ProviderOptionDescriptor,
 ): ProviderOptionDescriptor {
@@ -393,7 +468,9 @@ export function buildProviderOptionSelectionsFromDescriptors(
 
 function getClaudeModelMetadata(model: string | null | undefined): ClaudeModelMetadata | undefined {
   const normalized = normalizeModelSlug(model, "claudeAgent");
-  return normalized ? CLAUDE_MODEL_METADATA[normalized] : undefined;
+  return normalized && Object.prototype.hasOwnProperty.call(CLAUDE_MODEL_METADATA, normalized)
+    ? CLAUDE_MODEL_METADATA[normalized as ClaudeBuiltInModelSlug]
+    : undefined;
 }
 
 function getClaudeReasoningEffortOptions(
@@ -534,7 +611,7 @@ export function estimateModelContextWindowTokens(
   }
 
   return resolvedProvider === "claudeAgent"
-    ? (CLAUDE_MODEL_METADATA[normalized]?.contextWindowTokens ??
+    ? (getClaudeModelMetadata(normalized)?.contextWindowTokens ??
         DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS)
     : (CODEX_MODEL_CONTEXT_WINDOW_TOKENS[normalized] ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS);
 }

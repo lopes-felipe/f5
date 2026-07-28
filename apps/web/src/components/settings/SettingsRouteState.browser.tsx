@@ -1,7 +1,7 @@
 import "../../index.css";
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { NativeApi, ProjectId, ServerConfig } from "@t3tools/contracts";
+import type { NativeApi, ProjectId, ServerConfig, ServerProvider } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -90,14 +90,14 @@ function seedProjects() {
   });
 }
 
-function createNativeApiMock() {
+function createNativeApiMock(providers?: ReadonlyArray<ServerProvider>) {
   const serverConfig: ServerConfig = {
     cwd: "/repo/project-one",
     keybindingsConfigPath: "/repo/project-one/.t3code-keybindings.json",
     keybindings: [],
     customKeybindings: [],
     issues: [],
-    providers: [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
+    providers: providers ?? [createTestServerProvider("codex", { checkedAt: NOW_ISO })],
     availableEditors: [],
   };
 
@@ -156,10 +156,13 @@ async function selectSettingsProject(projectName: string) {
   });
 }
 
-async function renderHarness() {
-  createNativeApiMock();
+async function renderHarness(options?: {
+  settings?: Record<string, unknown>;
+  providers?: ReadonlyArray<ServerProvider>;
+}) {
+  createNativeApiMock(options?.providers);
   seedProjects();
-  seedAppSettings();
+  seedAppSettings(options?.settings);
 
   const queryClient = new QueryClient({
     defaultOptions: {
@@ -217,6 +220,80 @@ describe("useSettingsRouteState", () => {
     } finally {
       queryClient.clear();
       await screen.unmount();
+    }
+  });
+
+  it("uses inherit effectively for gated subagent models and reactivates them after upgrade", async () => {
+    const settings = {
+      claudeProjectSettings: {
+        [PROJECT_ONE]: {
+          subagentsEnabled: true,
+          subagentModel: "opus-5[1m]",
+        },
+      },
+      providerModelPreferences: {
+        claudeAgent: {
+          hiddenModels: ["claude-opus-5"],
+          modelOrder: [],
+        },
+      },
+    };
+    const preUpgrade = await renderHarness({
+      settings,
+      providers: [
+        createTestServerProvider("claudeAgent", {
+          version: "2.1.219",
+          models: [
+            {
+              slug: "claude-fable-5",
+              name: "Claude Fable 5",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        }),
+      ],
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector<HTMLElement>('[aria-label="Claude sub-agent model"]')?.textContent,
+        ).toContain("Inherit from parent");
+      });
+      expect(localStorage.getItem(APP_SETTINGS_STORAGE_KEY)).toContain("opus-5[1m]");
+    } finally {
+      preUpgrade.queryClient.clear();
+      await preUpgrade.screen.unmount();
+      document.body.innerHTML = "";
+    }
+
+    const postUpgrade = await renderHarness({
+      settings,
+      providers: [
+        createTestServerProvider("claudeAgent", {
+          version: "2.1.220",
+          models: [
+            {
+              slug: "claude-opus-5",
+              name: "Claude Opus 5",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+        }),
+      ],
+    });
+
+    try {
+      await vi.waitFor(() => {
+        expect(
+          document.querySelector<HTMLElement>('[aria-label="Claude sub-agent model"]')?.textContent,
+        ).toContain("Claude Opus 5");
+      });
+    } finally {
+      postUpgrade.queryClient.clear();
+      await postUpgrade.screen.unmount();
     }
   });
 });

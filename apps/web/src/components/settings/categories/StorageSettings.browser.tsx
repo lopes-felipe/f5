@@ -49,6 +49,9 @@ vi.mock("./IntegrationsSettings", () => ({
 vi.mock("./ProjectsSettings", () => ({
   ProjectsSettings: () => <div>Projects settings mock</div>,
 }));
+vi.mock("./ArchiveSettings", () => ({
+  ArchiveSettings: () => <div>Archive settings mock</div>,
+}));
 vi.mock("./AboutSettings", () => ({
   AboutSettings: () => <div>About settings mock</div>,
 }));

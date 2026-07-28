@@ -168,6 +168,8 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("Runtime mode: full-access");
     expect(text).toContain("Active model: claude-sonnet-4-6");
     expect(text).toContain("Active reasoning effort: max");
+    expect(text).toContain("Treat the `Active model` value in F3 Runtime Context as authoritative");
+    expect(text).toContain("Never infer or substitute a model identity from training knowledge");
   });
 
   it("delimits restored thread content as untrusted literal data", () => {

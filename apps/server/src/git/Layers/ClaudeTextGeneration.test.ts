@@ -241,7 +241,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             diffSummary: "1 file changed",
             diffPatch: "diff --git a/README.md b/README.md",
             modelSelection: {
-              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-6", [
+              ...createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-4-8", [
                 { id: "effort", value: "max" },
                 { id: "fastMode", value: true },
               ]),

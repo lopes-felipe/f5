@@ -1,9 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  defaultInstanceIdForDriver,
   type ProjectId,
   type ProjectMemoryType,
   type ProviderKind,
+  ProviderDriverKind,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
@@ -25,6 +27,7 @@ import { findKeybindingConflicts } from "../../lib/keybindingConflicts";
 import { newCommandId } from "../../lib/utils";
 import { ensureNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import { resolveClaudeSubagentModel } from "../ChatView.logic";
 import {
   dismissThreadStatusNotificationPrompt,
   requestThreadStatusNotificationPermission,
@@ -166,17 +169,22 @@ export function useSettingsRouteState() {
   );
   const hasProjects = projects.length > 0;
   const selectedProjectClaudeSettings = getClaudeProjectSettings(settings, selectedProject?.id);
-  const claudeSubagentModelOptions = getAppModelOptions(
-    "claudeAgent",
-    settings.customClaudeModels,
+  const defaultClaudeInstanceId = defaultInstanceIdForDriver(
+    ProviderDriverKind.make("claudeAgent"),
+  );
+  const claudeSubagentModelOptions =
+    serverConfigQuery.data?.providers.find(
+      (provider) => provider.instanceId === defaultClaudeInstanceId,
+    )?.models ?? [];
+  const effectiveClaudeSubagentModel = resolveClaudeSubagentModel(
     selectedProjectClaudeSettings.subagentModel,
+    claudeSubagentModelOptions,
   );
   const selectedClaudeSubagentModelLabel =
-    selectedProjectClaudeSettings.subagentModel === CLAUDE_SUBAGENT_MODEL_INHERIT
+    effectiveClaudeSubagentModel === CLAUDE_SUBAGENT_MODEL_INHERIT
       ? "Inherit from parent"
-      : (claudeSubagentModelOptions.find(
-          (option) => option.slug === selectedProjectClaudeSettings.subagentModel,
-        )?.name ?? selectedProjectClaudeSettings.subagentModel);
+      : (claudeSubagentModelOptions.find((option) => option.slug === effectiveClaudeSubagentModel)
+          ?.name ?? effectiveClaudeSubagentModel);
   const gitTextGenerationModelOptions = getAppModelOptions(
     "codex",
     settings.customCodexModels,
@@ -514,6 +522,7 @@ export function useSettingsRouteState() {
     submitMemoryUpdate,
     deleteMemory,
     selectedProjectClaudeSettings,
+    effectiveClaudeSubagentModel,
     claudeSubagentModelOptions,
     selectedClaudeSubagentModelLabel,
     updateSelectedProjectClaudeSettings,

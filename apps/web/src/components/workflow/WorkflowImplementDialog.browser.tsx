@@ -1,18 +1,23 @@
 import "../../index.css";
 
-import type {
-  GitListBranchesResult,
-  OrchestrationStartImplementationInput,
-  PlanningWorkflow,
-  PlanningWorkflowId,
-  ProjectId,
-  ThreadId,
+import {
+  defaultInstanceIdForDriver,
+  type GitListBranchesResult,
+  type OrchestrationStartImplementationInput,
+  type PlanningWorkflow,
+  type PlanningWorkflowId,
+  type ProjectId,
+  ProviderDriverKind,
+  type ServerProvider,
+  type ThreadId,
+  type WorkflowModelSlot,
 } from "@t3tools/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
+import { serverQueryKeys } from "../../lib/serverReactQuery";
 import { useStore } from "../../store";
 
 const nativeApiMocks = vi.hoisted(() => ({
@@ -71,7 +76,9 @@ import { WorkflowImplementDialog } from "./WorkflowImplementDialog";
 const PROJECT_ID = "project-1" as ProjectId;
 const NOW = "2026-04-17T00:00:00.000Z";
 
-function makeWorkflow(): PlanningWorkflow {
+function makeWorkflow(
+  mergeSlot: WorkflowModelSlot = { provider: "codex", model: "gpt-5-codex" },
+): PlanningWorkflow {
   return {
     id: "workflow-1" as PlanningWorkflowId,
     projectId: PROJECT_ID,
@@ -109,7 +116,7 @@ function makeWorkflow(): PlanningWorkflow {
       updatedAt: NOW,
     },
     merge: {
-      mergeSlot: { provider: "codex", model: "gpt-5-codex" },
+      mergeSlot,
       threadId: "merge-thread" as ThreadId,
       outputFilePath: "plans/workflow-merged.md",
       turnId: "merge-turn",
@@ -127,13 +134,42 @@ function makeWorkflow(): PlanningWorkflow {
   };
 }
 
-function makeQueryClient() {
-  return new QueryClient({
+function makeQueryClient(providers?: ReadonlyArray<ServerProvider>) {
+  const queryClient = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity },
       mutations: { retry: false },
     },
   });
+  queryClient.setQueryData(serverQueryKeys.config(), { providers });
+  return queryClient;
+}
+
+function claudeProvider(version: string, models: ReadonlyArray<string>): ServerProvider {
+  const driver = ProviderDriverKind.make("claudeAgent");
+  return {
+    instanceId: defaultInstanceIdForDriver(driver),
+    driver,
+    enabled: true,
+    installed: true,
+    version,
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-07-28T00:00:00.000Z",
+    models: models.map((slug) => ({
+      slug,
+      name:
+        slug === "claude-opus-5"
+          ? "Claude Opus 5"
+          : slug === "claude-fable-5"
+            ? "Claude Fable 5"
+            : slug,
+      isCustom: false,
+      capabilities: null,
+    })),
+    slashCommands: [],
+    skills: [],
+  };
 }
 
 describe("WorkflowImplementDialog", () => {
@@ -276,6 +312,78 @@ describe("WorkflowImplementDialog", () => {
           document.querySelectorAll<HTMLButtonElement>("button"),
         ).find((element) => element.textContent?.trim() === "New worktree");
         expect(newWorktreeButton?.getAttribute("aria-pressed")).toBe("true");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("falls back from gated Opus 5 before submitting an implementation", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const workflow = makeWorkflow({
+      provider: "claudeAgent",
+      model: "opus-5[1m]",
+      modelOptions: { claudeAgent: { fastMode: true } },
+    });
+    const screen = await render(
+      <QueryClientProvider
+        client={makeQueryClient([claudeProvider("2.1.219", ["claude-fable-5"])])}
+      >
+        <WorkflowImplementDialog open workflow={workflow} onOpenChange={() => {}} />
+      </QueryClientProvider>,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("Fable 5");
+      });
+      await page.getByRole("button", { name: "Start implementation" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
+        provider: "claudeAgent",
+        model: "claude-fable-5",
+      });
+      expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0].modelOptions).toBeUndefined();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("submits canonical Opus 5 options once the live snapshot supports it", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const workflow = makeWorkflow({
+      provider: "claudeAgent",
+      model: "opus-5[1m]",
+      modelOptions: { claudeAgent: { fastMode: true } },
+    });
+    const screen = await render(
+      <QueryClientProvider
+        client={makeQueryClient([claudeProvider("2.1.220", ["claude-opus-5", "claude-fable-5"])])}
+      >
+        <WorkflowImplementDialog open workflow={workflow} onOpenChange={() => {}} />
+      </QueryClientProvider>,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("Opus 5");
+      });
+      await page.getByRole("button", { name: "Start implementation" }).click();
+      await vi.waitFor(() => {
+        expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1);
+      });
+      expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        modelOptions: { claudeAgent: { fastMode: true } },
       });
     } finally {
       await screen.unmount();

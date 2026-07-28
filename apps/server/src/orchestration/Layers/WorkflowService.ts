@@ -50,6 +50,11 @@ import {
   slotLabel,
 } from "../workflowSharedUtils.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
+import {
+  resolveAvailableWorkflowModelSlot,
+  withWorkflowModelSelectionGuard,
+} from "../workflowModelSelection.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 
 const WORKFLOW_PLANNING_INTERACTION_MODE: ProviderInteractionMode = "plan";
 const MAX_AUTO_RETRY_ATTEMPTS = 2;
@@ -1174,10 +1179,18 @@ function resolveMergedPlanForImplementation(
 }
 
 export const makeWorkflowService = Effect.gen(function* () {
-  const orchestrationEngine = yield* OrchestrationEngineService;
+  const baseOrchestrationEngine = yield* OrchestrationEngineService;
   const textGeneration = yield* TextGeneration;
   const gitCore = yield* GitCore;
   const serverConfig = yield* ServerConfig;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+
+  const getWorkflowProviders =
+    providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
+  const orchestrationEngine = withWorkflowModelSelectionGuard(
+    baseOrchestrationEngine,
+    getWorkflowProviders,
+  );
 
   const upsertWorkflow = (workflow: PlanningWorkflow) =>
     orchestrationEngine.dispatch({
@@ -2972,8 +2985,15 @@ export const makeWorkflowService = Effect.gen(function* () {
     ),
   );
 
-  const createWorkflow: WorkflowServiceShape["createWorkflow"] = (input) =>
+  const createWorkflow: WorkflowServiceShape["createWorkflow"] = (rawInput) =>
     Effect.gen(function* () {
+      const providers = yield* getWorkflowProviders;
+      const input: CreateWorkflowInput = {
+        ...rawInput,
+        branchA: resolveAvailableWorkflowModelSlot(rawInput.branchA, providers),
+        branchB: resolveAvailableWorkflowModelSlot(rawInput.branchB, providers),
+        merge: resolveAvailableWorkflowModelSlot(rawInput.merge, providers),
+      };
       const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.planningWorkflows
@@ -3103,8 +3123,25 @@ export const makeWorkflowService = Effect.gen(function* () {
       return workflowId;
     });
 
-  const startImplementation: WorkflowServiceShape["startImplementation"] = (input) =>
+  const startImplementation: WorkflowServiceShape["startImplementation"] = (rawInput) =>
     Effect.gen(function* () {
+      const providers = yield* getWorkflowProviders;
+      const implementationSlot = resolveAvailableWorkflowModelSlot(
+        {
+          provider: rawInput.provider,
+          model: rawInput.model,
+          ...(rawInput.modelOptions ? { modelOptions: rawInput.modelOptions } : {}),
+        },
+        providers,
+      );
+      const input = {
+        ...rawInput,
+        provider: implementationSlot.provider,
+        model: implementationSlot.model,
+        ...(implementationSlot.modelOptions
+          ? { modelOptions: implementationSlot.modelOptions }
+          : { modelOptions: undefined }),
+      };
       const workflow = yield* readWorkflow(orchestrationEngine, input.workflowId).pipe(
         Effect.mapError((error) => new Error(`Failed to load workflow: ${String(error)}`)),
       );

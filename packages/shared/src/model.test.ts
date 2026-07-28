@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_MODEL_BY_PROVIDER, MODEL_OPTIONS_BY_PROVIDER } from "@t3tools/contracts";
+import {
+  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+  MODEL_OPTIONS_BY_PROVIDER,
+  MODEL_SLUG_ALIASES_BY_PROVIDER,
+  type ProviderKind,
+} from "@t3tools/contracts";
 
 import {
   claudeModelOptionsToProviderOptionSelections,
@@ -42,7 +49,10 @@ describe("normalizeModelSlug", () => {
     expect(normalizeModelSlug("claude-sonnet-5.0", "claudeAgent")).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("claude-sonnet-5-0", "claudeAgent")).toBe("claude-sonnet-5");
     expect(normalizeModelSlug("sonnet-4.6", "claudeAgent")).toBe("claude-sonnet-4-6");
-    expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-4-8");
+    expect(normalizeModelSlug("opus", "claudeAgent")).toBe("claude-opus-5");
+    expect(normalizeModelSlug("opus-5", "claudeAgent")).toBe("claude-opus-5");
+    expect(normalizeModelSlug("claude-opus-5.0", "claudeAgent")).toBe("claude-opus-5");
+    expect(normalizeModelSlug("claude-opus-5-0", "claudeAgent")).toBe("claude-opus-5");
     expect(normalizeModelSlug("opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("claude-opus-4.8", "claudeAgent")).toBe("claude-opus-4-8");
     expect(normalizeModelSlug("opus-4.6", "claudeAgent")).toBe("claude-opus-4-6");
@@ -65,6 +75,8 @@ describe("normalizeModelSlug", () => {
   it("strips Claude Code context-window suffixes from Claude model slugs", () => {
     expect(normalizeModelSlug("claude-fable-5[1m]", "claudeAgent")).toBe("claude-fable-5");
     expect(normalizeModelSlug("claude-fable-5[200k]", "claudeAgent")).toBe("claude-fable-5");
+    expect(normalizeModelSlug("opus-5[1m]", "claudeAgent")).toBe("claude-opus-5");
+    expect(normalizeModelSlug("claude-opus-5[200k]", "claudeAgent")).toBe("claude-opus-5");
   });
 
   it("does not leak prototype properties as aliases", () => {
@@ -94,10 +106,11 @@ describe("resolveModelSlug", () => {
     expect(getModelOptions()).toEqual(MODEL_OPTIONS_BY_PROVIDER.codex);
   });
 
-  it("makes Claude Fable 5 the Claude default while exposing prior Opus releases", () => {
+  it("makes Claude Opus 5 the Claude default while exposing prior releases", () => {
     expect(getDefaultModel("claudeAgent")).toBe(DEFAULT_MODEL_BY_PROVIDER.claudeAgent);
-    expect(DEFAULT_MODEL_BY_PROVIDER.claudeAgent).toBe("claude-fable-5");
+    expect(DEFAULT_MODEL_BY_PROVIDER.claudeAgent).toBe("claude-opus-5");
     expect(getModelOptions("claudeAgent").map((option) => option.slug)).toEqual([
+      "claude-opus-5",
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",
@@ -139,6 +152,33 @@ describe("resolveSelectableModel", () => {
   });
 });
 
+describe("model catalog invariants", () => {
+  const providers = Object.keys(MODEL_OPTIONS_BY_PROVIDER) as ProviderKind[];
+  const defaultMaps = [
+    DEFAULT_MODEL_BY_PROVIDER,
+    DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
+    DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  ] as const;
+
+  it.each(providers)("keeps %s built-in slugs unique and round-trippable", (provider) => {
+    const slugs = MODEL_OPTIONS_BY_PROVIDER[provider].map((model) => model.slug);
+    expect(new Set(slugs).size).toBe(slugs.length);
+    for (const slug of slugs) {
+      expect(normalizeModelSlug(slug, provider)).toBe(slug);
+    }
+  });
+
+  it.each(providers)("keeps %s defaults and aliases inside the built-in catalog", (provider) => {
+    const slugs = new Set<string>(MODEL_OPTIONS_BY_PROVIDER[provider].map((model) => model.slug));
+    for (const defaults of defaultMaps) {
+      expect(slugs.has(defaults[provider])).toBe(true);
+    }
+    for (const target of Object.values(MODEL_SLUG_ALIASES_BY_PROVIDER[provider])) {
+      expect(slugs.has(target)).toBe(true);
+    }
+  });
+});
+
 describe("getReasoningEffortOptions", () => {
   it("returns codex reasoning options for codex", () => {
     expect(getReasoningEffortOptions("codex")).toEqual([
@@ -153,6 +193,17 @@ describe("getReasoningEffortOptions", () => {
 
   it("exposes full Claude Fable effort controls", () => {
     expect(getReasoningEffortOptions("claudeAgent", "claude-fable-5")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultrathink",
+    ]);
+  });
+
+  it("exposes the full Claude Opus 5 effort ladder", () => {
+    expect(getReasoningEffortOptions("claudeAgent", "claude-opus-5")).toEqual([
       "low",
       "medium",
       "high",
@@ -217,6 +268,15 @@ describe("getReasoningEffortOptions", () => {
 });
 
 describe("Claude capability predicates", () => {
+  it("enables Opus 5 effort and Fast Mode without context or thinking toggles", () => {
+    expect(supportsClaudeFastMode("claude-opus-5")).toBe(true);
+    expect(supportsClaudeContextWindow("claude-opus-5")).toBe(false);
+    expect(supportsClaudeMaxEffort("claude-opus-5")).toBe(true);
+    expect(supportsClaudeAdaptiveReasoning("claude-opus-5")).toBe(true);
+    expect(supportsClaudeThinkingToggle("claude-opus-5")).toBe(false);
+    expect(supportsClaudeUltrathinkKeyword("claude-opus-5")).toBe(true);
+  });
+
   it("enables Sonnet 5 adaptive effort and context controls", () => {
     expect(supportsClaudeFastMode("claude-sonnet-5")).toBe(false);
     expect(supportsClaudeContextWindow("claude-sonnet-5")).toBe(true);
@@ -242,24 +302,24 @@ describe("Claude capability predicates", () => {
     expect(supportsClaudeUltrathinkKeyword("claude-opus-4-7")).toBe(true);
   });
 
-  it("enables Claude Opus 4.8 effort capabilities while keeping fast mode off", () => {
-    expect(supportsClaudeFastMode("claude-opus-4-8")).toBe(false);
+  it("enables Claude Opus 4.8 effort capabilities and Fast Mode", () => {
+    expect(supportsClaudeFastMode("claude-opus-4-8")).toBe(true);
     expect(supportsClaudeMaxEffort("claude-opus-4-8")).toBe(true);
     expect(supportsClaudeAdaptiveReasoning("claude-opus-4-8")).toBe(true);
     expect(supportsClaudeThinkingToggle("claude-opus-4-8")).toBe(false);
     expect(supportsClaudeUltrathinkKeyword("claude-opus-4-8")).toBe(true);
   });
 
-  it("retains documented Claude Opus 4.6 capabilities", () => {
-    expect(supportsClaudeFastMode("claude-opus-4-6")).toBe(true);
+  it("keeps Claude Opus 4.6 effort capabilities while disabling Fast Mode", () => {
+    expect(supportsClaudeFastMode("claude-opus-4-6")).toBe(false);
     expect(supportsClaudeMaxEffort("claude-opus-4-6")).toBe(true);
     expect(supportsClaudeAdaptiveReasoning("claude-opus-4-6")).toBe(true);
     expect(supportsClaudeThinkingToggle("claude-opus-4-6")).toBe(false);
     expect(supportsClaudeUltrathinkKeyword("claude-opus-4-6")).toBe(true);
   });
 
-  it("retains documented Claude Opus 4.5 capabilities", () => {
-    expect(supportsClaudeFastMode("claude-opus-4-5")).toBe(true);
+  it("keeps Claude Opus 4.5 effort capabilities while disabling Fast Mode", () => {
+    expect(supportsClaudeFastMode("claude-opus-4-5")).toBe(false);
     expect(supportsClaudeContextWindow("claude-opus-4-5")).toBe(false);
     expect(supportsClaudeMaxEffort("claude-opus-4-5")).toBe(true);
     expect(supportsClaudeAdaptiveReasoning("claude-opus-4-5")).toBe(true);
@@ -274,6 +334,7 @@ describe("getDefaultReasoningEffort", () => {
   });
 
   it("uses model-aware Claude defaults", () => {
+    expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-5")).toBe("high");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-fable-5")).toBe("max");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-8")).toBe("xhigh");
     expect(getDefaultReasoningEffort("claudeAgent", "claude-opus-4-7")).toBe("xhigh");
@@ -299,6 +360,7 @@ describe("estimateModelContextWindowTokens", () => {
     expect(estimateModelContextWindowTokens("gpt-5.4")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.4-mini")).toBe(400_000);
     expect(estimateModelContextWindowTokens("claude-fable-5")).toBe(1_000_000);
+    expect(estimateModelContextWindowTokens("claude-opus-5")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-8")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-7")).toBe(1_000_000);
     expect(estimateModelContextWindowTokens("claude-opus-4-5")).toBe(1_000_000);

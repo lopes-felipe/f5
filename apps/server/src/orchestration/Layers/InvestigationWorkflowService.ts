@@ -40,6 +40,11 @@ import {
   slotLabel,
 } from "../workflowSharedUtils.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
+import {
+  resolveAvailableWorkflowModelSlot,
+  withWorkflowModelSelectionGuard,
+} from "../workflowModelSelection.ts";
+import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
 
 type InvestigatorKey = "investigatorA" | "investigatorB";
 type InvestigationWorkflowTitleGenerationWorkItem = {
@@ -1077,8 +1082,15 @@ function hasPriorThreadWork(thread: OrchestrationReadModel["threads"][number] | 
 }
 
 export const makeInvestigationWorkflowService = Effect.gen(function* () {
-  const orchestrationEngine = yield* OrchestrationEngineService;
+  const baseOrchestrationEngine = yield* OrchestrationEngineService;
   const textGeneration = yield* TextGeneration;
+  const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  const getWorkflowProviders =
+    providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
+  const orchestrationEngine = withWorkflowModelSelectionGuard(
+    baseOrchestrationEngine,
+    getWorkflowProviders,
+  );
 
   const titleGenerationWorker = yield* makeDrainableWorker(
     (item: InvestigationWorkflowTitleGenerationWorkItem) =>
@@ -2188,8 +2200,15 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
     ),
   );
 
-  const createWorkflow: InvestigationWorkflowServiceShape["createWorkflow"] = (input) =>
+  const createWorkflow: InvestigationWorkflowServiceShape["createWorkflow"] = (rawInput) =>
     Effect.gen(function* () {
+      const providers = yield* getWorkflowProviders;
+      const input = {
+        ...rawInput,
+        investigatorA: resolveAvailableWorkflowModelSlot(rawInput.investigatorA, providers),
+        investigatorB: resolveAvailableWorkflowModelSlot(rawInput.investigatorB, providers),
+        synthesis: resolveAvailableWorkflowModelSlot(rawInput.synthesis, providers),
+      };
       if (
         input.investigatorA.provider === input.investigatorB.provider &&
         input.investigatorA.model === input.investigatorB.model
