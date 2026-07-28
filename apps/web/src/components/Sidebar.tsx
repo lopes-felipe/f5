@@ -64,6 +64,7 @@ import {
 import { isElectron } from "../env";
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
+import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
 import { WORKFLOW_TYPE_BADGE_CLASS } from "../lib/workflowType";
@@ -589,28 +590,6 @@ function F5Wordmark() {
       </text>
     </svg>
   );
-}
-
-/**
- * Derives the server's HTTP origin (scheme + host + port) from the same
- * sources WsTransport uses, converting ws(s) to http(s).
- */
-function getServerHttpOrigin(): string {
-  const bridgeUrl = window.desktopBridge?.getWsUrl();
-  const envUrl = import.meta.env.VITE_WS_URL as string | undefined;
-  const wsUrl =
-    bridgeUrl && bridgeUrl.length > 0
-      ? bridgeUrl
-      : envUrl && envUrl.length > 0
-        ? envUrl
-        : `${window.location.protocol === "https:" ? "wss" : "ws"}://${window.location.hostname}:${window.location.port}`;
-  // Parse to extract just the origin, dropping path/query (e.g. ?token=…)
-  const httpUrl = wsUrl.replace(/^wss:/, "https:").replace(/^ws:/, "http:");
-  try {
-    return new URL(httpUrl).origin;
-  } catch {
-    return httpUrl;
-  }
 }
 
 const serverHttpOrigin = getServerHttpOrigin();

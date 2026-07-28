@@ -197,6 +197,14 @@ export interface ServerShape {
  */
 export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServer/Server") {}
 
+const DESKTOP_RENDERER_ORIGIN = "t3://app";
+const DESKTOP_PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
+const DESKTOP_PRIVATE_CORS_HEADERS = new Set([
+  "authorization",
+  "content-type",
+  "x-f5-backup-password",
+]);
+
 const isServerNotRunningError = (error: Error): boolean => {
   const maybeCode = (error as NodeJS.ErrnoException).code;
   return (
@@ -664,7 +672,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   } = serverConfig;
   const serverAuth = makeServerAuth(authToken, {
     allowedWebSocketOrigins: [
-      ...(mode === "desktop" ? ["t3://app"] : []),
+      ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
       ...(devUrl ? [devUrl.origin] : []),
     ],
   });
@@ -946,13 +954,73 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     void Effect.runPromise(
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
+        const isPrivatePath = isPrivateHttpPath(url.pathname);
+        const isDesktopRendererRequest =
+          mode === "desktop" && isPrivatePath && req.headers.origin === DESKTOP_RENDERER_ORIGIN;
+        if (isDesktopRendererRequest) {
+          res.setHeader("Access-Control-Allow-Credentials", "true");
+          res.setHeader("Access-Control-Allow-Origin", DESKTOP_RENDERER_ORIGIN);
+          res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+          res.setHeader("Vary", "Origin");
+        }
+        if (req.method === "OPTIONS" && isPrivatePath) {
+          if (!isDesktopRendererRequest) {
+            respond(
+              403,
+              {
+                "Cache-Control": "no-store",
+                "Content-Type": "application/json; charset=utf-8",
+              },
+              JSON.stringify({ error: "CORS origin is not allowed." }),
+            );
+            return;
+          }
+
+          const requestedMethod = req.headers["access-control-request-method"]?.toUpperCase() ?? "";
+          const rawRequestedHeaders = req.headers["access-control-request-headers"];
+          const requestedHeaders = (
+            Array.isArray(rawRequestedHeaders)
+              ? rawRequestedHeaders.join(",")
+              : (rawRequestedHeaders ?? "")
+          )
+            .split(",")
+            .map((header) => header.trim().toLowerCase())
+            .filter((header) => header.length > 0);
+          if (
+            !DESKTOP_PRIVATE_CORS_METHODS.has(requestedMethod) ||
+            requestedHeaders.some((header) => !DESKTOP_PRIVATE_CORS_HEADERS.has(header))
+          ) {
+            respond(
+              403,
+              {
+                "Cache-Control": "no-store",
+                "Content-Type": "application/json; charset=utf-8",
+              },
+              JSON.stringify({ error: "CORS request method or headers are not allowed." }),
+            );
+            return;
+          }
+
+          res.setHeader(
+            "Vary",
+            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+          );
+          respond(204, {
+            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-F5-Backup-Password",
+            "Access-Control-Allow-Methods": "GET, POST",
+            "Cache-Control": "no-store",
+            "Content-Length": "0",
+          });
+          return;
+        }
+
         const handledAuthRequest = yield* Effect.promise(() =>
           serverAuth.handleHttpRequest(req, res, url),
         );
         if (handledAuthRequest) {
           return;
         }
-        if (isPrivateHttpPath(url.pathname) && !serverAuth.isHttpRequestAuthenticated(req)) {
+        if (isPrivatePath && !serverAuth.isHttpRequestAuthenticated(req)) {
           respond(
             401,
             {

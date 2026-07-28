@@ -585,6 +585,12 @@ function markReviewCompleted(
   threadId: ThreadId,
   updatedAt: string,
 ): PlanningWorkflow {
+  const reviewedBranch = branchId === "a" ? workflow.branchA : workflow.branchB;
+  const review = reviewedBranch.reviews.find((entry) => entry.threadId === threadId);
+  if (reviewedBranch.status !== "reviews_requested" || review?.status !== "running") {
+    return workflow;
+  }
+
   const completeReview = (review: PlanningWorkflow["branchA"]["reviews"][number]) =>
     review.threadId === threadId
       ? {
@@ -620,11 +626,17 @@ function markReviewCompleted(
     ...workflow,
     branchA: {
       ...branchA,
-      status: branchAComplete ? "reviews_saved" : branchA.status,
+      status:
+        branchA.status === "reviews_requested" && branchAComplete
+          ? "reviews_saved"
+          : branchA.status,
     },
     branchB: {
       ...branchB,
-      status: branchBComplete ? "reviews_saved" : branchB.status,
+      status:
+        branchB.status === "reviews_requested" && branchBComplete
+          ? "reviews_saved"
+          : branchB.status,
     },
     updatedAt,
   };
@@ -1679,6 +1691,40 @@ export const makeWorkflowService = Effect.gen(function* () {
         if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
           return workflow;
         }
+        if (branch.status === "revised") {
+          if (
+            workflow.merge.status !== "not_started" ||
+            turnId === branch.revisionTurnId ||
+            !thread.latestTurn ||
+            thread.latestTurn.requestedAt <= branch.updatedAt
+          ) {
+            return workflow;
+          }
+
+          if (!hasProposedPlanForTurn(thread, turnId)) {
+            const synthesized = yield* maybeSynthesizeProposedPlan({
+              thread,
+              turnId,
+              createdAt: updatedAt,
+            });
+            if (!synthesized) {
+              return workflow;
+            }
+          }
+
+          const nextWorkflow = markBranchRevised(workflow, authorBranchId, {
+            turnId,
+            updatedAt,
+          });
+          yield* Effect.logInfo("workflow revised branch repinned to newer completed turn", {
+            workflowId: workflow.id,
+            branchId: authorBranchId,
+            previousTurnId: branch.revisionTurnId,
+            replacementTurnId: turnId,
+          });
+          yield* upsertWorkflow(nextWorkflow);
+          return nextWorkflow;
+        }
         if (branch.status === "plan_saved") {
           if (
             branch.reviews.length > 0 ||
@@ -2160,53 +2206,6 @@ export const makeWorkflowService = Effect.gen(function* () {
       yield* reconcilePendingBranch("b");
       yield* refreshWorkflowFromSnapshot;
 
-      const repairStaleRevisedBranch = (branchId: "a" | "b") =>
-        Effect.gen(function* () {
-          const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
-          if (
-            branch.status !== "revised" ||
-            reconciledWorkflow.merge.status !== "not_started" ||
-            (branch.revisionTurnId !== null && branch.revisionTurnId !== branch.planTurnId)
-          ) {
-            return;
-          }
-
-          const authorThread = latestSnapshot.threads.find(
-            (thread) => thread.id === branch.authorThreadId,
-          );
-          const turnId = getFinishedLatestTurnId(authorThread);
-          if (
-            !turnId ||
-            !authorThread?.latestTurn ||
-            authorThread.latestTurn.requestedAt < branch.updatedAt ||
-            turnId === branch.revisionTurnId
-          ) {
-            return;
-          }
-
-          if (!hasProposedPlanForTurn(authorThread, turnId)) {
-            const synthesized = yield* maybeSynthesizeProposedPlan({
-              thread: authorThread,
-              turnId,
-              createdAt: updatedAt,
-            });
-            if (!synthesized) {
-              return;
-            }
-            yield* refreshWorkflowFromSnapshot;
-          }
-
-          reconciledWorkflow = markBranchRevised(reconciledWorkflow, branchId, {
-            turnId,
-            updatedAt,
-          });
-          yield* upsertWorkflow(reconciledWorkflow);
-          yield* refreshWorkflowFromSnapshot;
-        });
-
-      yield* repairStaleRevisedBranch("a");
-      yield* repairStaleRevisedBranch("b");
-
       const lifecycleThreadIds = [
         reconciledWorkflow.branchA.authorThreadId,
         reconciledWorkflow.branchB.authorThreadId,
@@ -2412,14 +2411,21 @@ export const makeWorkflowService = Effect.gen(function* () {
             event.payload.threadId,
           );
           if (match) {
-            const nextWorkflow = markReviewCompleted(
+            const nextWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
               match.workflow,
-              match.branchId,
+              readModel,
               event.payload.threadId,
               event.occurredAt,
             );
-            yield* upsertWorkflow(nextWorkflow);
-            yield* maybeStartRevisions(nextWorkflow, readModel, event.occurredAt);
+            const lifecycleSnapshot =
+              nextWorkflow !== match.workflow
+                ? yield* orchestrationEngine.getReadModel()
+                : readModel;
+            yield* maybeContinuePlanningWorkflowLifecycle(
+              nextWorkflow,
+              lifecycleSnapshot,
+              event.occurredAt,
+            );
             return;
           }
 
@@ -2435,7 +2441,11 @@ export const makeWorkflowService = Effect.gen(function* () {
               authorMatch.branchId === "a"
                 ? authorMatch.workflow.branchA
                 : authorMatch.workflow.branchB;
-            if (authorThread && (branch.status === "authoring" || branch.status === "revising")) {
+            const canAdvanceAuthor =
+              branch.status === "authoring" ||
+              branch.status === "revising" ||
+              (branch.status === "revised" && authorMatch.workflow.merge.status === "not_started");
+            if (authorThread && canAdvanceAuthor) {
               const synthesized = yield* maybeSynthesizeProposedPlan({
                 thread: authorThread,
                 turnId: event.payload.turnId,

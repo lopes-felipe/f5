@@ -6,6 +6,26 @@
 - Run `bun run test:full` at least once before considering a task completed. It includes the fast workspace suite and the exhaustive real-Git matrix.
 - NEVER run `bun test`. Always use `bun run test` or `bun run test:full` (runs Vitest).
 
+## Git and GitHub Command Policy
+
+Agents may run read-only Git and GitHub commands and routine, non-destructive write commands without asking for confirmation. This permission includes:
+
+- Staging explicit files with `git add`.
+- Creating new commits with `git commit` (but not rewriting existing commits).
+- Creating branches and switching/checking out branches when doing so will not overwrite local changes.
+- Pushing normally to non-protected branches without force options or deletion refspecs.
+- Creating pull requests and posting pull request or issue comments.
+
+Agents must never run destructive Git or GitHub commands. If a destructive operation is needed, stop and ask the user to perform it. Prohibited operations include:
+
+- Discarding local work or untracked files, including `git reset`, `git clean`, `git checkout -- <path>`, `git checkout -f`, and worktree-discarding uses of `git restore`.
+- Rewriting history, including `git commit --amend`, `git rebase`, history-filtering commands, and reflog expiration or aggressive pruning.
+- Force-pushing by any mechanism, deleting remote refs, using mirror pushes, or pushing directly to `main` or `master`.
+- Deleting branches, tags, stashes, worktrees, remotes, repositories, releases, or comments.
+- Merging or closing pull requests or issues, changing repository visibility, or modifying repository access, branch protection, secrets, or other security settings.
+
+When a command is ambiguous or combines safe and destructive behavior, do not run it; use a narrower non-destructive command or ask the user.
+
 ## Project Snapshot
 
 T3 Code is a minimal web GUI for using code agents like Codex and Claude Code (coming soon).

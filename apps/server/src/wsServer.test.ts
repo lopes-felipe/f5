@@ -3229,6 +3229,85 @@ describe("WebSocket Server", () => {
     connections.push(authorizedWs);
   });
 
+  it("allows narrowly scoped desktop renderer CORS requests to private HTTP routes", async () => {
+    const stateDir = makeTempDir("t3code-state-desktop-cors-");
+    server = await createTestServer({
+      mode: "desktop",
+      cwd: "/test",
+      authToken: "secret-token",
+      stateDir,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const origin = `http://127.0.0.1:${port}`;
+
+    const preflightResponse = await fetch(`${origin}/api/storage/restore`, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "t3://app",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization, content-type, x-f5-backup-password",
+      },
+    });
+    expect(preflightResponse.status).toBe(204);
+    expect(preflightResponse.headers.get("access-control-allow-origin")).toBe("t3://app");
+    expect(preflightResponse.headers.get("access-control-allow-credentials")).toBe("true");
+    expect(preflightResponse.headers.get("access-control-allow-methods")).toBe("GET, POST");
+    expect(preflightResponse.headers.get("access-control-allow-headers")).toBe(
+      "Authorization, Content-Type, X-F5-Backup-Password",
+    );
+
+    const unauthenticatedResponse = await fetch(`${origin}/api/storage/backup`, {
+      headers: { Origin: "t3://app" },
+    });
+    expect(unauthenticatedResponse.status).toBe(401);
+    expect(unauthenticatedResponse.headers.get("access-control-allow-origin")).toBe("t3://app");
+
+    const backupResponse = await fetch(`${origin}/api/storage/backup`, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        Origin: "t3://app",
+      },
+    });
+    await backupResponse.arrayBuffer();
+    expect(backupResponse.status).toBe(200);
+    expect(backupResponse.headers.get("access-control-allow-origin")).toBe("t3://app");
+    expect(backupResponse.headers.get("access-control-expose-headers")).toBe(
+      "Content-Disposition, Content-Length",
+    );
+  });
+
+  it("rejects desktop private-route preflights outside the exact CORS allowlist", async () => {
+    server = await createTestServer({
+      mode: "desktop",
+      cwd: "/test",
+      authToken: "secret-token",
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const url = `http://127.0.0.1:${port}/api/storage/restore`;
+
+    const disallowedOriginResponse = await fetch(url, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://attacker.example",
+        "Access-Control-Request-Method": "POST",
+      },
+    });
+    expect(disallowedOriginResponse.status).toBe(403);
+    expect(disallowedOriginResponse.headers.get("access-control-allow-origin")).toBeNull();
+
+    const disallowedHeaderResponse = await fetch(url, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "t3://app",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "authorization, x-not-allowed",
+      },
+    });
+    expect(disallowedHeaderResponse.status).toBe(403);
+  });
+
   it("accepts the authenticated configured development origin", async () => {
     server = await createTestServer({
       cwd: "/test",

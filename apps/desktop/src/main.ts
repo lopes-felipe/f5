@@ -43,6 +43,11 @@ import { RotatingFileSink } from "@t3tools/shared/logging";
 import { normalizePreviewUrl } from "@t3tools/shared/preview";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { buildDesktopBackendEnv, resolveDesktopStateDirConfig } from "./backendEnv";
+import {
+  authorizeDesktopBackendRequestHeaders,
+  DESKTOP_BACKEND_REQUEST_FILTER,
+  getDesktopBackendWebSocketUrl,
+} from "./backendRequestAuth";
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
@@ -1853,6 +1858,22 @@ function backendEnv(): NodeJS.ProcessEnv {
   });
 }
 
+function configureBackendRequestAuthentication(): void {
+  electronSession.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [DESKTOP_BACKEND_REQUEST_FILTER] },
+    (details, callback) => {
+      callback({
+        requestHeaders: authorizeDesktopBackendRequestHeaders({
+          url: details.url,
+          backendPort,
+          authToken: backendAuthToken,
+          requestHeaders: details.requestHeaders,
+        }),
+      });
+    },
+  );
+}
+
 function scheduleBackendRestart(reason: string): void {
   if (isQuitting || restartTimer) return;
 
@@ -2318,7 +2339,7 @@ async function bootstrap(): Promise<void> {
   );
   writeDesktopLogHeader(`reserved backend port via NetService port=${backendPort}`);
   backendAuthToken = Crypto.randomBytes(24).toString("hex");
-  backendWsUrl = `ws://127.0.0.1:${backendPort}/?token=${encodeURIComponent(backendAuthToken)}`;
+  backendWsUrl = getDesktopBackendWebSocketUrl(backendPort, backendAuthToken);
   process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
   writeDesktopLogHeader(`bootstrap resolved websocket endpoint=ws://127.0.0.1:${backendPort}`);
 
@@ -2327,6 +2348,8 @@ async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap ipc handlers registered");
   startBackend();
   writeDesktopLogHeader("bootstrap backend start requested");
+  configureBackendRequestAuthentication();
+  writeDesktopLogHeader("bootstrap backend request authentication configured");
   mainWindow = createWindow();
   writeDesktopLogHeader("bootstrap main window created");
 }
