@@ -22,6 +22,7 @@ import type { deriveTimelineEntries } from "../../session-logic";
 import { parsePersistedAppSettings } from "../../appSettings";
 import type { TurnDiffSummary } from "../../types";
 import { MessagesTimeline } from "./MessagesTimeline";
+import type { ImageAttachmentActionItem } from "./imageAttachmentActions";
 import { WORK_LOG_PAGE_SIZE } from "./workLogConstants";
 import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
@@ -66,7 +67,17 @@ function makeUserEntry(
   id: string,
   text: string,
   offsetSeconds: number,
-  options: { skillCall?: UserMessageSkillCall } = {},
+  options: {
+    skillCall?: UserMessageSkillCall;
+    attachments?: Array<{
+      type: "image";
+      id: string;
+      name: string;
+      mimeType: string;
+      sizeBytes: number;
+      previewUrl: string;
+    }>;
+  } = {},
 ): TimelineEntry {
   const createdAt = new Date(
     Date.parse("2026-03-04T12:00:00.000Z") + offsetSeconds * 1000,
@@ -83,7 +94,7 @@ function makeUserEntry(
       createdAt,
       completedAt: createdAt,
       streaming: false,
-      attachments: [],
+      attachments: options.attachments ?? [],
       reasoningText: null,
     },
   } as unknown as TimelineEntry;
@@ -163,6 +174,8 @@ interface HarnessProps {
     fileChangeSummariesById: Record<string, OrchestrationFileChangeSummary>;
   }>;
   onOpenTurnDiff?: (turnId: TurnId, filePath?: string) => void;
+  onImageActionMenu?: (item: ImageAttachmentActionItem, position: { x: number; y: number }) => void;
+  usesCustomImageContextMenu?: boolean;
 }
 
 interface TimelineHarnessApi {
@@ -252,6 +265,8 @@ function TimelineHarness(
           onRevertUserMessage={() => {}}
           isRevertingCheckpoint={false}
           onImageExpand={() => {}}
+          onImageActionMenu={props.onImageActionMenu}
+          usesCustomImageContextMenu={props.usesCustomImageContextMenu}
           markdownCwd={undefined}
           resolvedTheme="light"
           timestampFormat="locale"
@@ -382,6 +397,102 @@ describe("MessagesTimeline (LegendList)", () => {
         const taskPanel = host.querySelector('[data-testid="tasks-panel-stub"]');
         expect(taskPanel, "Tasks panel must render alongside the empty state.").not.toBeNull();
       });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("routes sent-image right-clicks to the F5 image action menu", async () => {
+    const onImageActionMenu = vi.fn();
+    const entry = makeUserEntry("message-with-image", "See screenshot", 0, {
+      attachments: [
+        {
+          type: "image",
+          id: "image-1",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 128,
+          previewUrl: "/attachments/image-1",
+        },
+      ],
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[entry]}
+        onIsAtEndChangeSpy={() => {}}
+        onImageActionMenu={onImageActionMenu}
+        usesCustomImageContextMenu={true}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('img[alt="screenshot.png"]')).not.toBeNull();
+      });
+      host.querySelector('img[alt="screenshot.png"]')!.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: 21,
+          clientY: 34,
+        }),
+      );
+
+      expect(onImageActionMenu).toHaveBeenCalledWith(
+        {
+          src: "/attachments/image-1",
+          name: "screenshot.png",
+          mimeType: "image/png",
+        },
+        { x: 21, y: 34 },
+      );
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("preserves the native image context menu outside Electron", async () => {
+    const onImageActionMenu = vi.fn();
+    const entry = makeUserEntry("message-with-web-image", "See screenshot", 0, {
+      attachments: [
+        {
+          type: "image",
+          id: "image-web-1",
+          name: "web-screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 128,
+          previewUrl: "/attachments/image-web-1",
+        },
+      ],
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[entry]}
+        onIsAtEndChangeSpy={() => {}}
+        onImageActionMenu={onImageActionMenu}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.querySelector('img[alt="web-screenshot.png"]')).not.toBeNull();
+      });
+      const contextMenuEvent = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+      });
+      host.querySelector('img[alt="web-screenshot.png"]')!.dispatchEvent(contextMenuEvent);
+
+      expect(contextMenuEvent.defaultPrevented).toBe(false);
+      expect(onImageActionMenu).not.toHaveBeenCalled();
     } finally {
       await screen.unmount();
       host.remove();

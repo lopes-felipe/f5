@@ -827,6 +827,7 @@ describe("store read model sync", () => {
               mimeType: "image/png",
               sizeBytes: 123,
               previewUrl: "/attachments/attachment-1",
+              sourceUrl: "/attachments/attachment-1",
             },
           ],
         },

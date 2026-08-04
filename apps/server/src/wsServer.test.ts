@@ -3323,6 +3323,90 @@ describe("WebSocket Server", () => {
     connections.push(authorizedWs);
   });
 
+  it("allows configured development origins to fetch private attachments", async () => {
+    const stateDir = makeTempDir("t3code-state-development-cors-");
+    const attachmentPath = path.join(stateDir, "attachments", "thread-image.png");
+    fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+    fs.writeFileSync(attachmentPath, Buffer.from("image-bytes"));
+    server = await createTestServer({
+      cwd: "/test",
+      authToken: "secret-token",
+      devUrl: "http://localhost:5173",
+      stateDir,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const url = `http://127.0.0.1:${port}/attachments/thread-image.png`;
+
+    const imageElementResponse = await fetch(url, {
+      headers: { Authorization: "Bearer secret-token" },
+    });
+    expect(imageElementResponse.status).toBe(200);
+    expect(imageElementResponse.headers.get("access-control-allow-origin")).toBeNull();
+    expect(imageElementResponse.headers.get("vary")).toBe("Origin");
+
+    const preflightResponse = await fetch(url, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "http://localhost:5173",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+      },
+    });
+    expect(preflightResponse.status).toBe(204);
+    expect(preflightResponse.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:5173",
+    );
+
+    const attachmentResponse = await fetch(url, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        Origin: "http://localhost:5173",
+      },
+    });
+    expect(attachmentResponse.status).toBe(200);
+    expect(attachmentResponse.headers.get("access-control-allow-origin")).toBe(
+      "http://localhost:5173",
+    );
+    expect(Buffer.from(await attachmentResponse.arrayBuffer())).toEqual(Buffer.from("image-bytes"));
+  });
+
+  it("rejects foreign private-route CORS access in web mode", async () => {
+    const stateDir = makeTempDir("t3code-state-web-cors-rejection-");
+    const attachmentPath = path.join(stateDir, "attachments", "thread-image.png");
+    fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+    fs.writeFileSync(attachmentPath, Buffer.from("image-bytes"));
+    server = await createTestServer({
+      mode: "web",
+      cwd: "/test",
+      authToken: "secret-token",
+      stateDir,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const url = `http://127.0.0.1:${port}/attachments/thread-image.png`;
+
+    const preflightResponse = await fetch(url, {
+      method: "OPTIONS",
+      headers: {
+        Origin: "https://attacker.example",
+        "Access-Control-Request-Method": "GET",
+        "Access-Control-Request-Headers": "authorization",
+      },
+    });
+    expect(preflightResponse.status).toBe(403);
+    expect(preflightResponse.headers.get("access-control-allow-origin")).toBeNull();
+
+    const attachmentResponse = await fetch(url, {
+      headers: {
+        Authorization: "Bearer secret-token",
+        Origin: "https://attacker.example",
+      },
+    });
+    expect(attachmentResponse.status).toBe(200);
+    expect(attachmentResponse.headers.get("access-control-allow-origin")).toBeNull();
+  });
+
   it("prepares a complete backup before committing the download response", async () => {
     const stateDir = makeTempDir("t3code-state-backup-export-");
     server = await createTestServer({ cwd: "/test", stateDir });

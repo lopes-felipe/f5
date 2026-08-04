@@ -384,8 +384,9 @@ export function makeServerAuth(
     if (parsedOrigin === null) return false;
     if (allowedWebSocketOrigins.has(parsedOrigin)) return true;
     const parsed = new URL(parsedOrigin);
+    const expectedProtocol = requestUsesTls(request) ? "https:" : "http:";
     return (
-      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      parsed.protocol === expectedProtocol &&
       normalizedHost(parsed.host) === normalizedHost(requestHost)
     );
   };

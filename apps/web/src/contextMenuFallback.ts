@@ -1,9 +1,9 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 
 /**
- * Imperative DOM-based context menu for non-Electron environments.
- * Shows a positioned dropdown and returns a promise that resolves
- * with the clicked item id, or null if dismissed.
+ * Imperative renderer-owned context menu. This is also useful in Electron
+ * when an action must retain Chromium's transient user activation.
+ * Resolves with the clicked item id, or null if dismissed.
  */
 export function showContextMenuFallback<T extends string>(
   items: readonly ContextMenuItem<T>[],

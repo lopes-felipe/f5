@@ -163,7 +163,6 @@ import { investigationWorkflowContainsThread } from "./workflow/investigationWor
 import {
   BotIcon,
   ChevronDownIcon,
-  ChevronLeftIcon,
   ChevronRightIcon,
   CircleAlertIcon,
   ListTodoIcon,
@@ -224,7 +223,15 @@ import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./Compose
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
 import { ChatHeader } from "./chat/ChatHeader";
-import { buildExpandedImagePreview, ExpandedImagePreview } from "./chat/ExpandedImagePreview";
+import {
+  buildExpandedImagePreview,
+  ExpandedImageDialog,
+  refreshExpandedImageActionSources,
+  type ExpandedImagePreview,
+} from "./chat/ExpandedImagePreview";
+import { type ImageAttachmentActionItem } from "./chat/imageAttachmentActions";
+import { type ImageAttachmentAction } from "./chat/useImageAttachmentActions";
+import { useImageAttachmentActions } from "./chat/useImageAttachmentActions";
 import { ProviderInstanceModelPicker } from "./chat/ProviderInstanceModelPicker";
 import { NextTurnQueuePanel, type OptimisticQueuedTurn } from "./chat/NextTurnQueuePanel";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
@@ -253,6 +260,7 @@ import {
   buildComposerSkillReplacement,
   buildFirstSendBootstrap,
   buildSlashComposerMenuItems,
+  applyUserMessageAttachmentPreviewHandoff,
   deriveProviderRuntimeInfoEntries,
   buildExpiredTerminalContextToastCopy,
   shouldRenderTimelineContent,
@@ -709,6 +717,13 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [isDragOverComposer, setIsDragOverComposer] = useState(false);
   const [expandedImage, setExpandedImage] = useState<ExpandedImagePreview | null>(null);
+  const {
+    canCopyImage,
+    usesCustomImageContextMenu,
+    pendingAction,
+    runImageAction,
+    showImageActionMenu,
+  } = useImageAttachmentActions(threadId);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
   const [optimisticQueuedTurn, setOptimisticQueuedTurn] = useState<OptimisticQueuedTurn | null>(
     null,
@@ -1956,40 +1971,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         : // Spread only fires for the few messages that actually changed;
           // unchanged ones early-return their original reference.
           // In-place mutation would break React's immutable state contract.
-          // oxlint-disable-next-line no-map-spread
-          messages.map((message) => {
-            if (
-              message.role !== "user" ||
-              !message.attachments ||
-              message.attachments.length === 0
-            ) {
-              return message;
-            }
-            const handoffPreviewUrls = attachmentPreviewHandoffByMessageId[message.id];
-            if (!handoffPreviewUrls || handoffPreviewUrls.length === 0) {
-              return message;
-            }
-
-            let changed = false;
-            let imageIndex = 0;
-            const attachments = message.attachments.map((attachment) => {
-              if (attachment.type !== "image") {
-                return attachment;
-              }
-              const handoffPreviewUrl = handoffPreviewUrls[imageIndex];
-              imageIndex += 1;
-              if (!handoffPreviewUrl || attachment.previewUrl === handoffPreviewUrl) {
-                return attachment;
-              }
-              changed = true;
-              return {
-                ...attachment,
-                previewUrl: handoffPreviewUrl,
-              };
-            });
-
-            return changed ? { ...message, attachments } : message;
-          });
+          messages.map((message) =>
+            applyUserMessageAttachmentPreviewHandoff(
+              message,
+              attachmentPreviewHandoffByMessageId[message.id] ?? [],
+            ),
+          );
 
     if (optimisticUserMessages.length === 0) {
       return serverMessagesWithPreviewHandoff;
@@ -2001,6 +1988,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
     return [...serverMessagesWithPreviewHandoff, ...pendingMessages];
   }, [serverMessages, attachmentPreviewHandoffByMessageId, optimisticUserMessages]);
+  useEffect(() => {
+    const imageSources = timelineMessages.flatMap((message) => message.attachments ?? []);
+    setExpandedImage((existing) =>
+      existing ? refreshExpandedImageActionSources(existing, imageSources) : existing,
+    );
+  }, [timelineMessages]);
   const timelineEntries = useMemo(
     () =>
       deriveTimelineEntries(
@@ -3115,37 +3108,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     });
   }, []);
 
-  useEffect(() => {
-    if (!expandedImage) {
-      return;
-    }
-
-    const onKeyDown = (event: globalThis.KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        closeExpandedImage();
-        return;
-      }
-      if (expandedImage.images.length <= 1) {
-        return;
-      }
-      if (event.key === "ArrowLeft") {
-        event.preventDefault();
-        event.stopPropagation();
-        navigateExpandedImage(-1);
-        return;
-      }
-      if (event.key !== "ArrowRight") return;
-      event.preventDefault();
-      event.stopPropagation();
-      navigateExpandedImage(1);
-    };
-
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeExpandedImage, expandedImage, navigateExpandedImage]);
-
   const activeWorktreePath = activeThread?.worktreePath;
   const envMode: DraftThreadEnvMode = activeWorktreePath
     ? "worktree"
@@ -4062,6 +4024,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       mimeType: image.mimeType,
       sizeBytes: image.sizeBytes,
       previewUrl: image.previewUrl,
+      sourceBlob: image.file,
     }));
     // Let the list preserve the current viewport across optimistic sends.
     // Manual pin-to-end here scrolls historical file-change rows out of view
@@ -5165,7 +5128,18 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const onExpandTimelineImage = useCallback((preview: ExpandedImagePreview) => {
     setExpandedImage(preview);
   }, []);
-  const expandedImageItem = expandedImage ? expandedImage.images[expandedImage.index] : null;
+  const onImageAction = useCallback(
+    (action: ImageAttachmentAction, item: ImageAttachmentActionItem) => {
+      void runImageAction(action, item);
+    },
+    [runImageAction],
+  );
+  const onImageActionMenu = useCallback(
+    (item: ImageAttachmentActionItem, position: { x: number; y: number }) => {
+      void showImageActionMenu(item, position);
+    },
+    [showImageActionMenu],
+  );
   const onOpenTurnDiff = useCallback(
     (turnId: TurnId, filePath?: string) => {
       void navigate({
@@ -5392,6 +5366,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                   onRevertUserMessage={onRevertUserMessage}
                   isRevertingCheckpoint={isRevertingCheckpoint}
                   onImageExpand={onExpandTimelineImage}
+                  onImageActionMenu={onImageActionMenu}
+                  usesCustomImageContextMenu={usesCustomImageContextMenu}
                   markdownCwd={gitCwd ?? undefined}
                   resolvedTheme={resolvedTheme}
                   timestampFormat={timestampFormat}
@@ -5546,6 +5522,21 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                       type="button"
                                       className="h-full w-full cursor-zoom-in"
                                       aria-label={`Preview ${image.name}`}
+                                      onContextMenu={(event) => {
+                                        if (!usesCustomImageContextMenu || !image.previewUrl)
+                                          return;
+                                        event.preventDefault();
+                                        event.stopPropagation();
+                                        onImageActionMenu(
+                                          {
+                                            src: image.previewUrl,
+                                            name: image.name,
+                                            mimeType: image.mimeType,
+                                            sourceBlob: image.file,
+                                          },
+                                          { x: event.clientX, y: event.clientY },
+                                        );
+                                      }}
                                       onClick={() => {
                                         const preview = buildExpandedImagePreview(
                                           composerImages,
@@ -5559,6 +5550,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                         src={image.previewUrl}
                                         alt={image.name}
                                         className="h-full w-full object-cover"
+                                        draggable={false}
                                       />
                                     </button>
                                   ) : (
@@ -6159,72 +6151,17 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
           </Suspense>
         ) : null}
 
-        {expandedImage && expandedImageItem && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 py-6 [-webkit-app-region:no-drag]"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Expanded image preview"
-          >
-            <button
-              type="button"
-              className="absolute inset-0 z-0 cursor-zoom-out"
-              aria-label="Close image preview"
-              onClick={closeExpandedImage}
-            />
-            {expandedImage.images.length > 1 && (
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="absolute left-2 top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:left-6"
-                aria-label="Previous image"
-                onClick={() => {
-                  navigateExpandedImage(-1);
-                }}
-              >
-                <ChevronLeftIcon className="size-5" />
-              </Button>
-            )}
-            <div className="relative isolate z-10 max-h-[92vh] max-w-[92vw]">
-              <Button
-                type="button"
-                size="icon-xs"
-                variant="ghost"
-                className="absolute right-2 top-2"
-                onClick={closeExpandedImage}
-                aria-label="Close image preview"
-              >
-                <XIcon />
-              </Button>
-              <img
-                src={expandedImageItem.src}
-                alt={expandedImageItem.name}
-                className="max-h-[86vh] max-w-[92vw] select-none rounded-lg border border-border/70 bg-background object-contain shadow-2xl"
-                draggable={false}
-              />
-              <p className="mt-2 max-w-[92vw] truncate text-center text-xs text-muted-foreground/80">
-                {expandedImageItem.name}
-                {expandedImage.images.length > 1
-                  ? ` (${expandedImage.index + 1}/${expandedImage.images.length})`
-                  : ""}
-              </p>
-            </div>
-            {expandedImage.images.length > 1 && (
-              <Button
-                type="button"
-                size="icon"
-                variant="ghost"
-                className="absolute right-2 top-1/2 z-20 -translate-y-1/2 text-white/90 hover:bg-white/10 hover:text-white sm:right-6"
-                aria-label="Next image"
-                onClick={() => {
-                  navigateExpandedImage(1);
-                }}
-              >
-                <ChevronRightIcon className="size-5" />
-              </Button>
-            )}
-          </div>
+        {expandedImage && (
+          <ExpandedImageDialog
+            preview={expandedImage}
+            canCopyImage={canCopyImage}
+            usesCustomImageContextMenu={usesCustomImageContextMenu}
+            pendingAction={pendingAction}
+            onClose={closeExpandedImage}
+            onNavigate={navigateExpandedImage}
+            onAction={onImageAction}
+            onActionMenu={onImageActionMenu}
+          />
         )}
       </div>
     </FileNavigationProvider>

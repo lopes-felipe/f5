@@ -5,6 +5,8 @@ const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const SET_THEME_CHANNEL = "desktop:set-theme";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
+const COPY_IMAGE_CHANNEL = "desktop:copy-image";
+const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
@@ -51,6 +53,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   confirm: (message) => ipcRenderer.invoke(CONFIRM_CHANNEL, message),
   setTheme: (theme) => ipcRenderer.invoke(SET_THEME_CHANNEL, theme),
   showContextMenu: (items, position) => ipcRenderer.invoke(CONTEXT_MENU_CHANNEL, items, position),
+  copyImage: (pngBytes) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes),
+  downloadImage: (bytes, filename) => ipcRenderer.invoke(DOWNLOAD_IMAGE_CHANNEL, bytes, filename),
   openExternal: (url: string) => ipcRenderer.invoke(OPEN_EXTERNAL_CHANNEL, url),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {

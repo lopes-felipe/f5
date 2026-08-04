@@ -173,7 +173,8 @@ export function mapMessageAttachmentsFromReadModel(
       existing.name === attachment.name &&
       existing.mimeType === attachment.mimeType &&
       existing.sizeBytes === attachment.sizeBytes &&
-      existing.previewUrl === previewUrl
+      existing.previewUrl === previewUrl &&
+      existing.sourceUrl === previewUrl
     ) {
       return existing;
     }
@@ -185,6 +186,7 @@ export function mapMessageAttachmentsFromReadModel(
       mimeType: attachment.mimeType,
       sizeBytes: attachment.sizeBytes,
       previewUrl,
+      sourceUrl: previewUrl,
     };
   });
 

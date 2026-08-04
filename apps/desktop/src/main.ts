@@ -7,6 +7,7 @@ import * as Path from "node:path";
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -51,6 +52,7 @@ import {
 import { showDesktopConfirmDialog } from "./confirmDialog";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 import { getAutoUpdateDisabledReason, shouldBroadcastDownloadProgress } from "./updateState";
+import { readDesktopImageActionBytes, saveDesktopImageDownload } from "./imageActions";
 import {
   createInitialDesktopUpdateState,
   reduceDesktopUpdateStateOnCheckFailure,
@@ -74,6 +76,8 @@ const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
 const SET_THEME_CHANNEL = "desktop:set-theme";
 const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
+const COPY_IMAGE_CHANNEL = "desktop:copy-image";
+const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
@@ -2109,6 +2113,31 @@ function registerIpcHandlers(): void {
           callback: () => resolve(null),
         });
       });
+    },
+  );
+
+  ipcMain.removeHandler(COPY_IMAGE_CHANNEL);
+  ipcMain.handle(COPY_IMAGE_CHANNEL, async (_event, rawBytes: unknown) => {
+    const bytes = readDesktopImageActionBytes(rawBytes);
+    const image = nativeImage.createFromBuffer(Buffer.from(bytes));
+    if (image.isEmpty()) {
+      throw new Error("F5 could not decode the image for copying.");
+    }
+    clipboard.writeImage(image);
+  });
+
+  ipcMain.removeHandler(DOWNLOAD_IMAGE_CHANNEL);
+  ipcMain.handle(
+    DOWNLOAD_IMAGE_CHANNEL,
+    async (_event, rawBytes: unknown, rawFilename: unknown) => {
+      const bytes = readDesktopImageActionBytes(rawBytes);
+      const filename = typeof rawFilename === "string" ? rawFilename : "image";
+      const savedPath = await saveDesktopImageDownload({
+        downloadsDirectory: app.getPath("downloads"),
+        filename,
+        bytes,
+      });
+      return { savedPath };
     },
   );
 

@@ -75,6 +75,10 @@ export interface ChatImageAttachment {
   mimeType: string;
   sizeBytes: number;
   previewUrl?: string;
+  /** Persisted bytes URL when previewUrl is a temporary optimistic blob URL. */
+  sourceUrl?: string;
+  /** Original local bytes retained while an optimistic sent-image preview can remain open. */
+  sourceBlob?: Blob;
 }
 
 export type ChatAttachment = ChatImageAttachment;

@@ -8,13 +8,19 @@
 
 ## Git and GitHub Command Policy
 
-Agents may run read-only Git and GitHub commands and routine, non-destructive write commands without asking for confirmation. This permission includes:
+The user grants standing authorization for non-destructive Git and GitHub mutations. When the user requests an allowed operation, or an allowed operation is required to complete an explicitly requested Git/GitHub workflow, agents must execute it instead of asking for confirmation, merely explaining the command, or asking the user to run it. The request itself is sufficient authorization.
 
-- Staging explicit files with `git add`.
-- Creating new commits with `git commit` (but not rewriting existing commits).
-- Creating branches and switching/checking out branches when doing so will not overwrite local changes.
-- Pushing normally to non-protected branches without force options or deletion refspecs.
-- Creating pull requests and posting pull request or issue comments.
+Do not treat a command as destructive merely because it changes the working tree, index, local refs, a remote feature branch, or pull request metadata. Read-only commands and non-destructive mutations are allowed. Examples include:
+
+- Staging explicit files with `git add`, including staging requested file deletions, and safely unstaging without discarding working-tree changes.
+- Creating new commits with `git commit`, plus additive history operations such as merge, cherry-pick, and revert when requested.
+- Creating, renaming, and switching/checking out branches when doing so will not overwrite local changes.
+- Creating and applying stashes without dropping them.
+- Fetching without pruning, pulling with `--ff-only`, and pushing normally to non-protected branches without force options or deletion refspecs.
+- Adding worktrees or remotes and making explicitly requested repository-local configuration changes.
+- Creating or editing pull requests and issues, and posting pull request, review, or issue comments.
+
+These examples are not an exhaustive allowlist. An operation is allowed when it preserves existing work and history, does not delete resources or refs, and does not bypass protections.
 
 Agents must never run destructive Git or GitHub commands. If a destructive operation is needed, stop and ask the user to perform it. Prohibited operations include:
 
@@ -24,7 +30,7 @@ Agents must never run destructive Git or GitHub commands. If a destructive opera
 - Deleting branches, tags, stashes, worktrees, remotes, repositories, releases, or comments.
 - Merging or closing pull requests or issues, changing repository visibility, or modifying repository access, branch protection, secrets, or other security settings.
 
-When a command is ambiguous or combines safe and destructive behavior, do not run it; use a narrower non-destructive command or ask the user.
+For commands with safe and destructive variants, use the safe variant rather than refusing the entire command family. For example, normal `git push` is allowed while force-push and ref deletion are prohibited; branch checkout is allowed while path checkout that discards changes is prohibited. Use targeted read-only checks to resolve uncertainty. Ask the user only when there is a concrete, unresolved risk that the operation would have a prohibited effect; generalized caution about mutation is not a reason to stop.
 
 ## Project Snapshot
 

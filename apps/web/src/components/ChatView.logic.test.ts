@@ -1,5 +1,6 @@
 import {
   defaultInstanceIdForDriver,
+  MessageId,
   ProjectId,
   ProviderDriverKind,
   ThreadId,
@@ -11,6 +12,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   buildComposerSkillReplacement,
+  applyUserMessageAttachmentPreviewHandoff,
   buildSlashComposerMenuItems,
   buildFirstSendBootstrap,
   buildExpiredTerminalContextToastCopy,
@@ -488,6 +490,39 @@ describe("shouldRenderTimelineContent", () => {
         hasRenderableMessage: false,
       }),
     ).toBe(false);
+  });
+});
+
+describe("applyUserMessageAttachmentPreviewHandoff", () => {
+  it("keeps the durable attachment URL while showing the optimistic blob preview", () => {
+    const message = {
+      id: MessageId.makeUnsafe("message-1"),
+      role: "user" as const,
+      text: "Screenshot",
+      attachments: [
+        {
+          type: "image" as const,
+          id: "attachment-1",
+          name: "screenshot.png",
+          mimeType: "image/png",
+          sizeBytes: 128,
+          previewUrl: "http://127.0.0.1:43123/attachments/attachment-1",
+        },
+      ],
+      createdAt: "2026-08-03T13:00:00.000Z",
+      streaming: false,
+    };
+
+    expect(
+      applyUserMessageAttachmentPreviewHandoff(message, ["blob:optimistic-preview"]),
+    ).toMatchObject({
+      attachments: [
+        {
+          previewUrl: "blob:optimistic-preview",
+          sourceUrl: "http://127.0.0.1:43123/attachments/attachment-1",
+        },
+      ],
+    });
   });
 });
 

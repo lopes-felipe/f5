@@ -296,6 +296,10 @@ export interface DesktopUpdateActionResult {
   state: DesktopUpdateState;
 }
 
+export interface DesktopImageDownloadResult {
+  savedPath: string;
+}
+
 export interface DesktopBridge {
   getWsUrl: () => string | null;
   getPathForFile?: (file: File) => string | null;
@@ -307,6 +311,8 @@ export interface DesktopBridge {
     items: readonly ContextMenuItem<T>[],
     position?: { x: number; y: number },
   ) => Promise<T | null>;
+  copyImage?: (pngBytes: Uint8Array) => Promise<void>;
+  downloadImage?: (bytes: Uint8Array, filename: string) => Promise<DesktopImageDownloadResult>;
   openExternal: (url: string) => Promise<boolean>;
   onMenuAction: (listener: (action: string) => void) => () => void;
   getUpdateState: () => Promise<DesktopUpdateState>;

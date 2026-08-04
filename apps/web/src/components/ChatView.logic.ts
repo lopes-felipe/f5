@@ -266,6 +266,37 @@ export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[
   return previewUrls;
 }
 
+export function applyUserMessageAttachmentPreviewHandoff(
+  message: ChatMessage,
+  previewUrls: ReadonlyArray<string>,
+): ChatMessage {
+  if (message.role !== "user" || !message.attachments || previewUrls.length === 0) {
+    return message;
+  }
+
+  let changed = false;
+  let imageIndex = 0;
+  const attachments = message.attachments.map((attachment) => {
+    if (attachment.type !== "image") {
+      return attachment;
+    }
+    const handoffPreviewUrl = previewUrls[imageIndex];
+    imageIndex += 1;
+    if (!handoffPreviewUrl || attachment.previewUrl === handoffPreviewUrl) {
+      return attachment;
+    }
+    changed = true;
+    const sourceUrl = attachment.sourceUrl ?? attachment.previewUrl;
+    return {
+      ...attachment,
+      ...(sourceUrl ? { sourceUrl } : {}),
+      previewUrl: handoffPreviewUrl,
+    };
+  });
+
+  return changed ? { ...message, attachments } : message;
+}
+
 export type PendingTurnDispatchStatus =
   | "dispatching"
   | "awaiting-recovery"

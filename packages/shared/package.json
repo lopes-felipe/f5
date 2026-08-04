@@ -144,6 +144,10 @@
       "types": "./src/byteSize.ts",
       "import": "./src/byteSize.ts"
     },
+    "./downloadFilename": {
+      "types": "./src/downloadFilename.ts",
+      "import": "./src/downloadFilename.ts"
+    },
     "./processTree": {
       "types": "./src/processTree.ts",
       "import": "./src/processTree.ts"

@@ -40,6 +40,7 @@ export default mergeConfig(
         "src/components/chat/CodexTraitsPicker.browser.tsx",
         "src/components/chat/ChatHeader.browser.tsx",
         "src/components/chat/CommandTranscriptCard.browser.tsx",
+        "src/components/chat/ExpandedImagePreview.browser.tsx",
         "src/components/chat/MessagesTimeline.browser.tsx",
         "src/components/chat/NextTurnQueuePanel.browser.tsx",
         "src/components/chat/ProviderInstanceModelPicker.browser.tsx",

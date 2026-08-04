@@ -198,12 +198,8 @@ export interface ServerShape {
 export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServer/Server") {}
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
-const DESKTOP_PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
-const DESKTOP_PRIVATE_CORS_HEADERS = new Set([
-  "authorization",
-  "content-type",
-  "x-f5-backup-password",
-]);
+const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
+const PRIVATE_CORS_HEADERS = new Set(["authorization", "content-type", "x-f5-backup-password"]);
 
 const isServerNotRunningError = (error: Error): boolean => {
   const maybeCode = (error as NodeJS.ErrnoException).code;
@@ -955,16 +951,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       Effect.gen(function* () {
         const url = new URL(req.url ?? "/", `http://localhost:${port}`);
         const isPrivatePath = isPrivateHttpPath(url.pathname);
-        const isDesktopRendererRequest =
-          mode === "desktop" && isPrivatePath && req.headers.origin === DESKTOP_RENDERER_ORIGIN;
-        if (isDesktopRendererRequest) {
-          res.setHeader("Access-Control-Allow-Credentials", "true");
-          res.setHeader("Access-Control-Allow-Origin", DESKTOP_RENDERER_ORIGIN);
-          res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+        const requestOrigin = req.headers.origin;
+        // Attachment URLs are also loaded by <img>, whose requests do not
+        // carry an Origin header. Keep those cache entries separate from
+        // authenticated CORS fetches used by copy and download actions.
+        if (isPrivatePath) {
           res.setHeader("Vary", "Origin");
         }
+        const isExplicitPrivateCorsOrigin =
+          requestOrigin === devUrl?.origin ||
+          (mode === "desktop" && requestOrigin === DESKTOP_RENDERER_ORIGIN);
+        const isAllowedPrivateCorsRequest =
+          isPrivatePath &&
+          typeof requestOrigin === "string" &&
+          isExplicitPrivateCorsOrigin &&
+          serverAuth.isWebSocketOriginAllowed(req);
+        if (isAllowedPrivateCorsRequest) {
+          res.setHeader("Access-Control-Allow-Credentials", "true");
+          res.setHeader("Access-Control-Allow-Origin", requestOrigin);
+          res.setHeader("Access-Control-Expose-Headers", "Content-Disposition, Content-Length");
+        }
         if (req.method === "OPTIONS" && isPrivatePath) {
-          if (!isDesktopRendererRequest) {
+          if (!isAllowedPrivateCorsRequest) {
             respond(
               403,
               {
@@ -987,8 +995,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             .map((header) => header.trim().toLowerCase())
             .filter((header) => header.length > 0);
           if (
-            !DESKTOP_PRIVATE_CORS_METHODS.has(requestedMethod) ||
-            requestedHeaders.some((header) => !DESKTOP_PRIVATE_CORS_HEADERS.has(header))
+            !PRIVATE_CORS_METHODS.has(requestedMethod) ||
+            requestedHeaders.some((header) => !PRIVATE_CORS_HEADERS.has(header))
           ) {
             respond(
               403,

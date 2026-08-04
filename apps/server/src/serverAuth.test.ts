@@ -105,9 +105,13 @@ describe("server authentication", () => {
     const auth = makeServerAuth("correct-token", {
       allowedWebSocketOrigins: ["t3://app", "http://localhost:5173"],
     });
-    const request = (origin: string, host = "127.0.0.1:52243") =>
+    const request = (origin: string, host = "127.0.0.1:52243", forwardedProto?: "http" | "https") =>
       ({
-        headers: { host, origin },
+        headers: {
+          host,
+          origin,
+          ...(forwardedProto ? { "x-forwarded-proto": forwardedProto } : {}),
+        },
         socket: { remoteAddress: "127.0.0.1" },
       }) as unknown as Http.IncomingMessage;
 
@@ -117,5 +121,11 @@ describe("server authentication", () => {
     expect(auth.isWebSocketOriginAllowed(request("t3://other-app"))).toBe(false);
     expect(auth.isWebSocketOriginAllowed(request("https://attacker.example"))).toBe(false);
     expect(auth.isWebSocketOriginAllowed(request("t3://app/unexpected-path"))).toBe(false);
+    expect(
+      auth.isWebSocketOriginAllowed(request("http://secure.example", "secure.example", "https")),
+    ).toBe(false);
+    expect(
+      auth.isWebSocketOriginAllowed(request("https://secure.example", "secure.example", "https")),
+    ).toBe(true);
   });
 });
