@@ -44,6 +44,7 @@ import {
 import { cn, isMacPlatform } from "../../lib/utils";
 import { togglePinned, usePinnedThreadIds } from "../../pinnedThreadsStore";
 import { useStore } from "../../store";
+import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { resolveThreadStatusForThread, type ThreadStatus } from "../../threadStatus";
 import type {
   CodeReviewWorkflow,
@@ -106,6 +107,7 @@ function collectAllWorkflowThreadIds(
 function bucketThreads(
   sortedThreads: ReadonlyArray<Thread>,
   statusByThreadId: ReadonlyMap<ThreadId, ThreadStatus>,
+  pausedQueueThreadIds: ReadonlySet<ThreadId>,
 ): MissionControlBuckets {
   const attentionAll: Thread[] = [];
   const workingAll: Thread[] = [];
@@ -113,7 +115,12 @@ function bucketThreads(
 
   for (const thread of sortedThreads) {
     const status = statusByThreadId.get(thread.id) ?? "none";
-    if (status === "pending-approval" || status === "awaiting-input" || status === "plan-ready") {
+    if (
+      pausedQueueThreadIds.has(thread.id) ||
+      status === "pending-approval" ||
+      status === "awaiting-input" ||
+      status === "plan-ready"
+    ) {
       attentionAll.push(thread);
     } else if (status === "working" || status === "connecting") {
       workingAll.push(thread);
@@ -126,7 +133,9 @@ function bucketThreads(
   attentionAll.sort((left, right) => {
     const leftKey = statusByThreadId.get(left.id) as keyof typeof ATTENTION_PRIORITY;
     const rightKey = statusByThreadId.get(right.id) as keyof typeof ATTENTION_PRIORITY;
-    return ATTENTION_PRIORITY[leftKey] - ATTENTION_PRIORITY[rightKey];
+    const leftPriority = pausedQueueThreadIds.has(left.id) ? 3 : ATTENTION_PRIORITY[leftKey];
+    const rightPriority = pausedQueueThreadIds.has(right.id) ? 3 : ATTENTION_PRIORITY[rightKey];
+    return leftPriority - rightPriority;
   });
 
   const attention = attentionAll.slice(0, ATTENTION_LIMIT);
@@ -402,6 +411,16 @@ export function HomeMissionControl() {
   const investigationWorkflows = useStore((state) => state.investigationWorkflows);
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
   const pinnedThreadIds = usePinnedThreadIds();
+  const queueSummary = useNextTurnQueueStore((state) => state.summary);
+  const pausedQueueThreadIds = useMemo(
+    () =>
+      new Set(
+        (queueSummary?.threads ?? [])
+          .filter((entry) => entry.paused)
+          .map((entry) => entry.threadId),
+      ),
+    [queueSummary],
+  );
 
   // Home-specific UI state: filter recent threads by project or lifecycle. We
   // keep this local (not in Zustand) because it's session-scoped: users don't
@@ -456,7 +475,8 @@ export function HomeMissionControl() {
     for (const thread of sorted) {
       const status = statusByThreadId.get(thread.id) ?? "none";
       const tag = resolveAttentionReasonTag(status, thread.lastInteractionAt);
-      if (tag) reasonByThreadId.set(thread.id, tag);
+      if (pausedQueueThreadIds.has(thread.id)) reasonByThreadId.set(thread.id, "queue paused");
+      else if (tag) reasonByThreadId.set(thread.id, tag);
     }
 
     // For the Recent section's project filter chips we want the full set of
@@ -467,6 +487,7 @@ export function HomeMissionControl() {
     for (const thread of sorted) {
       const status = statusByThreadId.get(thread.id) ?? "none";
       if (
+        !pausedQueueThreadIds.has(thread.id) &&
         status !== "pending-approval" &&
         status !== "awaiting-input" &&
         status !== "plan-ready" &&
@@ -501,7 +522,7 @@ export function HomeMissionControl() {
     ).slice(0, QUICK_JUMP_PROJECT_LIMIT);
 
     return {
-      buckets: bucketThreads(sorted, statusByThreadId),
+      buckets: bucketThreads(sorted, statusByThreadId, pausedQueueThreadIds),
       projectsById: projectMap,
       mostRecentProject: getMostRecentProject(
         projects,
@@ -517,7 +538,14 @@ export function HomeMissionControl() {
       allProjectsInRecent: projectsInRecent,
       attentionReasonByThreadId: reasonByThreadId,
     };
-  }, [codeReviewWorkflows, investigationWorkflows, planningWorkflows, projects, threads]);
+  }, [
+    codeReviewWorkflows,
+    investigationWorkflows,
+    pausedQueueThreadIds,
+    planningWorkflows,
+    projects,
+    threads,
+  ]);
 
   // Partition Recent into pinned + rest so users see their pinned threads
   // above the main activity grouping. Pinned items are pulled out of the main

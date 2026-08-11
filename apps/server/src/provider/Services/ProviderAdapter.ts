@@ -31,6 +31,7 @@ export interface ProviderAdapterCapabilities {
    * Declares whether changing the model on an existing session is supported.
    */
   readonly sessionModelSwitch: ProviderSessionModelSwitchMode;
+  readonly nativeTurnIdempotency?: boolean;
 }
 
 export interface ProviderThreadTurnSnapshot {

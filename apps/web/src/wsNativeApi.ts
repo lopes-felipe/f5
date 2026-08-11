@@ -3,6 +3,7 @@ import {
   type GitStatusInvalidatedPayload,
   type McpStatusUpdatedPayload,
   type NextTurnQueueSnapshot,
+  type NextTurnQueueSummary,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
   type PreviewAutomationRequest,
@@ -42,6 +43,7 @@ const mcpStatusUpdatedListeners = new Set<(payload: McpStatusUpdatedPayload) => 
 const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload) => void>();
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
 const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) => void>();
+const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
 const prHubSnapshotUpdatedListeners = new Set<(payload: PrHubSnapshot) => void>();
 const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisorySnapshot) => void>();
 
@@ -274,6 +276,16 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
+  transport.subscribe(WS_CHANNELS.nextTurnQueueSummaryUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of nextTurnQueueSummaryUpdatedListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
   transport.subscribe(PR_HUB_WS_CHANNELS.snapshotUpdated, (message) => {
     const payload = message.data;
     for (const listener of prHubSnapshotUpdatedListeners) {
@@ -482,15 +494,31 @@ export function createWsNativeApi(): NativeApi {
     },
     nextTurnQueue: {
       list: (input) => transport.request(WS_METHODS.nextTurnQueueList, input),
-      enqueue: (input) => transport.request(WS_METHODS.nextTurnQueueEnqueue, input),
+      submit: (input) => transport.request(WS_METHODS.nextTurnQueueSubmit, input),
+      summary: () => transport.request(WS_METHODS.nextTurnQueueSummary),
       update: (input) => transport.request(WS_METHODS.nextTurnQueueUpdate, input),
       cancel: (input) => transport.request(WS_METHODS.nextTurnQueueCancel, input),
       reorder: (input) => transport.request(WS_METHODS.nextTurnQueueReorder, input),
-      resume: (input) => transport.request(WS_METHODS.nextTurnQueueResume, input),
+      retry: (input) => transport.request(WS_METHODS.nextTurnQueueRetry, input),
+      promote: (input) => transport.request(WS_METHODS.nextTurnQueuePromote, input),
+      setPaused: (input) => transport.request(WS_METHODS.nextTurnQueueSetPaused, input),
+      duplicate: (input) => transport.request(WS_METHODS.nextTurnQueueDuplicate, input),
+      refreshGate: (input) => transport.request(WS_METHODS.nextTurnQueueRefreshGate, input),
+      clear: (input) => transport.request(WS_METHODS.nextTurnQueueClear, input),
+      restore: (input) => transport.request(WS_METHODS.nextTurnQueueRestore, input),
+      recheckDelivery: (input) => transport.request(WS_METHODS.nextTurnQueueRecheckDelivery, input),
+      retryDelivery: (input) => transport.request(WS_METHODS.nextTurnQueueRetryDelivery, input),
+      discardDelivery: (input) => transport.request(WS_METHODS.nextTurnQueueDiscardDelivery, input),
       onUpdated: (callback) => {
         nextTurnQueueUpdatedListeners.add(callback);
         return () => {
           nextTurnQueueUpdatedListeners.delete(callback);
+        };
+      },
+      onSummaryUpdated: (callback) => {
+        nextTurnQueueSummaryUpdatedListeners.add(callback);
+        return () => {
+          nextTurnQueueSummaryUpdatedListeners.delete(callback);
         };
       },
     },

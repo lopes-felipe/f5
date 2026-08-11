@@ -7,6 +7,7 @@ import PrAttentionNotificationController from "../components/prHub/PrAttentionNo
 import { PreviewBrowserHost } from "../components/PreviewBrowserHost";
 import ModelRecencyController from "../components/ModelRecencyController";
 import ThreadRecencyController from "../components/ThreadRecencyController";
+import { NextTurnQueueController } from "../components/NextTurnQueueController";
 import ThreadSidebar from "../components/Sidebar";
 import {
   Sidebar,
@@ -111,6 +112,7 @@ function ChatRouteLayout() {
         <ThreadRecencyController />
         <ModelRecencyController />
         <ThreadStatusNotificationController />
+        <NextTurnQueueController />
         <PrAttentionNotificationController />
         <PreviewBrowserHost>
           <Outlet />

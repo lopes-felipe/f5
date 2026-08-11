@@ -30,6 +30,7 @@ import { TextGeneration, type TextGenerationShape } from "../src/git/Services/Te
 import { OrchestrationCommandReceiptRepositoryLive } from "../src/persistence/Layers/OrchestrationCommandReceipts.ts";
 import { OrchestrationEventStoreLive } from "../src/persistence/Layers/OrchestrationEventStore.ts";
 import { ProjectionCheckpointRepositoryLive } from "../src/persistence/Layers/ProjectionCheckpoints.ts";
+import { ProjectionTurnRepositoryLive } from "../src/persistence/Layers/ProjectionTurns.ts";
 import { ProjectionPendingApprovalRepositoryLive } from "../src/persistence/Layers/ProjectionPendingApprovals.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { makeSqlitePersistenceLive } from "../src/persistence/Layers/Sqlite.ts";
@@ -53,6 +54,8 @@ import { RuntimeReceiptBusLive } from "../src/orchestration/Layers/RuntimeReceip
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { ProviderTurnDeliveryRepositoryLive } from "../src/orchestration/Layers/ProviderTurnDeliveryRepository.ts";
+import { ProviderTurnDeliveryWorkerLive } from "../src/orchestration/Layers/ProviderTurnDeliveryWorker.ts";
 import { ProjectSkillSyncServiceLive } from "../src/orchestration/Layers/ProjectSkillSyncService.ts";
 import { SessionNotesServiceLive } from "../src/orchestration/Layers/SessionNotesService.ts";
 import { CodeReviewWorkflowServiceLive } from "../src/orchestration/Layers/CodeReviewWorkflowService.ts";
@@ -75,6 +78,7 @@ import {
   type TestProviderAdapterHarness,
 } from "./TestProviderAdapter.integration.ts";
 import { ServerConfig } from "../src/config.ts";
+import { NextTurnQueueDispatcher } from "../src/nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 
 function runGit(cwd: string, args: ReadonlyArray<string>) {
   return execFileSync("git", args, {
@@ -354,6 +358,8 @@ export const makeOrchestrationIntegrationHarness = (
       providerSessionDirectoryLayer,
       providerLayer,
       RuntimeReceiptBusLive,
+      ProviderTurnDeliveryRepositoryLive,
+      ProjectionTurnRepositoryLive,
     );
     const runtimeIngestionLayer = ProviderRuntimeIngestionLive.pipe(
       Layer.provideMerge(runtimeServicesLayer),
@@ -398,6 +404,23 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(OrchestrationProjectionSnapshotQueryLive),
       Layer.provideMerge(textGenerationLayer),
     );
+    const nextTurnQueueDispatcherLayer = Layer.succeed(NextTurnQueueDispatcher, {
+      start: Effect.void,
+      notify: () => Effect.void,
+      drain: Effect.void,
+      submitAndSettle: () => Effect.die("unsupported in orchestration harness"),
+      getSnapshot: () => Effect.die("unsupported in orchestration harness"),
+      getSummary: Effect.die("unsupported in orchestration harness"),
+      promote: () => Effect.die("unsupported in orchestration harness"),
+      refreshGate: () => Effect.die("unsupported in orchestration harness"),
+      handleDeliveryOutcome: () => Effect.void,
+      changes: Stream.empty,
+      summaryChanges: Stream.empty,
+    });
+    const providerTurnDeliveryWorkerLayer = ProviderTurnDeliveryWorkerLive.pipe(
+      Layer.provideMerge(runtimeServicesLayer),
+      Layer.provideMerge(providerCommandReactorLayer),
+    );
     const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
       Layer.provideMerge(runtimeIngestionLayer),
       Layer.provideMerge(providerCommandReactorLayer),
@@ -408,6 +431,8 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(workflowServiceLayer),
       Layer.provideMerge(codeReviewWorkflowServiceLayer),
       Layer.provideMerge(investigationWorkflowServiceLayer),
+      Layer.provideMerge(nextTurnQueueDispatcherLayer),
+      Layer.provideMerge(providerTurnDeliveryWorkerLayer),
     );
     const layer = orchestrationReactorLayer.pipe(
       Layer.provide(persistenceLayer),

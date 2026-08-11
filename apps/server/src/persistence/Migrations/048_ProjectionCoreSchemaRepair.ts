@@ -773,7 +773,8 @@ export default Effect.gen(function* () {
     resetProjectors("projection.thread-turns", "projection.checkpoints");
   }
 
-  // Keep in sync with 005_Projections and 015_ProjectionTurnsSourceProposedPlan.
+  // Keep in sync with 005_Projections, 015_ProjectionTurnsSourceProposedPlan,
+  // and 058_TurnDeliveryDurability.
   yield* sql`
     CREATE TABLE IF NOT EXISTS projection_turns (
       row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -787,6 +788,7 @@ export default Effect.gen(function* () {
       requested_at TEXT NOT NULL,
       started_at TEXT,
       completed_at TEXT,
+      processing_quiesced_at TEXT,
       checkpoint_turn_count INTEGER,
       checkpoint_ref TEXT,
       checkpoint_status TEXT,
@@ -874,6 +876,14 @@ export default Effect.gen(function* () {
     yield* sql`
       ALTER TABLE projection_turns
       ADD COLUMN completed_at TEXT
+    `;
+  }
+
+  if (!turnColumns.has("processing_quiesced_at")) {
+    resetProjectors("projection.thread-turns", "projection.checkpoints");
+    yield* sql`
+      ALTER TABLE projection_turns
+      ADD COLUMN processing_quiesced_at TEXT
     `;
   }
 

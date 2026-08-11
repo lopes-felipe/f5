@@ -90,6 +90,12 @@ interface ThreadRow {
   readonly workspaceRoot: string | null;
 }
 
+interface OrphanAttachmentRow {
+  readonly attachmentId: string;
+  readonly name: string;
+  readonly finalPath: string;
+}
+
 type LegacyCleanupCategoryId = Extract<
   StorageCleanupCategoryId,
   | "legacyT3Userdata"
@@ -1144,6 +1150,52 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }),
       });
       warnings.push(...attachmentsUsage.errors);
+      const orphanAttachmentRows = yield* sql<OrphanAttachmentRow>`
+        SELECT
+          attachment.attachment_id AS "attachmentId",
+          attachment.name AS "name",
+          attachment.final_path AS "finalPath"
+        FROM attachments AS attachment
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM attachment_owners AS owner
+          WHERE owner.attachment_id = attachment.attachment_id
+        )
+        ORDER BY attachment.created_at ASC
+      `;
+      const orphanAttachmentTargets = yield* Effect.forEach(
+        orphanAttachmentRows,
+        (attachment) =>
+          Effect.tryPromise({
+            try: () => fileSizeIfExists(attachment.finalPath),
+            catch: (cause) =>
+              new StorageMaintenanceError({
+                operation: "StorageMaintenance.inspect.orphanAttachments",
+                message: "Failed to inspect an orphaned attachment.",
+                cause,
+              }),
+          }).pipe(
+            Effect.map(
+              (bytes): StorageCleanupTarget => ({
+                id: attachment.attachmentId,
+                label: attachment.name,
+                path: attachment.finalPath,
+                bytes,
+                safeToDelete: isPathWithinRoot({
+                  root: config.attachmentsDir,
+                  target: attachment.finalPath,
+                }),
+                ...(!isPathWithinRoot({
+                  root: config.attachmentsDir,
+                  target: attachment.finalPath,
+                })
+                  ? { disabledReason: "Attachment path is outside the attachment storage root." }
+                  : {}),
+              }),
+            ),
+          ),
+        { concurrency: 8 },
+      );
       const worktreesUsage = yield* Effect.tryPromise({
         try: () => sizeIfExists(config.worktreesDir),
         catch: (cause) =>
@@ -1360,6 +1412,20 @@ const makeStorageMaintenance = Effect.gen(function* () {
             bytes: file.bytes,
             safeToDelete: true,
           })),
+        }),
+        categoryUsage({
+          id: "orphanAttachments",
+          section: "attachments",
+          title: "Delete orphaned attachments",
+          description:
+            "Deletes attachment files that are no longer owned by a queued turn or message.",
+          bytes: attachmentsUsage.bytes,
+          reclaimableBytes: orphanAttachmentTargets
+            .filter((target) => target.safeToDelete)
+            .reduce((total, target) => total + target.bytes, 0),
+          defaultSelected: true,
+          impact: "none",
+          targets: orphanAttachmentTargets,
         }),
       ];
 
@@ -1819,7 +1885,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
 
         const segment = toSafeThreadAttachmentSegment(thread.threadId);
         let fsReclaimed = 0;
-        if (segment) {
+        if (segment && !survivingSegments.has(segment)) {
           const attachmentFiles = yield* Effect.tryPromise({
             try: () =>
               listFilesWithPrefix({
@@ -2241,6 +2307,164 @@ const makeStorageMaintenance = Effect.gen(function* () {
       });
     });
 
+  const cleanOrphanAttachments = (
+    request: StorageCleanupRequest,
+    context: StorageCleanupContext | undefined,
+    selectedTargetIds: ReadonlySet<string> | undefined,
+  ) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<OrphanAttachmentRow>`
+        SELECT
+          attachment.attachment_id AS "attachmentId",
+          attachment.name AS "name",
+          attachment.final_path AS "finalPath"
+        FROM attachments AS attachment
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM attachment_owners AS owner
+          WHERE owner.attachment_id = attachment.attachment_id
+        )
+        ORDER BY attachment.created_at ASC
+      `;
+      const candidates =
+        selectedTargetIds && selectedTargetIds.size > 0
+          ? rows.filter((row) => selectedTargetIds.has(row.attachmentId))
+          : rows;
+      if (candidates.length === 0) {
+        return resultFor({
+          categoryId: "orphanAttachments",
+          status: "Skipped",
+          message: "No orphaned attachments were found.",
+        });
+      }
+
+      const warnings: StoragePathWarning[] = [];
+      const perTargetReclaimed: PerTargetReclaimed = [];
+      let completedTargets = 0;
+      for (const attachment of candidates) {
+        if (checkCancelled(request.operationId)) break;
+        yield* publishProgress(request, context, {
+          categoryId: "orphanAttachments",
+          phase: "deleting",
+          message: `Deleting ${attachment.name}`,
+          completedTargets,
+          totalTargets: candidates.length,
+        });
+        if (!isPathWithinRoot({ root: config.attachmentsDir, target: attachment.finalPath })) {
+          warnings.push(
+            warningFor(
+              attachment.finalPath,
+              "Skipped attachment because its path is outside the attachment storage root.",
+            ),
+          );
+          completedTargets += 1;
+          continue;
+        }
+
+        const bytes = yield* Effect.tryPromise({
+          try: () => fileSizeIfExists(attachment.finalPath),
+          catch: (cause) =>
+            new StorageMaintenanceError({
+              operation: "StorageMaintenance.cleanup.orphanAttachments.stat",
+              message: "Failed to inspect an orphaned attachment.",
+              cause,
+            }),
+        });
+        const marked = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const updated = yield* sql<OrphanAttachmentRow>`
+              UPDATE attachments
+              SET lifecycle = 'deleting', updated_at = ${nowIso()}
+              WHERE attachment_id = ${attachment.attachmentId}
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM attachment_owners AS owner
+                  WHERE owner.attachment_id = attachments.attachment_id
+                )
+              RETURNING
+                attachment_id AS "attachmentId", name, final_path AS "finalPath"
+            `;
+            if (!updated[0]) return false;
+            const at = nowIso();
+            yield* sql`
+              INSERT INTO attachment_cleanup_jobs (
+                attachment_id, path, attempt, created_at, updated_at
+              ) VALUES (${attachment.attachmentId}, ${attachment.finalPath}, 0, ${at}, ${at})
+              ON CONFLICT(attachment_id) DO UPDATE SET
+                path = excluded.path,
+                updated_at = excluded.updated_at
+            `;
+            return true;
+          }),
+        );
+        if (!marked) {
+          warnings.push(
+            warningFor(
+              attachment.finalPath,
+              "Skipped attachment because it gained a live owner during cleanup.",
+            ),
+          );
+          completedTargets += 1;
+          continue;
+        }
+
+        const deletion = yield* Effect.exit(
+          Effect.tryPromise({
+            try: () =>
+              removeFileIfSafe({
+                path: attachment.finalPath,
+                allowedRoot: config.attachmentsDir,
+              }),
+            catch: (cause) =>
+              new StorageMaintenanceError({
+                operation: "StorageMaintenance.cleanup.orphanAttachments.delete",
+                message: "Failed to delete an orphaned attachment.",
+                cause,
+              }),
+          }),
+        );
+        if (Exit.isFailure(deletion)) {
+          warnings.push(warningFor(attachment.finalPath, Cause.pretty(deletion.cause)));
+          yield* sql`
+            UPDATE attachment_cleanup_jobs
+            SET attempt = attempt + 1, last_error = ${Cause.pretty(deletion.cause)},
+                updated_at = ${nowIso()}
+            WHERE attachment_id = ${attachment.attachmentId}
+          `;
+          completedTargets += 1;
+          continue;
+        }
+        if (deletion.value.warning) warnings.push(deletion.value.warning);
+        yield* sql`
+          DELETE FROM attachments
+          WHERE attachment_id = ${attachment.attachmentId}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM attachment_owners AS owner
+              WHERE owner.attachment_id = attachments.attachment_id
+            )
+        `;
+        perTargetReclaimed.push({
+          id: attachment.attachmentId,
+          path: attachment.finalPath,
+          reclaimedBytes: Math.max(bytes, deletion.value.reclaimedBytes),
+        });
+        completedTargets += 1;
+      }
+
+      return resultFor({
+        categoryId: "orphanAttachments",
+        status:
+          perTargetReclaimed.length > 0 ? "Cleaned" : warnings.length > 0 ? "Failed" : "Skipped",
+        reclaimedBytes: perTargetReclaimed.reduce(
+          (total, target) => total + target.reclaimedBytes,
+          0,
+        ),
+        perTargetReclaimed,
+        warnings,
+      });
+    });
+
   const vacuumDatabase = () =>
     Effect.gen(function* () {
       const warnings: StoragePathWarning[] = [];
@@ -2592,6 +2816,8 @@ const makeStorageMaintenance = Effect.gen(function* () {
                 return pruneProviderLogsForTerminalThreads(request, context);
               case "providerLogRotations":
                 return pruneEventsLogRotations(request, context);
+              case "orphanAttachments":
+                return cleanOrphanAttachments(request, context, targetSelections.get(categoryId));
               case "databaseVacuum":
                 return vacuumDatabase();
               case "legacyT3Userdata":

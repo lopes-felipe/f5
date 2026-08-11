@@ -902,7 +902,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect(
-    "purges soft-deleted thread rows and preserves provider logs on segment collision",
+    "purges soft-deleted thread rows and preserves colliding attachment and provider log files",
     () =>
       withIsolatedHome(
         Effect.gen(function* () {
@@ -970,7 +970,7 @@ layer("StorageMaintenance", (it) => {
             replayedEvents.some((event) => event.aggregateId === deletedThreadId),
             false,
           );
-          assert.equal(yield* Effect.promise(() => pathExists(attachmentPath)), false);
+          assert.equal(yield* Effect.promise(() => pathExists(attachmentPath)), true);
           assert.equal(yield* Effect.promise(() => pathExists(providerLogPath)), true);
         }),
       ),

@@ -157,6 +157,24 @@ export class ProviderSessionDirectoryPersistenceError extends Schema.TaggedError
   }
 }
 
+/**
+ * Delivery certainty established at the provider-call boundary. Callers must
+ * never infer this from transport text or a more general provider error tag.
+ */
+export class ProviderTurnDeliveryError extends Schema.TaggedErrorClass<ProviderTurnDeliveryError>()(
+  "ProviderTurnDeliveryError",
+  {
+    certainty: Schema.Literals(["not_sent", "unknown"]),
+    retryable: Schema.Boolean,
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {
+  override get message(): string {
+    return this.detail;
+  }
+}
+
 export type ProviderAdapterError =
   | ProviderAdapterValidationError
   | ProviderAdapterSessionNotFoundError
@@ -187,6 +205,7 @@ export type ProviderServiceError =
   | ProviderUnsupportedError
   | ProviderSessionNotFoundError
   | ProviderSessionDirectoryPersistenceError
+  | ProviderTurnDeliveryError
   | ProviderDriverError
   | ProviderAdapterError
   | CheckpointServiceError;

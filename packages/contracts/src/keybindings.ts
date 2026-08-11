@@ -38,6 +38,8 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.newLocal",
   "workflow.new",
   "chat.scrollToBottom",
+  "chat.queueTurn",
+  "chat.queueTurnNext",
   "dialog.primaryAction",
   "editor.openFavorite",
   "thread.switchRecentNext",

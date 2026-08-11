@@ -180,6 +180,10 @@ export function formatKeybindingCommandLabel(
       return "New workflow";
     case "chat.scrollToBottom":
       return "Scroll to bottom";
+    case "chat.queueTurn":
+      return "Queue turn at end";
+    case "chat.queueTurnNext":
+      return "Queue turn next";
     case "dialog.primaryAction":
       return "Dialog primary action";
     case "editor.openFavorite":

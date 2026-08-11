@@ -9,6 +9,7 @@ This is a living glossary for F5. It explains what common terms mean in this cod
 - [Orchestration](#orchestration)
 - [Provider runtime](#provider-runtime)
 - [Checkpointing](#checkpointing)
+- [Next-turn queue](#next-turn-queue)
 
 ## Concepts
 
@@ -86,6 +87,35 @@ Examples include `checkpoint.baseline.captured`, `checkpoint.diff.finalized`, an
 #### Quiesced
 
 "Quiesced" means a turn has gone quiet and stable. In [the receipt schema][13], it means the follow-up work has settled, including work in [CheckpointReactor.ts][6].
+
+### Next-turn queue
+
+#### Submission
+
+A durable, idempotent request to send a user turn. The client-generated submission id is stable
+across transport retries, while the command and message ids rotate when a failed queued item is
+edited or explicitly retried. See [the queue contracts][25] and [NextTurnQueueStore][26].
+
+#### Admission
+
+The server-owned decision to start a persisted queue head or leave it waiting. Admission checks
+the pending-turn barrier, live session state, worktree availability, pause watermark, and terminal
+turn quiescence. Browser snapshots are presentation hints and never decide whether a turn may run.
+
+#### Provider delivery ambiguity
+
+An outbox delivery is ambiguous when F5 cannot prove whether the provider accepted it. F5 does
+not automatically resend that turn. The queue pauses visibly so a possible duplicate is never
+hidden behind automatic retry. Recheck reconciles provider history, Retry requires explicit
+acknowledgement that a duplicate may be produced, and Discard abandons the unresolved delivery
+before the queue can advance. See [ProviderTurnDeliveryWorker][27].
+
+#### Workflow interleaving
+
+User-authored turns always use queue admission. Some workflow services still issue orchestration
+turn starts directly; those calls are measured and warned when a thread is already busy, but this
+landing does not make workflows queue-aware. New workflow code must not assume it is ordered with
+the user's next-turn queue.
 
 ### Provider runtime
 
@@ -178,3 +208,6 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [22]: ../apps/server/src/checkpointing/Utils.ts
 [23]: ../apps/server/src/checkpointing/Diffs.ts
 [24]: ./architecture.md
+[25]: ../packages/contracts/src/nextTurnQueue.ts
+[26]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueStore.ts
+[27]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts

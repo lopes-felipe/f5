@@ -125,12 +125,24 @@ import type {
 } from "./storage";
 import type {
   NextTurnQueueCancelInput,
-  NextTurnQueueEnqueueInput,
+  NextTurnQueueClearInput,
+  NextTurnQueueDuplicateInput,
   NextTurnQueueListInput,
+  NextTurnQueueMutationResult,
+  NextTurnQueuePromoteInput,
+  NextTurnQueueRefreshGateInput,
   NextTurnQueueReorderInput,
-  NextTurnQueueResumeInput,
+  NextTurnQueueRestoreInput,
+  NextTurnQueueRecheckDeliveryInput,
+  NextTurnQueueRetryDeliveryInput,
+  NextTurnQueueDiscardDeliveryInput,
+  NextTurnQueueRetryInput,
+  NextTurnQueueSetPausedInput,
   NextTurnQueueSnapshot,
+  NextTurnQueueSubmitInput,
+  NextTurnQueueSummary,
   NextTurnQueueUpdateInput,
+  TurnSubmissionResult,
 } from "./nextTurnQueue";
 import type { GlobalSearchQueryInput, GlobalSearchQueryResult } from "./globalSearch";
 import type {
@@ -479,12 +491,23 @@ export interface NativeApi {
   };
   nextTurnQueue: {
     list: (input: NextTurnQueueListInput) => Promise<NextTurnQueueSnapshot>;
-    enqueue: (input: NextTurnQueueEnqueueInput) => Promise<NextTurnQueueSnapshot>;
+    submit: (input: NextTurnQueueSubmitInput) => Promise<TurnSubmissionResult>;
+    summary: () => Promise<NextTurnQueueSummary>;
     update: (input: NextTurnQueueUpdateInput) => Promise<NextTurnQueueSnapshot>;
-    cancel: (input: NextTurnQueueCancelInput) => Promise<NextTurnQueueSnapshot>;
+    cancel: (input: NextTurnQueueCancelInput) => Promise<NextTurnQueueMutationResult>;
     reorder: (input: NextTurnQueueReorderInput) => Promise<NextTurnQueueSnapshot>;
-    resume: (input: NextTurnQueueResumeInput) => Promise<NextTurnQueueSnapshot>;
+    retry: (input: NextTurnQueueRetryInput) => Promise<NextTurnQueueSnapshot>;
+    promote: (input: NextTurnQueuePromoteInput) => Promise<NextTurnQueueSnapshot>;
+    setPaused: (input: NextTurnQueueSetPausedInput) => Promise<NextTurnQueueSnapshot>;
+    duplicate: (input: NextTurnQueueDuplicateInput) => Promise<NextTurnQueueSnapshot>;
+    refreshGate: (input: NextTurnQueueRefreshGateInput) => Promise<NextTurnQueueSnapshot>;
+    clear: (input: NextTurnQueueClearInput) => Promise<NextTurnQueueMutationResult>;
+    restore: (input: NextTurnQueueRestoreInput) => Promise<NextTurnQueueMutationResult>;
+    recheckDelivery: (input: NextTurnQueueRecheckDeliveryInput) => Promise<NextTurnQueueSnapshot>;
+    retryDelivery: (input: NextTurnQueueRetryDeliveryInput) => Promise<NextTurnQueueSnapshot>;
+    discardDelivery: (input: NextTurnQueueDiscardDeliveryInput) => Promise<NextTurnQueueSnapshot>;
     onUpdated: (callback: (payload: NextTurnQueueSnapshot) => void) => () => void;
+    onSummaryUpdated: (callback: (payload: NextTurnQueueSummary) => void) => () => void;
   };
   globalSearch: {
     query: (input: GlobalSearchQueryInput) => Promise<GlobalSearchQueryResult>;

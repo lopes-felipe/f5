@@ -5,7 +5,7 @@ import type {
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
-import { OrchestrationCommandInvariantError } from "./Errors.ts";
+import { OrchestrationCommandInvariantError, ThreadTurnAlreadyActiveError } from "./Errors.ts";
 import {
   listThreadsByProjectId,
   requireProject,
@@ -59,7 +59,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
   readonly readModel: OrchestrationReadModel;
 }): Effect.fn.Return<
   Omit<OrchestrationEvent, "sequence"> | ReadonlyArray<Omit<OrchestrationEvent, "sequence">>,
-  OrchestrationCommandInvariantError
+  OrchestrationCommandInvariantError | ThreadTurnAlreadyActiveError
 > {
   switch (command.type) {
     case "project.create": {
@@ -822,6 +822,90 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const threadIsBusy =
+        targetThread.latestTurn?.state === "running" ||
+        targetThread.session?.status === "starting" ||
+        targetThread.session?.status === "running" ||
+        targetThread.session?.activeTurnId != null;
+      if (threadIsBusy && command.dispatchSource === "next-turn-queue") {
+        return yield* new ThreadTurnAlreadyActiveError({
+          threadId: command.threadId,
+          activeTurnId: targetThread.session?.activeTurnId ?? null,
+          sessionStatus: targetThread.session?.status ?? null,
+        });
+      }
+      if (threadIsBusy) {
+        yield* Effect.logWarning("turn start on a busy thread", {
+          threadId: command.threadId,
+          commandId: command.commandId,
+          activeTurnId: targetThread.session?.activeTurnId ?? null,
+          sessionStatus: targetThread.session?.status ?? null,
+        });
+      }
+      const queueSourced = command.dispatchSource === "next-turn-queue";
+      const effectiveRuntimeMode = queueSourced ? command.runtimeMode : targetThread.runtimeMode;
+      const effectiveInteractionMode = queueSourced
+        ? command.interactionMode
+        : targetThread.interactionMode;
+      const settingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (queueSourced && effectiveRuntimeMode !== targetThread.runtimeMode) {
+        settingEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.runtime-mode-set",
+          payload: {
+            threadId: command.threadId,
+            runtimeMode: effectiveRuntimeMode,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      if (queueSourced && effectiveInteractionMode !== targetThread.interactionMode) {
+        settingEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.interaction-mode-set",
+          payload: {
+            threadId: command.threadId,
+            interactionMode: effectiveInteractionMode,
+            updatedAt: command.createdAt,
+          },
+        });
+      }
+      const modelSelectionChanged =
+        command.modelSelection !== undefined &&
+        JSON.stringify(command.modelSelection) !== JSON.stringify(targetThread.modelSelection);
+      if (
+        queueSourced &&
+        ((command.model !== undefined && command.model !== targetThread.model) ||
+          modelSelectionChanged)
+      ) {
+        settingEvents.push({
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.meta-updated",
+          payload: {
+            threadId: command.threadId,
+            ...(command.model !== undefined ? { model: command.model } : {}),
+            ...(command.modelSelection !== undefined
+              ? { modelSelection: command.modelSelection }
+              : {}),
+            updatedAt: command.createdAt,
+          },
+        });
+      }
       const sourceProposedPlan = command.sourceProposedPlan;
       const sourceThread = sourceProposedPlan
         ? yield* requireThread({
@@ -900,13 +984,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             ? { providerOptions: command.providerOptions }
             : {}),
           assistantDeliveryMode: command.assistantDeliveryMode ?? DEFAULT_ASSISTANT_DELIVERY_MODE,
-          runtimeMode: targetThread.runtimeMode,
-          interactionMode: targetThread.interactionMode,
+          runtimeMode: effectiveRuntimeMode,
+          interactionMode: effectiveInteractionMode,
           ...(sourceProposedPlan !== undefined ? { sourceProposedPlan } : {}),
           createdAt: command.createdAt,
         },
       };
-      return [userMessageEvent, turnStartRequestedEvent];
+      return [...settingEvents, userMessageEvent, turnStartRequestedEvent];
     }
 
     case "thread.turn.interrupt": {
@@ -1163,6 +1247,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           files: command.files,
           assistantMessageId: command.assistantMessageId ?? null,
           completedAt: command.completedAt,
+        },
+      };
+    }
+
+    case "thread.turn.processing.quiesce": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.turn-processing-quiesced",
+        payload: {
+          threadId: command.threadId,
+          turnId: command.turnId,
+          processingQuiescedAt: command.processingQuiescedAt,
         },
       };
     }

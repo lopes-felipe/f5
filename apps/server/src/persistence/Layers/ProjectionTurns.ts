@@ -10,6 +10,7 @@ import {
   GetProjectionPendingTurnStartInput,
   GetProjectionTurnByTurnIdInput,
   ListProjectionTurnsByThreadInput,
+  MarkProjectionTurnProcessingQuiescedInput,
   ProjectionPendingTurnStart,
   ProjectionTurn,
   ProjectionTurnById,
@@ -52,6 +53,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at,
           started_at,
           completed_at,
+          processing_quiesced_at,
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
@@ -66,6 +68,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           ${row.requestedAt},
           ${row.startedAt},
           ${row.completedAt},
+          ${row.processingQuiescedAt},
           ${row.checkpointTurnCount},
           ${row.checkpointRef},
           ${row.checkpointStatus},
@@ -79,6 +82,10 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at = excluded.requested_at,
           started_at = excluded.started_at,
           completed_at = excluded.completed_at,
+          processing_quiesced_at = COALESCE(
+            projection_turns.processing_quiesced_at,
+            excluded.processing_quiesced_at
+          ),
           checkpoint_turn_count = excluded.checkpoint_turn_count,
           checkpoint_ref = excluded.checkpoint_ref,
           checkpoint_status = excluded.checkpoint_status,
@@ -113,6 +120,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at,
           started_at,
           completed_at,
+          processing_quiesced_at,
           checkpoint_turn_count,
           checkpoint_ref,
           checkpoint_status,
@@ -127,6 +135,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           NULL,
           'pending',
           ${row.requestedAt},
+          NULL,
           NULL,
           NULL,
           NULL,
@@ -173,6 +182,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at AS "requestedAt",
           started_at AS "startedAt",
           completed_at AS "completedAt",
+          processing_quiesced_at AS "processingQuiescedAt",
           checkpoint_turn_count AS "checkpointTurnCount",
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "checkpointStatus",
@@ -204,6 +214,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at AS "requestedAt",
           started_at AS "startedAt",
           completed_at AS "completedAt",
+          processing_quiesced_at AS "processingQuiescedAt",
           checkpoint_turn_count AS "checkpointTurnCount",
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "checkpointStatus",
@@ -229,6 +240,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           requested_at AS "requestedAt",
           started_at AS "startedAt",
           completed_at AS "completedAt",
+          processing_quiesced_at AS "processingQuiescedAt",
           checkpoint_turn_count AS "checkpointTurnCount",
           checkpoint_ref AS "checkpointRef",
           checkpoint_status AS "checkpointStatus",
@@ -239,6 +251,73 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
           AND state = 'running'
         ORDER BY COALESCE(started_at, requested_at) DESC, requested_at DESC, turn_id DESC
         LIMIT 1
+      `,
+  });
+
+  const getLatestTerminalProjectionTurnByThreadId = SqlSchema.findOneOption({
+    Request: ListProjectionTurnsByThreadInput,
+    Result: ProjectionTurnByIdDbRowSchema,
+    execute: ({ threadId }) =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          pending_message_id AS "pendingMessageId",
+          assistant_message_id AS "assistantMessageId",
+          state,
+          requested_at AS "requestedAt",
+          started_at AS "startedAt",
+          completed_at AS "completedAt",
+          processing_quiesced_at AS "processingQuiescedAt",
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_ref AS "checkpointRef",
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_files_json AS "checkpointFiles"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id IS NOT NULL
+          AND state IN ('interrupted', 'completed', 'error')
+        ORDER BY COALESCE(completed_at, started_at, requested_at) DESC, turn_id DESC
+        LIMIT 1
+      `,
+  });
+
+  const listTerminalUnquiescedRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: ProjectionTurnByIdDbRowSchema,
+    execute: () =>
+      sql`
+        SELECT
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          pending_message_id AS "pendingMessageId",
+          assistant_message_id AS "assistantMessageId",
+          state,
+          requested_at AS "requestedAt",
+          started_at AS "startedAt",
+          completed_at AS "completedAt",
+          processing_quiesced_at AS "processingQuiescedAt",
+          checkpoint_turn_count AS "checkpointTurnCount",
+          checkpoint_ref AS "checkpointRef",
+          checkpoint_status AS "checkpointStatus",
+          checkpoint_files_json AS "checkpointFiles"
+        FROM projection_turns
+        WHERE turn_id IS NOT NULL
+          AND state IN ('interrupted', 'completed', 'error')
+          AND processing_quiesced_at IS NULL
+        ORDER BY COALESCE(completed_at, started_at, requested_at) ASC
+      `,
+  });
+
+  const markProcessingQuiescedRow = SqlSchema.void({
+    Request: MarkProjectionTurnProcessingQuiescedInput,
+    execute: ({ threadId, turnId, processingQuiescedAt }) =>
+      sql`
+        UPDATE projection_turns
+        SET processing_quiesced_at = COALESCE(processing_quiesced_at, ${processingQuiescedAt})
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+          AND state IN ('interrupted', 'completed', 'error')
       `,
   });
 
@@ -356,6 +435,37 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       ),
     );
 
+  const getLatestTerminalByThreadId: ProjectionTurnRepositoryShape["getLatestTerminalByThreadId"] =
+    (input) =>
+      getLatestTerminalProjectionTurnByThreadId(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionTurnRepository.getLatestTerminalByThreadId:query",
+            "ProjectionTurnRepository.getLatestTerminalByThreadId:decodeRow",
+          ),
+        ),
+      );
+
+  const listTerminalUnquiesced: ProjectionTurnRepositoryShape["listTerminalUnquiesced"] =
+    listTerminalUnquiescedRows(undefined).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionTurnRepository.listTerminalUnquiesced:query",
+          "ProjectionTurnRepository.listTerminalUnquiesced:decodeRows",
+        ),
+      ),
+    );
+
+  const markProcessingQuiesced: ProjectionTurnRepositoryShape["markProcessingQuiesced"] = (input) =>
+    markProcessingQuiescedRow(input).pipe(
+      Effect.mapError(
+        toPersistenceSqlOrDecodeError(
+          "ProjectionTurnRepository.markProcessingQuiesced:query",
+          "ProjectionTurnRepository.markProcessingQuiesced:encodeRequest",
+        ),
+      ),
+    );
+
   const clearCheckpointTurnConflict: ProjectionTurnRepositoryShape["clearCheckpointTurnConflict"] =
     (input) =>
       clearCheckpointTurnConflictRow(input).pipe(
@@ -376,6 +486,9 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     deletePendingTurnStartByThreadId,
     listByThreadId,
     getLatestRunningByThreadId,
+    getLatestTerminalByThreadId,
+    listTerminalUnquiesced,
+    markProcessingQuiesced,
     getByTurnId,
     clearCheckpointTurnConflict,
     deleteByThreadId,

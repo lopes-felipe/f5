@@ -14,7 +14,6 @@ import {
   type ProjectScript,
   type ModelSlug,
   type ModelSelection,
-  type NextTurnQueueSnapshot,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
@@ -212,6 +211,7 @@ import {
 } from "../lib/normalizeFilePathForDiff";
 import {
   appendTerminalContextsToPrompt,
+  deriveDisplayedUserMessageState,
   insertInlineTerminalContextPlaceholder,
   removeInlineTerminalContextPlaceholder,
   type TerminalContextDraft,
@@ -233,7 +233,9 @@ import { type ImageAttachmentActionItem } from "./chat/imageAttachmentActions";
 import { type ImageAttachmentAction } from "./chat/useImageAttachmentActions";
 import { useImageAttachmentActions } from "./chat/useImageAttachmentActions";
 import { ProviderInstanceModelPicker } from "./chat/ProviderInstanceModelPicker";
-import { NextTurnQueuePanel, type OptimisticQueuedTurn } from "./chat/NextTurnQueuePanel";
+import { NextTurnQueuePanel } from "./chat/NextTurnQueuePanel";
+import { EMPTY_QUEUE_THREAD_STATE, useNextTurnQueueStore } from "../nextTurnQueueStore";
+import { ComposerSendControl } from "./chat/ComposerSendControl";
 import { ComposerCommandItem, ComposerCommandMenu } from "./chat/ComposerCommandMenu";
 import { ComposerPendingApprovalActions } from "./chat/ComposerPendingApprovalActions";
 import {
@@ -287,11 +289,10 @@ import {
 import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { ThreadDetailsLoadingState } from "./StartupLoadingState";
 import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
+import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "../lib/composerSendText";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
-const IMAGE_ONLY_BOOTSTRAP_PROMPT =
-  "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]";
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_COMMAND_EXECUTIONS: OrchestrationCommandExecutionSummary[] = [];
 const EMPTY_TASKS: ThreadTaskItem[] = [];
@@ -303,6 +304,7 @@ const EMPTY_PROVIDER_MODELS: ServerProvider["models"] = [];
 const EMPTY_PENDING_USER_INPUT_ANSWERS: Record<string, PendingUserInputDraftAnswer> = {};
 const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
+type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 const SCRIPT_TERMINAL_ROWS = 30;
 
 function isComposerKeyboardEventComposing(event: KeyboardEvent): boolean {
@@ -628,6 +630,9 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
 }
 
 export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewProps) {
+  const nextTurnQueueState = useNextTurnQueueStore(
+    (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
+  );
   const threads = useStore((store) => store.threads);
   const projects = useStore((store) => store.projects);
   const planningWorkflows = useStore((store) => store.planningWorkflows);
@@ -725,11 +730,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     showImageActionMenu,
   } = useImageAttachmentActions(threadId);
   const [optimisticUserMessages, setOptimisticUserMessages] = useState<ChatMessage[]>([]);
-  const [optimisticQueuedTurn, setOptimisticQueuedTurn] = useState<OptimisticQueuedTurn | null>(
-    null,
-  );
-  const [nextTurnQueueSnapshotHint, setNextTurnQueueSnapshotHint] =
-    useState<NextTurnQueueSnapshot | null>(null);
   const optimisticUserMessagesRef = useRef(optimisticUserMessages);
   optimisticUserMessagesRef.current = optimisticUserMessages;
   const composerFilePathsRef = useRef<string[]>(composerFilePaths);
@@ -801,6 +801,9 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const isAtEndRef = useRef(true);
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
   const composerFormRef = useRef<HTMLFormElement>(null);
+  const onSendRef = useRef<
+    ((event?: { preventDefault: () => void }, intent?: SendIntent) => Promise<void>) | null
+  >(null);
   const composerImagesRef = useRef<ComposerImageAttachment[]>([]);
   const composerSelectLockRef = useRef(false);
   const composerMenuOpenRef = useRef(false);
@@ -3268,6 +3271,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       localDispatch: ReturnType<typeof createLocalDispatchSnapshot>;
       failureMessage: string;
       onNonTransportFailure?: (message: string, rollback: PendingTurnDispatchRollback) => void;
+      onStarted?: () => void;
+      onQueued?: () => void;
+      intent?: SendIntent;
+      interruptActiveForSendNow?: boolean;
     }) => {
       const existingPending = pendingTurnDispatchRef.current;
       if (existingPending?.commandId === input.command.commandId) {
@@ -3287,7 +3294,49 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       }
 
       try {
-        const result = await input.api.orchestration.dispatchCommand(input.command);
+        if (!input.command.bootstrap) {
+          useNextTurnQueueStore.getState().addOptimistic({
+            submissionId: input.command.commandId,
+            threadId: input.command.threadId,
+            text: deriveDisplayedUserMessageState(input.command.message.text).visibleText,
+            createdAtMs: Date.now(),
+          });
+        }
+        const result = input.command.bootstrap
+          ? await input.api.orchestration.dispatchCommand(input.command)
+          : await input.api.nextTurnQueue
+              .submit({
+                submissionId: input.command.commandId,
+                command: input.command,
+                intent: input.intent === "send-now" ? "queue-head" : (input.intent ?? "auto"),
+              })
+              .then(async (submission) => {
+                if (submission.disposition === "queued") {
+                  const snapshot =
+                    input.intent === "send-now"
+                      ? await input.api.nextTurnQueue.promote({
+                          itemId: submission.itemId,
+                          interruptActive: input.interruptActiveForSendNow ?? false,
+                          expectedRevision: submission.snapshot.revision,
+                        })
+                      : submission.snapshot;
+                  useNextTurnQueueStore.getState().applySnapshot(snapshot);
+                  clearPendingTurnDispatch({ commandId: input.command.commandId });
+                  input.onQueued?.();
+                  return null;
+                }
+                if (submission.disposition !== "started") {
+                  throw new Error(submission.detail ?? "The turn was not accepted.");
+                }
+                return { sequence: submission.sequence };
+              });
+        if (result === null) {
+          return { ok: true as const, disposition: "queued" as const };
+        }
+        useNextTurnQueueStore
+          .getState()
+          .removeOptimistic(input.command.threadId, input.command.commandId);
+        input.onStarted?.();
         updateStorePendingTurnDispatch(input.command.threadId, (current) => {
           if (!current || current.commandId !== input.command.commandId) {
             return current;
@@ -3297,7 +3346,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             acceptedSequence: result.sequence,
           };
         });
-        return { ok: true as const };
+        return { ok: true as const, disposition: "started" as const };
       } catch (error) {
         const message = error instanceof Error ? error.message : input.failureMessage;
         if (isTransportConnectionErrorMessage(message)) {
@@ -3311,11 +3360,18 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
               awaitingRecoveryAfterEpoch: recoveryEpoch,
             };
           });
-          setThreadError(input.command.threadId, message);
+          if (input.command.bootstrap) {
+            setThreadError(input.command.threadId, message);
+          } else {
+            toastManager.add({ type: "error", title: message });
+          }
           return { ok: false as const, transportFailure: true as const };
         }
 
         clearPendingTurnDispatch({ commandId: input.command.commandId });
+        useNextTurnQueueStore
+          .getState()
+          .removeOptimistic(input.command.threadId, input.command.commandId);
         input.onNonTransportFailure?.(message, input.rollback);
         return { ok: false as const, transportFailure: false as const };
       }
@@ -3439,6 +3495,15 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
           dialogFocus,
         },
       });
+      if (command === "chat.queueTurn" || command === "chat.queueTurnNext") {
+        event.preventDefault();
+        event.stopPropagation();
+        void onSendRef.current?.(
+          undefined,
+          command === "chat.queueTurn" ? "queue-tail" : "queue-head",
+        );
+        return;
+      }
       if (command !== "chat.scrollToBottom") return;
 
       const composerForm = composerFormRef.current;
@@ -3846,7 +3911,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     setThreadError,
   ]);
 
-  const onSend = async (e?: { preventDefault: () => void }) => {
+  const onSend = async (e?: { preventDefault: () => void }, intent: SendIntent = "auto") => {
     e?.preventDefault();
     const api = readNativeApi();
     if (
@@ -3922,7 +3987,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
-    const shouldQueueTurn = phase === "running";
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
@@ -3993,7 +4057,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       composerFilePathsSnapshot,
     );
     const messageIdForSend = newMessageId();
-    const queueItemIdForSend = shouldQueueTurn ? newCommandId() : null;
     const messageCreatedAt = new Date().toISOString();
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const inputLengthIssue = getProviderTurnInputLengthIssue(outgoingMessageText);
@@ -4026,32 +4089,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       previewUrl: image.previewUrl,
       sourceBlob: image.file,
     }));
-    // Let the list preserve the current viewport across optimistic sends.
-    // Manual pin-to-end here scrolls historical file-change rows out of view
-    // right when the next user message is appended.
-    setOptimisticUserMessages((existing) => [
-      ...existing,
-      {
-        id: messageIdForSend,
-        role: "user",
-        text: messageTextForSend,
-        ...(skillCall !== undefined ? { skillCall } : {}),
-        ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
-        createdAt: messageCreatedAt,
-        streaming: false,
-      },
-    ]);
-    if (queueItemIdForSend) {
-      setOptimisticQueuedTurn({
-        itemId: queueItemIdForSend,
-        threadId: threadIdForSend,
-        text: messageTextForSend || "Message with attachments",
-        ...(selectedModel ? { model: selectedModel } : {}),
-        interactionMode,
-        runtimeMode,
-      });
-    }
-
     setThreadError(threadIdForSend, null);
     if (expiredTerminalContextCount > 0) {
       const toastCopy = buildExpiredTerminalContextToastCopy(
@@ -4075,15 +4112,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       failureRollback: PendingTurnDispatchRollback,
     ) => {
       removeOptimisticMessage(messageIdForSend);
-      if (queueItemIdForSend) {
-        setOptimisticQueuedTurn((current) =>
-          current?.itemId === queueItemIdForSend ? null : current,
-        );
-      }
       if (composerMatchesClearedState()) {
         restoreComposerRollback(failureRollback);
       }
-      setThreadError(threadIdForSend, message);
+      toastManager.add({ type: "error", title: message });
     };
 
     try {
@@ -4104,17 +4136,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         },
         baseBranchForWorktree,
       });
-
-      if (isServerThread && !shouldQueueTurn) {
-        await persistThreadSettingsForNextTurn({
-          threadId: threadIdForSend,
-          createdAt: messageCreatedAt,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          modelSelection: selectedModelSelectionForDispatch,
-          runtimeMode,
-          interactionMode,
-        });
-      }
 
       const turnAttachments = await turnAttachmentsPromise;
       const command: PendingTurnStartCommand = {
@@ -4144,26 +4165,24 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         ...(bootstrap ? { bootstrap } : {}),
         createdAt: messageCreatedAt,
       };
-      if (shouldQueueTurn) {
-        if (command.bootstrap) {
-          throw new Error("Finish starting this thread before queueing another turn.");
-        }
-        if (!queueItemIdForSend) {
-          throw new Error("Failed to prepare the queued turn.");
-        }
-        const nextQueueSnapshot = await api.nextTurnQueue.enqueue({
-          itemId: queueItemIdForSend,
-          command,
-        });
-        setNextTurnQueueSnapshotHint(nextQueueSnapshot);
-        setOptimisticQueuedTurn((current) =>
-          current?.itemId === queueItemIdForSend ? null : current,
-        );
-        removeOptimisticMessage(messageIdForSend);
-        toastManager.add({ type: "success", title: "Turn added to the queue." });
-        return;
-      }
       const localDispatch = createLocalDispatchSnapshot(activeThread, { preparingWorktree });
+      const addOptimisticTimelineMessage = () => {
+        setOptimisticUserMessages((existing) => [
+          ...existing.filter((message) => message.id !== messageIdForSend),
+          {
+            id: messageIdForSend,
+            role: "user",
+            text: messageTextForSend,
+            ...(skillCall !== undefined ? { skillCall } : {}),
+            ...(optimisticAttachments.length > 0 ? { attachments: optimisticAttachments } : {}),
+            createdAt: messageCreatedAt,
+            streaming: false,
+          },
+        ]);
+      };
+      // Bootstrap turns do not pass through durable queue admission, so keep
+      // their existing optimistic timeline behavior while the direct RPC is in flight.
+      if (bootstrap) addOptimisticTimelineMessage();
       await dispatchPendingTurnStartCommand({
         api,
         command,
@@ -4171,7 +4190,17 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         preparingWorktree,
         localDispatch,
         failureMessage: "Failed to send message.",
+        intent,
+        interruptActiveForSendNow: intent === "send-now" && phase === "running",
         onNonTransportFailure: restoreDraftAfterFailure,
+        onStarted: () => {
+          // Add the timeline bubble only after durable admission reports that
+          // this turn actually started. Queued turns belong in the queue panel.
+          if (!bootstrap) addOptimisticTimelineMessage();
+        },
+        onQueued: () => {
+          toastManager.add({ type: "success", title: "Turn added to the queue." });
+        },
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to send message.";
@@ -4180,6 +4209,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       sendInFlightRef.current = false;
     }
   };
+  onSendRef.current = onSend;
 
   const onInterrupt = async () => {
     const api = readNativeApi();
@@ -4412,19 +4442,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
 
       sendInFlightRef.current = true;
       setThreadError(threadIdForSend, null);
-      // Let the list preserve the current viewport across optimistic follow-up
-      // sends instead of forcing the tail into view immediately.
-      setOptimisticUserMessages((existing) => [
-        ...existing,
-        {
-          id: messageIdForSend,
-          role: "user",
-          text: outgoingMessageText,
-          ...(skillCall !== undefined ? { skillCall } : {}),
-          createdAt: messageCreatedAt,
-          streaming: false,
-        },
-      ]);
 
       promptRef.current = "";
       clearComposerDraftContent(threadIdForSend);
@@ -4433,15 +4450,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       setComposerTrigger(null);
 
       try {
-        await persistThreadSettingsForNextTurn({
-          threadId: threadIdForSend,
-          createdAt: messageCreatedAt,
-          ...(selectedModel ? { model: selectedModel } : {}),
-          modelSelection: selectedModelSelectionForDispatch,
-          runtimeMode,
-          interactionMode: nextInteractionMode,
-        });
-
         // Keep the mode toggle and plan-follow-up banner in sync immediately
         // while the same-thread implementation turn is starting.
         setComposerDraftInteractionMode(threadIdForSend, nextInteractionMode);
@@ -4487,6 +4495,22 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
           preparingWorktree: false,
           localDispatch,
           failureMessage: "Failed to send plan follow-up.",
+          onStarted: () => {
+            setOptimisticUserMessages((existing) => [
+              ...existing,
+              {
+                id: messageIdForSend,
+                role: "user",
+                text: outgoingMessageText,
+                ...(skillCall !== undefined ? { skillCall } : {}),
+                createdAt: messageCreatedAt,
+                streaming: false,
+              },
+            ]);
+          },
+          onQueued: () => {
+            toastManager.add({ type: "success", title: "Plan follow-up added to the queue." });
+          },
           onNonTransportFailure: (message, failureRollback) => {
             removeOptimisticMessage(messageIdForSend);
             if (composerMatchesClearedState()) {
@@ -4732,6 +4756,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             })
           : pending.localDispatch,
         failureMessage: "Failed to retry send.",
+        onQueued: () => {
+          removeOptimisticMessage(pending.optimisticMessageId);
+          toastManager.add({ type: "success", title: "Turn recovered in the queue." });
+        },
         onNonTransportFailure: (message, failureRollback) => {
           removeOptimisticMessage(pending.optimisticMessageId);
           if (composerMatchesClearedState()) {
@@ -4744,7 +4772,11 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
               });
             }
           }
-          setThreadError(artifacts.command.threadId, message);
+          if (artifacts.command.bootstrap) {
+            setThreadError(artifacts.command.threadId, message);
+          } else {
+            toastManager.add({ type: "error", title: message });
+          }
         },
       });
     } finally {
@@ -5434,8 +5466,9 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                 {isServerThread ? (
                   <NextTurnQueuePanel
                     threadId={activeThread.id}
-                    optimisticItem={optimisticQueuedTurn}
-                    snapshotHint={nextTurnQueueSnapshotHint}
+                    provider={selectedProvider}
+                    runtimeSlashCommands={latestConfiguredRuntimeActivity?.slashCommands}
+                    projectSkills={activeProject?.skills}
                   />
                 ) : null}
                 <form
@@ -5915,33 +5948,26 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                               </Button>
                             </div>
                           ) : phase === "running" ? (
-                            <div className="flex items-center gap-1.5">
-                              <Button
-                                type="submit"
-                                size="sm"
-                                variant="outline"
-                                className="rounded-full"
-                                disabled={!composerSendState.hasSendableContent}
-                              >
-                                Queue
-                              </Button>
-                              <button
-                                type="button"
-                                className="flex size-8 cursor-pointer items-center justify-center rounded-full bg-rose-500/90 text-white transition-all duration-150 hover:bg-rose-500 hover:scale-105 sm:h-8 sm:w-8"
-                                onClick={() => void onInterrupt()}
-                                aria-label="Stop generation"
-                              >
-                                <svg
-                                  width="12"
-                                  height="12"
-                                  viewBox="0 0 12 12"
-                                  fill="currentColor"
-                                  aria-hidden="true"
-                                >
-                                  <rect x="2" y="2" width="8" height="8" rx="1.5" />
-                                </svg>
-                              </button>
-                            </div>
+                            <ComposerSendControl
+                              running
+                              hasSendableContent={composerSendState.hasSendableContent}
+                              dispatchBlocked={isPendingTurnDispatchBlocked}
+                              connecting={isConnecting}
+                              busy={isSendBusy}
+                              paused={nextTurnQueueState.snapshot?.paused ?? false}
+                              runnableQueueCount={
+                                nextTurnQueueState.snapshot?.paused
+                                  ? 0
+                                  : (nextTurnQueueState.snapshot?.items.filter(
+                                      (item) => item.status !== "failed",
+                                    ).length ?? 0)
+                              }
+                              itemCount={nextTurnQueueState.snapshot?.items.length ?? 0}
+                              maxItems={nextTurnQueueState.snapshot?.maxItems ?? 20}
+                              serverThread={isServerThread}
+                              onIntent={(intent) => void onSend(undefined, intent)}
+                              onInterrupt={() => void onInterrupt()}
+                            />
                           ) : pendingUserInputs.length === 0 ? (
                             showPlanFollowUpPrompt ? (
                               prompt.trim().length > 0 ? (
@@ -6006,61 +6032,26 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                 </>
                               )
                             ) : (
-                              <button
-                                type="submit"
-                                className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8"
-                                disabled={
-                                  isPendingTurnDispatchBlocked ||
-                                  isConnecting ||
-                                  !composerSendState.hasSendableContent
+                              <ComposerSendControl
+                                running={false}
+                                hasSendableContent={composerSendState.hasSendableContent}
+                                dispatchBlocked={isPendingTurnDispatchBlocked}
+                                connecting={isConnecting}
+                                busy={isSendBusy || isPreparingWorktree}
+                                paused={nextTurnQueueState.snapshot?.paused ?? false}
+                                runnableQueueCount={
+                                  nextTurnQueueState.snapshot?.paused
+                                    ? 0
+                                    : (nextTurnQueueState.snapshot?.items.filter(
+                                        (item) => item.status !== "failed",
+                                      ).length ?? 0)
                                 }
-                                aria-label={
-                                  isConnecting
-                                    ? "Connecting"
-                                    : isPreparingWorktree
-                                      ? "Preparing worktree"
-                                      : isSendBusy
-                                        ? "Sending"
-                                        : "Send message"
-                                }
-                              >
-                                {isConnecting || isSendBusy ? (
-                                  <svg
-                                    width="14"
-                                    height="14"
-                                    viewBox="0 0 14 14"
-                                    fill="none"
-                                    className="animate-spin"
-                                    aria-hidden="true"
-                                  >
-                                    <circle
-                                      cx="7"
-                                      cy="7"
-                                      r="5.5"
-                                      stroke="currentColor"
-                                      strokeWidth="1.5"
-                                      strokeLinecap="round"
-                                      strokeDasharray="20 12"
-                                    />
-                                  </svg>
-                                ) : (
-                                  <svg
-                                    width="14"
-                                    height="14"
-                                    viewBox="0 0 14 14"
-                                    fill="none"
-                                    aria-hidden="true"
-                                  >
-                                    <path
-                                      d="M7 11.5V2.5M7 2.5L3 6.5M7 2.5L11 6.5"
-                                      stroke="currentColor"
-                                      strokeWidth="1.8"
-                                      strokeLinecap="round"
-                                      strokeLinejoin="round"
-                                    />
-                                  </svg>
-                                )}
-                              </button>
+                                itemCount={nextTurnQueueState.snapshot?.items.length ?? 0}
+                                maxItems={nextTurnQueueState.snapshot?.maxItems ?? 20}
+                                serverThread={isServerThread}
+                                onIntent={(intent) => void onSend(undefined, intent)}
+                                onInterrupt={() => void onInterrupt()}
+                              />
                             )
                           ) : null}
                         </div>

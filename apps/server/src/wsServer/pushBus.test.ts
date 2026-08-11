@@ -68,12 +68,24 @@ describe("makeServerPushBus", () => {
     const first = pushCoalescingKey(WS_CHANNELS.nextTurnQueueUpdated, {
       threadId: ThreadId.makeUnsafe("thread-a"),
       items: [],
-      blockedReason: null,
+      revision: 1,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
     });
     const second = pushCoalescingKey(WS_CHANNELS.nextTurnQueueUpdated, {
       threadId: ThreadId.makeUnsafe("thread-b"),
       items: [],
-      blockedReason: null,
+      revision: 1,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
     });
 
     expect(first).not.toBe(second);

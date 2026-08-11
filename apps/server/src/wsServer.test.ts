@@ -1292,6 +1292,9 @@ describe("WebSocket Server", () => {
       const providerCommandReactorModule = await vi.importActual<
         typeof import("./orchestration/Services/ProviderCommandReactor.ts")
       >("./orchestration/Services/ProviderCommandReactor.ts");
+      const providerTurnDeliveryWorkerModule = await vi.importActual<
+        typeof import("./orchestration/Services/ProviderTurnDeliveryWorker.ts")
+      >("./orchestration/Services/ProviderTurnDeliveryWorker.ts");
       const workflowServiceModule = await vi.importActual<
         typeof import("./orchestration/Services/WorkflowService.ts")
       >("./orchestration/Services/WorkflowService.ts");
@@ -1310,6 +1313,9 @@ describe("WebSocket Server", () => {
       const providerSessionReaperModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionReaper.ts")
       >("./provider/Services/ProviderSessionReaper.ts");
+      const nextTurnQueueDispatcherModule = await vi.importActual<
+        typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
+      >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
@@ -1325,6 +1331,7 @@ describe("WebSocket Server", () => {
           start: Effect.never,
         }),
         Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
+        Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {} as any),
         Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
           sweep: () => Effect.void,
           start: () => Effect.void,
@@ -1335,6 +1342,18 @@ describe("WebSocket Server", () => {
         Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+        Layer.succeed(nextTurnQueueDispatcherModule.NextTurnQueueDispatcher, {
+          start: Effect.void,
+          notify: () => Effect.void,
+          drain: Effect.void,
+          getSnapshot: () => Effect.die("unused queue snapshot"),
+          getSummary: Effect.succeed({ threads: [] }),
+          submitAndSettle: () => Effect.die("unused queue submission"),
+          promote: () => Effect.die("unused queue promote"),
+          refreshGate: () => Effect.die("unused queue refresh"),
+          changes: Stream.empty,
+          summaryChanges: Stream.empty,
+        } as any),
       );
       return {
         ...actual,
@@ -1453,6 +1472,9 @@ describe("WebSocket Server", () => {
       const providerCommandReactorModule = await vi.importActual<
         typeof import("./orchestration/Services/ProviderCommandReactor.ts")
       >("./orchestration/Services/ProviderCommandReactor.ts");
+      const providerTurnDeliveryWorkerModule = await vi.importActual<
+        typeof import("./orchestration/Services/ProviderTurnDeliveryWorker.ts")
+      >("./orchestration/Services/ProviderTurnDeliveryWorker.ts");
       const workflowServiceModule = await vi.importActual<
         typeof import("./orchestration/Services/WorkflowService.ts")
       >("./orchestration/Services/WorkflowService.ts");
@@ -1474,6 +1496,9 @@ describe("WebSocket Server", () => {
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
+      const nextTurnQueueDispatcherModule = await vi.importActual<
+        typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
+      >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
 
       const readModelThread: OrchestrationThread = {
         id: threadId,
@@ -1534,6 +1559,7 @@ describe("WebSocket Server", () => {
           start: Effect.void,
         }),
         Layer.succeed(providerCommandReactorModule.ProviderCommandReactor, {} as any),
+        Layer.succeed(providerTurnDeliveryWorkerModule.ProviderTurnDeliveryWorker, {} as any),
         Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
           sweep: () => Effect.void,
           start: () => Effect.void,
@@ -1557,6 +1583,18 @@ describe("WebSocket Server", () => {
         Layer.succeed(investigationWorkflowServiceModule.InvestigationWorkflowService, {} as any),
         Layer.succeed(projectSetupScriptRunnerModule.ProjectSetupScriptRunner, {} as any),
         Layer.succeed(storageMaintenanceModule.StorageMaintenance, {} as any),
+        Layer.succeed(nextTurnQueueDispatcherModule.NextTurnQueueDispatcher, {
+          start: Effect.void,
+          notify: () => Effect.void,
+          drain: Effect.void,
+          getSnapshot: () => Effect.die("unused queue snapshot"),
+          getSummary: Effect.succeed({ threads: [] }),
+          submitAndSettle: () => Effect.die("unused queue submission"),
+          promote: () => Effect.die("unused queue promote"),
+          refreshGate: () => Effect.die("unused queue refresh"),
+          changes: Stream.empty,
+          summaryChanges: Stream.empty,
+        } as any),
       );
 
       return {
@@ -1609,8 +1647,7 @@ describe("WebSocket Server", () => {
       }),
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(readThreadStarted).toBe(true);
+    await vi.waitFor(() => expect(readThreadStarted).toBe(true), { timeout: 1_000 });
   });
 
   it("logs outbound websocket push events in dev mode", async () => {
@@ -2288,6 +2325,162 @@ describe("WebSocket Server", () => {
     expect(thread?.messages).toEqual([]);
   });
 
+  it("rejects established-thread turn starts that bypass queue admission", async () => {
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const createdAt = new Date().toISOString();
+    const workspaceRoot = makeTempDir("t3code-ws-queue-admission-");
+    const projectResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-queue-admission-project",
+      projectId: "project-queue-admission",
+      title: "Queue Admission",
+      workspaceRoot,
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(projectResponse.error).toBeUndefined();
+    const threadResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.create",
+      commandId: "cmd-queue-admission-thread",
+      threadId: "thread-queue-admission",
+      projectId: "project-queue-admission",
+      title: "Queue Admission",
+      model: "gpt-5-codex",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      branch: null,
+      worktreePath: null,
+      createdAt,
+    });
+    expect(threadResponse.error).toBeUndefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.turn.start",
+      commandId: "cmd-queue-admission-turn",
+      dispatchSource: "next-turn-queue",
+      threadId: "thread-queue-admission",
+      message: {
+        messageId: "message-queue-admission-turn",
+        role: "user",
+        text: "must go through the queue",
+        attachments: [],
+      },
+      assistantDeliveryMode: "streaming",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      createdAt,
+    });
+
+    expect(response.result).toBeUndefined();
+    expect(response.error).toEqual(
+      expect.objectContaining({
+        code: "NextTurnQueueAdmissionRequired",
+        message: expect.stringContaining("nextTurnQueue.submit"),
+      }),
+    );
+  });
+
+  it("deduplicates concurrent attachment submissions without leaving losing ingress files", async () => {
+    const stateDir = makeTempDir("t3code-ws-queue-attachment-replay-");
+    const workspaceRoot = makeTempDir("t3code-ws-queue-attachment-workspace-");
+    server = await createTestServer({ cwd: workspaceRoot, stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const [secondWs] = await connectAndAwaitWelcome(port);
+    connections.push(secondWs);
+    const createdAt = new Date().toISOString();
+
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "cmd-attachment-replay-project",
+          projectId: "project-attachment-replay",
+          title: "Attachment Replay",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "thread.create",
+          commandId: "cmd-attachment-replay-thread",
+          threadId: "thread-attachment-replay",
+          projectId: "project-attachment-replay",
+          title: "Attachment Replay",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const input = {
+      submissionId: "submission-attachment-replay",
+      intent: "queue-tail",
+      command: {
+        type: "thread.turn.start",
+        commandId: "cmd-attachment-replay-turn",
+        threadId: "thread-attachment-replay",
+        message: {
+          messageId: "message-attachment-replay-turn",
+          role: "user",
+          text: "image",
+          attachments: [
+            {
+              type: "image",
+              name: "image.png",
+              mimeType: "image/png",
+              sizeBytes: 5,
+              dataUrl: "data:image/png;base64,aGVsbG8=",
+            },
+          ],
+        },
+        assistantDeliveryMode: "streaming",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        createdAt,
+      },
+    };
+    const [first, second] = await Promise.all([
+      sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, input),
+      sendRequest(secondWs, WS_METHODS.nextTurnQueueSubmit, input),
+    ]);
+    expect(first.error).toBeUndefined();
+    expect(second.error).toBeUndefined();
+    expect(first.result).toEqual(expect.objectContaining({ disposition: "queued" }));
+    expect(second.result).toEqual(expect.objectContaining({ disposition: "queued" }));
+
+    const snapshotResponse = await sendRequest(ws, WS_METHODS.nextTurnQueueList, {
+      threadId: "thread-attachment-replay",
+    });
+    const snapshot = snapshotResponse.result as {
+      items: Array<{ command: { message: { attachments: Array<{ id: string }> } } }>;
+    };
+    expect(snapshot.items).toHaveLength(1);
+    const attachmentId = snapshot.items[0]?.command.message.attachments[0]?.id;
+    expect(attachmentId).toBeTruthy();
+    const attachmentFiles = fs
+      .readdirSync(path.join(stateDir, "attachments"), { recursive: true })
+      .map(String)
+      .filter((entry) => entry.endsWith(".png"));
+    expect(attachmentFiles).toHaveLength(1);
+    expect(attachmentFiles[0]).toContain(attachmentId);
+  });
+
   it("keeps orchestration domain push behavior for provider runtime events", async () => {
     const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
     const emitRuntimeEvent = (event: ProviderRuntimeEvent) => {
@@ -2361,20 +2554,24 @@ describe("WebSocket Server", () => {
     });
     expect(createThreadResponse.error).toBeUndefined();
 
-    const startTurnResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
-      type: "thread.turn.start",
-      commandId: "cmd-ws-runtime-turn-start",
-      threadId: "thread-1",
-      message: {
-        messageId: "msg-ws-runtime-1",
-        role: "user",
-        text: "hello",
-        attachments: [],
+    const startTurnResponse = await sendRequest(ws, WS_METHODS.nextTurnQueueSubmit, {
+      submissionId: "submission-ws-runtime-turn-start",
+      intent: "auto",
+      command: {
+        type: "thread.turn.start",
+        commandId: "cmd-ws-runtime-turn-start",
+        threadId: "thread-1",
+        message: {
+          messageId: "msg-ws-runtime-1",
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        assistantDeliveryMode: "streaming",
+        runtimeMode: "approval-required",
+        interactionMode: "default",
+        createdAt,
       },
-      assistantDeliveryMode: "streaming",
-      runtimeMode: "approval-required",
-      interactionMode: "default",
-      createdAt,
     });
     expect(startTurnResponse.error).toBeUndefined();
 

@@ -52,6 +52,19 @@ export class OrchestrationCommandPreviouslyRejectedError extends Schema.TaggedEr
   }
 }
 
+export class ThreadTurnAlreadyActiveError extends Schema.TaggedErrorClass<ThreadTurnAlreadyActiveError>()(
+  "ThreadTurnAlreadyActiveError",
+  {
+    threadId: Schema.String,
+    activeTurnId: Schema.NullOr(Schema.String),
+    sessionStatus: Schema.NullOr(Schema.String),
+  },
+) {
+  override get message(): string {
+    return `Thread '${this.threadId}' already has an active turn.`;
+  }
+}
+
 export class OrchestrationProjectorDecodeError extends Schema.TaggedErrorClass<OrchestrationProjectorDecodeError>()(
   "OrchestrationProjectorDecodeError",
   {
@@ -82,6 +95,7 @@ export type OrchestrationDispatchError =
   | ProjectionRepositoryError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
+  | ThreadTurnAlreadyActiveError
   | OrchestrationProjectorDecodeError
   | OrchestrationListenerCallbackError;
 

@@ -26,7 +26,7 @@ export const TurnProcessingQuiescedReceipt = Schema.Struct({
   type: Schema.Literal("turn.processing.quiesced"),
   threadId: ThreadId,
   turnId: TurnId,
-  checkpointTurnCount: NonNegativeInt,
+  checkpointTurnCount: Schema.optional(NonNegativeInt),
   createdAt: IsoDateTime,
 });
 export type TurnProcessingQuiescedReceipt = typeof TurnProcessingQuiescedReceipt.Type;

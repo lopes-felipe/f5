@@ -21,10 +21,13 @@ import {
   FileIcon,
   FolderIcon,
   FolderPlusIcon,
+  ListOrderedIcon,
   MessageSquareIcon,
+  PauseCircleIcon,
   RocketIcon,
   SettingsIcon,
   SquarePenIcon,
+  Trash2Icon,
 } from "lucide-react";
 import {
   useCallback,
@@ -99,6 +102,7 @@ import {
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
 import { toastManager } from "./ui/toast";
+import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
@@ -226,6 +230,10 @@ function OpenCommandPaletteDialog() {
   const planningWorkflows = useStore((store) => store.planningWorkflows);
   const codeReviewWorkflows = useStore((store) => store.codeReviewWorkflows);
   const investigationWorkflows = useStore((store) => store.investigationWorkflows);
+  const queueSummary = useNextTurnQueueStore((store) => store.summary);
+  const activeQueueSnapshot = useNextTurnQueueStore((store) =>
+    activeThread ? (store.byThreadId[activeThread.id]?.snapshot ?? null) : null,
+  );
   const keybindings = useServerKeybindings();
   const [viewStack, setViewStack] = useState<CommandPaletteView[]>([]);
   const currentView = viewStack.at(-1) ?? null;
@@ -481,6 +489,16 @@ function OpenCommandPaletteDialog() {
     () => threads.filter((thread) => thread.archivedAt === null).toSorted(compareThreadsByActivity),
     [threads],
   );
+  const queuedCountByThreadId = useMemo(
+    () =>
+      new Map(
+        (queueSummary?.threads ?? []).map((entry) => [
+          entry.threadId,
+          entry.queuedCount + entry.dispatchingCount + entry.failedCount,
+        ]),
+      ),
+    [queueSummary],
+  );
 
   const allThreadItems = useMemo(
     () =>
@@ -488,6 +506,7 @@ function OpenCommandPaletteDialog() {
         threads: sortedActiveThreads,
         ...(activeThreadId ? { activeThreadId } : {}),
         projectTitleById,
+        queuedCountByThreadId,
         icon: <MessageSquareIcon className={ITEM_ICON_CLASS} />,
         runThread: async (thread) => {
           await navigate({
@@ -496,7 +515,7 @@ function OpenCommandPaletteDialog() {
           });
         },
       }),
-    [activeThreadId, navigate, projectTitleById, sortedActiveThreads],
+    [activeThreadId, navigate, projectTitleById, queuedCountByThreadId, sortedActiveThreads],
   );
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
 
@@ -729,6 +748,53 @@ function OpenCommandPaletteDialog() {
       openAddProjectFlow();
     },
   });
+
+  if (activeThread && activeQueueSnapshot && activeQueueSnapshot.items.length > 0) {
+    actionItems.push(
+      {
+        kind: "action",
+        value: "action:queue-toggle-pause",
+        searchTerms: ["queue", "pause", "resume", "next turns"],
+        title: activeQueueSnapshot.paused ? "Resume queued turns" : "Pause queued turns",
+        icon: <PauseCircleIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          const snapshot = await ensureNativeApi().nextTurnQueue.setPaused({
+            threadId: activeThread.id,
+            paused: !activeQueueSnapshot.paused,
+            expectedRevision: activeQueueSnapshot.revision,
+          });
+          useNextTurnQueueStore.getState().applySnapshot(snapshot);
+        },
+      },
+      {
+        kind: "action",
+        value: "action:queue-cancel-all",
+        searchTerms: ["queue", "cancel", "clear", "next turns"],
+        title: "Cancel all queued turns",
+        icon: <Trash2Icon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          const result = await ensureNativeApi().nextTurnQueue.clear({
+            threadId: activeThread.id,
+            scope: "all",
+            expectedRevision: activeQueueSnapshot.revision,
+          });
+          useNextTurnQueueStore.getState().applySnapshot(result.snapshot);
+        },
+      },
+      {
+        kind: "action",
+        value: "action:queue-focus",
+        searchTerms: ["queue", "focus", "show", "next turns"],
+        title: "Focus queued turns",
+        icon: <ListOrderedIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          const panel = document.getElementById("next-turn-queue-panel");
+          panel?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+          panel?.focus();
+        },
+      },
+    );
+  }
 
   actionItems.push({
     kind: "action",

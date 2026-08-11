@@ -144,11 +144,22 @@ import {
 } from "./prHub";
 import {
   NextTurnQueueCancelInput,
-  NextTurnQueueEnqueueInput,
+  NextTurnQueueClearInput,
+  NextTurnQueueDuplicateInput,
   NextTurnQueueListInput,
+  NextTurnQueuePromoteInput,
+  NextTurnQueueRefreshGateInput,
   NextTurnQueueReorderInput,
-  NextTurnQueueResumeInput,
+  NextTurnQueueRestoreInput,
+  NextTurnQueueRecheckDeliveryInput,
+  NextTurnQueueRetryDeliveryInput,
+  NextTurnQueueDiscardDeliveryInput,
+  NextTurnQueueRetryInput,
+  NextTurnQueueSetPausedInput,
   NextTurnQueueSnapshot,
+  NextTurnQueueSubmitInput,
+  NextTurnQueueSummary,
+  NextTurnQueueSummaryInput,
   NextTurnQueueUpdateInput,
 } from "./nextTurnQueue";
 import { GlobalSearchQueryInput } from "./globalSearch";
@@ -229,11 +240,21 @@ export const WS_METHODS = {
 
   // Durable per-thread next-turn queue
   nextTurnQueueList: "nextTurnQueue.list",
-  nextTurnQueueEnqueue: "nextTurnQueue.enqueue",
+  nextTurnQueueSubmit: "nextTurnQueue.submit",
+  nextTurnQueueSummary: "nextTurnQueue.summary",
   nextTurnQueueUpdate: "nextTurnQueue.update",
   nextTurnQueueCancel: "nextTurnQueue.cancel",
   nextTurnQueueReorder: "nextTurnQueue.reorder",
-  nextTurnQueueResume: "nextTurnQueue.resume",
+  nextTurnQueueRetry: "nextTurnQueue.retry",
+  nextTurnQueuePromote: "nextTurnQueue.promote",
+  nextTurnQueueSetPaused: "nextTurnQueue.setPaused",
+  nextTurnQueueDuplicate: "nextTurnQueue.duplicate",
+  nextTurnQueueRefreshGate: "nextTurnQueue.refreshGate",
+  nextTurnQueueClear: "nextTurnQueue.clear",
+  nextTurnQueueRestore: "nextTurnQueue.restore",
+  nextTurnQueueRecheckDelivery: "nextTurnQueue.recheckDelivery",
+  nextTurnQueueRetryDelivery: "nextTurnQueue.retryDelivery",
+  nextTurnQueueDiscardDelivery: "nextTurnQueue.discardDelivery",
 
   // Cross-project full-text search
   globalSearchQuery: "globalSearch.query",
@@ -275,6 +296,7 @@ export const WS_CHANNELS = {
   storageInvalidated: "storage.invalidated",
   storageCleanupProgress: "storage.cleanupProgress",
   nextTurnQueueUpdated: "nextTurnQueue.updated",
+  nextTurnQueueSummaryUpdated: "nextTurnQueue.summaryUpdated",
 } as const;
 
 // -- Tagged Union of all request body schemas ─────────────────────────
@@ -436,11 +458,21 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.storageCleanup, StorageCleanupRequest),
   tagRequestBody(WS_METHODS.storageCancelCleanup, StorageCancelCleanupRequest),
   tagRequestBody(WS_METHODS.nextTurnQueueList, NextTurnQueueListInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueEnqueue, NextTurnQueueEnqueueInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueSubmit, NextTurnQueueSubmitInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueSummary, NextTurnQueueSummaryInput),
   tagRequestBody(WS_METHODS.nextTurnQueueUpdate, NextTurnQueueUpdateInput),
   tagRequestBody(WS_METHODS.nextTurnQueueCancel, NextTurnQueueCancelInput),
   tagRequestBody(WS_METHODS.nextTurnQueueReorder, NextTurnQueueReorderInput),
-  tagRequestBody(WS_METHODS.nextTurnQueueResume, NextTurnQueueResumeInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueRetry, NextTurnQueueRetryInput),
+  tagRequestBody(WS_METHODS.nextTurnQueuePromote, NextTurnQueuePromoteInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueSetPaused, NextTurnQueueSetPausedInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueDuplicate, NextTurnQueueDuplicateInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueRefreshGate, NextTurnQueueRefreshGateInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueClear, NextTurnQueueClearInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueRestore, NextTurnQueueRestoreInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueRecheckDelivery, NextTurnQueueRecheckDeliveryInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueRetryDelivery, NextTurnQueueRetryDeliveryInput),
+  tagRequestBody(WS_METHODS.nextTurnQueueDiscardDelivery, NextTurnQueueDiscardDeliveryInput),
   tagRequestBody(WS_METHODS.globalSearchQuery, GlobalSearchQueryInput),
   tagRequestBody(WS_METHODS.workflowPlatformListTemplates, Schema.Struct({})),
   WorkflowPlatformCreateRunInput.mapMembers(
@@ -494,6 +526,7 @@ export const WebSocketResponse = Schema.Struct({
   error: Schema.optional(
     Schema.Struct({
       message: Schema.String,
+      code: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -524,6 +557,7 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.storageInvalidated]: StorageInvalidatedPayload;
   readonly [WS_CHANNELS.storageCleanupProgress]: StorageCleanupProgressPayload;
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
+  readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
   readonly [PR_HUB_WS_CHANNELS.snapshotUpdated]: typeof PrHubSnapshot.Type;
   readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisorySnapshot.Type;
@@ -586,6 +620,10 @@ export const WsPushNextTurnQueueUpdated = makeWsPushSchema(
   WS_CHANNELS.nextTurnQueueUpdated,
   NextTurnQueueSnapshot,
 );
+export const WsPushNextTurnQueueSummaryUpdated = makeWsPushSchema(
+  WS_CHANNELS.nextTurnQueueSummaryUpdated,
+  NextTurnQueueSummary,
+);
 export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
@@ -613,6 +651,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.storageInvalidated,
   WS_CHANNELS.storageCleanupProgress,
   WS_CHANNELS.nextTurnQueueUpdated,
+  WS_CHANNELS.nextTurnQueueSummaryUpdated,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   PR_HUB_WS_CHANNELS.snapshotUpdated,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
@@ -633,6 +672,7 @@ export const WsPush = Schema.Union([
   WsPushStorageInvalidated,
   WsPushStorageCleanupProgress,
   WsPushNextTurnQueueUpdated,
+  WsPushNextTurnQueueSummaryUpdated,
   WsPushOrchestrationDomainEvent,
   WsPushPrHubSnapshotUpdated,
   WsPushPrHubAdvisoriesUpdated,

@@ -113,6 +113,7 @@ export function buildThreadActionItems(input: {
   projectTitleById: ReadonlyMap<Project["id"], string>;
   icon: ReactNode;
   runThread: (thread: Thread) => Promise<void>;
+  queuedCountByThreadId?: ReadonlyMap<Thread["id"], number>;
   limit?: number;
 }): CommandPaletteActionItem[] {
   const sortedThreads = input.threads
@@ -133,6 +134,10 @@ export function buildThreadActionItems(input: {
     }
     if (thread.id === input.activeThreadId) {
       descriptionParts.push("Current thread");
+    }
+    const queuedCount = input.queuedCountByThreadId?.get(thread.id) ?? 0;
+    if (queuedCount > 0) {
+      descriptionParts.push(`${queuedCount} queued`);
     }
 
     return {

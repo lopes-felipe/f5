@@ -1,4 +1,4 @@
-import { Effect, Exit, Layer, ManagedRuntime, Scope } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { CheckpointReactor } from "../Services/CheckpointReactor.ts";
@@ -12,6 +12,8 @@ import { SessionNotesService } from "../Services/SessionNotesService.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
+import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
+import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -29,6 +31,36 @@ describe("OrchestrationReactor", () => {
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
         Layer.provideMerge(
+          Layer.succeed(ProviderTurnDeliveryWorker, {
+            start: Effect.sync(() => {
+              started.push("provider-turn-delivery-worker");
+            }),
+            drain: Effect.void,
+            outcomes: Stream.empty,
+            acknowledgeOutcome: () => Effect.void,
+            recheck: () => Effect.succeed(null),
+            retry: () => Effect.die("unsupported"),
+            discard: () => Effect.die("unsupported"),
+          }),
+        ),
+        Layer.provideMerge(
+          Layer.succeed(NextTurnQueueDispatcher, {
+            start: Effect.sync(() => {
+              started.push("next-turn-queue-dispatcher");
+            }),
+            notify: () => Effect.void,
+            drain: Effect.void,
+            submitAndSettle: () => Effect.die("unsupported"),
+            getSnapshot: () => Effect.die("unsupported"),
+            getSummary: Effect.die("unsupported"),
+            promote: () => Effect.die("unsupported"),
+            refreshGate: () => Effect.die("unsupported"),
+            handleDeliveryOutcome: () => Effect.void,
+            changes: Stream.empty,
+            summaryChanges: Stream.empty,
+          }),
+        ),
+        Layer.provideMerge(
           Layer.succeed(ProviderRuntimeIngestionService, {
             start: Effect.sync(() => {
               started.push("provider-runtime-ingestion");
@@ -42,6 +74,8 @@ describe("OrchestrationReactor", () => {
               started.push("provider-command-reactor");
             }),
             drain: Effect.void,
+            deliverTurnStart: () => Effect.die("unsupported"),
+            recordTurnStartFailure: () => Effect.void,
             applyMcpConfigToLiveSessions: (_input) =>
               Effect.die(new Error("unused in OrchestrationReactor tests")),
           }),
@@ -131,6 +165,7 @@ describe("OrchestrationReactor", () => {
     expect(started).toEqual([
       "provider-runtime-ingestion",
       "provider-command-reactor",
+      "provider-turn-delivery-worker",
       "checkpoint-reactor",
       "compaction-service",
       "project-skill-sync-service",
@@ -138,6 +173,7 @@ describe("OrchestrationReactor", () => {
       "workflow-service",
       "code-review-workflow-service",
       "investigation-workflow-service",
+      "next-turn-queue-dispatcher",
     ]);
 
     await Effect.runPromise(Scope.close(scope, Exit.void));

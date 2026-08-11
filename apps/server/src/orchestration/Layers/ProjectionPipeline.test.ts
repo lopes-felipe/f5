@@ -1296,6 +1296,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         Effect.gen(function* () {
           const projectionPipeline = yield* OrchestrationProjectionPipeline;
           const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
           const now = new Date().toISOString();
           const threadId = ThreadId.makeUnsafe("Thread Revert.Files");
           const keepAttachmentId = "thread-revert-files-00000000-0000-4000-8000-000000000001";
@@ -1473,6 +1474,32 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
             `${otherThreadAttachmentId}.png`,
           );
           fs.writeFileSync(otherThreadPath, Buffer.from("other"));
+          for (const attachment of [
+            {
+              attachmentId: keepAttachmentId,
+              ownerId: "message-keep",
+              finalPath: keepPath,
+            },
+            {
+              attachmentId: removeAttachmentId,
+              ownerId: "message-remove",
+              finalPath: removePath,
+            },
+          ]) {
+            yield* sql`
+              INSERT INTO attachments (
+                attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash,
+                staging_path, final_path, lifecycle, created_at, updated_at
+              ) VALUES (
+                ${attachment.attachmentId}, ${threadId}, 'image', 'test.png', 'image/png', 5,
+                'test-hash', NULL, ${attachment.finalPath}, 'ready', ${now}, ${now}
+              )
+            `;
+            yield* sql`
+              INSERT INTO attachment_owners (attachment_id, owner_kind, owner_id, created_at)
+              VALUES (${attachment.attachmentId}, 'message', ${attachment.ownerId}, ${now})
+            `;
+          }
           assert.equal(fs.existsSync(keepPath), true);
           assert.equal(fs.existsSync(removePath), true);
           assert.equal(fs.existsSync(otherThreadPath), true);
@@ -1504,7 +1531,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
     ),
   );
 
-  it.effect("removes thread attachment directory when thread is deleted", () =>
+  it.effect("removes only exactly-owned attachment files when a thread is deleted", () =>
     Effect.sync(() =>
       fs.mkdtempSync(path.join(os.tmpdir(), "t3-projection-attachments-delete-")),
     ).pipe(
@@ -1512,6 +1539,7 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
         Effect.gen(function* () {
           const projectionPipeline = yield* OrchestrationProjectionPipeline;
           const eventStore = yield* OrchestrationEventStore;
+          const sql = yield* SqlClient.SqlClient;
           const now = new Date().toISOString();
           const threadId = ThreadId.makeUnsafe("Thread Delete.Files");
           const attachmentId = "thread-delete-files-00000000-0000-4000-8000-000000000001";
@@ -1607,6 +1635,19 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           fs.mkdirSync(path.join(stateDir, "attachments"), { recursive: true });
           fs.writeFileSync(threadAttachmentPath, Buffer.from("delete"));
           fs.writeFileSync(otherThreadAttachmentPath, Buffer.from("other-thread"));
+          yield* sql`
+            INSERT INTO attachments (
+              attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash,
+              staging_path, final_path, lifecycle, created_at, updated_at
+            ) VALUES (
+              ${attachmentId}, ${threadId}, 'image', 'delete.png', 'image/png', 5,
+              'delete-hash', NULL, ${threadAttachmentPath}, 'ready', ${now}, ${now}
+            )
+          `;
+          yield* sql`
+            INSERT INTO attachment_owners (attachment_id, owner_kind, owner_id, created_at)
+            VALUES (${attachmentId}, 'message', 'message-delete-files', ${now})
+          `;
           assert.equal(fs.existsSync(threadAttachmentPath), true);
           assert.equal(fs.existsSync(otherThreadAttachmentPath), true);
 

@@ -500,6 +500,17 @@ describe("ProviderCommandReactor", () => {
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start.pipe(Scope.provide(scope)));
+    // Turn delivery is outbox-owned in production. These focused reactor tests
+    // bridge committed turn intents directly into the exposed delivery entrypoint.
+    await Effect.runPromise(
+      Stream.runForEach(engine.streamDomainEvents, (event) =>
+        event.type === "thread.turn-start-requested"
+          ? Effect.promise(() =>
+              runtime.runPromise(reactor.deliverTurnStart(event).pipe(Scope.provide(scope!))),
+            ).pipe(Effect.asVoid)
+          : Effect.void,
+      ).pipe(Effect.forkScoped, Scope.provide(scope)),
+    );
     const drain = () => Effect.runPromise(reactor.drain);
 
     await Effect.runPromise(
@@ -1748,6 +1759,7 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
     expect(harness.startSession.mock.calls[0]?.[1]).toMatchObject({
       provider: "claudeAgent",
       cwd: harness.workspaceRoot,

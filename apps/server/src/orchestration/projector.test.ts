@@ -539,6 +539,7 @@ describe("orchestration projector", () => {
       startedAt,
       completedAt: readyAt,
       assistantMessageId: null,
+      processingQuiescedAt: null,
     });
     expect(afterReady.threads[0]?.session?.status).toBe("ready");
   });
@@ -638,6 +639,7 @@ describe("orchestration projector", () => {
         startedAt,
         completedAt: terminalAt,
         assistantMessageId: null,
+        processingQuiescedAt: null,
       });
     }
   });
@@ -730,6 +732,7 @@ describe("orchestration projector", () => {
       startedAt,
       completedAt: null,
       assistantMessageId: "assistant-running-diff",
+      processingQuiescedAt: null,
     });
     expect(afterCheckpoint.threads[0]?.checkpoints).toHaveLength(1);
   });
@@ -849,6 +852,7 @@ describe("orchestration projector", () => {
       startedAt,
       completedAt: readyAt,
       assistantMessageId: "assistant-final",
+      processingQuiescedAt: null,
     });
   });
 

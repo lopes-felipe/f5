@@ -51,6 +51,8 @@ import {
   ThreadSessionSetPayload,
   ThreadTasksUpdatedPayload,
   ThreadTurnDiffCompletedPayload,
+  ThreadTurnProcessingQuiescedPayload,
+  ThreadTurnStartRequestedPayload,
   ThreadUnarchivedPayload,
 } from "./Schemas.ts";
 import {
@@ -629,6 +631,9 @@ export function projectEvent(
             projectId: payload.projectId,
             title: payload.title,
             model: payload.model,
+            ...(payload.modelSelection !== undefined
+              ? { modelSelection: payload.modelSelection }
+              : {}),
             runtimeMode: payload.runtimeMode,
             interactionMode: payload.interactionMode,
             branch: payload.branch,
@@ -685,6 +690,9 @@ export function projectEvent(
             threads: updateThread(nextBase.threads, payload.threadId, {
               ...(payload.title !== undefined ? { title: payload.title } : {}),
               ...(payload.model !== undefined ? { model: payload.model } : {}),
+              ...(payload.modelSelection !== undefined
+                ? { modelSelection: payload.modelSelection }
+                : {}),
               ...(payload.model !== undefined
                 ? {
                     modelContextWindowTokens: estimateModelContextWindowTokens(
@@ -866,6 +874,38 @@ export function projectEvent(
         };
       });
 
+    case "thread.turn-start-requested":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnStartRequestedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        if (payload.modelSelection === undefined && payload.model === undefined) {
+          return nextBase;
+        }
+        const currentThread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            ...(payload.model !== undefined ? { model: payload.model } : {}),
+            ...(payload.modelSelection !== undefined
+              ? { modelSelection: payload.modelSelection }
+              : {}),
+            ...(payload.model !== undefined
+              ? {
+                  modelContextWindowTokens: estimateModelContextWindowTokens(
+                    payload.model,
+                    threadProviderName(currentThread),
+                  ),
+                }
+              : {}),
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
     case "thread.tasks.updated":
       return decodeForEvent(ThreadTasksUpdatedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
@@ -988,6 +1028,7 @@ export function projectEvent(
                     ? (thread.latestTurn.startedAt ?? nextSession.updatedAt)
                     : nextSession.updatedAt,
                 completedAt: null,
+                processingQuiescedAt: null,
                 assistantMessageId:
                   thread.latestTurn?.turnId === nextSession.activeTurnId
                     ? thread.latestTurn.assistantMessageId
@@ -1115,6 +1156,10 @@ export function projectEvent(
                   ? (thread.latestTurn.startedAt ?? payload.completedAt)
                   : payload.completedAt,
               completedAt: payload.completedAt,
+              processingQuiescedAt:
+                thread.latestTurn?.turnId === payload.turnId
+                  ? thread.latestTurn.processingQuiescedAt
+                  : null,
               assistantMessageId: payload.assistantMessageId,
             };
 
@@ -1124,6 +1169,28 @@ export function projectEvent(
             checkpoints,
             latestTurn: nextLatestTurn,
             lastInteractionAt: event.occurredAt,
+            updatedAt: event.occurredAt,
+          }),
+        };
+      });
+
+    case "thread.turn-processing-quiesced":
+      return Effect.gen(function* () {
+        const payload = yield* decodeForEvent(
+          ThreadTurnProcessingQuiescedPayload,
+          event.payload,
+          event.type,
+          "payload",
+        );
+        const thread = nextBase.threads.find((entry) => entry.id === payload.threadId);
+        if (!thread?.latestTurn || thread.latestTurn.turnId !== payload.turnId) return nextBase;
+        return {
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            latestTurn: {
+              ...thread.latestTurn,
+              processingQuiescedAt: payload.processingQuiescedAt,
+            },
             updatedAt: event.occurredAt,
           }),
         };
@@ -1163,6 +1230,7 @@ export function projectEvent(
                   requestedAt: latestCheckpoint.completedAt,
                   startedAt: latestCheckpoint.completedAt,
                   completedAt: latestCheckpoint.completedAt,
+                  processingQuiescedAt: null,
                   assistantMessageId: latestCheckpoint.assistantMessageId,
                 };
           const session =

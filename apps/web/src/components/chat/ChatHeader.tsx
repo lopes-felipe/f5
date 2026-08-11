@@ -16,6 +16,7 @@ import { SidebarTrigger } from "../ui/sidebar";
 import { OpenInPicker } from "./OpenInPicker";
 import ContextWindowBadge from "./ContextWindowBadge";
 import ThinkingTokenBadge from "./ThinkingTokenBadge";
+import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
@@ -96,6 +97,7 @@ export const ChatHeader = memo(function ChatHeader({
         >
           {activeThreadTitle}
         </h2>
+        <ThreadQueueCountBadge threadId={activeThreadId} />
         {activeProjectName && (
           <Badge variant="outline" className="min-w-0 shrink truncate">
             {activeProjectName}

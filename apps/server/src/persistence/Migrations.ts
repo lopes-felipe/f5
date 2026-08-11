@@ -68,6 +68,12 @@ import Migration0053 from "./Migrations/053_PrHubAdvisories.ts";
 import Migration0054 from "./Migrations/054_NextTurnQueue.ts";
 import Migration0055 from "./Migrations/055_GlobalSearchFts.ts";
 import Migration0056 from "./Migrations/056_NextTurnQueueDispatchStartedAt.ts";
+import Migration0057 from "./Migrations/057_NextTurnQueueRebuild.ts";
+import Migration0058 from "./Migrations/058_TurnDeliveryDurability.ts";
+import Migration0059 from "./Migrations/059_QueueReviewHardening.ts";
+import Migration0060 from "./Migrations/060_NextTurnQueueSchemaRepair.ts";
+import Migration0061 from "./Migrations/061_TurnDurabilitySchemaRepair.ts";
+import Migration0062 from "./Migrations/062_LegacyTurnQuiescenceBackfill.ts";
 import { Effect } from "effect";
 
 /**
@@ -137,6 +143,12 @@ export const MIGRATIONS = {
   "54_NextTurnQueue": Migration0054,
   "55_GlobalSearchFts": Migration0055,
   "56_NextTurnQueueDispatchStartedAt": Migration0056,
+  "57_NextTurnQueueRebuild": Migration0057,
+  "58_TurnDeliveryDurability": Migration0058,
+  "59_QueueReviewHardening": Migration0059,
+  "60_NextTurnQueueSchemaRepair": Migration0060,
+  "61_TurnDurabilitySchemaRepair": Migration0061,
+  "62_LegacyTurnQuiescenceBackfill": Migration0062,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

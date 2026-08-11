@@ -673,6 +673,7 @@ export const OrchestrationLatestTurn = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  processingQuiescedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   assistantMessageId: Schema.NullOr(MessageId),
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
@@ -1027,6 +1028,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   ),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  dispatchSource: Schema.optional(Schema.Literal("next-turn-queue")),
   createdAt: IsoDateTime,
 });
 export type ThreadTurnStartCommand = typeof ThreadTurnStartCommand.Type;
@@ -1214,6 +1216,15 @@ const ThreadTurnDiffCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTurnProcessingQuiesceCommand = Schema.Struct({
+  type: Schema.Literal("thread.turn.processing.quiesce"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  turnId: TurnId,
+  processingQuiescedAt: IsoDateTime,
+  createdAt: IsoDateTime,
+});
+
 const ThreadActivityAppendCommand = Schema.Struct({
   type: Schema.Literal("thread.activity.append"),
   commandId: CommandId,
@@ -1306,6 +1317,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
   ThreadTurnDiffCompleteCommand,
+  ThreadTurnProcessingQuiesceCommand,
   ThreadActivityAppendCommand,
   ThreadTasksUpdateCommand,
   ThreadCompactedRecordCommand,
@@ -1361,6 +1373,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.session-set",
   "thread.proposed-plan-upserted",
   "thread.turn-diff-completed",
+  "thread.turn-processing-quiesced",
   "thread.activity-appended",
   "thread.tasks.updated",
   "thread.compact-requested",
@@ -1623,6 +1636,12 @@ export const ThreadTurnDiffCompletedPayload = Schema.Struct({
   completedAt: IsoDateTime,
 });
 
+export const ThreadTurnProcessingQuiescedPayload = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  processingQuiescedAt: IsoDateTime,
+});
+
 export const ThreadActivityAppendedPayload = Schema.Struct({
   threadId: ThreadId,
   activity: OrchestrationThreadActivity,
@@ -1873,6 +1892,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.turn-diff-completed"),
     payload: ThreadTurnDiffCompletedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.turn-processing-quiesced"),
+    payload: ThreadTurnProcessingQuiescedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -20,6 +20,8 @@ Both providers are fronted by a shared `ProviderAdapter` interface so the UI, or
 │  ServerPushBus (ordered pushes) │
 │  ServerReadiness (startup gate) │
 │  OrchestrationEngine            │
+│  NextTurnQueueDispatcher        │
+│  ProviderTurnDeliveryWorker     │
 │  ProviderService                │
 │  CheckpointReactor              │
 │  RuntimeReceiptBus              │
@@ -79,29 +81,43 @@ sequenceDiagram
     participant Browser
     participant Transport as WsTransport
     participant Server as wsServer
+    participant Queue as NextTurnQueueDispatcher
+    participant Engine as OrchestrationEngine
+    participant Delivery as ProviderTurnDeliveryWorker
     participant Provider as ProviderService
     participant ProviderProc as codex app-server / Claude Agent SDK
     participant Ingest as ProviderRuntimeIngestion
     participant Engine as OrchestrationEngine
     participant Push as ServerPushBus
 
-    Browser->>Transport: Send user action
-    Transport->>Server: Typed WebSocket request
-    Server->>Provider: Route request
+    Browser->>Transport: Submit user turn + intent
+    Transport->>Server: nextTurnQueue.submit
+    Server->>Queue: Persist submission and queue item
+    Queue->>Queue: Evaluate durable readiness gate
+    Queue->>Engine: Dispatch admitted queue head
+    Engine->>Engine: Commit message, pending barrier, receipt, delivery outbox
+    Delivery->>Provider: Replay pending provider delivery
     Provider->>ProviderProc: JSON-RPC / SDK call
     ProviderProc-->>Ingest: Provider runtime events
-    Ingest->>Engine: Normalize into orchestration events
+    Ingest->>Engine: Normalize provider events
     Engine-->>Server: Domain events
     Server->>Push: Publish orchestration.domainEvent
     Push-->>Browser: Typed push
 ```
 
-1. A user action in the browser becomes a typed request through [`WsTransport`][1] and the browser API layer in [`nativeApi`][12].
-2. [`wsServer`][3] decodes that request using the shared WebSocket contracts in [`ws.ts`][6] and routes it to the right service.
-3. [`ProviderService`][8] starts or resumes a session and routes the call through the adapter for the selected provider (Codex via `codex app-server` JSON-RPC over stdio, or Claude via the Claude Agent SDK).
-4. Provider-native events are pulled back into the server by [`ProviderRuntimeIngestion`][9], which converts them into orchestration events.
-5. [`OrchestrationEngine`][10] persists those events, updates the read model, and exposes them as domain events.
-6. [`wsServer`][3] pushes those updates to the browser through [`ServerPushBus`][5] on channels defined in [`orchestration.ts`][11].
+1. Every established-thread send uses `nextTurnQueue.submit`; the server persists an idempotent submission ledger row and queue item before deciding whether it can start.
+2. [`NextTurnQueueDispatcher`][17] serializes admission per thread, checks the SQL readiness barrier, and dispatches at most one queue head for each readiness event. Four stable shards allow unrelated threads to progress independently.
+3. [`OrchestrationEngine`][10] atomically commits the user message, pending-turn barrier, command receipt, effective turn settings, and a provider-delivery outbox row.
+4. [`ProviderTurnDeliveryWorker`][18] replays the outbox at startup, retries only delivery failures known not to have sent, and surfaces unknown outcomes instead of automatically risking a duplicate turn.
+5. [`ProviderService`][8] starts or resumes a session and routes the call through the selected provider adapter. Provider-native events return through [`ProviderRuntimeIngestion`][9].
+6. Terminal turns do not release the next queue item until [`CheckpointReactor`][14] durably records processing quiescence. A bounded timeout changes a missing marker into a visible paused state.
+7. [`wsServer`][3] pushes orchestration and queue snapshots through [`ServerPushBus`][5]. Queue
+   mutations carry monotonic per-thread revisions; clients also accept same-revision snapshots
+   when external gate state changes, and invalidate cached thread snapshots on reconnect.
+
+Queue attachments have explicit ingress, queue-item, and message owners. Files are deleted only
+after their final owner is removed; storage maintenance exposes ownerless files as a separate,
+safe cleanup category.
 
 ### Async completion flow
 
@@ -147,3 +163,5 @@ sequenceDiagram
 [14]: ../apps/server/src/orchestration/Layers/CheckpointReactor.ts
 [15]: ../apps/server/src/orchestration/Layers/RuntimeReceiptBus.ts
 [16]: ../packages/shared/src/DrainableWorker.ts
+[17]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueDispatcher.ts
+[18]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts

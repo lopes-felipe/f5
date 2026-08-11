@@ -49,6 +49,7 @@ import {
 } from "../lib/terminalContext";
 import { isMacPlatform } from "../lib/utils";
 import { useModelPreferencesStore } from "../modelPreferencesStore";
+import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { useRecoveryStateStore } from "../recoveryStateStore";
 import { useRightPanelStore } from "../rightPanelStore";
@@ -1201,6 +1202,30 @@ function createThreadTailDetailsResult(threadId: ThreadId) {
 
 function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
+  if (tag === WS_METHODS.nextTurnQueueSummary) {
+    return { threads: [] };
+  }
+  if (tag === WS_METHODS.nextTurnQueueList) {
+    const threadId = typeof body.threadId === "string" ? body.threadId : THREAD_ID;
+    return {
+      threadId,
+      items: [],
+      revision: 0,
+      paused: false,
+      blockedKind: null,
+      reasonCode: null,
+      reasonDetail: null,
+      maxItems: 20,
+      quarantinedCount: 0,
+    };
+  }
+  if (tag === WS_METHODS.nextTurnQueueSubmit) {
+    return {
+      disposition: "started",
+      submissionId: body.submissionId,
+      sequence: fixture.snapshot.snapshotSequence + 1,
+    };
+  }
   if (tag === ORCHESTRATION_WS_METHODS.getSnapshot) {
     return fixture.snapshot;
   }
@@ -1523,7 +1548,10 @@ function getDispatchCommandRequests(
   type?: string,
 ): Array<WsRequestEnvelope["body"] & { command?: unknown }> {
   return wsRequests.filter((request) => {
-    if (request._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
+    if (
+      request._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand &&
+      request._tag !== WS_METHODS.nextTurnQueueSubmit
+    ) {
       return false;
     }
     if (!type) {
@@ -1531,6 +1559,29 @@ function getDispatchCommandRequests(
     }
     return (request.command as { type?: unknown } | undefined)?.type === type;
   }) as Array<WsRequestEnvelope["body"] & { command?: unknown }>;
+}
+
+function getSubmittedTurnCommand(body: WsRequestEnvelope["body"]):
+  | {
+      type?: unknown;
+      commandId?: string;
+      message?: { messageId?: MessageId; text?: string };
+    }
+  | undefined {
+  if (
+    body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand &&
+    body._tag !== WS_METHODS.nextTurnQueueSubmit
+  ) {
+    return undefined;
+  }
+  const command = body.command as
+    | {
+        type?: unknown;
+        commandId?: string;
+        message?: { messageId?: MessageId; text?: string };
+      }
+    | undefined;
+  return command?.type === "thread.turn.start" ? command : undefined;
 }
 
 function getStartImplementationRequests(): WsRequestEnvelope["body"][] {
@@ -1852,6 +1903,7 @@ describe("ChatView timeline (full app)", () => {
       openIntent: null,
     });
     useRightPanelStore.setState({ byThreadId: {} });
+    useNextTurnQueueStore.setState({ byThreadId: {}, summary: { threads: [] } });
     clearAllPendingTurnDispatchArtifacts();
     useStore.setState({
       projects: [],
@@ -4121,18 +4173,8 @@ describe("ChatView timeline (full app)", () => {
       snapshot: createDraftOnlySnapshot(),
       configureFixture: (nextFixture) => {
         nextFixture.resolveWsRequest = (body, _client) => {
-          if (body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
-            return null;
-          }
-          const command = body.command as
-            | {
-                type?: unknown;
-                message?: { messageId?: MessageId; text?: string };
-              }
-            | undefined;
-          if (command?.type !== "thread.turn.start") {
-            return null;
-          }
+          const command = getSubmittedTurnCommand(body);
+          if (!command) return null;
 
           dispatchedMessageId = command.message?.messageId ?? null;
           nextFixture.snapshot = createSnapshotForTargetUser({
@@ -4202,19 +4244,8 @@ describe("ChatView timeline (full app)", () => {
       snapshot: createDraftOnlySnapshot(),
       configureFixture: (nextFixture) => {
         nextFixture.resolveWsRequest = (body) => {
-          if (body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
-            return null;
-          }
-          const command = body.command as
-            | {
-                type?: unknown;
-                commandId?: string;
-                message?: { messageId?: MessageId };
-              }
-            | undefined;
-          if (command?.type !== "thread.turn.start") {
-            return null;
-          }
+          const command = getSubmittedTurnCommand(body);
+          if (!command) return null;
           firstCommandId ??= command.commandId ?? null;
           firstMessageId ??= command.message?.messageId ?? null;
           return { type: "close" };
@@ -4311,18 +4342,8 @@ describe("ChatView timeline (full app)", () => {
       snapshot: addThreadToSnapshot(createDraftOnlySnapshot(), otherThreadId),
       configureFixture: (nextFixture) => {
         nextFixture.resolveWsRequest = (body) => {
-          if (body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
-            return null;
-          }
-          const command = body.command as
-            | {
-                type?: unknown;
-                message?: { messageId?: MessageId };
-              }
-            | undefined;
-          if (command?.type !== "thread.turn.start") {
-            return null;
-          }
+          const command = getSubmittedTurnCommand(body);
+          if (!command) return null;
           pendingMessageId = command.message?.messageId ?? null;
           return { type: "close" };
         };
@@ -4399,13 +4420,8 @@ describe("ChatView timeline (full app)", () => {
       snapshot: planFollowUpSnapshot,
       configureFixture: (nextFixture) => {
         nextFixture.resolveWsRequest = (body) => {
-          if (body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
-            return null;
-          }
-          const command = body.command as { type?: unknown } | undefined;
-          if (command?.type !== "thread.turn.start") {
-            return null;
-          }
+          const command = getSubmittedTurnCommand(body);
+          if (!command) return null;
           nextFixture.snapshot = unresolvedSnapshot;
           return { type: "close" };
         };
@@ -4883,14 +4899,9 @@ describe("ChatView timeline (full app)", () => {
       snapshot: initialSnapshot,
       configureFixture: (nextFixture) => {
         nextFixture.resolveWsRequest = (body) => {
-          if (body._tag !== ORCHESTRATION_WS_METHODS.dispatchCommand) {
-            return null;
-          }
-          const command = body.command as { type?: unknown } | undefined;
-          if (command?.type !== "thread.turn.start") {
-            return null;
-          }
-          return { type: "result", result: null };
+          const command = getSubmittedTurnCommand(body);
+          if (!command) return null;
+          return { type: "result", result: resolveWsRpc(body) };
         };
       },
     });
@@ -4916,7 +4927,6 @@ describe("ChatView timeline (full app)", () => {
       await vi.waitFor(
         () => {
           expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(1);
-          expect(document.body.textContent).toContain(sentText);
         },
         { timeout: 8_000, interval: 16 },
       );

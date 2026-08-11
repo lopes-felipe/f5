@@ -6,6 +6,11 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Durable per-thread next-turn queues with pause/resume, editing, reordering, run-now,
+  duplication, retry, bulk clear/undo, queue badges, keyboard shortcuts, and queue visibility
+  outside the active thread.
+- Crash-replayed provider turn delivery with Recheck/Retry/Discard recovery, durable
+  turn-processing quiescence, and explicit attachment ownership/cleanup records.
 - Claude Opus 5 support as the new Claude default (custom Claude binaries require Claude Code
   v2.1.220+).
 - Claude Fable 5 support (requires Claude Code v2.1.170+).
@@ -17,6 +22,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- **Breaking:** the old `nextTurnQueue.enqueue` and `nextTurnQueue.resume` WebSocket methods were
+  replaced by server-owned `nextTurnQueue.submit`, `nextTurnQueue.setPaused`, and the expanded
+  queue mutation API. Established-thread sends now always pass through durable admission.
 - Correct Claude Fast Mode availability: enabled for Opus 5 and Opus 4.8, and disabled for Opus
   4.7, 4.6, and 4.5.
 - **Breaking:** the web server now binds to `127.0.0.1` by default. Remote deployments must set an

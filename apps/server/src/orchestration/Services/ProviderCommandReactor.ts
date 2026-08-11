@@ -11,7 +11,14 @@ import type { Effect, Scope } from "effect";
 import type {
   McpApplyToLiveSessionsRequest,
   McpApplyToLiveSessionsResult,
+  OrchestrationEvent,
+  ProviderTurnStartResult,
 } from "@t3tools/contracts";
+
+export type ProviderTurnStartRequestedEvent = Extract<
+  OrchestrationEvent,
+  { type: "thread.turn-start-requested" }
+>;
 
 /**
  * ProviderCommandReactorShape - Service API for provider command reactors.
@@ -33,6 +40,15 @@ export interface ProviderCommandReactorShape {
    * Intended for test use to replace timing-sensitive sleeps.
    */
   readonly drain: Effect.Effect<void>;
+
+  readonly deliverTurnStart: (
+    event: ProviderTurnStartRequestedEvent,
+  ) => Effect.Effect<ProviderTurnStartResult | undefined, Error, Scope.Scope>;
+
+  readonly recordTurnStartFailure: (
+    event: ProviderTurnStartRequestedEvent,
+    detail: string,
+  ) => Effect.Effect<void, Error>;
 
   readonly applyMcpConfigToLiveSessions: (
     input: McpApplyToLiveSessionsRequest,

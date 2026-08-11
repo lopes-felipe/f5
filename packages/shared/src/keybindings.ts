@@ -31,6 +31,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
   { key: "mod+shift+n", command: "workflow.new", when: "!terminalFocus" },
   { key: "mod+enter", command: "chat.scrollToBottom", when: "!dialogFocus" },
+  { key: "mod+shift+enter", command: "chat.queueTurn", when: "!dialogFocus" },
+  { key: "alt+enter", command: "chat.queueTurnNext", when: "!dialogFocus" },
   { key: "mod+enter", command: "dialog.primaryAction", when: "dialogFocus" },
   { key: "mod+o", command: "editor.openFavorite" },
   { key: "ctrl+tab", command: "thread.switchRecentNext" },

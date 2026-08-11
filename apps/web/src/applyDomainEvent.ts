@@ -981,8 +981,20 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         : { ...detailGate.state, threads };
     }
 
-    case "thread.turn-start-requested":
-      return state;
+    case "thread.turn-start-requested": {
+      if (event.payload.model === undefined && event.payload.modelSelection === undefined) {
+        return state;
+      }
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
+        ...(event.payload.modelSelection !== undefined
+          ? { modelSelection: event.payload.modelSelection }
+          : {}),
+        updatedAt: event.occurredAt,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
 
     case "thread.turn-interrupt-requested": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
@@ -1262,6 +1274,23 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       return threads === detailGate.state.threads
         ? detailGate.state
         : { ...detailGate.state, threads };
+    }
+
+    case "thread.turn-processing-quiesced": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => {
+        if (!thread.latestTurn || thread.latestTurn.turnId !== event.payload.turnId) return thread;
+        if (thread.latestTurn.processingQuiescedAt === event.payload.processingQuiescedAt) {
+          return thread;
+        }
+        return {
+          ...thread,
+          latestTurn: {
+            ...thread.latestTurn,
+            processingQuiescedAt: event.payload.processingQuiescedAt,
+          },
+        };
+      });
+      return threads === state.threads ? state : { ...state, threads };
     }
 
     case "thread.activity-appended": {

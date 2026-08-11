@@ -1,0 +1,7 @@
+export const MAX_DISPATCH_ATTEMPTS = 6;
+export const DISPATCH_LEASE_TTL_MS = 10 * 60_000;
+export const STALE_PENDING_TURN_MS = 5 * 60_000;
+export const QUEUE_WORKER_SHARDS = 4;
+export const SUBMISSION_LEDGER_RETENTION_MS = 24 * 60 * 60_000;
+export const SOFT_DELETE_RETENTION_MS = 15 * 60_000;
+export const QUIESCENCE_WAIT_TIMEOUT_MS = 60_000;

@@ -12,6 +12,7 @@ import {
   type OrchestrationDispatchError,
   OrchestrationListenerCallbackError,
   OrchestrationProjectorDecodeError,
+  ThreadTurnAlreadyActiveError,
 } from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import {
@@ -67,10 +68,11 @@ export interface BootstrapTurnStartDependencies {
   readonly worktreesDir?: string | undefined;
 }
 
-function isDefinitelyUncommittedDispatchError(error: OrchestrationDispatchError): boolean {
+export function isDefinitelyUncommittedDispatchError(error: OrchestrationDispatchError): boolean {
   return (
     Schema.is(OrchestrationCommandInvariantError)(error) ||
-    Schema.is(OrchestrationCommandPreviouslyRejectedError)(error)
+    Schema.is(OrchestrationCommandPreviouslyRejectedError)(error) ||
+    Schema.is(ThreadTurnAlreadyActiveError)(error)
   );
 }
 
@@ -137,6 +139,9 @@ function withAppendedCleanupDetail(
       ...error,
       detail: `${error.detail}${suffix}`,
     });
+  }
+  if (Schema.is(ThreadTurnAlreadyActiveError)(error)) {
+    return new ThreadTurnAlreadyActiveError({ ...error });
   }
   if (Schema.is(OrchestrationProjectorDecodeError)(error)) {
     return new OrchestrationProjectorDecodeError({

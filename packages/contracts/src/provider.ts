@@ -4,6 +4,7 @@ import { ProviderModelOptions } from "./model";
 import { ProviderInstanceId } from "./providerInstance";
 import {
   ApprovalRequestId,
+  CommandId,
   EventId,
   IsoDateTime,
   ProjectId,
@@ -84,6 +85,7 @@ export type ProviderSessionStartInput = typeof ProviderSessionStartInput.Type;
 
 export const ProviderSendTurnInput = Schema.Struct({
   threadId: ThreadId,
+  deliveryId: Schema.optional(CommandId),
   input: Schema.optional(
     TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)),
   ),

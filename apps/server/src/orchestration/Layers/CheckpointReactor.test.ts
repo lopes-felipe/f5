@@ -29,6 +29,7 @@ import { RuntimeReceiptBusLive } from "./RuntimeReceiptBus.ts";
 import { OrchestrationEventStoreLive } from "../../persistence/Layers/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepositoryLive } from "../../persistence/Layers/OrchestrationCommandReceipts.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -364,6 +365,7 @@ describe("CheckpointReactor", () => {
     readonly projectWorkspaceRoot?: string;
     readonly threadWorktreePath?: string | null;
     readonly providerSessionCwd?: string;
+    readonly stallStartupQuiescence?: boolean;
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
@@ -386,6 +388,13 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(RuntimeReceiptBusLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(Layer.succeed(CheckpointStore, fakeCheckpointStore)),
+      Layer.provideMerge(
+        Layer.succeed(ProjectionTurnRepository, {
+          listTerminalUnquiesced: options?.stallStartupQuiescence
+            ? Effect.never
+            : Effect.succeed([]),
+        } as never),
+      ),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
       Layer.provideMerge(NodeServices.layer),
     );
@@ -456,6 +465,13 @@ describe("CheckpointReactor", () => {
       drain,
     };
   }
+
+  it("does not block readiness on startup quiescence recovery", async () => {
+    const harness = await createHarness({ stallStartupQuiescence: true });
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+
+    expect(readModel.threads.some((thread) => thread.id === "thread-1")).toBe(true);
+  });
 
   it("captures pre-turn baseline on turn.started and post-turn checkpoint on turn.completed", async () => {
     const harness = await createHarness({ seedFilesystemCheckpoints: false });
@@ -531,6 +547,53 @@ describe("CheckpointReactor", () => {
         "README.md",
       ),
     ).toBe("v2\n");
+  });
+
+  it("captures and quiesces from the durable domain completion path without turn.completed", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const turnId = asTurnId("turn-domain-only");
+    harness.provider.emit({
+      type: "turn.started",
+      eventId: EventId.makeUnsafe("evt-domain-only-started"),
+      provider: "codex",
+      createdAt: "2026-04-23T10:00:00.000Z",
+      threadId,
+      turnId,
+    });
+    await waitForGitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 0));
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "domain-only\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.makeUnsafe("cmd-domain-only-placeholder"),
+        threadId,
+        turnId,
+        completedAt: "2026-04-23T10:00:01.000Z",
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+        status: "missing",
+        files: [],
+        checkpointTurnCount: 1,
+        assistantMessageId: MessageId.makeUnsafe("assistant-domain-only"),
+        createdAt: "2026-04-23T10:00:01.000Z",
+      }),
+    );
+
+    const events = await waitForEvent(
+      harness.engine,
+      (event) => event.type === "thread.turn-processing-quiesced",
+    );
+    const eventTypes = events.map((event) => event.type);
+    expect(eventTypes).toContain("thread.turn-diff-completed");
+    expect(eventTypes).toContain("thread.activity-appended");
+    expect(eventTypes).toContain("thread.turn-processing-quiesced");
+    expect(eventTypes.indexOf("thread.turn-processing-quiesced")).toBeGreaterThan(
+      eventTypes.lastIndexOf("thread.activity-appended"),
+    );
+    expect(
+      gitShowFileAtRef(harness.cwd, checkpointRefForThreadTurn(threadId, 1), "README.md"),
+    ).toBe("domain-only\n");
   });
 
   it("refreshes the same turn checkpoint when a missing placeholder is re-emitted mid-turn", async () => {

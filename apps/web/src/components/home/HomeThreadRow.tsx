@@ -8,6 +8,7 @@ import { cn } from "../../lib/utils";
 import { resolveThreadStatusPillForThread, type ThreadStatus } from "../../threadStatus";
 import type { Project, Thread } from "../../types";
 import { ThreadStatusPillBadge } from "../thread/ThreadStatusPillBadge";
+import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
 
 interface HomeThreadRowProps {
   readonly thread: Thread;
@@ -115,6 +116,7 @@ export const HomeThreadRow = forwardRef<HTMLButtonElement, HomeThreadRowProps>(
         </span>
 
         <span className="flex min-w-0 flex-1 items-center gap-2">
+          <ThreadQueueCountBadge threadId={thread.id} />
           {/* Project color chip — pre-attentive grouping cue for multi-project
               users. Tooltip names the project for the ambiguous case where two
               projects have similar hashed colors. */}

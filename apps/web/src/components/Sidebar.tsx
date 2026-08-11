@@ -149,6 +149,7 @@ import {
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import { ThreadStatusPillBadge } from "./thread/ThreadStatusPillBadge";
+import { ThreadQueueCountBadge } from "./thread/ThreadQueueCountBadge";
 import { StartupSidebarSkeleton } from "./StartupLoadingState";
 import { WorkflowCreateDialog } from "./workflow/WorkflowCreateDialog";
 import { threadIdsForCodeReviewWorkflow } from "./workflow/codeReviewWorkflowUtils";
@@ -2904,6 +2905,7 @@ export default function Sidebar() {
                                                   hideLabelBelowMd
                                                 />
                                               ) : null}
+                                              <ThreadQueueCountBadge threadId={thread.id} />
                                               {!isDraftThread && renamingThreadId === thread.id ? (
                                                 <InlineTitleEditor
                                                   initialValue={thread.title}

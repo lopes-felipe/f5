@@ -6,6 +6,7 @@ export const StorageCleanupCategoryId = Schema.Literals([
   "purgeArchivedThreads",
   "providerLogsForTerminalThreads",
   "providerLogRotations",
+  "orphanAttachments",
   "databaseVacuum",
   "inactiveF5Worktrees",
   "legacyT3Userdata",

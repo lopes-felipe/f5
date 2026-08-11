@@ -22,7 +22,7 @@ import {
   type RuntimeMode,
   type TurnId,
 } from "@t3tools/contracts";
-import { Cache, Cause, Duration, Effect, Layer, Option, Schema, Stream } from "effect";
+import { Cause, Effect, Layer, Option, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { estimateMessageContextCharacters, inferProviderForModel } from "@t3tools/shared/model";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
@@ -37,7 +37,14 @@ import {
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
-import { ProviderAdapterRequestError, ProviderServiceError } from "../../provider/Errors.ts";
+import {
+  ProviderAdapterRequestError,
+  ProviderAdapterValidationError,
+  ProviderServiceError,
+  ProviderTurnDeliveryError,
+  ProviderUnsupportedError,
+  ProviderValidationError,
+} from "../../provider/Errors.ts";
 import { resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import {
@@ -128,14 +135,9 @@ function mapProviderSessionStatusToOrchestrationStatus(
   }
 }
 
-const turnStartKeyForEvent = (event: ProviderIntentEvent): string =>
-  event.commandId !== null ? `command:${event.commandId}` : `event:${event.eventId}`;
-
 const serverCommandId = (tag: string): CommandId =>
   CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
 
-const HANDLED_TURN_START_KEY_MAX = 10_000;
-const HANDLED_TURN_START_KEY_TTL = Duration.minutes(30);
 const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const WORKTREE_BRANCH_PREFIX = "t3code";
 const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(`^${WORKTREE_BRANCH_PREFIX}\\/[0-9a-f]{8}$`);
@@ -252,24 +254,12 @@ const make = Effect.gen(function* () {
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
-  const handledTurnStartKeys = yield* Cache.make<string, true>({
-    capacity: HANDLED_TURN_START_KEY_MAX,
-    timeToLive: HANDLED_TURN_START_KEY_TTL,
-    lookup: () => Effect.succeed(true),
-  });
-
-  const hasHandledTurnStartRecently = (key: string) =>
-    Cache.getOption(handledTurnStartKeys, key).pipe(
-      Effect.flatMap((cached) =>
-        Cache.set(handledTurnStartKeys, key, true).pipe(Effect.as(Option.isSome(cached))),
-      ),
-    );
-
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
   const threadModelOptions = new Map<string, ProviderModelOptions>();
 
   const appendProviderFailureActivity = (input: {
     readonly threadId: ThreadId;
+    readonly deliveryId?: CommandId;
     readonly kind:
       | "provider.turn.start.failed"
       | "provider.turn.interrupt.failed"
@@ -682,6 +672,7 @@ const make = Effect.gen(function* () {
 
   const sendTurnForThread = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
+    readonly deliveryId?: CommandId;
     readonly messageText: string;
     readonly attachments?: ReadonlyArray<ChatAttachment>;
     readonly provider?: ProviderKind;
@@ -780,8 +771,9 @@ const make = Effect.gen(function* () {
       },
     });
 
-    yield* providerService.sendTurn({
+    return yield* providerService.sendTurn({
       threadId: input.threadId,
+      ...(input.deliveryId !== undefined ? { deliveryId: input.deliveryId } : {}),
       ...(normalizedInput ? { input: normalizedInput } : {}),
       ...(normalizedAttachments.length > 0 ? { attachments: normalizedAttachments } : {}),
       ...(modelForTurn !== undefined ? { model: modelForTurn } : {}),
@@ -919,27 +911,35 @@ const make = Effect.gen(function* () {
   const processTurnStartRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
   ) {
-    const key = turnStartKeyForEvent(event);
-    if (yield* hasHandledTurnStartRecently(key)) {
-      return;
-    }
-
     const thread = yield* resolveThread(event.payload.threadId);
     if (!thread) {
-      return;
+      yield* Effect.logWarning("provider turn start ignored because the thread is missing", {
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+      });
+      return yield* new ProviderTurnDeliveryError({
+        certainty: "not_sent",
+        retryable: false,
+        detail: "The queued turn's thread no longer exists.",
+      });
     }
 
     const message = thread.messages.find((entry) => entry.id === event.payload.messageId);
     if (!message || message.role !== "user") {
+      const detail = `User message '${event.payload.messageId}' was not found for turn start request.`;
       yield* appendProviderFailureActivity({
         threadId: event.payload.threadId,
         kind: "provider.turn.start.failed",
         summary: "Provider turn start failed",
-        detail: `User message '${event.payload.messageId}' was not found for turn start request.`,
+        detail,
         turnId: null,
         createdAt: event.payload.createdAt,
       });
-      return;
+      return yield* new ProviderTurnDeliveryError({
+        certainty: "not_sent",
+        retryable: false,
+        detail,
+      });
     }
 
     const inputLengthIssue = getProviderTurnInputLengthIssue(message.text);
@@ -952,7 +952,11 @@ const make = Effect.gen(function* () {
         turnId: null,
         createdAt: event.payload.createdAt,
       });
-      return;
+      return yield* new ProviderTurnDeliveryError({
+        certainty: "not_sent",
+        retryable: false,
+        detail: inputLengthIssue.message,
+      });
     }
 
     yield* maybeGenerateAndRenameWorktreeBranchForFirstTurn({
@@ -988,8 +992,9 @@ const make = Effect.gen(function* () {
       Effect.forkScoped,
     );
 
-    yield* sendTurnForThread({
+    return yield* sendTurnForThread({
       threadId: event.payload.threadId,
+      ...(event.commandId !== null ? { deliveryId: event.commandId } : {}),
       messageText: message.text,
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
       ...(event.payload.provider !== undefined ? { provider: event.payload.provider } : {}),
@@ -1007,6 +1012,42 @@ const make = Effect.gen(function* () {
       createdAt: event.payload.createdAt,
     });
   });
+
+  const recordTurnStartFailure: ProviderCommandReactorShape["recordTurnStartFailure"] = (
+    event,
+    detail,
+  ) =>
+    Effect.gen(function* () {
+      const thread = yield* resolveThread(event.payload.threadId);
+      if (!thread) return;
+      yield* setThreadSession({
+        threadId: event.payload.threadId,
+        session: {
+          threadId: event.payload.threadId,
+          status: "error",
+          providerName: thread.session?.providerName ?? null,
+          providerInstanceId: thread.session?.providerInstanceId ?? null,
+          runtimeMode: event.payload.runtimeMode,
+          activeTurnId: null,
+          lastError: detail,
+          ...(thread.session?.estimatedContextTokens != null
+            ? { estimatedContextTokens: thread.session.estimatedContextTokens }
+            : {}),
+          ...(thread.session?.modelContextWindowTokens != null
+            ? { modelContextWindowTokens: thread.session.modelContextWindowTokens }
+            : {}),
+          ...(thread.session?.tokenUsageSource != null
+            ? { tokenUsageSource: thread.session.tokenUsageSource }
+            : {}),
+          updatedAt: new Date().toISOString(),
+        },
+        createdAt: new Date().toISOString(),
+      });
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof Error ? error : new Error("Failed to record provider delivery failure."),
+      ),
+    );
 
   const processTurnInterruptRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-interrupt-requested" }>,
@@ -1432,7 +1473,6 @@ const make = Effect.gen(function* () {
         event.type !== "thread.runtime-mode-set" &&
         event.type !== "thread.meta-updated" &&
         event.type !== "thread.deleted" &&
-        event.type !== "thread.turn-start-requested" &&
         event.type !== "thread.turn-interrupt-requested" &&
         event.type !== "thread.approval-response-requested" &&
         event.type !== "thread.user-input-response-requested" &&
@@ -1446,9 +1486,38 @@ const make = Effect.gen(function* () {
     }),
   ).pipe(Effect.asVoid);
 
+  const deliverTurnStart: ProviderCommandReactorShape["deliverTurnStart"] = (event) =>
+    processTurnStartRequested(event).pipe(
+      Effect.tap(() =>
+        increment(orchestrationEventsProcessedTotal, {
+          eventType: event.type,
+        }),
+      ),
+      Effect.mapError((error) => {
+        if (Schema.is(ProviderTurnDeliveryError)(error)) return error;
+        const definitelyNotSent =
+          Schema.is(ProviderValidationError)(error) ||
+          Schema.is(ProviderUnsupportedError)(error) ||
+          Schema.is(ProviderAdapterValidationError)(error);
+        const detail = definitelyNotSent
+          ? error instanceof Error
+            ? error.message
+            : "The provider rejected the turn before it was sent."
+          : "The provider delivery outcome is unknown. Recheck provider history before retrying.";
+        return new ProviderTurnDeliveryError({
+          certainty: definitelyNotSent ? "not_sent" : "unknown",
+          retryable: false,
+          detail,
+          cause: error,
+        });
+      }),
+    );
+
   return {
     start,
     drain: worker.drain,
+    deliverTurnStart,
+    recordTurnStartFailure,
     applyMcpConfigToLiveSessions,
   } satisfies ProviderCommandReactorShape;
 });

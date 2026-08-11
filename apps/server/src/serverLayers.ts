@@ -13,6 +13,8 @@ import { ProjectMcpConfigRepositoryLive } from "./persistence/Layers/ProjectMcpC
 import { ProjectionCheckpointRepositoryLive } from "./persistence/Layers/ProjectionCheckpoints";
 import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
 import { ProjectionThreadRepositoryLive } from "./persistence/Layers/ProjectionThreads";
+import { ProjectionThreadSessionRepositoryLive } from "./persistence/Layers/ProjectionThreadSessions";
+import { ProjectionTurnRepositoryLive } from "./persistence/Layers/ProjectionTurns";
 import { OrchestrationEngineLive } from "./orchestration/Layers/OrchestrationEngine";
 import { CheckpointReactorLive } from "./orchestration/Layers/CheckpointReactor";
 import { OrchestrationReactorLive } from "./orchestration/Layers/OrchestrationReactor";
@@ -88,6 +90,10 @@ import { CodexMcpEventBus } from "./codex/CodexMcpEventBus";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager";
 import { ServerSettingsLive, ServerSettingsService } from "./serverSettings";
+import { NextTurnQueueStoreLive } from "./nextTurnQueue/Layers/NextTurnQueueStore";
+import { NextTurnQueueDispatcherLive } from "./nextTurnQueue/Layers/NextTurnQueueDispatcher";
+import { ProviderTurnDeliveryRepositoryLive } from "./orchestration/Layers/ProviderTurnDeliveryRepository";
+import { ProviderTurnDeliveryWorkerLive } from "./orchestration/Layers/ProviderTurnDeliveryWorker";
 import { SecretStoreError } from "./auth/Services/ServerSecretStore";
 import { HttpClient } from "effect/unstable/http";
 
@@ -292,6 +298,7 @@ export function makeServerRuntimeServicesLayer() {
     terminalLayer,
     KeybindingsLive,
     ObservabilityLive,
+    NextTurnQueueStoreLive,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }
 
@@ -313,11 +320,19 @@ export function makeServerOrchestrationRuntimeLayer() {
     projectionSnapshotQueryLayer,
     providerSessionDirectoryLayer,
     RuntimeReceiptBusLive,
+    ProviderTurnDeliveryRepositoryLive,
+    ProjectionTurnRepositoryLive,
     StorageMaintenanceLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(gitCoreLayer),
       Layer.provideMerge(OrchestrationEventStoreLive),
     ),
+  );
+  const nextTurnQueueDispatcherLayer = NextTurnQueueDispatcherLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(ProjectionThreadRepositoryLive),
+    Layer.provideMerge(ProjectionThreadSessionRepositoryLive),
+    Layer.provideMerge(OrchestrationCommandReceiptRepositoryLive),
   );
   const workflowServiceLayer = WorkflowServiceLive.pipe(
     Layer.provideMerge(orchestrationLayer),
@@ -342,6 +357,10 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(runtimeServicesLayer),
     Layer.provideMerge(textGenerationLayer),
   );
+  const providerTurnDeliveryWorkerLayer = ProviderTurnDeliveryWorkerLive.pipe(
+    Layer.provideMerge(runtimeServicesLayer),
+    Layer.provideMerge(providerCommandReactorLayer),
+  );
   const checkpointReactorLayer = CheckpointReactorLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
   );
@@ -364,6 +383,8 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(workflowServiceLayer),
     Layer.provideMerge(codeReviewWorkflowServiceLayer),
     Layer.provideMerge(investigationWorkflowServiceLayer),
+    Layer.provideMerge(nextTurnQueueDispatcherLayer),
+    Layer.provideMerge(providerTurnDeliveryWorkerLayer),
   );
   const providerSessionReaperLayer = ProviderSessionReaperLive.pipe(
     Layer.provideMerge(runtimeServicesLayer),
@@ -380,5 +401,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     orchestrationReactorLayer,
     providerSessionReaperLayer,
     projectSetupScriptRunnerLayer,
+    nextTurnQueueDispatcherLayer,
+    providerTurnDeliveryWorkerLayer,
   ).pipe(Layer.provideMerge(NodeServices.layer));
 }

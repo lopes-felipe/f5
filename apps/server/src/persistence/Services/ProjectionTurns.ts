@@ -40,6 +40,7 @@ export const ProjectionTurn = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  processingQuiescedAt: Schema.NullOr(IsoDateTime),
   checkpointTurnCount: Schema.NullOr(NonNegativeInt),
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
@@ -56,6 +57,7 @@ export const ProjectionTurnById = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  processingQuiescedAt: Schema.NullOr(IsoDateTime),
   checkpointTurnCount: Schema.NullOr(NonNegativeInt),
   checkpointRef: Schema.NullOr(CheckpointRef),
   checkpointStatus: Schema.NullOr(OrchestrationCheckpointStatus),
@@ -100,6 +102,14 @@ export const ClearCheckpointTurnConflictInput = Schema.Struct({
 });
 export type ClearCheckpointTurnConflictInput = typeof ClearCheckpointTurnConflictInput.Type;
 
+export const MarkProjectionTurnProcessingQuiescedInput = Schema.Struct({
+  threadId: ThreadId,
+  turnId: TurnId,
+  processingQuiescedAt: IsoDateTime,
+});
+export type MarkProjectionTurnProcessingQuiescedInput =
+  typeof MarkProjectionTurnProcessingQuiescedInput.Type;
+
 export interface ProjectionTurnRepositoryShape {
   /**
    * Inserts or updates the canonical row for a concrete `{threadId, turnId}` turn lifecycle state.
@@ -142,6 +152,19 @@ export interface ProjectionTurnRepositoryShape {
   readonly getLatestRunningByThreadId: (
     input: ListProjectionTurnsByThreadInput,
   ) => Effect.Effect<Option.Option<ProjectionTurnById>, ProjectionRepositoryError>;
+
+  readonly getLatestTerminalByThreadId: (
+    input: ListProjectionTurnsByThreadInput,
+  ) => Effect.Effect<Option.Option<ProjectionTurnById>, ProjectionRepositoryError>;
+
+  readonly listTerminalUnquiesced: Effect.Effect<
+    ReadonlyArray<ProjectionTurnById>,
+    ProjectionRepositoryError
+  >;
+
+  readonly markProcessingQuiesced: (
+    input: MarkProjectionTurnProcessingQuiescedInput,
+  ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
    * Looks up a concrete turn row by `{threadId, turnId}` and never returns pending placeholder rows.

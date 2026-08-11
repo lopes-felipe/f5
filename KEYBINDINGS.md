@@ -28,6 +28,8 @@ See the full schema for more details: [`packages/contracts/src/keybindings.ts`](
   { "key": "mod+n", "command": "chat.new", "when": "!terminalFocus" },
   { "key": "mod+shift+n", "command": "workflow.new", "when": "!terminalFocus" },
   { "key": "mod+enter", "command": "chat.scrollToBottom" },
+  { "key": "mod+shift+enter", "command": "chat.queueTurn" },
+  { "key": "alt+enter", "command": "chat.queueTurnNext" },
   { "key": "mod+o", "command": "editor.openFavorite" },
   { "key": "ctrl+tab", "command": "thread.switchRecentNext" },
   { "key": "ctrl+shift+tab", "command": "thread.switchRecentPrevious" },
@@ -68,6 +70,8 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `chat.newLocal`: create or reuse the active project's draft thread
 - `workflow.new`: open the workflow creation dialog for the active project
 - `chat.scrollToBottom`: scroll the active chat to the latest message without sending
+- `chat.queueTurn`: queue the composer contents at the end (`Mod+Shift+Enter` by default)
+- `chat.queueTurnNext`: queue the composer contents next (`Alt+Enter` by default)
 - `editor.openFavorite`: open current project/worktree in the last-used editor
 - `thread.switchRecentNext`: cycle to the next recent tab/page (`Ctrl+Tab` by default). This now includes thread tabs, workflow pages, and settings.
 - `thread.switchRecentPrevious`: cycle to the previous recent tab/page (`Ctrl+Shift+Tab` by default)

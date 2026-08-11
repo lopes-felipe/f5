@@ -1,10 +1,5 @@
-import type {
-  OrchestrationEvent,
-  OrchestrationReadModel,
-  ProjectId,
-  ThreadId,
-} from "@t3tools/contracts";
-import { OrchestrationCommand } from "@t3tools/contracts";
+import type { OrchestrationReadModel, ProjectId, ThreadId } from "@t3tools/contracts";
+import { OrchestrationCommand, OrchestrationEvent } from "@t3tools/contracts";
 import {
   Cause,
   Deferred,
@@ -167,6 +162,43 @@ const makeOrchestrationEngine = Effect.gen(function* () {
                 const savedEvent = yield* eventStore.append(nextEvent);
                 nextReadModel = yield* projectEvent(nextReadModel, savedEvent);
                 yield* projectionPipeline.projectEvent(savedEvent);
+                if (savedEvent.type === "thread.message-sent") {
+                  yield* Effect.forEach(
+                    savedEvent.payload.attachments ?? [],
+                    (attachment) =>
+                      Effect.gen(function* () {
+                        yield* sql`
+                          DELETE FROM attachment_owners
+                          WHERE attachment_id = ${attachment.id}
+                            AND owner_kind IN ('ingress', 'queue_item')
+                        `;
+                        yield* sql`
+                          INSERT OR IGNORE INTO attachment_owners (
+                            attachment_id, owner_kind, owner_id, created_at
+                          ) VALUES (
+                            ${attachment.id}, 'message', ${savedEvent.payload.messageId},
+                            ${savedEvent.occurredAt}
+                          )
+                        `;
+                      }),
+                    { concurrency: 1, discard: true },
+                  );
+                }
+                if (savedEvent.type === "thread.turn-start-requested") {
+                  const eventJson = Schema.encodeSync(Schema.fromJsonString(OrchestrationEvent))(
+                    savedEvent,
+                  );
+                  yield* sql`
+                    INSERT OR IGNORE INTO provider_turn_deliveries (
+                      delivery_id, thread_id, command_id, message_id, state, attempt,
+                      pre_send_turn_ids_json, event_json, created_at, updated_at
+                    ) VALUES (
+                      ${savedEvent.commandId}, ${savedEvent.payload.threadId},
+                      ${savedEvent.commandId}, ${savedEvent.payload.messageId}, 'pending', 0,
+                      '[]', ${eventJson}, ${savedEvent.occurredAt}, ${savedEvent.occurredAt}
+                    )
+                  `;
+                }
                 committedEvents.push(savedEvent);
               }
 

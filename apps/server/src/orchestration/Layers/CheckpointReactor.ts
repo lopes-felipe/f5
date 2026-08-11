@@ -19,11 +19,10 @@ import {
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
 import { CheckpointStore } from "../../checkpointing/Services/CheckpointStore.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { CheckpointReactor, type CheckpointReactorShape } from "../Services/CheckpointReactor.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { RuntimeReceiptBus } from "../Services/RuntimeReceiptBus.ts";
-import { CheckpointStoreError } from "../../checkpointing/Errors.ts";
-import { OrchestrationDispatchError } from "../Errors.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
 
 type ReactorInput =
@@ -68,6 +67,38 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const checkpointStore = yield* CheckpointStore;
   const receiptBus = yield* RuntimeReceiptBus;
+  const turns = yield* ProjectionTurnRepository;
+
+  const markTurnProcessingQuiesced = (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+    readonly checkpointTurnCount?: number | undefined;
+  }) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.turn.processing.quiesce",
+        commandId: CommandId.makeUnsafe(
+          `server:turn-processing-quiesced:${input.threadId}:${input.turnId}`,
+        ),
+        threadId: input.threadId,
+        turnId: input.turnId,
+        processingQuiescedAt: input.createdAt,
+        createdAt: input.createdAt,
+      })
+      .pipe(
+        Effect.andThen(
+          receiptBus.publish({
+            type: "turn.processing.quiesced",
+            threadId: input.threadId,
+            turnId: input.turnId,
+            ...(input.checkpointTurnCount !== undefined
+              ? { checkpointTurnCount: input.checkpointTurnCount }
+              : {}),
+            createdAt: input.createdAt,
+          }),
+        ),
+      );
 
   const appendRevertFailureActivity = (input: {
     readonly threadId: ThreadId;
@@ -291,14 +322,6 @@ const make = Effect.gen(function* () {
       status: input.status,
       createdAt: input.createdAt,
     });
-    yield* receiptBus.publish({
-      type: "turn.processing.quiesced",
-      threadId: input.threadId,
-      turnId: input.turnId,
-      checkpointTurnCount: input.turnCount,
-      createdAt: input.createdAt,
-    });
-
     yield* orchestrationEngine.dispatch({
       type: "thread.activity.append",
       commandId: serverCommandId("checkpoint-captured-activity"),
@@ -320,16 +343,16 @@ const make = Effect.gen(function* () {
   });
 
   // Captures a real git checkpoint when a turn completes via a runtime event.
-  const captureCheckpointFromTurnCompletion = Effect.fnUntraced(function* (
-    event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }>,
-  ) {
-    const turnId = toTurnId(event.turnId);
-    if (!turnId) {
-      return;
-    }
+  const captureCheckpointForTerminalTurn = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+    readonly status: "ready" | "missing" | "error";
+  }) {
+    const turnId = input.turnId;
 
     const readModel = yield* orchestrationEngine.getReadModel();
-    const thread = readModel.threads.find((entry) => entry.id === event.threadId);
+    const thread = readModel.threads.find((entry) => entry.id === input.threadId);
     if (!thread) {
       return;
     }
@@ -379,9 +402,51 @@ const make = Effect.gen(function* () {
       thread,
       cwd: checkpointCwd,
       turnCount: nextTurnCount,
-      status: checkpointStatusFromRuntime(event.payload.state),
+      status: input.status,
       assistantMessageId: undefined,
-      createdAt: event.createdAt,
+      createdAt: input.createdAt,
+    });
+    return nextTurnCount;
+  });
+
+  const settleTerminalTurnProcessing = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly createdAt: string;
+    readonly status: "ready" | "missing" | "error";
+    readonly checkpointProcessed?: boolean | undefined;
+    readonly checkpointTurnCount?: number | undefined;
+  }) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const row = readModel.threads.find((thread) => thread.id === input.threadId)?.latestTurn;
+    if (
+      !row ||
+      row.turnId !== input.turnId ||
+      row.state === "running" ||
+      (row.processingQuiescedAt !== null && row.processingQuiescedAt !== undefined)
+    ) {
+      return;
+    }
+    const checkpointTurnCount = input.checkpointProcessed
+      ? input.checkpointTurnCount
+      : yield* captureCheckpointForTerminalTurn(input).pipe(
+          Effect.catch((error) =>
+            appendCaptureFailureActivity({
+              threadId: input.threadId,
+              turnId: input.turnId,
+              detail: error.message,
+              createdAt: input.createdAt,
+            }).pipe(
+              Effect.catch(() => Effect.void),
+              Effect.as(undefined),
+            ),
+          ),
+        );
+    yield* markTurnProcessingQuiesced({
+      threadId: input.threadId,
+      turnId: input.turnId,
+      createdAt: input.createdAt,
+      ...(checkpointTurnCount !== undefined ? { checkpointTurnCount } : {}),
     });
   });
 
@@ -708,6 +773,32 @@ const make = Effect.gen(function* () {
           }).pipe(Effect.catch(() => Effect.void)),
         ),
       );
+      yield* settleTerminalTurnProcessing({
+        threadId: event.payload.threadId,
+        turnId: event.payload.turnId,
+        createdAt: event.payload.completedAt,
+        status: event.payload.status,
+      });
+      return;
+    }
+
+    if (
+      event.type === "thread.session-set" &&
+      (event.payload.session.status === "ready" ||
+        event.payload.session.status === "error" ||
+        event.payload.session.status === "stopped")
+    ) {
+      const readModel = yield* orchestrationEngine.getReadModel();
+      const latest = readModel.threads.find(
+        (thread) => thread.id === event.payload.threadId,
+      )?.latestTurn;
+      if (!latest || latest.state === "running") return;
+      yield* settleTerminalTurnProcessing({
+        threadId: event.payload.threadId,
+        turnId: latest.turnId,
+        createdAt: latest.completedAt ?? event.occurredAt,
+        status: latest.state === "error" ? "error" : "ready",
+      });
     }
   });
 
@@ -719,23 +810,46 @@ const make = Effect.gen(function* () {
 
     if (event.type === "turn.completed") {
       const turnId = toTurnId(event.turnId);
-      yield* captureCheckpointFromTurnCompletion(event).pipe(
+      if (!turnId) return;
+      const checkpointTurnCount = yield* captureCheckpointForTerminalTurn({
+        threadId: event.threadId,
+        turnId,
+        createdAt: event.createdAt,
+        status: checkpointStatusFromRuntime(event.payload.state),
+      }).pipe(
         Effect.catch((error) =>
           appendCaptureFailureActivity({
             threadId: event.threadId,
             turnId,
             detail: error.message,
-            createdAt: new Date().toISOString(),
-          }).pipe(Effect.catch(() => Effect.void)),
+            createdAt: event.createdAt,
+          }).pipe(
+            Effect.catch(() => Effect.void),
+            Effect.as(undefined),
+          ),
+        ),
+      );
+      yield* settleTerminalTurnProcessing({
+        threadId: event.threadId,
+        turnId,
+        createdAt: event.createdAt,
+        status: checkpointStatusFromRuntime(event.payload.state),
+        checkpointProcessed: true,
+        ...(checkpointTurnCount !== undefined ? { checkpointTurnCount } : {}),
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to persist turn processing quiescence", {
+            threadId: event.threadId,
+            turnId,
+            cause: Cause.pretty(cause),
+          }),
         ),
       );
       return;
     }
   });
 
-  const processInput = (
-    input: ReactorInput,
-  ): Effect.Effect<void, CheckpointStoreError | OrchestrationDispatchError, never> =>
+  const processInput = (input: ReactorInput) =>
     input.source === "domain" ? processDomainEvent(input.event) : processRuntimeEvent(input.event);
 
   const processInputSafely = (input: ReactorInput) =>
@@ -754,6 +868,35 @@ const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processInputSafely);
 
+  const reconcileStartupQuiescence = Effect.gen(function* () {
+    const unquiesced = yield* turns.listTerminalUnquiesced.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to list terminal turns for startup quiescence", {
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as([])),
+      ),
+    );
+    yield* Effect.forEach(
+      unquiesced,
+      (turn) =>
+        settleTerminalTurnProcessing({
+          threadId: turn.threadId,
+          turnId: turn.turnId,
+          createdAt: turn.completedAt ?? new Date().toISOString(),
+          status: turn.state === "error" ? "error" : "ready",
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("startup quiescence sweep failed", {
+              threadId: turn.threadId,
+              turnId: turn.turnId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      { concurrency: 1, discard: true },
+    );
+  });
+
   const start: CheckpointReactorShape["start"] = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
@@ -761,7 +904,8 @@ const make = Effect.gen(function* () {
           event.type !== "thread.turn-start-requested" &&
           event.type !== "thread.message-sent" &&
           event.type !== "thread.checkpoint-revert-requested" &&
-          event.type !== "thread.turn-diff-completed"
+          event.type !== "thread.turn-diff-completed" &&
+          event.type !== "thread.session-set"
         ) {
           return Effect.void;
         }
@@ -777,6 +921,11 @@ const make = Effect.gen(function* () {
         return worker.enqueue({ source: "runtime", event });
       }),
     );
+
+    // Historical recovery can involve filesystem and Git work for many turns.
+    // Keep it supervised by the reactor scope, but do not hold server readiness
+    // or queue availability until the entire sweep finishes.
+    yield* Effect.forkScoped(reconcileStartupQuiescence);
   });
 
   return {
