@@ -678,11 +678,6 @@ const make = Effect.gen(function* () {
           currentProvider !== undefined &&
           effectiveStartConfig.providerOptionsSource === "command" &&
           !areProviderStartOptionsEqual(previousProviderOptions, requestedProviderOptions);
-        const claudeBinaryPathChanged =
-          currentProvider === "claudeAgent" &&
-          effectiveStartConfig.providerOptionsSource === "command" &&
-          previousProviderOptions?.claudeAgent?.binaryPath !==
-            requestedProviderOptions?.claudeAgent?.binaryPath;
         const currentProjectMcpVersion = project
           ? yield* projectMcpConfigService.readEffectiveStoredConfig(project.id).pipe(
               Effect.map((config) => config.effectiveVersion),
@@ -730,11 +725,9 @@ const make = Effect.gen(function* () {
           ? "provider-changed"
           : instanceChanged
             ? "instance-changed"
-            : claudeBinaryPathChanged
-              ? "claude-binary-path-changed"
-              : shouldRestartForCwdChange
-                ? "cwd-changed"
-                : undefined;
+            : shouldRestartForCwdChange
+              ? "cwd-changed"
+              : undefined;
         const resumeCursor =
           resumeCursorDropReason !== undefined
             ? undefined

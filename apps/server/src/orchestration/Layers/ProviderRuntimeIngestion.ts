@@ -33,6 +33,7 @@ import {
 } from "@t3tools/shared/orchestrationActivityPayload";
 
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
+import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeState.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import {
   INSTRUCTION_PROFILE_CONFIG_KEY,
@@ -195,14 +196,6 @@ function sameId(left: string | null | undefined, right: string | null | undefine
     return false;
   }
   return left === right;
-}
-
-function isUuid(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-}
-
-function isSyntheticClaudeThreadId(value: string): boolean {
-  return value.startsWith("claude-thread-");
 }
 
 function truncateDetail(value: string, limit = 180): string {

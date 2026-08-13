@@ -32,7 +32,11 @@ import {
   buildClaudeAssistantInstructions,
   buildInstructionProfile,
 } from "../sharedAssistantContract.ts";
-import { makeClaudeAdapterLive, type ClaudeAdapterLiveOptions } from "./ClaudeAdapter.ts";
+import {
+  isClaudeMissingConversationError,
+  makeClaudeAdapterLive,
+  type ClaudeAdapterLiveOptions,
+} from "./ClaudeAdapter.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
 
 type ClaudeQueryOptionsForTest = Omit<ClaudeQueryOptions, "effort"> & {
@@ -191,8 +195,14 @@ function makeHarness(config?: {
   readonly nativeEventLogger?: ClaudeAdapterLiveOptions["nativeEventLogger"];
   readonly cwd?: string;
   readonly stateDir?: string;
+  readonly probeResumableClaudeSession?: ClaudeAdapterLiveOptions["probeResumableClaudeSession"];
 }) {
   const query = new FakeClaudeQuery();
+  const queries = [query];
+  const createInputs: Array<{
+    readonly prompt: AsyncIterable<SDKUserMessage>;
+    readonly options: ClaudeQueryOptionsForTest;
+  }> = [];
   let createInput:
     | {
         readonly prompt: AsyncIterable<SDKUserMessage>;
@@ -203,8 +213,13 @@ function makeHarness(config?: {
   const adapterOptions: ClaudeAdapterLiveOptions = {
     createQuery: (input) => {
       createInput = input;
-      return query;
+      createInputs.push(input);
+      const nextQuery = queries[createInputs.length - 1] ?? new FakeClaudeQuery();
+      if (!queries.includes(nextQuery)) queries.push(nextQuery);
+      return nextQuery;
     },
+    probeResumableClaudeSession:
+      config?.probeResumableClaudeSession ?? (() => Effect.succeed("unknown" as const)),
     ...(config?.nativeEventLogger
       ? {
           nativeEventLogger: config.nativeEventLogger,
@@ -228,6 +243,8 @@ function makeHarness(config?: {
       Layer.provideMerge(NodeServices.layer),
     ),
     query,
+    queries,
+    getCreateQueryInputs: () => createInputs,
     getLastCreateQueryInput: () => createInput,
   };
 }
@@ -273,6 +290,7 @@ function makeRealSdkHarness(config?: {
       });
       return activeQuery;
     },
+    probeResumableClaudeSession: () => Effect.succeed("unknown" as const),
     ...(config?.nativeEventLogger
       ? {
           nativeEventLogger: config.nativeEventLogger,
@@ -485,6 +503,28 @@ function emitClaudeSuccessResult(
 }
 
 describe("ClaudeAdapterLive", () => {
+  it("matches missing-conversation errors only for the attempted session", () => {
+    const attempted = "550e8400-e29b-41d4-a716-446655440000";
+    assert.equal(
+      isClaudeMissingConversationError(
+        `No conversation found with session ID: ${attempted}`,
+        attempted,
+      ),
+      true,
+    );
+    assert.equal(
+      isClaudeMissingConversationError("claude: No such file or directory", attempted),
+      false,
+    );
+    assert.equal(
+      isClaudeMissingConversationError(
+        "Session not found: 550e8400-e29b-41d4-a716-446655440001",
+        attempted,
+      ),
+      false,
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -4638,6 +4678,250 @@ describe("ClaudeAdapterLive", () => {
           ).appendSystemPrompt
         : undefined;
       assert.equal(resumeAppendSystemPrompt, undefined);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("starts fresh with instructions when the resume preflight reports absence", () => {
+    const harness = makeHarness({
+      probeResumableClaudeSession: () => Effect.succeed("absent"),
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const attempted = "550e8400-e29b-41d4-a716-446655440000";
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: {
+          threadId: RESUME_THREAD_ID,
+          resume: attempted,
+          turnCount: 4,
+          baseContextChars: 1_000,
+          approximateConversationChars: 2_000,
+          compactionRecommendationEmitted: true,
+        },
+        threadTitle: "Resume recovery",
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.resume, undefined);
+      assert.notEqual(createInput?.options.sessionId, attempted);
+      assert.equal(
+        typeof (
+          createInput?.options as
+            | (ClaudeQueryOptionsForTest & {
+                appendSystemPrompt?: { append: string };
+              })
+            | undefined
+        )?.appendSystemPrompt?.append,
+        "string",
+      );
+      const cursor = session.resumeCursor as Record<string, unknown>;
+      assert.notEqual(cursor.resume, attempted);
+      assert.equal(cursor.turnCount, 0);
+      assert.equal("sessionId" in cursor, false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("surfaces a non-UUID resume cursor and starts fresh", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: {
+          threadId: RESUME_THREAD_ID,
+          resume: "not-a-uuid",
+          turnCount: 7,
+        },
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.resume, undefined);
+      assert.equal(typeof createInput?.options.sessionId, "string");
+      const warning = yield* Stream.runHead(adapter.streamEvents);
+      assert.equal(warning._tag, "Some");
+      if (warning._tag === "Some" && warning.value.type === "runtime.warning") {
+        assert.equal(warning.value.payload.category, "provider");
+        assert.equal(warning.value.payload.actionable, true);
+      } else {
+        assert.fail("Expected the context reset warning before session startup events.");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("invalidates a rejected resume so the next start is fresh", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const attempted = "550e8400-e29b-41d4-a716-446655440000";
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: {
+          threadId: RESUME_THREAD_ID,
+          resume: attempted,
+          turnCount: 5,
+          baseContextChars: 1_000,
+          approximateConversationChars: 2_000,
+          compactionRecommendationEmitted: true,
+        },
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "continue",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: [`No conversation found with session ID: ${attempted}`],
+        session_id: attempted,
+        uuid: "resume-error-result",
+      } as unknown as SDKMessage);
+      harness.query.fail(new Error(`No conversation found with session ID: ${attempted}`));
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 25)));
+
+      const completed = events.find((event) => event.type === "turn.completed");
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type !== "turn.completed") return;
+      const cursor = completed.resumeCursor as Record<string, unknown>;
+      assert.equal("resume" in cursor, false);
+      assert.equal("sessionId" in cursor, false);
+      assert.equal(cursor.turnCount, 0);
+      assert.equal(cursor.baseContextChars, 0);
+      assert.equal(cursor.approximateConversationChars, 0);
+      assert.equal(cursor.compactionRecommendationEmitted, false);
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: cursor,
+        threadTitle: "Recovered thread",
+        runtimeMode: "full-access",
+      });
+      const secondCreate = harness.getCreateQueryInputs()[1];
+      assert.equal(secondCreate?.options.resume, undefined);
+      assert.equal(typeof secondCreate?.options.sessionId, "string");
+      assert.equal(
+        typeof (
+          secondCreate?.options as
+            | (ClaudeQueryOptionsForTest & {
+                appendSystemPrompt?: { append: string };
+              })
+            | undefined
+        )?.appendSystemPrompt?.append,
+        "string",
+      );
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("keeps a resume token after the resumed session is confirmed", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const attempted = "550e8400-e29b-41d4-a716-446655440000";
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: { threadId: RESUME_THREAD_ID, resume: attempted },
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: RESUME_THREAD_ID,
+        input: "continue",
+        attachments: [],
+      });
+      harness.query.emit({
+        type: "assistant",
+        session_id: attempted,
+        uuid: "confirmed-assistant",
+        parent_tool_use_id: null,
+        message: { id: "confirmed-message", content: [{ type: "text", text: "ready" }] },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: [`No conversation found with session ID: ${attempted}`],
+        session_id: attempted,
+        uuid: "confirmed-error-result",
+      } as unknown as SDKMessage);
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+
+      const completed = events.findLast((event) => event.type === "turn.completed");
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal((completed.resumeCursor as { resume?: string }).resume, attempted);
+      }
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("adopts a different SDK session id and emits an actionable reset warning", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const attempted = "550e8400-e29b-41d4-a716-446655440000";
+      const reported = "550e8400-e29b-41d4-a716-446655440001";
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: { threadId: RESUME_THREAD_ID, resume: attempted },
+        runtimeMode: "full-access",
+      });
+      harness.query.emit({
+        type: "system",
+        subtype: "init",
+        session_id: reported,
+        uuid: "mismatched-init",
+        model: "claude-opus-4-6",
+      } as unknown as SDKMessage);
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+
+      const sessions = yield* adapter.listSessions();
+      assert.equal((sessions[0]?.resumeCursor as { resume?: string }).resume, reported);
+      const warning = events.find(
+        (event) => event.type === "runtime.warning" && event.payload.category === "provider",
+      );
+      assert.equal(warning?.type, "runtime.warning");
+      if (warning?.type === "runtime.warning") {
+        assert.equal(warning.payload.actionable, true);
+      }
+      yield* Fiber.interrupt(eventFiber);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
