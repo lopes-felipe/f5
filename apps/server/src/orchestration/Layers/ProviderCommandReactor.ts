@@ -36,7 +36,11 @@ import {
 
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
-import { increment, orchestrationEventsProcessedTotal } from "../../observability/Metrics.ts";
+import {
+  increment,
+  orchestrationEventsProcessedTotal,
+  providerSessionContextResetsTotal,
+} from "../../observability/Metrics.ts";
 import {
   ProviderAdapterRequestError,
   ProviderAdapterValidationError,
@@ -98,6 +102,29 @@ function readPersistedProviderOptions(runtimePayload: unknown): ProviderStartOpt
 
   const raw = "providerOptions" in runtimePayload ? runtimePayload.providerOptions : undefined;
   return isRecord(raw) ? (raw as ProviderStartOptions) : undefined;
+}
+
+function readPersistedCwd(runtimePayload: unknown): string | undefined {
+  if (!isRecord(runtimePayload)) {
+    return undefined;
+  }
+  const raw = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
+  return typeof raw === "string" && raw.trim().length > 0 ? raw : undefined;
+}
+
+function providerDisplayName(provider: ProviderKind): string {
+  switch (provider) {
+    case "claudeAgent":
+      return "Claude";
+    case "codex":
+      return "Codex";
+    case "cursor":
+      return "Cursor";
+    case "opencode":
+      return "OpenCode";
+    case "grok":
+      return "Grok";
+  }
 }
 
 function providerFromSessionName(value: string | null | undefined): ProviderKind | undefined {
@@ -290,6 +317,46 @@ const make = Effect.gen(function* () {
       },
       createdAt: input.createdAt,
     });
+
+  const appendProviderContextResetActivity = (input: {
+    readonly threadId: ThreadId;
+    readonly provider: ProviderKind;
+    readonly reason: string;
+    readonly restartReasons: ReadonlyArray<string>;
+    readonly createdAt: string;
+  }) =>
+    orchestrationEngine
+      .dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("provider-context-reset-activity"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.makeUnsafe(crypto.randomUUID()),
+          tone: "info",
+          kind: "runtime.warning",
+          summary: "Session context reset",
+          payload: {
+            message: `Started a new ${providerDisplayName(input.provider)} session (${input.reason}); the earlier conversation is no longer in the agent's context.`,
+            category: "provider",
+            actionable: true,
+            detail: {
+              reason: input.reason,
+              restartReasons: input.restartReasons,
+            },
+          },
+          turnId: null,
+          createdAt: input.createdAt,
+        },
+        createdAt: input.createdAt,
+      })
+      .pipe(
+        Effect.tap(() =>
+          increment(providerSessionContextResetsTotal, {
+            provider: input.provider,
+            reason: input.reason,
+          }),
+        ),
+      );
 
   const setThreadSession = (input: {
     readonly threadId: ThreadId;
@@ -523,10 +590,20 @@ const make = Effect.gen(function* () {
         thread.session && thread.session.status !== "stopped" && activeSession ? thread.id : null;
       if (existingSessionThreadId) {
         const runtimeModeChanged = thread.runtimeMode !== thread.session?.runtimeMode;
+        const activeProvider =
+          activeSession?.provider ?? persistedBinding?.provider ?? currentProvider;
+        const activeInstanceId =
+          activeSession?.providerInstanceId ??
+          persistedBinding?.providerInstanceId ??
+          currentInstanceId;
         const providerChanged =
-          (options?.provider !== undefined && options.provider !== currentProvider) ||
-          (options?.modelSelection?.instanceId !== undefined &&
-            options.modelSelection.instanceId !== currentInstanceId);
+          preferredProvider !== undefined &&
+          activeProvider !== undefined &&
+          preferredProvider !== activeProvider;
+        const instanceChanged =
+          preferredInstanceId !== undefined &&
+          activeInstanceId !== undefined &&
+          preferredInstanceId !== activeInstanceId;
         const sessionModelSwitch =
           currentProvider === undefined
             ? "in-session"
@@ -546,13 +623,19 @@ const make = Effect.gen(function* () {
           currentProvider !== undefined
             ? getProviderSessionRestartOptions(currentProvider, threadProviderOptions.get(threadId))
             : undefined;
+        const requestedProviderOptions =
+          currentProvider !== undefined && options?.providerOptions !== undefined
+            ? getProviderSessionRestartOptions(currentProvider, options.providerOptions)
+            : undefined;
         const shouldRestartForProviderOptionsChange =
           currentProvider !== undefined &&
           options?.providerOptions !== undefined &&
-          !areProviderStartOptionsEqual(
-            previousProviderOptions,
-            getProviderSessionRestartOptions(currentProvider, options.providerOptions),
-          );
+          !areProviderStartOptionsEqual(previousProviderOptions, requestedProviderOptions);
+        const claudeBinaryPathChanged =
+          currentProvider === "claudeAgent" &&
+          options?.providerOptions !== undefined &&
+          previousProviderOptions?.claudeAgent?.binaryPath !==
+            requestedProviderOptions?.claudeAgent?.binaryPath;
         const currentProjectMcpVersion = project
           ? yield* projectMcpConfigService.readEffectiveStoredConfig(project.id).pipe(
               Effect.map((config) => config.effectiveVersion),
@@ -579,6 +662,7 @@ const make = Effect.gen(function* () {
         if (
           !runtimeModeChanged &&
           !providerChanged &&
+          !instanceChanged &&
           !shouldRestartForModelChange &&
           !shouldRestartForModelOptionsChange &&
           !shouldRestartForProviderOptionsChange &&
@@ -594,18 +678,35 @@ const make = Effect.gen(function* () {
           return existingSessionThreadId;
         }
 
+        const resumeCursorDropReason = providerChanged
+          ? "provider-changed"
+          : instanceChanged
+            ? "instance-changed"
+            : claudeBinaryPathChanged
+              ? "claude-binary-path-changed"
+              : shouldRestartForCwdChange
+                ? "cwd-changed"
+                : undefined;
         const resumeCursor =
-          providerChanged ||
-          shouldRestartForModelChange ||
-          shouldRestartForModelOptionsChange ||
-          shouldRestartForProviderOptionsChange ||
-          shouldRestartForProjectMcpChange ||
-          shouldRestartForCwdChange
+          resumeCursorDropReason !== undefined
             ? undefined
-            : (activeSession?.resumeCursor ?? undefined);
+            : (activeSession?.resumeCursor ?? persistedBinding?.resumeCursor ?? undefined);
+        const restartReasons = [
+          ...(runtimeModeChanged ? ["runtime-mode-changed"] : []),
+          ...(providerChanged ? ["provider-changed"] : []),
+          ...(instanceChanged ? ["instance-changed"] : []),
+          ...(shouldRestartForModelChange ? ["model-changed"] : []),
+          ...(shouldRestartForModelOptionsChange ? ["model-options-changed"] : []),
+          ...(shouldRestartForProviderOptionsChange ? ["provider-options-changed"] : []),
+          ...(shouldRestartForProjectMcpChange ? ["project-mcp-changed"] : []),
+          ...(shouldRestartForCwdChange ? ["cwd-changed"] : []),
+        ];
         yield* Effect.annotateCurrentSpan({
           "provider.session_decision": "restart",
           "provider.has_resume_cursor": resumeCursor !== undefined,
+          ...(resumeCursorDropReason
+            ? { "provider.resume_cursor_drop_reason": resumeCursorDropReason }
+            : {}),
         });
         yield* Effect.logInfo("provider command reactor restarting provider session", {
           threadId,
@@ -616,6 +717,7 @@ const make = Effect.gen(function* () {
           desiredRuntimeMode: thread.runtimeMode,
           runtimeModeChanged,
           providerChanged,
+          instanceChanged,
           modelChanged,
           shouldRestartForModelChange,
           shouldRestartForModelOptionsChange,
@@ -626,6 +728,7 @@ const make = Effect.gen(function* () {
           desiredSessionCwd,
           persistedMcpEffectiveConfigVersion: persistedBinding?.mcpEffectiveConfigVersion ?? null,
           currentProjectMcpVersion,
+          resumeCursorDropReason: resumeCursorDropReason ?? null,
           hasResumeCursor: resumeCursor !== undefined,
         });
         const restartedSession = yield* startProviderSession({
@@ -640,6 +743,18 @@ const make = Effect.gen(function* () {
           runtimeMode: restartedSession.runtimeMode,
         });
         yield* bindSessionToThread(restartedSession);
+        const contextResetReason =
+          resumeCursorDropReason ??
+          (resumeCursor === undefined ? "missing-resume-cursor" : undefined);
+        if (contextResetReason !== undefined && thread.messages.length > 0) {
+          yield* appendProviderContextResetActivity({
+            threadId,
+            provider: restartedSession.provider,
+            reason: contextResetReason,
+            restartReasons,
+            createdAt,
+          });
+        }
         return restartedSession.threadId;
       }
 
@@ -666,6 +781,19 @@ const make = Effect.gen(function* () {
           : {}),
       });
       yield* bindSessionToThread(startedSession);
+      if (
+        resumeCursorForStoppedSession === undefined &&
+        persistedBinding !== undefined &&
+        thread.messages.length > 0
+      ) {
+        yield* appendProviderContextResetActivity({
+          threadId,
+          provider: startedSession.provider,
+          reason: "missing-resume-cursor",
+          restartReasons: ["recover-session"],
+          createdAt,
+        });
+      }
       return startedSession.threadId;
     }).pipe(Effect.withSpan("provider.ensure-session"));
   });
@@ -1172,6 +1300,7 @@ const make = Effect.gen(function* () {
       yield* providerService.stopSession({ threadId: thread.id });
     }
     threadProviderOptions.delete(thread.id);
+    threadModelOptions.delete(thread.id);
 
     yield* setThreadSession({
       threadId: thread.id,
@@ -1221,6 +1350,19 @@ const make = Effect.gen(function* () {
     }
 
     const sessionContext = yield* resolveThreadSessionStartContext(binding.threadId);
+    const activeSession = yield* providerService
+      .listSessions()
+      .pipe(
+        Effect.map((sessions) => sessions.find((session) => session.threadId === binding.threadId)),
+      );
+    const persistedCwd = readPersistedCwd(binding.runtimePayload);
+    const cwdChanged =
+      persistedCwd !== undefined &&
+      sessionContext.instructionContext.cwd !== undefined &&
+      persistedCwd !== sessionContext.instructionContext.cwd;
+    const resumeCursor = cwdChanged
+      ? undefined
+      : (activeSession?.resumeCursor ?? binding.resumeCursor ?? undefined);
     const providerOptions =
       threadProviderOptions.get(binding.threadId) ??
       readPersistedProviderOptions(binding.runtimePayload);
@@ -1244,6 +1386,7 @@ const make = Effect.gen(function* () {
       ...(sessionContext.desiredModel ? { model: sessionContext.desiredModel } : {}),
       ...(modelOptions !== undefined ? { modelOptions } : {}),
       ...(providerOptions !== undefined ? { providerOptions } : {}),
+      ...(resumeCursor !== undefined && resumeCursor !== null ? { resumeCursor } : {}),
       runtimeMode: sessionContext.desiredRuntimeMode,
     });
 
@@ -1255,6 +1398,21 @@ const make = Effect.gen(function* () {
       desiredModel: sessionContext.desiredModel,
       instructionContext: sessionContext.instructionContext,
     });
+
+    const resetReason = cwdChanged
+      ? "cwd-changed"
+      : resumeCursor === undefined || resumeCursor === null
+        ? "missing-resume-cursor"
+        : undefined;
+    if (resetReason !== undefined && sessionContext.thread.messages.length > 0) {
+      yield* appendProviderContextResetActivity({
+        threadId: binding.threadId,
+        provider: restartedSession.provider,
+        reason: resetReason,
+        restartReasons: ["project-mcp-changed"],
+        createdAt,
+      });
+    }
 
     return true;
   });

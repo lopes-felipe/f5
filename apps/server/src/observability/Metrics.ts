@@ -44,6 +44,13 @@ export const providerSessionsTotal = Metric.counter("t3_provider_sessions_total"
   description: "Total provider session lifecycle operations.",
 });
 
+export const providerSessionContextResetsTotal = Metric.counter(
+  "t3_provider_session_context_resets_total",
+  {
+    description: "Total provider session replacements that reset conversation context.",
+  },
+);
+
 export const providerTurnsTotal = Metric.counter("t3_provider_turns_total", {
   description: "Total provider turn lifecycle operations.",
 });

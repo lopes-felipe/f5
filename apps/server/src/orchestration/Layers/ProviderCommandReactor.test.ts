@@ -1177,7 +1177,7 @@ describe("ProviderCommandReactor", () => {
     expect(
       (harness.startSession.mock.calls[1]?.[1] as { resumeCursor?: unknown } | undefined)
         ?.resumeCursor,
-    ).toBeUndefined();
+    ).toEqual({ opaque: "cursor-1" });
   });
 
   it("restarts claude sessions when claude model options change", async () => {
@@ -1249,7 +1249,7 @@ describe("ProviderCommandReactor", () => {
     expect(
       (harness.startSession.mock.calls[1]?.[1] as { resumeCursor?: unknown } | undefined)
         ?.resumeCursor,
-    ).toBeUndefined();
+    ).toEqual({ opaque: "cursor-1" });
   });
 
   it("does not restart claude sessions when model options are semantically unchanged", async () => {
@@ -1385,7 +1385,7 @@ describe("ProviderCommandReactor", () => {
     expect(
       (harness.startSession.mock.calls[1]?.[1] as { resumeCursor?: unknown } | undefined)
         ?.resumeCursor,
-    ).toBeUndefined();
+    ).toEqual({ opaque: "cursor-1" });
   });
 
   it("does not restart claude sessions when provider options are semantically unchanged", async () => {
@@ -1643,7 +1643,7 @@ describe("ProviderCommandReactor", () => {
     expect(
       (harness.startSession.mock.calls[1]?.[1] as { resumeCursor?: unknown } | undefined)
         ?.resumeCursor,
-    ).toBeUndefined();
+    ).toEqual({ opaque: "cursor-1" });
   });
 
   it("restarts the provider session when runtime mode is updated on the thread", async () => {
