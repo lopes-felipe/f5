@@ -79,7 +79,9 @@ import {
   Queue,
   Random,
   Ref,
+  Semaphore,
   Stream,
+  SynchronizedRef,
 } from "effect";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -1683,11 +1685,27 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ));
 
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
+    const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
+    const getThreadSemaphore = (threadId: string) =>
+      SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
+        const existing = Option.fromNullishOr(current.get(threadId));
+        return Option.match(existing, {
+          onNone: () =>
+            Semaphore.make(1).pipe(
+              Effect.map((semaphore) => {
+                const next = new Map(current);
+                next.set(threadId, semaphore);
+                return [semaphore, next] as const;
+              }),
+            ),
+          onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
+        });
+      });
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
@@ -3764,7 +3782,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
 
-        sessions.delete(context.session.threadId);
+        if (sessions.get(context.session.threadId) === context) {
+          sessions.delete(context.session.threadId);
+        }
       });
 
     const requireSession = (
@@ -3932,7 +3952,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         ),
       );
 
-    const startSession: ClaudeAdapterShape["startSession"] = (input) =>
+    const startSessionUnlocked: ClaudeAdapterShape["startSession"] = (input) =>
       Effect.gen(function* () {
         if (input.provider !== undefined && input.provider !== PROVIDER) {
           return yield* new ProviderAdapterValidationError({
@@ -4433,6 +4453,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           >;
         }
 
+        const existingContext = sessions.get(threadId);
+        if (existingContext) {
+          yield* stopSessionInternal(existingContext, { emitExitEvent: false });
+        }
+
         const queryRuntime = yield* Effect.try({
           try: () =>
             createQuery({
@@ -4580,6 +4605,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...session,
         };
       });
+
+    const startSession: ClaudeAdapterShape["startSession"] = (input) =>
+      Effect.flatMap(getThreadSemaphore(input.threadId), (semaphore) =>
+        semaphore.withPermit(startSessionUnlocked(input)),
+      );
 
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {

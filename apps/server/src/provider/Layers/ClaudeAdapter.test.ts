@@ -4928,6 +4928,81 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("replaces a same-thread query atomically", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+      const first = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: first.resumeCursor,
+        runtimeMode: "full-access",
+      });
+
+      assert.equal(harness.query.closeCalls, 1);
+      assert.equal(harness.queries.length, 2);
+      assert.equal((yield* adapter.listSessions()).length, 1);
+
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "replacement", attachments: [] });
+      assert.equal(
+        yield* Effect.promise(() => readFirstPromptText(harness.getCreateQueryInputs()[1])),
+        "replacement",
+      );
+      harness.query.fail(new Error("late old stream failure"));
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+      assert.equal((yield* adapter.listSessions()).length, 1);
+      assert.equal(
+        events.some((event) => event.type === "session.exited"),
+        false,
+      );
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("serializes concurrent starts for the same thread", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* Effect.all(
+        [
+          adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          }),
+          adapter.startSession({
+            threadId: THREAD_ID,
+            provider: "claudeAgent",
+            runtimeMode: "full-access",
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+
+      assert.equal(harness.queries.length, 2);
+      assert.equal(
+        harness.queries.reduce((sum, query) => sum + query.closeCalls, 0),
+        1,
+      );
+      assert.equal((yield* adapter.listSessions()).length, 1);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("uses an app-generated Claude session id for fresh sessions", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
