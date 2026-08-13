@@ -4913,7 +4913,8 @@ describe("ClaudeAdapterLive", () => {
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
 
       const sessions = yield* adapter.listSessions();
-      assert.equal((sessions[0]?.resumeCursor as { resume?: string }).resume, reported);
+      assert.ok(sessions[0]);
+      assert.equal((sessions[0].resumeCursor as { resume?: string }).resume, reported);
       const warning = events.find(
         (event) => event.type === "runtime.warning" && event.payload.category === "provider",
       );
