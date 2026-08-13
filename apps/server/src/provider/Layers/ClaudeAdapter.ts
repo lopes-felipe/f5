@@ -86,6 +86,7 @@ import {
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { increment, providerSessionContextResetsTotal } from "../../observability/Metrics.ts";
 import { buildProviderChildProcessEnv } from "../../providerProcessEnv.ts";
 import {
   fetchAnthropicModelContextWindowCatalog,
@@ -1910,6 +1911,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         yield* emitRuntimeWarning(context, "Claude session context could not be resumed.", {
           category: "provider",
           actionable: true,
+          reason,
+        });
+        yield* increment(providerSessionContextResetsTotal, {
+          provider: PROVIDER,
           reason,
         });
       });
@@ -4540,6 +4545,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               reason: pendingContextResetReason,
             },
           );
+          yield* increment(providerSessionContextResetsTotal, {
+            provider: PROVIDER,
+            reason: pendingContextResetReason,
+          });
         }
 
         const sessionStartedStamp = yield* makeEventStamp();

@@ -557,6 +557,12 @@ describe("WorkflowCreateDialog", () => {
       expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
         provider: "claudeAgent",
         model: "claude-fable-5",
+        providerOptions: {
+          claudeAgent: {
+            subagentsEnabled: true,
+            subagentModel: "inherit",
+          },
+        },
       });
     } finally {
       await screen.unmount();
