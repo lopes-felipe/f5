@@ -1036,6 +1036,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* provider.startSession(threadId, {
         provider: "codex",
         threadId,
+        providerOptions: undefined,
         runtimeMode: "full-access",
       });
 

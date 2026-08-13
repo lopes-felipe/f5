@@ -198,6 +198,13 @@ function deriveThreadTurnCount(thread: OrchestrationThread): number {
   return Math.max(turnIds.size, checkpointTurnCount);
 }
 
+function hasPriorConversationContext(thread: OrchestrationThread): boolean {
+  return (
+    thread.messages.some((message) => message.role === "assistant") ||
+    deriveThreadTurnCount(thread) > 1
+  );
+}
+
 function buildThreadInstructionContext(input: {
   readonly thread: OrchestrationThread;
   readonly projectTitle?: string;
@@ -484,6 +491,7 @@ const make = Effect.gen(function* () {
       readonly provider?: ProviderKind;
       readonly model?: string;
       readonly modelSelection?: ModelSelection;
+      readonly preferredInstanceId?: ProviderInstanceId;
       readonly modelOptions?: ProviderModelOptions;
       readonly providerOptions?: ProviderStartOptions;
     },
@@ -496,9 +504,17 @@ const make = Effect.gen(function* () {
         thread.session?.providerInstanceId ??
         persistedBinding?.providerInstanceId ??
         (currentProvider ? defaultInstanceForProvider(currentProvider) : undefined);
+      const threadSelectionProvider = thread.modelSelection?.model
+        ? inferProviderForModel(thread.modelSelection.model)
+        : undefined;
+      const sameProviderThreadSelectionInstanceId =
+        threadSelectionProvider !== undefined && threadSelectionProvider === currentProvider
+          ? thread.modelSelection?.instanceId
+          : undefined;
       const preferredInstanceId =
+        options?.preferredInstanceId ??
         options?.modelSelection?.instanceId ??
-        thread.modelSelection?.instanceId ??
+        sameProviderThreadSelectionInstanceId ??
         currentInstanceId;
       const preferredProvider: ProviderKind | undefined = options?.provider ?? currentProvider;
       const persistedStartConfig = readPersistedStartConfig(persistedBinding?.runtimePayload);
@@ -599,12 +615,16 @@ const make = Effect.gen(function* () {
               : thread.modelSelection !== undefined
                 ? { modelSelection: thread.modelSelection }
                 : {}),
-            ...(effectiveStartConfig.modelOptions !== undefined
-              ? { modelOptions: effectiveStartConfig.modelOptions }
-              : {}),
-            ...(effectiveStartConfig.providerOptions !== undefined
-              ? { providerOptions: effectiveStartConfig.providerOptions }
-              : {}),
+            ...(effectiveStartConfig.modelOptionsSource === "command"
+              ? { modelOptions: effectiveStartConfig.modelOptions ?? {} }
+              : effectiveStartConfig.modelOptions !== undefined
+                ? { modelOptions: effectiveStartConfig.modelOptions }
+                : {}),
+            ...(effectiveStartConfig.providerOptionsSource === "command"
+              ? { providerOptions: effectiveStartConfig.providerOptions ?? {} }
+              : effectiveStartConfig.providerOptions !== undefined
+                ? { providerOptions: effectiveStartConfig.providerOptions }
+                : {}),
             ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
             runtimeMode: desiredRuntimeMode,
           });
@@ -637,6 +657,8 @@ const make = Effect.gen(function* () {
           activeProvider !== undefined &&
           preferredProvider !== activeProvider;
         const instanceChanged =
+          !providerChanged &&
+          preferredProvider === activeProvider &&
           preferredInstanceId !== undefined &&
           activeInstanceId !== undefined &&
           preferredInstanceId !== activeInstanceId;
@@ -788,7 +810,7 @@ const make = Effect.gen(function* () {
         const contextResetReason =
           resumeCursorDropReason ??
           (resumeCursor === undefined ? "missing-resume-cursor" : undefined);
-        if (contextResetReason !== undefined && thread.messages.length > 0) {
+        if (contextResetReason !== undefined && hasPriorConversationContext(thread)) {
           yield* appendProviderContextResetActivity({
             threadId,
             provider: restartedSession.provider,
@@ -810,9 +832,13 @@ const make = Effect.gen(function* () {
       const persistedInstanceMatches =
         persistedBinding !== undefined &&
         (preferredInstanceId === undefined || persistedBindingInstanceId === preferredInstanceId);
+      const persistedCwd = readPersistedCwd(persistedBinding?.runtimePayload);
+      const persistedCwdMatches =
+        persistedBinding !== undefined && persistedCwd === instructionContext.cwd;
       const resumeCursorForStoppedSession =
         persistedProviderMatches &&
         persistedInstanceMatches &&
+        persistedCwdMatches &&
         persistedBinding?.resumeCursor !== undefined &&
         persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor
@@ -837,7 +863,7 @@ const make = Effect.gen(function* () {
       if (
         resumeCursorForStoppedSession === undefined &&
         persistedBinding !== undefined &&
-        thread.messages.length > 0
+        hasPriorConversationContext(thread)
       ) {
         yield* appendProviderContextResetActivity({
           threadId,
@@ -846,7 +872,9 @@ const make = Effect.gen(function* () {
             ? "provider-changed"
             : !persistedInstanceMatches
               ? "instance-changed"
-              : "missing-resume-cursor",
+              : !persistedCwdMatches
+                ? "cwd-changed"
+                : "missing-resume-cursor",
           restartReasons: ["recover-session"],
           createdAt,
         });
@@ -1400,10 +1428,7 @@ const make = Effect.gen(function* () {
         Effect.map((sessions) => sessions.find((session) => session.threadId === binding.threadId)),
       );
     const persistedCwd = readPersistedCwd(binding.runtimePayload);
-    const cwdChanged =
-      persistedCwd !== undefined &&
-      sessionContext.instructionContext.cwd !== undefined &&
-      persistedCwd !== sessionContext.instructionContext.cwd;
+    const cwdChanged = persistedCwd !== sessionContext.instructionContext.cwd;
     const resumeCursor = cwdChanged
       ? undefined
       : (activeSession?.resumeCursor ?? binding.resumeCursor ?? undefined);
@@ -1460,7 +1485,7 @@ const make = Effect.gen(function* () {
       : resumeCursor === undefined || resumeCursor === null
         ? "missing-resume-cursor"
         : undefined;
-    if (resetReason !== undefined && sessionContext.thread.messages.length > 0) {
+    if (resetReason !== undefined && hasPriorConversationContext(sessionContext.thread)) {
       yield* appendProviderContextResetActivity({
         threadId: binding.threadId,
         provider: restartedSession.provider,
@@ -1621,7 +1646,19 @@ const make = Effect.gen(function* () {
           if (!thread?.session || thread.session.status === "stopped") {
             return;
           }
-          yield* ensureSessionForThread(event.payload.threadId, event.occurredAt);
+          const currentProvider = providerFromSessionName(thread.session.providerName);
+          const selectedProvider = event.payload.modelSelection?.model
+            ? inferProviderForModel(event.payload.modelSelection.model)
+            : undefined;
+          const preferredInstanceId =
+            selectedProvider !== undefined && selectedProvider === currentProvider
+              ? event.payload.modelSelection?.instanceId
+              : undefined;
+          yield* ensureSessionForThread(
+            event.payload.threadId,
+            event.occurredAt,
+            preferredInstanceId !== undefined ? { preferredInstanceId } : undefined,
+          );
           break;
         }
         case "thread.deleted":

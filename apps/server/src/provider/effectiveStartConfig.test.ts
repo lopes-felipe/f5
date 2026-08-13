@@ -61,7 +61,7 @@ describe("resolveEffectiveStartConfig", () => {
     });
   });
 
-  it("reads legacy top-level provider options and model", () => {
+  it("reads only legacy top-level provider options as start intent", () => {
     const persisted = readPersistedStartConfig({
       providerOptions: { claudeAgent: { subagentsEnabled: false } },
       model: "legacy-model",
@@ -69,9 +69,9 @@ describe("resolveEffectiveStartConfig", () => {
 
     expect(resolveEffectiveStartConfig({ persisted })).toMatchObject({
       providerOptions: { claudeAgent: { subagentsEnabled: false } },
-      model: "legacy-model",
+      model: undefined,
       providerOptionsSource: "persisted",
-      modelSource: "persisted",
+      modelSource: "none",
     });
   });
 });

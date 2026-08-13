@@ -723,9 +723,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 modelOptions: { state: "absent" },
                 model: { state: "absent" },
               };
-          const suppliedProviderOptions = Object.hasOwn(rawInput, "providerOptions");
-          const suppliedModelOptions = Object.hasOwn(rawInput, "modelOptions");
-          const suppliedModel = Object.hasOwn(rawInput, "model");
+          // Presence is inspected on the caller input because schema decoding cannot
+          // distinguish an omitted optional field from a deliberate empty object.
+          // Explicit `undefined` remains omission; callers use `{}` to clear an
+          // object-valued start-config dimension.
+          const suppliedProviderOptions =
+            Object.hasOwn(rawInput, "providerOptions") && rawInput.providerOptions !== undefined;
+          const suppliedModelOptions =
+            Object.hasOwn(rawInput, "modelOptions") && rawInput.modelOptions !== undefined;
+          const suppliedModel = Object.hasOwn(rawInput, "model") && rawInput.model !== undefined;
           const sanitizedProviderOptions = sanitizeProviderOptionsForPersistence(
             input.providerOptions,
           );

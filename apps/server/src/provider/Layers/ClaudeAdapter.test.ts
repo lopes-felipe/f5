@@ -35,6 +35,7 @@ import {
 import {
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
+  probeClaudeSessionAvailability,
   type ClaudeAdapterLiveOptions,
 } from "./ClaudeAdapter.ts";
 import { FakeClaudeCodeProcess, respondToInitializeRequest } from "./ClaudeSdk.testUtils.ts";
@@ -67,6 +68,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     account: {},
   };
   public supportedModelsValue: ReadonlyArray<unknown> = [];
+  private supportedModelsPromise: Promise<ReadonlyArray<unknown>> | undefined;
   public supportedCommands?: () => Promise<
     ReadonlyArray<{
       readonly name: string;
@@ -91,6 +93,11 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   setSupportedModelsResult(result: ReadonlyArray<unknown>): void {
     this.supportedModelsValue = result;
+    this.supportedModelsPromise = undefined;
+  }
+
+  setSupportedModelsPromise(result: Promise<ReadonlyArray<unknown>>): void {
+    this.supportedModelsPromise = result;
   }
 
   emit(message: SDKMessage): void {
@@ -149,7 +156,8 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly initializationResult = async (): Promise<unknown> => this.initializationResultValue;
 
-  readonly supportedModels = async (): Promise<ReadonlyArray<unknown>> => this.supportedModelsValue;
+  readonly supportedModels = async (): Promise<ReadonlyArray<unknown>> =>
+    this.supportedModelsPromise ?? this.supportedModelsValue;
 
   readonly close = (): void => {
     this.closeCalls += 1;
@@ -4729,6 +4737,84 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("probes resumable sessions conservatively with system messages included", () =>
+    Effect.gen(function* () {
+      const calls: Array<Record<string, unknown>> = [];
+      const result = yield* probeClaudeSessionAvailability(
+        {
+          sessionId: "550e8400-e29b-41d4-a716-446655440000",
+          cwd: "/tmp/project",
+        },
+        ((_sessionId: string, options: Record<string, unknown>) => {
+          calls.push(options);
+          return Promise.resolve(
+            calls.length === 1 ? ([{ type: "system" }] as never) : ([] as never),
+          );
+        }) as never,
+      );
+
+      assert.equal(result, "present");
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0]?.includeSystemMessages, true);
+      assert.equal(calls[0]?.dir, "/tmp/project");
+    }),
+  );
+
+  it.effect("requires both scoped and global resume probes to report absence", () =>
+    Effect.gen(function* () {
+      const calls: Array<Record<string, unknown>> = [];
+      const reader = ((_sessionId: string, options: Record<string, unknown>) => {
+        calls.push(options);
+        return Promise.resolve(
+          calls.length === 1 ? ([] as never) : ([{ type: "system" }] as never),
+        );
+      }) as never;
+      const present = yield* probeClaudeSessionAvailability(
+        {
+          sessionId: "550e8400-e29b-41d4-a716-446655440000",
+          cwd: "/tmp/project",
+        },
+        reader,
+      );
+      const absent = yield* probeClaudeSessionAvailability(
+        {
+          sessionId: "550e8400-e29b-41d4-a716-446655440000",
+          cwd: undefined,
+        },
+        (() => Promise.resolve([] as never)) as never,
+      );
+
+      assert.equal(present, "present");
+      assert.equal(calls[1]?.dir, undefined);
+      assert.equal(absent, "absent");
+    }),
+  );
+
+  it.effect("treats resume probe failures and timeouts as unknown", () =>
+    Effect.gen(function* () {
+      const failed = yield* probeClaudeSessionAvailability(
+        {
+          sessionId: "550e8400-e29b-41d4-a716-446655440000",
+          cwd: undefined,
+        },
+        (() => Promise.reject(new Error("probe failed"))) as never,
+      );
+      const timeoutFiber = yield* probeClaudeSessionAvailability(
+        {
+          sessionId: "550e8400-e29b-41d4-a716-446655440000",
+          cwd: undefined,
+        },
+        (() => new Promise<never>(() => {})) as never,
+        5,
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("5 millis");
+      const timedOut = yield* Fiber.join(timeoutFiber);
+
+      assert.equal(failed, "unknown");
+      assert.equal(timedOut, "unknown");
+    }),
+  );
+
   it.effect("surfaces a non-UUID resume cursor and starts fresh", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -4887,7 +4973,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("adopts a different SDK session id and emits an actionable reset warning", () => {
+  it.effect("closes a mismatched resume and restarts next time with host instructions", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -4913,8 +4999,8 @@ describe("ClaudeAdapterLive", () => {
       yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
 
       const sessions = yield* adapter.listSessions();
-      assert.ok(sessions[0]);
-      assert.equal((sessions[0].resumeCursor as { resume?: string }).resume, reported);
+      assert.equal(sessions.length, 0);
+      assert.equal(harness.query.closeCalls, 1);
       const warning = events.find(
         (event) => event.type === "runtime.warning" && event.payload.category === "provider",
       );
@@ -4922,6 +5008,29 @@ describe("ClaudeAdapterLive", () => {
       if (warning?.type === "runtime.warning") {
         assert.equal(warning.payload.actionable, true);
       }
+      const exited = events.findLast((event) => event.type === "session.exited");
+      assert.equal(exited?.type, "session.exited");
+      if (exited?.type !== "session.exited") return;
+      const cleanedCursor = exited.resumeCursor as Record<string, unknown>;
+      assert.equal("resume" in cleanedCursor, false);
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: cleanedCursor,
+        threadTitle: "Recovered mismatch",
+        runtimeMode: "full-access",
+      });
+      const replacementInput = harness.getCreateQueryInputs()[1];
+      assert.equal(replacementInput?.options.resume, undefined);
+      assert.equal(
+        typeof (
+          replacementInput?.options as
+            | (ClaudeQueryOptionsForTest & { appendSystemPrompt?: { append: string } })
+            | undefined
+        )?.appendSystemPrompt?.append,
+        "string",
+      );
       yield* Fiber.interrupt(eventFiber);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -4965,6 +5074,51 @@ describe("ClaudeAdapterLive", () => {
         events.some((event) => event.type === "session.exited"),
         false,
       );
+      yield* Fiber.interrupt(eventFiber);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("ignores detached model metadata from a replaced session generation", () => {
+    const harness = makeHarness();
+    const oldCatalog = Promise.withResolvers<ReadonlyArray<unknown>>();
+    harness.query.setSupportedModelsPromise(oldCatalog.promise);
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const events: Array<ProviderRuntimeEvent> = [];
+      const eventFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => events.push(event)),
+      ).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-4-6",
+        runtimeMode: "full-access",
+      });
+      oldCatalog.resolve([
+        {
+          value: "claude-opus-4-6",
+          capabilities: { max_input_tokens: 987_654 },
+        },
+      ]);
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 20)));
+
+      const staleConfigured = events.some(
+        (event) =>
+          event.type === "session.configured" &&
+          event.payload.config.modelContextWindowTokens === 987_654,
+      );
+      assert.equal(staleConfigured, false);
+      assert.equal((yield* adapter.listSessions()).length, 1);
       yield* Fiber.interrupt(eventFiber);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

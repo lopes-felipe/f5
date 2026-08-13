@@ -113,7 +113,9 @@ export function readPersistedStartConfig(
         ? providerOptions
         : readObjectDimension<ProviderStartOptions>(payload, "providerOptions"),
     modelOptions,
-    model: model.state !== "absent" ? model : readStringDimension(payload, "model"),
+    // The legacy top-level `model` is live session state, not recorded start
+    // intent. Only the legacy provider-options key represented start config.
+    model,
   };
 }
 

@@ -16,7 +16,11 @@ import { getModelPreferences, recordModelSelection } from "../../modelPreference
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
-import { getCustomModelOptionsByProvider, resolveComposerPickerModel } from "../ChatView.logic";
+import {
+  getCustomModelOptionsByProvider,
+  getProviderDispatchModelsByProvider,
+  resolveComposerPickerModel,
+} from "../ChatView.logic";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
 import {
@@ -191,6 +195,15 @@ export function WorkflowImplementDialog(props: {
       ),
     [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
   );
+  const dispatchModelsByProvider = useMemo(
+    () =>
+      getProviderDispatchModelsByProvider(
+        settings,
+        serverConfigQuery.data?.providers,
+        serverConfigQuery.data?.settings,
+      ),
+    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
+  );
   const wasOpenRef = useRef(false);
 
   const project = useStore(
@@ -261,7 +274,7 @@ export function WorkflowImplementDialog(props: {
         settings,
         provider,
         projectId: props.workflow.projectId,
-        availableModels: modelOptionsByProvider[provider],
+        availableModels: dispatchModelsByProvider[provider],
       });
       await api.orchestration.startImplementation({
         workflowId: props.workflow.id,

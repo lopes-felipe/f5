@@ -408,6 +408,14 @@ export function getProviderEnvironmentKey(
     case "codex":
       return `codex|binary:${normalized?.codex?.binaryPath ?? ""}|home:${normalized?.codex?.homePath ?? ""}`;
     case "claudeAgent": {
+      const subagentsEnabled =
+        normalized?.claudeAgent?.subagentsEnabled === true
+          ? undefined
+          : normalized?.claudeAgent?.subagentsEnabled;
+      const subagentModel =
+        normalized?.claudeAgent?.subagentModel === "inherit"
+          ? undefined
+          : normalized?.claudeAgent?.subagentModel;
       const launchArgs = normalized?.claudeAgent?.launchArgs;
       const launchArgsKey = launchArgs
         ? Object.keys(launchArgs)
@@ -418,7 +426,7 @@ export function getProviderEnvironmentKey(
             })
             .join(",")
         : "";
-      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${normalized?.claudeAgent?.subagentsEnabled ?? ""}|subagentModel:${normalized?.claudeAgent?.subagentModel ?? ""}|launchArgs:${launchArgsKey}`;
+      return `claudeAgent|binary:${normalized?.claudeAgent?.binaryPath ?? ""}|permission:${normalized?.claudeAgent?.permissionMode ?? ""}|maxThinkingTokens:${normalized?.claudeAgent?.maxThinkingTokens ?? ""}|subagentsEnabled:${subagentsEnabled ?? ""}|subagentModel:${subagentModel ?? ""}|launchArgs:${launchArgsKey}`;
     }
     case "cursor":
       return `cursor|binary:${normalized?.cursor?.binaryPath ?? ""}|apiEndpoint:${normalized?.cursor?.apiEndpoint ?? ""}`;

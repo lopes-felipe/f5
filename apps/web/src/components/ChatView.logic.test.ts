@@ -20,6 +20,7 @@ import {
   deriveComposerSendState,
   deriveProviderRuntimeInfoEntries,
   getCustomModelOptionsByProvider,
+  getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
   readAttachedFileAbsolutePath,
   resolveClaudeSubagentModel,
@@ -72,6 +73,36 @@ function provider(input: {
 }
 
 describe("getCustomModelOptionsByProvider", () => {
+  it("keeps hidden runtime models available for non-picker dispatch settings", () => {
+    const providers = [
+      provider({
+        provider: "claudeAgent",
+        models: [
+          { slug: "claude-opus-4-6", name: "Claude Opus 4.6" },
+          { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+        ],
+      }),
+    ];
+    const settings = {
+      customCodexModels: [],
+      customClaudeModels: [],
+      customGrokModels: [],
+      providerModelPreferences: {
+        claudeAgent: {
+          hiddenModels: ["claude-opus-4-6"],
+          modelOrder: [],
+        },
+      },
+    };
+
+    expect(
+      getCustomModelOptionsByProvider(settings, providers).claudeAgent.map(({ slug }) => slug),
+    ).toEqual(["claude-sonnet-4-6"]);
+    expect(
+      getProviderDispatchModelsByProvider(settings, providers).claudeAgent.map(({ slug }) => slug),
+    ).toEqual(["claude-opus-4-6", "claude-sonnet-4-6"]);
+  });
+
   it("treats the live Claude catalog as authoritative over gated raw custom settings", () => {
     const providers = [
       provider({

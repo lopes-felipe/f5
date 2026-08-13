@@ -65,6 +65,7 @@ import { basenameOfPath } from "../../vscode-icons";
 import {
   createCachedAbsolutePathComparisonNormalizer,
   getCustomModelOptionsByProvider,
+  getProviderDispatchModelsByProvider,
   identityAbsolutePathNormalizer,
   resolveComposerPickerModel,
   resolveAttachedFileReferencePaths,
@@ -437,6 +438,15 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       ),
     [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
   );
+  const dispatchModelsByProvider = useMemo(
+    () =>
+      getProviderDispatchModelsByProvider(
+        settings,
+        serverConfigQuery.data?.providers,
+        serverConfigQuery.data?.settings,
+      ),
+    [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
+  );
   const initialBranchADefaults = getWorkflowSlotDefaults(
     "branchA",
     "codex",
@@ -777,7 +787,7 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             settings,
             provider,
             projectId: props.projectId,
-            availableModels: modelOptionsByProvider[provider],
+            availableModels: dispatchModelsByProvider[provider],
           });
           providerOptionsCache.set(provider, providerOptions);
         }

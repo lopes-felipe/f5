@@ -116,6 +116,14 @@ describe("normalizeProviderStartOptions (MCP OAuth fields)", () => {
 });
 
 describe("getProviderEnvironmentKey includes launchArgs", () => {
+  it("canonicalizes behaviorally neutral Claude defaults", () => {
+    expect(
+      getProviderEnvironmentKey("claudeAgent", {
+        claudeAgent: { subagentsEnabled: true, subagentModel: "inherit" },
+      }),
+    ).toBe(getProviderEnvironmentKey("claudeAgent", undefined));
+  });
+
   it("distinguishes bindings whose launchArgs differ", () => {
     const withoutArgs = getProviderEnvironmentKey("claudeAgent", undefined);
     const withFlag = getProviderEnvironmentKey("claudeAgent", {

@@ -55,7 +55,10 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderCommandReactorLive } from "./ProviderCommandReactor.ts";
-import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import {
+  OrchestrationEngineService,
+  type OrchestrationEngineShape,
+} from "../Services/OrchestrationEngine.ts";
 import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeLocalFileTracer } from "../../observability/LocalFileTracer.ts";
@@ -66,6 +69,34 @@ const asApprovalRequestId = (value: string): ApprovalRequestId =>
   ApprovalRequestId.makeUnsafe(value);
 const asMessageId = (value: string): MessageId => MessageId.makeUnsafe(value);
 const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
+
+async function appendAssistantContext(
+  engine: OrchestrationEngineShape,
+  input: { readonly threadId: ThreadId; readonly turnId: TurnId; readonly createdAt: string },
+) {
+  const messageId = asMessageId(`assistant-${input.turnId}`);
+  await Effect.runPromise(
+    engine.dispatch({
+      type: "thread.message.assistant.delta",
+      commandId: CommandId.makeUnsafe(`cmd-assistant-delta-${input.turnId}`),
+      threadId: input.threadId,
+      messageId,
+      delta: "remembered response",
+      turnId: input.turnId,
+      createdAt: input.createdAt,
+    }),
+  );
+  await Effect.runPromise(
+    engine.dispatch({
+      type: "thread.message.assistant.complete",
+      commandId: CommandId.makeUnsafe(`cmd-assistant-complete-${input.turnId}`),
+      threadId: input.threadId,
+      messageId,
+      turnId: input.turnId,
+      createdAt: input.createdAt,
+    }),
+  );
+}
 
 async function waitFor(
   predicate: () => boolean | Promise<boolean>,
@@ -594,6 +625,7 @@ describe("ProviderCommandReactor", () => {
 
     return {
       engine,
+      reactor,
       startSession,
       sendTurn,
       interruptTurn,
@@ -608,6 +640,11 @@ describe("ProviderCommandReactor", () => {
       workspaceRoot,
       upsertBinding: (binding: ProviderRuntimeBinding) => {
         upsertPersistedBinding(binding);
+      },
+      getBinding: (threadId: ThreadId) => persistedBindings.get(threadId),
+      removeLiveSession: (threadId: ThreadId) => {
+        const index = runtimeSessions.findIndex((session) => session.threadId === threadId);
+        if (index >= 0) runtimeSessions.splice(index, 1);
       },
       drain,
     };
@@ -1124,6 +1161,7 @@ describe("ProviderCommandReactor", () => {
         resume: "resume-cursor-stopped",
         threadId: "thread-1",
       },
+      runtimePayload: { cwd: harness.workspaceRoot },
     });
 
     await Effect.runPromise(
@@ -1490,6 +1528,398 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession).toHaveBeenCalledTimes(1);
     expect(harness.runtimeSessions).toHaveLength(1);
+  });
+
+  it("persists an explicit provider-options clear across cold recovery", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-provider-options-before-clear"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-provider-options-before-clear"),
+          role: "user",
+          text: "configured turn",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        providerOptions: { claudeAgent: { permissionMode: "plan" } },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-provider-options-clear"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-provider-options-clear"),
+          role: "user",
+          text: "clear settings",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        providerOptions: {},
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({ providerOptions: {} });
+    const bindingAfterClear = harness.getBinding(threadId);
+    if (bindingAfterClear === undefined) {
+      throw new Error("Expected a persisted binding after clearing provider options");
+    }
+    expect(
+      (bindingAfterClear.runtimePayload as { startConfig?: Record<string, unknown> }).startConfig
+        ?.providerOptions,
+    ).toBeNull();
+
+    harness.removeLiveSession(threadId);
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-provider-options-after-clear-recovery"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-provider-options-after-clear-recovery"),
+          role: "user",
+          text: "recover cleared settings",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls[2]?.[1]).not.toHaveProperty("providerOptions");
+  });
+
+  it("reuses a live session against only the persisted option baseline", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const providerInstanceId = ProviderInstanceId.makeUnsafe("claudeAgent");
+    harness.runtimeSessions.push({
+      threadId,
+      provider: "claudeAgent",
+      providerInstanceId,
+      status: "ready",
+      runtimeMode: "approval-required",
+      cwd: harness.workspaceRoot,
+      model: "claude-sonnet-4-6",
+      resumeCursor: { opaque: "persisted-baseline-cursor" },
+      createdAt: now,
+      updatedAt: now,
+    });
+    harness.upsertBinding({
+      threadId,
+      projectId: asProjectId("project-1"),
+      provider: "claudeAgent",
+      providerInstanceId,
+      runtimeMode: "approval-required",
+      status: "running",
+      mcpEffectiveConfigVersion: "mcp-version-test",
+      resumeCursor: { opaque: "persisted-baseline-cursor" },
+      runtimePayload: {
+        cwd: harness.workspaceRoot,
+        startConfig: {
+          providerOptions: { claudeAgent: { permissionMode: "plan" } },
+          model: "claude-sonnet-4-6",
+        },
+      },
+    });
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-seed-persisted-baseline-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          providerInstanceId,
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-turn-persisted-baseline"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-turn-persisted-baseline"),
+          role: "user",
+          text: "reuse persisted settings",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        providerOptions: { claudeAgent: { permissionMode: "plan" } },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    expect(harness.startSession).not.toHaveBeenCalled();
+  });
+
+  it("drops a cold-recovery cursor when the thread cwd changed and surfaces the reset", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-cold-cwd-initial-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-cold-cwd-initial-turn"),
+          role: "user",
+          text: "remember cwd context",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await appendAssistantContext(harness.engine, {
+      threadId,
+      turnId: asTurnId("turn-1"),
+      createdAt: now,
+    });
+    harness.removeLiveSession(threadId);
+    const nextCwd = path.join(harness.workspaceRoot, "worktree-cold-recovery");
+    fs.mkdirSync(nextCwd);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-cold-cwd-change"),
+        threadId,
+        worktreePath: nextCwd,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(
+      thread?.activities.some(
+        (activity) =>
+          activity.summary === "Session context reset" &&
+          (activity.payload as { actionable?: boolean }).actionable === true &&
+          (activity.payload as { detail?: { reason?: string } }).detail?.reason === "cwd-changed",
+      ),
+    ).toBe(true);
+  });
+
+  it("handles same-provider instance changes without cross-provider meta restarts", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-instance-initial-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-instance-initial-turn"),
+          role: "user",
+          text: "instance context",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-same-provider-instance-change"),
+        threadId,
+        model: "claude-opus-4-6",
+        modelSelection: {
+          instanceId: ProviderInstanceId.makeUnsafe("claude-alt"),
+          model: "claude-opus-4-6",
+        },
+      }),
+    );
+    await harness.drain();
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      provider: "claudeAgent",
+      providerInstanceId: "claude-alt",
+    });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-cross-provider-picker-change"),
+        threadId,
+        model: "gpt-5.3-codex",
+        modelSelection: {
+          instanceId: ProviderInstanceId.makeUnsafe("codex"),
+          model: "gpt-5.3-codex",
+        },
+      }),
+    );
+    await harness.drain();
+    expect(harness.startSession).toHaveBeenCalledTimes(2);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-cross-provider-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-cross-provider-turn"),
+          role: "user",
+          text: "switch provider",
+          attachments: [],
+        },
+        provider: "codex",
+        model: "gpt-5.3-codex",
+        modelSelection: {
+          instanceId: ProviderInstanceId.makeUnsafe("codex"),
+          model: "gpt-5.3-codex",
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 3);
+    expect(harness.startSession.mock.calls[2]?.[1]).toMatchObject({
+      provider: "codex",
+      providerInstanceId: "codex",
+    });
+    expect(harness.startSession.mock.calls[2]?.[1]).not.toHaveProperty("resumeCursor");
+  });
+
+  it("uses the live pre-stop cursor when applying MCP config to Claude", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-mcp-cursor-initial-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-mcp-cursor-initial-turn"),
+          role: "user",
+          text: "mcp context",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    const live = harness.runtimeSessions[0];
+    expect(live).toBeDefined();
+    harness.runtimeSessions[0] = { ...live!, resumeCursor: { opaque: "live-newer-cursor" } };
+    const binding = harness.getBinding(threadId);
+    expect(binding).toBeDefined();
+    harness.upsertBinding({
+      ...binding!,
+      resumeCursor: { opaque: "persisted-older-cursor" },
+      mcpEffectiveConfigVersion: "mcp-version-old",
+    });
+
+    const result = await Effect.runPromise(
+      harness.reactor.applyMcpConfigToLiveSessions({
+        scope: "project",
+        projectId: asProjectId("project-1"),
+      }),
+    );
+
+    expect(result.claudeRestarted).toBe(1);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      resumeCursor: { opaque: "live-newer-cursor" },
+    });
+  });
+
+  it("does not carry an MCP-restart cursor across cwd provenance", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-mcp-cwd-initial-turn"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-mcp-cwd-initial-turn"),
+          role: "user",
+          text: "mcp cwd context",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    const binding = harness.getBinding(threadId);
+    expect(binding).toBeDefined();
+    harness.upsertBinding({
+      ...binding!,
+      mcpEffectiveConfigVersion: "mcp-version-old",
+      runtimePayload: {
+        ...(binding?.runtimePayload as Record<string, unknown>),
+        cwd: path.join(harness.workspaceRoot, "different-worktree"),
+      },
+    });
+
+    await Effect.runPromise(
+      harness.reactor.applyMcpConfigToLiveSessions({
+        scope: "project",
+        projectId: asProjectId("project-1"),
+      }),
+    );
+
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
   });
 
   it("does not restart claude sessions when provider options are semantically unchanged", async () => {
@@ -2413,18 +2843,24 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    await appendAssistantContext(harness.engine, {
+      threadId: ThreadId.makeUnsafe("thread-1"),
+      turnId: asTurnId("turn-1"),
+      createdAt: now,
+    });
 
     harness.startSession.mockImplementationOnce(
       (_: unknown, __: unknown) => Effect.fail(new Error("simulated restart failure")) as never,
     );
 
+    const failedReplacementCwd = path.join(harness.workspaceRoot, "failed-replacement-worktree");
+    fs.mkdirSync(failedReplacementCwd);
     await Effect.runPromise(
       harness.engine.dispatch({
-        type: "thread.runtime-mode.set",
-        commandId: CommandId.makeUnsafe("cmd-runtime-mode-set-restart-failure"),
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-cwd-change-restart-failure"),
         threadId: ThreadId.makeUnsafe("thread-1"),
-        runtimeMode: "approval-required",
-        createdAt: now,
+        worktreePath: failedReplacementCwd,
       }),
     );
 
@@ -2433,7 +2869,7 @@ describe("ProviderCommandReactor", () => {
       const thread = readModel.threads.find(
         (entry) => entry.id === ThreadId.makeUnsafe("thread-1"),
       );
-      return thread?.runtimeMode === "approval-required";
+      return thread?.worktreePath === failedReplacementCwd;
     });
     await waitFor(() => harness.startSession.mock.calls.length === 2);
     await harness.drain();
@@ -2445,6 +2881,9 @@ describe("ProviderCommandReactor", () => {
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     expect(thread?.session?.threadId).toBe("thread-1");
     expect(thread?.session?.runtimeMode).toBe("full-access");
+    expect(
+      thread?.activities.some((activity) => activity.summary === "Session context reset"),
+    ).toBe(false);
   });
 
   it("reacts to thread.turn.interrupt-requested by calling provider interrupt", async () => {

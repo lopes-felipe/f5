@@ -575,6 +575,56 @@ function toModelPickerOption(model: ServerProviderModel): ModelPickerOptionWithC
   };
 }
 
+function getUnfilteredModelOptionsByProvider(
+  settings: {
+    customCodexModels: readonly string[];
+    customClaudeModels: readonly string[];
+    customGrokModels: readonly string[];
+  },
+  providers: ReadonlyArray<ServerProvider> | null | undefined,
+  serverSettings: Pick<ServerSettings, "providers" | "providerInstances"> | null | undefined,
+  provider: ProviderKind,
+): Array<ModelPickerOptionWithCustomFlag> {
+  const liveModels = getLiveProviderModels(providers, provider);
+  const liveModelsIncludeBuiltIns = liveModels.some((model) => !model.isCustom);
+  const customModels = getProviderCustomModelsForPicker(settings, serverSettings, provider);
+  const appOptions = getAppModelOptions(provider, customModels);
+  const options: Array<ModelPickerOptionWithCustomFlag> = liveModelsIncludeBuiltIns
+    ? liveModels.map(toModelPickerOption)
+    : [...appOptions];
+
+  const seen = new Set(options.map((option) => option.slug));
+  for (const customOption of appOptions.filter((option) => option.isCustom)) {
+    if (!seen.has(customOption.slug)) {
+      seen.add(customOption.slug);
+      options.push(customOption);
+    }
+  }
+  return options;
+}
+
+export function getProviderDispatchModelsByProvider(
+  settings: {
+    customCodexModels: readonly string[];
+    customClaudeModels: readonly string[];
+    customGrokModels: readonly string[];
+  },
+  providers?: ReadonlyArray<ServerProvider> | null,
+  serverSettings?: Pick<ServerSettings, "providers" | "providerInstances"> | null,
+): Record<ProviderKind, ReadonlyArray<{ readonly slug: string }>> {
+  const modelsFor = (provider: ProviderKind) =>
+    getUnfilteredModelOptionsByProvider(settings, providers, serverSettings, provider).map(
+      ({ slug }) => ({ slug }),
+    );
+  return {
+    codex: modelsFor("codex"),
+    claudeAgent: modelsFor("claudeAgent"),
+    cursor: modelsFor("cursor"),
+    opencode: modelsFor("opencode"),
+    grok: modelsFor("grok"),
+  };
+}
+
 function applyPickerModelPreferences(
   provider: ProviderKind,
   models: ReadonlyArray<ModelPickerOptionWithCustomFlag>,
@@ -621,22 +671,12 @@ export function getCustomModelOptionsByProvider(
 ): Record<ProviderKind, ReadonlyArray<ModelPickerModelOption>> {
   return Object.fromEntries(
     PICKER_PROVIDERS.map((provider) => {
-      const liveModels = getLiveProviderModels(providers, provider);
-      const liveModelsIncludeBuiltIns = liveModels.some((model) => !model.isCustom);
-      const customModels = getProviderCustomModelsForPicker(settings, serverSettings, provider);
-      const appOptions = getAppModelOptions(provider, customModels);
-      const options: ModelPickerOptionWithCustomFlag[] = liveModelsIncludeBuiltIns
-        ? liveModels.map(toModelPickerOption)
-        : appOptions;
-
-      const seen = new Set(options.map((option) => option.slug));
-      for (const customOption of appOptions.filter((option) => option.isCustom)) {
-        if (seen.has(customOption.slug)) {
-          continue;
-        }
-        seen.add(customOption.slug);
-        options.push(customOption);
-      }
+      const options = getUnfilteredModelOptionsByProvider(
+        settings,
+        providers,
+        serverSettings,
+        provider,
+      );
 
       return [provider, applyPickerModelPreferences(provider, options, settings)] as const;
     }),

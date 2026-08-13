@@ -239,6 +239,12 @@ interface ClaudeTaskUpdatedMessage {
   readonly malformed: boolean;
 }
 
+interface ClaudeRuntimeWarningOptions {
+  readonly category?: "provider" | "verification" | "guardian" | "protocol";
+  readonly actionable?: boolean;
+  readonly detail?: unknown;
+}
+
 interface ClaudeSessionContext {
   session: ProviderSession;
   readonly providerInstanceId: ProviderInstanceId;
@@ -281,7 +287,7 @@ interface ClaudeSessionContext {
   compactionRecommendationEmitted: boolean;
   resumeAttemptSessionId: string | undefined;
   resumeConfirmed: boolean;
-  resumeInvalidated: boolean;
+  resumeInvalidatedTurnId: TurnId | undefined;
   modelContextWindowTokens: number;
   stopped: boolean;
 }
@@ -326,6 +332,45 @@ export interface ClaudeAdapterLiveOptions {
     readonly sessionId: string;
     readonly cwd: string | undefined;
   }) => Effect.Effect<"present" | "absent" | "unknown">;
+}
+
+type ClaudeSessionMessagesReader = typeof getSessionMessages;
+
+export function probeClaudeSessionAvailability(
+  input: {
+    readonly sessionId: string;
+    readonly cwd: string | undefined;
+  },
+  readSessionMessages: ClaudeSessionMessagesReader = getSessionMessages,
+  timeoutMs = 1_500,
+): Effect.Effect<"present" | "absent" | "unknown"> {
+  return Effect.gen(function* () {
+    const scopedMessages = yield* Effect.tryPromise(() =>
+      readSessionMessages(input.sessionId, {
+        ...(input.cwd ? { dir: input.cwd } : {}),
+        limit: 1,
+        includeSystemMessages: true,
+      }),
+    );
+    if (scopedMessages.length > 0) {
+      return "present" as const;
+    }
+
+    // Require a second, global lookup to agree before declaring a session
+    // absent. With no cwd this intentionally repeats the lookup: a transient
+    // empty read must not silently discard a valid resume cursor.
+    const globalMessages = yield* Effect.tryPromise(() =>
+      readSessionMessages(input.sessionId, {
+        limit: 1,
+        includeSystemMessages: true,
+      }),
+    );
+    return globalMessages.length > 0 ? ("present" as const) : ("absent" as const);
+  }).pipe(
+    Effect.timeoutOption(timeoutMs),
+    Effect.map(Option.getOrElse(() => "unknown" as const)),
+    Effect.orElseSucceed(() => "unknown" as const),
+  );
 }
 
 function toMessage(cause: unknown, fallback: string): string {
@@ -1663,36 +1708,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           options: input.options as ClaudeQueryOptions,
         }) as ClaudeQueryRuntime);
     const probeResumableClaudeSession =
-      options?.probeResumableClaudeSession ??
-      ((input: { readonly sessionId: string; readonly cwd: string | undefined }) =>
-        Effect.gen(function* () {
-          const withDirectory = yield* Effect.tryPromise(() =>
-            getSessionMessages(input.sessionId, {
-              ...(input.cwd ? { dir: input.cwd } : {}),
-              limit: 1,
-            }),
-          );
-          if (withDirectory.length > 0 || input.cwd === undefined) {
-            return withDirectory.length > 0 ? ("present" as const) : ("absent" as const);
-          }
-          const withoutDirectory = yield* Effect.tryPromise(() =>
-            getSessionMessages(input.sessionId, { limit: 1 }),
-          );
-          return withoutDirectory.length > 0 ? ("present" as const) : ("absent" as const);
-        }).pipe(
-          Effect.timeoutOption(1_500),
-          Effect.map(Option.getOrElse(() => "unknown" as const)),
-          Effect.orElseSucceed(() => "unknown" as const),
-        ));
+      options?.probeResumableClaudeSession ?? probeClaudeSessionAvailability;
 
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
-    const threadLocksRef = yield* SynchronizedRef.make(new Map<string, Semaphore.Semaphore>());
+    interface ThreadLockEntry {
+      readonly semaphore: Semaphore.Semaphore;
+      readonly users: number;
+    }
+    const threadLocksRef = yield* SynchronizedRef.make(new Map<string, ThreadLockEntry>());
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
     const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
-    const getThreadSemaphore = (threadId: string) =>
+    const acquireThreadLock = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
         const existing = Option.fromNullishOr(current.get(threadId));
         return Option.match(existing, {
@@ -1700,13 +1729,39 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             Semaphore.make(1).pipe(
               Effect.map((semaphore) => {
                 const next = new Map(current);
-                next.set(threadId, semaphore);
-                return [semaphore, next] as const;
+                const entry = { semaphore, users: 1 } satisfies ThreadLockEntry;
+                next.set(threadId, entry);
+                return [entry, next] as const;
               }),
             ),
-          onSome: (semaphore) => Effect.succeed([semaphore, current] as const),
+          onSome: (entry) => {
+            const next = new Map(current);
+            const acquired = { ...entry, users: entry.users + 1 } satisfies ThreadLockEntry;
+            next.set(threadId, acquired);
+            return Effect.succeed([acquired, next] as const);
+          },
         });
       });
+    const releaseThreadLock = (threadId: string, entry: ThreadLockEntry) =>
+      SynchronizedRef.update(threadLocksRef, (current) => {
+        const active = current.get(threadId);
+        if (active?.semaphore !== entry.semaphore) {
+          return current;
+        }
+        const next = new Map(current);
+        if (active.users <= 1) {
+          next.delete(threadId);
+        } else {
+          next.set(threadId, { ...active, users: active.users - 1 });
+        }
+        return next;
+      });
+    const withThreadLock = <A, E, R>(threadId: string, effect: Effect.Effect<A, E, R>) =>
+      Effect.acquireUseRelease(
+        acquireThreadLock(threadId),
+        (entry) => entry.semaphore.withPermit(effect),
+        (entry) => releaseThreadLock(threadId, entry),
+      );
 
     const offerRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
       Queue.offer(runtimeEventQueue, event).pipe(Effect.asVoid);
@@ -1741,6 +1796,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     const refreshModelContextWindowTokens = (context: ClaudeSessionContext): Effect.Effect<void> =>
       Effect.gen(function* () {
+        if (context.stopped || sessions.get(context.session.threadId) !== context) {
+          return;
+        }
         const requestedModel = getClaudeSessionModel(context);
         if (!requestedModel) {
           return;
@@ -1753,6 +1811,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           lookupClaudeReportedModelContextWindowTokens(context),
         ).pipe(Effect.orElseSucceed(() => undefined));
         if (
+          context.stopped ||
+          sessions.get(context.session.threadId) !== context ||
           reportedTokens === undefined ||
           requestedModel !== getClaudeSessionModel(context) ||
           reportedTokens === context.modelContextWindowTokens
@@ -1906,12 +1966,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.baseContextChars = 0;
         context.approximateConversationChars = 0;
         context.compactionRecommendationEmitted = false;
-        context.resumeInvalidated = true;
+        context.resumeInvalidatedTurnId = context.turnState?.turnId;
         yield* updateResumeCursor(context);
         yield* emitRuntimeWarning(context, "Claude session context could not be resumed.", {
           category: "provider",
           actionable: true,
-          reason,
+          detail: { reason },
         });
         yield* increment(providerSessionContextResetsTotal, {
           provider: PROVIDER,
@@ -2119,10 +2179,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const ensureThreadId = (
       context: ClaudeSessionContext,
       message: SDKMessage,
-    ): Effect.Effect<void> =>
+    ): Effect.Effect<boolean> =>
       Effect.gen(function* () {
         if (typeof message.session_id !== "string" || message.session_id.length === 0) {
-          return;
+          return true;
         }
         const nextThreadId = message.session_id;
         const confirmsResume =
@@ -2142,6 +2202,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               reportedSessionId: nextThreadId,
             });
             yield* invalidateClaudeResumeState(context, "resume-session-id-mismatch");
+            yield* emitRuntimeError(
+              context,
+              "Claude could not resume the requested conversation. Retry to start a fresh session with the project instructions.",
+            );
+            yield* stopSessionInternal(context, {
+              emitExitEvent: true,
+              interruptStreamFiber: false,
+            });
+            return false;
           }
         }
         context.resumeSessionId = message.session_id;
@@ -2169,6 +2238,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             },
           });
         }
+        return true;
       });
 
     const emitRuntimeError = (
@@ -2201,7 +2271,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const emitRuntimeWarning = (
       context: ClaudeSessionContext,
       message: string,
-      detail?: unknown,
+      options?: ClaudeRuntimeWarningOptions,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         const turnState = context.turnState;
@@ -2215,19 +2285,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(turnState ? { turnId: asCanonicalTurnId(turnState.turnId) } : {}),
           payload: {
             message,
-            ...(detail !== undefined ? { detail } : {}),
-            ...(detail && typeof detail === "object" && "category" in detail
-              ? {
-                  category: (
-                    detail as {
-                      category: "provider" | "verification" | "guardian" | "protocol";
-                    }
-                  ).category,
-                }
-              : {}),
-            ...(detail && typeof detail === "object" && "actionable" in detail
-              ? { actionable: (detail as { actionable: boolean }).actionable }
-              : {}),
+            ...(options?.category !== undefined ? { category: options.category } : {}),
+            ...(options?.actionable !== undefined ? { actionable: options.actionable } : {}),
+            ...(options?.detail !== undefined ? { detail: options.detail } : {}),
           },
           providerRefs: nativeProviderRefs(context),
         });
@@ -2384,11 +2444,15 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (taskUpdated.malformed || !taskUpdated.taskId) {
-          yield* emitRuntimeWarning(context, "Malformed Claude task_updated message.", message);
+          yield* emitRuntimeWarning(context, "Malformed Claude task_updated message.", {
+            detail: message,
+          });
           return;
         }
         if (!taskUpdated.patch) {
-          yield* emitRuntimeWarning(context, "Unhandled Claude task_updated patch.", message);
+          yield* emitRuntimeWarning(context, "Unhandled Claude task_updated patch.", {
+            detail: message,
+          });
           return;
         }
 
@@ -2642,7 +2706,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const invalidResumeFailure =
-          status === "failed" && context.resumeInvalidated && !context.resumeConfirmed;
+          status === "failed" && context.resumeInvalidatedTurnId === turnState.turnId;
         const approximateTurnChars = approximateContextCharsFromTurnItems(turnState.items);
         if (!invalidResumeFailure) {
           context.turns.push({
@@ -2666,6 +2730,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(status === "failed" && errorMessage ? { lastError: errorMessage } : {}),
         };
         context.turnState = undefined;
+        if (context.resumeInvalidatedTurnId === turnState.turnId) {
+          context.resumeInvalidatedTurnId = undefined;
+        }
         yield* updateResumeCursor(context);
 
         const stamp = yield* makeEventStamp();
@@ -3276,22 +3343,32 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const status = turnStatusFromResult(message);
         const errorMessage =
+          message.subtype === "success" ? undefined : message.errors[0] || undefined;
+        const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
+        let resumeRejected = false;
 
         if (status === "failed") {
           const attemptedSessionId = context.resumeAttemptSessionId;
           if (
             attemptedSessionId !== undefined &&
             !context.resumeConfirmed &&
-            errorMessage !== undefined &&
-            isClaudeMissingConversationError(errorMessage, attemptedSessionId)
+            resumeErrorText !== undefined &&
+            isClaudeMissingConversationError(resumeErrorText, attemptedSessionId)
           ) {
             yield* invalidateClaudeResumeState(context, "resume-session-not-found");
+            resumeRejected = true;
           }
           yield* emitRuntimeError(context, errorMessage ?? "Claude turn failed.");
         }
 
         yield* completeTurn(context, status, errorMessage, message);
+        if (resumeRejected) {
+          yield* stopSessionInternal(context, {
+            emitExitEvent: true,
+            interruptStreamFiber: false,
+          });
+        }
       });
 
     const handleSystemMessage = (
@@ -3498,7 +3575,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* emitRuntimeWarning(
               context,
               `Unhandled Claude system message subtype '${message.subtype}'.`,
-              message,
+              { detail: message },
             );
             return;
         }
@@ -3584,7 +3661,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         yield* logNativeSdkMessage(context, message);
-        yield* ensureThreadId(context, message);
+        const shouldContinue = yield* ensureThreadId(context, message);
+        if (!shouldContinue) {
+          return;
+        }
 
         // If the current turn was interrupted, drop any buffered SDK output
         // except "result", which legitimately ends the turn via completeTurn.
@@ -3618,7 +3698,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             yield* emitRuntimeWarning(
               context,
               `Unhandled Claude SDK message type '${message.type}'.`,
-              message,
+              { detail: message },
             );
             return;
         }
@@ -3729,7 +3809,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     const stopSessionInternal = (
       context: ClaudeSessionContext,
-      options?: { readonly emitExitEvent?: boolean },
+      options?: {
+        readonly emitExitEvent?: boolean;
+        readonly interruptStreamFiber?: boolean;
+      },
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
         if (context.stopped) return;
@@ -3756,7 +3839,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           yield* emitRuntimeError(context, "Failed to close Claude runtime query.", cause);
         }
 
-        if (streamFiber && streamFiber.pollUnsafe() === undefined) {
+        if (
+          options?.interruptStreamFiber !== false &&
+          streamFiber &&
+          streamFiber.pollUnsafe() === undefined
+        ) {
           yield* Fiber.interrupt(streamFiber);
         }
 
@@ -3977,7 +4064,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           resumeState = undefined;
           yield* Effect.logWarning("ignoring invalid Claude resume cursor", {
             threadId,
-            resumeCandidate: rawResumeCandidate,
+            resumeCandidateLength: rawResumeCandidate.length,
           });
         } else if (resumeState?.resume !== undefined) {
           const probeResult = yield* probeResumableClaudeSession({
@@ -4526,7 +4613,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           compactionRecommendationEmitted: resumeState?.compactionRecommendationEmitted ?? false,
           resumeAttemptSessionId: existingResumeSessionId,
           resumeConfirmed: false,
-          resumeInvalidated: false,
+          resumeInvalidatedTurnId: undefined,
           modelContextWindowTokens:
             runtimeModelSelection.contextWindowTokens ??
             estimateModelContextWindowTokens(selectedModel, "claudeAgent"),
@@ -4542,7 +4629,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             {
               category: "provider",
               actionable: true,
-              reason: pendingContextResetReason,
+              detail: { reason: pendingContextResetReason },
             },
           );
           yield* increment(providerSessionContextResetsTotal, {
@@ -4616,11 +4703,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       });
 
     const startSession: ClaudeAdapterShape["startSession"] = (input) =>
-      Effect.flatMap(getThreadSemaphore(input.threadId), (semaphore) =>
-        semaphore.withPermit(startSessionUnlocked(input)),
-      );
+      withThreadLock(input.threadId, startSessionUnlocked(input));
 
-    const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
+    const sendTurnUnlocked: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
 
@@ -4772,6 +4857,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
       });
 
+    const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
+      withThreadLock(input.threadId, sendTurnUnlocked(input));
+
     const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (threadId, _turnId) =>
       Effect.gen(function* () {
         const context = yield* requireSession(threadId);
@@ -4879,13 +4967,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         yield* Deferred.succeed(pending.answers, answers);
       });
 
-    const stopSession: ClaudeAdapterShape["stopSession"] = (threadId) =>
+    const stopSessionUnlocked: ClaudeAdapterShape["stopSession"] = (threadId) =>
       Effect.gen(function* () {
         const context = yield* requireSession(threadId);
         yield* stopSessionInternal(context, {
           emitExitEvent: true,
         });
       });
+
+    const stopSession: ClaudeAdapterShape["stopSession"] = (threadId) =>
+      withThreadLock(threadId, stopSessionUnlocked(threadId));
 
     const listSessions: ClaudeAdapterShape["listSessions"] = () =>
       Effect.sync(() => Array.from(sessions.values(), ({ session }) => ({ ...session })));
