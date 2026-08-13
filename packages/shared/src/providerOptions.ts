@@ -198,6 +198,7 @@ export function areProviderStartOptionsEqual(
 export function getProviderSessionRestartOptions(
   provider: ProviderKind,
   providerOptions?: ProviderStartOptions,
+  options?: { readonly ignoreMcpServers?: boolean },
 ): ProviderStartOptions | undefined {
   const normalized = normalizeProviderStartOptions(provider, providerOptions);
   if (!normalized) {
@@ -206,13 +207,43 @@ export function getProviderSessionRestartOptions(
 
   switch (provider) {
     case "codex":
-      return normalized.mcpServers ? { mcpServers: normalized.mcpServers } : undefined;
-    case "claudeAgent":
-      return normalized;
+      return !options?.ignoreMcpServers && normalized.mcpServers
+        ? { mcpServers: normalized.mcpServers }
+        : undefined;
+    case "claudeAgent": {
+      const claudeAgent = normalized.claudeAgent
+        ? {
+            ...normalized.claudeAgent,
+            ...(normalized.claudeAgent.subagentsEnabled === true
+              ? { subagentsEnabled: undefined }
+              : {}),
+            ...(normalized.claudeAgent.subagentModel === "inherit"
+              ? { subagentModel: undefined }
+              : {}),
+          }
+        : undefined;
+      const compactClaudeAgent = claudeAgent
+        ? Object.fromEntries(Object.entries(claudeAgent).filter(([, value]) => value !== undefined))
+        : undefined;
+      const result: ProviderStartOptions = {
+        ...(!options?.ignoreMcpServers && normalized.mcpServers
+          ? { mcpServers: normalized.mcpServers }
+          : {}),
+        ...(compactClaudeAgent && Object.keys(compactClaudeAgent).length > 0
+          ? { claudeAgent: compactClaudeAgent }
+          : {}),
+      };
+      return Object.keys(result).length > 0 ? result : undefined;
+    }
     case "cursor":
     case "opencode":
-    case "grok":
-      return normalized;
+    case "grok": {
+      if (!options?.ignoreMcpServers) {
+        return normalized;
+      }
+      const { mcpServers: _ignoredMcpServers, ...rest } = normalized;
+      return Object.keys(rest).length > 0 ? rest : undefined;
+    }
   }
 }
 

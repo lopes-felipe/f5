@@ -860,6 +860,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
         provider: "codex",
         threadId: asThreadId("thread-1"),
         cwd: "/tmp/project-send-turn",
+        model: "gpt-5.3-codex",
+        modelOptions: { codex: { reasoningEffort: "high" } },
+        providerOptions: { codex: { homePath: "/tmp/codex-recovery-home" } },
         projectTitle: "Project title",
         threadTitle: "Recovery thread",
         priorWorkSummary: "Earlier work",
@@ -886,6 +889,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
           projectTitle?: string;
           threadTitle?: string;
           priorWorkSummary?: string;
+          model?: string;
+          modelOptions?: { codex?: { reasoningEffort?: string } };
+          providerOptions?: { codex?: { homePath?: string } };
           resumeCursor?: unknown;
           threadId?: string;
         };
@@ -894,6 +900,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.projectTitle, "Project title");
         assert.equal(startPayload.threadTitle, "Recovery thread");
         assert.equal(startPayload.priorWorkSummary, "Earlier work");
+        assert.equal(startPayload.model, "gpt-5.3-codex");
+        assert.equal(startPayload.modelOptions?.codex?.reasoningEffort, "high");
+        assert.equal(startPayload.providerOptions?.codex?.homePath, "/tmp/codex-recovery-home");
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
@@ -1006,6 +1015,65 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.deepEqual(startPayload.restoredTasks, ["[pending] Finish the task"]);
         assert.equal(startPayload.cwd, "/tmp/project-first-turn");
         assert.equal(startPayload.providerOptions?.codex?.homePath, "/tmp/codex-home");
+      }
+    }),
+  );
+
+  it.effect("preserves absent start config fields and records sanitized clears as null", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-start-config");
+
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        model: "gpt-5.3-codex",
+        modelOptions: { codex: { reasoningEffort: "high" } },
+        providerOptions: { codex: { homePath: "/tmp/codex-start-config" } },
+        runtimeMode: "full-access",
+      });
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+
+      const preserved = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(preserved), true);
+      if (Option.isSome(preserved)) {
+        const payload = preserved.value.runtimePayload as {
+          startConfig?: Record<string, unknown>;
+        };
+        assert.deepEqual(payload.startConfig, {
+          providerOptions: { codex: { homePath: "/tmp/codex-start-config" } },
+          modelOptions: { codex: { reasoningEffort: "high" } },
+          model: "gpt-5.3-codex",
+        });
+      }
+
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        providerOptions: {
+          mcpServers: {
+            filesystem: { type: "stdio", command: "node" },
+          },
+        },
+        runtimeMode: "full-access",
+      });
+
+      const cleared = yield* runtimeRepository.getByThreadId({ threadId });
+      assert.equal(Option.isSome(cleared), true);
+      if (Option.isSome(cleared)) {
+        const payload = cleared.value.runtimePayload as {
+          startConfig?: Record<string, unknown>;
+        };
+        assert.deepEqual(payload.startConfig, {
+          providerOptions: null,
+          modelOptions: { codex: { reasoningEffort: "high" } },
+          model: "gpt-5.3-codex",
+        });
       }
     }),
   );

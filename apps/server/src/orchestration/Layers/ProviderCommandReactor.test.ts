@@ -166,6 +166,10 @@ describe("ProviderCommandReactor", () => {
         projectId:
           binding.projectId !== undefined ? binding.projectId : (existing?.projectId ?? null),
         provider: binding.provider,
+        providerInstanceId:
+          binding.providerInstanceId !== undefined
+            ? binding.providerInstanceId
+            : (existing?.providerInstanceId ?? null),
         mcpEffectiveConfigVersion:
           binding.mcpEffectiveConfigVersion !== undefined
             ? binding.mcpEffectiveConfigVersion
@@ -210,6 +214,13 @@ describe("ProviderCommandReactor", () => {
         typeof input.model === "string"
           ? input.model
           : undefined;
+      const providerInstanceId =
+        typeof input === "object" &&
+        input !== null &&
+        "providerInstanceId" in input &&
+        typeof input.providerInstanceId === "string"
+          ? ProviderInstanceId.makeUnsafe(input.providerInstanceId)
+          : undefined;
       const threadId =
         typeof input === "object" &&
         input !== null &&
@@ -219,6 +230,7 @@ describe("ProviderCommandReactor", () => {
           : ThreadId.makeUnsafe(`thread-${sessionIndex}`);
       const session: ProviderSession = {
         provider,
+        ...(providerInstanceId ? { providerInstanceId } : {}),
         status: "ready" as const,
         runtimeMode:
           typeof input === "object" &&
@@ -239,7 +251,14 @@ describe("ProviderCommandReactor", () => {
         createdAt: now,
         updatedAt: now,
       };
-      runtimeSessions.push(session);
+      const existingSessionIndex = runtimeSessions.findIndex(
+        (entry) => entry.threadId === session.threadId,
+      );
+      if (existingSessionIndex >= 0) {
+        runtimeSessions.splice(existingSessionIndex, 1, session);
+      } else {
+        runtimeSessions.push(session);
+      }
       const projectId =
         typeof input === "object" &&
         input !== null &&
@@ -247,12 +266,42 @@ describe("ProviderCommandReactor", () => {
         typeof input.projectId === "string"
           ? ProjectId.makeUnsafe(input.projectId)
           : null;
+      const previousRuntimePayload = persistedBindings.get(threadId)?.runtimePayload;
+      const previousStartConfig =
+        isRecord(previousRuntimePayload) && isRecord(previousRuntimePayload.startConfig)
+          ? previousRuntimePayload.startConfig
+          : {};
+      const inputProviderOptions =
+        typeof input === "object" && input !== null && "providerOptions" in input
+          ? input.providerOptions
+          : undefined;
+      const persistedProviderOptions = isRecord(inputProviderOptions)
+        ? Object.fromEntries(
+            Object.entries(inputProviderOptions).filter(([key]) => key !== "mcpServers"),
+          )
+        : undefined;
+      const startConfig =
+        typeof input === "object" && input !== null
+          ? {
+              ...previousStartConfig,
+              ...("providerOptions" in input
+                ? {
+                    providerOptions:
+                      persistedProviderOptions && Object.keys(persistedProviderOptions).length > 0
+                        ? persistedProviderOptions
+                        : null,
+                  }
+                : {}),
+              ...("modelOptions" in input ? { modelOptions: input.modelOptions ?? null } : {}),
+              ...("model" in input ? { model: input.model ?? null } : {}),
+            }
+          : previousStartConfig;
       const runtimePayload =
         typeof input === "object" && input !== null
           ? {
               ...("cwd" in input ? { cwd: input.cwd ?? null } : {}),
               ...(model !== undefined ? { model } : {}),
-              ...("providerOptions" in input ? { providerOptions: input.providerOptions } : {}),
+              startConfig,
               instructionContext: {
                 ...("projectTitle" in input ? { projectTitle: input.projectTitle } : {}),
                 ...("threadTitle" in input ? { threadTitle: input.threadTitle } : {}),
@@ -284,6 +333,7 @@ describe("ProviderCommandReactor", () => {
         threadId,
         projectId,
         provider,
+        ...(providerInstanceId ? { providerInstanceId } : {}),
         runtimeMode: session.runtimeMode,
         status: "running",
         mcpEffectiveConfigVersion: projectId ? "mcp-version-test" : null,
@@ -1386,6 +1436,60 @@ describe("ProviderCommandReactor", () => {
       (harness.startSession.mock.calls[1]?.[1] as { resumeCursor?: unknown } | undefined)
         ?.resumeCursor,
     ).toEqual({ opaque: "cursor-1" });
+  });
+
+  it("does not restart when a workflow-shaped Claude turn is followed by UI defaults", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-workflow-shaped-claude-turn"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-workflow-shaped"),
+          role: "user",
+          text: "remember marmalade",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-ui-defaults-claude-turn"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        message: {
+          messageId: asMessageId("user-message-ui-defaults"),
+          role: "user",
+          text: "what word?",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        providerOptions: {
+          claudeAgent: {
+            subagentsEnabled: true,
+            subagentModel: "inherit",
+          },
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession).toHaveBeenCalledTimes(1);
+    expect(harness.runtimeSessions).toHaveLength(1);
   });
 
   it("does not restart claude sessions when provider options are semantically unchanged", async () => {

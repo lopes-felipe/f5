@@ -69,6 +69,12 @@ import {
   type ProviderCommandReactorShape,
 } from "../Services/ProviderCommandReactor.ts";
 import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
+import { resolveEffectiveStartConfig } from "../../provider/effectiveStartConfig.ts";
+import {
+  readPersistedCwd,
+  readPersistedProviderOptions,
+  readPersistedStartConfig,
+} from "../../provider/runtimePayload.ts";
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -89,27 +95,6 @@ type ProviderIntentEvent = Extract<
 function toNonEmptyProviderInput(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function readPersistedProviderOptions(runtimePayload: unknown): ProviderStartOptions | undefined {
-  if (!isRecord(runtimePayload)) {
-    return undefined;
-  }
-
-  const raw = "providerOptions" in runtimePayload ? runtimePayload.providerOptions : undefined;
-  return isRecord(raw) ? (raw as ProviderStartOptions) : undefined;
-}
-
-function readPersistedCwd(runtimePayload: unknown): string | undefined {
-  if (!isRecord(runtimePayload)) {
-    return undefined;
-  }
-  const raw = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
-  return typeof raw === "string" && raw.trim().length > 0 ? raw : undefined;
 }
 
 function providerDisplayName(provider: ProviderKind): string {
@@ -516,11 +501,60 @@ const make = Effect.gen(function* () {
         thread.modelSelection?.instanceId ??
         currentInstanceId;
       const preferredProvider: ProviderKind | undefined = options?.provider ?? currentProvider;
-      const desiredModel =
-        options?.model ??
-        options?.modelSelection?.model ??
-        thread.modelSelection?.model ??
-        sessionContext.desiredModel;
+      const persistedStartConfig = readPersistedStartConfig(persistedBinding?.runtimePayload);
+      const memoryStartConfig = {
+        ...(threadProviderOptions.has(threadId)
+          ? { providerOptions: threadProviderOptions.get(threadId) }
+          : {}),
+        ...(threadModelOptions.has(threadId)
+          ? { modelOptions: threadModelOptions.get(threadId) }
+          : {}),
+        ...((thread.modelSelection?.model ?? sessionContext.desiredModel)
+          ? { model: thread.modelSelection?.model ?? sessionContext.desiredModel }
+          : {}),
+      };
+      const commandModel = options?.model ?? options?.modelSelection?.model;
+      const commandStartConfig = {
+        ...(options && Object.hasOwn(options, "providerOptions")
+          ? { providerOptions: options.providerOptions }
+          : {}),
+        ...(options && Object.hasOwn(options, "modelOptions")
+          ? { modelOptions: options.modelOptions }
+          : {}),
+        ...(commandModel !== undefined ? { model: commandModel } : {}),
+      };
+      const baselineStartConfig = resolveEffectiveStartConfig({
+        memory: memoryStartConfig,
+        persisted: persistedStartConfig,
+      });
+      const unresolvedEffectiveStartConfig = resolveEffectiveStartConfig({
+        command: commandStartConfig,
+        memory: memoryStartConfig,
+        persisted: persistedStartConfig,
+      });
+      const effectiveStartConfig = {
+        ...unresolvedEffectiveStartConfig,
+        providerOptions: preferredProvider
+          ? normalizeProviderStartOptions(
+              preferredProvider,
+              unresolvedEffectiveStartConfig.providerOptions,
+            )
+          : unresolvedEffectiveStartConfig.providerOptions,
+      };
+      const desiredModel = effectiveStartConfig.model;
+      const recordEffectiveStartConfig = () =>
+        Effect.sync(() => {
+          if (effectiveStartConfig.providerOptions !== undefined) {
+            threadProviderOptions.set(threadId, effectiveStartConfig.providerOptions);
+          } else {
+            threadProviderOptions.delete(threadId);
+          }
+          if (effectiveStartConfig.modelOptions !== undefined) {
+            threadModelOptions.set(threadId, effectiveStartConfig.modelOptions);
+          } else {
+            threadModelOptions.delete(threadId);
+          }
+        });
       yield* Effect.annotateCurrentSpan({
         "provider.thread_id": threadId,
         "provider.operation": "ensure-session",
@@ -565,9 +599,11 @@ const make = Effect.gen(function* () {
               : thread.modelSelection !== undefined
                 ? { modelSelection: thread.modelSelection }
                 : {}),
-            ...(options?.modelOptions !== undefined ? { modelOptions: options.modelOptions } : {}),
-            ...(options?.providerOptions !== undefined
-              ? { providerOptions: options.providerOptions }
+            ...(effectiveStartConfig.modelOptions !== undefined
+              ? { modelOptions: effectiveStartConfig.modelOptions }
+              : {}),
+            ...(effectiveStartConfig.providerOptions !== undefined
+              ? { providerOptions: effectiveStartConfig.providerOptions }
               : {}),
             ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
             runtimeMode: desiredRuntimeMode,
@@ -581,7 +617,7 @@ const make = Effect.gen(function* () {
           session,
           createdAt,
           desiredRuntimeMode,
-          desiredModel,
+          ...(desiredModel ? { desiredModel } : {}),
           instructionContext,
         });
 
@@ -608,32 +644,43 @@ const make = Effect.gen(function* () {
           currentProvider === undefined
             ? "in-session"
             : (yield* providerService.getCapabilities(currentProvider)).sessionModelSwitch;
-        const requestedModel = options?.model ?? options?.modelSelection?.model;
+        const requestedModel = commandModel;
         const modelChanged =
           requestedModel !== undefined && requestedModel !== activeSession?.model;
         const shouldRestartForModelChange =
           modelChanged &&
           (sessionModelSwitch === "restart-session" || currentProvider === "claudeAgent");
-        const previousModelOptions = threadModelOptions.get(threadId);
         const shouldRestartForModelOptionsChange =
           currentProvider === "claudeAgent" &&
-          options?.modelOptions !== undefined &&
-          !areProviderModelOptionsEqual(previousModelOptions, options.modelOptions);
+          effectiveStartConfig.modelOptionsSource === "command" &&
+          !areProviderModelOptionsEqual(
+            baselineStartConfig.modelOptions,
+            effectiveStartConfig.modelOptions,
+          );
+        const ignorePersistedMcpServers = baselineStartConfig.providerOptionsSource === "persisted";
         const previousProviderOptions =
           currentProvider !== undefined
-            ? getProviderSessionRestartOptions(currentProvider, threadProviderOptions.get(threadId))
+            ? getProviderSessionRestartOptions(
+                currentProvider,
+                baselineStartConfig.providerOptions,
+                { ignoreMcpServers: ignorePersistedMcpServers },
+              )
             : undefined;
         const requestedProviderOptions =
-          currentProvider !== undefined && options?.providerOptions !== undefined
-            ? getProviderSessionRestartOptions(currentProvider, options.providerOptions)
+          currentProvider !== undefined && effectiveStartConfig.providerOptionsSource === "command"
+            ? getProviderSessionRestartOptions(
+                currentProvider,
+                effectiveStartConfig.providerOptions,
+                { ignoreMcpServers: ignorePersistedMcpServers },
+              )
             : undefined;
         const shouldRestartForProviderOptionsChange =
           currentProvider !== undefined &&
-          options?.providerOptions !== undefined &&
+          effectiveStartConfig.providerOptionsSource === "command" &&
           !areProviderStartOptionsEqual(previousProviderOptions, requestedProviderOptions);
         const claudeBinaryPathChanged =
           currentProvider === "claudeAgent" &&
-          options?.providerOptions !== undefined &&
+          effectiveStartConfig.providerOptionsSource === "command" &&
           previousProviderOptions?.claudeAgent?.binaryPath !==
             requestedProviderOptions?.claudeAgent?.binaryPath;
         const currentProjectMcpVersion = project
@@ -672,6 +719,7 @@ const make = Effect.gen(function* () {
           if (activeSession) {
             yield* bindSessionToThread(activeSession);
           }
+          yield* recordEffectiveStartConfig();
           yield* Effect.annotateCurrentSpan({
             "provider.session_decision": "reuse",
           });
@@ -743,6 +791,7 @@ const make = Effect.gen(function* () {
           runtimeMode: restartedSession.runtimeMode,
         });
         yield* bindSessionToThread(restartedSession);
+        yield* recordEffectiveStartConfig();
         const contextResetReason =
           resumeCursorDropReason ??
           (resumeCursor === undefined ? "missing-resume-cursor" : undefined);
@@ -758,11 +807,21 @@ const make = Effect.gen(function* () {
         return restartedSession.threadId;
       }
 
+      const persistedBindingInstanceId = persistedBinding
+        ? (persistedBinding.providerInstanceId ??
+          defaultInstanceForProvider(persistedBinding.provider))
+        : undefined;
+      const persistedProviderMatches =
+        persistedBinding !== undefined &&
+        (preferredProvider === undefined || persistedBinding.provider === preferredProvider);
+      const persistedInstanceMatches =
+        persistedBinding !== undefined &&
+        (preferredInstanceId === undefined || persistedBindingInstanceId === preferredInstanceId);
       const resumeCursorForStoppedSession =
-        thread.session?.status === "stopped" &&
+        persistedProviderMatches &&
+        persistedInstanceMatches &&
         persistedBinding?.resumeCursor !== undefined &&
-        persistedBinding.resumeCursor !== null &&
-        (options?.provider === undefined || options.provider === persistedBinding.provider)
+        persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor
           : undefined;
       yield* Effect.annotateCurrentSpan({
@@ -781,6 +840,7 @@ const make = Effect.gen(function* () {
           : {}),
       });
       yield* bindSessionToThread(startedSession);
+      yield* recordEffectiveStartConfig();
       if (
         resumeCursorForStoppedSession === undefined &&
         persistedBinding !== undefined &&
@@ -789,7 +849,11 @@ const make = Effect.gen(function* () {
         yield* appendProviderContextResetActivity({
           threadId,
           provider: startedSession.provider,
-          reason: "missing-resume-cursor",
+          reason: !persistedProviderMatches
+            ? "provider-changed"
+            : !persistedInstanceMatches
+              ? "instance-changed"
+              : "missing-resume-cursor",
           restartReasons: ["recover-session"],
           createdAt,
         });
@@ -832,19 +896,6 @@ const make = Effect.gen(function* () {
     const persistedBinding = yield* providerSessionDirectory
       .getBinding(input.threadId)
       .pipe(Effect.map(Option.getOrUndefined));
-    if (input.providerOptions !== undefined) {
-      const normalizedProviderOptions = activeSession?.provider
-        ? normalizeProviderStartOptions(activeSession.provider, input.providerOptions)
-        : input.providerOptions;
-      if (normalizedProviderOptions) {
-        threadProviderOptions.set(input.threadId, normalizedProviderOptions);
-      } else {
-        threadProviderOptions.delete(input.threadId);
-      }
-    }
-    if (input.modelOptions !== undefined) {
-      threadModelOptions.set(input.threadId, input.modelOptions);
-    }
     const readModel = yield* orchestrationEngine.getReadModel();
     const project = readModel.projects.find(
       (project) => project.id === thread.projectId && project.deletedAt === null,
@@ -1363,10 +1414,18 @@ const make = Effect.gen(function* () {
     const resumeCursor = cwdChanged
       ? undefined
       : (activeSession?.resumeCursor ?? binding.resumeCursor ?? undefined);
-    const providerOptions =
-      threadProviderOptions.get(binding.threadId) ??
-      readPersistedProviderOptions(binding.runtimePayload);
-    const modelOptions = threadModelOptions.get(binding.threadId);
+    const effectiveStartConfig = resolveEffectiveStartConfig({
+      memory: {
+        ...(threadProviderOptions.has(binding.threadId)
+          ? { providerOptions: threadProviderOptions.get(binding.threadId) }
+          : {}),
+        ...(threadModelOptions.has(binding.threadId)
+          ? { modelOptions: threadModelOptions.get(binding.threadId) }
+          : {}),
+        ...(sessionContext.desiredModel ? { model: sessionContext.desiredModel } : {}),
+      },
+      persisted: readPersistedStartConfig(binding.runtimePayload),
+    });
 
     yield* providerService.stopSession({ threadId: binding.threadId }).pipe(
       Effect.catchCause((cause) =>
@@ -1383,9 +1442,13 @@ const make = Effect.gen(function* () {
       provider: "claudeAgent",
       providerInstanceId: binding.providerInstanceId ?? defaultInstanceForProvider("claudeAgent"),
       ...sessionContext.instructionContext,
-      ...(sessionContext.desiredModel ? { model: sessionContext.desiredModel } : {}),
-      ...(modelOptions !== undefined ? { modelOptions } : {}),
-      ...(providerOptions !== undefined ? { providerOptions } : {}),
+      ...(effectiveStartConfig.model ? { model: effectiveStartConfig.model } : {}),
+      ...(effectiveStartConfig.modelOptions !== undefined
+        ? { modelOptions: effectiveStartConfig.modelOptions }
+        : {}),
+      ...(effectiveStartConfig.providerOptions !== undefined
+        ? { providerOptions: effectiveStartConfig.providerOptions }
+        : {}),
       ...(resumeCursor !== undefined && resumeCursor !== null ? { resumeCursor } : {}),
       runtimeMode: sessionContext.desiredRuntimeMode,
     });
@@ -1395,7 +1458,7 @@ const make = Effect.gen(function* () {
       session: restartedSession,
       createdAt,
       desiredRuntimeMode: sessionContext.desiredRuntimeMode,
-      desiredModel: sessionContext.desiredModel,
+      ...(effectiveStartConfig.model ? { desiredModel: effectiveStartConfig.model } : {}),
       instructionContext: sessionContext.instructionContext,
     });
 
@@ -1557,14 +1620,7 @@ const make = Effect.gen(function* () {
           if (!thread?.session || thread.session.status === "stopped") {
             return;
           }
-          const cachedProviderOptions = threadProviderOptions.get(event.payload.threadId);
-          const cachedModelOptions = threadModelOptions.get(event.payload.threadId);
-          yield* ensureSessionForThread(event.payload.threadId, event.occurredAt, {
-            ...(cachedProviderOptions !== undefined
-              ? { providerOptions: cachedProviderOptions }
-              : {}),
-            ...(cachedModelOptions !== undefined ? { modelOptions: cachedModelOptions } : {}),
-          });
+          yield* ensureSessionForThread(event.payload.threadId, event.occurredAt);
           break;
         }
         case "thread.meta-updated": {
@@ -1572,14 +1628,7 @@ const make = Effect.gen(function* () {
           if (!thread?.session || thread.session.status === "stopped") {
             return;
           }
-          const cachedProviderOptions = threadProviderOptions.get(event.payload.threadId);
-          const cachedModelOptions = threadModelOptions.get(event.payload.threadId);
-          yield* ensureSessionForThread(event.payload.threadId, event.occurredAt, {
-            ...(cachedProviderOptions !== undefined
-              ? { providerOptions: cachedProviderOptions }
-              : {}),
-            ...(cachedModelOptions !== undefined ? { modelOptions: cachedModelOptions } : {}),
-          });
+          yield* ensureSessionForThread(event.payload.threadId, event.occurredAt);
           break;
         }
         case "thread.deleted":

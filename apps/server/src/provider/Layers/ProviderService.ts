@@ -13,6 +13,7 @@ import {
   NonNegativeInt,
   ProjectId,
   ProviderKind,
+  type ProviderModelOptions,
   ProviderStartOptions,
   ThreadId,
   ProviderInterruptTurnInput,
@@ -59,6 +60,19 @@ import {
   ProjectMcpConfigService,
   ProjectMcpConfigServiceError,
 } from "../../mcp/ProjectMcpConfigService.ts";
+import {
+  isRecord,
+  persistedStartConfigToRecord,
+  readPersistedCwd,
+  readPersistedInstructionContext,
+  readPersistedProviderOptions,
+  readPersistedRuntimePayloadRecord,
+  readPersistedStartConfig,
+  sanitizeProviderOptionsForPersistence,
+  startConfigValueOrUndefined,
+  type PersistedStartConfig,
+  type PersistedStartConfigValue,
+} from "../runtimePayload.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
@@ -139,19 +153,16 @@ function toRuntimeStatus(session: ProviderSession): "starting" | "running" | "st
 function toRuntimePayloadFromSession(
   session: ProviderSession,
   extra?: {
-    readonly providerOptions?: unknown;
+    readonly startConfig?: Record<string, unknown>;
     readonly instructionContext?: Partial<SharedInstructionInput> | null;
   },
 ): Record<string, unknown> {
-  const persistedProviderOptions = sanitizeProviderOptionsForPersistence(extra?.providerOptions);
   return {
     cwd: session.cwd ?? null,
     model: session.model ?? null,
     activeTurnId: session.activeTurnId ?? null,
     lastError: session.lastError ?? null,
-    ...(persistedProviderOptions !== undefined
-      ? { providerOptions: persistedProviderOptions }
-      : {}),
+    ...(extra?.startConfig !== undefined ? { startConfig: extra.startConfig } : {}),
     ...(extra?.instructionContext !== undefined
       ? { instructionContext: extra.instructionContext }
       : {}),
@@ -170,61 +181,6 @@ function mergeResolvedMcpProviderOptions(input: {
     ...input.providerOptions,
     mcpServers: input.projectMcpServers,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function sanitizeProviderOptionsForPersistence(
-  providerOptions: unknown,
-): Record<string, unknown> | undefined {
-  if (!isRecord(providerOptions)) {
-    return undefined;
-  }
-
-  const { mcpServers: _discardedMcpServers, ...rest } = providerOptions;
-  return Object.keys(rest).length > 0 ? rest : undefined;
-}
-
-function readPersistedProviderOptions(
-  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
-): Record<string, unknown> | undefined {
-  if (!isRecord(runtimePayload)) {
-    return undefined;
-  }
-  const raw = "providerOptions" in runtimePayload ? runtimePayload.providerOptions : undefined;
-  if (!isRecord(raw)) return undefined;
-  return raw as Record<string, unknown>;
-}
-
-function readPersistedCwd(
-  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
-): string | undefined {
-  if (!isRecord(runtimePayload)) {
-    return undefined;
-  }
-  const rawCwd = "cwd" in runtimePayload ? runtimePayload.cwd : undefined;
-  if (typeof rawCwd !== "string") return undefined;
-  const trimmed = rawCwd.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function readPersistedInstructionContext(
-  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
-): Partial<SharedInstructionInput> | undefined {
-  if (!isRecord(runtimePayload)) {
-    return undefined;
-  }
-  const raw =
-    "instructionContext" in runtimePayload ? runtimePayload.instructionContext : undefined;
-  return isRecord(raw) ? (raw as Partial<SharedInstructionInput>) : undefined;
-}
-
-function readPersistedRuntimePayloadRecord(
-  runtimePayload: ProviderRuntimeBinding["runtimePayload"],
-): Record<string, unknown> | undefined {
-  return isRecord(runtimePayload) ? runtimePayload : undefined;
 }
 
 function resolveBindingInstanceId(binding: {
@@ -317,8 +273,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       extra?: {
         readonly projectId?: ProjectId | null;
         readonly mcpEffectiveConfigVersion?: string | null;
-        readonly providerOptions?: unknown;
+        readonly startConfig?: Record<string, unknown>;
         readonly instructionContext?: Partial<SharedInstructionInput> | null;
+        readonly clearMissingResumeCursor?: boolean;
       },
     ) =>
       directory.upsert({
@@ -333,7 +290,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         ...(extra?.mcpEffectiveConfigVersion !== undefined
           ? { mcpEffectiveConfigVersion: extra.mcpEffectiveConfigVersion }
           : {}),
-        ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
+        ...(session.resumeCursor !== undefined
+          ? { resumeCursor: session.resumeCursor }
+          : extra?.clearMissingResumeCursor
+            ? { resumeCursor: null }
+            : {}),
         runtimePayload: toRuntimePayloadFromSession(session, extra),
       });
 
@@ -530,7 +491,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
 
         const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
-        const persistedProviderOptions = readPersistedProviderOptions(input.binding.runtimePayload);
+        const persistedStartConfig = readPersistedStartConfig(input.binding.runtimePayload);
+        const persistedProviderOptions = startConfigValueOrUndefined(
+          persistedStartConfig.providerOptions,
+        );
+        const persistedModelOptions = startConfigValueOrUndefined(
+          persistedStartConfig.modelOptions,
+        );
+        const persistedModel = startConfigValueOrUndefined(persistedStartConfig.model);
         const persistedInstructionContext = readPersistedInstructionContext(
           input.binding.runtimePayload,
         );
@@ -560,6 +528,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           providerInstanceId: bindingInstanceId,
           ...(persistedCwd ? { cwd: persistedCwd } : {}),
           ...recoveredInstructionContext,
+          ...(persistedModel ? { model: persistedModel } : {}),
+          ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
           ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
           runtimeMode: input.binding.runtimeMode ?? "full-access",
@@ -579,7 +549,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               ? { projectId: input.binding.projectId }
               : {}),
             mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
-            ...(persistedProviderOptions ? { providerOptions: persistedProviderOptions } : {}),
+            startConfig: persistedStartConfigToRecord(persistedStartConfig),
             ...(recoveredInstructionContext
               ? { instructionContext: recoveredInstructionContext }
               : {}),
@@ -740,6 +710,50 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: requestedInstanceId,
           };
           const adapter = yield* registry.getByInstance(requestedInstanceId);
+          const previousBinding = yield* directory
+            .getBinding(threadId)
+            .pipe(Effect.map(Option.getOrUndefined));
+          const sameProvenance =
+            previousBinding?.provider === resolvedProvider &&
+            resolveBindingInstanceId(previousBinding) === requestedInstanceId;
+          const previousStartConfig: PersistedStartConfig = sameProvenance
+            ? readPersistedStartConfig(previousBinding.runtimePayload)
+            : {
+                providerOptions: { state: "absent" },
+                modelOptions: { state: "absent" },
+                model: { state: "absent" },
+              };
+          const suppliedProviderOptions = Object.hasOwn(rawInput, "providerOptions");
+          const suppliedModelOptions = Object.hasOwn(rawInput, "modelOptions");
+          const suppliedModel = Object.hasOwn(rawInput, "model");
+          const sanitizedProviderOptions = sanitizeProviderOptionsForPersistence(
+            input.providerOptions,
+          );
+          const providerOptionsDimension: PersistedStartConfigValue<ProviderStartOptions> =
+            suppliedProviderOptions
+              ? sanitizedProviderOptions !== undefined
+                ? {
+                    state: "value",
+                    value: sanitizedProviderOptions as ProviderStartOptions,
+                  }
+                : { state: "cleared" }
+              : previousStartConfig.providerOptions;
+          const modelOptionsDimension: PersistedStartConfigValue<ProviderModelOptions> =
+            suppliedModelOptions
+              ? input.modelOptions !== undefined
+                ? { state: "value", value: input.modelOptions }
+                : { state: "cleared" }
+              : previousStartConfig.modelOptions;
+          const modelDimension: PersistedStartConfigValue<string> = suppliedModel
+            ? input.model !== undefined
+              ? { state: "value", value: input.model }
+              : { state: "cleared" }
+            : previousStartConfig.model;
+          const persistedStartConfig = persistedStartConfigToRecord({
+            providerOptions: providerOptionsDimension,
+            modelOptions: modelOptionsDimension,
+            model: modelDimension,
+          });
           const resolvedProjectMcp =
             input.projectId !== undefined
               ? yield* projectMcpConfigService
@@ -777,8 +791,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           yield* upsertSessionBinding(sessionWithInstance, threadId, {
             ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
             mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
-            providerOptions: input.providerOptions,
+            startConfig: persistedStartConfig,
             instructionContext: toInstructionContextFromSessionStartInput(input),
+            clearMissingResumeCursor: !sameProvenance,
           });
           yield* Effect.logInfo("provider service started provider session", {
             threadId,
