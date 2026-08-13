@@ -49,6 +49,18 @@ export function resolveAvailableWorkflowModelSlot(
     ...(slot.modelOptions && normalizedRequestedModel === selectedModel
       ? { modelOptions: slot.modelOptions }
       : {}),
+    ...(slot.providerOptions ? { providerOptions: slot.providerOptions } : {}),
+  };
+}
+
+export function workflowTurnProviderFields(
+  slot: WorkflowModelSlot,
+): Pick<WorkflowTurnStartCommand, "provider" | "model" | "modelOptions" | "providerOptions"> {
+  return {
+    provider: slot.provider,
+    model: slot.model,
+    ...(slot.modelOptions ? { modelOptions: slot.modelOptions } : {}),
+    ...(slot.providerOptions ? { providerOptions: slot.providerOptions } : {}),
   };
 }
 
@@ -65,15 +77,18 @@ export function resolveAvailableWorkflowTurnCommand(
       provider: command.provider,
       model: command.model,
       ...(command.modelOptions ? { modelOptions: command.modelOptions } : {}),
+      ...(command.providerOptions ? { providerOptions: command.providerOptions } : {}),
     },
     providers,
   );
-  const { modelOptions: _discardedModelOptions, ...rest } = command;
+  const {
+    modelOptions: _discardedModelOptions,
+    providerOptions: _preservedProviderOptions,
+    ...rest
+  } = command;
   return {
     ...rest,
-    provider: slot.provider,
-    model: slot.model,
-    ...(slot.modelOptions ? { modelOptions: slot.modelOptions } : {}),
+    ...workflowTurnProviderFields(slot),
   };
 }
 

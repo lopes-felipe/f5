@@ -52,6 +52,7 @@ import {
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
+  workflowTurnProviderFields,
   withWorkflowModelSelectionGuard,
 } from "../workflowModelSelection.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -1653,11 +1654,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }),
           attachments: [],
         },
-        provider: workflow.merge.mergeSlot.provider,
-        model: workflow.merge.mergeSlot.model,
-        ...(workflow.merge.mergeSlot.modelOptions
-          ? { modelOptions: workflow.merge.mergeSlot.modelOptions }
-          : {}),
+        ...workflowTurnProviderFields(workflow.merge.mergeSlot),
         titleSourceText: workflow.title,
         runtimeMode: DEFAULT_RUNTIME_MODE,
         interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
@@ -2003,11 +2000,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           text: buildImplementationRevisionPrompt({ reviews: reviewTexts }),
           attachments: [],
         },
-        provider: workflow.implementation.implementationSlot.provider,
-        model: workflow.implementation.implementationSlot.model,
-        ...(workflow.implementation.implementationSlot.modelOptions
-          ? { modelOptions: workflow.implementation.implementationSlot.modelOptions }
-          : {}),
+        ...workflowTurnProviderFields(workflow.implementation.implementationSlot),
         titleSourceText: workflow.title,
         runtimeMode: DEFAULT_RUNTIME_MODE,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -2110,11 +2103,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           text: latestUserMessage.text,
           attachments: latestUserMessage.attachments ?? [],
         },
-        provider: input.workflow.implementation.implementationSlot.provider,
-        model: input.workflow.implementation.implementationSlot.model,
-        ...(input.workflow.implementation.implementationSlot.modelOptions
-          ? { modelOptions: input.workflow.implementation.implementationSlot.modelOptions }
-          : {}),
+        ...workflowTurnProviderFields(input.workflow.implementation.implementationSlot),
         titleSourceText: input.workflow.title,
         runtimeMode: input.thread.runtimeMode,
         interactionMode: input.thread.interactionMode,
@@ -3131,6 +3120,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           provider: rawInput.provider,
           model: rawInput.model,
           ...(rawInput.modelOptions ? { modelOptions: rawInput.modelOptions } : {}),
+          ...(rawInput.providerOptions ? { providerOptions: rawInput.providerOptions } : {}),
         },
         providers,
       );
@@ -3141,6 +3131,9 @@ export const makeWorkflowService = Effect.gen(function* () {
         ...(implementationSlot.modelOptions
           ? { modelOptions: implementationSlot.modelOptions }
           : { modelOptions: undefined }),
+        ...(implementationSlot.providerOptions
+          ? { providerOptions: implementationSlot.providerOptions }
+          : { providerOptions: undefined }),
       };
       const workflow = yield* readWorkflow(orchestrationEngine, input.workflowId).pipe(
         Effect.mapError((error) => new Error(`Failed to load workflow: ${String(error)}`)),
@@ -3258,9 +3251,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           }),
           attachments: [],
         },
-        provider: input.provider,
-        model: input.model,
-        ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
+        ...workflowTurnProviderFields(implementationSlot),
         titleSourceText: implementationWorkflow.title,
         runtimeMode,
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -3278,6 +3269,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             provider: input.provider,
             model: input.model,
             ...(input.modelOptions ? { modelOptions: input.modelOptions } : {}),
+            ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
           },
           threadId: implementationThreadId,
           implementationTurnId: null,
@@ -3527,9 +3519,7 @@ function startAuthoringTurn({
       }),
       attachments: [],
     },
-    provider: branch.authorSlot.provider,
-    model: branch.authorSlot.model,
-    ...(branch.authorSlot.modelOptions ? { modelOptions: branch.authorSlot.modelOptions } : {}),
+    ...workflowTurnProviderFields(branch.authorSlot),
     titleSourceText: workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
@@ -3602,9 +3592,7 @@ function startReviewTurn({
       }),
       attachments: [],
     },
-    provider: reviewerSlot.provider,
-    model: reviewerSlot.model,
-    ...(reviewerSlot.modelOptions ? { modelOptions: reviewerSlot.modelOptions } : {}),
+    ...workflowTurnProviderFields(reviewerSlot),
     titleSourceText: workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
@@ -3640,9 +3628,7 @@ function startRevisionTurn({
       text: buildRevisionPrompt({ reviews }),
       attachments: [],
     },
-    provider: branch.authorSlot.provider,
-    model: branch.authorSlot.model,
-    ...(branch.authorSlot.modelOptions ? { modelOptions: branch.authorSlot.modelOptions } : {}),
+    ...workflowTurnProviderFields(branch.authorSlot),
     titleSourceText: workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
@@ -3714,9 +3700,7 @@ function startCodeReviewTurn({
       }),
       attachments: [],
     },
-    provider: reviewerSlot.provider,
-    model: reviewerSlot.model,
-    ...(reviewerSlot.modelOptions ? { modelOptions: reviewerSlot.modelOptions } : {}),
+    ...workflowTurnProviderFields(reviewerSlot),
     titleSourceText: workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,

@@ -42,6 +42,7 @@ import {
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
+  workflowTurnProviderFields,
   withWorkflowModelSelectionGuard,
 } from "../workflowModelSelection.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -804,11 +805,7 @@ function startInvestigationTurn(input: {
       }),
       attachments: [],
     },
-    provider: input.investigator.slot.provider,
-    model: input.investigator.slot.model,
-    ...(input.investigator.slot.modelOptions
-      ? { modelOptions: input.investigator.slot.modelOptions }
-      : {}),
+    ...workflowTurnProviderFields(input.investigator.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -866,11 +863,7 @@ function startCrossReviewTurn(input: {
       }),
       attachments: [],
     },
-    provider: input.investigator.slot.provider,
-    model: input.investigator.slot.model,
-    ...(input.investigator.slot.modelOptions
-      ? { modelOptions: input.investigator.slot.modelOptions }
-      : {}),
+    ...workflowTurnProviderFields(input.investigator.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -927,11 +920,7 @@ function startSelfReviewTurn(input: {
       }),
       attachments: [],
     },
-    provider: input.investigator.slot.provider,
-    model: input.investigator.slot.model,
-    ...(input.investigator.slot.modelOptions
-      ? { modelOptions: input.investigator.slot.modelOptions }
-      : {}),
+    ...workflowTurnProviderFields(input.investigator.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -988,11 +977,7 @@ function startSynthesisTurn(input: {
       }),
       attachments: [],
     },
-    provider: input.workflow.synthesis.slot.provider,
-    model: input.workflow.synthesis.slot.model,
-    ...(input.workflow.synthesis.slot.modelOptions
-      ? { modelOptions: input.workflow.synthesis.slot.modelOptions }
-      : {}),
+    ...workflowTurnProviderFields(input.workflow.synthesis.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,

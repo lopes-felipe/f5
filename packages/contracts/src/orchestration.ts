@@ -1,10 +1,11 @@
 import { Effect, Option, Schema, SchemaIssue, SchemaTransformation, Struct } from "effect";
 import { CodeReviewWorkflow, CodeReviewWorkflowId } from "./codeReviewWorkflow";
 import { InvestigationWorkflow, InvestigationWorkflowId } from "./investigationWorkflow";
-import { McpProjectServersConfig } from "./mcpServer";
 import { ProviderModelOptions, ProviderOptionSelections } from "./model";
 import { PlanningWorkflow, PlanningWorkflowId, WorkflowModelSlot } from "./planningWorkflow";
 import { ProviderInstanceId } from "./providerInstance";
+import { ProviderStartOptions } from "./providerStartOptions";
+export { ClaudeProviderStartOptions, ProviderStartOptions } from "./providerStartOptions";
 import {
   isKnownProviderKind as isKnownProviderKindValue,
   ProviderKind as ProviderKindSchema,
@@ -125,44 +126,6 @@ export const ModelSelection = ModelSelectionSource.pipe(
 );
 export type ModelSelection = typeof ModelSelection.Type;
 
-const CodexProviderStartOptions = Schema.Struct({
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  homePath: Schema.optional(TrimmedNonEmptyString),
-});
-
-export const ClaudeProviderStartOptions = Schema.Struct({
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  permissionMode: Schema.optional(TrimmedNonEmptyString),
-  maxThinkingTokens: Schema.optional(NonNegativeInt),
-  subagentsEnabled: Schema.optional(Schema.Boolean),
-  subagentModel: Schema.optional(TrimmedNonEmptyString),
-  launchArgs: Schema.optional(Schema.Record(Schema.String, Schema.NullOr(Schema.String))),
-});
-
-const CursorProviderStartOptions = Schema.Struct({
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  apiEndpoint: Schema.optional(TrimmedNonEmptyString),
-});
-
-const OpenCodeProviderStartOptions = Schema.Struct({
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-  serverUrl: Schema.optional(TrimmedNonEmptyString),
-  serverPassword: Schema.optional(TrimmedNonEmptyString),
-});
-
-const GrokProviderStartOptions = Schema.Struct({
-  binaryPath: Schema.optional(TrimmedNonEmptyString),
-});
-
-export const ProviderStartOptions = Schema.Struct({
-  mcpServers: Schema.optional(McpProjectServersConfig),
-  codex: Schema.optional(CodexProviderStartOptions),
-  claudeAgent: Schema.optional(ClaudeProviderStartOptions),
-  cursor: Schema.optional(CursorProviderStartOptions),
-  opencode: Schema.optional(OpenCodeProviderStartOptions),
-  grok: Schema.optional(GrokProviderStartOptions),
-});
-export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);
 export type RuntimeMode = typeof RuntimeMode.Type;
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
@@ -2356,6 +2319,7 @@ export const OrchestrationStartImplementationInput = Schema.Struct({
   provider: ProviderKind,
   model: TrimmedNonEmptyString,
   modelOptions: Schema.optional(ProviderModelOptions),
+  providerOptions: Schema.optional(ProviderStartOptions),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
   codeReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   envMode: Schema.Literals(["local", "worktree"]).pipe(

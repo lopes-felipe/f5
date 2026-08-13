@@ -15,6 +15,7 @@ import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { getModelPreferences, recordModelSelection } from "../../modelPreferencesStore";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
 import { getCustomModelOptionsByProvider, resolveComposerPickerModel } from "../ChatView.logic";
 import { Button } from "../ui/button";
 import { Checkbox } from "../ui/checkbox";
@@ -256,11 +257,18 @@ export function WorkflowImplementDialog(props: {
         selection,
         modelOptions,
       );
+      const providerOptions = resolveProviderOptionsForDispatch({
+        settings,
+        provider,
+        projectId: props.workflow.projectId,
+        availableModels: modelOptionsByProvider[provider],
+      });
       await api.orchestration.startImplementation({
         workflowId: props.workflow.id,
         provider,
         model: selection,
         ...(normalizedModelOptions ? { modelOptions: normalizedModelOptions } : {}),
+        ...(providerOptions ? { providerOptions } : {}),
         runtimeMode: requireApproval ? "approval-required" : "full-access",
         codeReviewEnabled,
         envMode,

@@ -3,6 +3,7 @@ import {
   type PlanningWorkflow,
   type PlanningWorkflowId,
   type ProviderModelOptions,
+  type ProviderStartOptions,
   type ProviderKind,
   type RuntimeMode,
   type ThreadId,
@@ -25,6 +26,7 @@ export interface WorkflowServiceShape {
     provider: ProviderKind;
     model: string;
     modelOptions?: ProviderModelOptions;
+    providerOptions?: ProviderStartOptions;
     runtimeMode?: RuntimeMode;
     codeReviewEnabled?: boolean;
     envMode?: "local" | "worktree";

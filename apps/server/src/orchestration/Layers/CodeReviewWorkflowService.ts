@@ -40,6 +40,7 @@ import {
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
+  workflowTurnProviderFields,
   withWorkflowModelSelectionGuard,
 } from "../workflowModelSelection.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
@@ -425,9 +426,7 @@ function startReviewerTurn(input: {
       }),
       attachments: [],
     },
-    provider: input.reviewer.slot.provider,
-    model: input.reviewer.slot.model,
-    ...(input.reviewer.slot.modelOptions ? { modelOptions: input.reviewer.slot.modelOptions } : {}),
+    ...workflowTurnProviderFields(input.reviewer.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -477,11 +476,7 @@ function startConsolidationTurn(input: {
       }),
       attachments: [],
     },
-    provider: input.workflow.consolidation.slot.provider,
-    model: input.workflow.consolidation.slot.model,
-    ...(input.workflow.consolidation.slot.modelOptions
-      ? { modelOptions: input.workflow.consolidation.slot.modelOptions }
-      : {}),
+    ...workflowTurnProviderFields(input.workflow.consolidation.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
     interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,

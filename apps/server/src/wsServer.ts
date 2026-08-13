@@ -2356,6 +2356,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             codeReviewEnabled: body.codeReviewEnabled,
             envMode: body.envMode,
             ...(body.modelOptions ? { modelOptions: body.modelOptions } : {}),
+            ...(body.providerOptions ? { providerOptions: body.providerOptions } : {}),
             ...(body.baseBranch ? { baseBranch: body.baseBranch } : {}),
           })
           .pipe(

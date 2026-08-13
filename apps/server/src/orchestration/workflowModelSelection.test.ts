@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveAvailableWorkflowModelSlot,
   resolveAvailableWorkflowTurnCommand,
+  workflowTurnProviderFields,
 } from "./workflowModelSelection";
 
 function claudeProvider(models: ReadonlyArray<string>): ServerProvider {
@@ -43,12 +44,14 @@ describe("resolveAvailableWorkflowModelSlot", () => {
           provider: "claudeAgent",
           model: "opus-5[1m]",
           modelOptions: { claudeAgent: { effort: "high", fastMode: true } },
+          providerOptions: { claudeAgent: { binaryPath: "/tmp/claude" } },
         },
         [claudeProvider(["claude-fable-5", "claude-opus-4-8"])],
       ),
     ).toEqual({
       provider: "claudeAgent",
       model: "claude-fable-5",
+      providerOptions: { claudeAgent: { binaryPath: "/tmp/claude" } },
     });
   });
 
@@ -59,6 +62,7 @@ describe("resolveAvailableWorkflowModelSlot", () => {
           provider: "claudeAgent",
           model: "opus-5[1m]",
           modelOptions: { claudeAgent: { effort: "high", fastMode: true } },
+          providerOptions: { claudeAgent: { subagentsEnabled: false } },
         },
         [claudeProvider(["claude-opus-5", "claude-fable-5"])],
       ),
@@ -66,6 +70,7 @@ describe("resolveAvailableWorkflowModelSlot", () => {
       provider: "claudeAgent",
       model: "claude-opus-5",
       modelOptions: { claudeAgent: { effort: "high", fastMode: true } },
+      providerOptions: { claudeAgent: { subagentsEnabled: false } },
     });
   });
 
@@ -83,6 +88,7 @@ describe("resolveAvailableWorkflowModelSlot", () => {
       provider: "claudeAgent",
       model: "claude-opus-5",
       modelOptions: { claudeAgent: { effort: "high", fastMode: true } },
+      providerOptions: { claudeAgent: { permissionMode: "plan" } },
       runtimeMode: "full-access",
       interactionMode: "default",
       createdAt: "2026-07-28T00:00:00.000Z",
@@ -96,6 +102,22 @@ describe("resolveAvailableWorkflowModelSlot", () => {
     ).toEqual({
       ...commandWithoutOptions,
       model: "claude-fable-5",
+    });
+  });
+
+  it("builds the complete provider fields for workflow turns", () => {
+    expect(
+      workflowTurnProviderFields({
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        modelOptions: { claudeAgent: { effort: "max" } },
+        providerOptions: { claudeAgent: { subagentsEnabled: false } },
+      }),
+    ).toEqual({
+      provider: "claudeAgent",
+      model: "claude-opus-5",
+      modelOptions: { claudeAgent: { effort: "max" } },
+      providerOptions: { claudeAgent: { subagentsEnabled: false } },
     });
   });
 });

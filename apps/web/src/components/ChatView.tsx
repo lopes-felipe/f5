@@ -45,7 +45,6 @@ import {
   readMcpStatusActivityPayload,
   readRuntimeConfiguredPayload,
 } from "@t3tools/shared/orchestrationActivityPayload";
-import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import {
   lazy,
@@ -188,7 +187,8 @@ import {
 import { SidebarTrigger } from "./ui/sidebar";
 import { newCommandId, newMessageId, newThreadId } from "~/lib/utils";
 import { readNativeApi } from "~/nativeApi";
-import { getClaudeProjectSettings, resolveThreadTitleModel, useAppSettings } from "../appSettings";
+import { resolveThreadTitleModel, useAppSettings } from "../appSettings";
+import { resolveProviderOptionsForDispatch } from "../providerOptionsForDispatch";
 import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
@@ -271,7 +271,6 @@ import {
   createCachedAbsolutePathComparisonNormalizer,
   deriveComposerSendState,
   getCustomModelOptionsByProvider,
-  resolveClaudeSubagentModel,
   identityAbsolutePathNormalizer,
   DISMISSED_PROVIDER_STATUS_KEY,
   DismissedProviderStatusSchema,
@@ -1358,75 +1357,25 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       ),
     [selectedModel, selectedProviderInstanceId, selectedProviderModelOptionsForDispatch],
   );
-  const activeProjectClaudeSettings = useMemo(
+  const providerOptionsForDispatch = useMemo(
     () =>
-      getClaudeProjectSettings(
-        {
-          claudeProjectSettings: settings.claudeProjectSettings,
-        },
-        activeProject?.id,
-      ),
-    [activeProject?.id, settings.claudeProjectSettings],
+      resolveProviderOptionsForDispatch({
+        settings,
+        provider: selectedProvider,
+        projectId: activeProject?.id,
+        availableModels: selectedProviderModels,
+      }),
+    [
+      activeProject?.id,
+      selectedProvider,
+      selectedProviderModels,
+      settings.claudeBinaryPath,
+      settings.claudeLaunchArgs,
+      settings.claudeProjectSettings,
+      settings.codexBinaryPath,
+      settings.codexHomePath,
+    ],
   );
-  const effectiveProjectClaudeSubagentModel = useMemo(
-    () =>
-      resolveClaudeSubagentModel(
-        activeProjectClaudeSettings.subagentModel,
-        selectedProvider === "claudeAgent" ? selectedProviderModels : EMPTY_PROVIDER_MODELS,
-      ),
-    [activeProjectClaudeSettings.subagentModel, selectedProvider, selectedProviderModels],
-  );
-  const providerOptionsForDispatch = useMemo(() => {
-    if (selectedProvider === "codex") {
-      if (!settings.codexBinaryPath && !settings.codexHomePath) {
-        return undefined;
-      }
-
-      return {
-        codex: {
-          ...(settings.codexBinaryPath ? { binaryPath: settings.codexBinaryPath } : {}),
-          ...(settings.codexHomePath ? { homePath: settings.codexHomePath } : {}),
-        },
-      };
-    }
-
-    if (selectedProvider === "claudeAgent" && activeProject?.id) {
-      const parsedLaunchArgs = parseClaudeLaunchArgs(settings.claudeLaunchArgs);
-      if (!parsedLaunchArgs.ok) {
-        // The settings page surfaces parse errors inline, but a thread may be
-        // started (or restarted) without the page ever being reopened. Emit a
-        // console warning so the silent drop is at least discoverable when
-        // debugging "my flags aren't being applied".
-        console.warn(
-          "[ChatView] Ignoring invalid claudeLaunchArgs — open Settings to fix:",
-          parsedLaunchArgs.error,
-        );
-      }
-      const launchArgs =
-        parsedLaunchArgs.ok && Object.keys(parsedLaunchArgs.args).length > 0
-          ? parsedLaunchArgs.args
-          : undefined;
-      return {
-        claudeAgent: {
-          ...(settings.claudeBinaryPath ? { binaryPath: settings.claudeBinaryPath } : {}),
-          subagentsEnabled: activeProjectClaudeSettings.subagentsEnabled,
-          subagentModel: effectiveProjectClaudeSubagentModel,
-          ...(launchArgs ? { launchArgs } : {}),
-        },
-      };
-    }
-
-    return undefined;
-  }, [
-    activeProject?.id,
-    activeProjectClaudeSettings.subagentsEnabled,
-    effectiveProjectClaudeSubagentModel,
-    selectedProvider,
-    settings.claudeBinaryPath,
-    settings.claudeLaunchArgs,
-    settings.codexBinaryPath,
-    settings.codexHomePath,
-  ]);
   const selectedModelForPicker = selectedModel;
   const selectedModelForPickerWithCustomFallback = useMemo(() => {
     const currentOptions = modelOptionsByInstance.get(selectedProviderInstanceId) ?? [];

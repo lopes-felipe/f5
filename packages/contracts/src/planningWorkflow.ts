@@ -9,6 +9,7 @@ import {
 } from "./baseSchemas";
 import { ProviderModelOptions } from "./model";
 import { ProviderKind } from "./providerKind";
+import { ProviderStartOptions } from "./providerStartOptions";
 
 export const PlanningWorkflowId = makeEntityId("PlanningWorkflowId");
 export type PlanningWorkflowId = typeof PlanningWorkflowId.Type;
@@ -59,6 +60,7 @@ export const WorkflowModelSlot = Schema.Struct({
   provider: ProviderKind,
   model: TrimmedNonEmptyString,
   modelOptions: Schema.optional(ProviderModelOptions),
+  providerOptions: Schema.optional(ProviderStartOptions),
 });
 export type WorkflowModelSlot = typeof WorkflowModelSlot.Type;
 

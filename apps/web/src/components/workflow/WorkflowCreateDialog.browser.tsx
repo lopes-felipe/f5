@@ -596,6 +596,9 @@ describe("WorkflowCreateDialog", () => {
         provider: "claudeAgent",
         model: "claude-opus-5",
         modelOptions: { claudeAgent: { fastMode: true } },
+        providerOptions: {
+          claudeAgent: { subagentsEnabled: true, subagentModel: "inherit" },
+        },
       });
     } finally {
       await screen.unmount();

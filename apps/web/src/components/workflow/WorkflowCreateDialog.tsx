@@ -14,6 +14,7 @@ import type {
   ProjectId,
   ProviderKind,
   ProviderModelOptions,
+  WorkflowModelSlot,
 } from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -59,6 +60,7 @@ import {
 } from "../../modelPreferencesStore";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
+import { resolveProviderOptionsForDispatch } from "../../providerOptionsForDispatch";
 import { basenameOfPath } from "../../vscode-icons";
 import {
   createCachedAbsolutePathComparisonNormalizer,
@@ -762,6 +764,33 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         requirementPrompt,
         attachedFilePathsSnapshot,
       );
+      const providerOptionsCache = new Map<ProviderKind, WorkflowModelSlot["providerOptions"]>();
+      const buildSlot = (
+        provider: ProviderKind,
+        model: ModelSlug,
+        rawModelOptions: ProviderModelOptions | undefined,
+      ): WorkflowModelSlot => {
+        const modelOptions = normalizeWorkflowSlotModelOptions(provider, model, rawModelOptions);
+        let providerOptions = providerOptionsCache.get(provider);
+        if (!providerOptionsCache.has(provider)) {
+          providerOptions = resolveProviderOptionsForDispatch({
+            settings,
+            provider,
+            projectId: props.projectId,
+            availableModels: modelOptionsByProvider[provider],
+          });
+          providerOptionsCache.set(provider, providerOptions);
+        }
+        return {
+          provider,
+          model,
+          ...(modelOptions ? { modelOptions } : {}),
+          ...(providerOptions ? { providerOptions } : {}),
+        };
+      };
+      const branchASlot = buildSlot(branchAProvider, branchASelection, branchAModelOptions);
+      const branchBSlot = buildSlot(branchBProvider, branchBSelection, branchBModelOptions);
+      const mergeSlot = buildSlot(mergeProvider, mergeSelection, mergeModelOptions);
       if (workflowType === "planning") {
         const result = await api.workflowPlatform.createRun({
           templateId: "builtin.planning.dual",
@@ -773,57 +802,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             titleGenerationModel,
             plansDirectory: plansDirectory.trim() || "plans",
             selfReviewEnabled,
-            branchA: {
-              provider: branchAProvider,
-              model: branchASelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                branchAProvider,
-                branchASelection,
-                branchAModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      branchAProvider,
-                      branchASelection,
-                      branchAModelOptions,
-                    ),
-                  }
-                : {}),
-            },
-            branchB: {
-              provider: branchBProvider,
-              model: branchBSelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                branchBProvider,
-                branchBSelection,
-                branchBModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      branchBProvider,
-                      branchBSelection,
-                      branchBModelOptions,
-                    ),
-                  }
-                : {}),
-            },
-            merge: {
-              provider: mergeProvider,
-              model: mergeSelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                mergeProvider,
-                mergeSelection,
-                mergeModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      mergeProvider,
-                      mergeSelection,
-                      mergeModelOptions,
-                    ),
-                  }
-                : {}),
-            },
+            branchA: branchASlot,
+            branchB: branchBSlot,
+            merge: mergeSlot,
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
@@ -837,57 +818,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             reviewPrompt: promptForSubmission,
             titleGenerationModel,
             ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
-            reviewerA: {
-              provider: branchAProvider,
-              model: branchASelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                branchAProvider,
-                branchASelection,
-                branchAModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      branchAProvider,
-                      branchASelection,
-                      branchAModelOptions,
-                    ),
-                  }
-                : {}),
-            },
-            reviewerB: {
-              provider: branchBProvider,
-              model: branchBSelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                branchBProvider,
-                branchBSelection,
-                branchBModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      branchBProvider,
-                      branchBSelection,
-                      branchBModelOptions,
-                    ),
-                  }
-                : {}),
-            },
-            consolidation: {
-              provider: mergeProvider,
-              model: mergeSelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                mergeProvider,
-                mergeSelection,
-                mergeModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      mergeProvider,
-                      mergeSelection,
-                      mergeModelOptions,
-                    ),
-                  }
-                : {}),
-            },
+            reviewerA: branchASlot,
+            reviewerB: branchBSlot,
+            consolidation: mergeSlot,
           },
         });
         props.onWorkflowCreated?.(result.workflowId);
@@ -908,57 +841,9 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
             titleGenerationModel,
             ...(reviewBranch.trim() ? { branch: reviewBranch.trim() } : {}),
             selfReviewEnabled: investigationSelfReviewEnabled,
-            investigatorA: {
-              provider: branchAProvider,
-              model: branchASelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                branchAProvider,
-                branchASelection,
-                branchAModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      branchAProvider,
-                      branchASelection,
-                      branchAModelOptions,
-                    ),
-                  }
-                : {}),
-            },
-            investigatorB: {
-              provider: branchBProvider,
-              model: branchBSelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                branchBProvider,
-                branchBSelection,
-                branchBModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      branchBProvider,
-                      branchBSelection,
-                      branchBModelOptions,
-                    ),
-                  }
-                : {}),
-            },
-            synthesis: {
-              provider: mergeProvider,
-              model: mergeSelection,
-              ...(normalizeWorkflowSlotModelOptions(
-                mergeProvider,
-                mergeSelection,
-                mergeModelOptions,
-              )
-                ? {
-                    modelOptions: normalizeWorkflowSlotModelOptions(
-                      mergeProvider,
-                      mergeSelection,
-                      mergeModelOptions,
-                    ),
-                  }
-                : {}),
-            },
+            investigatorA: branchASlot,
+            investigatorB: branchBSlot,
+            synthesis: mergeSlot,
           },
         });
         props.onWorkflowCreated?.(result.workflowId);

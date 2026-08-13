@@ -35,6 +35,9 @@ function makeWorkflowRecord(now: string) {
       authorSlot: {
         provider: "claudeAgent",
         model: "claude-sonnet-4-5",
+        providerOptions: {
+          claudeAgent: { subagentsEnabled: false },
+        },
       },
       authorThreadId: ThreadId.makeUnsafe("thread-b"),
       planFilePath: null,
@@ -77,6 +80,9 @@ describe("planningWorkflow contracts", () => {
     expect(workflow.id).toBe("workflow-1");
     expect(workflow.branchA.authorSlot.provider).toBe("codex");
     expect(workflow.selfReviewEnabled).toBe(true);
+    expect(workflow.branchB.authorSlot.providerOptions).toEqual({
+      claudeAgent: { subagentsEnabled: false },
+    });
     expect(workflow.merge.approvedPlanId).toBeNull();
     expect(workflow.implementation).toBeNull();
   });
