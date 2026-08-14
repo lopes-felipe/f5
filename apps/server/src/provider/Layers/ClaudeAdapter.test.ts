@@ -605,7 +605,7 @@ describe("ClaudeAdapterLive", () => {
           },
         ),
       );
-      assert.equal(editPermission.behavior, "allow");
+      assert.equal(editPermission?.behavior, "allow");
 
       const shellAbort = new AbortController();
       let shellResolved = false;
@@ -625,7 +625,7 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(shellResolved, false);
       shellAbort.abort();
       const shellResult = yield* Effect.promise(() => shellPermission);
-      assert.equal(shellResult.behavior, "deny");
+      assert.equal(shellResult?.behavior, "deny");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

@@ -86,6 +86,7 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         provider: "codex",
         threadId,
         status: "starting",
+        launchFingerprint: "launch-a",
         resumeCursor: {
           threadId: "provider-thread-runtime",
         },
@@ -109,6 +110,7 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
       if (Option.isSome(runtime)) {
         assert.equal(runtime.value.threadId, threadId);
         assert.equal(runtime.value.status, "running");
+        assert.equal(runtime.value.launchFingerprint, "launch-a");
         assert.deepEqual(runtime.value.resumeCursor, {
           threadId: "provider-thread-runtime",
         });
@@ -135,6 +137,7 @@ it.layer(makeDirectoryLayer(SqlitePersistenceMemory))("ProviderSessionDirectoryL
         status: "running",
         lastSeenAt: new Date().toISOString(),
         mcpEffectiveConfigVersion: null,
+        launchFingerprint: null,
         resumeCursor: null,
         runtimePayload: null,
       });

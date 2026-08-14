@@ -258,18 +258,22 @@ export function normalizeProviderStartOptions(
     case "codex": {
       const binaryPath = normalizeOptionalString(providerOptions?.codex?.binaryPath);
       const homePath = normalizeOptionalString(providerOptions?.codex?.homePath);
+      const launchArgs = providerOptions?.codex?.launchArgs
+        ?.map(normalizeOptionalString)
+        .filter((value): value is string => value !== undefined);
 
-      if (!binaryPath && !homePath && !hasMcpServers) {
+      if (!binaryPath && !homePath && !launchArgs?.length && !hasMcpServers) {
         return undefined;
       }
 
       return {
         ...(hasMcpServers ? { mcpServers: normalizedMcpServers } : {}),
-        ...(binaryPath || homePath
+        ...(binaryPath || homePath || launchArgs?.length
           ? {
               codex: {
                 ...(binaryPath ? { binaryPath } : {}),
                 ...(homePath ? { homePath } : {}),
+                ...(launchArgs?.length ? { launchArgs } : {}),
               },
             }
           : {}),
@@ -390,11 +394,13 @@ export function normalizeProviderStartOptions(
 export function readCodexEnvironmentOptions(providerOptions?: ProviderStartOptions): {
   readonly binaryPath?: string;
   readonly homePath?: string;
+  readonly launchArgs?: ReadonlyArray<string>;
 } {
   const normalized = normalizeProviderStartOptions("codex", providerOptions);
   return {
     ...(normalized?.codex?.binaryPath ? { binaryPath: normalized.codex.binaryPath } : {}),
     ...(normalized?.codex?.homePath ? { homePath: normalized.codex.homePath } : {}),
+    ...(normalized?.codex?.launchArgs ? { launchArgs: normalized.codex.launchArgs } : {}),
   };
 }
 
@@ -406,7 +412,7 @@ export function getProviderEnvironmentKey(
 
   switch (provider) {
     case "codex":
-      return `codex|binary:${normalized?.codex?.binaryPath ?? ""}|home:${normalized?.codex?.homePath ?? ""}`;
+      return `codex|binary:${normalized?.codex?.binaryPath ?? ""}|home:${normalized?.codex?.homePath ?? ""}|launchArgs:${JSON.stringify(normalized?.codex?.launchArgs ?? [])}`;
     case "claudeAgent": {
       const subagentsEnabled =
         normalized?.claudeAgent?.subagentsEnabled === true

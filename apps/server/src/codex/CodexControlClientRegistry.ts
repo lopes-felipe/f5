@@ -62,6 +62,7 @@ export function readCodexControlEnvironmentConfig(
     cwd,
     ...(environmentOptions.binaryPath ? { binaryPath: environmentOptions.binaryPath } : {}),
     ...(environmentOptions.homePath ? { homePath: environmentOptions.homePath } : {}),
+    ...(environmentOptions.launchArgs ? { launchArgs: environmentOptions.launchArgs } : {}),
     mcpServers: input.mcpServers ?? {},
     ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
     ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),

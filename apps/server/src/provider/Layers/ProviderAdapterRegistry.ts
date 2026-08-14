@@ -45,6 +45,7 @@ const makeProviderAdapterRegistry = Effect.gen(function* () {
               accentColor: instance.accentColor,
               enabled: instance.enabled,
               continuationIdentity: instance.continuationIdentity,
+              ...(instance.launchIdentity ? { launchIdentity: instance.launchIdentity } : {}),
             })
           : Effect.fail(new ProviderUnsupportedError({ provider: instanceId })),
       ),

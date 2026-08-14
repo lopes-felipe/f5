@@ -140,14 +140,8 @@ class FakeCodexManager extends CodexAppServerManager {
   );
 
   public runOneOffPromptImpl = vi.fn(
-    async (_input: {
-      prompt: string;
-      cwd?: string;
-      model?: string;
-      runtimeMode?: "approval-required" | "full-access";
-      providerOptions?: unknown;
-      timeoutMs?: number;
-    }): Promise<string> => "one-off-result",
+    async (_input: Parameters<CodexAppServerManager["runOneOffPrompt"]>[0]): Promise<string> =>
+      "one-off-result",
   );
 
   public stopAllImpl = vi.fn(() => undefined);
@@ -188,14 +182,9 @@ class FakeCodexManager extends CodexAppServerManager {
     return this.respondToUserInputImpl(threadId, requestId, answers);
   }
 
-  override runOneOffPrompt(input: {
-    prompt: string;
-    cwd?: string;
-    model?: string;
-    runtimeMode?: "approval-required" | "full-access";
-    providerOptions?: unknown;
-    timeoutMs?: number;
-  }): Promise<string> {
+  override runOneOffPrompt(
+    input: Parameters<CodexAppServerManager["runOneOffPrompt"]>[0],
+  ): Promise<string> {
     return this.runOneOffPromptImpl(input);
   }
 
@@ -330,6 +319,55 @@ validationLayer("CodexAdapterLive validation", (it) => {
         model: "gpt-5.3-codex",
         runtimeMode: "approval-required",
         timeoutMs: 5_000,
+      });
+    }),
+  );
+});
+
+const configuredManager = new FakeCodexManager();
+const configuredLayer = it.layer(
+  makeCodexAdapterLive({
+    manager: configuredManager,
+    defaultProviderOptions: {
+      codex: {
+        binaryPath: "/configured/codex",
+        homePath: "/configured/home",
+        launchArgs: ["--enable=configured"],
+      },
+    },
+    processEnvironment: { PATH: "/configured/bin" },
+  }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
+    Layer.provideMerge(providerSessionDirectoryTestLayer),
+    Layer.provideMerge(NodeServices.layer),
+  ),
+);
+
+configuredLayer("CodexAdapterLive configured launch identity", (it) => {
+  it.effect("hydrates instance defaults and appends explicit launch arguments", () =>
+    Effect.gen(function* () {
+      configuredManager.startSessionImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      yield* adapter.startSession({
+        provider: "codex",
+        threadId: asThreadId("thread-configured"),
+        providerOptions: {
+          codex: {
+            binaryPath: "/explicit/codex",
+            launchArgs: ["--disable=explicit"],
+          },
+        },
+        runtimeMode: "auto-accept-edits",
+      });
+
+      const managerInput = configuredManager.startSessionImpl.mock.calls[0]?.[0];
+      assert.deepStrictEqual(managerInput?.processEnvironment, { PATH: "/configured/bin" });
+      assert.deepStrictEqual(managerInput?.providerOptions, {
+        codex: {
+          binaryPath: "/explicit/codex",
+          homePath: "/configured/home",
+          launchArgs: ["--enable=configured", "--disable=explicit"],
+        },
       });
     }),
   );

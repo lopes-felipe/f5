@@ -10,7 +10,7 @@ import {
   killChildTree,
 } from "../codexAppServerManager.ts";
 import { createJsonRpcStdinWriter, type JsonRpcStdinWriter } from "./JsonRpcStdinWriter.ts";
-import { prependCodexCliTelemetryDisabledConfig } from "../provider/codexCliConfig.ts";
+import { buildCodexAppServerCommand } from "../provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { resolveCodexHome } from "../os-jank.ts";
 import { resolveInvocation } from "../spawn/resolveCommand.ts";
@@ -42,6 +42,7 @@ interface JsonRpcNotification {
 export interface CodexControlEnvironmentConfig {
   readonly binaryPath?: string;
   readonly homePath?: string;
+  readonly launchArgs?: ReadonlyArray<string>;
   readonly cwd: string;
   readonly mcpServers?: Record<string, CodexMcpServerEntry>;
   readonly mcpOAuthCallbackPort?: number;
@@ -229,7 +230,9 @@ export class CodexControlClient extends EventEmitter<{
       process.env,
       codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
     );
-    const childArgs = prependCodexCliTelemetryDisabledConfig(["app-server"], {
+    const appServerCommand = buildCodexAppServerCommand({
+      ...(environment.launchArgs ? { providerLaunchArgs: environment.launchArgs } : {}),
+      environment: childEnvironment,
       mcpServers: environment.mcpServers ?? {},
       ...(environment.mcpOAuthCallbackPort
         ? { mcpOAuthCallbackPort: environment.mcpOAuthCallbackPort }
@@ -238,7 +241,10 @@ export class CodexControlClient extends EventEmitter<{
         ? { mcpOAuthCallbackUrl: environment.mcpOAuthCallbackUrl }
         : {}),
     });
-    const invocation = resolveInvocation(binaryPath, childArgs, childEnvironment, {
+    if (appServerCommand.dropped.length > 0) {
+      console.warn("Ignored reserved Codex launch arguments", appServerCommand.dropped);
+    }
+    const invocation = resolveInvocation(binaryPath, appServerCommand.argv, childEnvironment, {
       cwd: environment.cwd,
     });
 

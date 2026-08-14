@@ -22,6 +22,7 @@ export interface ProviderRuntimeBinding {
   readonly adapterKey?: string;
   readonly status?: ProviderSessionRuntimeStatus;
   readonly mcpEffectiveConfigVersion?: string | null;
+  readonly launchFingerprint?: string | null;
   readonly resumeCursor?: unknown | null;
   readonly runtimePayload?: unknown | null;
   readonly runtimeMode?: RuntimeMode;

@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
+
 import {
   CodexSettings,
   MODEL_OPTIONS_BY_PROVIDER,
   ProviderDriverKind,
+  type ProviderStartOptions,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
@@ -18,12 +21,14 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
+import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import {
   codexContinuationIdentity,
   materializeCodexShadowHome,
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
+import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -56,12 +61,19 @@ const codexModels = (settings: CodexSettings): ServerProvider["models"] => {
   return [...builtIns, ...custom];
 };
 
-const providerOptionsFromSettings = (settings: CodexSettings) => ({
-  codex: {
-    ...(settings.binaryPath.trim().length > 0 ? { binaryPath: settings.binaryPath } : {}),
-    ...(settings.homePath.trim().length > 0 ? { homePath: settings.homePath } : {}),
-  },
-});
+export function providerOptionsFromCodexSettings(settings: CodexSettings): ProviderStartOptions {
+  const launchArgs = parseLaunchArgv(settings.launchArgs);
+  if (!launchArgs.ok) {
+    throw new Error(`Invalid Codex launch arguments: ${launchArgs.error}`);
+  }
+  return {
+    codex: {
+      ...(settings.binaryPath.trim().length > 0 ? { binaryPath: settings.binaryPath } : {}),
+      ...(settings.homePath.trim().length > 0 ? { homePath: settings.homePath } : {}),
+      ...(launchArgs.argv.length > 0 ? { launchArgs: [...launchArgs.argv] } : {}),
+    },
+  };
+}
 
 const toSnapshot = (input: {
   readonly instance: Pick<
@@ -115,7 +127,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
   },
   configSchema: CodexSettings,
   defaultConfig: (): CodexSettings => Schema.decodeSync(CodexSettings)({}),
-  create: ({ instanceId, displayName, accentColor, enabled, config }) =>
+  create: ({ instanceId, displayName, accentColor, environment, enabled, config }) =>
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const fileSystem = yield* FileSystem.FileSystem;
@@ -142,6 +154,28 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         homePath: homeLayout.effectiveHomePath ?? config.homePath,
       } satisfies CodexSettings;
+      const processEnvironment = mergeProviderInstanceEnvironment(environment);
+      const defaultProviderOptions = yield* Effect.try({
+        try: () => providerOptionsFromCodexSettings(effectiveConfig),
+        catch: (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          }),
+      });
+      const launchIdentity = createHash("sha256")
+        .update(
+          JSON.stringify({
+            version: 1,
+            providerOptions: defaultProviderOptions.codex ?? {},
+            environment: Object.entries(processEnvironment).toSorted(([left], [right]) =>
+              left.localeCompare(right),
+            ),
+          }),
+        )
+        .digest("hex");
       const instanceIdentity = {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -152,14 +186,15 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         "instanceId" | "driverKind" | "displayName" | "accentColor"
       >;
 
-      const adapter = yield* makeCodexAdapter(
-        eventLoggers.native
-          ? { nativeEventLogger: eventLoggers.native, previewMcpHttpServer }
-          : { previewMcpHttpServer },
-      );
-      const textGeneration = yield* makeCodexTextGeneration;
+      const adapter = yield* makeCodexAdapter({
+        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        previewMcpHttpServer,
+        defaultProviderOptions,
+        processEnvironment,
+      });
+      const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnvironment);
       const checkProvider = checkCodexProviderPreflight({
-        providerOptions: providerOptionsFromSettings(effectiveConfig),
+        providerOptions: defaultProviderOptions,
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -202,6 +237,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         instanceId,
         driverKind: DRIVER_KIND,
         continuationIdentity: codexContinuationIdentity(homeLayout),
+        launchIdentity,
         displayName,
         accentColor,
         enabled,

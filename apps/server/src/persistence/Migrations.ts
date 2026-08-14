@@ -74,6 +74,7 @@ import Migration0059 from "./Migrations/059_QueueReviewHardening.ts";
 import Migration0060 from "./Migrations/060_NextTurnQueueSchemaRepair.ts";
 import Migration0061 from "./Migrations/061_TurnDurabilitySchemaRepair.ts";
 import Migration0062 from "./Migrations/062_LegacyTurnQuiescenceBackfill.ts";
+import Migration0063 from "./Migrations/063_ProviderSessionLaunchFingerprint.ts";
 import { Effect } from "effect";
 
 /**
@@ -149,6 +150,7 @@ export const MIGRATIONS = {
   "60_NextTurnQueueSchemaRepair": Migration0060,
   "61_TurnDurabilitySchemaRepair": Migration0061,
   "62_LegacyTurnQuiescenceBackfill": Migration0062,
+  "63_ProviderSessionLaunchFingerprint": Migration0063,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

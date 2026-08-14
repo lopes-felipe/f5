@@ -6,6 +6,7 @@ import { McpProjectServersConfig } from "./mcpServer";
 const CodexProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
+  launchArgs: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
 });
 
 export const ClaudeProviderStartOptions = Schema.Struct({

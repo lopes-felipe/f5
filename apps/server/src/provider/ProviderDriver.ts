@@ -63,6 +63,8 @@ export interface ProviderInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
   readonly continuationIdentity: ProviderContinuationIdentity;
+  /** Opaque server-side identity for executable, argv, and environment defaults. */
+  readonly launchIdentity?: string;
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;

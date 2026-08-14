@@ -75,6 +75,7 @@ import {
   type PersistedStartConfig,
   type PersistedStartConfigValue,
 } from "../runtimePayload.ts";
+import { computeProviderLaunchFingerprint } from "../providerLaunchFingerprint.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
@@ -275,6 +276,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       extra?: {
         readonly projectId?: ProjectId | null;
         readonly mcpEffectiveConfigVersion?: string | null;
+        readonly launchFingerprint?: string | null;
         readonly startConfig?: Record<string, unknown>;
         readonly instructionContext?: Partial<SharedInstructionInput> | null;
         readonly clearMissingResumeCursor?: boolean;
@@ -291,6 +293,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         status: toRuntimeStatus(session),
         ...(extra?.mcpEffectiveConfigVersion !== undefined
           ? { mcpEffectiveConfigVersion: extra.mcpEffectiveConfigVersion }
+          : {}),
+        ...(extra?.launchFingerprint !== undefined
+          ? { launchFingerprint: extra.launchFingerprint }
           : {}),
         ...(session.resumeCursor !== undefined
           ? { resumeCursor: session.resumeCursor }
@@ -456,42 +461,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           "provider.thread_id": input.binding.threadId,
         });
         const adapter = yield* registry.getByInstance(bindingInstanceId);
+        const instanceInfo = yield* registry.getInstanceInfo(bindingInstanceId);
         const hasResumeCursor =
           input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
-        const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
-        if (hasActiveSession) {
-          const activeSessions = yield* adapter.listSessions();
-          const existing = activeSessions.find(
-            (session) => session.threadId === input.binding.threadId,
-          );
-          if (existing) {
-            yield* upsertSessionBinding(
-              { ...existing, providerInstanceId: bindingInstanceId },
-              input.binding.threadId,
-            );
-            yield* Effect.logInfo("provider service adopted existing provider session", {
-              operation: input.operation,
-              threadId: input.binding.threadId,
-              provider: existing.provider,
-              bindingStatus: input.binding.status ?? null,
-              hasResumeCursor: existing.resumeCursor !== undefined,
-            });
-            yield* analytics.record("provider.session.recovered", {
-              provider: existing.provider,
-              strategy: "adopt-existing",
-              hasResumeCursor: existing.resumeCursor !== undefined,
-            });
-            return { adapter, session: existing } as const;
-          }
-        }
-
-        if (!hasResumeCursor) {
-          return yield* toValidationError(
-            input.operation,
-            `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
-          );
-        }
-
         const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
         const persistedStartConfig = readPersistedStartConfig(input.binding.runtimePayload);
         const persistedProviderOptions = startConfigValueOrUndefined(
@@ -531,6 +503,58 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         if (unsupportedRuntimeMode) {
           return yield* toValidationError(input.operation, unsupportedRuntimeMode);
         }
+        const launchFingerprint = computeProviderLaunchFingerprint({
+          provider: input.binding.provider,
+          providerInstanceId: bindingInstanceId,
+          runtimeMode: recoveredRuntimeMode,
+          ...(persistedCwd ? { cwd: persistedCwd } : {}),
+          ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
+          ...(instanceInfo.launchIdentity
+            ? { instanceLaunchIdentity: instanceInfo.launchIdentity }
+            : {}),
+          mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+        });
+        const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
+        if (hasActiveSession && input.binding.launchFingerprint === launchFingerprint) {
+          const activeSessions = yield* adapter.listSessions();
+          const existing = activeSessions.find(
+            (session) => session.threadId === input.binding.threadId,
+          );
+          if (existing) {
+            yield* upsertSessionBinding(
+              { ...existing, providerInstanceId: bindingInstanceId },
+              input.binding.threadId,
+              { launchFingerprint },
+            );
+            yield* Effect.logInfo("provider service adopted existing provider session", {
+              operation: input.operation,
+              threadId: input.binding.threadId,
+              provider: existing.provider,
+              bindingStatus: input.binding.status ?? null,
+              hasResumeCursor: existing.resumeCursor !== undefined,
+            });
+            yield* analytics.record("provider.session.recovered", {
+              provider: existing.provider,
+              strategy: "adopt-existing",
+              hasResumeCursor: existing.resumeCursor !== undefined,
+            });
+            return { adapter, session: existing } as const;
+          }
+        } else if (hasActiveSession) {
+          yield* Effect.logWarning("provider launch identity changed; replacing active session", {
+            operation: input.operation,
+            threadId: input.binding.threadId,
+            provider: input.binding.provider,
+          });
+          yield* adapter.stopSession(input.binding.threadId);
+        }
+
+        if (!hasResumeCursor) {
+          return yield* toValidationError(
+            input.operation,
+            `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
+          );
+        }
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
@@ -559,6 +583,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               ? { projectId: input.binding.projectId }
               : {}),
             mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+            launchFingerprint,
             startConfig: persistedStartConfigToRecord(persistedStartConfig),
             ...(recoveredInstructionContext
               ? { instructionContext: recoveredInstructionContext }
@@ -794,6 +819,19 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               projectMcpServers: resolvedProjectMcp?.servers,
             }),
           };
+          const launchFingerprint = computeProviderLaunchFingerprint({
+            provider: resolvedProvider,
+            providerInstanceId: requestedInstanceId,
+            runtimeMode: input.runtimeMode,
+            ...(input.cwd ? { cwd: input.cwd } : {}),
+            ...(adapterInput.providerOptions
+              ? { providerOptions: adapterInput.providerOptions }
+              : {}),
+            ...(instanceInfo.launchIdentity
+              ? { instanceLaunchIdentity: instanceInfo.launchIdentity }
+              : {}),
+            mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+          });
           yield* stopStaleSessionsForThread({
             threadId,
             currentInstanceId: requestedInstanceId,
@@ -814,6 +852,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           yield* upsertSessionBinding(sessionWithInstance, threadId, {
             ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
             mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+            launchFingerprint,
             startConfig: persistedStartConfig,
             instructionContext: toInstructionContextFromSessionStartInput(input),
             clearMissingResumeCursor: !sameProvenance,

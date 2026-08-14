@@ -42,6 +42,17 @@ describe("normalizeProviderStartOptions (claudeAgent launchArgs)", () => {
   });
 });
 
+describe("normalizeProviderStartOptions (Codex launchArgs)", () => {
+  it("drops empty arrays and preserves argv ordering", () => {
+    expect(normalizeProviderStartOptions("codex", { codex: { launchArgs: [] } })).toBeUndefined();
+    expect(
+      normalizeProviderStartOptions("codex", {
+        codex: { launchArgs: [" --enable=one ", "--disable=two"] },
+      })?.codex?.launchArgs,
+    ).toEqual(["--enable=one", "--disable=two"]);
+  });
+});
+
 describe("getProviderSessionRestartOptions", () => {
   it("canonicalizes behaviorally neutral Claude defaults to omission", () => {
     expect(
@@ -116,6 +127,18 @@ describe("normalizeProviderStartOptions (MCP OAuth fields)", () => {
 });
 
 describe("getProviderEnvironmentKey includes launchArgs", () => {
+  it("distinguishes Codex argv values and ordering", () => {
+    const withoutArgs = getProviderEnvironmentKey("codex");
+    const withArgs = getProviderEnvironmentKey("codex", {
+      codex: { launchArgs: ["--enable=one"] },
+    });
+    const reordered = getProviderEnvironmentKey("codex", {
+      codex: { launchArgs: ["--disable=two", "--enable=one"] },
+    });
+    expect(withArgs).not.toBe(withoutArgs);
+    expect(reordered).not.toBe(withArgs);
+  });
+
   it("canonicalizes behaviorally neutral Claude defaults", () => {
     expect(
       getProviderEnvironmentKey("claudeAgent", {

@@ -34,6 +34,21 @@ export type ClaudeLaunchArgsParseResult =
   | ClaudeLaunchArgsParseSuccess
   | ClaudeLaunchArgsParseFailure;
 
+export interface LaunchArgvParseSuccess {
+  readonly ok: true;
+  readonly argv: ReadonlyArray<string>;
+}
+
+export interface LaunchArgvParseFailure {
+  readonly ok: false;
+  readonly error: string;
+}
+
+export type LaunchArgvParseResult = LaunchArgvParseSuccess | LaunchArgvParseFailure;
+
+export const MAX_LAUNCH_ARGS_CHARS = 32 * 1024;
+export const MAX_LAUNCH_ARG_TOKENS = 256;
+
 const FLAG_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9-]*$/;
 
 /**
@@ -103,23 +118,57 @@ function stripSurroundingQuotes(value: string): string {
 }
 
 /**
- * Tokenize a user-provided launch-args string into argv-style tokens,
- * honoring single and double quotes so values containing spaces survive
- * whole. Backslash escapes are treated as literal backslashes — users
- * should rely on quoting for values with spaces.
+ * Tokenize a user-provided launch-args string into argv-style tokens without
+ * invoking a shell. This intentionally performs no variable, command, or glob
+ * expansion. Backslashes escape the next character outside single quotes and
+ * the conventional quote/backslash characters inside double quotes.
  */
-function tokenize(raw: string): string[] {
+export function parseLaunchArgv(input: string | null | undefined): LaunchArgvParseResult {
+  const raw = input ?? "";
+  if (raw.includes("\0")) {
+    return { ok: false, error: "Launch arguments cannot contain NUL bytes." };
+  }
+  if (raw.length > MAX_LAUNCH_ARGS_CHARS) {
+    return {
+      ok: false,
+      error: `Launch arguments exceed the ${MAX_LAUNCH_ARGS_CHARS}-character limit.`,
+    };
+  }
+
   const tokens: string[] = [];
   let current = "";
   let quote: '"' | "'" | null = null;
   let inToken = false;
+
+  const pushToken = (): LaunchArgvParseFailure | undefined => {
+    tokens.push(current);
+    current = "";
+    inToken = false;
+    if (tokens.length > MAX_LAUNCH_ARG_TOKENS) {
+      return {
+        ok: false,
+        error: `Launch arguments exceed the ${MAX_LAUNCH_ARG_TOKENS}-token limit.`,
+      };
+    }
+    return undefined;
+  };
 
   for (let index = 0; index < raw.length; index += 1) {
     const char = raw[index]!;
     if (quote) {
       if (char === quote) {
         quote = null;
+        inToken = true;
         continue;
+      }
+      if (char === "\\" && quote === '"') {
+        const next = raw[index + 1];
+        if (next !== undefined && ['"', "\\", "$", "`"].includes(next)) {
+          current += next;
+          index += 1;
+          inToken = true;
+          continue;
+        }
       }
       current += char;
       inToken = true;
@@ -132,21 +181,34 @@ function tokenize(raw: string): string[] {
     }
     if (char === " " || char === "\t" || char === "\n" || char === "\r") {
       if (inToken) {
-        tokens.push(current);
-        current = "";
-        inToken = false;
+        const failure = pushToken();
+        if (failure) return failure;
       }
+      continue;
+    }
+    if (char === "\\") {
+      const next = raw[index + 1];
+      if (next === undefined) {
+        return { ok: false, error: "Launch arguments cannot end with an escape character." };
+      }
+      current += next;
+      index += 1;
+      inToken = true;
       continue;
     }
     current += char;
     inToken = true;
   }
 
+  if (quote) {
+    return { ok: false, error: `Unterminated ${quote === '"' ? "double" : "single"} quote.` };
+  }
   if (inToken) {
-    tokens.push(current);
+    const failure = pushToken();
+    if (failure) return failure;
   }
 
-  return tokens;
+  return { ok: true, argv: tokens };
 }
 
 /**
@@ -162,7 +224,11 @@ export function parseClaudeLaunchArgs(
     return { ok: true, args: {} };
   }
 
-  const tokens = tokenize(trimmed);
+  const parsedArgv = parseLaunchArgv(trimmed);
+  if (!parsedArgv.ok) {
+    return parsedArgv;
+  }
+  const tokens = parsedArgv.argv;
   const args: Record<string, string | null> = {};
 
   for (let index = 0; index < tokens.length; index += 1) {

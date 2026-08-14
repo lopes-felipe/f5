@@ -70,6 +70,7 @@ function toRuntimeBinding(
       runtimeMode: runtime.runtimeMode,
       status: runtime.status,
       mcpEffectiveConfigVersion: runtime.mcpEffectiveConfigVersion,
+      launchFingerprint: runtime.launchFingerprint,
       resumeCursor: runtime.resumeCursor,
       runtimePayload: runtime.runtimePayload,
       lastSeenAt: runtime.lastSeenAt,
@@ -130,6 +131,12 @@ const makeProviderSessionDirectory = Effect.gen(function* () {
           binding.mcpEffectiveConfigVersion !== undefined
             ? binding.mcpEffectiveConfigVersion
             : (existingRuntime?.mcpEffectiveConfigVersion ?? null),
+        launchFingerprint:
+          binding.launchFingerprint !== undefined
+            ? binding.launchFingerprint
+            : providerChanged
+              ? null
+              : (existingRuntime?.launchFingerprint ?? null),
         resumeCursor:
           binding.resumeCursor !== undefined
             ? binding.resumeCursor

@@ -1,9 +1,10 @@
-import { Effect, Stream } from "effect";
+import { Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import type { CodexMcpServerEntry } from "@t3tools/contracts";
 
 import { prependCodexCliTelemetryDisabledConfig } from "./codexCliConfig.ts";
+import { CodexLaunchArgsError, resolveCodexLaunchArgv } from "./codexLaunchArgs.ts";
 import { resolveCodexHome } from "../os-jank.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { CommandNotFoundError, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
@@ -18,6 +19,7 @@ export interface ProviderCliCommandResult {
 export interface ProviderCliCommandOptions {
   readonly binaryPath?: string | undefined;
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
+  readonly launchArgs?: ReadonlyArray<string> | undefined;
   readonly mcpServers?: Record<string, CodexMcpServerEntry> | null | undefined;
   readonly mcpOAuthCallbackPort?: number | null | undefined;
   readonly mcpOAuthCallbackUrl?: string | null | undefined;
@@ -51,15 +53,34 @@ export function runProviderCliCommand(
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const resolvedBinary = options?.binaryPath ?? binary;
+    const environment = buildProviderChildProcessEnv(process.env, options?.envOverrides);
+    const launchArgs =
+      binary === "codex"
+        ? yield* Effect.try({
+            try: () =>
+              resolveCodexLaunchArgv({
+                ...(options?.launchArgs ? { providerLaunchArgs: options.launchArgs } : {}),
+                environment,
+              }),
+            catch: (cause) =>
+              Schema.is(CodexLaunchArgsError)(cause)
+                ? cause
+                : new CodexLaunchArgsError({ message: String(cause) }),
+          })
+        : { argv: [], dropped: [] };
+    if (launchArgs.dropped.length > 0) {
+      yield* Effect.logWarning("ignored reserved Codex launch arguments", {
+        dropped: launchArgs.dropped,
+      });
+    }
     const commandArgs =
       binary === "codex"
-        ? prependCodexCliTelemetryDisabledConfig(args, {
+        ? prependCodexCliTelemetryDisabledConfig([...launchArgs.argv, ...args], {
             mcpServers: options?.mcpServers ?? null,
             mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
             mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
           })
         : [...args];
-    const environment = buildProviderChildProcessEnv(process.env, options?.envOverrides);
     const invocation = yield* resolveInvocationEffect(resolvedBinary, commandArgs, environment);
     const command = ChildProcess.make(invocation.file, [...invocation.args], {
       env: environment,

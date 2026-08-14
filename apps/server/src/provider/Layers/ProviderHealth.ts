@@ -352,6 +352,7 @@ function readCodexProviderOptions(providerOptions?: ProviderStartOptions): {
   readonly binaryPath?: string;
   readonly envOverrides?: NodeJS.ProcessEnv;
   readonly homePath?: string;
+  readonly launchArgs?: ReadonlyArray<string>;
 } {
   const binaryPath = providerOptions?.codex?.binaryPath;
   const homePath = providerOptions?.codex?.homePath;
@@ -360,6 +361,7 @@ function readCodexProviderOptions(providerOptions?: ProviderStartOptions): {
     ...(binaryPath ? { binaryPath } : {}),
     ...(envOverrides?.CODEX_HOME ? { homePath: envOverrides.CODEX_HOME } : {}),
     ...(envOverrides ? { envOverrides } : {}),
+    ...(providerOptions?.codex?.launchArgs ? { launchArgs: providerOptions.codex.launchArgs } : {}),
   };
 }
 

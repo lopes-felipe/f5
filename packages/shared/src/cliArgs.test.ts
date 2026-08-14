@@ -3,8 +3,43 @@ import { describe, expect, it } from "vitest";
 import {
   canonicalizeClaudeLaunchArgs,
   filterReservedClaudeLaunchArgs,
+  MAX_LAUNCH_ARGS_CHARS,
+  MAX_LAUNCH_ARG_TOKENS,
   parseClaudeLaunchArgs,
+  parseLaunchArgv,
 } from "./cliArgs";
+
+describe("parseLaunchArgv", () => {
+  it("handles whitespace, quotes, empty values, and documented escapes", () => {
+    expect(parseLaunchArgv(`--flag 'one two' "three \\"four\\"" escaped\\ value ''`)).toEqual({
+      ok: true,
+      argv: ["--flag", "one two", 'three "four"', "escaped value", ""],
+    });
+  });
+
+  it.each([
+    ["unterminated single quote", "'oops"],
+    ["unterminated double quote", '"oops'],
+    ["trailing escape", "oops\\"],
+    ["NUL byte", "oops\0value"],
+  ])("rejects %s", (_name, input) => {
+    expect(parseLaunchArgv(input)).toMatchObject({ ok: false });
+  });
+
+  it("bounds input length and token count", () => {
+    expect(parseLaunchArgv("x".repeat(MAX_LAUNCH_ARGS_CHARS + 1))).toMatchObject({ ok: false });
+    expect(
+      parseLaunchArgv(Array.from({ length: MAX_LAUNCH_ARG_TOKENS + 1 }, () => "x").join(" ")),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("does not perform shell expansion", () => {
+    expect(parseLaunchArgv("$HOME *.ts $(whoami) `whoami`")).toEqual({
+      ok: true,
+      argv: ["$HOME", "*.ts", "$(whoami)", "`whoami`"],
+    });
+  });
+});
 
 describe("parseClaudeLaunchArgs", () => {
   it("returns an empty record for empty input", () => {
@@ -51,6 +86,10 @@ describe("parseClaudeLaunchArgs", () => {
       ok: true,
       args: { custom: "hello world" },
     });
+  });
+
+  it("surfaces shared argv syntax failures", () => {
+    expect(parseClaudeLaunchArgs('--custom "unterminated')).toMatchObject({ ok: false });
   });
 
   it("mixes flags and key/value pairs", () => {

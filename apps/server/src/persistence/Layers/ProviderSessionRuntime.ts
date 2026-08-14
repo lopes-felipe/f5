@@ -54,6 +54,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           status,
           last_seen_at,
           mcp_config_version,
+          launch_fingerprint,
           resume_cursor_json,
           runtime_payload_json
         )
@@ -67,6 +68,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           ${runtime.status},
           ${runtime.lastSeenAt},
           ${runtime.mcpEffectiveConfigVersion},
+          ${runtime.launchFingerprint},
           ${runtime.resumeCursor},
           ${runtime.runtimePayload}
         )
@@ -80,6 +82,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           status = excluded.status,
           last_seen_at = excluded.last_seen_at,
           mcp_config_version = excluded.mcp_config_version,
+          launch_fingerprint = excluded.launch_fingerprint,
           resume_cursor_json = excluded.resume_cursor_json,
           runtime_payload_json = excluded.runtime_payload_json
       `,
@@ -100,6 +103,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           status,
           last_seen_at AS "lastSeenAt",
           mcp_config_version AS "mcpEffectiveConfigVersion",
+          launch_fingerprint AS "launchFingerprint",
           resume_cursor_json AS "resumeCursor",
           runtime_payload_json AS "runtimePayload"
         FROM provider_session_runtime
@@ -122,6 +126,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           status,
           last_seen_at AS "lastSeenAt",
           mcp_config_version AS "mcpEffectiveConfigVersion",
+          launch_fingerprint AS "launchFingerprint",
           resume_cursor_json AS "resumeCursor",
           runtime_payload_json AS "runtimePayload"
         FROM provider_session_runtime
@@ -144,6 +149,7 @@ const makeProviderSessionRuntimeRepository = Effect.gen(function* () {
           status,
           last_seen_at AS "lastSeenAt",
           mcp_config_version AS "mcpEffectiveConfigVersion",
+          launch_fingerprint AS "launchFingerprint",
           resume_cursor_json AS "resumeCursor",
           runtime_payload_json AS "runtimePayload"
         FROM provider_session_runtime

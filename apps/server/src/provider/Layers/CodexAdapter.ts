@@ -10,6 +10,7 @@ import {
   type CanonicalItemType,
   type CanonicalRequestType,
   type ProviderEvent,
+  type ProviderStartOptions,
   type ProviderRuntimeEvent,
   type ProviderUserInputAnswers,
   RuntimeItemId,
@@ -61,6 +62,33 @@ export interface CodexAdapterLiveOptions {
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: EventNdjsonLogger;
   readonly previewMcpHttpServer?: PreviewMcpHttpServerShape;
+  readonly defaultProviderOptions?: ProviderStartOptions;
+  readonly processEnvironment?: NodeJS.ProcessEnv;
+}
+
+function mergeCodexProviderOptions(
+  defaults: ProviderStartOptions | undefined,
+  explicit: ProviderStartOptions | undefined,
+): ProviderStartOptions | undefined {
+  const defaultCodex = defaults?.codex;
+  const explicitCodex = explicit?.codex;
+  const launchArgs = [...(defaultCodex?.launchArgs ?? []), ...(explicitCodex?.launchArgs ?? [])];
+  const codex =
+    defaultCodex || explicitCodex || launchArgs.length > 0
+      ? {
+          ...defaultCodex,
+          ...explicitCodex,
+          ...(launchArgs.length > 0 ? { launchArgs } : {}),
+        }
+      : undefined;
+  if (!codex && !explicit?.mcpServers && !defaults?.mcpServers) {
+    return undefined;
+  }
+  return {
+    ...(defaults?.mcpServers ? { mcpServers: defaults.mcpServers } : {}),
+    ...(explicit?.mcpServers ? { mcpServers: explicit.mcpServers } : {}),
+    ...(codex ? { codex } : {}),
+  };
 }
 
 function toMessage(cause: unknown, fallback: string): string {
@@ -2077,7 +2105,11 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       };
 
       return Effect.gen(function* () {
-        const baseProviderMcpServers = input.providerOptions?.mcpServers;
+        const providerOptions = mergeCodexProviderOptions(
+          options?.defaultProviderOptions,
+          input.providerOptions,
+        );
+        const baseProviderMcpServers = providerOptions?.mcpServers;
         previewMcpSessions.get(input.threadId)?.dispose();
         previewMcpSessions.delete(input.threadId);
         previewMcpSession =
@@ -2136,8 +2168,9 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           ...(input.restoredTasks !== undefined ? { restoredTasks: input.restoredTasks } : {}),
           ...(input.sessionNotes !== undefined ? { sessionNotes: input.sessionNotes } : {}),
           ...(input.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
-          ...(input.providerOptions !== undefined
-            ? { providerOptions: input.providerOptions }
+          ...(providerOptions !== undefined ? { providerOptions } : {}),
+          ...(options?.processEnvironment !== undefined
+            ? { processEnvironment: options.processEnvironment }
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.model !== undefined ? { model: input.model } : {}),

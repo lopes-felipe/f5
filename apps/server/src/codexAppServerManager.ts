@@ -47,6 +47,7 @@ import {
   readCodexModelContextWindowCatalog,
 } from "./provider/modelContextWindowMetadata.ts";
 import { prependCodexCliTelemetryDisabledConfig } from "./provider/codexCliConfig";
+import { buildCodexAppServerCommand } from "./provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "./providerProcessEnv";
 import {
   fingerprintSupportedSlashCommands,
@@ -203,6 +204,7 @@ export interface CodexAppServerStartSessionInput {
   readonly mcpOAuthCallbackUrl?: string;
   readonly resumeCursor?: unknown;
   readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
+  readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly runtimeMode: RuntimeMode;
 }
 
@@ -731,18 +733,36 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
       });
-      const childEnvironment = buildProviderChildProcessEnv(process.env, {
-        ...input.mcpEnvironment,
-        ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
-      });
-      const childArgs = prependCodexCliTelemetryDisabledConfig(["app-server"], {
+      const childEnvironment = buildProviderChildProcessEnv(
+        input.processEnvironment ?? process.env,
+        {
+          ...input.mcpEnvironment,
+          ...(codexHomePath ? { CODEX_HOME: codexHomePath } : {}),
+        },
+      );
+      const appServerCommand = buildCodexAppServerCommand({
+        ...(codexOptions.launchArgs ? { providerLaunchArgs: codexOptions.launchArgs } : {}),
+        environment: childEnvironment,
         mcpServers: input.mcpServers ?? {},
         ...(input.mcpOAuthCallbackPort ? { mcpOAuthCallbackPort: input.mcpOAuthCallbackPort } : {}),
         ...(input.mcpOAuthCallbackUrl ? { mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl } : {}),
       });
-      const invocation = resolveInvocation(codexBinaryPath, childArgs, childEnvironment, {
-        cwd: resolvedCwd,
-      });
+      if (appServerCommand.dropped.length > 0) {
+        await this.runPromise(
+          Effect.logWarning("ignored reserved Codex launch arguments", {
+            threadId,
+            dropped: appServerCommand.dropped,
+          }),
+        );
+      }
+      const invocation = resolveInvocation(
+        codexBinaryPath,
+        appServerCommand.argv,
+        childEnvironment,
+        {
+          cwd: resolvedCwd,
+        },
+      );
       const child = spawn(invocation.file, [...invocation.args], {
         cwd: resolvedCwd,
         env: childEnvironment,
@@ -2355,6 +2375,7 @@ function normalizeProviderThreadId(value: string | undefined): string | undefine
 function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
   readonly binaryPath?: string;
   readonly homePath?: string;
+  readonly launchArgs?: ReadonlyArray<string>;
 } {
   const options = input.providerOptions?.codex;
   if (!options) {
@@ -2363,6 +2384,7 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
   return {
     ...(options.binaryPath ? { binaryPath: options.binaryPath } : {}),
     ...(options.homePath ? { homePath: options.homePath } : {}),
+    ...(options.launchArgs ? { launchArgs: options.launchArgs } : {}),
   };
 }
 

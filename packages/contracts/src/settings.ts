@@ -106,6 +106,7 @@ export const CodexSettings = Schema.Struct({
   binaryPath: makeBinaryPathSetting("codex"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   shadowHomePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  launchArgs: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CodexSettings = typeof CodexSettings.Type;
@@ -235,6 +236,7 @@ const CodexSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
   shadowHomePath: Schema.optionalKey(Schema.String),
+  launchArgs: Schema.optionalKey(Schema.String),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 

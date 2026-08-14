@@ -22,6 +22,7 @@ export interface ProviderInstanceRoutingInfo {
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;
   readonly continuationIdentity: ProviderContinuationIdentity;
+  readonly launchIdentity?: string;
 }
 
 /**

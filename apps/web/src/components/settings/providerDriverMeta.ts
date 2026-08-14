@@ -61,6 +61,13 @@ export const DRIVER_OPTIONS: readonly DriverOption[] = [
         description:
           "Account-specific Codex home. Keeps auth.json separate while sharing state from CODEX_HOME.",
       },
+      {
+        key: "launchArgs",
+        label: "Launch arguments",
+        placeholder: "e.g. --enable=feature-name",
+        description:
+          "Additional Codex flags. Use --flag=value for valued flags; app-managed security and session flags are ignored.",
+      },
     ],
   },
   {

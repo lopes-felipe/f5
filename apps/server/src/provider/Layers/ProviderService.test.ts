@@ -782,6 +782,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(Option.isSome(stoppedRuntime), true);
       if (Option.isSome(stoppedRuntime)) {
         assert.equal(stoppedRuntime.value.status, "stopped");
+        assert.match(stoppedRuntime.value.launchFingerprint ?? "", /^[a-f0-9]{64}$/);
         const payload = stoppedRuntime.value.runtimePayload;
         assert.equal(payload !== null && typeof payload === "object", true);
         if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {

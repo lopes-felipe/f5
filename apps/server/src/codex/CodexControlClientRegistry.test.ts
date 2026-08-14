@@ -137,6 +137,12 @@ describe("CodexControlClientRegistry", () => {
       readCodexControlEnvironmentConfig(
         {
           projectId: ProjectId.makeUnsafe("project-registry-env"),
+          providerOptions: {
+            codex: {
+              binaryPath: "/tmp/codex",
+              launchArgs: ["--enable=feature"],
+            },
+          },
           mcpServers: {},
           mcpOAuthCallbackPort: 3118,
           mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",
@@ -145,6 +151,8 @@ describe("CodexControlClientRegistry", () => {
       ),
     ).toEqual({
       cwd: "/tmp/repo",
+      binaryPath: "/tmp/codex",
+      launchArgs: ["--enable=feature"],
       mcpServers: {},
       mcpOAuthCallbackPort: 3118,
       mcpOAuthCallbackUrl: "http://127.0.0.1:3118/callback",

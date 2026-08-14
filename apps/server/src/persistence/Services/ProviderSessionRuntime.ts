@@ -33,6 +33,9 @@ export const ProviderSessionRuntime = Schema.Struct({
   mcpEffectiveConfigVersion: Schema.NullOr(TrimmedNonEmptyString).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  launchFingerprint: Schema.NullOr(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   resumeCursor: Schema.NullOr(Schema.Unknown),
   runtimePayload: Schema.NullOr(Schema.Unknown),
 });
