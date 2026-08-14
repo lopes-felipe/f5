@@ -3005,6 +3005,14 @@
   ],
   "olderBacklog": [
     {
+      "category": "codex-launch-arguments",
+      "selection": "Upstream 40c0ab088308fb010a3db488c545f10aa7179ed2 (#2892), which predates the frozen first-parent window",
+      "disposition": "ported",
+      "reason": "Reimplemented with f5-native argv validation, managed-flag precedence, provider-instance hydration, and persisted launch fingerprints.",
+      "upstreamShas": ["40c0ab088308fb010a3db488c545f10aa7179ed2"],
+      "f5Shas": ["75a825f28e168e459e5d217ca29f6550f14512ca"]
+    },
+    {
       "category": "pre-schema-ledger",
       "selection": "Upstream SHAs tracked before the frozen 500-commit window",
       "disposition": "deferred",

@@ -56,9 +56,11 @@ interface LedgerEntry {
 interface OlderBacklogCategory {
   readonly category: string;
   readonly selection: string;
-  readonly disposition: "not-applicable" | "deferred";
+  readonly disposition: Disposition;
   readonly reason: string;
   readonly upstreamShas?: ReadonlyArray<string>;
+  readonly f5Shas?: ReadonlyArray<string>;
+  readonly evidence?: ReadonlyArray<string>;
 }
 
 interface Ledger {
@@ -420,12 +422,43 @@ function validate(): void {
     if (!assertNonEmpty(category.reason)) {
       errors.push(`older-backlog category ${category.category} has no reason`);
     }
+    if (!DISPOSITIONS.has(category.disposition)) {
+      errors.push(`older-backlog category ${category.category} has an invalid disposition`);
+      continue;
+    }
+    const completed =
+      category.disposition === "ported" || category.disposition === "already-present";
+    if (completed && (!category.upstreamShas || category.upstreamShas.length === 0)) {
+      errors.push(`completed older-backlog category ${category.category} has no upstream SHA`);
+    }
+    if (completed && (!category.f5Shas || category.f5Shas.length === 0)) {
+      errors.push(`completed older-backlog category ${category.category} has no f5 SHA`);
+    }
+    if (
+      category.disposition === "already-present" &&
+      (!category.evidence || category.evidence.length === 0)
+    ) {
+      errors.push(`already-present older-backlog category ${category.category} has no evidence`);
+    }
     for (const sha of category.upstreamShas ?? []) {
       if (!SHA_PATTERN.test(sha)) errors.push(`older-backlog category has invalid SHA ${sha}`);
       if (manifestShas.has(sha))
         errors.push(`older-backlog SHA ${sha} overlaps the frozen manifest`);
       if (olderShas.has(sha)) errors.push(`duplicate older-backlog SHA ${sha}`);
       olderShas.add(sha);
+    }
+    for (const f5Sha of category.f5Shas ?? []) {
+      if (!SHA_PATTERN.test(f5Sha)) {
+        errors.push(`older-backlog category ${category.category} has invalid f5 SHA ${f5Sha}`);
+        continue;
+      }
+      try {
+        git(["cat-file", "-e", `${f5Sha}^{commit}`]);
+      } catch {
+        errors.push(
+          `older-backlog category ${category.category} references non-resolving f5 SHA ${f5Sha}`,
+        );
+      }
     }
   }
 
@@ -434,6 +467,9 @@ function validate(): void {
       const actual = frozenCommits(manifest.selection.headSha);
       if (JSON.stringify(actual) !== JSON.stringify(manifest.commits)) {
         errors.push("checked-in manifest differs from the frozen upstream commit set");
+      }
+      for (const sha of olderShas) {
+        git(["cat-file", "-e", `${sha}^{commit}`]);
       }
     } catch (error) {
       errors.push(`could not resolve frozen upstream history locally: ${String(error)}`);
