@@ -164,6 +164,7 @@ export const GitStatusResult = Schema.Struct({
     ),
     insertions: NonNegativeInt,
     deletions: NonNegativeInt,
+    countUnavailableReason: Schema.optionalKey(Schema.Literal("unborn_head")),
   }),
   hasUpstream: Schema.Boolean,
   aheadCount: NonNegativeInt,

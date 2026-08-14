@@ -153,6 +153,7 @@ import { getCustomModelOptionsByInstance } from "../modelSelection";
 import { useSettings } from "../hooks/useSettings";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import BranchToolbar from "./BranchToolbar";
+import { useChatViewBranchDriftGuard } from "./ChatViewBranchDriftGuard";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { selectThreadRightPanelState, useRightPanelStore } from "../rightPanelStore";
 import { canStartImplementation, workflowContainsThread } from "./workflow/workflowUtils";
@@ -658,6 +659,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();
+  const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(threadId);
   const composerDraft = useComposerThreadDraft(threadId);
   const prompt = composerDraft.prompt;
   const composerImages = composerDraft.images;
@@ -3931,6 +3933,14 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     if (!activeProject) return;
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
+    if (isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
+      const proceed = await guardBranchDrift({
+        cwd: gitCwd,
+        threadId: threadIdForSend,
+        recordedBranch: activeThread.branch,
+      });
+      if (!proceed) return;
+    }
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
     // cache can be stale after preload/restore, and the server has the
@@ -4360,6 +4370,14 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       }
 
       const threadIdForSend = activeThread.id;
+      if (activeThread.branch && gitCwd) {
+        const proceed = await guardBranchDrift({
+          cwd: gitCwd,
+          threadId: threadIdForSend,
+          recordedBranch: activeThread.branch,
+        });
+        if (!proceed) return;
+      }
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();
       const { text: outgoingMessageText, skillCall } = rewriteComposerRuntimeSkillInvocationForSend(
@@ -4502,6 +4520,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       composerMatchesClearedState,
       dispatchPendingTurnStartCommand,
       draftThread,
+      gitCwd,
+      guardBranchDrift,
       hasPendingTurnDispatch,
       isConnecting,
       isServerThread,
@@ -6067,6 +6087,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             />
           </Suspense>
         ) : null}
+
+        {branchDriftDialog}
 
         {expandedImage && (
           <ExpandedImageDialog

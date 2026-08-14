@@ -1046,6 +1046,67 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("CAS-updates a thread branch and rejects stale branch drift decisions", async () => {
+    const system = await createOrchestrationSystem();
+    const { engine } = system;
+    const projectId = asProjectId("project-branch-cas");
+    const threadId = ThreadId.makeUnsafe("thread-branch-cas");
+    const createdAt = now();
+
+    await system.run(
+      engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.makeUnsafe("cmd-project-branch-cas"),
+        projectId,
+        title: "Branch CAS",
+        workspaceRoot: "/tmp/project-branch-cas",
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-branch-cas"),
+        threadId,
+        projectId,
+        title: "branch-cas",
+        model: "gpt-5-codex",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        branch: "feature/original",
+        worktreePath: null,
+        createdAt,
+      }),
+    );
+    await system.run(
+      engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("cmd-thread-branch-cas-success"),
+        threadId,
+        branch: "feature/current",
+        expectedBranch: "feature/original",
+      }),
+    );
+
+    await expect(
+      system.run(
+        engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-thread-branch-cas-stale"),
+          threadId,
+          branch: "feature/stale",
+          expectedBranch: "feature/original",
+        }),
+      ),
+    ).rejects.toThrow("branch changed before metadata update");
+    expect(
+      (await system.run(engine.getReadModel())).threads.find((entry) => entry.id === threadId),
+    ).toMatchObject({ branch: "feature/current" });
+
+    await system.dispose();
+  });
+
   it("rejects duplicate thread creation", async () => {
     const system = await createOrchestrationSystem();
     const { engine } = system;

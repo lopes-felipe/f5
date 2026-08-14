@@ -740,6 +740,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Thread '${command.threadId}' archive state changed before metadata update.`,
         });
       }
+      if (command.expectedBranch !== undefined && thread.branch !== command.expectedBranch) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' branch changed before metadata update.`,
+        });
+      }
       if (
         command.expectedWorktreePath !== undefined &&
         thread.worktreePath !== command.expectedWorktreePath

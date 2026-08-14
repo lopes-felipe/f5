@@ -172,6 +172,9 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["diff", "--cached", "--numstat"])) {
         return { stdout: "3\t2\tsrc/a.ts\n" };
       }
+      if (argsEqual(input, ["diff", "HEAD", "--numstat"])) {
+        return { stdout: "3\t1\tsrc/a.ts\n2\t0\tnotes.txt\n" };
+      }
       return {};
     });
     const core = await makeCore(scripted.service);
@@ -187,8 +190,8 @@ describe("GitCore unit", () => {
           { path: "notes.txt", insertions: 2, deletions: 0 },
           { path: "src/a.ts", insertions: 7, deletions: 3 },
         ],
-        insertions: 9,
-        deletions: 3,
+        insertions: 5,
+        deletions: 1,
       },
       hasUpstream: true,
       aheadCount: 2,
@@ -229,6 +232,39 @@ describe("GitCore unit", () => {
       "origin",
       "+refs/heads/feature/cache:refs/remotes/origin/feature/cache",
     ]);
+    expect(
+      scripted.calls.filter((call) =>
+        argsEqual(call, ["symbolic-ref", "refs/remotes/origin/HEAD"]),
+      ),
+    ).toHaveLength(1);
+    expect(
+      scripted.calls.filter((call) => argsEqual(call, ["rev-parse", "--git-common-dir"])),
+    ).toHaveLength(1);
+    expect(scripted.calls.filter((call) => argsEqual(call, ["remote"]))).toHaveLength(1);
+  });
+
+  it("reports aggregate counts as unavailable for an unborn HEAD", async () => {
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["status", "--porcelain=2", "--branch"])) {
+        return {
+          stdout: "# branch.oid (initial)\n# branch.head main\n? README.md\n",
+        };
+      }
+      if (argsEqual(input, ["diff", "HEAD", "--numstat"])) {
+        return { code: 128, stderr: "fatal: ambiguous argument 'HEAD'" };
+      }
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    const status = await Effect.runPromise(core.statusDetails(process.cwd()));
+
+    expect(status.workingTree).toMatchObject({
+      insertions: 0,
+      deletions: 0,
+      countUnavailableReason: "unborn_head",
+    });
+    expect(status.workingTree.files).toEqual([{ path: "README.md", insertions: 0, deletions: 0 }]);
   });
 
   it("parses local and slash-containing remote names without pseudo refs", async () => {

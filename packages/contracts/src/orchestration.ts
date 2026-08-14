@@ -926,6 +926,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedArchivedAt: Schema.optional(IsoDateTime),
+  expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
 });
 
