@@ -69,6 +69,7 @@ import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runti
 import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
+import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 
 syncShellEnvironment();
 
@@ -2246,6 +2247,12 @@ function getIconOption(): { icon: string } | Record<string, never> {
   return iconPath ? { icon: iconPath } : {};
 }
 
+function mainRendererUrl(): string {
+  return isDevelopment
+    ? (process.env.VITE_DEV_SERVER_URL as string)
+    : `${DESKTOP_SCHEME}://app/index.html`;
+}
+
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1100,
@@ -2324,6 +2331,32 @@ function createWindow(): BrowserWindow {
     return { action: "deny" };
   });
 
+  const rendererCrashRecovery = new MainRendererCrashRecovery({
+    cleanupRendererResources: () => previewRuntime.resetRendererOwnedResources(),
+    reloadRenderer: async () => {
+      if (!window.isDestroyed()) {
+        await window.loadURL(mainRendererUrl());
+      }
+    },
+    showCrashScreen: async () => {
+      if (!window.isDestroyed()) {
+        await window.loadURL(mainRendererCrashScreenUrl(mainRendererUrl()));
+      }
+    },
+    reportError: (operation, error) => {
+      const message = formatErrorMessage(error);
+      console.error(`[renderer-recovery] ${operation} failed: ${message}`);
+      writeDesktopLogHeader(`renderer recovery ${operation} failed error=${message}`);
+    },
+  });
+  window.webContents.on("render-process-gone", (_event, details) => {
+    const reason = sanitizeLogValue(details.reason);
+    writeDesktopLogHeader(
+      `main renderer process gone reason=${reason} exitCode=${details.exitCode}`,
+    );
+    void rendererCrashRecovery.handleCrash();
+  });
+
   window.on("page-title-updated", (event) => {
     event.preventDefault();
     window.setTitle(APP_DISPLAY_NAME);
@@ -2336,14 +2369,13 @@ function createWindow(): BrowserWindow {
     window.show();
   });
 
+  void window.loadURL(mainRendererUrl());
   if (isDevelopment) {
-    void window.loadURL(process.env.VITE_DEV_SERVER_URL as string);
     window.webContents.openDevTools({ mode: "detach" });
-  } else {
-    void window.loadURL(`${DESKTOP_SCHEME}://app/index.html`);
   }
 
   window.on("closed", () => {
+    rendererCrashRecovery.dispose();
     if (mainWindow === window) {
       mainWindow = null;
     }

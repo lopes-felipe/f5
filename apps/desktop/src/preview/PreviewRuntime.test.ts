@@ -36,6 +36,7 @@ function makeGuest(options?: { attachFailures?: number }) {
   const guest = Object.assign(guestEvents, {
     debugger: debuggerApi,
     isDestroyed: () => false,
+    close: vi.fn(),
     capturePage: async () => ({
       getSize: () => ({ width: 640, height: 480 }),
       toPNG: () => Buffer.from([137, 80, 78, 71]),
@@ -155,6 +156,26 @@ describe("PreviewRuntime", () => {
 
     await runtime.discardRecordingsForTab("tab-1");
 
+    await expect(runtime.stopRecording(started.recordingId)).rejects.toThrow(
+      "Unknown preview recording",
+    );
+  });
+
+  it("clears renderer-owned guests, listeners, and partial recordings before main reload", async () => {
+    const { runtime, mock, stateDirectory } = makeRuntime();
+    await runtime.initialize();
+    const entry = runtime.ensureTab("tab-1");
+    const removeListener = vi.fn();
+    entry?.removeListeners.push(removeListener);
+    const started = await runtime.startRecording("tab-1");
+    await runtime.appendRecordingChunk(started.recordingId, new Uint8Array([1, 2, 3]));
+
+    await runtime.resetRendererOwnedResources();
+
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    expect(mock.guest.close).toHaveBeenCalledTimes(1);
+    expect(runtime.tabs.size).toBe(0);
+    expect(fs.readdirSync(path.join(stateDirectory, "preview-artifacts"))).toEqual([]);
     await expect(runtime.stopRecording(started.recordingId)).rejects.toThrow(
       "Unknown preview recording",
     );

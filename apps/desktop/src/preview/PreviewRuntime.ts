@@ -230,8 +230,23 @@ export class PreviewRuntime {
     );
   }
 
-  async dispose(): Promise<void> {
+  async resetRendererOwnedResources(): Promise<void> {
     await Promise.all([...this.#recordings.keys()].map((id) => this.discardRecording(id)));
+    for (const [tabId, entry] of this.tabs) {
+      for (const removeListener of entry.removeListeners.splice(0)) {
+        removeListener();
+      }
+      const guest = this.#getWebContents(tabId);
+      entry.webContentsId = null;
+      if (guest && !guest.isDestroyed()) {
+        guest.close();
+      }
+    }
+    this.tabs.clear();
+  }
+
+  async dispose(): Promise<void> {
+    await this.resetRendererOwnedResources();
     await this.#artifactStore.dispose();
   }
 
