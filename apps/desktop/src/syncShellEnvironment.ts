@@ -1,5 +1,8 @@
 import { readEnvironmentFromLoginShell, ShellEnvironmentReader } from "@t3tools/shared/shell";
-import { hydrateWindowsPath, type WindowsRegistryPathReader } from "@t3tools/shared/windowsPath";
+import {
+  ensureWindowsPathHydrated,
+  type WindowsRegistryPathReader,
+} from "@t3tools/shared/windowsPath";
 
 export function syncShellEnvironment(
   env: NodeJS.ProcessEnv = process.env,
@@ -7,23 +10,22 @@ export function syncShellEnvironment(
     platform?: NodeJS.Platform;
     readEnvironment?: ShellEnvironmentReader;
     readWindowsRegistryPaths?: WindowsRegistryPathReader;
-    windowsPathExists?: (path: string) => boolean;
+    windowsPathExists?: (path: string) => Promise<boolean>;
     warn?: (message: string) => void;
   } = {},
-): void {
+): Promise<void> {
   const platform = options.platform ?? process.platform;
   if (platform === "win32") {
-    hydrateWindowsPath(env, {
+    return ensureWindowsPathHydrated(env, {
       platform,
       ...(options.readWindowsRegistryPaths
         ? { readRegistryPaths: options.readWindowsRegistryPaths }
         : {}),
       ...(options.windowsPathExists ? { pathExists: options.windowsPathExists } : {}),
       warn: options.warn ?? ((message) => console.warn(`[environment] ${message}`)),
-    });
-    return;
+    }).then(() => undefined);
   }
-  if (platform !== "darwin") return;
+  if (platform !== "darwin") return Promise.resolve();
 
   try {
     const shell = env.SHELL ?? "/bin/zsh";
@@ -42,4 +44,5 @@ export function syncShellEnvironment(
   } catch {
     // Keep inherited environment if shell lookup fails.
   }
+  return Promise.resolve();
 }

@@ -3,11 +3,11 @@ import * as PathNode from "node:path";
 import { Effect, Path } from "effect";
 import { F5_HOME_DIR_NAME, USERDATA_STATE_DIR_NAME } from "@t3tools/shared/appStatePaths";
 import { readPathFromLoginShell } from "@t3tools/shared/shell";
-import { hydrateWindowsPath } from "@t3tools/shared/windowsPath";
+import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
-export function fixPath(): void {
+export async function fixPath(): Promise<void> {
   if (process.platform === "win32") {
-    hydrateWindowsPath(process.env, {
+    await ensureWindowsPathHydrated(process.env, {
       warn: (message) => console.warn(`[environment] ${message}`),
     });
     return;

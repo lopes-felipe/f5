@@ -1,5 +1,6 @@
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import * as NodePath from "node:path";
+import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 import { Effect } from "effect";
 
 const DEFAULT_WINDOWS_PATH_EXTENSIONS = [".COM", ".EXE", ".BAT", ".CMD"] as const;
@@ -354,11 +355,15 @@ export function resolveInvocationEffect(
   env: NodeJS.ProcessEnv = process.env,
   options: CommandResolutionOptions = {},
 ) {
-  return Effect.try({
-    try: () => resolveInvocation(command, args, env, options),
-    catch: (cause) =>
-      cause instanceof CommandNotFoundError
-        ? cause
-        : new CommandNotFoundError(command, String(cause)),
-  });
+  return Effect.promise(() => ensureWindowsPathHydrated(env)).pipe(
+    Effect.flatMap(() =>
+      Effect.try({
+        try: () => resolveInvocation(command, args, env, options),
+        catch: (cause) =>
+          cause instanceof CommandNotFoundError
+            ? cause
+            : new CommandNotFoundError(command, String(cause)),
+      }),
+    ),
+  );
 }

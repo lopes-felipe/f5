@@ -1,5 +1,6 @@
 import { type ChildProcess as ChildProcessHandle, spawn } from "node:child_process";
 import { killProcessTree } from "@t3tools/shared/processTree";
+import { ensureWindowsPathHydrated } from "@t3tools/shared/windowsPath";
 
 import { resolveInvocation } from "./spawn/resolveCommand.ts";
 
@@ -144,6 +145,7 @@ export async function runProcess(
   const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
   const outputMode = options.outputMode ?? "error";
   const environment = options.env ?? process.env;
+  await ensureWindowsPathHydrated(environment);
   const invocation = resolveInvocation(command, args, environment, { cwd: options.cwd });
 
   return new Promise<ProcessRunResult>((resolve, reject) => {

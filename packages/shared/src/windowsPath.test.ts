@@ -9,19 +9,19 @@ describe("Windows PATH hydration", () => {
     ).toBe("C:\\Tools;C:\\Windows\\System32;D:\\Node");
   });
 
-  it("replaces duplicate PATH key spellings and appends existing known directories", () => {
+  it("replaces duplicate PATH key spellings and appends existing known directories", async () => {
     const env: NodeJS.ProcessEnv = {
       Path: "C:\\Inherited",
       PATH: "C:\\Duplicate",
       APPDATA: "C:\\Users\\Test\\AppData\\Roaming",
     };
-    hydrateWindowsPath(env, {
+    await hydrateWindowsPath(env, {
       platform: "win32",
-      readRegistryPaths: () => ({
+      readRegistryPaths: async () => ({
         machine: "C:\\Windows\\System32",
         user: "c:\\inherited;D:\\UserTools",
       }),
-      pathExists: (candidate) => candidate.endsWith("\\npm"),
+      pathExists: async (candidate) => candidate.endsWith("\\npm"),
     });
     expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["PATH"]);
     expect(env.PATH).toBe(
@@ -29,30 +29,30 @@ describe("Windows PATH hydration", () => {
     );
   });
 
-  it("falls back to inherited PATH and warns when registry lookup fails", () => {
+  it("falls back to inherited PATH and warns when registry lookup fails", async () => {
     const warn = vi.fn();
     const env = { Path: "C:\\Inherited" };
     expect(
-      hydrateWindowsPath(env, {
+      await hydrateWindowsPath(env, {
         platform: "win32",
-        readRegistryPaths: () => undefined,
-        pathExists: () => false,
+        readRegistryPaths: async () => undefined,
+        pathExists: async () => false,
         warn,
       }),
     ).toBe("C:\\Inherited");
     expect(warn).toHaveBeenCalledOnce();
   });
 
-  it("finds native provider shims under the user-local bin directory", () => {
+  it("finds native provider shims under the user-local bin directory", async () => {
     const env: NodeJS.ProcessEnv = {
       PATH: "C:\\Windows\\System32",
       USERPROFILE: "C:\\Users\\Test",
     };
 
-    hydrateWindowsPath(env, {
+    await hydrateWindowsPath(env, {
       platform: "win32",
-      readRegistryPaths: () => undefined,
-      pathExists: (candidate) => candidate === "C:\\Users\\Test\\.local\\bin",
+      readRegistryPaths: async () => undefined,
+      pathExists: async (candidate) => candidate === "C:\\Users\\Test\\.local\\bin",
     });
 
     expect(env.PATH).toBe("C:\\Windows\\System32;C:\\Users\\Test\\.local\\bin");

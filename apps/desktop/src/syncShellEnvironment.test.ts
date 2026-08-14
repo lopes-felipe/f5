@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 
 describe("syncShellEnvironment", () => {
-  it("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", () => {
+  it("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", async () => {
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
       PATH: "/usr/bin",
@@ -13,7 +13,7 @@ describe("syncShellEnvironment", () => {
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
-    syncShellEnvironment(env, {
+    await syncShellEnvironment(env, {
       platform: "darwin",
       readEnvironment,
     });
@@ -23,7 +23,7 @@ describe("syncShellEnvironment", () => {
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
   });
 
-  it("preserves an inherited SSH_AUTH_SOCK value", () => {
+  it("preserves an inherited SSH_AUTH_SOCK value", async () => {
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
       PATH: "/usr/bin",
@@ -34,7 +34,7 @@ describe("syncShellEnvironment", () => {
       SSH_AUTH_SOCK: "/tmp/login-shell.sock",
     }));
 
-    syncShellEnvironment(env, {
+    await syncShellEnvironment(env, {
       platform: "darwin",
       readEnvironment,
     });
@@ -43,7 +43,7 @@ describe("syncShellEnvironment", () => {
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/inherited.sock");
   });
 
-  it("preserves inherited values when the login shell omits them", () => {
+  it("preserves inherited values when the login shell omits them", async () => {
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
       PATH: "/usr/bin",
@@ -53,7 +53,7 @@ describe("syncShellEnvironment", () => {
       PATH: "/opt/homebrew/bin:/usr/bin",
     }));
 
-    syncShellEnvironment(env, {
+    await syncShellEnvironment(env, {
       platform: "darwin",
       readEnvironment,
     });
@@ -62,7 +62,7 @@ describe("syncShellEnvironment", () => {
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/inherited.sock");
   });
 
-  it("does nothing outside macOS", () => {
+  it("does nothing outside macOS", async () => {
     const env: NodeJS.ProcessEnv = {
       SHELL: "/bin/zsh",
       PATH: "/usr/bin",
@@ -73,7 +73,7 @@ describe("syncShellEnvironment", () => {
       SSH_AUTH_SOCK: "/tmp/secretive.sock",
     }));
 
-    syncShellEnvironment(env, {
+    await syncShellEnvironment(env, {
       platform: "linux",
       readEnvironment,
     });
@@ -83,17 +83,25 @@ describe("syncShellEnvironment", () => {
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/inherited.sock");
   });
 
-  it("hydrates Windows PATH before the backend process starts", () => {
+  it("hydrates Windows PATH before the backend process starts without blocking the caller", async () => {
     const env: NodeJS.ProcessEnv = {
       Path: "C:\\Inherited",
       APPDATA: "C:\\Users\\Test\\AppData\\Roaming",
     };
 
-    syncShellEnvironment(env, {
+    let finishRegistryRead: ((value: { machine: string }) => void) | undefined;
+    const environmentReady = syncShellEnvironment(env, {
       platform: "win32",
-      readWindowsRegistryPaths: () => ({ machine: "C:\\Windows\\System32" }),
-      windowsPathExists: (candidate) => candidate.endsWith("\\npm"),
+      readWindowsRegistryPaths: () =>
+        new Promise((resolve) => {
+          finishRegistryRead = resolve;
+        }),
+      windowsPathExists: async (candidate) => candidate.endsWith("\\npm"),
     });
+
+    expect(env.PATH).toBeUndefined();
+    finishRegistryRead?.({ machine: "C:\\Windows\\System32" });
+    await environmentReady;
 
     expect(Object.keys(env).filter((key) => key.toLowerCase() === "path")).toEqual(["PATH"]);
     expect(env.PATH).toBe(

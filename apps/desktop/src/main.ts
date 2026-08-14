@@ -71,7 +71,7 @@ import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 
-syncShellEnvironment();
+const shellEnvironmentReady = syncShellEnvironment();
 
 const PICK_FOLDER_CHANNEL = "desktop:pick-folder";
 const CONFIRM_CHANNEL = "desktop:confirm";
@@ -2407,12 +2407,16 @@ async function bootstrap(): Promise<void> {
   await previewRuntime.initialize();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
-  startBackend();
-  writeDesktopLogHeader("bootstrap backend start requested");
   configureBackendRequestAuthentication();
   writeDesktopLogHeader("bootstrap backend request authentication configured");
   mainWindow = createWindow();
   writeDesktopLogHeader("bootstrap main window created");
+  await shellEnvironmentReady;
+  writeDesktopLogHeader("bootstrap shell environment ready");
+  if (!isQuitting) {
+    startBackend();
+    writeDesktopLogHeader("bootstrap backend start requested");
+  }
 }
 
 app.on("before-quit", () => {
