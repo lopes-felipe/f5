@@ -15,6 +15,7 @@ import type {
   PrHubAdvisoryRecommendation,
   TrackedPullRequest,
 } from "@t3tools/contracts";
+import { resolveSnoozePreset } from "../../lib/snoozePresets";
 
 import { ensureNativeApi } from "../../nativeApi";
 import { toastManager } from "../ui/toast";
@@ -230,7 +231,7 @@ export function mergeableLabel(mergeable: TrackedPullRequest["mergeable"]): stri
 }
 
 export function defaultSnoozeUntil(): string {
-  return new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
+  return resolveSnoozePreset("three-hours");
 }
 
 /** The two layouts the PR Hub can render. Persisted per-user in localStorage. */

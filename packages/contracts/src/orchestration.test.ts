@@ -368,6 +368,10 @@ it.effect("decodes threads without persisted token usage and defaults to null", 
     });
     assert.strictEqual(parsed.estimatedContextTokens, null);
     assert.strictEqual(parsed.modelContextWindowTokens, null);
+    assert.strictEqual(parsed.pinnedAt, undefined);
+    assert.strictEqual(parsed.pinOrderKey, undefined);
+    assert.strictEqual(parsed.snoozedUntil, undefined);
+    assert.strictEqual(parsed.snoozedAt, undefined);
   }),
 );
 
@@ -612,6 +616,8 @@ it.effect("defaults thread archivedAt to null for historical snapshots", () =>
     });
 
     assert.strictEqual(parsed.archivedAt, null);
+    assert.strictEqual(parsed.pinnedAt, undefined);
+    assert.strictEqual(parsed.snoozedUntil, undefined);
     assert.strictEqual(parsed.compaction, null);
     assert.strictEqual(parsed.tasksTurnId, null);
     assert.strictEqual(parsed.tasksUpdatedAt, null);

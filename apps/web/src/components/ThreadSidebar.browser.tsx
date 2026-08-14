@@ -1572,6 +1572,81 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("dispatches a revisioned full-list command when pinning from the thread menu", async () => {
+    installDesktopBridgeMock({
+      showContextMenu: (async () => "pin") as DesktopBridge["showContextMenu"],
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = { ...nextFixture.snapshot, pinRevision: 7 };
+      },
+    });
+
+    try {
+      const row = await waitForSidebarThreadRow(LONG_THREAD_TITLE);
+      const requestCount = wsRequests.length;
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: 30,
+          clientY: 30,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        const request = wsRequests
+          .slice(requestCount)
+          .find(
+            (entry) =>
+              entry._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (entry.command as { type?: string } | undefined)?.type === "thread.pins.replace",
+          );
+        expect(request).toBeTruthy();
+        expect(request?.command).toMatchObject({
+          threadId: THREAD_ID,
+          pinnedThreadIds: [THREAD_ID],
+          expectedRevision: 7,
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("groups snoozed threads under a collapsed per-project section", async () => {
+    const snoozedTitle = "Snoozed implementation";
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({
+            id: THREAD_ID,
+            title: snoozedTitle,
+            snoozedAt: NOW_ISO,
+            snoozedUntil: "2099-03-11T15:00:00.000Z",
+          }),
+        ]);
+      },
+    });
+
+    try {
+      const toggle = await waitForElement(
+        () => querySidebarButtonByText("Snoozed (1)"),
+        "Snoozed section toggle should render.",
+      );
+      expect(querySidebarThreadRowByTitle(snoozedTitle)).toBeNull();
+      toggle.click();
+      await waitForSidebarThreadRow(snoozedTitle);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("keeps a project draft visible in the collapsed preview when it would normally be truncated", async () => {
     const previewThreads = Array.from({ length: 8 }, (_, index) =>
       createSnapshotThread({

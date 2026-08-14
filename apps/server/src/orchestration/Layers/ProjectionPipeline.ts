@@ -638,6 +638,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             sessionNotes: null,
             threadReferences: event.payload.threadReferences ?? [],
             archivedAt: null,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: null,
+            snoozedAt: null,
             createdAt: event.payload.createdAt,
             lastInteractionAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -655,8 +659,23 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: event.payload.archivedAt,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: null,
+            snoozedAt: null,
             updatedAt: event.occurredAt,
           });
+          if (event.payload.pinRevision !== undefined) {
+            yield* sql`
+              UPDATE projection_thread_pin_state
+              SET revision = ${event.payload.pinRevision}
+              WHERE singleton_id = 1
+            `.pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.threadArchived:updatePinRevision"),
+              ),
+            );
+          }
           return;
         }
 
@@ -670,6 +689,103 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             archivedAt: null,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
+        case "thread.pins-replaced":
+        case "thread.legacy-pins-imported": {
+          const currentPins = yield* sql<{
+            readonly threadId: string;
+            readonly pinnedAt: string;
+          }>`
+            SELECT thread_id AS "threadId", pinned_at AS "pinnedAt"
+            FROM projection_threads
+            WHERE pinned_at IS NOT NULL
+          `.pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.threadPinsReplaced:readCurrentPins"),
+            ),
+          );
+          const pinnedAtByThreadId = new Map(
+            currentPins.map((row) => [row.threadId, row.pinnedAt] as const),
+          );
+          yield* sql`
+            UPDATE projection_threads
+            SET pinned_at = NULL, pin_order_key = NULL
+            WHERE pinned_at IS NOT NULL OR pin_order_key IS NOT NULL
+          `.pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.threadPinsReplaced:clearPins"),
+            ),
+          );
+          yield* Effect.forEach(
+            event.payload.pinnedThreadIds,
+            (threadId, pinOrderKey) =>
+              sql`
+                UPDATE projection_threads
+                SET
+                  pinned_at = ${pinnedAtByThreadId.get(threadId) ?? event.payload.updatedAt},
+                  pin_order_key = ${pinOrderKey},
+                  snoozed_until = NULL,
+                  snoozed_at = NULL
+                WHERE thread_id = ${threadId}
+              `.pipe(
+                Effect.mapError(
+                  toPersistenceSqlError("ProjectionPipeline.threadPinsReplaced:setPin"),
+                ),
+              ),
+            { concurrency: 1, discard: true },
+          );
+          yield* sql`
+            UPDATE projection_thread_pin_state
+            SET revision = ${event.payload.pinRevision}
+            WHERE singleton_id = 1
+          `.pipe(
+            Effect.mapError(
+              toPersistenceSqlError("ProjectionPipeline.threadPinsReplaced:updateRevision"),
+            ),
+          );
+          return;
+        }
+
+        case "thread.snoozed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: event.payload.snoozedUntil,
+            snoozedAt: event.payload.snoozedAt,
+            updatedAt: event.occurredAt,
+          });
+          if (event.payload.pinRevision !== undefined) {
+            yield* sql`
+              UPDATE projection_thread_pin_state
+              SET revision = ${event.payload.pinRevision}
+              WHERE singleton_id = 1
+            `.pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.threadSnoozed:updatePinRevision"),
+              ),
+            );
+          }
+          return;
+        }
+
+        case "thread.unsnoozed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            snoozedUntil: null,
+            snoozedAt: null,
             updatedAt: event.occurredAt,
           });
           return;

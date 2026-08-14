@@ -165,6 +165,56 @@ function makeEvent<TType extends OrchestrationEvent["type"]>(
 }
 
 describe("applyDomainEvent", () => {
+  it("applies revisioned pin ordering and snooze lifecycle events", () => {
+    const threadOne = makeThread({ id: ThreadId.makeUnsafe("thread-1") });
+    const threadTwo = makeThread({ id: ThreadId.makeUnsafe("thread-2") });
+    const pinned = applyDomainEvent(
+      makeState({ threads: [threadOne, threadTwo], pinRevision: 0 }),
+      makeEvent("thread.pins-replaced", {
+        threadId: threadOne.id,
+        pinnedThreadIds: [threadTwo.id, threadOne.id],
+        pinRevision: 1,
+        updatedAt: "2026-04-01T09:05:00.000Z",
+      }),
+    );
+    expect(pinned.pinRevision).toBe(1);
+    expect(pinned.threads.find((thread) => thread.id === threadTwo.id)?.pinOrderKey).toBe(0);
+    expect(pinned.threads.find((thread) => thread.id === threadOne.id)?.pinOrderKey).toBe(1);
+
+    const snoozed = applyDomainEvent(
+      pinned,
+      makeEvent(
+        "thread.snoozed",
+        {
+          threadId: threadOne.id,
+          snoozedAt: "2026-04-01T09:06:00.000Z",
+          snoozedUntil: "2026-04-01T12:00:00.000Z",
+          pinRevision: 2,
+        },
+        { sequence: 2 },
+      ),
+    );
+    expect(snoozed.pinRevision).toBe(2);
+    expect(snoozed.threads.find((thread) => thread.id === threadOne.id)).toMatchObject({
+      pinnedAt: null,
+      pinOrderKey: null,
+      snoozedUntil: "2026-04-01T12:00:00.000Z",
+    });
+
+    const awake = applyDomainEvent(
+      snoozed,
+      makeEvent(
+        "thread.unsnoozed",
+        { threadId: threadOne.id, unsnoozedAt: "2026-04-01T09:07:00.000Z" },
+        { sequence: 3 },
+      ),
+    );
+    expect(awake.threads.find((thread) => thread.id === threadOne.id)).toMatchObject({
+      snoozedUntil: null,
+      snoozedAt: null,
+    });
+  });
+
   it("marks newly created threads as detail-ready", () => {
     const next = applyDomainEvent(
       makeState({ threads: [] }),

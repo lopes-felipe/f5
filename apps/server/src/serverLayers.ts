@@ -377,6 +377,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(runtimeServicesLayer),
   );
   const orchestrationReactorLayer = OrchestrationReactorLive.pipe(
+    Layer.provideMerge(orchestrationLayer),
     Layer.provideMerge(runtimeIngestionLayer),
     Layer.provideMerge(providerCommandReactorLayer),
     Layer.provideMerge(checkpointReactorLayer),

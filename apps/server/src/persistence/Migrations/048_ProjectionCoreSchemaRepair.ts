@@ -74,6 +74,10 @@ export default Effect.gen(function* () {
       session_notes_json TEXT,
       thread_references_json TEXT NOT NULL DEFAULT '[]',
       archived_at TEXT,
+      pinned_at TEXT,
+      pin_order_key INTEGER,
+      snoozed_until TEXT,
+      snoozed_at TEXT,
       created_at TEXT NOT NULL,
       last_interaction_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -169,6 +173,38 @@ export default Effect.gen(function* () {
     yield* sql`
       ALTER TABLE projection_threads
       ADD COLUMN archived_at TEXT
+    `;
+  }
+
+  if (!threadColumns.has("pinned_at")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN pinned_at TEXT
+    `;
+  }
+
+  if (!threadColumns.has("pin_order_key")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN pin_order_key INTEGER
+    `;
+  }
+
+  if (!threadColumns.has("snoozed_until")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN snoozed_until TEXT
+    `;
+  }
+
+  if (!threadColumns.has("snoozed_at")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN snoozed_at TEXT
     `;
   }
 
@@ -279,6 +315,18 @@ export default Effect.gen(function* () {
   yield* sql`
     CREATE INDEX IF NOT EXISTS idx_projection_threads_project_archived_last_interaction
     ON projection_threads(project_id, archived_at, last_interaction_at)
+  `;
+
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS projection_threads_pin_order_idx
+    ON projection_threads(pin_order_key)
+    WHERE pin_order_key IS NOT NULL
+  `;
+
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS projection_threads_snoozed_until_idx
+    ON projection_threads(snoozed_until)
+    WHERE snoozed_until IS NOT NULL
   `;
 
   const hasProjectionThreadMessages = yield* tableExists("projection_thread_messages");

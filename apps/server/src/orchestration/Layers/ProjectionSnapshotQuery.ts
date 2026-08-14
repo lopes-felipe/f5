@@ -132,6 +132,10 @@ const ProjectionThreadSummaryDbRowSchema = Schema.Struct({
   branch: ProjectionThread.fields.branch,
   worktreePath: ProjectionThread.fields.worktreePath,
   archivedAt: ProjectionThread.fields.archivedAt,
+  pinnedAt: ProjectionThread.fields.pinnedAt,
+  pinOrderKey: ProjectionThread.fields.pinOrderKey,
+  snoozedUntil: ProjectionThread.fields.snoozedUntil,
+  snoozedAt: ProjectionThread.fields.snoozedAt,
   createdAt: ProjectionThread.fields.createdAt,
   lastInteractionAt: ProjectionThread.fields.lastInteractionAt,
   updatedAt: ProjectionThread.fields.updatedAt,
@@ -407,6 +411,10 @@ function buildThreadSnapshot(params: {
     worktreePath: row.worktreePath,
     latestTurn: params.latestTurnByThread.get(row.threadId) ?? null,
     archivedAt: row.archivedAt,
+    pinnedAt: row.pinnedAt,
+    pinOrderKey: row.pinOrderKey,
+    snoozedUntil: row.snoozedUntil,
+    snoozedAt: row.snoozedAt,
     createdAt: row.createdAt,
     lastInteractionAt: row.lastInteractionAt,
     updatedAt: row.updatedAt,
@@ -701,6 +709,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           session_notes_json AS "sessionNotes",
           thread_references_json AS "threadReferences",
           archived_at AS "archivedAt",
+          pinned_at AS "pinnedAt",
+          pin_order_key AS "pinOrderKey",
+          snoozed_until AS "snoozedUntil",
+          snoozed_at AS "snoozedAt",
           created_at AS "createdAt",
           last_interaction_at AS "lastInteractionAt",
           updated_at AS "updatedAt",
@@ -727,6 +739,10 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           branch,
           worktree_path AS "worktreePath",
           archived_at AS "archivedAt",
+          pinned_at AS "pinnedAt",
+          pin_order_key AS "pinOrderKey",
+          snoozed_until AS "snoozedUntil",
+          snoozed_at AS "snoozedAt",
           created_at AS "createdAt",
           last_interaction_at AS "lastInteractionAt",
           updated_at AS "updatedAt",
@@ -736,6 +752,15 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_threads
         ORDER BY last_interaction_at DESC, created_at DESC, thread_id DESC
       `,
+  });
+  const listThreadPinStateRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: Schema.Struct({ revision: NonNegativeInt }),
+    execute: () => sql`
+      SELECT revision
+      FROM projection_thread_pin_state
+      WHERE singleton_id = 1
+    `,
   });
 
   const listProjectMemoryRows = SqlSchema.findAll({
@@ -1584,6 +1609,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
         ),
       });
+      const threadPinStateRows = yield* withTimedLog({
+        kind: "query",
+        scope: params.scope,
+        name: "listThreadPinState",
+        effect: listThreadPinStateRows(undefined).pipe(
+          Effect.mapError(
+            toPersistenceSqlOrDecodeError(
+              `ProjectionSnapshotQuery.${params.scope}:listThreadPinState:query`,
+              `ProjectionSnapshotQuery.${params.scope}:listThreadPinState:decodeRows`,
+            ),
+          ),
+        ),
+      });
       const messageRows = params.includeMessages
         ? yield* withTimedLog({
             kind: "query",
@@ -1857,6 +1895,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
 
       return yield* decodeReadModel({
         snapshotSequence: computeSnapshotSequence(stateRows),
+        pinRevision: threadPinStateRows[0]?.revision ?? 0,
         projects,
         planningWorkflows,
         codeReviewWorkflows,

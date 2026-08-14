@@ -1,7 +1,9 @@
-import type {
-  OrchestrationCommand,
-  OrchestrationEvent,
-  OrchestrationReadModel,
+import {
+  MAX_PINNED_THREADS,
+  type OrchestrationCommand,
+  type OrchestrationEvent,
+  type OrchestrationReadModel,
+  type ThreadId,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
 
@@ -48,6 +50,26 @@ function withEventBase(
     commandId: input.commandId,
     correlationId: input.commandId,
     metadata: input.metadata ?? {},
+  };
+}
+
+function makeThreadUnsnoozedEvent(input: {
+  readonly commandId: OrchestrationCommand["commandId"];
+  readonly threadId: ThreadId;
+  readonly occurredAt: string;
+}): Omit<OrchestrationEvent, "sequence"> {
+  return {
+    ...withEventBase({
+      aggregateKind: "thread",
+      aggregateId: input.threadId,
+      occurredAt: input.occurredAt,
+      commandId: input.commandId,
+    }),
+    type: "thread.unsnoozed",
+    payload: {
+      threadId: input.threadId,
+      unsnoozedAt: input.occurredAt,
+    },
   };
 }
 
@@ -684,11 +706,12 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.archive": {
-      yield* requireThreadNotArchived({
+      const thread = yield* requireThreadNotArchived({
         readModel,
         command,
         threadId: command.threadId,
       });
+      const pinRevision = thread.pinnedAt != null ? (readModel.pinRevision ?? 0) + 1 : undefined;
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -700,6 +723,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           archivedAt: command.createdAt,
+          ...(pinRevision !== undefined ? { pinRevision } : {}),
         },
       };
     }
@@ -723,6 +747,196 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           unarchivedAt: command.createdAt,
         },
       };
+    }
+
+    case "thread.pins.replace": {
+      const anchorThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (anchorThread.deletedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Deleted thread '${command.threadId}' cannot anchor a pin update.`,
+        });
+      }
+      const currentRevision = readModel.pinRevision ?? 0;
+      if (command.expectedRevision !== currentRevision) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Pinned thread order changed (expected revision ${command.expectedRevision}, current revision ${currentRevision}).`,
+        });
+      }
+      const uniqueIds = new Set(command.pinnedThreadIds);
+      if (uniqueIds.size !== command.pinnedThreadIds.length) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "Pinned thread order contains duplicate thread IDs.",
+        });
+      }
+      for (const threadId of command.pinnedThreadIds) {
+        const thread = yield* requireThread({ readModel, command, threadId });
+        if (thread.archivedAt !== null || thread.deletedAt !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Archived or deleted thread '${threadId}' cannot be pinned.`,
+          });
+        }
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.pins-replaced",
+        payload: {
+          threadId: command.threadId,
+          pinnedThreadIds: command.pinnedThreadIds,
+          pinRevision: currentRevision + 1,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.pins.import-legacy": {
+      const anchorThread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (anchorThread.deletedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Deleted thread '${command.threadId}' cannot anchor a legacy pin import.`,
+        });
+      }
+      const currentRevision = readModel.pinRevision ?? 0;
+      if (command.expectedRevision !== currentRevision) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Pinned thread order changed (expected revision ${command.expectedRevision}, current revision ${currentRevision}).`,
+        });
+      }
+
+      const currentPinnedThreadIds = readModel.threads
+        .filter(
+          (thread) =>
+            thread.pinnedAt != null &&
+            thread.pinOrderKey != null &&
+            thread.archivedAt === null &&
+            thread.deletedAt === null,
+        )
+        .toSorted(
+          (left, right) =>
+            (left.pinOrderKey ?? Number.MAX_SAFE_INTEGER) -
+              (right.pinOrderKey ?? Number.MAX_SAFE_INTEGER) || left.id.localeCompare(right.id),
+        )
+        .slice(0, MAX_PINNED_THREADS)
+        .map((thread) => thread.id);
+      const nextPinnedThreadIds = [...currentPinnedThreadIds];
+      const acceptedThreadIds: ThreadId[] = [];
+      const overflowedThreadIds: ThreadId[] = [];
+      const unknownThreadIds: ThreadId[] = [];
+      const seenLegacyIds = new Set<ThreadId>();
+
+      for (const threadId of command.legacyThreadIds) {
+        if (seenLegacyIds.has(threadId)) continue;
+        seenLegacyIds.add(threadId);
+        const thread = readModel.threads.find((entry) => entry.id === threadId);
+        if (!thread || thread.archivedAt !== null || thread.deletedAt !== null) {
+          unknownThreadIds.push(threadId);
+          continue;
+        }
+        if (nextPinnedThreadIds.includes(threadId)) {
+          acceptedThreadIds.push(threadId);
+          continue;
+        }
+        if (nextPinnedThreadIds.length >= MAX_PINNED_THREADS) {
+          overflowedThreadIds.push(threadId);
+          continue;
+        }
+        nextPinnedThreadIds.push(threadId);
+        acceptedThreadIds.push(threadId);
+      }
+
+      const changed =
+        nextPinnedThreadIds.length !== currentPinnedThreadIds.length ||
+        nextPinnedThreadIds.some((threadId, index) => threadId !== currentPinnedThreadIds[index]);
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.legacy-pins-imported",
+        payload: {
+          threadId: command.threadId,
+          pinnedThreadIds: nextPinnedThreadIds,
+          pinRevision: changed ? currentRevision + 1 : currentRevision,
+          acceptedThreadIds,
+          overflowedThreadIds,
+          unknownThreadIds,
+          updatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.snooze": {
+      const thread = yield* requireThreadNotArchived({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (thread.deletedAt !== null) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Deleted thread '${command.threadId}' cannot be snoozed.`,
+        });
+      }
+      if (Date.parse(command.until) <= Date.parse(command.createdAt)) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A snooze must end after it starts.",
+        });
+      }
+      const pinRevision = thread.pinnedAt != null ? (readModel.pinRevision ?? 0) + 1 : undefined;
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.snoozed",
+        payload: {
+          threadId: command.threadId,
+          snoozedUntil: command.until,
+          snoozedAt: command.createdAt,
+          ...(pinRevision !== undefined ? { pinRevision } : {}),
+        },
+      };
+    }
+
+    case "thread.unsnooze": {
+      const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (
+        command.expectedSnoozedUntil !== undefined &&
+        thread.snoozedUntil !== command.expectedSnoozedUntil
+      ) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: `Thread '${command.threadId}' snooze changed before wake-up.`,
+        });
+      }
+      return makeThreadUnsnoozedEvent({
+        commandId: command.commandId,
+        threadId: command.threadId,
+        occurredAt: command.createdAt,
+      });
     }
 
     case "thread.meta.update": {
@@ -856,6 +1070,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ? command.interactionMode
         : targetThread.interactionMode;
       const settingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
+      if (targetThread.snoozedUntil != null) {
+        settingEvents.push(
+          makeThreadUnsnoozedEvent({
+            commandId: command.commandId,
+            threadId: command.threadId,
+            occurredAt: command.createdAt,
+          }),
+        );
+      }
       if (queueSourced && effectiveRuntimeMode !== targetThread.runtimeMode) {
         settingEvents.push({
           ...withEventBase({
@@ -1141,7 +1364,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.message.assistant.delta": {
-      yield* requireThread({
+      const targetThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1160,7 +1383,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
         return [];
       }
-      return {
+      const messageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1182,15 +1405,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      return targetThread.snoozedUntil != null
+        ? [
+            makeThreadUnsnoozedEvent({
+              commandId: command.commandId,
+              threadId: command.threadId,
+              occurredAt: command.createdAt,
+            }),
+            messageEvent,
+          ]
+        : messageEvent;
     }
 
     case "thread.message.assistant.complete": {
-      yield* requireThread({
+      const targetThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
       });
-      return {
+      const messageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1209,6 +1442,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
+      return targetThread.snoozedUntil != null
+        ? [
+            makeThreadUnsnoozedEvent({
+              commandId: command.commandId,
+              threadId: command.threadId,
+              occurredAt: command.createdAt,
+            }),
+            messageEvent,
+          ]
+        : messageEvent;
     }
 
     case "thread.proposed-plan.upsert": {
@@ -1303,7 +1546,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
     }
 
     case "thread.activity.append": {
-      yield* requireThread({
+      const targetThread = yield* requireThread({
         readModel,
         command,
         threadId: command.threadId,
@@ -1316,7 +1559,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ? ((command.activity.payload as { requestId: string })
               .requestId as OrchestrationEvent["metadata"]["requestId"])
           : undefined;
-      return {
+      const activityEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
           aggregateId: command.threadId,
@@ -1330,6 +1573,20 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           activity: command.activity,
         },
       };
+      const wakesSnoozedThread =
+        targetThread.snoozedUntil != null &&
+        (command.activity.kind === "approval.requested" ||
+          command.activity.kind === "user-input.requested");
+      return wakesSnoozedThread
+        ? [
+            makeThreadUnsnoozedEvent({
+              commandId: command.commandId,
+              threadId: command.threadId,
+              occurredAt: command.createdAt,
+            }),
+            activityEvent,
+          ]
+        : activityEvent;
     }
 
     case "thread.tasks.update": {

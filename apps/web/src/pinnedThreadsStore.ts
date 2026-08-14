@@ -1,21 +1,22 @@
 /**
- * Lightweight localStorage-backed set of pinned thread IDs.
+ * Reader for the legacy localStorage-backed pin list.
  *
- * Pinning is a purely client-side preference (no backend involvement): users
- * can mark up to `MAX_PINNED_THREADS` threads to surface at the top of the
- * Home page. We keep this separate from `appSettings` because pins are a
- * collection that mutates frequently and don't belong in the Effect-schema
- * ceremony of the settings store.
+ * New pin mutations are server-authoritative. This store remains only so the
+ * one-time import controller can preserve pins created by older builds. The
+ * mutation helpers are retained for the isolated legacy-store tests.
  *
  * Limits exist so the Home page doesn't turn into a long list of pinned
  * items — pinning should remain a focused, "top 1–5" affordance.
  */
 
-import type { ThreadId } from "@t3tools/contracts";
+import {
+  MAX_PINNED_THREADS as CONTRACT_MAX_PINNED_THREADS,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { useSyncExternalStore } from "react";
 
 const STORAGE_KEY = "t3code:pinned-threads:v1";
-export const MAX_PINNED_THREADS = 5;
+export const MAX_PINNED_THREADS = CONTRACT_MAX_PINNED_THREADS;
 
 type Listener = () => void;
 
@@ -61,6 +62,13 @@ function emit(): void {
 
 export function getPinnedThreadIds(): ReadonlyArray<ThreadId> {
   return pinnedIds;
+}
+
+export function clearLegacyPinnedThreads(): void {
+  if (pinnedIds.length === 0) return;
+  pinnedIds = [];
+  writeToStorage([]);
+  emit();
 }
 
 export function isPinned(threadId: ThreadId): boolean {
@@ -111,9 +119,7 @@ export function usePinnedThreadIds(): ReadonlyArray<ThreadId> {
   return useSyncExternalStore(
     subscribe,
     () => pinnedIds,
-    // Server snapshot: pins are purely client-side, so return an empty array
-    // during SSR so nothing appears pinned on first paint — matching what the
-    // client will show until localStorage rehydrates.
+    // localStorage is unavailable during SSR.
     () => [],
   );
 }

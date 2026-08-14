@@ -42,8 +42,9 @@ import {
   sortThreadsByActivity,
 } from "../../lib/threadOrdering";
 import { cn, isMacPlatform } from "../../lib/utils";
-import { togglePinned, usePinnedThreadIds } from "../../pinnedThreadsStore";
 import { useStore } from "../../store";
+import { orderedPinnedThreadIds, toggleThreadPin } from "../../threadPinSnooze";
+import { toastManager } from "../ui/toast";
 import { useNextTurnQueueStore } from "../../nextTurnQueueStore";
 import { resolveThreadStatusForThread, type ThreadStatus } from "../../threadStatus";
 import type {
@@ -410,7 +411,8 @@ export function HomeMissionControl() {
   const codeReviewWorkflows = useStore((state) => state.codeReviewWorkflows);
   const investigationWorkflows = useStore((state) => state.investigationWorkflows);
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
-  const pinnedThreadIds = usePinnedThreadIds();
+  const pinRevision = useStore((state) => state.pinRevision ?? 0);
+  const pinnedThreadIds = useMemo(() => orderedPinnedThreadIds(threads), [threads]);
   const queueSummary = useNextTurnQueueStore((state) => state.summary);
   const pausedQueueThreadIds = useMemo(
     () =>
@@ -568,6 +570,19 @@ export function HomeMissionControl() {
   }, [pinnedThreadIds, recentAll, threads]);
 
   const pinnedIdSet = useMemo(() => new Set<ThreadId>(pinnedThreadIds), [pinnedThreadIds]);
+  const pinnedThreadsByProject = useMemo(() => {
+    const grouped = new Map<ProjectId, Thread[]>();
+    for (const thread of pinnedThreads) {
+      const group = grouped.get(thread.projectId) ?? [];
+      group.push(thread);
+      grouped.set(thread.projectId, group);
+    }
+    return [...grouped].map(([projectId, projectThreads]) => ({
+      projectId,
+      project: projectsById.get(projectId),
+      threads: projectThreads,
+    }));
+  }, [pinnedThreads, projectsById]);
 
   const filteredRecent = useMemo(() => {
     const filteredByProject =
@@ -602,9 +617,18 @@ export function HomeMissionControl() {
     [navigate],
   );
 
-  const onTogglePin = useCallback((threadId: ThreadId) => {
-    togglePinned(threadId);
-  }, []);
+  const onTogglePin = useCallback(
+    (threadId: ThreadId) => {
+      void toggleThreadPin({ threadId, threads, expectedRevision: pinRevision }).catch((error) => {
+        toastManager.add({
+          type: "error",
+          title: "Failed to update pinned threads",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        });
+      });
+    },
+    [pinRevision, threads],
+  );
 
   const onNewThread = () => {
     if (!mostRecentProject) {
@@ -866,17 +890,24 @@ export function HomeMissionControl() {
               </span>
             }
           >
-            <div className="flex flex-col gap-1.5">
-              {pinnedThreads.map((thread) => (
-                <HomeThreadRow
-                  key={thread.id}
-                  thread={thread}
-                  project={projectsById.get(thread.projectId)}
-                  onSelect={onSelectThread}
-                  rowIndex={nextRowIndex()}
-                  isPinned
-                  onTogglePin={onTogglePin}
-                />
+            <div className="flex flex-col gap-3">
+              {pinnedThreadsByProject.map((group) => (
+                <div key={group.projectId} className="flex flex-col gap-1.5">
+                  <h3 className="px-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
+                    {group.project?.name ?? "Unknown project"}
+                  </h3>
+                  {group.threads.map((thread) => (
+                    <HomeThreadRow
+                      key={thread.id}
+                      thread={thread}
+                      project={group.project}
+                      onSelect={onSelectThread}
+                      rowIndex={nextRowIndex()}
+                      isPinned
+                      onTogglePin={onTogglePin}
+                    />
+                  ))}
+                </div>
               ))}
             </div>
           </Section>

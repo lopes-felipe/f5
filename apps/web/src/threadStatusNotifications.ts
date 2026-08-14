@@ -27,6 +27,7 @@ export interface ThreadStatusNotificationSnapshot {
   threadTitle: string;
   projectName: string | null;
   status: ThreadStatus;
+  snoozed?: boolean;
 }
 
 export interface ThreadStatusNotificationTransition extends Omit<
@@ -176,7 +177,11 @@ export function diffThreadStatusNotifications(
     }
 
     const previousStatus = previousStatusByThreadId.get(thread.threadId) ?? "none";
-    if (thread.status === previousStatus || !isVisibleThreadStatus(thread.status)) {
+    if (
+      thread.snoozed === true ||
+      thread.status === previousStatus ||
+      !isVisibleThreadStatus(thread.status)
+    ) {
       continue;
     }
 

@@ -21,6 +21,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - `docs/provider-prerequisites.md` covering both Codex and Claude Code install/auth.
 - Documentation index at `docs/README.md`.
 - Drift test comparing the README env-var table against `turbo.json` `globalEnv`.
+- Server-authoritative thread pins and snoozes with global pin ordering, durable expiry, wake
+  predicates, and one-time migration of legacy browser-local pins.
 
 ### Changed
 
@@ -33,6 +35,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - **Breaking:** removed the unused `orchestration.replayEvents` WebSocket RPC. Clients must use
   bounded startup snapshots, thread tails, and history-page APIs instead of requesting the full
   event log in one response.
+- **Breaking:** pin and snooze lifecycle commands add new orchestration domain-event variants.
+  Clients must be upgraded before using these actions; existing snapshots remain decodable because
+  the new thread fields are optional.
 - Correct Claude Fast Mode availability: enabled for Opus 5 and Opus 4.8, and disabled for Opus
   4.7, 4.6, and 4.5.
 - **Breaking:** the web server now binds to `127.0.0.1` by default. Remote deployments must set an

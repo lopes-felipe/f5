@@ -8,6 +8,8 @@ import { PreviewBrowserHost } from "../components/PreviewBrowserHost";
 import ModelRecencyController from "../components/ModelRecencyController";
 import ThreadRecencyController from "../components/ThreadRecencyController";
 import { NextTurnQueueController } from "../components/NextTurnQueueController";
+import { LegacyPinnedThreadsMigrationController } from "../components/LegacyPinnedThreadsMigrationController";
+import { SnoozedThreadWakeController } from "../components/SnoozedThreadWakeController";
 import ThreadSidebar from "../components/Sidebar";
 import {
   Sidebar,
@@ -113,6 +115,8 @@ function ChatRouteLayout() {
         <ModelRecencyController />
         <ThreadStatusNotificationController />
         <NextTurnQueueController />
+        <LegacyPinnedThreadsMigrationController />
+        <SnoozedThreadWakeController />
         <PrAttentionNotificationController />
         <PreviewBrowserHost>
           <Outlet />

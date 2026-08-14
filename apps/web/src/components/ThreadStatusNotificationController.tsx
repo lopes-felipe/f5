@@ -21,6 +21,7 @@ import {
 } from "../threadStatusNotifications";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
+import { isSnoozedThread } from "../lib/threadOrdering";
 
 export function ThreadStatusNotificationControllerContent({
   navigateToThread,
@@ -47,6 +48,7 @@ export function ThreadStatusNotificationControllerContent({
       threadTitle: thread.title,
       projectName: projectNameById.get(thread.projectId) ?? null,
       status: resolveThreadStatusForThread(thread),
+      snoozed: isSnoozedThread(thread),
     }));
   }, [projects, threads]);
 

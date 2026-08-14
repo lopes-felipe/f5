@@ -2735,4 +2735,80 @@ engineLayer("OrchestrationProjectionPipeline via engine dispatch", (it) => {
       ]);
     }),
   );
+
+  it.effect("projects revisioned pin and snooze lifecycle state", () =>
+    Effect.gen(function* () {
+      const engine = yield* OrchestrationEngineService;
+      const sql = yield* SqlClient.SqlClient;
+      const createdAt = "2026-08-15T09:00:00.000Z";
+      const snoozedUntil = "2026-08-15T12:00:00.000Z";
+      const projectId = ProjectId.makeUnsafe("project-pins-live");
+      const threadId = ThreadId.makeUnsafe("thread-pins-live");
+
+      yield* engine.dispatch({
+        type: "project.create",
+        commandId: CommandId.makeUnsafe("cmd-project-pins-live"),
+        projectId,
+        title: "Pins Project",
+        workspaceRoot: "/tmp/project-pins-live",
+        defaultModel: "gpt-5-codex",
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.create",
+        commandId: CommandId.makeUnsafe("cmd-thread-pins-live"),
+        threadId,
+        projectId,
+        title: "Pinned Thread",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.pins.replace",
+        commandId: CommandId.makeUnsafe("cmd-pins-replace-live"),
+        threadId,
+        pinnedThreadIds: [threadId],
+        expectedRevision: 0,
+        createdAt,
+      });
+      yield* engine.dispatch({
+        type: "thread.snooze",
+        commandId: CommandId.makeUnsafe("cmd-snooze-live"),
+        threadId,
+        until: snoozedUntil,
+        createdAt,
+      });
+
+      const rows = yield* sql<{
+        readonly pinnedAt: string | null;
+        readonly pinOrderKey: number | null;
+        readonly snoozedUntil: string | null;
+        readonly snoozedAt: string | null;
+      }>`
+        SELECT
+          pinned_at AS "pinnedAt",
+          pin_order_key AS "pinOrderKey",
+          snoozed_until AS "snoozedUntil",
+          snoozed_at AS "snoozedAt"
+        FROM projection_threads
+        WHERE thread_id = ${threadId}
+      `;
+      const revisions = yield* sql<{ readonly revision: number }>`
+        SELECT revision FROM projection_thread_pin_state WHERE singleton_id = 1
+      `;
+      assert.deepEqual(rows, [
+        {
+          pinnedAt: null,
+          pinOrderKey: null,
+          snoozedUntil,
+          snoozedAt: createdAt,
+        },
+      ]);
+      assert.deepEqual(revisions, [{ revision: 2 }]);
+    }),
+  );
 });

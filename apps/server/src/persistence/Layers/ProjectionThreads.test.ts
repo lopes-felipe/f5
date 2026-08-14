@@ -11,7 +11,7 @@ const layer = it.layer(
 );
 
 layer("ProjectionThreadRepository", (it) => {
-  it.effect("round-trips archived_at through upsert and read paths", () =>
+  it.effect("round-trips lifecycle metadata through upsert and read paths", () =>
     Effect.gen(function* () {
       const repository = yield* ProjectionThreadRepository;
       const threadId = ThreadId.makeUnsafe("thread-archived");
@@ -43,6 +43,10 @@ layer("ProjectionThreadRepository", (it) => {
         sessionNotes: null,
         threadReferences: [],
         archivedAt: "2026-03-10T09:00:00.000Z",
+        pinnedAt: "2026-03-10T08:50:00.000Z",
+        pinOrderKey: 2,
+        snoozedUntil: "2026-03-11T08:50:00.000Z",
+        snoozedAt: "2026-03-10T08:55:00.000Z",
         createdAt: "2026-03-10T08:00:00.000Z",
         lastInteractionAt: "2026-03-10T08:30:00.000Z",
         updatedAt: "2026-03-10T09:00:00.000Z",
@@ -57,6 +61,10 @@ layer("ProjectionThreadRepository", (it) => {
         throw new Error("Expected archived projection thread row.");
       }
       assert.equal(row.value.archivedAt, "2026-03-10T09:00:00.000Z");
+      assert.equal(row.value.pinnedAt, "2026-03-10T08:50:00.000Z");
+      assert.equal(row.value.pinOrderKey, 2);
+      assert.equal(row.value.snoozedUntil, "2026-03-11T08:50:00.000Z");
+      assert.equal(row.value.snoozedAt, "2026-03-10T08:55:00.000Z");
       assert.equal(row.value.compaction, null);
       assert.equal(row.value.estimatedContextTokens, 72_000);
       assert.equal(row.value.modelContextWindowTokens, 400_000);
@@ -72,6 +80,10 @@ layer("ProjectionThreadRepository", (it) => {
       ]);
       assert.equal(rows.length, 1);
       assert.equal(rows[0]?.archivedAt, "2026-03-10T09:00:00.000Z");
+      assert.equal(rows[0]?.pinnedAt, "2026-03-10T08:50:00.000Z");
+      assert.equal(rows[0]?.pinOrderKey, 2);
+      assert.equal(rows[0]?.snoozedUntil, "2026-03-11T08:50:00.000Z");
+      assert.equal(rows[0]?.snoozedAt, "2026-03-10T08:55:00.000Z");
       assert.equal(rows[0]?.estimatedContextTokens, 72_000);
       assert.equal(rows[0]?.modelContextWindowTokens, 400_000);
       assert.equal(rows[0]?.tasks[0]?.id, "task-1");

@@ -151,6 +151,10 @@ export interface Thread {
   error: string | null;
   createdAt: string;
   archivedAt: string | null;
+  pinnedAt?: string | null;
+  pinOrderKey?: number | null;
+  snoozedUntil?: string | null;
+  snoozedAt?: string | null;
   lastInteractionAt: string;
   estimatedContextTokens: number | null;
   estimatedThinkingTokens: number | null;

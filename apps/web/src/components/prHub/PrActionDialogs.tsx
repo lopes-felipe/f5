@@ -12,6 +12,7 @@ import {
 import { Select, SelectButton, SelectItem, SelectPopup } from "../ui/select";
 import { Textarea } from "../ui/textarea";
 import type { PrActionDialogProps } from "./usePrActions";
+import { SnoozePresetPicker } from "../SnoozePresetPicker";
 
 /**
  * The action dialog (approve / comment / request-changes / merge / mark-ready /
@@ -83,18 +84,7 @@ export function PrActionDialogs({
               />
             ) : null}
             {pendingAction === "snooze" ? (
-              <input
-                className="h-8 w-full rounded-lg border border-input bg-background px-3 text-sm"
-                type="datetime-local"
-                value={snoozeUntil.slice(0, 16)}
-                onChange={(event) => {
-                  // Clearing or partially editing the field yields "" / an
-                  // invalid date; ignore those so the dialog never crashes on
-                  // `new Date("").toISOString()`.
-                  const date = new Date(event.currentTarget.value);
-                  if (Number.isFinite(date.getTime())) setSnoozeUntil(date.toISOString());
-                }}
-              />
+              <SnoozePresetPicker value={snoozeUntil} onChange={setSnoozeUntil} />
             ) : null}
           </DialogPanel>
           <DialogFooter>

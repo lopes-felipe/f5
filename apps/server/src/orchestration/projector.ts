@@ -44,8 +44,11 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadPinsReplacedPayload,
+  ThreadLegacyPinsImportedPayload,
   ThreadProposedPlanUpsertedPayload,
   ThreadRuntimeModeSetPayload,
+  ThreadSnoozedPayload,
   ThreadRevertedPayload,
   ThreadSessionNotesRecordedPayload,
   ThreadSessionSetPayload,
@@ -54,6 +57,7 @@ import {
   ThreadTurnProcessingQuiescedPayload,
   ThreadTurnStartRequestedPayload,
   ThreadUnarchivedPayload,
+  ThreadUnsnoozedPayload,
 } from "./Schemas.ts";
 import {
   MAX_THREAD_ACTIVITIES,
@@ -227,6 +231,7 @@ function compareThreadActivities(
 export function createEmptyReadModel(nowIso: string): OrchestrationReadModel {
   return {
     snapshotSequence: 0,
+    pinRevision: 0,
     projects: [],
     threads: [],
     planningWorkflows: [],
@@ -640,6 +645,10 @@ export function projectEvent(
             worktreePath: payload.worktreePath,
             latestTurn: null,
             archivedAt: null,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: null,
+            snoozedAt: null,
             createdAt: payload.createdAt,
             lastInteractionAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -713,8 +722,13 @@ export function projectEvent(
       return decodeForEvent(ThreadArchivedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
+          ...(payload.pinRevision !== undefined ? { pinRevision: payload.pinRevision } : {}),
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: payload.archivedAt,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: null,
+            snoozedAt: null,
             updatedAt: event.occurredAt,
           }),
         })),
@@ -727,6 +741,68 @@ export function projectEvent(
           threads: updateThread(nextBase.threads, payload.threadId, {
             archivedAt: null,
             updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.pins-replaced":
+    case "thread.legacy-pins-imported":
+      return decodeForEvent(
+        event.type === "thread.pins-replaced"
+          ? ThreadPinsReplacedPayload
+          : ThreadLegacyPinsImportedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const pinOrderByThreadId = new Map(
+            payload.pinnedThreadIds.map((threadId, index) => [threadId, index] as const),
+          );
+          return {
+            ...nextBase,
+            pinRevision: payload.pinRevision,
+            threads: nextBase.threads.map((thread) => {
+              const pinOrderKey = pinOrderByThreadId.get(thread.id);
+              return pinOrderKey === undefined
+                ? thread.pinnedAt === null && thread.pinOrderKey === null
+                  ? thread
+                  : { ...thread, pinnedAt: null, pinOrderKey: null }
+                : {
+                    ...thread,
+                    pinnedAt: thread.pinnedAt ?? payload.updatedAt,
+                    pinOrderKey,
+                    snoozedUntil: null,
+                    snoozedAt: null,
+                  };
+            }),
+          };
+        }),
+      );
+
+    case "thread.snoozed":
+      return decodeForEvent(ThreadSnoozedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          ...(payload.pinRevision !== undefined ? { pinRevision: payload.pinRevision } : {}),
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: payload.snoozedUntil,
+            snoozedAt: payload.snoozedAt,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.unsnoozed":
+      return decodeForEvent(ThreadUnsnoozedPayload, event.payload, event.type, "payload").pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            snoozedUntil: null,
+            snoozedAt: null,
+            updatedAt: payload.unsnoozedAt,
           }),
         })),
       );

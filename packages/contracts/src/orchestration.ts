@@ -66,6 +66,7 @@ export const ProviderKind = ProviderKindSchema;
 export type ProviderKind = typeof ProviderKind.Type;
 export const isKnownProviderKind = isKnownProviderKindValue;
 export const DEFAULT_NEW_THREAD_TITLE = "New thread";
+export const MAX_PINNED_THREADS = 5;
 export const ProviderApprovalPolicy = Schema.Literals([
   "untrusted",
   "on-failure",
@@ -662,6 +663,10 @@ export const OrchestrationThread = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
+  pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  pinOrderKey: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
+  snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   createdAt: IsoDateTime,
   lastInteractionAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -698,6 +703,7 @@ export type OrchestrationThread = typeof OrchestrationThread.Type;
 
 export const OrchestrationReadModel = Schema.Struct({
   snapshotSequence: NonNegativeInt,
+  pinRevision: Schema.optional(NonNegativeInt),
   projects: Schema.Array(OrchestrationProject),
   threads: Schema.Array(OrchestrationThread),
   planningWorkflows: Schema.Array(PlanningWorkflow).pipe(Schema.withDecodingDefault(() => [])),
@@ -915,6 +921,40 @@ const ThreadUnarchiveCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadPinsReplaceCommand = Schema.Struct({
+  type: Schema.Literal("thread.pins.replace"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  pinnedThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  expectedRevision: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
+const ThreadLegacyPinsImportCommand = Schema.Struct({
+  type: Schema.Literal("thread.pins.import-legacy"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  legacyThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  expectedRevision: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
+const ThreadSnoozeCommand = Schema.Struct({
+  type: Schema.Literal("thread.snooze"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  until: IsoDateTime,
+  createdAt: IsoDateTime,
+});
+
+const ThreadUnsnoozeCommand = Schema.Struct({
+  type: Schema.Literal("thread.unsnooze"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedSnoozedUntil: Schema.optional(IsoDateTime),
+  createdAt: IsoDateTime,
+});
+
 const ThreadMetaUpdateCommand = Schema.Struct({
   type: Schema.Literal("thread.meta.update"),
   commandId: CommandId,
@@ -1096,6 +1136,10 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
+  ThreadPinsReplaceCommand,
+  ThreadLegacyPinsImportCommand,
+  ThreadSnoozeCommand,
+  ThreadUnsnoozeCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -1123,6 +1167,10 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadDeleteCommand,
   ThreadArchiveCommand,
   ThreadUnarchiveCommand,
+  ThreadPinsReplaceCommand,
+  ThreadLegacyPinsImportCommand,
+  ThreadSnoozeCommand,
+  ThreadUnsnoozeCommand,
   ThreadMetaUpdateCommand,
   ThreadRuntimeModeSetCommand,
   ThreadInteractionModeSetCommand,
@@ -1330,6 +1378,10 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.deleted",
   "thread.archived",
   "thread.unarchived",
+  "thread.pins-replaced",
+  "thread.legacy-pins-imported",
+  "thread.snoozed",
+  "thread.unsnoozed",
   "thread.meta-updated",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
@@ -1485,11 +1537,41 @@ export const ThreadDeletedPayload = Schema.Struct({
 export const ThreadArchivedPayload = Schema.Struct({
   threadId: ThreadId,
   archivedAt: IsoDateTime,
+  pinRevision: Schema.optional(NonNegativeInt),
 });
 
 export const ThreadUnarchivedPayload = Schema.Struct({
   threadId: ThreadId,
   unarchivedAt: IsoDateTime,
+});
+
+export const ThreadPinsReplacedPayload = Schema.Struct({
+  threadId: ThreadId,
+  pinnedThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  pinRevision: NonNegativeInt,
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadLegacyPinsImportedPayload = Schema.Struct({
+  threadId: ThreadId,
+  pinnedThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  pinRevision: NonNegativeInt,
+  acceptedThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  overflowedThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  unknownThreadIds: Schema.Array(ThreadId).check(Schema.isMaxLength(MAX_PINNED_THREADS)),
+  updatedAt: IsoDateTime,
+});
+
+export const ThreadSnoozedPayload = Schema.Struct({
+  threadId: ThreadId,
+  snoozedUntil: IsoDateTime,
+  snoozedAt: IsoDateTime,
+  pinRevision: Schema.optional(NonNegativeInt),
+});
+
+export const ThreadUnsnoozedPayload = Schema.Struct({
+  threadId: ThreadId,
+  unsnoozedAt: IsoDateTime,
 });
 
 export const ThreadMetaUpdatedPayload = Schema.Struct({
@@ -1793,6 +1875,26 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.unarchived"),
     payload: ThreadUnarchivedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.pins-replaced"),
+    payload: ThreadPinsReplacedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.legacy-pins-imported"),
+    payload: ThreadLegacyPinsImportedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.snoozed"),
+    payload: ThreadSnoozedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.unsnoozed"),
+    payload: ThreadUnsnoozedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

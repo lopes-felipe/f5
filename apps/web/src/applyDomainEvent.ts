@@ -768,6 +768,10 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         error: null,
         createdAt: event.payload.createdAt,
         archivedAt: null,
+        pinnedAt: null,
+        pinOrderKey: null,
+        snoozedUntil: null,
+        snoozedAt: null,
         lastInteractionAt: event.payload.createdAt,
         estimatedContextTokens: null,
         estimatedThinkingTokens: null,
@@ -807,16 +811,75 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
 
     case "thread.archived": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
-        thread.archivedAt === event.payload.archivedAt
+        thread.archivedAt === event.payload.archivedAt &&
+        (thread.pinnedAt ?? null) === null &&
+        (thread.snoozedUntil ?? null) === null
           ? thread
-          : { ...thread, archivedAt: event.payload.archivedAt },
+          : {
+              ...thread,
+              archivedAt: event.payload.archivedAt,
+              pinnedAt: null,
+              pinOrderKey: null,
+              snoozedUntil: null,
+              snoozedAt: null,
+            },
       );
-      return threads === state.threads ? state : { ...state, threads };
+      const pinRevision = event.payload.pinRevision ?? state.pinRevision ?? 0;
+      return threads === state.threads && pinRevision === state.pinRevision
+        ? state
+        : { ...state, threads, pinRevision };
     }
 
     case "thread.unarchived": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
         thread.archivedAt === null ? thread : { ...thread, archivedAt: null },
+      );
+      return threads === state.threads ? state : { ...state, threads };
+    }
+
+    case "thread.pins-replaced":
+    case "thread.legacy-pins-imported": {
+      const pinOrderByThreadId = new Map(
+        event.payload.pinnedThreadIds.map((threadId, index) => [threadId, index] as const),
+      );
+      const threads = state.threads.map((thread) => {
+        const pinOrderKey = pinOrderByThreadId.get(thread.id);
+        if (pinOrderKey === undefined) {
+          return (thread.pinnedAt ?? null) === null && (thread.pinOrderKey ?? null) === null
+            ? thread
+            : { ...thread, pinnedAt: null, pinOrderKey: null };
+        }
+        return {
+          ...thread,
+          pinnedAt: thread.pinnedAt ?? event.payload.updatedAt,
+          pinOrderKey,
+          snoozedUntil: null,
+          snoozedAt: null,
+        };
+      });
+      return { ...state, threads, pinRevision: event.payload.pinRevision };
+    }
+
+    case "thread.snoozed": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        pinnedAt: null,
+        pinOrderKey: null,
+        snoozedUntil: event.payload.snoozedUntil,
+        snoozedAt: event.payload.snoozedAt,
+      }));
+      return {
+        ...state,
+        threads,
+        pinRevision: event.payload.pinRevision ?? state.pinRevision ?? 0,
+      };
+    }
+
+    case "thread.unsnoozed": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
+        (thread.snoozedUntil ?? null) === null && (thread.snoozedAt ?? null) === null
+          ? thread
+          : { ...thread, snoozedUntil: null, snoozedAt: null },
       );
       return threads === state.threads ? state : { ...state, threads };
     }

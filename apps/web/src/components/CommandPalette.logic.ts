@@ -5,7 +5,7 @@ import {
 } from "@t3tools/contracts";
 import { type ReactNode } from "react";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
-import { compareThreadsByActivity } from "../lib/threadOrdering";
+import { compareThreadsByActivity, isSnoozedThread } from "../lib/threadOrdering";
 import { resolveThreadStatusPillForThread, type ThreadStatusPill } from "../threadStatus";
 import type { Project, Thread } from "../types";
 
@@ -138,6 +138,9 @@ export function buildThreadActionItems(input: {
     const queuedCount = input.queuedCountByThreadId?.get(thread.id) ?? 0;
     if (queuedCount > 0) {
       descriptionParts.push(`${queuedCount} queued`);
+    }
+    if (isSnoozedThread(thread)) {
+      descriptionParts.push("Snoozed");
     }
 
     return {

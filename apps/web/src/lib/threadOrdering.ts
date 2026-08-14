@@ -28,6 +28,24 @@ export function isArchivedThread(thread: Pick<Thread, "archivedAt">): boolean {
   return thread.archivedAt !== null;
 }
 
+export function isSnoozedThread(thread: Pick<Thread, "snoozedUntil">, now = Date.now()): boolean {
+  if (thread.snoozedUntil == null) return false;
+  const timestamp = Date.parse(thread.snoozedUntil);
+  return Number.isFinite(timestamp) && timestamp > now;
+}
+
+export function partitionThreadsBySnooze(
+  threads: ReadonlyArray<Thread>,
+  now = Date.now(),
+): { readonly activeThreads: Thread[]; readonly snoozedThreads: Thread[] } {
+  const activeThreads: Thread[] = [];
+  const snoozedThreads: Thread[] = [];
+  for (const thread of threads) {
+    (isSnoozedThread(thread, now) ? snoozedThreads : activeThreads).push(thread);
+  }
+  return { activeThreads, snoozedThreads };
+}
+
 export function partitionThreadsByArchive(threads: ReadonlyArray<Thread>): {
   readonly activeThreads: Thread[];
   readonly archivedThreads: Thread[];
@@ -58,7 +76,10 @@ export function getVisibleThreads(
     investigationWorkflows,
   );
   return threads.filter(
-    (thread) => !isArchivedThread(thread) && !hiddenWorkflowThreadIds.has(thread.id),
+    (thread) =>
+      !isArchivedThread(thread) &&
+      !isSnoozedThread(thread) &&
+      !hiddenWorkflowThreadIds.has(thread.id),
   );
 }
 

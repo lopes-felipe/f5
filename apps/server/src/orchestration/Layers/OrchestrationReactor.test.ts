@@ -10,10 +10,12 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { SessionNotesService } from "../Services/SessionNotesService.ts";
 import { OrchestrationReactor } from "../Services/OrchestrationReactor.ts";
+import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
 import { makeOrchestrationReactor } from "./OrchestrationReactor.ts";
 import { NextTurnQueueDispatcher } from "../../nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
+import { createEmptyReadModel } from "../projector.ts";
 
 describe("OrchestrationReactor", () => {
   let runtime: ManagedRuntime.ManagedRuntime<OrchestrationReactor, never> | null = null;
@@ -30,6 +32,15 @@ describe("OrchestrationReactor", () => {
 
     runtime = ManagedRuntime.make(
       Layer.effect(OrchestrationReactor, makeOrchestrationReactor).pipe(
+        Layer.provideMerge(
+          Layer.succeed(OrchestrationEngineService, {
+            getReadModel: () => Effect.succeed(createEmptyReadModel(new Date(0).toISOString())),
+            readEvents: () => Stream.empty,
+            dispatch: () => Effect.die("unsupported"),
+            acquireMaintenanceLock: () => Effect.die("unsupported"),
+            streamDomainEvents: Stream.empty,
+          }),
+        ),
         Layer.provideMerge(
           Layer.succeed(ProviderTurnDeliveryWorker, {
             start: Effect.sync(() => {

@@ -15,6 +15,8 @@ import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWork
 import { ProviderRuntimeIngestionService } from "../Services/ProviderRuntimeIngestion.ts";
 import { SessionNotesService } from "../Services/SessionNotesService.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
+import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
+import { startThreadSnoozeReactor } from "../threadSnoozeReactor.ts";
 
 export const makeOrchestrationReactor = Effect.gen(function* () {
   const providerRuntimeIngestion = yield* ProviderRuntimeIngestionService;
@@ -28,6 +30,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
   const codeReviewWorkflowService = yield* CodeReviewWorkflowService;
   const investigationWorkflowService = yield* InvestigationWorkflowService;
   const nextTurnQueueDispatcher = yield* NextTurnQueueDispatcher;
+  const orchestrationEngine = yield* OrchestrationEngineService;
 
   const start: OrchestrationReactorShape["start"] = Effect.gen(function* () {
     yield* providerRuntimeIngestion.start;
@@ -52,6 +55,7 @@ export const makeOrchestrationReactor = Effect.gen(function* () {
     yield* codeReviewWorkflowService.start;
     yield* investigationWorkflowService.start;
     yield* nextTurnQueueDispatcher.start;
+    yield* startThreadSnoozeReactor(orchestrationEngine);
   });
 
   return {

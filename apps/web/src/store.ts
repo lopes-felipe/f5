@@ -44,6 +44,7 @@ export interface AppState {
   investigationWorkflows: InvestigationWorkflow[];
   threadsHydrated: boolean;
   lastAppliedSequence: number;
+  pinRevision?: number;
   detailEventBufferByThreadId: Map<ThreadId, ThreadDetailEventBuffer>;
   /**
    * Per-thread flag for whether the "Changed files" directory tree is expanded
@@ -76,6 +77,7 @@ function createInitialState(): AppState {
     investigationWorkflows: [],
     threadsHydrated: false,
     lastAppliedSequence: 0,
+    pinRevision: 0,
     detailEventBufferByThreadId: new Map(),
     changedFilesExpandedByThreadId: { ...persistedChangedFilesExpandedByThreadId },
   };
@@ -953,6 +955,10 @@ function buildThreadFromReadModel(
   const estimatedThinkingTokens = thread.estimatedThinkingTokens ?? null;
   const modelContextWindowTokens = thread.modelContextWindowTokens ?? null;
   const compaction = thread.compaction ?? null;
+  const pinnedAt = thread.pinnedAt ?? null;
+  const pinOrderKey = thread.pinOrderKey ?? null;
+  const snoozedUntil = thread.snoozedUntil ?? null;
+  const snoozedAt = thread.snoozedAt ?? null;
   const existingCompaction = existing?.compaction ?? null;
   const nextDetailFields = detailFields ?? preserveThreadDetailFields(existing);
 
@@ -972,6 +978,10 @@ function buildThreadFromReadModel(
     existing.error === error &&
     existing.createdAt === thread.createdAt &&
     existing.archivedAt === thread.archivedAt &&
+    (existing.pinnedAt ?? null) === pinnedAt &&
+    (existing.pinOrderKey ?? null) === pinOrderKey &&
+    (existing.snoozedUntil ?? null) === snoozedUntil &&
+    (existing.snoozedAt ?? null) === snoozedAt &&
     existing.lastInteractionAt === thread.lastInteractionAt &&
     existing.estimatedContextTokens === estimatedContextTokens &&
     existing.estimatedThinkingTokens === estimatedThinkingTokens &&
@@ -1010,6 +1020,10 @@ function buildThreadFromReadModel(
     error,
     createdAt: thread.createdAt,
     archivedAt: thread.archivedAt,
+    pinnedAt,
+    pinOrderKey,
+    snoozedUntil,
+    snoozedAt,
     lastInteractionAt: thread.lastInteractionAt,
     estimatedContextTokens,
     estimatedThinkingTokens,
@@ -1136,6 +1150,7 @@ export function syncStartupSnapshot(state: AppState, readModel: OrchestrationRea
       (workflow) => workflow.deletedAt === null,
     ),
     threads,
+    pinRevision: readModel.pinRevision ?? 0,
     threadsHydrated: true,
     lastAppliedSequence: Math.max(state.lastAppliedSequence, readModel.snapshotSequence),
   };
@@ -1515,6 +1530,7 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
       (workflow) => workflow.deletedAt === null,
     ),
     threads,
+    pinRevision: readModel.pinRevision ?? 0,
     threadsHydrated: true,
     lastAppliedSequence: Math.max(state.lastAppliedSequence, readModel.snapshotSequence),
     // A full snapshot supersedes any in-flight detail fetch and its buffered deltas.
