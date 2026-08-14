@@ -3031,6 +3031,14 @@
       "f5Shas": ["df110c40689c601e75020be810c3d51fdb811be9"]
     },
     {
+      "category": "foreground-connectivity-probe",
+      "selection": "Upstream 2640e6dcfcb6a5ba2f01f20295ce8bacd2fdb05e (#4137), 516 commits behind the frozen head and therefore outside the 500-commit manifest",
+      "disposition": "ported",
+      "reason": "Added f5's lightweight server.probe route, generation-safe foreground/focus/online probing, ten-second coalescing, listener disposal, and bounded reconnect jitter on the existing WebSocket transport.",
+      "upstreamShas": ["2640e6dcfcb6a5ba2f01f20295ce8bacd2fdb05e"],
+      "f5Shas": ["f57e2499596c4b9ee7c65bc4c0774000241d60dc"]
+    },
+    {
       "category": "pre-schema-ledger",
       "selection": "Upstream SHAs tracked before the frozen 500-commit window",
       "disposition": "deferred",
