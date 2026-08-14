@@ -30,6 +30,85 @@ const DEFAULT_MAX_CLIENT_BUFFERED_BYTES = 4 * 1024 * 1024;
 const SLOW_CLIENT_CLOSE_CODE = 1013;
 const SLOW_CLIENT_CLOSE_REASON = "Client fell behind; reconnecting to resynchronize.";
 
+export interface WebSocketSendController {
+  readonly send: (client: WebSocket, message: string) => Effect.Effect<boolean>;
+  readonly logicalOutstandingBytes: (client: WebSocket) => number;
+}
+
+export function makeWebSocketSendController(input: {
+  readonly clients: Ref.Ref<Set<WebSocket>>;
+  readonly maxClientBufferedBytes?: number;
+}): WebSocketSendController {
+  const maxClientBufferedBytes = Math.max(
+    1,
+    input.maxClientBufferedBytes ?? DEFAULT_MAX_CLIENT_BUFFERED_BYTES,
+  );
+  const logicalOutstandingByClient = new WeakMap<WebSocket, number>();
+
+  const removeClient = (client: WebSocket) =>
+    Ref.update(input.clients, (current) => {
+      if (!current.has(client)) return current;
+      const next = new Set(current);
+      next.delete(client);
+      return next;
+    });
+
+  const closeSlowClient = (client: WebSocket) =>
+    Effect.sync(() => {
+      try {
+        client.close(SLOW_CLIENT_CLOSE_CODE, SLOW_CLIENT_CLOSE_REASON);
+      } catch {
+        // The socket may already be tearing down. Removing it from the
+        // broadcast set is sufficient; its close handler is idempotent.
+      }
+    }).pipe(Effect.andThen(removeClient(client)));
+
+  const send: WebSocketSendController["send"] = (client, message) =>
+    Effect.gen(function* () {
+      if (client.readyState !== client.OPEN) {
+        yield* removeClient(client);
+        return false;
+      }
+
+      const logicalBytes = Buffer.byteLength(message);
+      const logicalOutstanding = logicalOutstandingByClient.get(client) ?? 0;
+      if (
+        client.bufferedAmount > maxClientBufferedBytes ||
+        logicalOutstanding + logicalBytes > maxClientBufferedBytes
+      ) {
+        yield* closeSlowClient(client);
+        return false;
+      }
+
+      logicalOutstandingByClient.set(client, logicalOutstanding + logicalBytes);
+      const didSend = yield* Effect.try({
+        try: () =>
+          client.send(message, (error) => {
+            const currentOutstanding = logicalOutstandingByClient.get(client) ?? 0;
+            logicalOutstandingByClient.set(client, Math.max(0, currentOutstanding - logicalBytes));
+            if (error) {
+              Effect.runFork(closeSlowClient(client));
+            }
+          }),
+        catch: () => undefined,
+      }).pipe(
+        Effect.as(true),
+        Effect.catch(() => Effect.succeed(false)),
+      );
+      if (!didSend) {
+        logicalOutstandingByClient.set(client, logicalOutstanding);
+        yield* closeSlowClient(client);
+        return false;
+      }
+      return true;
+    });
+
+  return {
+    send,
+    logicalOutstandingBytes: (client) => logicalOutstandingByClient.get(client) ?? 0,
+  };
+}
+
 // These channels carry latest-state notifications. Replacing an older queued
 // value with a newer one is safe and prevents a burst of invalidations or
 // progress frames from crowding lossless orchestration/terminal events.
@@ -75,14 +154,19 @@ export const makeServerPushBus = (input: {
   readonly logOutgoingPush: (push: WsPushEnvelopeBase, recipients: number) => void;
   readonly queueCapacity?: number;
   readonly maxClientBufferedBytes?: number;
+  readonly sendClient?: WebSocketSendController["send"];
 }): Effect.Effect<ServerPushBus, never, Scope.Scope> =>
   Effect.gen(function* () {
     const nextSequence = yield* Ref.make(0);
     const queueCapacity = Math.max(1, input.queueCapacity ?? DEFAULT_PUSH_QUEUE_CAPACITY);
-    const maxClientBufferedBytes = Math.max(
-      1,
-      input.maxClientBufferedBytes ?? DEFAULT_MAX_CLIENT_BUFFERED_BYTES,
-    );
+    const sendClient =
+      input.sendClient ??
+      makeWebSocketSendController({
+        clients: input.clients,
+        ...(input.maxClientBufferedBytes !== undefined
+          ? { maxClientBufferedBytes: input.maxClientBufferedBytes }
+          : {}),
+      }).send;
     const queue = yield* Queue.bounded<PushQueueEntry>(queueCapacity);
     const coalescedJobs = yield* Ref.make<ReadonlyMap<string, PushJob>>(new Map());
     const encodePush = Schema.encodeUnknownEffect(Schema.fromJsonString(WsPush));
@@ -104,45 +188,12 @@ export const makeServerPushBus = (input: {
         job.target.kind === "all" ? yield* Ref.get(input.clients) : new Set([job.target.client]);
 
       const message = yield* encodePush(push);
-      const clientsToRemove = new Set<WebSocket>();
       let recipientCount = 0;
 
-      yield* Effect.sync(() => {
-        for (const client of recipients) {
-          if (client.readyState !== client.OPEN) {
-            clientsToRemove.add(client);
-            continue;
-          }
-          if (client.bufferedAmount > maxClientBufferedBytes) {
-            clientsToRemove.add(client);
-            try {
-              client.close(SLOW_CLIENT_CLOSE_CODE, SLOW_CLIENT_CLOSE_REASON);
-            } catch {
-              // The socket may already be tearing down. Removing it from the
-              // broadcast set is sufficient; its close handler is idempotent.
-            }
-            continue;
-          }
-          try {
-            client.send(message);
-            recipientCount += 1;
-          } catch {
-            clientsToRemove.add(client);
-            try {
-              client.close(SLOW_CLIENT_CLOSE_CODE, SLOW_CLIENT_CLOSE_REASON);
-            } catch {
-              // Ignore close failures for an already-broken socket.
-            }
-          }
+      for (const client of recipients) {
+        if (yield* sendClient(client, message)) {
+          recipientCount += 1;
         }
-      });
-
-      if (clientsToRemove.size > 0) {
-        yield* Ref.update(input.clients, (current) => {
-          const next = new Set(current);
-          for (const client of clientsToRemove) next.delete(client);
-          return next;
-        });
       }
 
       input.logOutgoingPush(push, recipientCount);

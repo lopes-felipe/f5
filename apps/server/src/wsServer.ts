@@ -159,7 +159,11 @@ import {
   dispatchBootstrapTurnStart,
   isDefinitelyUncommittedDispatchError,
 } from "./wsServer/bootstrapTurnStart.ts";
-import { makeServerPushBus } from "./wsServer/pushBus.ts";
+import { makeServerPushBus, makeWebSocketSendController } from "./wsServer/pushBus.ts";
+import {
+  resolveServerPerMessageDeflate,
+  webSocketRuntimeName,
+} from "./wsServer/webSocketTransport.ts";
 import { makeServerReadiness } from "./wsServer/readiness.ts";
 import { cleanupStaleWorktrees } from "./orchestration/Layers/WorktreeStartupCleanup.ts";
 import { makeServerOrchestrationRuntimeLayer } from "./serverLayers.ts";
@@ -807,9 +811,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     );
   }
 
+  const webSocketSendController = makeWebSocketSendController({ clients });
   const pushBus = yield* makeServerPushBus({
     clients,
     logOutgoingPush,
+    sendClient: webSocketSendController.send,
   });
   const previewManager = makePreviewManager();
   const previewAutomationClientIdsByWs = new WeakMap<WebSocket, Map<string, string>>();
@@ -1491,7 +1497,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   });
 
   // WebSocket server — upgrades from the HTTP server
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: resolveServerPerMessageDeflate(),
+  });
 
   const closeWebSocketServer = Effect.callback<void, ServerLifecycleError>((resume) => {
     wss.close((error) => {
@@ -3664,7 +3673,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const handleMessage = Effect.fnUntraced(function* (ws: WebSocket, raw: unknown) {
     const sendWsResponse = (response: WsResponseMessage) =>
       encodeWsResponse(response).pipe(
-        Effect.tap((encodedResponse) => Effect.sync(() => ws.send(encodedResponse))),
+        Effect.flatMap((encodedResponse) => webSocketSendController.send(ws, encodedResponse)),
         Effect.asVoid,
       );
 
@@ -3736,6 +3745,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   });
 
   wss.on("connection", (ws) => {
+    logger.info("websocket transport negotiated", {
+      runtime: webSocketRuntimeName(),
+      extensions: ws.extensions.length > 0 ? ws.extensions : "none",
+      compression: ws.extensions.includes("permessage-deflate") ? "enabled" : "disabled",
+    });
     void runPromise(
       increment(websocketConnectionsTotal, {
         event: "connect",
