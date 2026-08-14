@@ -28,6 +28,12 @@ export const SidebarProjectGroupingMode = Schema.Literals([
 export type SidebarProjectGroupingMode = typeof SidebarProjectGroupingMode.Type;
 export const DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE: SidebarProjectGroupingMode = "repository";
 
+/**
+ * Shared typing/defaults for settings used by schema-only consumers.
+ *
+ * The web application's authoritative persisted client-settings schema is
+ * `apps/web/src/appSettings.ts`. Do not add web persistence fields here.
+ */
 export const ClientSettingsSchema = Schema.Struct({
   autoOpenPlanSidebar: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   confirmThreadArchive: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
@@ -296,35 +302,3 @@ export const ServerSettingsPatch = Schema.Struct({
   providerInstances: Schema.optionalKey(Schema.Record(ProviderInstanceId, ProviderInstanceConfig)),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
-
-export const ClientSettingsPatch = Schema.Struct({
-  autoOpenPlanSidebar: Schema.optionalKey(Schema.Boolean),
-  confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
-  confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
-  diffWordWrap: Schema.optionalKey(Schema.Boolean),
-  favorites: Schema.optionalKey(
-    Schema.Array(
-      Schema.Struct({
-        provider: ProviderInstanceId,
-        model: TrimmedNonEmptyString,
-      }),
-    ),
-  ),
-  providerModelPreferences: Schema.optionalKey(
-    Schema.Record(
-      ProviderInstanceId,
-      Schema.Struct({
-        hiddenModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
-        modelOrder: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
-      }),
-    ),
-  ),
-  sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
-  sidebarProjectGroupingOverrides: Schema.optionalKey(
-    Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
-  ),
-  sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
-  sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
-  timestampFormat: Schema.optionalKey(TimestampFormat),
-});
-export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

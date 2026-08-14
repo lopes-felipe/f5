@@ -3,28 +3,26 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ServerSettings, type ServerSettingsPatch, type UnifiedSettings } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 
-import { type AppSettings, useAppSettings } from "../appSettings";
+import { AppSettingsSchema, type AppSettings, useAppSettings } from "../appSettings";
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
 import { ensureNativeApi } from "../nativeApi";
 
 const SERVER_SETTINGS_KEYS = new Set(Object.keys(ServerSettings.fields));
+const APP_SETTINGS_KEYS = new Set(Object.keys(AppSettingsSchema.fields));
+export type UnifiedWebSettings = UnifiedSettings & AppSettings;
 
-function mergeSettings(appSettings: AppSettings, serverSettings?: ServerSettings): UnifiedSettings {
+export function mergeSettings(
+  appSettings: AppSettings,
+  serverSettings?: ServerSettings,
+): UnifiedWebSettings {
   return {
     ...DEFAULT_UNIFIED_SETTINGS,
     ...serverSettings,
-    enableAssistantStreaming: appSettings.enableAssistantStreaming,
-    defaultThreadEnvMode: appSettings.defaultThreadEnvMode,
-    addProjectBaseDirectory: appSettings.addProjectBaseDirectory,
-    timestampFormat: appSettings.timestampFormat,
-    confirmThreadDelete: appSettings.confirmThreadDelete,
-    favorites: appSettings.favorites,
-    providerModelPreferences: appSettings.providerModelPreferences,
-    dismissedProviderUpdateAdvisories: appSettings.dismissedProviderUpdateAdvisories,
-  };
+    ...appSettings,
+  } as UnifiedWebSettings;
 }
 
-function splitSettingsPatch(patch: Partial<UnifiedSettings>): {
+export function splitSettingsPatch(patch: Partial<UnifiedWebSettings>): {
   serverPatch: ServerSettingsPatch;
   appPatch: Partial<AppSettings>;
 } {
@@ -34,16 +32,7 @@ function splitSettingsPatch(patch: Partial<UnifiedSettings>): {
     if (SERVER_SETTINGS_KEYS.has(key)) {
       serverPatch[key] = value;
     }
-    if (
-      key === "enableAssistantStreaming" ||
-      key === "defaultThreadEnvMode" ||
-      key === "addProjectBaseDirectory" ||
-      key === "timestampFormat" ||
-      key === "confirmThreadDelete" ||
-      key === "favorites" ||
-      key === "providerModelPreferences" ||
-      key === "dismissedProviderUpdateAdvisories"
-    ) {
+    if (APP_SETTINGS_KEYS.has(key)) {
       appPatch[key] = value;
     }
   }
@@ -53,7 +42,9 @@ function splitSettingsPatch(patch: Partial<UnifiedSettings>): {
   };
 }
 
-export function useSettings<T = UnifiedSettings>(selector?: (settings: UnifiedSettings) => T): T {
+export function useSettings<T = UnifiedWebSettings>(
+  selector?: (settings: UnifiedWebSettings) => T,
+): T {
   const { settings: appSettings } = useAppSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
   const merged = useMemo(
@@ -68,7 +59,7 @@ export function useUpdateSettings() {
   const queryClient = useQueryClient();
 
   const updateSettings = useCallback(
-    async (patch: Partial<UnifiedSettings>) => {
+    async (patch: Partial<UnifiedWebSettings>) => {
       const { serverPatch, appPatch } = splitSettingsPatch(patch);
       if (Object.keys(appPatch).length > 0) {
         updateAppSettings(appPatch);

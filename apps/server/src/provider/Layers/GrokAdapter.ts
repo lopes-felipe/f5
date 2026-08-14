@@ -10,6 +10,7 @@ import {
   type ProviderSession,
   type ProviderUserInputAnswers,
   ProviderInstanceId,
+  type RuntimeMode,
   RuntimeRequestId,
   type ThreadId,
   TurnId,
@@ -29,6 +30,7 @@ import {
   Stream,
   SynchronizedRef,
 } from "effect";
+import { assertNever } from "@t3tools/shared/exhaustive";
 import { ChildProcessSpawner } from "effect/unstable/process";
 import * as EffectAcpErrors from "effect-acp/errors";
 import type * as EffectAcpSchema from "effect-acp/schema";
@@ -472,16 +474,24 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               mapAcpCallbackFailure(
                 Effect.gen(function* () {
                   yield* logNative(input.threadId, "session/request_permission", params);
-                  if (input.runtimeMode === "full-access") {
-                    const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
-                    if (autoApprovedOptionId !== undefined) {
-                      return {
-                        outcome: {
-                          outcome: "selected" as const,
-                          optionId: autoApprovedOptionId,
-                        },
-                      };
+                  const runtimeMode: RuntimeMode = input.runtimeMode;
+                  switch (runtimeMode) {
+                    case "full-access": {
+                      const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
+                      if (autoApprovedOptionId !== undefined) {
+                        return {
+                          outcome: {
+                            outcome: "selected" as const,
+                            optionId: autoApprovedOptionId,
+                          },
+                        };
+                      }
+                      break;
                     }
+                    case "approval-required":
+                      break;
+                    default:
+                      return assertNever(runtimeMode, "Grok approval mode");
                   }
                   const permissionRequest = parsePermissionRequest(params);
                   const requestId = ApprovalRequestId.make(yield* Random.nextUUIDv4);

@@ -24,6 +24,7 @@ import {
   TurnId,
 } from "@t3tools/contracts";
 import { cursorModelOptionsToProviderOptionSelections } from "@t3tools/shared/model";
+import { assertNever } from "@t3tools/shared/exhaustive";
 import {
   DateTime,
   Deferred,
@@ -224,21 +225,24 @@ function resolveRequestedModeId(input: {
     return findModeByAliases(modeState.availableModes, ACP_PLAN_MODE_ALIASES)?.id;
   }
 
-  if (input.runtimeMode === "approval-required") {
-    return (
-      findModeByAliases(modeState.availableModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
-      findModeByAliases(modeState.availableModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
-      modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
-      modeState.currentModeId
-    );
+  switch (input.runtimeMode) {
+    case "approval-required":
+      return (
+        findModeByAliases(modeState.availableModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
+        findModeByAliases(modeState.availableModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
+        modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
+        modeState.currentModeId
+      );
+    case "full-access":
+      return (
+        findModeByAliases(modeState.availableModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
+        findModeByAliases(modeState.availableModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
+        modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
+        modeState.currentModeId
+      );
+    default:
+      return assertNever(input.runtimeMode, "Cursor runtime mode");
   }
-
-  return (
-    findModeByAliases(modeState.availableModes, ACP_IMPLEMENT_MODE_ALIASES)?.id ??
-    findModeByAliases(modeState.availableModes, ACP_APPROVAL_MODE_ALIASES)?.id ??
-    modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
-    modeState.currentModeId
-  );
 }
 
 function applyRequestedSessionConfiguration<E>(input: {
@@ -696,16 +700,23 @@ export function makeCursorAdapter(
                   params,
                   "acp.jsonrpc",
                 );
-                if (input.runtimeMode === "full-access") {
-                  const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
-                  if (autoApprovedOptionId !== undefined) {
-                    return {
-                      outcome: {
-                        outcome: "selected" as const,
-                        optionId: autoApprovedOptionId,
-                      },
-                    };
+                switch (input.runtimeMode) {
+                  case "full-access": {
+                    const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
+                    if (autoApprovedOptionId !== undefined) {
+                      return {
+                        outcome: {
+                          outcome: "selected" as const,
+                          optionId: autoApprovedOptionId,
+                        },
+                      };
+                    }
+                    break;
                   }
+                  case "approval-required":
+                    break;
+                  default:
+                    return assertNever(input.runtimeMode, "Cursor approval mode");
                 }
                 const permissionRequest = parsePermissionRequest(params);
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());

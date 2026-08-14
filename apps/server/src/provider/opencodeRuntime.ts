@@ -32,6 +32,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { isWindowsCommandNotFound } from "../processRunner.ts";
 import { collectStreamAsString } from "./providerSnapshot.ts";
 import { NetService } from "@t3tools/shared/Net";
+import { assertNever } from "@t3tools/shared/exhaustive";
 import { resolveInvocation, resolveInvocationEffect } from "../spawn/resolveCommand.ts";
 
 const OPENCODE_SERVER_READY_PREFIX = "opencode server listening";
@@ -217,21 +218,24 @@ export function toOpenCodeFileParts(input: {
 }
 
 export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): PermissionRuleset {
-  if (runtimeMode === "full-access") {
-    return [{ permission: "*", pattern: "*", action: "allow" }];
+  switch (runtimeMode) {
+    case "full-access":
+      return [{ permission: "*", pattern: "*", action: "allow" }];
+    case "approval-required":
+      return [
+        { permission: "*", pattern: "*", action: "ask" },
+        { permission: "bash", pattern: "*", action: "ask" },
+        { permission: "edit", pattern: "*", action: "ask" },
+        { permission: "webfetch", pattern: "*", action: "ask" },
+        { permission: "websearch", pattern: "*", action: "ask" },
+        { permission: "codesearch", pattern: "*", action: "ask" },
+        { permission: "external_directory", pattern: "*", action: "ask" },
+        { permission: "doom_loop", pattern: "*", action: "ask" },
+        { permission: "question", pattern: "*", action: "allow" },
+      ];
+    default:
+      return assertNever(runtimeMode, "OpenCode runtime mode");
   }
-
-  return [
-    { permission: "*", pattern: "*", action: "ask" },
-    { permission: "bash", pattern: "*", action: "ask" },
-    { permission: "edit", pattern: "*", action: "ask" },
-    { permission: "webfetch", pattern: "*", action: "ask" },
-    { permission: "websearch", pattern: "*", action: "ask" },
-    { permission: "codesearch", pattern: "*", action: "ask" },
-    { permission: "external_directory", pattern: "*", action: "ask" },
-    { permission: "doom_loop", pattern: "*", action: "ask" },
-    { permission: "question", pattern: "*", action: "allow" },
-  ];
 }
 
 export function toOpenCodePermissionReply(

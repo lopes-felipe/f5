@@ -38,6 +38,8 @@ import {
   type ProviderUserInputAnswers,
   type RuntimeItemStatus,
   type RuntimeContentStreamKind,
+  DEFAULT_RUNTIME_MODE,
+  type RuntimeMode,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
@@ -64,6 +66,7 @@ import {
   supportsClaudeUltrathinkKeyword,
 } from "@t3tools/shared/model";
 import { filterReservedClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
+import { assertNever } from "@t3tools/shared/exhaustive";
 import { translateMcpForClaudeAgent } from "@t3tools/shared/mcpTranslation";
 import {
   Cause,
@@ -4289,12 +4292,17 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 } satisfies PermissionResult;
               }
 
-              const runtimeMode = input.runtimeMode ?? "full-access";
-              if (runtimeMode === "full-access") {
-                return {
-                  behavior: "allow",
-                  updatedInput: toolInput,
-                } satisfies PermissionResult;
+              const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+              switch (runtimeMode) {
+                case "full-access":
+                  return {
+                    behavior: "allow",
+                    updatedInput: toolInput,
+                  } satisfies PermissionResult;
+                case "approval-required":
+                  break;
+                default:
+                  return assertNever(runtimeMode, "Claude runtime mode");
               }
 
               const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
@@ -4422,9 +4430,19 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           runtimeModelSelection,
           input.model,
         );
+        const runtimeMode = input.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+        const runtimePermissionMode = (() => {
+          switch (runtimeMode) {
+            case "approval-required":
+              return undefined;
+            case "full-access":
+              return "bypassPermissions" as const;
+            default:
+              return assertNever(runtimeMode, "Claude permission mode");
+          }
+        })();
         const permissionMode =
-          toPermissionMode(providerOptions?.permissionMode) ??
-          (input.runtimeMode === "full-access" ? "bypassPermissions" : undefined);
+          toPermissionMode(providerOptions?.permissionMode) ?? runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
         const settings = {
           ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),

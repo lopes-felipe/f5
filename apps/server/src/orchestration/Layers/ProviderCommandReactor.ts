@@ -1,6 +1,7 @@
 import {
   type ChatAttachment,
   CommandId,
+  DEFAULT_RUNTIME_MODE,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   defaultInstanceIdForDriver,
@@ -150,7 +151,6 @@ function mapProviderSessionStatusToOrchestrationStatus(
 const serverCommandId = (tag: string): CommandId =>
   CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
 
-const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 const WORKTREE_BRANCH_PREFIX = "t3code";
 const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(`^${WORKTREE_BRANCH_PREFIX}\\/[0-9a-f]{8}$`);
 

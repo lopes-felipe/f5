@@ -159,6 +159,10 @@
     "./windowsPath": {
       "types": "./src/windowsPath.ts",
       "import": "./src/windowsPath.ts"
+    },
+    "./exhaustive": {
+      "types": "./src/exhaustive.ts",
+      "import": "./src/exhaustive.ts"
     }
   },
   "scripts": {

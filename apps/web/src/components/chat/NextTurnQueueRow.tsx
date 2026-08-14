@@ -1,4 +1,9 @@
-import type { CommandId, NextTurnQueueItem, NextTurnQueueSnapshot } from "@t3tools/contracts";
+import type {
+  CommandId,
+  NextTurnQueueItem,
+  NextTurnQueueSnapshot,
+  RuntimeMode,
+} from "@t3tools/contracts";
 import { CSS } from "@dnd-kit/utilities";
 import { useSortable } from "@dnd-kit/sortable";
 import {
@@ -42,7 +47,7 @@ export function NextTurnQueueRow({
     update: {
       readonly text: string;
       readonly model: string | undefined;
-      readonly runtimeMode: "approval-required" | "full-access";
+      readonly runtimeMode: RuntimeMode;
       readonly interactionMode: "default" | "plan";
     },
   ) => Promise<void>;
@@ -159,9 +164,7 @@ export function NextTurnQueueRow({
               className="h-8 rounded-md border bg-background px-2 text-xs"
               aria-label="Queued turn access"
               value={editRuntimeMode}
-              onChange={(event) =>
-                setEditRuntimeMode(event.currentTarget.value as "approval-required" | "full-access")
-              }
+              onChange={(event) => setEditRuntimeMode(event.currentTarget.value as RuntimeMode)}
             >
               <option value="approval-required">Ask approval</option>
               <option value="full-access">Full access</option>

@@ -7,6 +7,7 @@ import {
   ApprovalRequestId,
   type CodexMcpServerEntry,
   DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_RUNTIME_MODE,
   EventId,
   type ProjectMemory,
   ProviderItemId,
@@ -26,6 +27,7 @@ import {
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { Effect, ServiceMap } from "effect";
 
@@ -422,17 +424,20 @@ function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
   readonly approvalPolicy: "on-request" | "never";
   readonly sandbox: "workspace-write" | "danger-full-access";
 } {
-  if (runtimeMode === "approval-required") {
-    return {
-      approvalPolicy: "on-request",
-      sandbox: "workspace-write",
-    };
+  switch (runtimeMode) {
+    case "approval-required":
+      return {
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+      };
+    case "full-access":
+      return {
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+      };
+    default:
+      return assertNever(runtimeMode, "Codex runtime mode");
   }
-
-  return {
-    approvalPolicy: "never",
-    sandbox: "danger-full-access",
-  };
 }
 
 export function resolveCodexModelForAccount(
@@ -767,7 +772,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         model: normalizedModel ?? null,
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
         cwd: input.cwd ?? null,
-        ...mapCodexRuntimeMode(input.runtimeMode ?? "full-access"),
+        ...mapCodexRuntimeMode(input.runtimeMode ?? DEFAULT_RUNTIME_MODE),
       };
 
       const threadStartParams = {
