@@ -701,8 +701,8 @@
     {
       "upstreamSha": "c8ad4b8135dca79c439a44845d270f12c355cfe2",
       "subject": "fix(shell): add ~/.local/bin to the Windows CLI resolver so native-installed providers are found (#5074)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 1.5 Windows ~/.local/bin resolution; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["df110c40689c601e75020be810c3d51fdb811be9"]
     },
     {
       "upstreamSha": "bd18d8d6d1feb23dd05dc357e34e353547a51d40",
@@ -3020,6 +3020,14 @@
       "reason": "Reimplemented the final Codex web-search detail resolution behavior in f5's provider adapter.",
       "upstreamShas": ["33f1cb422461bf0f072b9f181734e9b654d1ca69"],
       "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
+    },
+    {
+      "category": "background-task-labels-non-first-parent",
+      "selection": "Upstream 749baec353d5675f1acac81f22aa15da573e71c7 (#3751), reachable from upstream head but outside the frozen first-parent manifest",
+      "disposition": "ported",
+      "reason": "Preserved f5's Claude tool descriptor in background work-log rows and appended the terminal status.",
+      "upstreamShas": ["749baec353d5675f1acac81f22aa15da573e71c7"],
+      "f5Shas": ["df110c40689c601e75020be810c3d51fdb811be9"]
     },
     {
       "category": "pre-schema-ledger",
