@@ -343,12 +343,26 @@ function itemTitle(itemType: CanonicalItemType): string | undefined {
 }
 
 function itemDetail(
+  itemType: CanonicalItemType,
   item: Record<string, unknown>,
   payload: Record<string, unknown>,
 ): string | undefined {
   const nestedResult = asObject(item.result);
   const durationMs = asNumber(item.durationMs ?? item.duration_ms);
+  const action = asObject(item.action);
+  const actionQueries = Array.isArray(action?.queries)
+    ? action.queries.map(asString).filter((value): value is string => value !== undefined)
+    : [];
   const candidates = [
+    ...(itemType === "web_search"
+      ? [
+          asString(item.query),
+          asString(action?.query),
+          ...actionQueries,
+          asString(action?.pattern),
+          asString(action?.url),
+        ]
+      : []),
     asString(item.command),
     asString(item.title),
     asString(item.summary),
@@ -825,7 +839,7 @@ function mapItemLifecycle(
     );
   }
 
-  const detail = itemDetail(source, payload ?? {});
+  const detail = itemDetail(itemType, source, payload ?? {});
   const status = itemLifecycleStatus(source, lifecycle);
 
   return {
@@ -1333,7 +1347,7 @@ function mapToRuntimeEvents(
     }
     const itemType = source ? normalizeCodexThreadItemType(source.type ?? source.kind) : "unknown";
     if (itemType === "plan") {
-      const detail = itemDetail(source, payload ?? {});
+      const detail = itemDetail(itemType, source, payload ?? {});
       if (!detail) {
         return [];
       }

@@ -487,7 +487,19 @@ function resultErrorsText(result: SDKResultMessage): string {
     : "";
 }
 
+function resultUserFacingError(result: SDKResultMessage): string | undefined {
+  if (result.subtype === "success" || !Array.isArray(result.errors)) {
+    return undefined;
+  }
+  return result.errors.find((error) => !error.startsWith("[ede_diagnostic]"));
+}
+
 function isInterruptedResult(result: SDKResultMessage): boolean {
+  const terminalReason = (result as SDKResultMessage & { terminal_reason?: unknown })
+    .terminal_reason;
+  if (terminalReason === "aborted_tools" || terminalReason === "aborted_streaming") {
+    return true;
+  }
   const errors = resultErrorsText(result);
   if (errors.includes("interrupt")) {
     return true;
@@ -625,6 +637,10 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeOptionalNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function asUnknownRecord(value: unknown): Record<string, unknown> | undefined {
@@ -3355,8 +3371,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         }
 
         const status = turnStatusFromResult(message);
-        const errorMessage =
-          message.subtype === "success" ? undefined : message.errors[0] || undefined;
+        const errorMessage = resultUserFacingError(message);
         const resumeErrorText =
           message.subtype === "success" ? undefined : message.errors.join("\n") || undefined;
         let resumeRejected = false;
@@ -3414,6 +3429,59 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             payload: message,
           },
         };
+
+        const rawMessage = message as unknown as Record<string, unknown>;
+        const rawSubtype = normalizeOptionalString(rawMessage.subtype);
+        switch (rawSubtype) {
+          case "background_tasks_changed":
+          case "vcs_state_changed":
+          case "code_change_published":
+          case "commands_changed":
+          case "model_refusal_fallback":
+          case "local_command_output":
+          case "plugin_install":
+          case "memory_recall":
+          case "elicitation_complete":
+            return;
+          case "api_retry": {
+            const attempt = normalizeOptionalNumber(rawMessage.attempt);
+            const maxRetries = normalizeOptionalNumber(rawMessage.max_retries);
+            yield* offerRuntimeEvent({
+              ...base,
+              type: "session.state.changed",
+              payload: {
+                state: "running",
+                reason: `api_retry:${attempt ?? "?"}/${maxRetries ?? "?"}`,
+              },
+            });
+            return;
+          }
+          case "session_state_changed": {
+            const state = normalizeOptionalString(rawMessage.state);
+            yield* offerRuntimeEvent({
+              ...base,
+              type: "session.state.changed",
+              payload: {
+                state:
+                  state === "requires_action"
+                    ? "waiting"
+                    : state === "running"
+                      ? "running"
+                      : "ready",
+                reason: `session_state:${state ?? "unknown"}`,
+              },
+            });
+            return;
+          }
+          case "notification": {
+            const priority = normalizeOptionalString(rawMessage.priority);
+            const text = normalizeOptionalString(rawMessage.text);
+            if ((priority === "high" || priority === "immediate") && text) {
+              yield* emitRuntimeWarning(context, text, { detail: message });
+            }
+            return;
+          }
+        }
 
         switch (message.subtype) {
           case "init":
@@ -3706,6 +3774,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "auth_status":
           case "rate_limit_event":
             yield* handleSdkTelemetryMessage(context, message);
+            return;
+          case "prompt_suggestion":
             return;
           default:
             yield* emitRuntimeWarning(

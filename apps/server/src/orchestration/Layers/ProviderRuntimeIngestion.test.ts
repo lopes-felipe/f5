@@ -2549,6 +2549,47 @@ describe("ProviderRuntimeIngestion", () => {
     expect(resolvedPayload?.requestType).toBe("command_execution_approval");
   });
 
+  it("surfaces unknown approvals with their raw type and byte-bounded detail", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const detail = `${"head🙂".repeat(7_000)}${"tail界".repeat(7_000)}`;
+
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-request-opened-unknown"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      requestId: ApprovalRequestId.makeUnsafe("req-open-unknown"),
+      payload: {
+        requestType: "workspace_policy_approval",
+        detail,
+      },
+    });
+
+    await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-request-opened-unknown",
+      ),
+    );
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
+    const requested = thread?.activities.find(
+      (activity: ProviderRuntimeTestActivity) => activity.id === "evt-request-opened-unknown",
+    );
+    const payload = requested?.payload as Record<string, unknown> | undefined;
+    const persistedDetail = String(payload?.detail ?? "");
+
+    expect(requested?.summary).toBe("Unknown approval requested (workspace_policy_approval)");
+    expect(payload?.requestKind).toBe("unknown");
+    expect(payload?.requestType).toBe("workspace_policy_approval");
+    expect(Buffer.byteLength(persistedDetail, "utf8")).toBeLessThanOrEqual(32 * 1024);
+    expect(persistedDetail).toContain("approval detail truncated; middle omitted");
+    expect(persistedDetail).toContain("head🙂");
+    expect(persistedDetail).toContain("tail界");
+  });
+
   it("preserves requested permission profiles on approval activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

@@ -40,7 +40,8 @@ function normalizeRequestKind(value: unknown): ProviderRequestKind | undefined {
     value === "command" ||
     value === "file-read" ||
     value === "file-change" ||
-    value === "permission"
+    value === "permission" ||
+    value === "unknown"
   ) {
     return value;
   }

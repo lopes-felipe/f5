@@ -51,6 +51,15 @@ export type ServerProviderStatus = typeof ServerProviderStatus.Type;
 export const ServerProviderState = Schema.Literals(["ready", "warning", "error", "disabled"]);
 export type ServerProviderState = typeof ServerProviderState.Type;
 
+export const ServerProviderProbeOutcome = Schema.Literals([
+  "loading",
+  "success",
+  "transient_failure",
+  "disabled",
+  "missing",
+]);
+export type ServerProviderProbeOutcome = typeof ServerProviderProbeOutcome.Type;
+
 export const ServerProviderAuth = Schema.Struct({
   status: ServerProviderAuthStatus,
   type: Schema.optional(TrimmedNonEmptyString),
@@ -140,6 +149,9 @@ export const ServerProvider = Schema.Struct({
   status: ServerProviderState,
   auth: ServerProviderAuth,
   checkedAt: IsoDateTime,
+  probeOutcome: Schema.optional(ServerProviderProbeOutcome),
+  probeOutcomeStartedAt: Schema.optional(IsoDateTime),
+  configurationFingerprint: Schema.optional(TrimmedNonEmptyString),
   message: Schema.optional(TrimmedNonEmptyString),
   availability: Schema.optional(ServerProviderAvailability),
   unavailableReason: Schema.optional(TrimmedNonEmptyString),

@@ -27,6 +27,7 @@ import {
   ProviderDriverKind,
   type ProviderInstanceId,
   type ServerProvider,
+  type ServerProviderProbeOutcome,
 } from "@t3tools/contracts";
 import { Cause, Effect, Equal, FileSystem, Layer, Path, PubSub, Ref, Stream } from "effect";
 import * as Semaphore from "effect/Semaphore";
@@ -46,11 +47,58 @@ import type { ProviderSnapshotSource } from "../builtInProviderCatalog.ts";
 const hasModelCapabilities = (model: ServerProvider["models"][number]): boolean =>
   (model.capabilities?.optionDescriptors?.length ?? 0) > 0;
 
+const TRANSIENT_MODEL_RETENTION_MS = 30_000;
+
+function probeOutcome(provider: ServerProvider): ServerProviderProbeOutcome {
+  if (provider.probeOutcome) {
+    return provider.probeOutcome;
+  }
+  if (!provider.enabled || provider.status === "disabled") {
+    return "disabled";
+  }
+  if (!provider.installed) {
+    return provider.status === "error" ? "missing" : "loading";
+  }
+  return provider.status === "error" ? "transient_failure" : "success";
+}
+
+function probeOutcomeStartedAt(
+  previousProvider: ServerProvider,
+  nextProvider: ServerProvider,
+  outcome: ServerProviderProbeOutcome,
+): string {
+  return probeOutcome(previousProvider) === outcome
+    ? (previousProvider.probeOutcomeStartedAt ?? previousProvider.checkedAt)
+    : nextProvider.checkedAt;
+}
+
+function shouldRetainMissingModels(input: {
+  readonly provider: ServerProvider;
+  readonly outcome: ServerProviderProbeOutcome;
+  readonly outcomeStartedAt: string;
+}): boolean {
+  if (input.outcome === "loading") {
+    return true;
+  }
+  if (input.outcome !== "transient_failure") {
+    return false;
+  }
+  const checkedAt = Date.parse(input.provider.checkedAt);
+  const startedAt = Date.parse(input.outcomeStartedAt);
+  return (
+    Number.isFinite(checkedAt) &&
+    Number.isFinite(startedAt) &&
+    checkedAt >= startedAt &&
+    checkedAt - startedAt <= TRANSIENT_MODEL_RETENTION_MS
+  );
+}
+
 const mergeProviderModels = (
+  retainMissingModels: boolean,
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
-  if (nextModels.length === 0 && previousModels.length > 0) {
+  if (retainMissingModels && nextModels.length === 0 && previousModels.length > 0) {
     return previousModels;
   }
 
@@ -66,19 +114,35 @@ const mergeProviderModels = (
     };
   });
   const nextSlugs = new Set(nextModels.map((model) => model.slug));
-  return [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))];
+  return retainMissingModels
+    ? [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))]
+    : mergedModels;
 };
 
 export const mergeProviderSnapshot = (
   previousProvider: ServerProvider | undefined,
   nextProvider: ServerProvider,
-): ServerProvider =>
-  !previousProvider
-    ? nextProvider
-    : {
-        ...nextProvider,
-        models: mergeProviderModels(previousProvider.models, nextProvider.models),
-      };
+): ServerProvider => {
+  if (!previousProvider) {
+    return nextProvider;
+  }
+  const outcome = probeOutcome(nextProvider);
+  const outcomeStartedAt = probeOutcomeStartedAt(previousProvider, nextProvider, outcome);
+  return {
+    ...nextProvider,
+    probeOutcome: outcome,
+    probeOutcomeStartedAt: outcomeStartedAt,
+    models: mergeProviderModels(
+      shouldRetainMissingModels({
+        provider: nextProvider,
+        outcome,
+        outcomeStartedAt,
+      }),
+      previousProvider.models,
+      nextProvider.models,
+    ),
+  };
+};
 
 export const haveProvidersChanged = (
   previousProviders: ReadonlyArray<ServerProvider>,
@@ -103,7 +167,11 @@ const correlateSnapshotWithSource = (
       ),
     );
   }
-  return Effect.succeed(snapshot);
+  return Effect.succeed(
+    source.configurationFingerprint
+      ? { ...snapshot, configurationFingerprint: source.configurationFingerprint }
+      : snapshot,
+  );
 };
 
 /**
@@ -123,6 +191,9 @@ const snapshotInstanceKey = (provider: ServerProvider): ProviderInstanceId => {
 const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource => ({
   instanceId: instance.instanceId,
   driverKind: instance.driverKind,
+  ...(instance.configurationFingerprint
+    ? { configurationFingerprint: instance.configurationFingerprint }
+    : {}),
   getSnapshot: instance.snapshot.getSnapshot,
   refresh: instance.snapshot.refresh,
   streamChanges: instance.snapshot.streamChanges,
@@ -173,7 +244,8 @@ export const ProviderRegistryLive = Layer.effect(
               }
               if (
                 cachedProvider.instanceId !== source.instanceId ||
-                cachedProvider.driver !== source.driverKind
+                cachedProvider.driver !== source.driverKind ||
+                cachedProvider.configurationFingerprint !== source.configurationFingerprint
               ) {
                 return Effect.logWarning("provider status cache identity mismatch, ignoring", {
                   path: filePath,
@@ -181,6 +253,8 @@ export const ProviderRegistryLive = Layer.effect(
                   cachedInstanceId: cachedProvider.instanceId ?? null,
                   driver: source.driverKind,
                   cachedDriver: cachedProvider.driver ?? null,
+                  configurationFingerprint: source.configurationFingerprint ?? null,
+                  cachedConfigurationFingerprint: cachedProvider.configurationFingerprint ?? null,
                 }).pipe(Effect.as(undefined as ServerProvider | undefined));
               }
               return Effect.succeed(cachedProvider);
@@ -241,15 +315,17 @@ export const ProviderRegistryLive = Layer.effect(
         readonly replace?: boolean;
       },
     ) {
-      const [previousProviders, providers] = yield* Ref.modify(
+      const [previousProviders, providers, providersToPersist] = yield* Ref.modify(
         providersRef,
         (previousProviders) => {
           const mergedProviders = new Map(
             previousProviders.map((provider) => [snapshotInstanceKey(provider), provider] as const),
           );
 
+          const updatedKeys = new Set<ProviderInstanceId>();
           for (const provider of nextProviders) {
             const key = snapshotInstanceKey(provider);
+            updatedKeys.add(key);
             mergedProviders.set(
               key,
               options?.replace === true
@@ -259,13 +335,16 @@ export const ProviderRegistryLive = Layer.effect(
           }
 
           const providers = orderProviderSnapshots([...mergedProviders.values()]);
-          return [[previousProviders, providers] as const, providers];
+          const providersToPersist = providers.filter((provider) =>
+            updatedKeys.has(snapshotInstanceKey(provider)),
+          );
+          return [[previousProviders, providers, providersToPersist] as const, providers];
         },
       );
 
       if (haveProvidersChanged(previousProviders, providers)) {
         if (options?.persist !== false) {
-          yield* Effect.forEach(nextProviders, persistProvider, {
+          yield* Effect.forEach(providersToPersist, persistProvider, {
             concurrency: "unbounded",
             discard: true,
           });

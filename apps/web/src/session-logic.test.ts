@@ -213,6 +213,33 @@ describe("derivePendingApprovals", () => {
     ]);
   });
 
+  it("keeps unknown approval types actionable", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "approval-open-unknown",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "approval.requested",
+        summary: "Unknown approval requested (workspace_policy_approval)",
+        tone: "approval",
+        payload: {
+          requestId: "req-unknown",
+          requestType: "workspace_policy_approval",
+          detail: "Review this provider request",
+        },
+      }),
+    ];
+
+    expect(derivePendingApprovals(activities)).toEqual([
+      {
+        requestId: "req-unknown",
+        requestKind: "unknown",
+        requestType: "workspace_policy_approval",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        detail: "Review this provider request",
+      },
+    ]);
+  });
+
   it("clears stale pending approvals when provider reports unknown pending request", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -99,6 +99,10 @@ const MAX_HOOK_DIAGNOSTIC_TEXT_BYTES = 64 * 1024;
 const HOOK_DIAGNOSTIC_TEXT_HEAD_BYTES = 48 * 1024;
 const HOOK_DIAGNOSTIC_TEXT_TRUNCATION_MARKER =
   "\n\n[... hook diagnostic output truncated; middle omitted ...]\n\n";
+const MAX_APPROVAL_DETAIL_BYTES = 32 * 1024;
+const APPROVAL_DETAIL_HEAD_BYTES = 24 * 1024;
+const APPROVAL_DETAIL_TRUNCATION_MARKER =
+  "\n\n[... approval detail truncated; middle omitted ...]\n\n";
 const MAX_HOOK_DIAGNOSTIC_ENTRIES = 32;
 const MAX_HOOK_DIAGNOSTIC_ENTRY_BYTES = 16 * 1024;
 const MAX_HOOK_DIAGNOSTIC_ENTRIES_BYTES = 64 * 1024;
@@ -200,6 +204,14 @@ function sameId(left: string | null | undefined, right: string | null | undefine
 
 function truncateDetail(value: string, limit = 180): string {
   return value.length > limit ? `${value.slice(0, limit - 3)}...` : value;
+}
+
+function truncateApprovalDetail(value: string): string {
+  return truncateMiddleByBytes(value, {
+    maxBytes: MAX_APPROVAL_DETAIL_BYTES,
+    headBytes: APPROVAL_DETAIL_HEAD_BYTES,
+    marker: APPROVAL_DETAIL_TRUNCATION_MARKER,
+  }).output;
 }
 
 function truncateHookDiagnosticText(value: string): string {
@@ -1049,7 +1061,7 @@ function orchestrationSessionStatusFromRuntimeState(
 
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
-): "command" | "file-read" | "file-change" | "permission" | undefined {
+): "command" | "file-read" | "file-change" | "permission" | "unknown" | undefined {
   switch (requestType) {
     case "command_execution_approval":
     case "exec_command_approval":
@@ -1062,7 +1074,7 @@ function requestKindFromCanonicalRequestType(
     case "permissions_approval":
       return "permission";
     default:
-      return undefined;
+      return requestType === undefined ? undefined : "unknown";
   }
 }
 
@@ -1287,12 +1299,14 @@ function runtimeEventToActivities(
                   ? "File-change approval requested"
                   : requestKind === "permission"
                     ? "Permission approval requested"
-                    : "Approval requested",
+                    : `Unknown approval requested (${event.payload.requestType})`,
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
-            ...(event.payload.detail ? { detail: truncateDetail(event.payload.detail) } : {}),
+            ...(event.payload.detail
+              ? { detail: truncateApprovalDetail(event.payload.detail) }
+              : {}),
             ...(requestKind === "permission" && event.payload.requestedPermissions
               ? { requestedPermissions: event.payload.requestedPermissions }
               : {}),

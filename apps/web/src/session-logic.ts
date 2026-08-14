@@ -8,6 +8,7 @@ import {
   type OrchestrationThreadActivity,
   type OrchestrationProposedPlanId,
   type ProviderKind,
+  type ProviderRequestKind,
   type ToolLifecycleItemType,
   type UserInputQuestion,
   type ThreadId,
@@ -113,7 +114,8 @@ export interface WorkLogEntry {
 
 export interface PendingApproval {
   requestId: ApprovalRequestId;
-  requestKind: "command" | "file-read" | "file-change" | "permission";
+  requestKind: ProviderRequestKind;
+  requestType?: string;
   createdAt: string;
   detail?: string;
   requestedPermissions?: Record<string, unknown>;
@@ -295,7 +297,7 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
     case "permissions_approval":
       return "permission";
     default:
-      return null;
+      return typeof requestType === "string" && requestType.trim().length > 0 ? "unknown" : null;
   }
 }
 
@@ -325,12 +327,15 @@ export function derivePendingApprovals(
       (payload.requestKind === "command" ||
         payload.requestKind === "file-read" ||
         payload.requestKind === "file-change" ||
-        payload.requestKind === "permission")
+        payload.requestKind === "permission" ||
+        payload.requestKind === "unknown")
         ? payload.requestKind
         : payload
           ? requestKindFromRequestType(payload.requestType)
           : null;
     const detail = payload && typeof payload.detail === "string" ? payload.detail : undefined;
+    const requestType =
+      payload && typeof payload.requestType === "string" ? payload.requestType : undefined;
     const requestedPermissions = asUnknownRecord(payload?.requestedPermissions);
 
     if (activity.kind === "approval.requested" && requestId && requestKind) {
@@ -338,6 +343,7 @@ export function derivePendingApprovals(
         requestId,
         requestKind,
         createdAt: activity.createdAt,
+        ...(requestKind === "unknown" && requestType ? { requestType } : {}),
         ...(detail ? { detail } : {}),
         ...(requestKind === "permission" && requestedPermissions ? { requestedPermissions } : {}),
       });
@@ -1279,7 +1285,8 @@ function extractWorkLogRequestKind(
     payload?.requestKind === "command" ||
     payload?.requestKind === "file-read" ||
     payload?.requestKind === "file-change" ||
-    payload?.requestKind === "permission"
+    payload?.requestKind === "permission" ||
+    payload?.requestKind === "unknown"
   ) {
     return payload.requestKind;
   }

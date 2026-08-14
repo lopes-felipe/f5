@@ -32,6 +32,8 @@
  *
  * @module provider/Layers/ProviderInstanceRegistryLive
  */
+import { createHash } from "node:crypto";
+
 import {
   defaultInstanceIdForDriver,
   ProviderInstanceId,
@@ -92,6 +94,41 @@ const decodedConfigEnabled = (config: unknown): boolean | undefined => {
   return typeof enabled === "boolean" ? enabled : undefined;
 };
 
+function sortForStableJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortForStableJson);
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, sortForStableJson(nested)]),
+    );
+  }
+  return value;
+}
+
+function providerConfigurationFingerprint(input: {
+  readonly entry: ProviderInstanceConfig;
+  readonly decodedConfig: unknown;
+}): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify(
+        sortForStableJson({
+          version: 1,
+          driver: input.entry.driver,
+          displayName: input.entry.displayName ?? null,
+          accentColor: input.entry.accentColor ?? null,
+          enabled: input.entry.enabled ?? null,
+          environment: input.entry.environment ?? [],
+          config: input.decodedConfig,
+        }),
+      ),
+    )
+    .digest("hex");
+}
+
 /**
  * Build one live entry from a raw config envelope. Returns either a
  * `LiveEntry` plus undefined unavailable shadow, or a shadow snapshot and
@@ -148,6 +185,10 @@ const buildEntry = <R>(input: {
     }
 
     const typedConfig = decodeResult.success;
+    const configurationFingerprint = providerConfigurationFingerprint({
+      entry,
+      decodedConfig: typedConfig,
+    });
     const childScope = yield* Scope.make();
     // Attach the child scope to the registry's parent scope: if the
     // registry scope closes, each surviving instance's child scope is
@@ -189,7 +230,10 @@ const buildEntry = <R>(input: {
     return {
       kind: "live" as const,
       live: {
-        instance: createResult.success,
+        instance: {
+          ...createResult.success,
+          configurationFingerprint,
+        },
         scope: childScope,
         entry,
       },

@@ -3052,6 +3052,137 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("treats aborted_tools results as interrupted and hides ede_diagnostic errors", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 6).pipe(
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const turn = yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["[ede_diagnostic] result_type=user stop_reason=tool_use"],
+        stop_reason: "tool_use",
+        terminal_reason: "aborted_tools",
+        session_id: "sdk-session-abort-tools",
+        uuid: "result-abort-tools",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.equal(
+        runtimeEvents.some((event) => event.type === "runtime.error"),
+        false,
+      );
+      const completed = runtimeEvents.at(-1);
+      assert.equal(completed?.type, "turn.completed");
+      if (completed?.type === "turn.completed") {
+        assert.equal(String(completed.turnId), String(turn.turnId));
+        assert.equal(completed.payload.state, "interrupted");
+        assert.equal(completed.payload.errorMessage, undefined);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect(
+    "consumes informational notices and represents API retries without warning spam",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const runtimeEventsFiber = yield* Stream.take(adapter.streamEvents, 7).pipe(
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
+        yield* adapter.sendTurn({
+          threadId: session.threadId,
+          input: "hello",
+          attachments: [],
+        });
+
+        for (const subtype of [
+          "background_tasks_changed",
+          "vcs_state_changed",
+          "code_change_published",
+          "commands_changed",
+          "model_refusal_fallback",
+          "local_command_output",
+          "plugin_install",
+          "memory_recall",
+          "elicitation_complete",
+        ]) {
+          harness.query.emit({
+            type: "system",
+            subtype,
+            session_id: "sdk-session-notices",
+            uuid: `notice-${subtype}`,
+          } as unknown as SDKMessage);
+        }
+        harness.query.emit({
+          type: "prompt_suggestion",
+          suggestion: "Try this next",
+          session_id: "sdk-session-notices",
+          uuid: "notice-prompt-suggestion",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "api_retry",
+          attempt: 2,
+          max_retries: 5,
+          session_id: "sdk-session-notices",
+          uuid: "notice-api-retry",
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "system",
+          subtype: "future_notice",
+          session_id: "sdk-session-notices",
+          uuid: "notice-future",
+        } as unknown as SDKMessage);
+
+        const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+        assert.equal(runtimeEvents.length, 7);
+        const retryState = runtimeEvents.find(
+          (event) =>
+            event.type === "session.state.changed" && event.payload.reason === "api_retry:2/5",
+        );
+        assert.equal(retryState?.type, "session.state.changed");
+        const warnings = runtimeEvents.filter((event) => event.type === "runtime.warning");
+        assert.equal(warnings.length, 1);
+        assert.equal(
+          warnings[0]?.type === "runtime.warning" ? warnings[0].payload.message : undefined,
+          "Unhandled Claude system message subtype 'future_notice'.",
+        );
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("closes the session when the Claude stream aborts after a turn starts", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

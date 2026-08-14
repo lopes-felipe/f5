@@ -233,4 +233,36 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
       fallbackCodex,
     );
   });
+
+  it("rejects cached snapshots from a different provider configuration", () => {
+    const fallbackCodex = makeProvider(CODEX_DRIVER, {
+      configurationFingerprint: "sha256:current",
+    });
+    const staleCachedCodex = makeProvider(CODEX_DRIVER, {
+      configurationFingerprint: "sha256:previous",
+      models: [
+        {
+          slug: "stale-model",
+          name: "Stale Model",
+          isCustom: false,
+          capabilities: emptyCapabilities,
+        },
+      ],
+    });
+
+    assert.strictEqual(
+      isCachedProviderCorrelated({
+        cachedProvider: staleCachedCodex,
+        fallbackProvider: fallbackCodex,
+      }),
+      false,
+    );
+    assert.deepStrictEqual(
+      hydrateCachedProvider({
+        cachedProvider: staleCachedCodex,
+        fallbackProvider: fallbackCodex,
+      }),
+      fallbackCodex,
+    );
+  });
 });

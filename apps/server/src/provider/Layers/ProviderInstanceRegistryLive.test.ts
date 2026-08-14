@@ -167,6 +167,9 @@ describe("ProviderInstanceRegistryLive — multi-instance codex slice", () => {
       expect(personal!.adapter).not.toBe(work!.adapter);
       expect(personal!.textGeneration).not.toBe(work!.textGeneration);
       expect(personal!.snapshot).not.toBe(work!.snapshot);
+      expect(personal!.configurationFingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(work!.configurationFingerprint).toMatch(/^[a-f0-9]{64}$/);
+      expect(personal!.configurationFingerprint).not.toBe(work!.configurationFingerprint);
 
       // Snapshots identify themselves by instanceId + driver — this is
       // what makes per-instance routing distinguishable downstream.

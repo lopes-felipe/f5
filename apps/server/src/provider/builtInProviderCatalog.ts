@@ -11,6 +11,7 @@ export type ProviderSnapshotSource = {
   readonly instanceId: ProviderInstanceId;
   /** Driver implementation kind. */
   readonly driverKind: ProviderDriverKind;
+  readonly configurationFingerprint?: string;
   readonly getSnapshot: ServerProviderShape["getSnapshot"];
   readonly refresh: ServerProviderShape["refresh"];
   readonly streamChanges: Stream.Stream<ServerProvider>;

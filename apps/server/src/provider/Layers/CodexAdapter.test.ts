@@ -670,6 +670,63 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("resolves web-search detail in canonical query fallback order", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 5)).pipe(
+        Effect.forkChild,
+      );
+      const createdAt = new Date().toISOString();
+      const items = [
+        {
+          id: "web-search-item-query",
+          query: "item query",
+          action: {
+            query: "action query",
+            queries: ["query list"],
+            pattern: "pattern",
+            url: "url",
+          },
+        },
+        {
+          id: "web-search-action-query",
+          action: {
+            query: "action query",
+            queries: ["query list"],
+            pattern: "pattern",
+            url: "url",
+          },
+        },
+        {
+          id: "web-search-query-list",
+          action: { queries: ["query list", "second query"], pattern: "pattern", url: "url" },
+        },
+        { id: "web-search-pattern", action: { pattern: "pattern", url: "url" } },
+        { id: "web-search-url", action: { url: "https://example.com" } },
+      ];
+
+      for (const item of items) {
+        lifecycleManager.emit("event", {
+          id: asEventId(`evt-${item.id}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          itemId: asItemId(item.id),
+          createdAt,
+          method: "item/completed",
+          payload: { item: { type: "webSearch", ...item } },
+        } satisfies ProviderEvent);
+      }
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => (event.type === "item.completed" ? event.payload.detail : undefined)),
+        ["item query", "action query", "query list", "pattern", "https://example.com"],
+      );
+    }),
+  );
+
   it.effect("maps generated images, waits, and subagent activity as distinct current items", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

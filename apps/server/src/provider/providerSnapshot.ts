@@ -7,6 +7,7 @@ import type {
   ServerProviderSlashCommand,
   ServerProviderModel,
   ServerProviderState,
+  ServerProviderProbeOutcome,
 } from "@t3tools/contracts";
 import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
@@ -30,6 +31,19 @@ export interface ProviderProbeResult {
   readonly status: Exclude<ServerProviderState, "disabled">;
   readonly auth: ServerProviderAuth;
   readonly message?: string;
+}
+
+function providerProbeOutcome(input: {
+  readonly enabled: boolean;
+  readonly probe: ProviderProbeResult;
+}): ServerProviderProbeOutcome {
+  if (!input.enabled) {
+    return "disabled";
+  }
+  if (!input.probe.installed) {
+    return input.probe.status === "error" ? "missing" : "loading";
+  }
+  return input.probe.status === "error" ? "transient_failure" : "success";
 }
 
 export interface ServerProviderPresentation {
@@ -214,6 +228,7 @@ export function buildServerProvider(input: {
   skills?: ReadonlyArray<ServerProviderSkill>;
   probe: ProviderProbeResult;
 }): ServerProviderDraft {
+  const probeOutcome = providerProbeOutcome(input);
   return {
     displayName: input.presentation.displayName,
     ...(input.presentation.badgeLabel ? { badgeLabel: input.presentation.badgeLabel } : {}),
@@ -226,6 +241,8 @@ export function buildServerProvider(input: {
     status: input.enabled ? input.probe.status : "disabled",
     auth: input.probe.auth,
     checkedAt: input.checkedAt,
+    probeOutcome,
+    probeOutcomeStartedAt: input.checkedAt,
     ...(input.probe.message ? { message: input.probe.message } : {}),
     models: input.models,
     slashCommands: [...(input.slashCommands ?? [])],

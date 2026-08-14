@@ -35,7 +35,8 @@ export const isCachedProviderCorrelated = (input: {
   readonly fallbackProvider: ServerProvider;
 }): boolean =>
   input.cachedProvider.instanceId === input.fallbackProvider.instanceId &&
-  input.cachedProvider.driver === input.fallbackProvider.driver;
+  input.cachedProvider.driver === input.fallbackProvider.driver &&
+  input.cachedProvider.configurationFingerprint === input.fallbackProvider.configurationFingerprint;
 
 export const hydrateCachedProvider = (input: {
   readonly cachedProvider: ServerProvider;
@@ -61,6 +62,12 @@ export const hydrateCachedProvider = (input: {
     status: input.cachedProvider.status,
     auth: input.cachedProvider.auth,
     checkedAt: input.cachedProvider.checkedAt,
+    ...(input.cachedProvider.probeOutcome
+      ? { probeOutcome: input.cachedProvider.probeOutcome }
+      : {}),
+    ...(input.cachedProvider.probeOutcomeStartedAt
+      ? { probeOutcomeStartedAt: input.cachedProvider.probeOutcomeStartedAt }
+      : {}),
     slashCommands: input.cachedProvider.slashCommands,
     skills: input.cachedProvider.skills,
   };
