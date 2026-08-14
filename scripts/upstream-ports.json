@@ -1475,8 +1475,9 @@
     {
       "upstreamSha": "36caf34c68b7bc6c2e967fdec1812fd08f61cdc8",
       "subject": "fix(desktop,web): contain renderer memory growth and recover from renderer OOM crashes (#5148)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop,web): contain renderer memory growth and recover from renderer OOM crashes (#5148))."
+      "disposition": "ported",
+      "f5Shas": ["75514185ff78046b36718e93a0c8ee1f416b72b7"],
+      "reason": "Added separate main-renderer crash recovery with renderer-owned preview cleanup, bounded 1/2/4-second reloads, a rolling three-attempt budget, and a local recovery screen. f5 already bounds startup activity snapshots; full live-activity pagination remains tracked by merged plan item 7.1."
     },
     {
       "upstreamSha": "90e3778660690e4f00bdd4e237fc541725dc1427",
