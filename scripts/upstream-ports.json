@@ -815,8 +815,8 @@
     {
       "upstreamSha": "a6c9b41f902fba2a4137806c09e829935e91baac",
       "subject": "feat(server): agents can now open the images you paste into chat (#5757)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 1.3 provider-visible pasted-image paths; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["0923e58f814bda78988b107c5a9fac8538a54313"]
     },
     {
       "upstreamSha": "70c423a5e48ab34d8b1a033e798ab378b48dde5d",
