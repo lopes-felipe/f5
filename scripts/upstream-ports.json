@@ -563,8 +563,9 @@
     {
       "upstreamSha": "8de0aa24d9b09b3dff9e3378222877cbfff41ae0",
       "subject": "perf(desktop): probe the Windows shell environment concurrently (#5878)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 2.4 non-blocking Windows PATH hydration; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["dec95d2137a0d85d01c122b4d7ddf501bd8c8fcb"],
+      "reason": "Reimplemented for f5's resolver architecture with asynchronous PowerShell and concurrent install-directory probes, a process-wide readiness promise, non-blocking Electron window creation, and readiness waits at Effect and Promise spawn boundaries without widening synchronous resolver APIs."
     },
     {
       "upstreamSha": "cad2c93616a7c25110670c151a816d5c68341bd4",
