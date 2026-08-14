@@ -527,8 +527,8 @@
     {
       "upstreamSha": "9afef94a61466422128da9c3b723b633d4c7ed1d",
       "subject": "feat: add three-hour snooze option (#5914)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["710f95287355d92a4eec2609b12c2cf58f5b749f"]
     },
     {
       "upstreamSha": "a7b0366cbe1e9eabc9e37eb079a38f6b6691f999",
@@ -966,8 +966,8 @@
     {
       "upstreamSha": "5661c6116c9d6e9e93e59cf067fc02dd3303ceef",
       "subject": "feat(web): drag pinned threads into your own order (#5581)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["710f95287355d92a4eec2609b12c2cf58f5b749f"]
     },
     {
       "upstreamSha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
@@ -990,8 +990,8 @@
     {
       "upstreamSha": "61b51ae0e343afc42ba0424d4d74b4f9a216d620",
       "subject": "feat(web): click the pin icon to unpin a thread (#5578)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["710f95287355d92a4eec2609b12c2cf58f5b749f"]
     },
     {
       "upstreamSha": "bfc69e4b4de12cd9867972dc802936acfb219b74",
@@ -1440,8 +1440,8 @@
     {
       "upstreamSha": "da6e1a96782594cab3a6925f441731a65be57c11",
       "subject": "feat(sidebar-v2): thread pinning for sidebar v2 (#5312)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["710f95287355d92a4eec2609b12c2cf58f5b749f"]
     },
     {
       "upstreamSha": "8eca20005b47e197b3610f7996f3fd02355c1891",
@@ -1664,8 +1664,8 @@
     {
       "upstreamSha": "a041981276b4c789fed8132e3b8a320749bf25e8",
       "subject": "feat(mobile): add thread snoozing (#5053)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["710f95287355d92a4eec2609b12c2cf58f5b749f"]
     },
     {
       "upstreamSha": "964cc279014f512b4fc4c719377403417744ace2",
@@ -2495,8 +2495,8 @@
     {
       "upstreamSha": "202e5609ffb294bc0aa86c08ce1d3751de567226",
       "subject": "feat(sidebar-v2): thread snoozing (#4311)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["710f95287355d92a4eec2609b12c2cf58f5b749f"]
     },
     {
       "upstreamSha": "bb38c3320d0a4eec4e9097fdc400970d881ff559",
