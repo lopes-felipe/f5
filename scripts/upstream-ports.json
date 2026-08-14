@@ -2663,8 +2663,8 @@
     {
       "upstreamSha": "fbd77420f27c1322d49726dd927861b8b5903494",
       "subject": "feat: add \"Auto\" runtime mode — AI-reviewed approvals for Codex and Claude (#4272)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 1.1 four runtime modes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["d071c612efe95ad13ce798a6de2726b5a226c417"]
     },
     {
       "upstreamSha": "16491a84b9bb2842ad6db41635d087647fc2df5b",
