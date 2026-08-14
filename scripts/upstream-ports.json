@@ -2121,8 +2121,9 @@
     {
       "upstreamSha": "5fcdefd057751eb511de9e61142ef797f142059b",
       "subject": "perf(server): trim stale context-window rows and drop dead replay RPC (#4791)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 2.6 dead replayEvents RPC removal; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["86b2e3cfc690f2690d99e9a5cccf9773ad22fe97"],
+      "reason": "Removed the unused unbounded orchestration.replayEvents method from f5's schemas, IPC surface, WebSocket router, and client adapter; bounded snapshot and history APIs remain authoritative."
     },
     {
       "upstreamSha": "38a6e3ce65b1d4fa58788faa96ff9410a8c26ffe",
