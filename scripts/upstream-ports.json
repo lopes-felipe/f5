@@ -1784,8 +1784,9 @@
     {
       "upstreamSha": "34b15a9acec5519425c81bdd2a10f11e9ba3d23d",
       "subject": "perf(server): cache default branch name and origin existence across status refreshes (#5008)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 2.5 Git metadata caching; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["2203fd867adb937bb7dbdd2fed69b4dee84549a2"],
+      "reason": "Reimplemented with a cwd-scoped, repository-fingerprint-aware metadata cache, accurate HEAD-based aggregate change counts with unborn-HEAD diagnostics, and a race-safe branch-drift choice before thread dispatch."
     },
     {
       "upstreamSha": "fbecb7365ede9892045dec4d03805d20ef9859f8",
