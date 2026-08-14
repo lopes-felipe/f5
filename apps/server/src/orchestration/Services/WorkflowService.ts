@@ -1,5 +1,7 @@
 import {
   type OrchestrationCreateWorkflowInput,
+  type OrchestrationRetryWorkflowInput,
+  type OrchestrationRetryWorkflowResult,
   type PlanningWorkflow,
   type PlanningWorkflowId,
   type ProviderModelOptions,
@@ -20,7 +22,9 @@ export interface WorkflowServiceShape {
   readonly archiveWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
   readonly unarchiveWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
   readonly deleteWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
-  readonly retryWorkflow: (workflowId: PlanningWorkflowId) => Effect.Effect<void, Error>;
+  readonly retryWorkflow: (
+    input: OrchestrationRetryWorkflowInput,
+  ) => Effect.Effect<OrchestrationRetryWorkflowResult, Error>;
   readonly startImplementation: (input: {
     workflowId: PlanningWorkflowId;
     provider: ProviderKind;

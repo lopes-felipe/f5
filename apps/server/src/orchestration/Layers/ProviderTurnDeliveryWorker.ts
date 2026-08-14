@@ -281,7 +281,22 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const delivery = yield* repository.getUnresolvedByThread(threadId);
       if (!delivery) return null;
-      const snapshot = yield* provider.readThread(threadId);
+      if (
+        delivery.state === "pending" ||
+        (delivery.state === "rejected" && delivery.certainty === "not_sent")
+      ) {
+        return delivery;
+      }
+      const snapshot = yield* provider.readThread(threadId).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider delivery recheck could not inspect provider history", {
+            threadId,
+            deliveryId: delivery.deliveryId,
+            cause: Cause.pretty(cause),
+          }).pipe(Effect.as(null)),
+        ),
+      );
+      if (!snapshot) return delivery;
       const before = new Set(delivery.preSendTurnIds);
       const added = snapshot.turns.filter((turn) => !before.has(turn.id));
       if (added.length !== 1) return delivery;

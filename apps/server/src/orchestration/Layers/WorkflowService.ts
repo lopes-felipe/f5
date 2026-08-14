@@ -14,9 +14,10 @@ import {
   type WorkflowReviewSlot,
 } from "@t3tools/contracts";
 import { readFile } from "node:fs/promises";
-import { Duration, Effect, Layer, Stream } from "effect";
+import { Cause, Duration, Effect, Layer, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
+import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 
@@ -56,6 +57,8 @@ import {
   withWorkflowModelSelectionGuard,
 } from "../workflowModelSelection.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import type { OrchestrationDispatchError } from "../Errors.ts";
+import { ProviderTurnDeliveryWorker } from "../Services/ProviderTurnDeliveryWorker.ts";
 
 const WORKFLOW_PLANNING_INTERACTION_MODE: ProviderInteractionMode = "plan";
 const MAX_AUTO_RETRY_ATTEMPTS = 2;
@@ -163,102 +166,6 @@ function getFinishedLatestTurnId(
   return thread.latestTurn.turnId;
 }
 
-function resetWorkflowForRetry(workflow: PlanningWorkflow, now: string): PlanningWorkflow {
-  const resetBranch = (branch: PlanningWorkflow["branchA"]): PlanningWorkflow["branchA"] => ({
-    ...branch,
-    planTurnId: branch.status === "error" ? null : branch.planTurnId,
-    revisionTurnId: branch.status === "error" ? null : branch.revisionTurnId,
-    retryCount: 0,
-    lastRetryAt: null,
-    reviews: branch.reviews.map((review) =>
-      review.status === "error"
-        ? {
-            ...review,
-            status: "pending",
-            error: null,
-            updatedAt: now,
-          }
-        : review,
-    ),
-    status: branch.status === "error" ? "pending" : branch.status,
-    error: branch.status === "error" ? null : branch.error,
-    updatedAt: now,
-  });
-
-  let implementation = workflow.implementation;
-  if (implementation) {
-    const resetCodeReviews = implementation.codeReviews.map((review) => ({
-      ...review,
-      retryCount: 0,
-      lastRetryAt: null,
-      ...(review.status === "error"
-        ? {
-            status: "pending" as const,
-            error: null,
-            updatedAt: now,
-          }
-        : {}),
-    }));
-
-    if (implementation.status === "error" && implementation.codeReviews.length === 0) {
-      implementation = null;
-    } else {
-      const hasFailedReviews = implementation.codeReviews.some(
-        (review) => review.status === "error",
-      );
-      if (implementation.status === "error" && hasFailedReviews) {
-        implementation = {
-          ...implementation,
-          codeReviews: resetCodeReviews,
-          status: "code_reviews_requested",
-          error: null,
-          retryCount: 0,
-          lastRetryAt: null,
-          updatedAt: now,
-        };
-      } else if (implementation.status === "error") {
-        implementation = {
-          ...implementation,
-          codeReviews: resetCodeReviews,
-          revisionTurnId: null,
-          status: "code_reviews_saved",
-          error: null,
-          retryCount: 0,
-          lastRetryAt: null,
-          updatedAt: now,
-        };
-      } else {
-        implementation = {
-          ...implementation,
-          codeReviews: resetCodeReviews,
-          retryCount: 0,
-          lastRetryAt: null,
-          updatedAt: now,
-        };
-      }
-    }
-  }
-
-  return {
-    ...workflow,
-    branchA: resetBranch(workflow.branchA),
-    branchB: resetBranch(workflow.branchB),
-    merge:
-      workflow.merge.status === "error"
-        ? {
-            ...workflow.merge,
-            turnId: null,
-            status: "not_started",
-            error: null,
-            updatedAt: now,
-          }
-        : workflow.merge,
-    implementation,
-    totalCostUsd: workflow.totalCostUsd,
-    updatedAt: now,
-  };
-}
-
 function buildWorkflowRecord(input: {
   workflowId: PlanningWorkflowId;
   projectId: CreateWorkflowInput["projectId"];
@@ -293,6 +200,7 @@ function buildWorkflowRecord(input: {
       reviews: [],
       status: "pending",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: input.createdAt,
@@ -307,6 +215,7 @@ function buildWorkflowRecord(input: {
       reviews: [],
       status: "pending",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: input.createdAt,
@@ -343,12 +252,14 @@ function updateAuthoringBranch(
           ...workflow.branchA,
           status: outcome.ok ? ("authoring" as const) : ("error" as const),
           error: outcome.ok ? null : outcome.error,
+          errorStage: outcome.ok ? null : ("authoring" as const),
           updatedAt: now,
         }
       : {
           ...workflow.branchB,
           status: outcome.ok ? ("authoring" as const) : ("error" as const),
           error: outcome.ok ? null : outcome.error,
+          errorStage: outcome.ok ? null : ("authoring" as const),
           updatedAt: now,
         };
 
@@ -427,6 +338,7 @@ function markBranchPlanSaved(
           status: "plan_saved" as const,
           planTurnId: input.turnId ?? workflow.branchA.planTurnId,
           error: null,
+          errorStage: null,
           updatedAt: input.updatedAt,
         }
       : {
@@ -434,6 +346,7 @@ function markBranchPlanSaved(
           status: "plan_saved" as const,
           planTurnId: input.turnId ?? workflow.branchB.planTurnId,
           error: null,
+          errorStage: null,
           updatedAt: input.updatedAt,
         };
 
@@ -450,6 +363,7 @@ function markBranchError(
   branchId: "a" | "b",
   input: {
     readonly error: string;
+    readonly stage: "authoring" | "revision";
     readonly updatedAt: string;
   },
 ): PlanningWorkflow {
@@ -459,12 +373,14 @@ function markBranchError(
           ...workflow.branchA,
           status: "error" as const,
           error: input.error,
+          errorStage: input.stage,
           updatedAt: input.updatedAt,
         }
       : {
           ...workflow.branchB,
           status: "error" as const,
           error: input.error,
+          errorStage: input.stage,
           updatedAt: input.updatedAt,
         };
 
@@ -563,9 +479,13 @@ function markReviewsRequested(
         outputFilePath: null,
         status: "running" as const,
         error: null,
+        retryCount: 0,
+        lastRetryAt: null,
         updatedAt: input.updatedAt,
       })),
       status: "reviews_requested",
+      error: null,
+      errorStage: null,
       updatedAt: input.updatedAt,
     },
     branchB: {
@@ -576,9 +496,13 @@ function markReviewsRequested(
         outputFilePath: null,
         status: "running" as const,
         error: null,
+        retryCount: 0,
+        lastRetryAt: null,
         updatedAt: input.updatedAt,
       })),
       status: "reviews_requested",
+      error: null,
+      errorStage: null,
       updatedAt: input.updatedAt,
     },
     updatedAt: input.updatedAt,
@@ -593,7 +517,11 @@ function markReviewCompleted(
 ): PlanningWorkflow {
   const reviewedBranch = branchId === "a" ? workflow.branchA : workflow.branchB;
   const review = reviewedBranch.reviews.find((entry) => entry.threadId === threadId);
-  if (reviewedBranch.status !== "reviews_requested" || review?.status !== "running") {
+  if (
+    (reviewedBranch.status !== "reviews_requested" &&
+      planningWorkflowBranchFailureStage(reviewedBranch) !== "reviews") ||
+    (review?.status !== "running" && review?.status !== "error")
+  ) {
     return workflow;
   }
 
@@ -607,43 +535,62 @@ function markReviewCompleted(
         }
       : review;
 
-  const branchA =
-    branchId === "a"
-      ? {
-          ...workflow.branchA,
-          reviews: workflow.branchA.reviews.map(completeReview),
-          updatedAt,
-        }
-      : workflow.branchA;
-  const branchB =
-    branchId === "b"
-      ? {
-          ...workflow.branchB,
-          reviews: workflow.branchB.reviews.map(completeReview),
-          updatedAt,
-        }
-      : workflow.branchB;
-  const branchAComplete =
-    branchA.reviews.length > 0 && branchA.reviews.every((review) => review.status === "completed");
-  const branchBComplete =
-    branchB.reviews.length > 0 && branchB.reviews.every((review) => review.status === "completed");
+  const completeBranch = (branch: PlanningWorkflow["branchA"]): PlanningWorkflow["branchA"] => {
+    const reviews = branch.reviews.map(completeReview);
+    const complete = reviews.length > 0 && reviews.every((entry) => entry.status === "completed");
+    return {
+      ...branch,
+      reviews,
+      status: complete ? "reviews_saved" : "reviews_requested",
+      error: null,
+      errorStage: null,
+      updatedAt,
+    };
+  };
 
   return {
     ...workflow,
-    branchA: {
-      ...branchA,
-      status:
-        branchA.status === "reviews_requested" && branchAComplete
-          ? "reviews_saved"
-          : branchA.status,
-    },
-    branchB: {
-      ...branchB,
-      status:
-        branchB.status === "reviews_requested" && branchBComplete
-          ? "reviews_saved"
-          : branchB.status,
-    },
+    branchA: branchId === "a" ? completeBranch(workflow.branchA) : workflow.branchA,
+    branchB: branchId === "b" ? completeBranch(workflow.branchB) : workflow.branchB,
+    updatedAt,
+  };
+}
+
+function markPlanningReviewError(
+  workflow: PlanningWorkflow,
+  branchId: "a" | "b",
+  threadId: ThreadId,
+  error: string,
+  updatedAt: string,
+): PlanningWorkflow {
+  const branch = branchId === "a" ? workflow.branchA : workflow.branchB;
+  const review = branch.reviews.find((entry) => entry.threadId === threadId);
+  if (branch.status !== "reviews_requested" || review?.status !== "running") {
+    return workflow;
+  }
+
+  const updatedBranch: PlanningWorkflow["branchA"] = {
+    ...branch,
+    reviews: branch.reviews.map((review) =>
+      review.threadId === threadId
+        ? {
+            ...review,
+            status: "error" as const,
+            error,
+            updatedAt,
+          }
+        : review,
+    ),
+    status: "reviews_requested",
+    error: null,
+    errorStage: null,
+    updatedAt,
+  };
+
+  return {
+    ...workflow,
+    branchA: branchId === "a" ? updatedBranch : workflow.branchA,
+    branchB: branchId === "b" ? updatedBranch : workflow.branchB,
     updatedAt,
   };
 }
@@ -661,6 +608,7 @@ function markBranchRevising(
             ...workflow.branchA,
             status: "revising",
             error: null,
+            errorStage: null,
             updatedAt,
           }
         : workflow.branchA,
@@ -670,6 +618,7 @@ function markBranchRevising(
             ...workflow.branchB,
             status: "revising",
             error: null,
+            errorStage: null,
             updatedAt,
           }
         : workflow.branchB,
@@ -694,6 +643,7 @@ function markBranchRevised(
             status: "revised",
             revisionTurnId: input.turnId ?? workflow.branchA.revisionTurnId,
             error: null,
+            errorStage: null,
             updatedAt: input.updatedAt,
           }
         : workflow.branchA,
@@ -704,6 +654,7 @@ function markBranchRevised(
             status: "revised",
             revisionTurnId: input.turnId ?? workflow.branchB.revisionTurnId,
             error: null,
+            errorStage: null,
             updatedAt: input.updatedAt,
           }
         : workflow.branchB,
@@ -997,6 +948,40 @@ function incrementBranchRetryCount(
   };
 }
 
+function incrementPlanningReviewRetryCount(
+  workflow: PlanningWorkflow,
+  branchId: "a" | "b",
+  threadId: ThreadId,
+  updatedAt: string,
+): PlanningWorkflow {
+  const updateBranch = (branch: PlanningWorkflow["branchA"]): PlanningWorkflow["branchA"] => ({
+    ...branch,
+    reviews: branch.reviews.map((review) =>
+      review.threadId === threadId
+        ? {
+            ...review,
+            status: "running" as const,
+            error: null,
+            retryCount: review.retryCount + 1,
+            lastRetryAt: updatedAt,
+            updatedAt,
+          }
+        : review,
+    ),
+    status: "reviews_requested",
+    error: null,
+    errorStage: null,
+    updatedAt,
+  });
+
+  return {
+    ...workflow,
+    branchA: branchId === "a" ? updateBranch(workflow.branchA) : workflow.branchA,
+    branchB: branchId === "b" ? updateBranch(workflow.branchB) : workflow.branchB,
+    updatedAt,
+  };
+}
+
 function incrementImplementationRetryCount(
   workflow: PlanningWorkflow,
   updatedAt: string,
@@ -1185,6 +1170,7 @@ export const makeWorkflowService = Effect.gen(function* () {
   const gitCore = yield* GitCore;
   const serverConfig = yield* ServerConfig;
   const providerRegistry = yield* Effect.serviceOption(ProviderRegistry);
+  const providerTurnDeliveryWorker = yield* Effect.serviceOption(ProviderTurnDeliveryWorker);
 
   const getWorkflowProviders =
     providerRegistry._tag === "Some" ? providerRegistry.value.getProviders : Effect.succeed([]);
@@ -1209,7 +1195,7 @@ export const makeWorkflowService = Effect.gen(function* () {
     readonly buildDispatch: (input: {
       readonly workflow: PlanningWorkflow;
       readonly snapshot: OrchestrationReadModel;
-    }) => ReturnType<OrchestrationEngineShape["dispatch"]> | null;
+    }) => Effect.Effect<unknown, OrchestrationDispatchError | Error> | null;
   }) =>
     Effect.gen(function* () {
       yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS));
@@ -1238,6 +1224,111 @@ export const makeWorkflowService = Effect.gen(function* () {
           workflowId: input.workflowId,
           threadId: input.threadId,
           cause,
+        }),
+      ),
+      Effect.forkScoped,
+    );
+
+  const forkPlanningReviewAutoRetry = (input: {
+    readonly workflowId: PlanningWorkflowId;
+    readonly branchId: "a" | "b";
+    readonly threadId: ThreadId;
+    readonly expectedRetryCount: number;
+    readonly originalError: string;
+  }) =>
+    Effect.gen(function* () {
+      yield* Effect.sleep(Duration.millis(AUTO_RETRY_BACKOFF_MS));
+      const snapshot = yield* orchestrationEngine.getReadModel();
+      const workflow =
+        snapshot.planningWorkflows.find(
+          (entry) =>
+            entry.id === input.workflowId &&
+            !isDeletedWorkflow(entry) &&
+            !isArchivedWorkflow(entry),
+        ) ?? null;
+      if (!workflow) {
+        return;
+      }
+
+      const branch = input.branchId === "a" ? workflow.branchA : workflow.branchB;
+      const review = branch.reviews.find((entry) => entry.threadId === input.threadId);
+      if (
+        branch.status !== "reviews_requested" ||
+        review?.status !== "running" ||
+        review.retryCount !== input.expectedRetryCount
+      ) {
+        return;
+      }
+
+      const retryThread = snapshot.threads.find((thread) => thread.id === input.threadId);
+      if (hasActiveRunningTurn(retryThread)) {
+        return;
+      }
+      if (!retryThread) {
+        return yield* Effect.fail(new Error("Review thread not found for automatic retry."));
+      }
+      const planMarkdown = completedProposedPlanForTurn(
+        snapshot,
+        branch.authorThreadId,
+        branch.planTurnId,
+      )?.planMarkdown;
+      if (!planMarkdown) {
+        return yield* Effect.fail(new Error("Saved plan not found for automatic review retry."));
+      }
+      const reviewerSlot =
+        review.slot === "self"
+          ? branch.authorSlot
+          : input.branchId === "a"
+            ? workflow.branchB.authorSlot
+            : workflow.branchA.authorSlot;
+      yield* startReviewTurn({
+        orchestrationEngine,
+        workflow,
+        reviewerSlot,
+        reviewThreadId: review.threadId,
+        planMarkdown,
+        reviewKind: review.slot,
+        createdAt: new Date().toISOString(),
+      });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          yield* Effect.logError("WorkflowService.autoRetryDispatch failed", {
+            kind: "planning_review",
+            workflowId: input.workflowId,
+            threadId: input.threadId,
+            cause,
+          });
+          const snapshot = yield* orchestrationEngine.getReadModel();
+          const workflow =
+            snapshot.planningWorkflows.find(
+              (entry) =>
+                entry.id === input.workflowId &&
+                !isDeletedWorkflow(entry) &&
+                !isArchivedWorkflow(entry),
+            ) ?? null;
+          if (!workflow) {
+            return;
+          }
+          const branch = input.branchId === "a" ? workflow.branchA : workflow.branchB;
+          const review = branch.reviews.find((entry) => entry.threadId === input.threadId);
+          if (
+            branch.status !== "reviews_requested" ||
+            review?.status !== "running" ||
+            review.retryCount !== input.expectedRetryCount
+          ) {
+            return;
+          }
+          const failedAt = new Date().toISOString();
+          yield* upsertWorkflow(
+            markPlanningReviewError(
+              workflow,
+              input.branchId,
+              input.threadId,
+              `${input.originalError} | Automatic retry failed: ${Cause.pretty(cause)}`,
+              failedAt,
+            ),
+          );
         }),
       ),
       Effect.forkScoped,
@@ -1299,6 +1390,55 @@ export const makeWorkflowService = Effect.gen(function* () {
         ),
       ),
   );
+
+  const reviewFeedbackForBranch = (
+    branch: PlanningWorkflow["branchA"],
+    snapshot: {
+      readonly threads: ReadonlyArray<{
+        readonly id: ThreadId;
+        readonly latestTurn: { readonly assistantMessageId: string | null } | null;
+        readonly messages: ReadonlyArray<{
+          readonly id: string;
+          readonly role: string;
+          readonly text: string;
+          readonly reasoningText?: string | undefined;
+          readonly streaming: boolean;
+          readonly createdAt: string;
+        }>;
+      }>;
+    },
+  ) =>
+    Effect.forEach(
+      branch.reviews.toSorted((left, right) => compareWorkflowReviewSlots(left.slot, right.slot)),
+      (review) =>
+        Effect.gen(function* () {
+          const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
+          const reviewerLabel = `${review.slot} review`;
+          const feedback = thread ? latestAssistantFeedback(thread) : null;
+          if (!feedback) {
+            yield* Effect.logWarning("review yielded empty feedback text", {
+              threadId: review.threadId,
+              reviewerLabel,
+              reviewStatus: review.status,
+            });
+            return null;
+          }
+          if (feedback.source !== "text-only") {
+            yield* Effect.logDebug("reviewer feedback included reasoning-channel content", {
+              threadId: review.threadId,
+              reviewerLabel,
+              source: feedback.source,
+            });
+          }
+          return { reviewerLabel, reviewMarkdown: feedback.text };
+        }),
+    ).pipe(
+      Effect.map((reviews) =>
+        reviews.filter(
+          (review): review is { reviewerLabel: string; reviewMarkdown: string } => review !== null,
+        ),
+      ),
+    );
 
   const maybeSynthesizeProposedPlan = (input: {
     readonly thread: Pick<
@@ -1530,47 +1670,8 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const extractReviewFeedback = (
-        review: PlanningWorkflow["branchA"]["reviews"][number],
-      ): Effect.Effect<{ reviewerLabel: string; reviewMarkdown: string } | null> =>
-        Effect.gen(function* () {
-          const thread = snapshot.threads.find((entry) => entry.id === review.threadId);
-          const reviewerLabel = `${review.slot} review`;
-          const feedback = thread ? latestAssistantFeedback(thread) : null;
-          if (!feedback) {
-            yield* Effect.logWarning("review yielded empty feedback text", {
-              threadId: review.threadId,
-              reviewerLabel,
-              reviewStatus: review.status,
-            });
-            return null;
-          }
-          if (feedback.source !== "text-only") {
-            yield* Effect.logDebug("reviewer feedback included reasoning-channel content", {
-              threadId: review.threadId,
-              reviewerLabel,
-              source: feedback.source,
-            });
-          }
-          return { reviewerLabel, reviewMarkdown: feedback.text };
-        });
-
-      const branchAReviewTexts = (yield* Effect.forEach(
-        workflow.branchA.reviews.toSorted((left, right) =>
-          compareWorkflowReviewSlots(left.slot, right.slot),
-        ),
-        extractReviewFeedback,
-      )).filter(
-        (review): review is { reviewerLabel: string; reviewMarkdown: string } => review !== null,
-      );
-      const branchBReviewTexts = (yield* Effect.forEach(
-        workflow.branchB.reviews.toSorted((left, right) =>
-          compareWorkflowReviewSlots(left.slot, right.slot),
-        ),
-        extractReviewFeedback,
-      )).filter(
-        (review): review is { reviewerLabel: string; reviewMarkdown: string } => review !== null,
-      );
+      const branchAReviewTexts = yield* reviewFeedbackForBranch(workflow.branchA, snapshot);
+      const branchBReviewTexts = yield* reviewFeedbackForBranch(workflow.branchB, snapshot);
 
       if (branchAReviewTexts.length === 0 || branchBReviewTexts.length === 0) {
         return;
@@ -1756,13 +1857,18 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
           return nextWorkflow;
         }
-        if (branch.status !== "authoring" && branch.status !== "revising") {
+        const failureStage = planningWorkflowBranchFailureStage(branch);
+        const isRevisionCompletion = branch.status === "revising" || failureStage === "revision";
+        const isAuthoringCompletion = branch.status === "authoring" || failureStage === "authoring";
+        if (!isAuthoringCompletion && !isRevisionCompletion) {
           return workflow;
         }
-        if (branch.status === "revising" && turnId === branch.planTurnId) {
+        if (isRevisionCompletion && turnId === branch.planTurnId) {
           return workflow;
         }
-        if (!thread.latestTurn || thread.latestTurn.requestedAt < branch.updatedAt) {
+        const completionEvidenceAt =
+          thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? null;
+        if (!completionEvidenceAt || completionEvidenceAt < branch.updatedAt) {
           return workflow;
         }
 
@@ -1778,16 +1884,15 @@ export const makeWorkflowService = Effect.gen(function* () {
           }
         }
 
-        const nextWorkflow =
-          branch.status === "revising"
-            ? markBranchRevised(workflow, authorBranchId, {
-                turnId,
-                updatedAt,
-              })
-            : markBranchPlanSaved(workflow, authorBranchId, {
-                turnId,
-                updatedAt,
-              });
+        const nextWorkflow = isRevisionCompletion
+          ? markBranchRevised(workflow, authorBranchId, {
+              turnId,
+              updatedAt,
+            })
+          : markBranchPlanSaved(workflow, authorBranchId, {
+              turnId,
+              updatedAt,
+            });
         if (nextWorkflow !== workflow) {
           yield* upsertWorkflow(nextWorkflow);
         }
@@ -1798,7 +1903,14 @@ export const makeWorkflowService = Effect.gen(function* () {
       if (reviewMatch) {
         const branch = reviewMatch.branchId === "a" ? workflow.branchA : workflow.branchB;
         const review = branch.reviews.find((entry) => entry.threadId === threadId);
-        if (review?.status !== "running" || !getFinishedConsumableLatestTurn(thread)) {
+        const finishedTurn = getFinishedConsumableLatestTurn(thread);
+        if (
+          (review?.status !== "running" && review?.status !== "error") ||
+          !finishedTurn ||
+          (review.status === "error" &&
+            (thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? "") <
+              review.updatedAt)
+        ) {
           return workflow;
         }
 
@@ -1814,12 +1926,23 @@ export const makeWorkflowService = Effect.gen(function* () {
         return nextWorkflow;
       }
 
-      if (workflow.merge.threadId !== threadId || workflow.merge.status !== "in_progress") {
+      if (
+        workflow.merge.threadId !== threadId ||
+        (workflow.merge.status !== "in_progress" && workflow.merge.status !== "error")
+      ) {
         return workflow;
       }
 
       const turnId = getFinishedLatestTurnId(thread);
       if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
+        return workflow;
+      }
+      const mergeCompletionEvidenceAt =
+        thread.latestTurn?.completedAt ?? thread.latestTurn?.requestedAt ?? null;
+      if (
+        workflow.merge.status === "error" &&
+        (!mergeCompletionEvidenceAt || mergeCompletionEvidenceAt < workflow.merge.updatedAt)
+      ) {
         return workflow;
       }
 
@@ -2029,18 +2152,38 @@ export const makeWorkflowService = Effect.gen(function* () {
 
       let nextWorkflow = workflow;
       if (threadId === workflow.implementation.threadId) {
+        const failedCodeReviews = workflow.implementation.codeReviews.some(
+          (review) => review.status === "error",
+        );
+        const completionEvidenceAt =
+          thread?.latestTurn?.completedAt ?? thread?.latestTurn?.requestedAt ?? null;
+        const recoveredStatus =
+          workflow.implementation.status === "error" &&
+          !failedCodeReviews &&
+          completionEvidenceAt &&
+          completionEvidenceAt >= workflow.implementation.updatedAt
+            ? workflow.implementation.codeReviews.length > 0 &&
+              workflow.implementation.codeReviews.every((review) => review.status === "completed")
+              ? "applying_reviews"
+              : "implementing"
+            : workflow.implementation.status;
         nextWorkflow =
-          workflow.implementation.status === "implementing"
+          recoveredStatus === "implementing"
             ? markImplementationDone(workflow, completedTurn.turnId, updatedAt)
-            : workflow.implementation.status === "applying_reviews"
+            : recoveredStatus === "applying_reviews"
               ? markImplementationCompleted(workflow, completedTurn.turnId, updatedAt)
               : workflow;
       } else {
         const review = workflow.implementation.codeReviews.find(
           (entry) => entry.threadId === threadId,
         );
+        const completionEvidenceAt =
+          thread?.latestTurn?.completedAt ?? thread?.latestTurn?.requestedAt ?? null;
         nextWorkflow =
-          review?.status === "running"
+          review?.status === "running" ||
+          (review?.status === "error" &&
+            completionEvidenceAt !== null &&
+            completionEvidenceAt >= review.updatedAt)
             ? markCodeReviewCompleted(workflow, threadId, updatedAt)
             : workflow;
       }
@@ -2082,7 +2225,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         return yield* Effect.die(new Error("Workflow implementation not found for retry."));
       }
       const budgetError = workflowBudgetError(input.workflow);
-      if (budgetError) return yield* budgetError;
+      if (budgetError) return yield* Effect.fail(new Error(budgetError.message));
 
       const latestUserMessage = input.thread.messages
         .toReversed()
@@ -2168,6 +2311,33 @@ export const makeWorkflowService = Effect.gen(function* () {
       const updatedAt = new Date().toISOString();
       let reconciledWorkflow = workflow;
       let latestSnapshot = snapshot;
+      const legacyReviewErrors = new Map<"a" | "b", string>();
+
+      for (const branchId of ["a", "b"] as const) {
+        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+        if (branch.status !== "error" || branch.errorStage !== null) {
+          continue;
+        }
+        const legacyStage = planningWorkflowBranchFailureStage(branch);
+        if (legacyStage === "reviews" && branch.error) {
+          legacyReviewErrors.set(branchId, branch.error);
+          continue;
+        }
+        const repairedBranch: PlanningWorkflow["branchA"] = {
+          ...branch,
+          errorStage: legacyStage === "revision" ? "revision" : "authoring",
+          updatedAt,
+        };
+        reconciledWorkflow = {
+          ...reconciledWorkflow,
+          branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
+          branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+          updatedAt,
+        };
+      }
+      if (reconciledWorkflow !== workflow) {
+        yield* upsertWorkflow(reconciledWorkflow);
+      }
 
       const refreshWorkflowFromSnapshot = Effect.gen(function* () {
         latestSnapshot = yield* orchestrationEngine.getReadModel();
@@ -2228,6 +2398,60 @@ export const makeWorkflowService = Effect.gen(function* () {
         }
       }
 
+      for (const [branchId, legacyError] of legacyReviewErrors) {
+        const branch = branchId === "a" ? reconciledWorkflow.branchA : reconciledWorkflow.branchB;
+        if (branch.reviews.length === 0) {
+          const repairedBranch: PlanningWorkflow["branchA"] = {
+            ...branch,
+            status: "plan_saved",
+            error: null,
+            errorStage: null,
+            updatedAt,
+          };
+          reconciledWorkflow = {
+            ...reconciledWorkflow,
+            branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
+            branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+            updatedAt,
+          };
+          continue;
+        }
+        if (branch.reviews.every((review) => review.status === "completed")) {
+          continue;
+        }
+        const repairedBranch: PlanningWorkflow["branchA"] = {
+          ...branch,
+          reviews: branch.reviews.map((review) => {
+            if (review.status === "completed") {
+              return review;
+            }
+            const reviewThread = latestSnapshot.threads.find(
+              (thread) => thread.id === review.threadId,
+            );
+            const sessionError = reviewThread?.session?.lastError
+              ? formatSessionError(reviewThread.session, "Review failed.")
+              : null;
+            return {
+              ...review,
+              status: "error" as const,
+              error: review.error ?? sessionError ?? legacyError,
+              updatedAt,
+            };
+          }),
+          status: "reviews_requested",
+          error: null,
+          errorStage: null,
+          updatedAt,
+        };
+        reconciledWorkflow = {
+          ...reconciledWorkflow,
+          branchA: branchId === "a" ? repairedBranch : reconciledWorkflow.branchA,
+          branchB: branchId === "b" ? repairedBranch : reconciledWorkflow.branchB,
+          updatedAt,
+        };
+        yield* upsertWorkflow(reconciledWorkflow);
+      }
+
       yield* maybeContinuePlanningWorkflowLifecycle(reconciledWorkflow, latestSnapshot, updatedAt);
       yield* refreshWorkflowFromSnapshot;
 
@@ -2247,9 +2471,18 @@ export const makeWorkflowService = Effect.gen(function* () {
         ) {
           reconciledWorkflow = markBranchError(reconciledWorkflow, branchId, {
             error:
-              branch.status === "revising"
-                ? "Revision session was not running during reconciliation."
-                : "Authoring session was not running during reconciliation.",
+              branch.error ??
+              (authorThread?.session?.lastError
+                ? formatSessionError(
+                    authorThread.session,
+                    branch.status === "revising"
+                      ? "Revision session was not running during reconciliation."
+                      : "Authoring session was not running during reconciliation.",
+                  )
+                : branch.status === "revising"
+                  ? "Revision session was not running during reconciliation."
+                  : "Authoring session was not running during reconciliation."),
+            stage: branch.status === "revising" ? "revision" : "authoring",
             updatedAt,
           });
           yield* upsertWorkflow(reconciledWorkflow);
@@ -2269,12 +2502,23 @@ export const makeWorkflowService = Effect.gen(function* () {
             (thread) => thread.id === review.threadId,
           );
           if (!startedReviewThisPass && isSessionUnavailableForReconciliation(reviewThread)) {
-            reconciledWorkflow = markBranchError(reconciledWorkflow, branchId, {
-              error: "Review session was not running during reconciliation.",
+            const error =
+              review.error ??
+              (reviewThread?.session?.lastError
+                ? formatSessionError(
+                    reviewThread.session,
+                    "Review session was not running during reconciliation.",
+                  )
+                : (legacyReviewErrors.get(branchId) ??
+                  "Review session was not running during reconciliation."));
+            reconciledWorkflow = markPlanningReviewError(
+              reconciledWorkflow,
+              branchId,
+              review.threadId,
+              error,
               updatedAt,
-            });
+            );
             yield* upsertWorkflow(reconciledWorkflow);
-            break;
           }
         }
       }
@@ -2698,11 +2942,56 @@ export const makeWorkflowService = Effect.gen(function* () {
             return;
           }
           if (reviewMatch) {
+            const baseWorkflow = applyTurnCost(reviewMatch.workflow);
+            const reviewedBranch =
+              reviewMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
+            const review = reviewedBranch.reviews.find(
+              (entry) => entry.threadId === event.payload.threadId,
+            );
+            const reviewThread = readModel.threads.find(
+              (thread) => thread.id === event.payload.threadId,
+            );
+            const acceptedFailedTurn =
+              reviewThread?.latestTurn?.state === "error" &&
+              reviewThread.latestTurn.requestedAt >= (review?.updatedAt ?? event.occurredAt);
+            if (
+              reviewedBranch.status === "reviews_requested" &&
+              review?.status === "running" &&
+              acceptedFailedTurn &&
+              isRetryableSessionError(event.payload.session.lastError) &&
+              review.retryCount < MAX_AUTO_RETRY_ATTEMPTS
+            ) {
+              const retryWorkflow = incrementPlanningReviewRetryCount(
+                baseWorkflow,
+                reviewMatch.branchId,
+                event.payload.threadId,
+                event.occurredAt,
+              );
+              const expectedRetryCount =
+                (reviewMatch.branchId === "a"
+                  ? retryWorkflow.branchA
+                  : retryWorkflow.branchB
+                ).reviews.find((entry) => entry.threadId === event.payload.threadId)?.retryCount ??
+                0;
+              yield* upsertWorkflow(retryWorkflow);
+              yield* forkPlanningReviewAutoRetry({
+                workflowId: retryWorkflow.id,
+                branchId: reviewMatch.branchId,
+                threadId: event.payload.threadId,
+                expectedRetryCount,
+                originalError: formatSessionError(event.payload.session, "Review failed."),
+              });
+              return;
+            }
+
             yield* upsertWorkflow(
-              markBranchError(applyTurnCost(reviewMatch.workflow), reviewMatch.branchId, {
-                error: formatSessionError(event.payload.session, "Review failed."),
-                updatedAt: event.occurredAt,
-              }),
+              markPlanningReviewError(
+                baseWorkflow,
+                reviewMatch.branchId,
+                event.payload.threadId,
+                formatSessionError(event.payload.session, "Review failed."),
+                event.occurredAt,
+              ),
             );
             return;
           }
@@ -2764,6 +3053,7 @@ export const makeWorkflowService = Effect.gen(function* () {
             yield* upsertWorkflow(
               markBranchError(baseWorkflow, authorMatch.branchId, {
                 error: formatSessionError(event.payload.session, "Authoring failed."),
+                stage: branch.status === "revising" ? "revision" : "authoring",
                 updatedAt: event.occurredAt,
               }),
             );
@@ -3350,80 +3640,797 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
     });
 
-  const retryWorkflow: WorkflowServiceShape["retryWorkflow"] = (workflowId) =>
+  const retryWorkflow: WorkflowServiceShape["retryWorkflow"] = (input) =>
     Effect.gen(function* () {
-      const workflow = yield* readWorkflow(orchestrationEngine, workflowId).pipe(
+      const workflow = yield* readWorkflow(orchestrationEngine, input.workflowId).pipe(
         Effect.mapError(
-          (error) => new Error(`Failed to load workflow '${workflowId}': ${String(error)}`),
+          (error) => new Error(`Failed to load workflow '${input.workflowId}': ${String(error)}`),
         ),
       );
       if (!workflow) {
-        return yield* Effect.fail(new Error(`Workflow '${workflowId}' does not exist.`));
+        return yield* Effect.fail(new Error(`Workflow '${input.workflowId}' does not exist.`));
       }
 
       const updatedAt = new Date().toISOString();
-      const resetWorkflow = resetWorkflowForRetry(workflow, updatedAt);
-      yield* upsertWorkflow(resetWorkflow);
-
-      if (resetWorkflow.implementation?.status === "code_reviews_saved") {
-        const snapshot = yield* orchestrationEngine.getReadModel();
-        yield* maybeStartImplementationRevision(resetWorkflow, snapshot, updatedAt);
-        return;
+      const failedThreadIds = new Set<ThreadId>();
+      for (const branch of [workflow.branchA, workflow.branchB]) {
+        const stage = planningWorkflowBranchFailureStage(branch);
+        if (stage === "authoring" || stage === "revision") {
+          failedThreadIds.add(branch.authorThreadId);
+        }
+        for (const review of branch.reviews) {
+          if (review.status === "error" || (stage === "reviews" && review.status !== "completed")) {
+            failedThreadIds.add(review.threadId);
+          }
+        }
+      }
+      if (workflow.merge.status === "error" && workflow.merge.threadId) {
+        failedThreadIds.add(workflow.merge.threadId);
+      }
+      if (workflow.implementation?.status === "error") {
+        const failedCodeReviews = workflow.implementation.codeReviews.filter(
+          (review) => review.status === "error",
+        );
+        if (failedCodeReviews.length > 0) {
+          for (const review of failedCodeReviews) {
+            failedThreadIds.add(review.threadId);
+          }
+        } else if (workflow.implementation.threadId) {
+          failedThreadIds.add(workflow.implementation.threadId);
+        }
       }
 
-      if (resetWorkflow.implementation?.status === "code_reviews_requested") {
-        const snapshot = yield* orchestrationEngine.getReadModel();
-        const mergeThread = snapshot.threads.find(
-          (thread) => thread.id === resetWorkflow.merge.threadId,
-        );
-        const mergedPlan = mergeThread
-          ? resolveApprovedMergedPlan(resetWorkflow, mergeThread)
-          : null;
-        if (!mergedPlan?.planMarkdown) {
-          yield* upsertWorkflow(
-            markImplementationError(
-              resetWorkflow,
-              "Merged plan not found for retried code review.",
-              updatedAt,
+      const deliveryStateByThread = new Map<
+        ThreadId,
+        "pending" | "sending" | "accepted" | "rejected" | "ambiguous"
+      >();
+      let ambiguousThreadIds: ThreadId[] = [];
+      if (providerTurnDeliveryWorker._tag === "Some") {
+        const deliveries = yield* Effect.forEach([...failedThreadIds], (threadId) =>
+          providerTurnDeliveryWorker.value.recheck(threadId).pipe(
+            Effect.map((delivery) => ({ threadId, delivery })),
+            Effect.mapError(
+              (error) =>
+                new Error(
+                  `Could not verify provider delivery for thread '${threadId}'. Retry after the provider reconnects.`,
+                  { cause: error },
+                ),
             ),
-          );
-          return;
-        }
-
-        yield* Effect.forEach(
-          resetWorkflow.implementation.codeReviews.filter((review) => review.status === "pending"),
-          (review) =>
-            startCodeReviewTurn({
-              orchestrationEngine,
-              workflow: resetWorkflow,
-              reviewerSlot: review.reviewerSlot,
-              reviewThreadId: review.threadId,
-              mergedPlanMarkdown: mergedPlan.planMarkdown,
-              reviewerLabel: review.reviewerLabel,
-              createdAt: updatedAt,
-            }),
-          { discard: true },
+          ),
         );
+        ambiguousThreadIds = deliveries
+          .filter(({ delivery }) => delivery?.state === "ambiguous")
+          .map(({ threadId }) => threadId);
 
-        yield* upsertWorkflow({
-          ...resetWorkflow,
-          implementation: {
-            ...resetWorkflow.implementation,
-            codeReviews: resetWorkflow.implementation.codeReviews.map((review) => {
-              if (review.status !== "pending") {
-                return review;
-              }
-              return Object.assign({}, review, {
+        for (const { threadId, delivery } of deliveries) {
+          if (
+            delivery?.state === "pending" ||
+            delivery?.state === "sending" ||
+            delivery?.state === "accepted" ||
+            delivery?.state === "rejected" ||
+            delivery?.state === "ambiguous"
+          ) {
+            deliveryStateByThread.set(threadId, delivery.state);
+          }
+        }
+      }
+
+      const snapshot = yield* orchestrationEngine.getReadModel();
+      const deliveryMode = (
+        threadId: ThreadId | null,
+      ): "fresh" | "accepted" | "queued" | "retry" => {
+        if (!threadId) return "fresh";
+        switch (deliveryStateByThread.get(threadId)) {
+          case "accepted":
+            return "accepted";
+          case "pending":
+          case "sending":
+            return "queued";
+          case "rejected":
+          case "ambiguous":
+            return "retry";
+          default:
+            return "fresh";
+        }
+      };
+      let retriedWorkflow = workflow;
+      const handledAcceptedThreadIds = new Set<ThreadId>();
+      const setReviewRunning = (
+        current: PlanningWorkflow,
+        branchId: "a" | "b",
+        threadId: ThreadId,
+      ): PlanningWorkflow => {
+        const branch = branchId === "a" ? current.branchA : current.branchB;
+        const nextBranch: PlanningWorkflow["branchA"] = {
+          ...branch,
+          reviews: branch.reviews.map((review) =>
+            review.threadId === threadId
+              ? {
+                  ...review,
+                  status: "running" as const,
+                  error: null,
+                  retryCount: 0,
+                  lastRetryAt: null,
+                  updatedAt,
+                }
+              : review,
+          ),
+          status: "reviews_requested",
+          error: null,
+          errorStage: null,
+          updatedAt,
+        };
+        return {
+          ...current,
+          branchA: branchId === "a" ? nextBranch : current.branchA,
+          branchB: branchId === "b" ? nextBranch : current.branchB,
+          updatedAt,
+        };
+      };
+      const setCodeReviewRunning = (
+        current: PlanningWorkflow,
+        threadId: ThreadId,
+      ): PlanningWorkflow => {
+        if (!current.implementation) return current;
+        const reviews = current.implementation.codeReviews.map((review) =>
+          review.threadId === threadId
+            ? {
+                ...review,
                 status: "running" as const,
+                error: null,
+                retryCount: 0,
+                lastRetryAt: null,
                 updatedAt,
-              });
-            }),
+              }
+            : review,
+        );
+        const hasErrors = reviews.some((review) => review.status === "error");
+        return {
+          ...current,
+          implementation: {
+            ...current.implementation,
+            codeReviews: reviews,
+            status: hasErrors ? "error" : "code_reviews_requested",
+            error: hasErrors ? current.implementation.error : null,
             updatedAt,
           },
           updatedAt,
-        });
+        };
+      };
+
+      for (const branchId of ["a", "b"] as const) {
+        const branch = branchId === "a" ? workflow.branchA : workflow.branchB;
+        const stage = planningWorkflowBranchFailureStage(branch);
+        for (const review of branch.reviews) {
+          if (
+            deliveryMode(review.threadId) !== "accepted" ||
+            (review.status !== "error" && !(stage === "reviews" && review.status !== "completed"))
+          ) {
+            continue;
+          }
+          const completedWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            retriedWorkflow,
+            snapshot,
+            review.threadId,
+            updatedAt,
+          );
+          if (completedWorkflow === retriedWorkflow) {
+            retriedWorkflow = setReviewRunning(retriedWorkflow, branchId, review.threadId);
+            yield* upsertWorkflow(retriedWorkflow);
+          } else {
+            retriedWorkflow = completedWorkflow;
+          }
+          handledAcceptedThreadIds.add(review.threadId);
+        }
+
+        if (
+          (stage === "authoring" || stage === "revision") &&
+          deliveryMode(branch.authorThreadId) === "accepted"
+        ) {
+          const completedWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            retriedWorkflow,
+            snapshot,
+            branch.authorThreadId,
+            updatedAt,
+          );
+          if (completedWorkflow === retriedWorkflow) {
+            const currentBranch =
+              branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB;
+            const nextBranch: PlanningWorkflow["branchA"] = {
+              ...currentBranch,
+              status: stage === "revision" ? "revising" : "authoring",
+              error: null,
+              errorStage: null,
+              retryCount: 0,
+              lastRetryAt: null,
+              updatedAt,
+            };
+            retriedWorkflow = {
+              ...retriedWorkflow,
+              branchA: branchId === "a" ? nextBranch : retriedWorkflow.branchA,
+              branchB: branchId === "b" ? nextBranch : retriedWorkflow.branchB,
+              updatedAt,
+            };
+            yield* upsertWorkflow(retriedWorkflow);
+          } else {
+            retriedWorkflow = completedWorkflow;
+          }
+          handledAcceptedThreadIds.add(branch.authorThreadId);
+        }
       }
-    });
+
+      if (
+        workflow.merge.status === "error" &&
+        workflow.merge.threadId &&
+        deliveryMode(workflow.merge.threadId) === "accepted"
+      ) {
+        const completedWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+          retriedWorkflow,
+          snapshot,
+          workflow.merge.threadId,
+          updatedAt,
+        );
+        if (completedWorkflow === retriedWorkflow) {
+          retriedWorkflow = markMergeStarted(retriedWorkflow, workflow.merge.threadId, updatedAt);
+          yield* upsertWorkflow(retriedWorkflow);
+        } else {
+          retriedWorkflow = completedWorkflow;
+        }
+        handledAcceptedThreadIds.add(workflow.merge.threadId);
+      }
+
+      if (workflow.implementation?.status === "error") {
+        const failedReviews = workflow.implementation.codeReviews.filter(
+          (review) => review.status === "error",
+        );
+        for (const review of failedReviews) {
+          if (deliveryMode(review.threadId) !== "accepted") {
+            continue;
+          }
+          const completedWorkflow = yield* maybeAdvanceImplementationLifecycle(
+            retriedWorkflow,
+            snapshot,
+            review.threadId,
+            updatedAt,
+          );
+          if (completedWorkflow === retriedWorkflow) {
+            retriedWorkflow = setCodeReviewRunning(retriedWorkflow, review.threadId);
+            yield* upsertWorkflow(retriedWorkflow);
+          } else {
+            retriedWorkflow = completedWorkflow;
+          }
+          handledAcceptedThreadIds.add(review.threadId);
+        }
+
+        if (
+          failedReviews.length === 0 &&
+          workflow.implementation.threadId &&
+          deliveryMode(workflow.implementation.threadId) === "accepted"
+        ) {
+          const completedWorkflow = yield* maybeAdvanceImplementationLifecycle(
+            retriedWorkflow,
+            snapshot,
+            workflow.implementation.threadId,
+            updatedAt,
+          );
+          if (completedWorkflow === retriedWorkflow && retriedWorkflow.implementation) {
+            const implementation = retriedWorkflow.implementation;
+            const retryStatus =
+              implementation.codeReviews.length > 0 &&
+              implementation.codeReviews.every((review) => review.status === "completed")
+                ? "applying_reviews"
+                : "implementing";
+            retriedWorkflow = {
+              ...retriedWorkflow,
+              implementation: {
+                ...implementation,
+                status: retryStatus,
+                error: null,
+                retryCount: 0,
+                lastRetryAt: null,
+                updatedAt,
+              },
+              updatedAt,
+            };
+            yield* upsertWorkflow(retriedWorkflow);
+          } else {
+            retriedWorkflow = completedWorkflow;
+          }
+          handledAcceptedThreadIds.add(workflow.implementation.threadId);
+        }
+      }
+      if (ambiguousThreadIds.length > 0 && !input.allowPossibleDuplicate) {
+        return {
+          status: "confirmation_required" as const,
+          threadIds: ambiguousThreadIds,
+        };
+      }
+      const retriesLegacyReviewSetup = [workflow.branchA, workflow.branchB].some(
+        (branch) =>
+          planningWorkflowBranchFailureStage(branch) === "reviews" && branch.reviews.length === 0,
+      );
+
+      const willSpend =
+        [...failedThreadIds].some((threadId) => {
+          const mode = deliveryMode(threadId);
+          return mode === "fresh" || mode === "retry";
+        }) ||
+        retriesLegacyReviewSetup ||
+        (workflow.merge.status === "error" &&
+          (!workflow.merge.threadId || deliveryMode(workflow.merge.threadId) === "fresh"));
+      if (willSpend) {
+        const budgetError = workflowBudgetError(workflow);
+        if (budgetError) {
+          return yield* Effect.fail(new Error(budgetError.message));
+        }
+      }
+
+      const planForBranch = (branch: PlanningWorkflow["branchA"]) =>
+        completedProposedPlanForTurn(snapshot, branch.authorThreadId, branch.planTurnId)
+          ?.planMarkdown ?? null;
+
+      if (retriesLegacyReviewSetup) {
+        const prospectiveStatuses = [workflow.branchA, workflow.branchB].map((branch) =>
+          planningWorkflowBranchFailureStage(branch) === "reviews" && branch.reviews.length === 0
+            ? "plan_saved"
+            : branch.status,
+        );
+        if (prospectiveStatuses.some((status) => status !== "plan_saved")) {
+          return yield* Effect.fail(
+            new Error("Review setup cannot be retried until both branch plans are saved."),
+          );
+        }
+        if (!planForBranch(workflow.branchA) || !planForBranch(workflow.branchB)) {
+          return yield* Effect.fail(new Error("Saved branch plans not found for review retry."));
+        }
+      }
+
+      const reviewPlans = new Map<ThreadId, string>();
+      const revisionFeedback = new Map<
+        "a" | "b",
+        ReadonlyArray<{
+          readonly reviewerLabel: string;
+          readonly reviewMarkdown: string;
+        }>
+      >();
+
+      for (const branchId of ["a", "b"] as const) {
+        const branch = branchId === "a" ? workflow.branchA : workflow.branchB;
+        const stage = planningWorkflowBranchFailureStage(branch);
+        for (const review of branch.reviews) {
+          if (
+            review.status !== "error" &&
+            !(stage === "reviews" && review.status !== "completed")
+          ) {
+            continue;
+          }
+          if (deliveryMode(review.threadId) !== "fresh") {
+            continue;
+          }
+          const planMarkdown = planForBranch(branch);
+          if (!planMarkdown) {
+            return yield* Effect.fail(
+              new Error(`Saved plan not found for Branch ${branchId.toUpperCase()} review retry.`),
+            );
+          }
+          reviewPlans.set(review.threadId, planMarkdown);
+        }
+
+        if (stage === "revision" && deliveryMode(branch.authorThreadId) === "fresh") {
+          const feedback = yield* reviewFeedbackForBranch(branch, snapshot);
+          if (feedback.length === 0) {
+            return yield* Effect.fail(
+              new Error(`Review feedback not found for Branch ${branchId.toUpperCase()} revision.`),
+            );
+          }
+          revisionFeedback.set(branchId, feedback);
+        }
+      }
+
+      if (workflow.merge.status === "error" && deliveryMode(workflow.merge.threadId) === "fresh") {
+        const planA = completedProposedPlanForTurn(
+          snapshot,
+          workflow.branchA.authorThreadId,
+          workflow.branchA.revisionTurnId,
+        )?.planMarkdown;
+        const planB = completedProposedPlanForTurn(
+          snapshot,
+          workflow.branchB.authorThreadId,
+          workflow.branchB.revisionTurnId,
+        )?.planMarkdown;
+        if (!planA || !planB) {
+          return yield* Effect.fail(new Error("Revised plans not found for merge retry."));
+        }
+      }
+
+      let mergedPlanMarkdown: string | null = null;
+      const failedCodeReviews =
+        workflow.implementation?.status === "error"
+          ? workflow.implementation.codeReviews.filter((review) => review.status === "error")
+          : [];
+      if (failedCodeReviews.some((review) => deliveryMode(review.threadId) === "fresh")) {
+        const mergeThread = snapshot.threads.find(
+          (thread) => thread.id === workflow.merge.threadId,
+        );
+        mergedPlanMarkdown = mergeThread
+          ? (resolveApprovedMergedPlan(workflow, mergeThread)?.planMarkdown ?? null)
+          : null;
+        if (!mergedPlanMarkdown) {
+          return yield* Effect.fail(new Error("Merged plan not found for code review retry."));
+        }
+      }
+
+      let implementationThread: OrchestrationReadModel["threads"][number] | null = null;
+      if (workflow.implementation?.status === "error" && failedCodeReviews.length === 0) {
+        if (!workflow.implementation.threadId) {
+          return yield* Effect.fail(new Error("Implementation thread not found for retry."));
+        }
+        if (deliveryMode(workflow.implementation.threadId) === "fresh") {
+          implementationThread =
+            snapshot.threads.find((thread) => thread.id === workflow.implementation?.threadId) ??
+            null;
+          if (!implementationThread) {
+            return yield* Effect.fail(new Error("Implementation thread not found for retry."));
+          }
+          const latestUserMessage = implementationThread.messages
+            .toReversed()
+            .find((message) => message.role === "user" && !message.streaming);
+          if (!latestUserMessage) {
+            return yield* Effect.fail(
+              new Error(
+                `Implementation retry message not found for thread '${implementationThread.id}'.`,
+              ),
+            );
+          }
+        }
+      }
+
+      if (providerTurnDeliveryWorker._tag === "Some") {
+        yield* Effect.forEach(
+          [...failedThreadIds].filter((threadId) => deliveryMode(threadId) === "retry"),
+          (threadId) =>
+            providerTurnDeliveryWorker.value.retry({
+              threadId,
+              allowPossibleDuplicate: input.allowPossibleDuplicate ?? false,
+            }),
+          { discard: true },
+        );
+      }
+
+      const preserveLegacyReviewError = (
+        current: PlanningWorkflow,
+        branchId: "a" | "b",
+        threadId: ThreadId,
+        legacyError: string,
+      ): PlanningWorkflow => {
+        const branch = branchId === "a" ? current.branchA : current.branchB;
+        const nextBranch: PlanningWorkflow["branchA"] = {
+          ...branch,
+          reviews: branch.reviews.map((review) =>
+            review.threadId === threadId && review.status !== "completed"
+              ? { ...review, status: "error" as const, error: review.error ?? legacyError }
+              : review,
+          ),
+          status: "reviews_requested",
+          error: null,
+          errorStage: null,
+          updatedAt,
+        };
+        return {
+          ...current,
+          branchA: branchId === "a" ? nextBranch : current.branchA,
+          branchB: branchId === "b" ? nextBranch : current.branchB,
+          updatedAt,
+        };
+      };
+
+      for (const branchId of ["a", "b"] as const) {
+        const originalBranch = branchId === "a" ? workflow.branchA : workflow.branchB;
+        const originalStage = planningWorkflowBranchFailureStage(originalBranch);
+        if (originalStage === "reviews" && originalBranch.reviews.length === 0) {
+          const repairedBranch: PlanningWorkflow["branchA"] = {
+            ...(branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB),
+            status: "plan_saved",
+            error: null,
+            errorStage: null,
+            updatedAt,
+          };
+          retriedWorkflow = {
+            ...retriedWorkflow,
+            branchA: branchId === "a" ? repairedBranch : retriedWorkflow.branchA,
+            branchB: branchId === "b" ? repairedBranch : retriedWorkflow.branchB,
+            updatedAt,
+          };
+        }
+        for (const review of originalBranch.reviews) {
+          if (
+            review.status !== "error" &&
+            !(originalStage === "reviews" && review.status !== "completed")
+          ) {
+            continue;
+          }
+          if (handledAcceptedThreadIds.has(review.threadId)) {
+            continue;
+          }
+          const mode = deliveryMode(review.threadId);
+          if (mode === "queued" || mode === "retry") {
+            if (originalStage === "reviews" && originalBranch.error) {
+              retriedWorkflow = preserveLegacyReviewError(
+                retriedWorkflow,
+                branchId,
+                review.threadId,
+                originalBranch.error,
+              );
+              yield* upsertWorkflow(retriedWorkflow);
+            }
+            continue;
+          }
+          if (mode === "accepted") {
+            const completedWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+              retriedWorkflow,
+              snapshot,
+              review.threadId,
+              updatedAt,
+            );
+            if (completedWorkflow !== retriedWorkflow) {
+              retriedWorkflow = completedWorkflow;
+              continue;
+            }
+            retriedWorkflow = setReviewRunning(retriedWorkflow, branchId, review.threadId);
+            yield* upsertWorkflow(retriedWorkflow);
+            continue;
+          }
+          const branch = branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB;
+          const reviewerSlot =
+            review.slot === "self"
+              ? branch.authorSlot
+              : branchId === "a"
+                ? retriedWorkflow.branchB.authorSlot
+                : retriedWorkflow.branchA.authorSlot;
+          yield* startReviewTurn({
+            orchestrationEngine,
+            workflow: retriedWorkflow,
+            reviewerSlot,
+            reviewThreadId: review.threadId,
+            planMarkdown: reviewPlans.get(review.threadId)!,
+            reviewKind: review.slot,
+            createdAt: updatedAt,
+          });
+          retriedWorkflow = setReviewRunning(retriedWorkflow, branchId, review.threadId);
+          yield* upsertWorkflow(retriedWorkflow);
+        }
+
+        if (originalStage !== "authoring" && originalStage !== "revision") {
+          continue;
+        }
+        if (handledAcceptedThreadIds.has(originalBranch.authorThreadId)) {
+          continue;
+        }
+        const mode = deliveryMode(originalBranch.authorThreadId);
+        if (mode === "queued" || mode === "retry") {
+          continue;
+        }
+        if (mode === "accepted") {
+          const completedWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            retriedWorkflow,
+            snapshot,
+            originalBranch.authorThreadId,
+            updatedAt,
+          );
+          if (completedWorkflow !== retriedWorkflow) {
+            retriedWorkflow = completedWorkflow;
+            continue;
+          }
+        }
+        const nextBranch: PlanningWorkflow["branchA"] = {
+          ...(branchId === "a" ? retriedWorkflow.branchA : retriedWorkflow.branchB),
+          status: originalStage === "revision" ? "revising" : "authoring",
+          error: null,
+          errorStage: null,
+          retryCount: 0,
+          lastRetryAt: null,
+          updatedAt,
+        };
+        if (mode === "accepted") {
+          retriedWorkflow = {
+            ...retriedWorkflow,
+            branchA: branchId === "a" ? nextBranch : retriedWorkflow.branchA,
+            branchB: branchId === "b" ? nextBranch : retriedWorkflow.branchB,
+            updatedAt,
+          };
+          yield* upsertWorkflow(retriedWorkflow);
+          continue;
+        }
+        if (originalStage === "authoring") {
+          yield* startAuthoringTurn({
+            orchestrationEngine,
+            workflow: retriedWorkflow,
+            branch: originalBranch,
+            createdAt: updatedAt,
+          });
+        } else {
+          yield* startRevisionTurn({
+            orchestrationEngine,
+            workflow: retriedWorkflow,
+            branch: originalBranch,
+            reviews: revisionFeedback.get(branchId)!,
+            createdAt: updatedAt,
+          });
+        }
+        retriedWorkflow = {
+          ...retriedWorkflow,
+          branchA: branchId === "a" ? nextBranch : retriedWorkflow.branchA,
+          branchB: branchId === "b" ? nextBranch : retriedWorkflow.branchB,
+          updatedAt,
+        };
+        yield* upsertWorkflow(retriedWorkflow);
+      }
+
+      if (retriesLegacyReviewSetup) {
+        yield* maybeStartReviews(retriedWorkflow, snapshot, updatedAt);
+        const refreshed = yield* orchestrationEngine.getReadModel();
+        retriedWorkflow =
+          refreshed.planningWorkflows.find((entry) => entry.id === retriedWorkflow.id) ??
+          retriedWorkflow;
+      }
+
+      if (retriedWorkflow.merge.status === "error") {
+        const mode = deliveryMode(retriedWorkflow.merge.threadId);
+        if (mode === "accepted" && retriedWorkflow.merge.threadId) {
+          const completedWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            retriedWorkflow,
+            snapshot,
+            retriedWorkflow.merge.threadId,
+            updatedAt,
+          );
+          if (completedWorkflow !== retriedWorkflow) {
+            retriedWorkflow = completedWorkflow;
+          } else {
+            retriedWorkflow = markMergeStarted(
+              retriedWorkflow,
+              retriedWorkflow.merge.threadId,
+              updatedAt,
+            );
+            yield* upsertWorkflow(retriedWorkflow);
+          }
+        } else if (mode === "fresh") {
+          const mergeRetryWorkflow: PlanningWorkflow = {
+            ...retriedWorkflow,
+            merge: {
+              ...retriedWorkflow.merge,
+              threadId: null,
+              turnId: null,
+              outputFilePath: null,
+              approvedPlanId: null,
+              status: "not_started",
+              error: null,
+              updatedAt,
+            },
+            updatedAt,
+          };
+          yield* maybeStartMerge(mergeRetryWorkflow, snapshot, updatedAt);
+          const refreshed = yield* orchestrationEngine.getReadModel();
+          retriedWorkflow =
+            refreshed.planningWorkflows.find((entry) => entry.id === retriedWorkflow.id) ??
+            retriedWorkflow;
+        }
+      }
+
+      if (retriedWorkflow.implementation?.status === "error") {
+        const failedReviews = retriedWorkflow.implementation.codeReviews.filter(
+          (review) => review.status === "error",
+        );
+        if (failedReviews.length > 0) {
+          for (const review of failedReviews) {
+            const mode = deliveryMode(review.threadId);
+            if (mode === "queued" || mode === "retry") {
+              continue;
+            }
+            if (mode === "accepted") {
+              const completedWorkflow = yield* maybeAdvanceImplementationLifecycle(
+                retriedWorkflow,
+                snapshot,
+                review.threadId,
+                updatedAt,
+              );
+              if (completedWorkflow !== retriedWorkflow) {
+                retriedWorkflow = completedWorkflow;
+                continue;
+              }
+            } else {
+              yield* startCodeReviewTurn({
+                orchestrationEngine,
+                workflow: retriedWorkflow,
+                reviewerSlot: review.reviewerSlot,
+                reviewThreadId: review.threadId,
+                mergedPlanMarkdown: mergedPlanMarkdown!,
+                reviewerLabel: review.reviewerLabel,
+                createdAt: updatedAt,
+              });
+            }
+            retriedWorkflow = setCodeReviewRunning(retriedWorkflow, review.threadId);
+            yield* upsertWorkflow(retriedWorkflow);
+          }
+        } else {
+          const implementation = retriedWorkflow.implementation;
+          if (!implementation.threadId) {
+            return yield* Effect.fail(new Error("Implementation thread not found for retry."));
+          }
+          const mode = deliveryMode(implementation.threadId);
+          if (mode !== "queued" && mode !== "retry") {
+            if (mode === "accepted") {
+              const completedWorkflow = yield* maybeAdvanceImplementationLifecycle(
+                retriedWorkflow,
+                snapshot,
+                implementation.threadId,
+                updatedAt,
+              );
+              if (completedWorkflow !== retriedWorkflow) {
+                retriedWorkflow = completedWorkflow;
+              } else {
+                const retryStatus =
+                  implementation.codeReviews.length > 0 &&
+                  implementation.codeReviews.every((review) => review.status === "completed")
+                    ? "applying_reviews"
+                    : "implementing";
+                retriedWorkflow = {
+                  ...retriedWorkflow,
+                  implementation: {
+                    ...implementation,
+                    status: retryStatus,
+                    error: null,
+                    retryCount: 0,
+                    lastRetryAt: null,
+                    updatedAt,
+                  },
+                  updatedAt,
+                };
+                yield* upsertWorkflow(retriedWorkflow);
+              }
+            } else {
+              yield* retryImplementationTurn({
+                workflow: retriedWorkflow,
+                thread: implementationThread!,
+                createdAt: updatedAt,
+              });
+              const retryStatus =
+                implementation.codeReviews.length > 0 &&
+                implementation.codeReviews.every((review) => review.status === "completed")
+                  ? "applying_reviews"
+                  : "implementing";
+              retriedWorkflow = {
+                ...retriedWorkflow,
+                implementation: {
+                  ...implementation,
+                  status: retryStatus,
+                  error: null,
+                  retryCount: 0,
+                  lastRetryAt: null,
+                  updatedAt,
+                },
+                updatedAt,
+              };
+              yield* upsertWorkflow(retriedWorkflow);
+            }
+          }
+        }
+      }
+
+      const latestSnapshot = yield* orchestrationEngine.getReadModel();
+      retriedWorkflow =
+        latestSnapshot.planningWorkflows.find((entry) => entry.id === retriedWorkflow.id) ??
+        retriedWorkflow;
+      yield* maybeContinuePlanningWorkflowLifecycle(retriedWorkflow, latestSnapshot, updatedAt);
+      yield* maybeContinueImplementationLifecycle(retriedWorkflow, latestSnapshot, updatedAt);
+
+      return { status: "started" as const };
+    }).pipe(
+      Effect.mapError((error) =>
+        error instanceof Error
+          ? error
+          : new Error(error === null ? "Workflow retry failed." : String(error)),
+      ),
+    );
 
   const workflowForThread: WorkflowServiceShape["workflowForThread"] = (threadId) =>
     orchestrationEngine.getReadModel().pipe(

@@ -22,6 +22,7 @@ const createdAt = "2026-01-01T00:00:00.000Z";
 let state: ProviderTurnDelivery;
 let requeueCount = 0;
 let outcomeProjected = false;
+let providerReadFails = false;
 
 function resetDelivery() {
   state = {
@@ -47,6 +48,7 @@ function resetDelivery() {
   };
   requeueCount = 0;
   outcomeProjected = false;
+  providerReadFails = false;
 }
 
 const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
@@ -105,7 +107,10 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   Layer.provideMerge(repositoryLayer),
   Layer.provideMerge(
     Layer.succeed(ProviderService, {
-      readThread: () => Effect.succeed({ threadId, turns: [] }),
+      readThread: () =>
+        providerReadFails
+          ? Effect.fail(new Error("provider unavailable"))
+          : Effect.succeed({ threadId, turns: [] }),
     } as never),
   ),
   Layer.provideMerge(
@@ -153,5 +158,26 @@ it.effect(
       }
       yield* worker.acknowledgeOutcome(deliveryId);
       assert.equal(outcomeProjected, true);
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "ProviderTurnDeliveryWorker preserves durable evidence when provider history is unavailable",
+  () =>
+    Effect.gen(function* () {
+      resetDelivery();
+      state = {
+        ...state,
+        state: "ambiguous",
+        certainty: "unknown",
+        errorDetail: "Could not prove whether the provider accepted this turn.",
+      };
+      providerReadFails = true;
+      const worker = yield* ProviderTurnDeliveryWorker;
+
+      const delivery = yield* worker.recheck(threadId);
+
+      assert.equal(delivery?.state, "ambiguous");
+      assert.equal(delivery?.certainty, "unknown");
     }).pipe(Effect.provide(testLayer)),
 );

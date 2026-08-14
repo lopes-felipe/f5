@@ -12,6 +12,8 @@ import {
   OrchestrationThread,
   OrchestrationGetTurnDiffInput,
   OrchestrationProposedPlan,
+  OrchestrationRetryWorkflowInput,
+  OrchestrationRetryWorkflowResult,
   OrchestrationMessage,
   OrchestrationSession,
   TaskItem,
@@ -50,6 +52,28 @@ const decodeTaskItem = Schema.decodeUnknownEffect(TaskItem);
 const decodeCreateWorkflowInput = Schema.decodeUnknownEffect(OrchestrationCreateWorkflowInput);
 const decodeCreateCodeReviewWorkflowInput = Schema.decodeUnknownEffect(
   OrchestrationCreateCodeReviewWorkflowInput,
+);
+const decodeRetryWorkflowInput = Schema.decodeUnknownEffect(OrchestrationRetryWorkflowInput);
+const decodeRetryWorkflowResult = Schema.decodeUnknownEffect(OrchestrationRetryWorkflowResult);
+
+it.effect("defaults planning workflow duplicate-risk confirmation to false", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeRetryWorkflowInput({ workflowId: "workflow-1" });
+    assert.equal(parsed.allowPossibleDuplicate, false);
+  }),
+);
+
+it.effect("decodes planning workflow retry confirmation results", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeRetryWorkflowResult({
+      status: "confirmation_required",
+      threadIds: ["thread-1"],
+    });
+    assert.deepEqual(parsed, {
+      status: "confirmation_required",
+      threadIds: ["thread-1"],
+    });
+  }),
 );
 
 it.effect("parses turn diff input when fromTurnCount <= toTurnCount", () =>

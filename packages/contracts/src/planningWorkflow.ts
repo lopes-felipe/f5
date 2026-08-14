@@ -32,6 +32,9 @@ export const WorkflowBranchStatus = Schema.Literals([
 ]);
 export type WorkflowBranchStatus = typeof WorkflowBranchStatus.Type;
 
+export const WorkflowBranchErrorStage = Schema.Literals(["authoring", "revision"]);
+export type WorkflowBranchErrorStage = typeof WorkflowBranchErrorStage.Type;
+
 export const WorkflowMergeStatus = Schema.Literals([
   "not_started",
   "in_progress",
@@ -70,6 +73,8 @@ export const WorkflowReview = Schema.Struct({
   outputFilePath: Schema.NullOr(TrimmedNonEmptyString),
   status: WorkflowStepStatus,
   error: Schema.NullOr(Schema.String),
+  retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
 });
 export type WorkflowReview = typeof WorkflowReview.Type;
@@ -96,6 +101,7 @@ export const WorkflowBranch = Schema.Struct({
   reviews: Schema.Array(WorkflowReview),
   status: WorkflowBranchStatus,
   error: Schema.NullOr(Schema.String),
+  errorStage: Schema.NullOr(WorkflowBranchErrorStage).pipe(Schema.withDecodingDefault(() => null)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,

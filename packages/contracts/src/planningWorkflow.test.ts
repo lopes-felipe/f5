@@ -26,6 +26,7 @@ function makeWorkflowRecord(now: string) {
       reviews: [],
       status: "pending",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: now,
@@ -46,6 +47,7 @@ function makeWorkflowRecord(now: string) {
       reviews: [],
       status: "pending",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: now,
@@ -110,11 +112,13 @@ describe("planningWorkflow contracts", () => {
     const now = new Date().toISOString();
     const record = makeWorkflowRecord(now);
     const {
+      errorStage: _branchAErrorStage,
       retryCount: _branchARetryCount,
       lastRetryAt: _branchALastRetryAt,
       ...legacyBranchA
     } = record.branchA;
     const {
+      errorStage: _branchBErrorStage,
       retryCount: _branchBRetryCount,
       lastRetryAt: _branchBLastRetryAt,
       ...legacyBranchB
@@ -129,9 +133,53 @@ describe("planningWorkflow contracts", () => {
 
     expect(workflow.branchA.retryCount).toBe(0);
     expect(workflow.branchA.lastRetryAt).toBeNull();
+    expect(workflow.branchA.errorStage).toBeNull();
     expect(workflow.branchB.retryCount).toBe(0);
     expect(workflow.branchB.lastRetryAt).toBeNull();
+    expect(workflow.branchB.errorStage).toBeNull();
     expect(workflow.totalCostUsd).toBe(0);
+  });
+
+  it("defaults legacy planning review retry metadata and round-trips new failure fields", () => {
+    const now = new Date().toISOString();
+    const record = makeWorkflowRecord(now);
+    const legacyReview = {
+      slot: "cross" as const,
+      threadId: ThreadId.makeUnsafe("review-a"),
+      outputFilePath: null,
+      status: "error" as const,
+      error: "connection reset",
+      updatedAt: now,
+    };
+    const decoded = Schema.decodeUnknownSync(PlanningWorkflow)({
+      ...record,
+      branchA: {
+        ...record.branchA,
+        reviews: [legacyReview],
+      },
+    });
+
+    expect(decoded.branchA.reviews[0]?.retryCount).toBe(0);
+    expect(decoded.branchA.reviews[0]?.lastRetryAt).toBeNull();
+
+    const withRetryMetadata = {
+      ...decoded,
+      branchA: {
+        ...decoded.branchA,
+        errorStage: "revision" as const,
+        reviews: decoded.branchA.reviews.map((review) => ({
+          ...review,
+          retryCount: 2,
+          lastRetryAt: now,
+        })),
+      },
+    };
+    const encoded = Schema.encodeSync(PlanningWorkflow)(withRetryMetadata);
+    const roundTripped = Schema.decodeUnknownSync(PlanningWorkflow)(encoded);
+
+    expect(roundTripped.branchA.errorStage).toBe("revision");
+    expect(roundTripped.branchA.reviews[0]?.retryCount).toBe(2);
+    expect(roundTripped.branchA.reviews[0]?.lastRetryAt).toBe(now);
   });
 
   it("defaults archivedAt to null when omitted for older records", () => {

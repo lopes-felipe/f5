@@ -2305,7 +2305,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.retryWorkflow: {
         const { workflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* workflowService.retryWorkflow(body.workflowId).pipe(
+        return yield* workflowService.retryWorkflow(body).pipe(
           Effect.mapError(
             (cause) =>
               new RouteRequestError({
@@ -2313,7 +2313,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
-        return undefined;
       }
 
       case ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow: {

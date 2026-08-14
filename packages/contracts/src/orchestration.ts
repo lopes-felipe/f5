@@ -2293,8 +2293,22 @@ export type OrchestrationUnarchiveInvestigationWorkflowInput =
 
 export const OrchestrationRetryWorkflowInput = Schema.Struct({
   workflowId: PlanningWorkflowId,
+  allowPossibleDuplicate: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
 });
 export type OrchestrationRetryWorkflowInput = typeof OrchestrationRetryWorkflowInput.Type;
+
+export const OrchestrationRetryWorkflowResult = Schema.Union([
+  Schema.Struct({
+    status: Schema.Literal("started"),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("confirmation_required"),
+    threadIds: Schema.Array(ThreadId),
+  }),
+]);
+export type OrchestrationRetryWorkflowResult = typeof OrchestrationRetryWorkflowResult.Type;
 
 export const OrchestrationRetryCodeReviewWorkflowInput = Schema.Struct({
   workflowId: CodeReviewWorkflowId,
@@ -2433,7 +2447,7 @@ export const OrchestrationRpcSchemas = {
   },
   retryWorkflow: {
     input: OrchestrationRetryWorkflowInput,
-    output: Schema.Void,
+    output: OrchestrationRetryWorkflowResult,
   },
   retryCodeReviewWorkflow: {
     input: OrchestrationRetryCodeReviewWorkflowInput,

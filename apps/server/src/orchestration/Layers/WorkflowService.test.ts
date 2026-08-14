@@ -32,6 +32,11 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import type { ProviderTurnDelivery } from "../Services/ProviderTurnDeliveryRepository.ts";
+import {
+  ProviderTurnDeliveryWorker,
+  type ProviderTurnDeliveryWorkerShape,
+} from "../Services/ProviderTurnDeliveryWorker.ts";
 import { WorkflowService } from "../Services/WorkflowService.ts";
 import { WorkflowServiceLive } from "./WorkflowService.ts";
 
@@ -110,6 +115,7 @@ function makeWorkflow(overrides: Partial<PlanningWorkflow> = {}): PlanningWorkfl
       reviews: [],
       status: "revised",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: NOW,
@@ -124,6 +130,7 @@ function makeWorkflow(overrides: Partial<PlanningWorkflow> = {}): PlanningWorkfl
       reviews: [],
       status: "revised",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: NOW,
@@ -229,6 +236,35 @@ function turnStartsForThread(dispatched: OrchestrationCommand[], threadId: Threa
   );
 }
 
+function makeProviderTurnDelivery(
+  threadId: ThreadId,
+  state: ProviderTurnDelivery["state"],
+): ProviderTurnDelivery {
+  return {
+    deliveryId: CommandId.makeUnsafe(`delivery-${threadId}`),
+    threadId,
+    commandId: CommandId.makeUnsafe(`delivery-command-${threadId}`),
+    messageId: MessageId.makeUnsafe(`delivery-message-${threadId}`),
+    state,
+    providerTurnId: null,
+    attempt: 1,
+    preSendTurnIds: [],
+    event: makeEvent("thread.turn-start-requested", {
+      threadId,
+      turnId: TurnId.makeUnsafe(`pending-${threadId}`),
+      messageId: MessageId.makeUnsafe(`delivery-message-${threadId}`),
+      requestedAt: NOW,
+    } as never),
+    errorCode: "transport_error",
+    errorDetail: "Timed out waiting for thread/start.",
+    certainty: "unknown",
+    notBefore: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    outcomeProjectedAt: null,
+  };
+}
+
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
   const startedAt = Date.now();
   while (!predicate()) {
@@ -325,6 +361,7 @@ function applyWorkflowCommandToSnapshot(
           reviews: [],
           status: "pending",
           error: null,
+          errorStage: null,
           retryCount: 0,
           lastRetryAt: null,
           updatedAt: command.createdAt,
@@ -339,6 +376,7 @@ function applyWorkflowCommandToSnapshot(
           reviews: [],
           status: "pending",
           error: null,
+          errorStage: null,
           retryCount: 0,
           lastRetryAt: null,
           updatedAt: command.createdAt,
@@ -473,6 +511,9 @@ async function createHarness(
   initialSnapshot: OrchestrationReadModel,
   options?: {
     readonly getProviders?: () => ReadonlyArray<ServerProvider>;
+    readonly recheckDelivery?: ProviderTurnDeliveryWorkerShape["recheck"];
+    readonly retryDelivery?: ProviderTurnDeliveryWorkerShape["retry"];
+    readonly dispatchDefect?: (command: OrchestrationCommand) => Error | null;
   },
 ) {
   let snapshot = initialSnapshot;
@@ -529,6 +570,10 @@ async function createHarness(
     readEvents: () => Stream.empty,
     dispatch: (command) =>
       Effect.sync(() => {
+        const defect = options?.dispatchDefect?.(command) ?? null;
+        if (defect) {
+          throw defect;
+        }
         dispatched.push(command);
         snapshot = applyWorkflowCommandToSnapshot(snapshot, command);
         return { sequence: dispatched.length };
@@ -624,6 +669,19 @@ async function createHarness(
           refreshInstance: () => Effect.sync(() => options?.getProviders?.() ?? []),
           streamChanges: Stream.empty,
         } satisfies ProviderRegistryShape),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(ProviderTurnDeliveryWorker, {
+          start: Effect.void,
+          drain: Effect.void,
+          outcomes: Stream.empty,
+          acknowledgeOutcome: () => Effect.void,
+          recheck: options?.recheckDelivery ?? (() => Effect.succeed(null)),
+          retry:
+            options?.retryDelivery ??
+            (() => Effect.die(new Error("Unexpected provider delivery retry in test."))),
+          discard: () => Effect.die(new Error("Unexpected provider delivery discard in test.")),
+        } satisfies ProviderTurnDeliveryWorkerShape),
       ),
     ),
   );
@@ -1186,9 +1244,9 @@ describe("WorkflowService", () => {
     });
     harness = await createHarness(makeReadModel({ workflow }));
 
-    await Effect.runPromise(harness.service.retryWorkflow(workflow.id));
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
 
-    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.status).toBe("pending");
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.status).toBe("authoring");
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.archivedAt).toBe(NOW);
   });
 
@@ -2644,6 +2702,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "running",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -2658,6 +2718,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "running",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -2728,6 +2790,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "completed",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -2742,6 +2806,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "running",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -2857,6 +2923,8 @@ describe("WorkflowService", () => {
               outputFilePath: null,
               status: "completed",
               error: null,
+              retryCount: 0,
+              lastRetryAt: null,
               updatedAt: NOW,
             },
           ],
@@ -2871,6 +2939,8 @@ describe("WorkflowService", () => {
               outputFilePath: null,
               status: "running",
               error: null,
+              retryCount: 0,
+              lastRetryAt: null,
               updatedAt: NOW,
             },
           ],
@@ -3031,6 +3101,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "completed",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -3045,6 +3117,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "running",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -3162,6 +3236,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "completed",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -3176,6 +3252,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "completed",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -3298,6 +3376,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "completed",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -3312,6 +3392,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "completed",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -5417,6 +5499,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "running",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -5432,6 +5516,8 @@ describe("WorkflowService", () => {
             outputFilePath: null,
             status: "running",
             error: null,
+            retryCount: 0,
+            lastRetryAt: null,
             updatedAt: NOW,
           },
         ],
@@ -5721,6 +5807,8 @@ describe("WorkflowService", () => {
           outputFilePath: null,
           status: "running",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -6448,12 +6536,997 @@ describe("WorkflowService", () => {
     ).toHaveLength(1);
   });
 
-  it("resets retry counters on manual retry", async () => {
+  it("auto-retries a planning review only after an accepted turn definitively fails", async () => {
+    vi.useFakeTimers();
+    const reviewThreadId = ThreadId.makeUnsafe("review-a-cross");
+    const planTurnId = TurnId.makeUnsafe("plan-a");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId,
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "running",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        status: "reviews_requested",
+      },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: planTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("plan-a-message"),
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-a"),
+                turnId: planTurnId,
+                planMarkdown: "# Plan A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("review-turn-a"),
+              state: "error",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: reviewThreadId,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: reviewThreadId,
+        session: {
+          threadId: reviewThreadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "WebSocket connection reset",
+          updatedAt: NOW,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(1);
+
+    const retriedReview = lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.reviews[0];
+    expect(retriedReview?.status).toBe("running");
+    expect(retriedReview?.retryCount).toBe(1);
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.status).toBe(
+      "reviews_requested",
+    );
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(turnStartsForThread(harness.dispatched, reviewThreadId)).toHaveLength(1);
+  });
+
+  it("restores a planning review error when automatic retry dispatch fails", async () => {
+    vi.useFakeTimers();
+    const reviewThreadId = ThreadId.makeUnsafe("review-auto-retry-dispatch-failure");
+    const planTurnId = TurnId.makeUnsafe("plan-auto-retry-dispatch-failure");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId,
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "running",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: planTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("plan-auto-retry-message"),
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-auto-retry"),
+                turnId: planTurnId,
+                planMarkdown: "# Plan A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("failed-review-turn"),
+              state: "error",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: reviewThreadId,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+      {
+        dispatchDefect: (command) =>
+          command.type === "thread.turn.start" && command.threadId === reviewThreadId
+            ? new Error("provider dispatch unavailable")
+            : null,
+      },
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: reviewThreadId,
+        session: {
+          threadId: reviewThreadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "WebSocket connection reset",
+          updatedAt: NOW,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]).toMatchObject({
+      status: "error",
+      retryCount: 1,
+    });
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]?.error).toContain(
+      "Automatic retry failed",
+    );
+  });
+
+  it("does not auto-retry an ambiguous planning review thread/start delivery", async () => {
+    vi.useFakeTimers();
+    const reviewThreadId = ThreadId.makeUnsafe("review-a-cross");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "running",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+      branchB: { ...makeWorkflow().branchB, status: "reviews_requested" },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: null,
+            session: {
+              threadId: reviewThreadId,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: reviewThreadId,
+        session: {
+          threadId: reviewThreadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "Timed out waiting for thread/start.",
+          updatedAt: NOW,
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(5_001);
+
+    const failedReview = lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.reviews[0];
+    expect(failedReview?.status).toBe("error");
+    expect(failedReview?.error).toContain("Timed out waiting for thread/start.");
+    expect(failedReview?.retryCount).toBe(0);
+    expect(turnStartsForThread(harness.dispatched, reviewThreadId)).toHaveLength(0);
+  });
+
+  it("recovers a planning review when a newer successful completion arrives after error", async () => {
+    const reviewThreadId = ThreadId.makeUnsafe("review-a-cross");
+    const reviewTurnId = TurnId.makeUnsafe("review-turn-a");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "error",
+            error: "connection reset",
+            retryCount: 1,
+            lastRetryAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      },
+      branchB: { ...makeWorkflow().branchB, status: "reviews_requested" },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: {
+              turnId: reviewTurnId,
+              state: "error",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: reviewThreadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: reviewTurnId,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+    harness.setSnapshot({
+      ...harness.getSnapshot(),
+      threads: harness.getSnapshot().threads.map((thread) =>
+        thread.id === reviewThreadId
+          ? {
+              ...thread,
+              latestTurn: {
+                turnId: reviewTurnId,
+                state: "completed" as const,
+                requestedAt: NOW,
+                startedAt: NOW,
+                completedAt: NOW,
+                assistantMessageId: MessageId.makeUnsafe("review-answer"),
+              },
+              messages: [
+                {
+                  id: MessageId.makeUnsafe("review-answer"),
+                  role: "assistant" as const,
+                  text: "Looks good",
+                  turnId: reviewTurnId,
+                  streaming: false,
+                  createdAt: NOW,
+                  updatedAt: NOW,
+                },
+              ],
+              session: {
+                ...thread.session!,
+                status: "ready" as const,
+                activeTurnId: null,
+              },
+            }
+          : thread,
+      ),
+    });
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: reviewThreadId,
+        session: harness.getSnapshot().threads.find((thread) => thread.id === reviewThreadId)!
+          .session!,
+      }),
+    );
+    await waitFor(
+      () =>
+        lastWorkflowUpsert(harness!.dispatched)?.workflow.branchA.reviews[0]?.status ===
+        "completed",
+      100,
+    );
+
+    const recovered = lastWorkflowUpsert(harness.dispatched)?.workflow.branchA;
+    expect(recovered?.reviews[0]?.status).toBe("completed");
+    expect(recovered?.reviews[0]?.error).toBeNull();
+    expect(recovered?.status).toBe("reviews_saved");
+  });
+
+  it("requires confirmation for ambiguous manual retry and reuses its durable delivery", async () => {
+    const reviewThreadId = ThreadId.makeUnsafe("review-a-cross");
+    const planTurnId = TurnId.makeUnsafe("plan-a");
+    const ambiguous = makeProviderTurnDelivery(reviewThreadId, "ambiguous");
+    const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>(() =>
+      Effect.succeed({ ...ambiguous, state: "pending" }),
+    );
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId,
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "error",
+            error: "Timed out waiting for thread/start.",
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("author-a"),
+            latestTurn: {
+              turnId: planTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("plan-a-message"),
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-a"),
+                turnId: planTurnId,
+                planMarkdown: "# Plan A",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+      {
+        recheckDelivery: () => Effect.succeed(ambiguous),
+        retryDelivery,
+      },
+    );
+
+    const firstResult = await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id }),
+    );
+    expect(firstResult).toEqual({
+      status: "confirmation_required",
+      threadIds: [reviewThreadId],
+    });
+    expect(retryDelivery).not.toHaveBeenCalled();
+
+    const confirmedResult = await Effect.runPromise(
+      harness.service.retryWorkflow({
+        workflowId: workflow.id,
+        allowPossibleDuplicate: true,
+      }),
+    );
+    expect(confirmedResult).toEqual({ status: "started" });
+    expect(retryDelivery).toHaveBeenCalledWith({
+      threadId: reviewThreadId,
+      allowPossibleDuplicate: true,
+    });
+    expect(turnStartsForThread(harness.dispatched, reviewThreadId)).toHaveLength(0);
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]?.status).toBe("error");
+  });
+
+  it.each(["pending", "sending"] as const)(
+    "keeps a review visibly retryable while its durable delivery is %s",
+    async (deliveryState) => {
+      const reviewThreadId = ThreadId.makeUnsafe(`review-${deliveryState}`);
+      const workflow = makeWorkflow({
+        branchA: {
+          ...makeWorkflow().branchA,
+          planTurnId: "plan-a",
+          status: "reviews_requested",
+          reviews: [
+            {
+              slot: "cross",
+              threadId: reviewThreadId,
+              outputFilePath: null,
+              status: "error",
+              error: "delivery failed",
+              retryCount: 0,
+              lastRetryAt: null,
+              updatedAt: NOW,
+            },
+          ],
+        },
+      });
+      harness = await createHarness(makeReadModel({ workflow }), {
+        recheckDelivery: () =>
+          Effect.succeed(makeProviderTurnDelivery(reviewThreadId, deliveryState)),
+      });
+
+      expect(
+        await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id })),
+      ).toEqual({ status: "started" });
+      expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]).toMatchObject({
+        status: "error",
+        error: "delivery failed",
+      });
+      expect(turnStartsForThread(harness.dispatched, reviewThreadId)).toHaveLength(0);
+    },
+  );
+
+  it("reconciles a completed accepted delivery before advancing its review", async () => {
+    const reviewThreadId = ThreadId.makeUnsafe("review-accepted-complete");
+    const reviewTurnId = TurnId.makeUnsafe("review-accepted-turn");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "reviews_requested",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "error",
+            error: "delivery outcome was unknown",
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: {
+              turnId: reviewTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("accepted-review-message"),
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("accepted-review-message"),
+                role: "assistant",
+                text: "Accepted review completed",
+                turnId: reviewTurnId,
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+      {
+        recheckDelivery: () => Effect.succeed(makeProviderTurnDelivery(reviewThreadId, "accepted")),
+      },
+    );
+
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]).toMatchObject({
+      status: "completed",
+      error: null,
+    });
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.status).toBe("reviews_saved");
+    expect(turnStartsForThread(harness.dispatched, reviewThreadId)).toHaveLength(0);
+  });
+
+  it("recovers completed accepted authoring instead of creating a duplicate turn", async () => {
+    const authorThreadId = ThreadId.makeUnsafe("author-a");
+    const acceptedTurnId = TurnId.makeUnsafe("accepted-author-turn");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "error",
+        error: "delivery outcome was unknown",
+        errorStage: "authoring",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: authorThreadId,
+            latestTurn: {
+              turnId: acceptedTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("accepted-author-message"),
+            },
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("accepted-author-plan"),
+                turnId: acceptedTurnId,
+                planMarkdown: "# Accepted author plan",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+      {
+        recheckDelivery: () => Effect.succeed(makeProviderTurnDelivery(authorThreadId, "accepted")),
+      },
+    );
+
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA).toMatchObject({
+      status: "plan_saved",
+      planTurnId: acceptedTurnId,
+      error: null,
+      errorStage: null,
+    });
+    expect(turnStartsForThread(harness.dispatched, authorThreadId)).toHaveLength(0);
+  });
+
+  it("persists accepted completion evidence even when another retry fails preflight", async () => {
+    const acceptedReviewId = ThreadId.makeUnsafe("accepted-review-before-preflight-error");
+    const missingPlanReviewId = ThreadId.makeUnsafe("missing-plan-review");
+    const acceptedTurnId = TurnId.makeUnsafe("accepted-review-before-preflight-turn");
+    const review = (threadId: ThreadId) => ({
+      slot: "cross" as const,
+      threadId,
+      outputFilePath: null,
+      status: "error" as const,
+      error: "review failed",
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: NOW,
+    });
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "reviews_requested",
+        reviews: [review(acceptedReviewId)],
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: "plan-b",
+        status: "reviews_requested",
+        reviews: [review(missingPlanReviewId)],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: acceptedReviewId,
+            latestTurn: {
+              turnId: acceptedTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("accepted-before-preflight-message"),
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("accepted-before-preflight-message"),
+                role: "assistant",
+                text: "Accepted feedback",
+                turnId: acceptedTurnId,
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+      {
+        recheckDelivery: (threadId) =>
+          Effect.succeed(
+            threadId === acceptedReviewId
+              ? makeProviderTurnDelivery(acceptedReviewId, "accepted")
+              : null,
+          ),
+      },
+    );
+
+    const error = await Effect.runPromise(
+      Effect.flip(harness.service.retryWorkflow({ workflowId: workflow.id })),
+    );
+
+    expect(error.message).toContain("Saved plan not found for Branch B");
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]?.status).toBe(
+      "completed",
+    );
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchB.reviews[0]?.status).toBe("error");
+  });
+
+  it("surfaces a delivery-recheck failure without mutating the failed stage", async () => {
     const workflow = makeWorkflow({
       branchA: {
         ...makeWorkflow().branchA,
         status: "error",
         error: "authoring failed",
+        errorStage: "authoring",
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow }), {
+      recheckDelivery: () => Effect.fail(new Error("provider offline")),
+    });
+
+    const error = await Effect.runPromise(
+      Effect.flip(harness.service.retryWorkflow({ workflowId: workflow.id })),
+    );
+
+    expect(error.message).toContain("Could not verify provider delivery");
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA).toMatchObject({
+      status: "error",
+      error: "authoring failed",
+      errorStage: "authoring",
+    });
+  });
+
+  it("preflights the workflow budget before changing retry state", async () => {
+    const workflow = makeWorkflow({
+      totalCostUsd: 1,
+      maxCostUsd: 1,
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "error",
+        error: "authoring failed",
+        errorStage: "authoring",
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow }));
+
+    const error = await Effect.runPromise(
+      Effect.flip(harness.service.retryWorkflow({ workflowId: workflow.id })),
+    );
+
+    expect(error.message).toContain("Workflow cost limit reached");
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.status).toBe("error");
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      0,
+    );
+  });
+
+  it("applies the workflow budget to durable delivery retries", async () => {
+    const authorThreadId = ThreadId.makeUnsafe("author-a");
+    const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>(() =>
+      Effect.succeed(makeProviderTurnDelivery(authorThreadId, "pending")),
+    );
+    const workflow = makeWorkflow({
+      totalCostUsd: 1,
+      maxCostUsd: 1,
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "error",
+        error: "authoring failed",
+        errorStage: "authoring",
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow }), {
+      recheckDelivery: () => Effect.succeed(makeProviderTurnDelivery(authorThreadId, "rejected")),
+      retryDelivery,
+    });
+
+    const error = await Effect.runPromise(
+      Effect.flip(harness.service.retryWorkflow({ workflowId: workflow.id })),
+    );
+
+    expect(error.message).toContain("Workflow cost limit reached");
+    expect(retryDelivery).not.toHaveBeenCalled();
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.status).toBe("error");
+  });
+
+  it("keeps a failed stage retryable when dispatch itself fails", async () => {
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "error",
+        error: "authoring failed",
+        errorStage: "authoring",
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow }), {
+      dispatchDefect: (command) =>
+        command.type === "thread.turn.start" && command.threadId === workflow.branchA.authorThreadId
+          ? new Error("dispatch unavailable")
+          : null,
+    });
+
+    const exit = await Effect.runPromiseExit(
+      harness.service.retryWorkflow({ workflowId: workflow.id }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA).toMatchObject({
+      status: "error",
+      error: "authoring failed",
+      errorStage: "authoring",
+    });
+  });
+
+  it("retries only a failed revision while preserving its plan, reviews, and sibling branch", async () => {
+    const reviewThreadId = ThreadId.makeUnsafe("completed-review-a");
+    const reviewTurnId = TurnId.makeUnsafe("completed-review-turn-a");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "error",
+        error: "revision failed",
+        errorStage: "revision",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "completed",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: "plan-b",
+        revisionTurnId: "revision-b",
+        status: "revised",
+      },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: reviewThreadId,
+            latestTurn: {
+              turnId: reviewTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("completed-review-message-a"),
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("completed-review-message-a"),
+                role: "assistant",
+                text: "Keep the completed review",
+                turnId: reviewTurnId,
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+
+    const retried = lastWorkflowUpsert(harness.dispatched)?.workflow;
+    expect(retried?.branchA.planTurnId).toBe("plan-a");
+    expect(retried?.branchA.reviews[0]?.status).toBe("completed");
+    expect(retried?.branchA.status).toBe("revising");
+    expect(retried?.branchB.status).toBe("revised");
+    expect(retried?.branchB.revisionTurnId).toBe("revision-b");
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      1,
+    );
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-b"))).toHaveLength(
+      0,
+    );
+  });
+
+  it("retries revision with available feedback when a completed review has no text", async () => {
+    const availableReviewId = ThreadId.makeUnsafe("available-revision-feedback");
+    const emptyReviewId = ThreadId.makeUnsafe("empty-revision-feedback");
+    const availableTurnId = TurnId.makeUnsafe("available-revision-feedback-turn");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "error",
+        error: "revision failed",
+        errorStage: "revision",
+        reviews: [
+          {
+            slot: "self",
+            threadId: emptyReviewId,
+            outputFilePath: null,
+            status: "completed",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+          {
+            slot: "cross",
+            threadId: availableReviewId,
+            outputFilePath: null,
+            status: "completed",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({ id: emptyReviewId }),
+          makeThread({
+            id: availableReviewId,
+            latestTurn: {
+              turnId: availableTurnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("available-revision-feedback-message"),
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("available-revision-feedback-message"),
+                role: "assistant",
+                text: "Use the available feedback",
+                turnId: availableTurnId,
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.status).toBe("revising");
+    const revisionTurn = turnStartsForThread(
+      harness.dispatched,
+      workflow.branchA.authorThreadId,
+    )[0];
+    expect(revisionTurn?.message.text).toContain("Use the available feedback");
+  });
+
+  it("fails clearly when an errored implementation has no thread", async () => {
+    const workflow = makeWorkflow({
+      implementation: makeImplementation({
+        threadId: null,
+        status: "error",
+        error: "implementation failed",
+      }),
+    });
+    harness = await createHarness(makeReadModel({ workflow }));
+
+    const error = await Effect.runPromise(
+      Effect.flip(harness.service.retryWorkflow({ workflowId: workflow.id })),
+    );
+
+    expect(error.message).toBe("Implementation thread not found for retry.");
+    expect(harness.getSnapshot().planningWorkflows[0]?.implementation?.status).toBe("error");
+  });
+
+  it("resets only retry counters for manually retried stages", async () => {
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "error",
+        error: "authoring failed",
+        errorStage: "authoring",
         retryCount: 2,
         lastRetryAt: NOW,
       },
@@ -6504,12 +7577,12 @@ describe("WorkflowService", () => {
       }),
     );
 
-    await Effect.runPromise(harness.service.retryWorkflow(workflow.id));
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
 
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.retryCount).toBe(0);
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.lastRetryAt).toBeNull();
-    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.implementation?.retryCount).toBe(0);
-    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.implementation?.lastRetryAt).toBeNull();
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.implementation?.retryCount).toBe(2);
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.implementation?.lastRetryAt).toBe(NOW);
     expect(
       lastWorkflowUpsert(harness.dispatched)?.workflow.implementation?.codeReviews[0]?.retryCount,
     ).toBe(0);
@@ -6553,7 +7626,404 @@ describe("WorkflowService", () => {
     );
 
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.error).toBe(
-      "Authoring session was not running during reconciliation.",
+      "provider crashed | provider: codex",
+    );
+  });
+
+  it("does not clear a sibling revision error when another branch review completes", async () => {
+    const reviewAId = ThreadId.makeUnsafe("completed-review-a-before-revision-error");
+    const reviewBId = ThreadId.makeUnsafe("completing-review-b");
+    const review = (threadId: ThreadId, status: "completed" | "running") => ({
+      slot: "cross" as const,
+      threadId,
+      outputFilePath: null,
+      status,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: NOW,
+    });
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "error",
+        error: "revision failed",
+        errorStage: "revision",
+        reviews: [review(reviewAId, "completed")],
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: "plan-b",
+        status: "reviews_requested",
+        reviews: [review(reviewBId, "running")],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: reviewBId,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("completed-review-b-turn"),
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("completed-review-b-message"),
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("completed-review-b-message"),
+                role: "assistant",
+                text: "Review B complete",
+                turnId: TurnId.makeUnsafe("completed-review-b-turn"),
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA).toMatchObject({
+      status: "error",
+      error: "revision failed",
+      errorStage: "revision",
+      updatedAt: NOW,
+    });
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchB.status).toBe("reviews_saved");
+    expect(turnStartsForThread(harness.dispatched, workflow.branchA.authorThreadId)).toHaveLength(
+      0,
+    );
+  });
+
+  it("ignores stale review session errors after the branch was revised", async () => {
+    const reviewThreadId = ThreadId.makeUnsafe("stale-review-error");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        revisionTurnId: "revision-a",
+        status: "revised",
+        reviews: [
+          {
+            slot: "cross",
+            threadId: reviewThreadId,
+            outputFilePath: null,
+            status: "completed",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({ workflow, threads: [makeThread({ id: reviewThreadId })] }),
+    );
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: reviewThreadId,
+        session: {
+          threadId: reviewThreadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: "late transport error",
+          updatedAt: NOW,
+        },
+      }),
+    );
+
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA).toMatchObject({
+      status: "revised",
+      revisionTurnId: "revision-a",
+      error: null,
+      errorStage: null,
+    });
+    expect(harness.getSnapshot().planningWorkflows[0]?.branchA.reviews[0]).toMatchObject({
+      status: "completed",
+      error: null,
+    });
+  });
+
+  it("partially heals legacy branch-level review errors and preserves the provider error", async () => {
+    const completedReviewId = ThreadId.makeUnsafe("review-a-completed");
+    const failedReviewId = ThreadId.makeUnsafe("review-a-failed");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "error",
+        error: "legacy branch review failure",
+        errorStage: null,
+        reviews: [
+          {
+            slot: "cross",
+            threadId: completedReviewId,
+            outputFilePath: null,
+            status: "running",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+          {
+            slot: "self",
+            threadId: failedReviewId,
+            outputFilePath: null,
+            status: "running",
+            error: null,
+            retryCount: 0,
+            lastRetryAt: null,
+            updatedAt: NOW,
+          },
+        ],
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: completedReviewId,
+            latestTurn: {
+              turnId: TurnId.makeUnsafe("completed-review-turn"),
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe("completed-review-message"),
+            },
+            session: {
+              threadId: completedReviewId,
+              status: "stopped",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("completed-review-message"),
+                role: "assistant",
+                text: "Completed review",
+                turnId: TurnId.makeUnsafe("completed-review-turn"),
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+          makeThread({
+            id: failedReviewId,
+            session: {
+              threadId: failedReviewId,
+              status: "error",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: "Timed out waiting for thread/start.",
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    const repaired = lastWorkflowUpsert(harness.dispatched)?.workflow.branchA;
+    expect(repaired?.status).toBe("reviews_requested");
+    expect(repaired?.error).toBeNull();
+    expect(repaired?.reviews.find((review) => review.threadId === completedReviewId)?.status).toBe(
+      "completed",
+    );
+    expect(repaired?.reviews.find((review) => review.threadId === failedReviewId)).toMatchObject({
+      status: "error",
+      error: "Timed out waiting for thread/start. | provider: codex",
+    });
+  });
+
+  it("restarts legacy review setup without discarding saved branch plans", async () => {
+    const planATurnId = TurnId.makeUnsafe("legacy-plan-a-turn");
+    const planBTurnId = TurnId.makeUnsafe("legacy-plan-b-turn");
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: planATurnId,
+        status: "error",
+        error: "review setup failed",
+        errorStage: null,
+        reviews: [],
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: planBTurnId,
+        status: "error",
+        error: "review setup failed",
+        errorStage: null,
+        reviews: [],
+      },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    const planThread = (threadId: ThreadId, turnId: TurnId, suffix: string) =>
+      makeThread({
+        id: threadId,
+        latestTurn: {
+          turnId,
+          state: "completed",
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          assistantMessageId: MessageId.makeUnsafe(`legacy-plan-${suffix}-message`),
+        },
+        proposedPlans: [
+          {
+            id: OrchestrationProposedPlanId.makeUnsafe(`legacy-plan-${suffix}`),
+            turnId,
+            planMarkdown: `# Plan ${suffix.toUpperCase()}`,
+            implementedAt: null,
+            implementationThreadId: null,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          planThread(workflow.branchA.authorThreadId, planATurnId, "a"),
+          planThread(workflow.branchB.authorThreadId, planBTurnId, "b"),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    const repaired = harness.getSnapshot().planningWorkflows[0];
+    expect(repaired?.branchA.planTurnId).toBe(planATurnId);
+    expect(repaired?.branchB.planTurnId).toBe(planBTurnId);
+    expect(repaired?.branchA.status).toBe("reviews_requested");
+    expect(repaired?.branchB.status).toBe("reviews_requested");
+    expect(repaired?.branchA.reviews).toHaveLength(2);
+    expect(repaired?.branchB.reviews).toHaveLength(2);
+    expect(turnStartsForThread(harness.dispatched, workflow.branchA.authorThreadId)).toHaveLength(
+      0,
+    );
+    expect(turnStartsForThread(harness.dispatched, workflow.branchB.authorThreadId)).toHaveLength(
+      0,
+    );
+  });
+
+  it("fully heals legacy review errors and starts each revision exactly once", async () => {
+    const reviewAId = ThreadId.makeUnsafe("legacy-review-a");
+    const reviewBId = ThreadId.makeUnsafe("legacy-review-b");
+    const review = (threadId: ThreadId) => ({
+      slot: "cross" as const,
+      threadId,
+      outputFilePath: null,
+      status: "running" as const,
+      error: null,
+      retryCount: 0,
+      lastRetryAt: null,
+      updatedAt: NOW,
+    });
+    const workflow = makeWorkflow({
+      branchA: {
+        ...makeWorkflow().branchA,
+        planTurnId: "plan-a",
+        status: "error",
+        error: "legacy review failure A",
+        errorStage: null,
+        reviews: [review(reviewAId)],
+      },
+      branchB: {
+        ...makeWorkflow().branchB,
+        planTurnId: "plan-b",
+        status: "error",
+        error: "legacy review failure B",
+        errorStage: null,
+        reviews: [review(reviewBId)],
+      },
+      merge: { ...makeWorkflow().merge, threadId: null, status: "not_started" },
+    });
+    const completedReviewThread = (threadId: ThreadId, suffix: string) => {
+      const turnId = TurnId.makeUnsafe(`legacy-review-turn-${suffix}`);
+      const messageId = MessageId.makeUnsafe(`legacy-review-message-${suffix}`);
+      return makeThread({
+        id: threadId,
+        latestTurn: {
+          turnId,
+          state: "completed",
+          requestedAt: NOW,
+          startedAt: NOW,
+          completedAt: NOW,
+          assistantMessageId: messageId,
+        },
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: NOW,
+        },
+        messages: [
+          {
+            id: messageId,
+            role: "assistant",
+            text: `Review ${suffix}`,
+            turnId,
+            streaming: false,
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      });
+    };
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [completedReviewThread(reviewAId, "a"), completedReviewThread(reviewBId, "b")],
+      }),
+    );
+
+    await harness.start();
+
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchA.status).toBe("revising");
+    expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchB.status).toBe("revising");
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      1,
+    );
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-b"))).toHaveLength(
+      1,
+    );
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: reviewAId,
+        session: harness.getSnapshot().threads.find((thread) => thread.id === reviewAId)!.session!,
+      }),
+    );
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-a"))).toHaveLength(
+      1,
+    );
+    expect(turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("author-b"))).toHaveLength(
+      1,
     );
   });
 

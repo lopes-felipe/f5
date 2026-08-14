@@ -215,6 +215,14 @@ export interface CodexThreadSnapshot {
 }
 
 const CODEX_VERSION_CHECK_TIMEOUT_MS = 4_000;
+const CODEX_JSON_RPC_TIMEOUT_MS = 20_000;
+export const CODEX_THREAD_OPEN_TIMEOUT_MS = 60_000;
+
+export function codexRequestTimeoutMs(method: string): number {
+  return method === "thread/start" || method === "thread/resume"
+    ? CODEX_THREAD_OPEN_TIMEOUT_MS
+    : CODEX_JSON_RPC_TIMEOUT_MS;
+}
 
 const ANSI_ESCAPE_CHAR = String.fromCharCode(27);
 const ANSI_ESCAPE_REGEX = new RegExp(`${ANSI_ESCAPE_CHAR}\\[[0-9;]*m`, "g");
@@ -1882,7 +1890,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context: CodexSessionContext,
     method: string,
     params: unknown,
-    timeoutMs = 20_000,
+    timeoutMs = codexRequestTimeoutMs(method),
   ): Promise<TResponse> {
     const id = context.nextRequestId;
     context.nextRequestId += 1;

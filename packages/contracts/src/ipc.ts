@@ -212,6 +212,7 @@ import type {
   OrchestrationRetryCodeReviewWorkflowInput,
   OrchestrationRetryInvestigationWorkflowInput,
   OrchestrationRetryWorkflowInput,
+  OrchestrationRetryWorkflowResult,
   OrchestrationStartImplementationInput,
   OrchestrationUnarchiveInvestigationWorkflowInput,
   OrchestrationUnarchiveCodeReviewWorkflowInput,
@@ -602,7 +603,9 @@ export interface NativeApi {
     deleteInvestigationWorkflow: (
       input: OrchestrationDeleteInvestigationWorkflowInput,
     ) => Promise<void>;
-    retryWorkflow: (input: OrchestrationRetryWorkflowInput) => Promise<void>;
+    retryWorkflow: (
+      input: OrchestrationRetryWorkflowInput,
+    ) => Promise<OrchestrationRetryWorkflowResult>;
     retryCodeReviewWorkflow: (input: OrchestrationRetryCodeReviewWorkflowInput) => Promise<void>;
     retryInvestigationWorkflow: (
       input: OrchestrationRetryInvestigationWorkflowInput,

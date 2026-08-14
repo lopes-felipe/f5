@@ -12,6 +12,7 @@ import {
 
 import {
   buildCodexInitializeParams,
+  codexRequestTimeoutMs,
   CodexAppServerManager,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
@@ -491,6 +492,12 @@ describe("readEnabledSkillsFromSkillsListResponse", () => {
 });
 
 describe("startSession", () => {
+  it("uses sixty seconds only for thread open requests", () => {
+    expect(codexRequestTimeoutMs("thread/start")).toBe(60_000);
+    expect(codexRequestTimeoutMs("thread/resume")).toBe(60_000);
+    expect(codexRequestTimeoutMs("turn/start")).toBe(20_000);
+  });
+
   it("enables Codex experimental api capabilities during initialize", () => {
     expect(buildCodexInitializeParams()).toEqual({
       clientInfo: {

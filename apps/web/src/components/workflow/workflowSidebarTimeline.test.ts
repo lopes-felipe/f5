@@ -39,6 +39,7 @@ function makeWorkflow(
       reviews: [],
       status: "pending",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: NOW,
@@ -53,6 +54,7 @@ function makeWorkflow(
       reviews: [],
       status: "pending",
       error: null,
+      errorStage: null,
       retryCount: 0,
       lastRetryAt: null,
       updatedAt: NOW,
@@ -85,6 +87,10 @@ function withBranches(
     bReviews?: PlanningWorkflow["branchB"]["reviews"];
     aError?: string | null;
     bError?: string | null;
+    aErrorStage?: PlanningWorkflow["branchA"]["errorStage"];
+    bErrorStage?: PlanningWorkflow["branchB"]["errorStage"];
+    aPlanTurnId?: string | null;
+    bPlanTurnId?: string | null;
   },
 ): PlanningWorkflow {
   return {
@@ -94,12 +100,16 @@ function withBranches(
       status: patch.aStatus ?? workflow.branchA.status,
       reviews: patch.aReviews ?? workflow.branchA.reviews,
       error: patch.aError ?? workflow.branchA.error,
+      errorStage: patch.aErrorStage ?? workflow.branchA.errorStage,
+      planTurnId: patch.aPlanTurnId ?? workflow.branchA.planTurnId,
     },
     branchB: {
       ...workflow.branchB,
       status: patch.bStatus ?? workflow.branchB.status,
       reviews: patch.bReviews ?? workflow.branchB.reviews,
       error: patch.bError ?? workflow.branchB.error,
+      errorStage: patch.bErrorStage ?? workflow.branchB.errorStage,
+      planTurnId: patch.bPlanTurnId ?? workflow.branchB.planTurnId,
     },
   };
 }
@@ -177,6 +187,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "running",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -187,6 +199,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "completed",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -358,6 +372,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "error",
           error: "review failed",
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -365,6 +381,15 @@ describe("deriveTimelinePhases", () => {
     const reviewPhases = deriveTimelinePhases(reviewError);
     expect(reviewPhases[REVIEWS]!.state).toBe("error");
     expect(reviewPhases[REVIEWS]!.steps[0]!.state).toBe("error");
+
+    const savedPlanReviewError = withBranches(reviewError, {
+      aPlanTurnId: "plan-a",
+      bPlanTurnId: "plan-b",
+    });
+    const savedPlanPhases = deriveTimelinePhases(savedPlanReviewError);
+    expect(savedPlanPhases[AUTHORING]!.state).toBe("completed");
+    expect(savedPlanPhases[REVIEWS]!.state).toBe("error");
+    expect(savedPlanPhases[REVISION]!.state).toBe("pending");
 
     // Merge error → merge phase error
     const mergeError = withMerge(makeWorkflow(), { status: "error" });
@@ -489,6 +514,8 @@ describe("deriveTimelinePhases", () => {
       const workflow = withBranches(makeWorkflow(), {
         aStatus: "error",
         bStatus: "revising",
+        aErrorStage: "revision",
+        aPlanTurnId: "plan-a",
       });
       const phases = deriveTimelinePhases(workflow);
       expect(phases[REVISION]!.state).toBe("error");
@@ -792,6 +819,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "completed",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -802,6 +831,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "completed",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -830,6 +861,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "completed",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],
@@ -840,6 +873,8 @@ describe("deriveTimelinePhases", () => {
           outputFilePath: null,
           status: "pending",
           error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
       ],

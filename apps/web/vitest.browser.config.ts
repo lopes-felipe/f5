@@ -48,6 +48,7 @@ export default mergeConfig(
         "src/components/ui/toast.browser.tsx",
         "src/components/workflow/WorkflowCreateDialog.browser.tsx",
         "src/components/workflow/WorkflowImplementDialog.browser.tsx",
+        "src/components/workflow/WorkflowView.browser.tsx",
       ],
       browser: {
         enabled: true,

@@ -6,6 +6,7 @@ import {
   type NextTurnQueueSummary,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
+  OrchestrationRetryWorkflowResult,
   type PreviewAutomationRequest,
   type DiscoveredLocalServerList,
   type PreviewEvent,
@@ -24,6 +25,7 @@ import {
   type WsWelcomePayload,
 } from "@t3tools/contracts";
 import { CODEX_MCP_OAUTH_LOGIN_REQUEST_TIMEOUT_MS } from "@t3tools/shared/codexOAuthTiming";
+import { Schema } from "effect";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { WsTransport } from "./wsTransport";
@@ -600,7 +602,10 @@ export function createWsNativeApi(): NativeApi {
         transport.request(ORCHESTRATION_WS_METHODS.deleteCodeReviewWorkflow, input),
       deleteInvestigationWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow, input),
-      retryWorkflow: (input) => transport.request(ORCHESTRATION_WS_METHODS.retryWorkflow, input),
+      retryWorkflow: async (input) =>
+        Schema.decodeUnknownSync(OrchestrationRetryWorkflowResult)(
+          await transport.request(ORCHESTRATION_WS_METHODS.retryWorkflow, input),
+        ),
       retryCodeReviewWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow, input),
       retryInvestigationWorkflow: (input) =>

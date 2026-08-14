@@ -80,6 +80,8 @@ const make = Effect.gen(function* () {
   const getUnresolvedByThread: ProviderTurnDeliveryRepositoryShape["getUnresolvedByThread"] = (
     threadId,
   ) =>
+    // A terminal newer delivery supersedes an older unresolved row on the
+    // same thread. Otherwise workflow retry could reuse stale duplicate risk.
     sql
       .unsafe<Record<string, unknown>>(
         `SELECT delivery_id AS "deliveryId", thread_id AS "threadId",
@@ -89,9 +91,19 @@ const make = Effect.gen(function* () {
              error_code AS "errorCode", error_detail AS "errorDetail", certainty,
              not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
              outcome_projected_at AS "outcomeProjectedAt"
-           FROM provider_turn_deliveries
-           WHERE thread_id = ? AND state IN ('pending', 'sending', 'rejected', 'ambiguous')
-           ORDER BY created_at DESC LIMIT 1`,
+           FROM provider_turn_deliveries AS delivery
+           WHERE delivery.thread_id = ?
+             AND delivery.state IN ('pending', 'sending', 'rejected', 'ambiguous')
+             AND NOT EXISTS (
+               SELECT 1
+               FROM provider_turn_deliveries AS newer
+               WHERE newer.thread_id = delivery.thread_id
+                 AND (
+                   newer.created_at > delivery.created_at
+                   OR (newer.created_at = delivery.created_at AND newer.rowid > delivery.rowid)
+                 )
+             )
+           LIMIT 1`,
         [threadId],
       )
       .pipe(

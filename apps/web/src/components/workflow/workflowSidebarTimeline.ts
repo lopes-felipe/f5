@@ -1,4 +1,5 @@
 import type { PlanningWorkflow } from "@t3tools/contracts";
+import { planningWorkflowBranchFailureStage } from "@t3tools/shared/planningWorkflow";
 import type {
   WorkflowTimelinePhase as TimelinePhase,
   WorkflowTimelinePhaseState as PhaseState,
@@ -44,11 +45,17 @@ function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
   const aStatus = workflow.branchA.status;
   const bStatus = workflow.branchB.status;
 
-  const aCompleted = BRANCH_AT_OR_AFTER_PLAN_SAVED.has(aStatus);
-  const bCompleted = BRANCH_AT_OR_AFTER_PLAN_SAVED.has(bStatus);
+  // A persisted plan turn proves authoring completed even when a later-stage
+  // failure left the legacy branch status at `error`.
+  const aCompleted =
+    workflow.branchA.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(aStatus);
+  const bCompleted =
+    workflow.branchB.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(bStatus);
+  const aError = planningWorkflowBranchFailureStage(workflow.branchA) === "authoring";
+  const bError = planningWorkflowBranchFailureStage(workflow.branchB) === "authoring";
 
   let state: PhaseState;
-  if (aStatus === "error" || bStatus === "error") {
+  if (aError || bError) {
     state = "error";
   } else if (aCompleted && bCompleted) {
     state = "completed";
@@ -57,9 +64,11 @@ function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
     state = "active";
   }
 
-  function branchStepState(branchStatus: string): StepState {
-    if (branchStatus === "error") return "error";
-    if (BRANCH_AT_OR_AFTER_PLAN_SAVED.has(branchStatus)) return "completed";
+  function branchStepState(branch: PlanningWorkflow["branchA"]): StepState {
+    if (planningWorkflowBranchFailureStage(branch) === "authoring") return "error";
+    if (branch.planTurnId !== null || BRANCH_AT_OR_AFTER_PLAN_SAVED.has(branch.status)) {
+      return "completed";
+    }
     return "active";
   }
 
@@ -72,13 +81,13 @@ function deriveAuthoringPhase(workflow: PlanningWorkflow): TimelinePhase {
         key: "author-a",
         label: "Branch A",
         threadId: workflow.branchA.authorThreadId,
-        state: branchStepState(aStatus),
+        state: branchStepState(workflow.branchA),
       },
       {
         key: "author-b",
         label: "Branch B",
         threadId: workflow.branchB.authorThreadId,
-        state: branchStepState(bStatus),
+        state: branchStepState(workflow.branchB),
       },
     ],
   };
@@ -93,6 +102,9 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
 
   const allReviews = [...workflow.branchA.reviews, ...workflow.branchB.reviews];
   const hasReviewError = allReviews.some((r) => r.status === "error");
+  const hasLegacyReviewError =
+    planningWorkflowBranchFailureStage(workflow.branchA) === "reviews" ||
+    planningWorkflowBranchFailureStage(workflow.branchB) === "reviews";
 
   // Also check actual review objects — on retry, branches may be reset to
   // "pending" while completed review threads are preserved.
@@ -101,7 +113,7 @@ function deriveReviewsPhase(workflow: PlanningWorkflow): TimelinePhase {
   const anyReviewRunning = allReviews.some((r) => r.status === "running");
 
   let state: PhaseState;
-  if (hasReviewError) {
+  if (hasReviewError || hasLegacyReviewError) {
     state = "error";
   } else if ((aReviewsDone && bReviewsDone) || allReviewsCompleted) {
     state = "completed";
@@ -186,13 +198,9 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
   const bRevising = bStatus === "revising";
   const aReviewsDone = BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(aStatus);
   const bReviewsDone = BRANCH_AT_OR_AFTER_REVIEWS_SAVED.has(bStatus);
-
-  // Only attribute a branch error to the Revision phase if at least one branch
-  // is actually at or past the reviews_saved stage — otherwise the error
-  // belongs to an earlier phase (authoring or reviews).
-  const anyPastReviews =
-    aReviewsDone || bReviewsDone || aRevising || bRevising || aRevised || bRevised;
-  const hasErrorInRevision = (aStatus === "error" || bStatus === "error") && anyPastReviews;
+  const aRevisionError = planningWorkflowBranchFailureStage(workflow.branchA) === "revision";
+  const bRevisionError = planningWorkflowBranchFailureStage(workflow.branchB) === "revision";
+  const hasErrorInRevision = aRevisionError || bRevisionError;
 
   let state: PhaseState;
   if (hasErrorInRevision) {
@@ -209,13 +217,10 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
     state = "pending";
   }
 
-  function branchRevisionStepState(branchStatus: string): StepState {
-    if (branchStatus === "error") {
-      // Only surface as error at the step level if this phase owns the error.
-      return hasErrorInRevision ? "error" : "pending";
-    }
-    if (BRANCH_AT_OR_AFTER_REVISED.has(branchStatus)) return "completed";
-    if (branchStatus === "revising") return "active";
+  function branchRevisionStepState(branch: PlanningWorkflow["branchA"]): StepState {
+    if (planningWorkflowBranchFailureStage(branch) === "revision") return "error";
+    if (BRANCH_AT_OR_AFTER_REVISED.has(branch.status)) return "completed";
+    if (branch.status === "revising") return "active";
     return "pending";
   }
 
@@ -228,13 +233,13 @@ function deriveRevisionPhase(workflow: PlanningWorkflow): TimelinePhase {
         key: "revision-a",
         label: "Branch A",
         threadId: workflow.branchA.authorThreadId,
-        state: branchRevisionStepState(aStatus),
+        state: branchRevisionStepState(workflow.branchA),
       },
       {
         key: "revision-b",
         label: "Branch B",
         threadId: workflow.branchB.authorThreadId,
-        state: branchRevisionStepState(bStatus),
+        state: branchRevisionStepState(workflow.branchB),
       },
     ],
   };
@@ -281,7 +286,11 @@ function deriveImplementationPhase(workflow: PlanningWorkflow): TimelinePhase {
   if (!impl || impl.status === "not_started") {
     state = "pending";
   } else if (impl.status === "error") {
-    state = "error";
+    const errorBelongsToLaterPhase =
+      impl.codeReviews.some((review) => review.status === "error") ||
+      (impl.codeReviews.length > 0 &&
+        impl.codeReviews.every((review) => review.status === "completed"));
+    state = errorBelongsToLaterPhase ? "completed" : "error";
   } else if (impl.status === "completed") {
     state = "completed";
   } else if (ACTIVE_IMPLEMENTATION_STATUSES.has(impl.status)) {

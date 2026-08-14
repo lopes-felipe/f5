@@ -498,6 +498,33 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("runtime-validates retryWorkflow responses", async () => {
+    requestMock.mockResolvedValueOnce({
+      status: "confirmation_required",
+      threadIds: ["review-a-cross"],
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+
+    await expect(
+      api.orchestration.retryWorkflow({
+        workflowId: "workflow-1" as never,
+        allowPossibleDuplicate: false,
+      }),
+    ).resolves.toEqual({
+      status: "confirmation_required",
+      threadIds: ["review-a-cross"],
+    });
+
+    requestMock.mockResolvedValueOnce({ status: "unexpected" });
+    await expect(
+      api.orchestration.retryWorkflow({
+        workflowId: "workflow-1" as never,
+        allowPossibleDuplicate: false,
+      }),
+    ).rejects.toThrow();
+  });
+
   it("forwards context menu metadata to desktop bridge", async () => {
     const showContextMenu = vi.fn().mockResolvedValue("delete");
     Object.defineProperty(getWindowForTest(), "desktopBridge", {
