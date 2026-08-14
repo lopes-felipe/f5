@@ -1032,7 +1032,7 @@
       "upstreamSha": "7963cc70f3c9873768a5eaad7ca0a20a23d67aed",
       "subject": "feat(server): record runtime mode per turn and on mode changes (#5593)",
       "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 1.7 runtime mode per turn; pending its f5-native implementation commit."
+      "reason": "Deferred as explicitly permitted by merged plan item 1.7: f5 assistant-message events do not carry the effective turn runtime mode and projection_thread_messages has no durable runtime-mode column. A UI-only derivation would misattribute turns after mode changes and disappear after restart; the authoritative audit remains in thread.turn-start-requested events until a coordinated event-contract and projection migration is scheduled."
     },
     {
       "upstreamSha": "b792ed9f7b9c7c6386a14a1697c4393567812546",
