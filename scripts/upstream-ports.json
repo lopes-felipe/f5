@@ -1,332 +1,3026 @@
 {
-  "c27109cc20cd9c56bec3ce9f396f4c7250429ab2": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 1.2 - composer placeholder mentions skills and slash commands"
-  },
-  "99efaa0faae572344f2bcb7cfc97becc6420e645": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 1.3 - collapse long user messages with show more toggle"
-  },
-  "11f40556de8a37c7f16486c23fb6bce058275557": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 1.1 - render leading $skill invocations as inline chips with structured metadata"
-  },
-  "9acf46a76d60e31098034267b36fd4f6e3a15ea6": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Applied iOS-safe 16px small-viewport font sizing to composer and sidebar raw text inputs."
-  },
-  "7da6522fb84ba9616ebe24649a7d6fa1a0d51364": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Re-verified: Sidebar and command palette add-project actions both use FolderPlusIcon."
-  },
-  "9b604bcae1e2cfe0e0566bc2aff660850e276c6d": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 4 - added per-provider-instance update advisories with copy-first npm commands and local dismissals."
-  },
-  "7e20b23e7ea5dc1daf4cbfa65d61301d99168bae": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 4 - used an overflow-safe update advisory popover."
-  },
-  "8f50ca8e2c0e7dc4464fbbc17763dab2e109ac0c": {
-    "ported": false,
-    "f5-sha": null,
-    "skipped": true,
-    "reason": "N/A: f5 web auth has no pairing-token bootstrap flow."
-  },
-  "16c69ba7ffe950aa054b84e8052b03abe0f7379a": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Already correct: f5 git action success toasts do not use the upstream actionVariant styling path."
-  },
-  "3a1daa87ac103da0c176426e82eb576d87046bdf": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added accessible dismiss controls to stacked and anchored toasts."
-  },
-  "047a0a697c9ae5563a19b54f78b9909dc9b33cf4": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added pointer cursor styling to select triggers."
-  },
-  "f2205bdc4297ddc4b854bc10bdcc0234113e102e": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added padding/margin around the composer provider model picker row to avoid focus-ring clipping."
-  },
-  "cadd7086462c2db3c92185d4a5488f9ad132cc34": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Kept the sidebar full-title tooltip and added delay plus touch suppression."
-  },
-  "86c94b48522b279ca411067529dc89a9aca8ee7b": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Already implemented: ChatHeader allows closing an already-open diff panel when the project is not a git repository."
-  },
-  "69d9a659a36ee246c543e46a522556918ed4ed9e": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Filtered closed/merged PR status only on the repository default branch and added regression tests."
-  },
-  "de05b0c94e257e69afc346ae6daaea85fcfb4e65": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Preserved manual project order and explicit collapsed project state in f5's renderer store."
-  },
-  "60387f67e99d68eba414d2c2e00c8ccdb145b0c3": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "No global Restore defaults control exists in f5; defaults remain category-local."
-  },
-  "33dadb5aeca1ac5201682daed6e1412d57e14287": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Timeline autoscroll anchoring behavior and browser regression coverage were already present in f5."
-  },
-  "6d1505c9fb6ef9a7e147133bb9827f2f36e6945c": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Introduced a shared right-panel sheet with titlebar-height offset."
-  },
-  "19d47408a53181446a02fac967846cc15d77d5b8": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Moved the plan sidebar into the shared right-panel sheet on narrow layouts and kept composer overflow rules."
-  },
-  "00b5c3e1b3b06888282e5d5e0678a2e3a88eb607": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added the task sidebar auto-open app setting, General settings toggle, and gates around automatic task/plan sidebar opens."
-  },
-  "d8d329691a3db759d6054af35e373005e9efcabd": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Reused f5's shared thread status pill resolution and badge in command-palette thread results."
-  },
-  "a3b1df5224700a1d76e590e4d7b29fd5a7a8e4d6": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Registered Claude Opus 4.5 in contracts/shared model metadata and alias handling with capability tests."
-  },
-  "68061af0420ba6acd9c1a4c2f77eeddfff0e8bd2": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Kept f5's existing markdown file-link chip metadata system and added upstream-style workspace-relative path display coverage."
-  },
-  "4e0c003e78b451c25b69f43f9c7b93e760f6c371": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added a server invariant for deleting non-empty projects and a warning-toast Delete anyway action that reuses per-thread cleanup."
-  },
-  "5f7ec73a22b28e2775987b03a744f75e5e151152": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Keyed project draft reuse by project plus workspace context so local and worktree defaults keep independent drafts."
-  },
-  "188df6da074bf60af765881bdfd6e886ef83e6ee": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Restarted provider sessions on thread metadata cwd drift and added a Claude regression test."
-  },
-  "0d280262f6c9dcaf529376b2007dc7447f86fa3c": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Verified f5 already emits TodoWrite item.updated events from streamed tool JSON and added regression coverage."
-  },
-  "28cb9db20bc78fdb5a767ff9661e500076938fbe": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Converted composer file mention pills to DecoratorNode rendering with the shared tooltip primitive while preserving text export."
-  },
-  "d18e43b6747887a5c4bdf55a04f0b3f2f71ead83": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Gated projected provider-session reuse on an active runtime session and added a projected-session-only regression test."
-  },
-  "8dbcf92a0d125050988474f258df3e55c538efec": {
-    "ported": false,
-    "f5-sha": null,
-    "skipped": true,
-    "reason": "N/A: f5 does not have upstream's probeClaudeCapabilities fallback path; Claude health uses CLI auth status only."
-  },
-  "b8305afa29309e52045987caab91db9b7e481ac0": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Introduced a Claude-auth-only 10s timeout while keeping non-auth probes at 4s and bounded provider health probe concurrency."
-  },
-  "721b6b4c6f596bd1d1b3af585ed9c62c4b6f72ab": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Removed provider-session directory deletion from the service contract and kept stopSession as a stopped persisted binding."
-  },
-  "d90e15d1d7ecba302d6977315977d5c2a748bf36": {
-    "ported": false,
-    "f5-sha": null,
-    "skipped": true,
-    "reason": "N/A: RepositoryIdentityResolver is not present because the coupled configurable project grouping work remains deferred."
-  },
-  "d5b7690f95504a04c12d10acfefd59f32515dbf2": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Already correct: f5 tracks only an explicit slow-RPC allowlist and has no subscribe RPCs in latency tracking."
-  },
-  "e0117b271a79f66d0ac793da334991e7a2ccb800": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added ProviderSessionReaper, stale cross-provider session cleanup on start, and archive-triggered session stop."
-  },
-  "9dcea68bce25e1c30be7a6439bfe607b236740a0": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added a git status invalidation WebSocket push and client-side git query invalidation for worktree creation and branch metadata updates."
-  },
-  "40009735eea88b2266cf7d112217e85a688b3e63": {
-    "ported": false,
-    "f5-sha": null,
-    "skipped": true,
-    "reason": "Deferred per plan: backend startup readiness extraction is architectural and not needed for current f5 startup behavior."
-  },
-  "569fea87a90f1d9a5d4d9b6c7c1c59801324a561": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Already present through f5's threadPreload startup/live warming path with a top-10 recent preload and bounded concurrency."
-  },
-  "0d55a42840231122f8d7414b35f155343031f82d": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Already present in f5's sequence-gated startup snapshot merge and stale snapshot regression coverage."
-  },
-  "e25db3a572a6718a1f3c5a64529395cc88cd5249": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Provider status cache is absent in f5; added shared random temp-directory atomic writes and applied it to keybindings persistence."
-  },
-  "d22c6f52800673d954840bd447109aeb707c6e8e": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Guarded pending-approval projection writes so only approval.requested activities create pending approval rows."
-  },
-  "f297e30e4c0fe044ba5cbed7679bfcba134526fe": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Added a migration that deletes invalid pending approvals not backed by approval.requested activities."
-  },
-  "7a08fcf2e832da5969aeb373c46d5249b4e820b7": {
-    "ported": false,
-    "f5-sha": null,
-    "skipped": true,
-    "reason": "N/A: f5 has no server-side text-generation settings store; text generation model selection is still client-side."
-  },
-  "ed6b7fbf27973c8a5180e7074ba448d912c3cce4": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Already present and covered by workspace search gitignore smoke tests."
-  },
-  "9c64f12ea033eaff8ddb3fb1bdd53b2a2ff24db9": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Ported Cursor ACP support into f5's provider-driver, server settings, runtime event, text-generation, and UI surfaces."
-  },
-  "ce94feeea156e77f465c0330e89c0cb77eb0196f": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Ported OpenCode support with settings-backed probing, runtime cleanup, event mapping, model metadata, and text-generation routing."
-  },
-  "08e6d4cfbfe55af83fe5fb6b9e75364f42f1f22f": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Ported the provider-instance architecture, model-selection persistence/migrations, server-authoritative provider settings, and instance-aware web/provider flows."
-  },
-  "f7748a0d656f918080828130aceda039457897e0": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 2.1 - added checkpoint diff ignore-whitespace plumbing, setting, toolbar toggle, and query-key separation."
-  },
-  "f4c9418d40358f61e4e9236992c0620d06c4bea3": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 2.2 - added collapsible per-file diffs and word-wrap controls."
-  },
-  "449e1aaa48061eb282bcaf3fc2d2280bc671c6c5": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 2.2 - applied sticky changed-files header polish inside timeline diff cards."
-  },
-  "131234be3fa53d9b0daff3e8116138d5bad079ba": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 2.2 - kept changed-files card overflow compatible with sticky headers."
-  },
-  "466d8ee5b0a003b3f735dd25e21273539b515316": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 3.1 - added configurable sidebar thread preview count setting and Display settings control."
-  },
-  "31b52acc8d230f66034f8dc1163cf6b4502ba77e": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 3.1 - wired the configured preview count through sidebar visible-thread helpers."
-  },
-  "0e388706470fdf8df7b5b5ae37f12bbeea777e06": {
-    "ported": true,
-    "f5-sha": null,
-    "skipped": false,
-    "reason": "Wave 3.2 - added shared keybinding logic, exact mutation RPCs, raw custom keybindings snapshot, and Integrations keybinding editor."
-  }
+  "schemaVersion": 2,
+  "manifest": "scripts/upstream-ports.manifest.json",
+  "entries": [
+    {
+      "upstreamSha": "196c8ea0d642acd1db66bd57f5d98abe81d8da6e",
+      "subject": "fix(web): style sidebar action tooltips (#6371)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): style sidebar action tooltips (#6371))."
+    },
+    {
+      "upstreamSha": "c9063f03ea1c16e0239e1996a9b6ef611679995d",
+      "subject": "perf(desktop): speed up Windows update installation (#6169)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (perf(desktop): speed up Windows update installation (#6169))."
+    },
+    {
+      "upstreamSha": "1add47b322ab1dfb5010bb363613650176b88088",
+      "subject": "fix(web): add copying terminal selection with ctrl+c in the web app (#5638)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): add copying terminal selection with ctrl+c in the web app (#5638))."
+    },
+    {
+      "upstreamSha": "80991402dcdc488838fb4d8b21171bd38d9ab0aa",
+      "subject": "fix(server): terminal subprocess polling no longer floods the PID space (#6377)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): terminal subprocess polling no longer floods the PID space (#6377))."
+    },
+    {
+      "upstreamSha": "1a6599437b6ad77330923819613cc28be3b33945",
+      "subject": "fix(web): clarify desktop update status (#6504)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): clarify desktop update status (#6504))."
+    },
+    {
+      "upstreamSha": "184d8ef33b8f42869fb84f66a33984185b81dc47",
+      "subject": "fix(mobile): steer active turns by default (#6543)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "038560e58036d51b2576b3c2cd9170a194cefe9e",
+      "subject": "fix(web): align every titlebar control cluster on one shared inset (#6592)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align every titlebar control cluster on one shared inset (#6592))."
+    },
+    {
+      "upstreamSha": "21a3669cee0c6fb54f5afe065cf0eb0348bd232c",
+      "subject": "fix(mobile): prevent OTA update restart crashes (#6324)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "b3b4b57794476c2e130d38f9243f3c5da1a0cbe7",
+      "subject": "fix(mobile): preserve keyboard suggestions while typing (#6323)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "6ae44b418a24dc021cf042cbb1e60ebeb47e160f",
+      "subject": "refactor(mobile): name the iOS nav bar height fallback (#6589)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "4a2f8b04bbce916be166fec96f33a7e1f0df4a9f",
+      "subject": "fix(web): keep thread rename open during IME composition (#6281)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep thread rename open during IME composition (#6281))."
+    },
+    {
+      "upstreamSha": "8f9ab0845d8e034bf49b28eb4d6abbb14fce597d",
+      "subject": "fix(mobile): add breathing room between the git progress overlay and the app bar (#6587)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "baaeda305c60933e5e573b30807ecfc3a0871a80",
+      "subject": "fix: avoid stale Live Activities when publishing is disabled (#6325)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: avoid stale Live Activities when publishing is disabled (#6325))."
+    },
+    {
+      "upstreamSha": "7e01d33f0eeb9435299791392d546756cc09c5d3",
+      "subject": "perf(build): stop unpacking node_modules wholesale from the Windows asar (#5877)",
+      "disposition": "not-applicable",
+      "reason": "Already equivalent: f5 uses a narrow desktop asar unpack list."
+    },
+    {
+      "upstreamSha": "9fd788b5a92254a2afa72c2a53513ed2cb730f0d",
+      "subject": "fix(preview): only show browser-ready local servers (#6021)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(preview): only show browser-ready local servers (#6021))."
+    },
+    {
+      "upstreamSha": "710fd0eeb3b4c4146c28fa0fc558ac4c236a8067",
+      "subject": "feat(desktop): add favicons to the Browser panel (#5644)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.3 preview favicons; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "e15f655ba423e4b0e50a5692cc06eb9421bff7df",
+      "subject": "fix(web): show background policy tooltips sooner (#6506)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show background policy tooltips sooner (#6506))."
+    },
+    {
+      "upstreamSha": "59be6f78465d73d2d8bba5ddd7741018205dc675",
+      "subject": "fix(web): simplify the desktop-managed server update banner copy (#6549)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): simplify the desktop-managed server update banner copy (#6549))."
+    },
+    {
+      "upstreamSha": "5304f3e9d4c912bfa0eb2f5f41fa109b3646236b",
+      "subject": "chore(mobile): bump app version to 1.0.4",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "85389b9883a2c7b31022573563b59981d697c3b4",
+      "subject": "Nest mobile task settings in bottom sheets (#6224)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "db1507e986591ae8e82f8fa1e173a9013309c64e",
+      "subject": "feat: allow disabling auto-settle on merge (#5880)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 archives explicitly and has no automatic sidebar settling."
+    },
+    {
+      "upstreamSha": "96bfa67b3d05d8adb2fb23d1017bd10fe4b9a338",
+      "subject": "fix(web): align the snoozed thread wake icon (#6215)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align the snoozed thread wake icon (#6215))."
+    },
+    {
+      "upstreamSha": "5ff3a03ada52f5a18a23dbab82ace3ddcf470ca1",
+      "subject": "fix(web): align sidebar wordmark label (#6086)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align sidebar wordmark label (#6086))."
+    },
+    {
+      "upstreamSha": "23d45d914eeecb2b4b33a3c7781cc02f4d73cbab",
+      "subject": "fix(web): restore default stage artwork colors (#6535)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): restore default stage artwork colors (#6535))."
+    },
+    {
+      "upstreamSha": "bad1143b02f7b585d1fe1335b3d9a97983ce8d8b",
+      "subject": "fix(mobile): show a real settings cog in the Android sidebar header (#6520)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "92d4a2e996b19239d95e32a3feb05208e0a52306",
+      "subject": "fix(web): scope pull request errors to their environment (#6490)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): scope pull request errors to their environment (#6490))."
+    },
+    {
+      "upstreamSha": "2fab18e289bdb2b1b767f05a307729d0a0d1c002",
+      "subject": "fix(web): show unlinked icon when viewport aspect ratio is unlocked (#6509)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show unlinked icon when viewport aspect ratio is unlocked (#6509))."
+    },
+    {
+      "upstreamSha": "1b16ed663ffe475490a644d1004873a8aae6bb90",
+      "subject": "fix(web): avoid Clerk close button overlap (#6442)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): avoid Clerk close button overlap (#6442))."
+    },
+    {
+      "upstreamSha": "83ad26c3a3aeb877ee8bf07c05145ad804717e2e",
+      "subject": "fix(mobile): prevent invalid HTML entities from crashing markdown (#6495)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "fd51561b4e2de1893cb7eb4069937256d702572c",
+      "subject": "fix(mobile): extend blockquotes across wrapped lines (#6482)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "9e201941aaa9cfece3e0ffaa4cc24bbe880d1be4",
+      "subject": "Remove rebase requirement before opening PR (#6479)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Remove rebase requirement before opening PR (#6479))."
+    },
+    {
+      "upstreamSha": "2ab188f1c0afe99ba269739704e2e96f0bbbe78f",
+      "subject": "fix: ignore pull request actions in latency tracker (#6476)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: ignore pull request actions in latency tracker (#6476))."
+    },
+    {
+      "upstreamSha": "9513e62e240bdf1da285e4f3304bc52787125671",
+      "subject": "Add bil0000 to VOUCHED contributors list (#6462)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add bil0000 to VOUCHED contributors list (#6462))."
+    },
+    {
+      "upstreamSha": "97db94c9bf6fa5d83f94c8fff85566d7fc96276e",
+      "subject": "fix(web): keep pull request panel within viewport (#6451)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep pull request panel within viewport (#6451))."
+    },
+    {
+      "upstreamSha": "5015d7cf9f98fe551115b625031f01e3f022cd2d",
+      "subject": "fix(web): keep turn minimap stable as composer grows (#6414)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep turn minimap stable as composer grows (#6414))."
+    },
+    {
+      "upstreamSha": "df19f6cfe3046dbbeb4073a3aac4c12f991b8fc7",
+      "subject": "fix(server): align Codex collaboration prompts (#6432)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): align Codex collaboration prompts (#6432))."
+    },
+    {
+      "upstreamSha": "6bc6cb6be4ebecd5bd7a3b7b88f07cb61815ded5",
+      "subject": "fix(web): keep diff file lists scrollable past expanded files (#6423)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep diff file lists scrollable past expanded files (#6423))."
+    },
+    {
+      "upstreamSha": "1e59b4c4004ce3c724d09ca0b140ed4523758d1e",
+      "subject": "fix(web): keep the typed prompt when a draft changes repo (#6393)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep the typed prompt when a draft changes repo (#6393))."
+    },
+    {
+      "upstreamSha": "33f9705926c4557c845bdf972256f805f625b95b",
+      "subject": "fix(web): make reset zoom hover visible (#6385)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): make reset zoom hover visible (#6385))."
+    },
+    {
+      "upstreamSha": "da6253b3dd3a2fbf5040c236775b1c48fd757856",
+      "subject": "web/settings: fix source control scan on relay environments (#6230)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "ac1264e2cab1f357cc683bc52c32bcec23845f32",
+      "subject": "feat(web): project favicon and workspace icons in command subtitles (#6330)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): project favicon and workspace icons in command subtitles (#6330))."
+    },
+    {
+      "upstreamSha": "2eb099fdc896506a2663bc7fe3117b6062ac345f",
+      "subject": "fix(web): cmd+click sidebar PR numbers open in the browser (#6378)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): cmd+click sidebar PR numbers open in the browser (#6378))."
+    },
+    {
+      "upstreamSha": "b28f9bf0a1bd562623c027c5ed80b5ca50395b28",
+      "subject": "feat(web): pull request surfaces — filters & qualifiers, all-server listing, update branch, reactions, in-place editing, smarter diffs (#6039)",
+      "disposition": "deferred",
+      "reason": "Deferred until the provider-neutral GitHub PR detail seam is complete."
+    },
+    {
+      "upstreamSha": "d0b8d6306b4686528913948b21c8a9eeda01645a",
+      "subject": "feat(connect): deregister account environments from any client (#4844)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "9666b875164581b67e5d75cf26aa05753e83e49e",
+      "subject": "fix(web): preserve appearance mode when changing themes (#6343)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): preserve appearance mode when changing themes (#6343))."
+    },
+    {
+      "upstreamSha": "e3a9c2518d5f71ca24872cb3238c1b921c5ae5a1",
+      "subject": "test(mobile): seed snoozed showcase threads (#5155)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "18918d1c4d0933b565d1336a75cc5069547ff5e6",
+      "subject": "Fix mobile command popover glass rendering (#6370)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "8d24b5131f439d11876815996df41a57d791d3ad",
+      "subject": "fix(web): open modified PR clicks in browser (#6278)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): open modified PR clicks in browser (#6278))."
+    },
+    {
+      "upstreamSha": "770946d026208359450bf94083ad807d469d9f07",
+      "subject": "fix(web): render tooltips above dropdowns (#6241)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): render tooltips above dropdowns (#6241))."
+    },
+    {
+      "upstreamSha": "8601797233f2723d83faac7fd5677b137a0b8781",
+      "subject": "fix(web): align update toast release notes link (#6322)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align update toast release notes link (#6322))."
+    },
+    {
+      "upstreamSha": "b73232bdd31e83914a8a943960c7dc4b6390b39b",
+      "subject": "feat(web): reset sidebar width on double click (#6320)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.8 reset sidebar width; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "f131228a5908974c90d9b80a4d8ef866bb29e973",
+      "subject": "fix(web): theme Clerk surfaces (#6300)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): theme Clerk surfaces (#6300))."
+    },
+    {
+      "upstreamSha": "e321667b100a18d5306f845c655dce6f20525776",
+      "subject": "fix(web): prevent changed files header overlap (#6314)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): prevent changed files header overlap (#6314))."
+    },
+    {
+      "upstreamSha": "849bac8946c40420174b4187e36fcf17b5ea7cc4",
+      "subject": "fix(connect): preserve CLI OAuth parameters through browser sign-in (#6285)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "6fd088af9f77933745c8ecb93dda98fa0938ea4d",
+      "subject": "fix(web): align mobile onboarding header (#6293)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "b54bfc9312b030bad9d89771fbf561ccbfb2d315",
+      "subject": "feat(web): a better right panel empty state (#6258)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.9 right-panel empty states; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "e1378a1f4d6a78d51c2d583997121f6adc0ad6cc",
+      "subject": "fix(mobile): keep ordered lists inside user bubbles (#6154)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "5a84614809b6e853b872f9e57ff4b97e9df5df02",
+      "subject": "fix(web): align the composer model picker (#6252)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align the composer model picker (#6252))."
+    },
+    {
+      "upstreamSha": "63e6faef62218c9d1b5277933154516e278f7cb2",
+      "subject": "chore: add dara to vouched (#6259)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore: add dara to vouched (#6259))."
+    },
+    {
+      "upstreamSha": "d37a9b09b8ea6b014e9ea2d6b00d9b25cde0efc6",
+      "subject": "feat(mobile): add thread title regeneration (#6253)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.2 title regeneration; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "560d4a4560ddb5f42c8f8e0e35fa7827c0e46f80",
+      "subject": "fix(web): keep sidebar wordmark visible at minimum width (#6246)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep sidebar wordmark visible at minimum width (#6246))."
+    },
+    {
+      "upstreamSha": "52e5a75a872289040df85621d7a82ea9cba05182",
+      "subject": "feat(web): compact sidebar footer actions (#6210)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): compact sidebar footer actions (#6210))."
+    },
+    {
+      "upstreamSha": "c196f422ed387a1cc2cdb671b0472782e5610339",
+      "subject": "fix(web): clean up composer resize animation (#6209)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): clean up composer resize animation (#6209))."
+    },
+    {
+      "upstreamSha": "f0b57ca2313bd7971cefb366d3b3808152b014fc",
+      "subject": "feat(web): add Open VSX theme search (#5654)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.2 theme import/search; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "2db08457f2f4eaaa713a067b2ea480ca2b583025",
+      "subject": "fix(web): use upload icon for disabled push action (#6207)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): use upload icon for disabled push action (#6207))."
+    },
+    {
+      "upstreamSha": "083fa4ab24c464ddf01e5b7ab22135d1ebdc120b",
+      "subject": "feat(web): use OKLCH for theme palettes (#6036)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.2 OKLCH themes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "35172010b131510d36d0cef54e174926e38a3013",
+      "subject": "fix(web): use a clearer pull action icon (#6194)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): use a clearer pull action icon (#6194))."
+    },
+    {
+      "upstreamSha": "57b1052679da56229dba45e3505718e5f5991b32",
+      "subject": "fix(web): thread error banner dismiss survives reconnect and rerenders (#6123)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): thread error banner dismiss survives reconnect and rerenders (#6123))."
+    },
+    {
+      "upstreamSha": "1e355a2a3444d4de0c9cf68cbe31ade370afd598",
+      "subject": "fix(web): render dropdowns above toasts (#6165)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): render dropdowns above toasts (#6165))."
+    },
+    {
+      "upstreamSha": "44621c345fe7ce7cfa5d8e5286290d9c8dc20ce5",
+      "subject": "feat(web): add back buttons for the pull requests and usage pages in the sidebar footer (#6031)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): add back buttons for the pull requests and usage pages in the sidebar footer (#6031))."
+    },
+    {
+      "upstreamSha": "220e573b14cea84b6662a7d69047129047433b63",
+      "subject": "fix(shared): detect Azure DevOps SSH remotes (ssh.dev.azure.com) (#6187)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(shared): detect Azure DevOps SSH remotes (ssh.dev.azure.com) (#6187))."
+    },
+    {
+      "upstreamSha": "6befe42eb09633f3adb500ae906a0e1da3f15f64",
+      "subject": "fix(shared): normalize a bare Windows drive root the same as C:\\ / C:/ (#6189)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(shared): normalize a bare Windows drive root the same as C:\\ / C:/ (#6189))."
+    },
+    {
+      "upstreamSha": "b30a9bc4143910f12d9c990c221fb9bc20cbc293",
+      "subject": "feat(web): make environment artwork theme aware (#6183)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): make environment artwork theme aware (#6183))."
+    },
+    {
+      "upstreamSha": "ac4780f451f98c10d5b518f2bfa3d035b46645df",
+      "subject": "fix(web): restore typography font sizes to defaults (#6172)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): restore typography font sizes to defaults (#6172))."
+    },
+    {
+      "upstreamSha": "3da7f9c5c35d0c1f2a1b4420fbc10016e11ce069",
+      "subject": "fix(mobile): guard App Store release versions (#6177)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "c842c6f5b90122ad88b1d2295df6a99e94954571",
+      "subject": "Add hourly past-24-hour usage view (#6170)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 7.3 hourly usage reporting; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "6676f9c83b6a6dd1e2076eaa68dff48845ad955b",
+      "subject": "fix(mobile): stabilize thread composer and interactions (#5986)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "65b005f1e4bfccb6a404b3b1e5bfa363d534ac2a",
+      "subject": "feat(web): add Copy Thread ID to the sidebar and chat header thread context menu (#5574)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.3 shared thread actions; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "752acbf6549e6dd422ac8d8ed11c0fa02577965b",
+      "subject": "feat: add ability to create a new thread in the current project with shift+click and show shortcut in tooltip (#5994)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.5 new-thread affordances; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "f5fce74169a5629f701aeb8c4535cab6f7bd3c92",
+      "subject": "fix(pull-requests): route self-hosted GitLab remotes (#6061)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "9c7622dac3d1a385351e6c74354a9e6b9c2037d5",
+      "subject": "fix(server): handle unborn HEAD in VCS status (#5944)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): handle unborn HEAD in VCS status (#5944))."
+    },
+    {
+      "upstreamSha": "c14bcca1035895edca5ebd8d65faea5fe788a825",
+      "subject": "fix(server): advertise 256-color TERM on Windows terminals (#5693)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): advertise 256-color TERM on Windows terminals (#5693))."
+    },
+    {
+      "upstreamSha": "1fa315ea93f24e6f72455e234fa84a97de28492b",
+      "subject": "fix(server): skip Linux libc detection on Windows/macOS (#5354)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): skip Linux libc detection on Windows/macOS (#5354))."
+    },
+    {
+      "upstreamSha": "f9730979c1046e3e69ac89aa86882ebf8b2be9a6",
+      "subject": "perf(web): skip base64 for oversized image candidates (#5220)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.2 deferred base64 encoding; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "59d0c922e9363b209bcb004444c05e70fa9fdd8b",
+      "subject": "fix(web): persist sidebar shelf collapse state (#5136)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): persist sidebar shelf collapse state (#5136))."
+    },
+    {
+      "upstreamSha": "2ea51bd31f494ec3214a0c9f9adc3262c71e6530",
+      "subject": "fix(server): OpenCode model parsing drops models with a slash in the JSON body (#5072)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): OpenCode model parsing drops models with a slash in the JSON body (#5072))."
+    },
+    {
+      "upstreamSha": "e5c82d79a09e010d1a87c715f405635f8c45f1f7",
+      "subject": "fix(mobile): keep chat composer above the Android gesture bar (#5988)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "9afef94a61466422128da9c3b723b633d4c7ed1d",
+      "subject": "feat: add three-hour snooze option (#5914)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "a7b0366cbe1e9eabc9e37eb079a38f6b6691f999",
+      "subject": "fix(web): account for Windows window controls in PR page header (#6049)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): account for Windows window controls in PR page header (#6049))."
+    },
+    {
+      "upstreamSha": "428d9f9f67b73688317e362d9f658d06b2a42dfe",
+      "subject": "Allow Android tablets to rotate (#5613)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Allow Android tablets to rotate (#5613))."
+    },
+    {
+      "upstreamSha": "1b120f352f6cc518d0b2822d4ec303d050aaef10",
+      "subject": "fix(ci): extend release publish timeout (#6034)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(ci): extend release publish timeout (#6034))."
+    },
+    {
+      "upstreamSha": "0a7c662d39329eeb3cffe00d66a31f1a8241b3d7",
+      "subject": "fix(web): improve built-in theme contrast (#6000)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): improve built-in theme contrast (#6000))."
+    },
+    {
+      "upstreamSha": "b91a000a17ddb4937397151a0a39a07990ad6473",
+      "subject": "feat(web): add duplicate action to the T3 Code default theme (#6013)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.2 theme duplication; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "8de0aa24d9b09b3dff9e3378222877cbfff41ae0",
+      "subject": "perf(desktop): probe the Windows shell environment concurrently (#5878)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 2.4 non-blocking Windows PATH hydration; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "cad2c93616a7c25110670c151a816d5c68341bd4",
+      "subject": "feat: multi-provider pull requests page with in-app reviews (#4849)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 7.4 provider-neutral PR seam; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "78f462c4e18c8ea5e5037dc916389a3b72246025",
+      "subject": "chore(release): prepare v0.0.33",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore(release): prepare v0.0.33)."
+    },
+    {
+      "upstreamSha": "3b72d17cbca691f0b64e6d4a10c9e349f42873a5",
+      "subject": "fix(mobile): parse EAS fingerprint JSON (#5991)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "d440442db6cd1c45696ba551a71ee6575cc23f37",
+      "subject": "fix(mobile): stop Android user bubbles with code blocks from overlapping (#5659)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "67ef189d8b7b68c3096350db404bd649704ec6f2",
+      "subject": "fix(mobile): detect PowerShell cmdlet errors in work log rows (#5726)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "fbcae59ef57f28cc51956ca47c0838298b24e79c",
+      "subject": "fix(web): use import/export-appropriate icons for theme buttons (#5964)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): use import/export-appropriate icons for theme buttons (#5964))."
+    },
+    {
+      "upstreamSha": "9821bca1ceb97f137a9d93f1080fe1954b6641d3",
+      "subject": "fix(web): use themed confirmation dialogs (#5624)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): use themed confirmation dialogs (#5624))."
+    },
+    {
+      "upstreamSha": "3d74474f6cf825d3ef37b40dc7af0037e26a3bf9",
+      "subject": "fix(web): update pills use readable theme foregrounds (#5938)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): update pills use readable theme foregrounds (#5938))."
+    },
+    {
+      "upstreamSha": "f0e2975180a85004e0d2604e3aa4125ed8bddb24",
+      "subject": "fix(web): align project name with headline (#5864)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align project name with headline (#5864))."
+    },
+    {
+      "upstreamSha": "d43210050b97d57d7a4e76df30624b89108102d9",
+      "subject": "fix(web): trait menu closes after you pick a level (#5879)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): trait menu closes after you pick a level (#5879))."
+    },
+    {
+      "upstreamSha": "ef051bdb87c5eba1942aeda9a4f8607d892dc96c",
+      "subject": "fix(web): enable restore defaults after theme mix changes (#5928)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): enable restore defaults after theme mix changes (#5928))."
+    },
+    {
+      "upstreamSha": "0ca9fb3fb5c7bb604b572a45bac1a3b8936c81ae",
+      "subject": "fix(web): show worktree icon in sidebar v2 (#5909)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show worktree icon in sidebar v2 (#5909))."
+    },
+    {
+      "upstreamSha": "cbd55d637413f9fd0b688dc0bd9ee75eeb4f2d75",
+      "subject": "fix(web): correct model picker trigger padding (#5935)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): correct model picker trigger padding (#5935))."
+    },
+    {
+      "upstreamSha": "96906805f1677a3b064ebd2c40902cbb48337a23",
+      "subject": "Add settings and usage breadcrumbs (#5929)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add settings and usage breadcrumbs (#5929))."
+    },
+    {
+      "upstreamSha": "73b2e8fdd47807fcc0fc5bfe4928187035b71242",
+      "subject": "Automate production mobile EAS releases (#5609)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "5da45337f7178db711624c3e7c4d69059b2b286a",
+      "subject": "Preserve back navigation when opening settings (#5930)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Preserve back navigation when opening settings (#5930))."
+    },
+    {
+      "upstreamSha": "f21d5e444e9a6b5876253ca8618a4dc8d4f2146c",
+      "subject": "Move project settings to contextual project routes (#5923)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Move project settings to contextual project routes (#5923))."
+    },
+    {
+      "upstreamSha": "9a1472d9558ec74b5ed419bd7b87b2aa0e6be1e6",
+      "subject": "fix(web): match usage titlebar text styling (#5897)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): match usage titlebar text styling (#5897))."
+    },
+    {
+      "upstreamSha": "2abe66800cceeafea759d4db782c72298cc1e1e1",
+      "subject": "fix(server): sandbox user-provided SVGs (#5916)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): sandbox user-provided SVGs (#5916))."
+    },
+    {
+      "upstreamSha": "0d38866dcf63d133b2ed732bbb303dc533b5934f",
+      "subject": "fix(server): usage no longer double-counts forked Codex sessions (#5887)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): usage no longer double-counts forked Codex sessions (#5887))."
+    },
+    {
+      "upstreamSha": "f993fa1c5fe51dfae78ec8869c9694b7cb97115f",
+      "subject": "fix(mobile): long-pressing a thread row no longer navigates into the thread (#5901)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "83d769f02dc874e8d3112b5eeef2ac6e5420eaac",
+      "subject": "fix(web): match settings search shortcut styling to command palette's (#5841)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): match settings search shortcut styling to command palette's (#5841))."
+    },
+    {
+      "upstreamSha": "c8ad4b8135dca79c439a44845d270f12c355cfe2",
+      "subject": "fix(shell): add ~/.local/bin to the Windows CLI resolver so native-installed providers are found (#5074)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 1.5 Windows ~/.local/bin resolution; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "bd18d8d6d1feb23dd05dc357e34e353547a51d40",
+      "subject": "fix(web): unify usage page chrome (#5823)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): unify usage page chrome (#5823))."
+    },
+    {
+      "upstreamSha": "659986ce384d29123269820ccb8340ab4d824cdd",
+      "subject": "fix(web): thread title button no longer eats the drag area (#5857)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): thread title button no longer eats the drag area (#5857))."
+    },
+    {
+      "upstreamSha": "062b4618c229f3e2f13e44efd8dab8c71ad33dae",
+      "subject": "fix(shared): bound the file-link label so bracket runs stop rescanning (#5782)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(shared): bound the file-link label so bracket runs stop rescanning (#5782))."
+    },
+    {
+      "upstreamSha": "deb901d6381e0c86ef326946c8fb45ee323db708",
+      "subject": "fix(server): favicon resolution no longer pins the event loop (#5538)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): favicon resolution no longer pins the event loop (#5538))."
+    },
+    {
+      "upstreamSha": "02f4ce566711e7989e10c2b937c2655ef19188ff",
+      "subject": "fix(web): match create theme and import theme buttons to the standard outline style (#5860)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): match create theme and import theme buttons to the standard outline style (#5860))."
+    },
+    {
+      "upstreamSha": "285cf5947b14acb9a66d26a669ce632633fd0749",
+      "subject": "fix(web): preserve desktop route during Clerk auth (#5770)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): preserve desktop route during Clerk auth (#5770))."
+    },
+    {
+      "upstreamSha": "1a003e383ac6b10258b8100c2617d938c4f06c69",
+      "subject": "Add cross-platform mobile usage dashboard (#5743)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "963ebf5bd7cce00d40ff60c258b34c12dcab271e",
+      "subject": "ci: label-gated hosted-web preview deploys (#5465)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "ba9c9ae81dce4e554b4dd52abfd28d0c01b5c651",
+      "subject": "fix(server): one greedy agent process no longer takes down the whole server (#5788)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): one greedy agent process no longer takes down the whole server (#5788))."
+    },
+    {
+      "upstreamSha": "076e9048dc57ab09b3692def050e12d690a1b027",
+      "subject": "feat(web): project icons can be chosen manually (#5775)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 5.6 manual project icons; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "05eb051184ac4d486795ac6f8be29129b8b8845f",
+      "subject": "feat(web): keep unsent drafts one click away in the sidebar (#5777)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.7 unsent drafts in sidebar; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "ddaa6afef55e0da53950c7ed45f7d91b717475a5",
+      "subject": "feat(server): vp run migrate-dev-db seeds worktree dev dbs with real data (#5773)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(server): vp run migrate-dev-db seeds worktree dev dbs with real data (#5773))."
+    },
+    {
+      "upstreamSha": "6f69b4407f1e6e1aa56e46bbb51a0b133374eeae",
+      "subject": "fix(web): sidebar rows show the branch again, not a truncated plan step (#5776)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): sidebar rows show the branch again, not a truncated plan step (#5776))."
+    },
+    {
+      "upstreamSha": "6dbffa022d9e44091d0edc496181011e3acfb695",
+      "subject": "feat: pick worktree or current checkout per project (#5766)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 5.5 per-project workspace mode; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "5bb8c0366447b1bb94c0ac41f2d4cd06730ffb94",
+      "subject": "fix(server): settle no longer leaves monitors and dev servers running (#5774)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): settle no longer leaves monitors and dev servers running (#5774))."
+    },
+    {
+      "upstreamSha": "886195ec1e6335d46d34fb3819ab4f3440b42b6d",
+      "subject": "fix(web): usage totals no longer jump while devices report in (#5772)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): usage totals no longer jump while devices report in (#5772))."
+    },
+    {
+      "upstreamSha": "288d8e3457f0466da2cbef2eab648331c969b8a7",
+      "subject": "feat(web): overhaul project settings into a real settings page (#5768)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): overhaul project settings into a real settings page (#5768))."
+    },
+    {
+      "upstreamSha": "5208bdeb0db95063091a29f97af3548436c5f291",
+      "subject": "fix(web): pinned reorder no longer reshuffles while writes land (#5767)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): pinned reorder no longer reshuffles while writes land (#5767))."
+    },
+    {
+      "upstreamSha": "a6c9b41f902fba2a4137806c09e829935e91baac",
+      "subject": "feat(server): agents can now open the images you paste into chat (#5757)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 1.3 provider-visible pasted-image paths; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "70c423a5e48ab34d8b1a033e798ab378b48dde5d",
+      "subject": "fix(web): usage page loses the cost quality panel, gains a back button (#5756)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): usage page loses the cost quality panel, gains a back button (#5756))."
+    },
+    {
+      "upstreamSha": "89c320df0b0884a8c4df1cf596564c6bc725eb54",
+      "subject": "fix(server): stop Codex threads with queued follow-ups (#5762)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop Codex threads with queued follow-ups (#5762))."
+    },
+    {
+      "upstreamSha": "7b2cf4374f5d92cc01eff482ad1af92ab7a87f41",
+      "subject": "chore: vouch saphid (#5763)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore: vouch saphid (#5763))."
+    },
+    {
+      "upstreamSha": "49964e38c02ca26783449e56a3083b124a1d04c8",
+      "subject": "chore: vouch gfsaaser24 (#5761)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore: vouch gfsaaser24 (#5761))."
+    },
+    {
+      "upstreamSha": "e70cdb478d34342d13ba4f433992394bf7303c1d",
+      "subject": "fix(server): stop Claude resume handshakes from completing turns that never ran (#5710)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop Claude resume handshakes from completing turns that never ran (#5710))."
+    },
+    {
+      "upstreamSha": "be01b287b92b4686023a5e213078a2f51b3c1880",
+      "subject": "fix(web): add missing cursor-pointer styling to dropdowns and interactive buttons (#5716)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): add missing cursor-pointer styling to dropdowns and interactive buttons (#5716))."
+    },
+    {
+      "upstreamSha": "c2f8cb7ca1576afd70294b98dfe1de9be17aacae",
+      "subject": "feat(web): show how many subagents are running at a glance (#5745)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 6.2 running subagent count; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "89ee692bf0436505d008c1d70215e70836eba4e2",
+      "subject": "fix(web): persist diff view mode (#5731)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): persist diff view mode (#5731))."
+    },
+    {
+      "upstreamSha": "a20923ce463335e89e92f5983d98a180536e8e7d",
+      "subject": "fix(web): usage chart no longer makes Claude look like the bigger spender (#5697)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): usage chart no longer makes Claude look like the bigger spender (#5697))."
+    },
+    {
+      "upstreamSha": "8101cd044911c7dc2a2adf7c7a9ba7962abf57b6",
+      "subject": "feat(usage): usage page reading provider transcripts across environments (#5684)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 7.3 usage reporting; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "30164cb1ba8ea05fdd6be69215dba2cc2f0e2aa8",
+      "subject": "feat(mobile): one sheet for model and thread settings (#5625)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "06404107261cae24394d6abe39984fb445c5aff5",
+      "subject": "fix(desktop): zoom shortcuts no longer die when the preview browser has focus (#5691)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): zoom shortcuts no longer die when the preview browser has focus (#5691))."
+    },
+    {
+      "upstreamSha": "2c7267ad43a05cf3e30343400c76fd9ac47698e7",
+      "subject": "fix(server): stop the reaper from silently killing live background subagents (#5677)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop the reaper from silently killing live background subagents (#5677))."
+    },
+    {
+      "upstreamSha": "daf8ee0b2f684cda82e8721abe1138b219b1ef12",
+      "subject": "fix(web): inherit terminal size in simple typography (#5628)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): inherit terminal size in simple typography (#5628))."
+    },
+    {
+      "upstreamSha": "ed886fe1814890da30ae73c77f9e894ddc9bd481",
+      "subject": "fix(web): delay transient reconnect warnings (#5670)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): delay transient reconnect warnings (#5670))."
+    },
+    {
+      "upstreamSha": "4eaf5ef8bb47b870397d5c61cd216b1a6bdd1510",
+      "subject": "fix(server): stop PR status lookups amplifying GitHub rate limits (#5673)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop PR status lookups amplifying GitHub rate limits (#5673))."
+    },
+    {
+      "upstreamSha": "0de9540739369301d5056870deeee3f258a03b14",
+      "subject": "feat: sidebar v2 is now the default sidebar (#5672)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat: sidebar v2 is now the default sidebar (#5672))."
+    },
+    {
+      "upstreamSha": "31891a1a0c208a6b244b64937741066c61fefd9c",
+      "subject": "feat(web): fold plan mode and token-by-token output into Legacy features (#5664)",
+      "disposition": "not-applicable",
+      "reason": "Divergent direction: f5 deliberately retains plan mode and streaming."
+    },
+    {
+      "upstreamSha": "45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b",
+      "subject": "fix(web): show Stop button while input is pending (#5554)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show Stop button while input is pending (#5554))."
+    },
+    {
+      "upstreamSha": "7a84f6cf10a5040d29c6392ad216d976458363cd",
+      "subject": "fix(web): reconnect the composer seam for remote non-Git projects (#5633)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): reconnect the composer seam for remote non-Git projects (#5633))."
+    },
+    {
+      "upstreamSha": "f0fb406acf419c1ab3d37d5f42093c07921484b2",
+      "subject": "feat(web): make sidebar artwork theme-aware (#5636)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): make sidebar artwork theme-aware (#5636))."
+    },
+    {
+      "upstreamSha": "82406bce99c2cf46d1d8fbad26bfefc2ab3169ce",
+      "subject": "chore: vouch chrisdeeming (#5641)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore: vouch chrisdeeming (#5641))."
+    },
+    {
+      "upstreamSha": "72d673a855c730536f0cf3bb964ba523e0af9e2e",
+      "subject": "feat(desktop): remember recently used sites in the Browser panel (#5270)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.3 preview recents; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "e2cd2383cec150ea674030d408f2a99a411c94fc",
+      "subject": "chore(ci): vouch StiensWout (#5637)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore(ci): vouch StiensWout (#5637))."
+    },
+    {
+      "upstreamSha": "5661c6116c9d6e9e93e59cf067fc02dd3303ceef",
+      "subject": "feat(web): drag pinned threads into your own order (#5581)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
+      "subject": "fix(mobile): reconnects no longer shift the thread list (#5372)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "be1a836745395286cbd392512179ab5816f538ba",
+      "subject": "chore(release): prepare v0.0.32",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore(release): prepare v0.0.32)."
+    },
+    {
+      "upstreamSha": "239ef1c54df2f657912ccb5b8e25193d49d90417",
+      "subject": "fix(web): show the correctly matching shortcut in new thread button's tooltip (#5594)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.5 new-thread shortcut copy; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "61b51ae0e343afc42ba0424d4d74b4f9a216d620",
+      "subject": "feat(web): click the pin icon to unpin a thread (#5578)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "bfc69e4b4de12cd9867972dc802936acfb219b74",
+      "subject": "Bump mobile app version to 1.0.2 (#5588)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "af281c9fc4cd74e9e28e5ee153a605fef9dfd5f9",
+      "subject": "fix(mobile): repair Clerk auth navigation headers (#5140)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "bd422fd8d1d960d9f75b9434cbc6b9128fbd3187",
+      "subject": "fix(mobile): keep Android chat text from showing through the composer (#5582)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "33a03c8a7bf4a398f410c9e6def903531237958a",
+      "subject": "fix(mobile): pad scroll views above Android nav bar (#5415)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "a17459e8a93a7be1f8261166034c245dd9794a0a",
+      "subject": "fix(mobile): avoid iOS terminal reset on clear (#5440)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "b2ee17d7c1b1bdff543ffff43929d01b92a902f4",
+      "subject": "feat(web): thread actions from the chat header title (#5592)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.3 shared thread actions; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "7963cc70f3c9873768a5eaad7ca0a20a23d67aed",
+      "subject": "feat(server): record runtime mode per turn and on mode changes (#5593)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 1.7 runtime mode per turn; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "b792ed9f7b9c7c6386a14a1697c4393567812546",
+      "subject": "fix(web): stabilize chat timeline positioning (#5449)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): stabilize chat timeline positioning (#5449))."
+    },
+    {
+      "upstreamSha": "2e66b1fdfc63d39822cd58948bcf43e8fbc239b6",
+      "subject": "fix(web): live background-work banner no longer hides behind the update notice (#5595)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): live background-work banner no longer hides behind the update notice (#5595))."
+    },
+    {
+      "upstreamSha": "8100062a78f1e1942663a0cea9ddc42d2f835525",
+      "subject": "fix(mobile): improve keyboard avoiding (#5451)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "a1762fdd7482728800f1f4fd260c632f01a30b1f",
+      "subject": "fix(dev): Improve instructions for --share (#5586)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(dev): Improve instructions for --share (#5586))."
+    },
+    {
+      "upstreamSha": "388b43a27cc37ae067087073825633d4fc5de3b7",
+      "subject": "perf(dev): faster cold-start for dev web serving (#5584)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (perf(dev): faster cold-start for dev web serving (#5584))."
+    },
+    {
+      "upstreamSha": "23f0a1ae38cb1fc510a499ef2b3602f5ae98d0c9",
+      "subject": "fix(web): reading a thread clears Done; Woke is dismissible (#5579)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): reading a thread clears Done; Woke is dismissible (#5579))."
+    },
+    {
+      "upstreamSha": "85b1734d4d4914e743044f0ea8cb38a796de7da5",
+      "subject": "feat(web): add modular theme library (#5226)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.2 theme library; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "3ffe84f9688e22afea531988807a1c7faeccdc37",
+      "subject": "fix(web): stop the sidebar \"Working\" label from pulsing (#5580)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): stop the sidebar \"Working\" label from pulsing (#5580))."
+    },
+    {
+      "upstreamSha": "220efad62b7ce7b9ee4befff75edb0753467df0a",
+      "subject": "fix: add missing space before 'GitHub releases page' link on download page (#4511)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: add missing space before 'GitHub releases page' link on download page (#4511))."
+    },
+    {
+      "upstreamSha": "b98a0f0d2292d180db0ac7c6ae8ccdbc9f6478f7",
+      "subject": "fix(mobile): invisible T3 Connect devices can now be seen and removed (#5563)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "95305c36fa418301183e4750f13b6a525a20cafe",
+      "subject": "feat(web): per-device provider settings (#4479)",
+      "disposition": "not-applicable",
+      "reason": "Rejected on security grounds: browser-local executable selection would be privilege escalation."
+    },
+    {
+      "upstreamSha": "48aa875c0e6f8f2ee83d6972dd4357a4a083fe30",
+      "subject": "feat(web): remove Build/Plan toggle from the composer (#5551)",
+      "disposition": "not-applicable",
+      "reason": "Divergent direction: f5 deliberately retains the Build/Plan composer control."
+    },
+    {
+      "upstreamSha": "a8cd2ad2ebb32ad789e8e0ecd2fc713c2edc38f4",
+      "subject": "fix(web): plans stop hijacking the UI, fold into chat instead (#5558)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): plans stop hijacking the UI, fold into chat instead (#5558))."
+    },
+    {
+      "upstreamSha": "4a07c1ca9d9033ef35161a1ffbea44d0418ca2bf",
+      "subject": "docs: ship production T3 Connect public config in .env.example (#5573)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "cf5c9948c895e120965165b7b2b643ca275c5315",
+      "subject": "fix(web): keep agent panel rows stable (#5569)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep agent panel rows stable (#5569))."
+    },
+    {
+      "upstreamSha": "2288d416aa3bcb5f2eeb4004228872593296971e",
+      "subject": "fix(web): stop the \"requests are slow\" warning from firing on every provider update (#5570)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): stop the \"requests are slow\" warning from firing on every provider update (#5570))."
+    },
+    {
+      "upstreamSha": "ddfe45c66eccd93c0adf61db92a16cbbbcde23e1",
+      "subject": "test(server): catch client transfer regressions in CI (#5350)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (test(server): catch client transfer regressions in CI (#5350))."
+    },
+    {
+      "upstreamSha": "9547cf24634ccafe5d381964449b722d33f812b8",
+      "subject": "fix(server): one disconnecting client no longer blocks every reconnect (#5572)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): one disconnecting client no longer blocks every reconnect (#5572))."
+    },
+    {
+      "upstreamSha": "1c7d059f550a53dd94d5b9802640ecd11b759d1a",
+      "subject": "fix: scrolling up during a running thread no longer snaps back to the bottom (#5566)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: scrolling up during a running thread no longer snaps back to the bottom (#5566))."
+    },
+    {
+      "upstreamSha": "6fa457607886caf096e7871b67e447f76d3772f6",
+      "subject": "fix(server): settle stopped Claude subagents (#5568)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): settle stopped Claude subagents (#5568))."
+    },
+    {
+      "upstreamSha": "ae7b27de824e890f2cdfc85018fc9301e7d45022",
+      "subject": "fix: prevent reconnect loops during server stalls (#5561)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: prevent reconnect loops during server stalls (#5561))."
+    },
+    {
+      "upstreamSha": "6b73b3defe1dfb365de3b7bbb97ca56a26b50a43",
+      "subject": "feat: paginate thread loading with user-anchored turn windows (#5493)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 7.2 anchored thread pagination; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "7aad7911f66c2fecba1cfd6601ea783a3fe2bf31",
+      "subject": "fix(server): let stopped threads settle immediately (#5553)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): let stopped threads settle immediately (#5553))."
+    },
+    {
+      "upstreamSha": "6da92244cc2a7438703be95a0fcfaca0b73502a7",
+      "subject": "fix(web): show one toast when snoozing threads in bulk (#5560)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show one toast when snoozing threads in bulk (#5560))."
+    },
+    {
+      "upstreamSha": "c471145e96fc2399b4df57ce78c72aa7fb7ccabf",
+      "subject": "fix(server): stopping a Claude thread no longer shows an ede_diagnostic error (#5557)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stopping a Claude thread no longer shows an ede_diagnostic error (#5557))."
+    },
+    {
+      "upstreamSha": "64a991ad455234e6fdd808a5a3caadc51f18a152",
+      "subject": "fix(web): show remote environment for non-Git projects (#5555)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show remote environment for non-Git projects (#5555))."
+    },
+    {
+      "upstreamSha": "0ec4fbc4a376cbf6465e59b05506ce9d89b3d078",
+      "subject": "fix(server): stop showing commit/push/PR notices as errors in the work log (#5559)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop showing commit/push/PR notices as errors in the work log (#5559))."
+    },
+    {
+      "upstreamSha": "ea50b695a749d6a0d44ef96b479b6dfceb8881e3",
+      "subject": "fix(web): update tooltip no longer dismisses when scrolling release notes (#5547)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): update tooltip no longer dismisses when scrolling release notes (#5547))."
+    },
+    {
+      "upstreamSha": "331c6dce7f6745863752b1b423fc76d24014deec",
+      "subject": "fix(server): skip origin fetch when creating worktrees in repos without an origin remote (#5556)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): skip origin fetch when creating worktrees in repos without an origin remote (#5556))."
+    },
+    {
+      "upstreamSha": "4f5834ba72c5905a318c00456dd21271b2fa9d6f",
+      "subject": "fix(web): clear woke state on explicit thread actions (#5486)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): clear woke state on explicit thread actions (#5486))."
+    },
+    {
+      "upstreamSha": "aa16c180e5850ab94c022d3e41e18350c2117deb",
+      "subject": "fix(web): align composer inline chips with prompt text (#5495)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align composer inline chips with prompt text (#5495))."
+    },
+    {
+      "upstreamSha": "470d4eb993eccd7d33cc9ad6f282c684d6760ac8",
+      "subject": "fix(mobile): stop thread messages reading through pending cards (#5450)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "99d91ddaa4996203b675cbd086d5acaa642d4827",
+      "subject": "fix(acp): keep unknown approvals actionable (#5430)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(acp): keep unknown approvals actionable (#5430))."
+    },
+    {
+      "upstreamSha": "ab3b55e29ac20a6212f09e38f1983b856fd77695",
+      "subject": "fix(web): clarify auto permission fallback (#5431)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): clarify auto permission fallback (#5431))."
+    },
+    {
+      "upstreamSha": "e4abc31f1e3f930e521a5bb62b38a9c5b28d8fb1",
+      "subject": "docs(server): pin interleaved-collapse divergence as intentional with test",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (docs(server): pin interleaved-collapse divergence as intentional with test)."
+    },
+    {
+      "upstreamSha": "b7d1981b57f1c30908808d1939fd4edbc781de12",
+      "subject": "fix(server): drop superseded tool updates from snapshots",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): drop superseded tool updates from snapshots)."
+    },
+    {
+      "upstreamSha": "64a3cd6d7daab21f6bfbc00faf0104b6fd361267",
+      "subject": "fix(server): separate trial cleanup from handoff retention",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): separate trial cleanup from handoff retention)."
+    },
+    {
+      "upstreamSha": "48e2c27f2fef10520512fcfc482d022477ed18ab",
+      "subject": "fix(web): make update version tooltips accessible",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): make update version tooltips accessible)."
+    },
+    {
+      "upstreamSha": "8b2ea5721a213c3e3e3bcab56eaea6fa0fa82714",
+      "subject": "fix(server): order explicit service shutdown",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): order explicit service shutdown)."
+    },
+    {
+      "upstreamSha": "df2f1273e9e1f1c6f342eecbf3539a5e992163e1",
+      "subject": "fix(server): clean up interrupted update trials",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): clean up interrupted update trials)."
+    },
+    {
+      "upstreamSha": "f9e8236899f25653ce95d688fac798cd070afbc1",
+      "subject": "fix(server): release the tunnel when an explicit stop interrupts an update",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): release the tunnel when an explicit stop interrupts an update)."
+    },
+    {
+      "upstreamSha": "8f341f20c91e708de1dab949dbd723e86f2ff328",
+      "subject": "test(server): use the launcher state writer in release tests",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (test(server): use the launcher state writer in release tests)."
+    },
+    {
+      "upstreamSha": "808d6853555c8b57f414a06e0a79eb1b9e192ef5",
+      "subject": "fix(server): keep the managed tunnel across remote update restarts",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): keep the managed tunnel across remote update restarts)."
+    },
+    {
+      "upstreamSha": "80720ad592dc68c29677444fd7b6abb97b82c03e",
+      "subject": "fix(web): calm one-row server update status and banner",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): calm one-row server update status and banner)."
+    },
+    {
+      "upstreamSha": "a483337a02d4ac641db0219517816c300a33be6b",
+      "subject": "fix: respect time format for sidebar snooze (#4438)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: respect time format for sidebar snooze (#4438))."
+    },
+    {
+      "upstreamSha": "1ffba7093a83c99ef41dd486b10df75f2b9974e1",
+      "subject": "fix(web): closed plan sidebar stays closed when returning to a thread (#5484)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): closed plan sidebar stays closed when returning to a thread (#5484))."
+    },
+    {
+      "upstreamSha": "3da315e7b5c4537cbc7280f33dadb3f5f0e3baf0",
+      "subject": "perf(server): stop shipping full MCP tool results in thread payloads (#5482)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 7.1 bounded activity payloads; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "a2ca89aa10f13a2222e08afd98c66285121d5ba2",
+      "subject": "feat: native subagent & workflow observability (#5219)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 6.2 Agents observability; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "990bb0b689b23a33f8e53f12962fe2542b3f4005",
+      "subject": "fix: reconnect faster after remote server updates (#5404)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: reconnect faster after remote server updates (#5404))."
+    },
+    {
+      "upstreamSha": "7251f1a1f14afdf626e7c7f8664da423594732a3",
+      "subject": "Prevent terminal loading flash (#5432)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Prevent terminal loading flash (#5432))."
+    },
+    {
+      "upstreamSha": "30e471530b3e2ddf59caf309636bed940b8b3776",
+      "subject": "fix(web): preserve terminal font size when splitting (#5444)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): preserve terminal font size when splitting (#5444))."
+    },
+    {
+      "upstreamSha": "de592a00e89776d2e0614f3be6e666012d90cd51",
+      "subject": "Enrich terminal font previews (#5428)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Enrich terminal font previews (#5428))."
+    },
+    {
+      "upstreamSha": "2a04db134c2d88f06e5b8d61a8410cb51ea07430",
+      "subject": "fix(web): keep terminal font settings reliable (#5397)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep terminal font settings reliable (#5397))."
+    },
+    {
+      "upstreamSha": "37d3667de4e45ffb42dc96e8b7fbf39e3a78c1da",
+      "subject": "fix(web): keep model picker shortcuts in sync (#5400)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep model picker shortcuts in sync (#5400))."
+    },
+    {
+      "upstreamSha": "9697b765e5c32232e96514e38b6ecfac351d5a8f",
+      "subject": "fix(ci): isolate releases from shared API rate limits (#5394)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(ci): isolate releases from shared API rate limits (#5394))."
+    },
+    {
+      "upstreamSha": "9d9a872bccc6ed099de85a121ab042c9e078987e",
+      "subject": "fix(web): restore terminal link hover styles (#5382)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): restore terminal link hover styles (#5382))."
+    },
+    {
+      "upstreamSha": "9235c83eb7f16c321ad02aa4cc502fbe0be252c1",
+      "subject": "fix(web): keep the composer command menu anchored to the composer (#5336)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep the composer command menu anchored to the composer (#5336))."
+    },
+    {
+      "upstreamSha": "e0c85a20ef0ec9b49ade5989a13850493036a49b",
+      "subject": "fix(mobile): avoid double dividers between thread sections (#5391)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "3c5bdb84a93682646848acf48cae94c4d189b7a6",
+      "subject": "fix(web): truncate long project switcher names (#5348)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): truncate long project switcher names (#5348))."
+    },
+    {
+      "upstreamSha": "70de6e17860d7343a73e117e6e9e1ce41b1b633e",
+      "subject": "fix(mobile): prevent Android thread search crash (#5386)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "47dfc6526521866992f6b50beac4587b45114631",
+      "subject": "fix(mobile): preserve grouped project workspaces (#4642)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "41ebf22eea64e177b11a0709a16d6716581cc78c",
+      "subject": "fix(web): clear main branch lint warnings (#5384)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): clear main branch lint warnings (#5384))."
+    },
+    {
+      "upstreamSha": "3d429662c9bd7b731c059dc3a84ccdfc43bf3701",
+      "subject": "fix(mcp): unblock Kimi models in OpenCode with preview tools (#5128)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(mcp): unblock Kimi models in OpenCode with preview tools (#5128))."
+    },
+    {
+      "upstreamSha": "7b38fb5c6b0fb46a7dadaf33e1739726be3dc104",
+      "subject": "fix(server): allow remote updates with database migrations (#5374)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): allow remote updates with database migrations (#5374))."
+    },
+    {
+      "upstreamSha": "7537adc30f41059afcfeb8bd20368cb0acfce293",
+      "subject": "fix(web): prevent legacy model picker layout shift (#5349)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): prevent legacy model picker layout shift (#5349))."
+    },
+    {
+      "upstreamSha": "94696b0f54f467062a14aa800ee257a4801c2022",
+      "subject": "fix(desktop,web): improve in-app browser shortcuts and URL behavior (#4703)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop,web): improve in-app browser shortcuts and URL behavior (#4703))."
+    },
+    {
+      "upstreamSha": "fff6a5b028f85122ffef8d3636f390f95ade5172",
+      "subject": "feat(web): make pairing QR codes actually scannable, with endpoint choice (#5360)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "da6e1a96782594cab3a6925f441731a65be57c11",
+      "subject": "feat(sidebar-v2): thread pinning for sidebar v2 (#5312)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "8eca20005b47e197b3610f7996f3fd02355c1891",
+      "subject": "feat(web): configurable fonts and sizes under Settings → Appearance (#5103)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.1 configurable fonts; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "2fa1fec8d8f63bc8fa4579e7c0fd280b21de02ef",
+      "subject": "refactor(server): make title prompts plaintext (#5368)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (refactor(server): make title prompts plaintext (#5368))."
+    },
+    {
+      "upstreamSha": "9bd2a4c6886a4c20e0a0a937dc98dd118c645c8f",
+      "subject": "fix(server): keep regenerated titles on topic (#5365)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): keep regenerated titles on topic (#5365))."
+    },
+    {
+      "upstreamSha": "4fb03aff0bcddf3379e9f9277a87e8eae994a2ae",
+      "subject": "fix(web): better right panel (new diffs styling) (#5260)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): better right panel (new diffs styling) (#5260))."
+    },
+    {
+      "upstreamSha": "d7950ac153c6fdd788ef63699a5d061243bb4997",
+      "subject": "fix(server): generate durable thread titles (#5357)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): generate durable thread titles (#5357))."
+    },
+    {
+      "upstreamSha": "36caf34c68b7bc6c2e967fdec1812fd08f61cdc8",
+      "subject": "fix(desktop,web): contain renderer memory growth and recover from renderer OOM crashes (#5148)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop,web): contain renderer memory growth and recover from renderer OOM crashes (#5148))."
+    },
+    {
+      "upstreamSha": "90e3778660690e4f00bdd4e237fc541725dc1427",
+      "subject": "fix(web): stop the chat timeline reading through the provider status banner (#5353)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): stop the chat timeline reading through the provider status banner (#5353))."
+    },
+    {
+      "upstreamSha": "94331c58ecda6b32ee101e8f5ce2dfe5b5195afd",
+      "subject": "fix(mobile): show correct provider icons for Grok, Cursor, and OpenCode (#4586)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "c30a6d9b9943cfbf2fd47efc9de6eb9675457d52",
+      "subject": "fix(server): scrub AppImage XDG_DATA_DIRS and GSETTINGS_SCHEMA_DIR from terminals (#5075)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): scrub AppImage XDG_DATA_DIRS and GSETTINGS_SCHEMA_DIR from terminals (#5075))."
+    },
+    {
+      "upstreamSha": "37ae1abbe947f0e002d008276225e4af2248a969",
+      "subject": "fix(ssh): isolate managed tunnel processes (#4347)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(ssh): isolate managed tunnel processes (#4347))."
+    },
+    {
+      "upstreamSha": "82b76e2138db7fcf8f8c1613184dc94777b2196e",
+      "subject": "fix(server): use a Cursor todo's title when its content is blank (#5073)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): use a Cursor todo's title when its content is blank (#5073))."
+    },
+    {
+      "upstreamSha": "8a16cadbafb2ec98f79e7cb1300a3ad09ca394e5",
+      "subject": "fix(web): increase tooltip z-index to overlay popovers and menus (#5326)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): increase tooltip z-index to overlay popovers and menus (#5326))."
+    },
+    {
+      "upstreamSha": "2b1d4fecb859b9a68f4853b8c4c5857ffe9d448d",
+      "subject": "Upgrade Effect to beta.103 (#5331)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Upgrade Effect to beta.103 (#5331))."
+    },
+    {
+      "upstreamSha": "cec1bb9de38a80d7c06faa6841360002ca136080",
+      "subject": "fix(web): align multiline error alert controls (#5304)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align multiline error alert controls (#5304))."
+    },
+    {
+      "upstreamSha": "25ec0b9d13deaaa6d30c42f66ddfee633e9a29be",
+      "subject": "fix(web): simplify chat code blocks (#5301)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): simplify chat code blocks (#5301))."
+    },
+    {
+      "upstreamSha": "966cc05a9007a4ad1b7f8d5d3a1fc0e5c82a5b94",
+      "subject": "fix(contracts): decode ServerProviders forward-compatibly (#5327)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(contracts): decode ServerProviders forward-compatibly (#5327))."
+    },
+    {
+      "upstreamSha": "1cbd88aba042f3209e1538a927775a7c4f7fdb06",
+      "subject": "fix(server): strip replayable terminal queries from history (#5319)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): strip replayable terminal queries from history (#5319))."
+    },
+    {
+      "upstreamSha": "553867262cf22f982622df3eb7f3174f62b4ba2b",
+      "subject": "fix(terminal): protect held Ctrl/Cmd+W close shortcut (#5322)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(terminal): protect held Ctrl/Cmd+W close shortcut (#5322))."
+    },
+    {
+      "upstreamSha": "11639bf4391d9d49e48052bae755f748cbd22ff2",
+      "subject": "fix(web): blink the terminal cursor again (#5314)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): blink the terminal cursor again (#5314))."
+    },
+    {
+      "upstreamSha": "a261a6440ae7c1a063ff23591f43960c7d2b06e5",
+      "subject": "fix(web): match loading screen to dark theme (#5303)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): match loading screen to dark theme (#5303))."
+    },
+    {
+      "upstreamSha": "6f04a5cffb8fcad95f709af69eb2da2605c4d472",
+      "subject": "fix(desktop): Niri/Hyprland - Linux secret storage backend (#2916)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): Niri/Hyprland - Linux secret storage backend (#2916))."
+    },
+    {
+      "upstreamSha": "30c96228067bcd3a49e432ec898e52d4acb04297",
+      "subject": "fix(web): polish interface spacing (#5252)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): polish interface spacing (#5252))."
+    },
+    {
+      "upstreamSha": "69dfb7f09a473d270a8b127cb1c39836fa1c6bc4",
+      "subject": "fix(desktop): claim the t3code:// scheme default on Linux at startup (#5054)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): claim the t3code:// scheme default on Linux at startup (#5054))."
+    },
+    {
+      "upstreamSha": "e60821f0e0d82a5d671ca3b94719c49d333921c8",
+      "subject": "feat: fold legacy models into separate menus (#5190)",
+      "disposition": "not-applicable",
+      "reason": "Divergent direction: f5 model preferences already address model-menu crowding."
+    },
+    {
+      "upstreamSha": "64bf0161919ec0e41470af3304928d9fc8711bf4",
+      "subject": "fix(server): stop npx service updates from silently leaving the old server running (#5217)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop npx service updates from silently leaving the old server running (#5217))."
+    },
+    {
+      "upstreamSha": "5192f777fe54c2a2a359f6c25ecf5fbde46d49b0",
+      "subject": "fix(server): surface cloudflared FTL/PNC relay logs as warnings, not debug (#5076)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "283c7ac4baafd96711872d4fe49e3851a8ecaa65",
+      "subject": "fix: normalize app icon glyph sizing (#5202)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: normalize app icon glyph sizing (#5202))."
+    },
+    {
+      "upstreamSha": "78eb3ecae981a6fce108cd3ecc44a6832b4cd3a0",
+      "subject": "fix(web): stop settle controls overlapping the status label (#4574)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): stop settle controls overlapping the status label (#4574))."
+    },
+    {
+      "upstreamSha": "d3037064e61a9f059eafbd4f9869679779bd2a7c",
+      "subject": "fix(server): make remote updates rollback-safe (#5181)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): make remote updates rollback-safe (#5181))."
+    },
+    {
+      "upstreamSha": "0ad91b6e7fc1fcb6d5f4bc736d84c337e912bc62",
+      "subject": "fix(server): follow branch drift in dedicated worktrees so PRs link to their thread (#5159)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): follow branch drift in dedicated worktrees so PRs link to their thread (#5159))."
+    },
+    {
+      "upstreamSha": "ca72e381c64f25d771236eecf70219f68e5f365b",
+      "subject": "fix(server): bound thread catch-up replay and stop full-DB snapshot hydration (#5147)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): bound thread catch-up replay and stop full-DB snapshot hydration (#5147))."
+    },
+    {
+      "upstreamSha": "491219bf1f4db7144b747fe02af0cbc075668b12",
+      "subject": "fix: threads with open PRs no longer auto-settle (#5151)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: threads with open PRs no longer auto-settle (#5151))."
+    },
+    {
+      "upstreamSha": "e5c75470678e33ca2bd1001d9d93493fe437972a",
+      "subject": "feat(web): add settings sidebar search (#4682)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 5.3 settings search and deep links; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "bfc31507f8483b0ba22cf10f5862947b49b20a53",
+      "subject": "feat(web): search threads from the sidebar (#4769)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.4 sidebar thread search; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "03adf215ceebedeb9c5e813406154dd8353b36f6",
+      "subject": "follow-up normalization after #4700. (#4498)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (follow-up normalization after #4700. (#4498))."
+    },
+    {
+      "upstreamSha": "916cff733cd00c85fe0419df5bcb9372a6384746",
+      "subject": "feat(mobile): make settled threads collapsible (#5056)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "a041981276b4c789fed8132e3b8a320749bf25e8",
+      "subject": "feat(mobile): add thread snoozing (#5053)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "964cc279014f512b4fc4c719377403417744ace2",
+      "subject": "refactor: move the canonical libghostty-vt vendor to the repository root (#5102)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (refactor: move the canonical libghostty-vt vendor to the repository root (#5102))."
+    },
+    {
+      "upstreamSha": "acf761b2f511e1918260a8043e151bbc2849e29a",
+      "subject": "feat(web): render terminals with libghostty-vt (#4860)",
+      "disposition": "deferred",
+      "reason": "Deferred pending a cross-platform Ghostty/Electron packaging spike."
+    },
+    {
+      "upstreamSha": "ab8182cb4e5338caf93ee90a7bd57351a0c77283",
+      "subject": "fix(ci): rotate iPad showcase captures without Simulator UI scripting (#5094)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(ci): rotate iPad showcase captures without Simulator UI scripting (#5094))."
+    },
+    {
+      "upstreamSha": "ef4ec2ad4b9b08d1aca31d68aea28f0a846ef295",
+      "subject": "fix(server): self-update no longer rolls itself back on restart (#5095)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): self-update no longer rolls itself back on restart (#5095))."
+    },
+    {
+      "upstreamSha": "61514c1294ff79e2a9924551b2042fcc0d1c3a34",
+      "subject": "feat(cli): `npx t3 pair` - generate QR code from a running server (#4955)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(cli): `npx t3 pair` - generate QR code from a running server (#4955))."
+    },
+    {
+      "upstreamSha": "894d6d68f555b97a070791590ed99695c09e4233",
+      "subject": "fix(oxlint-plugin): Resolve the oxlint bin without assuming a pnpm layout (#5066)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(oxlint-plugin): Resolve the oxlint bin without assuming a pnpm layout (#5066))."
+    },
+    {
+      "upstreamSha": "fccec9f097ab6b89714161ccab2efc7e19d59c00",
+      "subject": "fix(ci): capture iPad App Store screenshots in landscape (#5065)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(ci): capture iPad App Store screenshots in landscape (#5065))."
+    },
+    {
+      "upstreamSha": "50a3d6b872406bb15af72d439740dd63e89f820d",
+      "subject": "fix(ci): repair the mobile showcase screenshots workflow (#5057)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "e259dd23c7ef67a7f215389762a1ef5622c79088",
+      "subject": "fix(mobile): server model, worktree, and origin preferences now apply to new tasks (#5064)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "df78cda8bf9c0971300e1bf35251774d9fbc833a",
+      "subject": "fix(contracts): decode growing config unions forward-compatibly (#5055)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(contracts): decode growing config unions forward-compatibly (#5055))."
+    },
+    {
+      "upstreamSha": "605c2bb734bbebed0b19fc1ff6b514f41bd3659b",
+      "subject": "fix(mobile): show the correct build channel in Android's Threads page header (#4861)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "cb11a71d632e0fb9e7a1fe8c0a95f35583c9cf11",
+      "subject": "fix(mobile): accept Android clipboard images in composer (#4836)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "41124c726001498bb09e6c1b3eaff71e6ca0b43d",
+      "subject": "fix(desktop): link release notes from the update downloaded toast (#4771)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): link release notes from the update downloaded toast (#4771))."
+    },
+    {
+      "upstreamSha": "b0b275227bcf495f75bab1daa39f99489420dad7",
+      "subject": "chore: add mobile issue template area (#4895)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "cb293fe790fef3acba6220404f30c1665cde5fdb",
+      "subject": "fix(mobile): restore iOS Threads branding (#4862)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "1d694dcbd8d27c994b3bdc66c4bdb199faf2efc3",
+      "subject": "fix(mobile): default bare IP pairing to HTTP (#4990)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "32407df9c5ffd3c5dda2e745568997ac33c15ed1",
+      "subject": "fix(shared): lenient JSON parser deletes commas inside string values (#5025)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(shared): lenient JSON parser deletes commas inside string values (#5025))."
+    },
+    {
+      "upstreamSha": "162e774294f9e3dda15ca2f8083db019fe398837",
+      "subject": "fix(mobile): remove unnecessary photo library permission (#4929)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "063ed7120a17de65fcd5bd835b5c7c4e19536037",
+      "subject": "feat(shared): support shorthand (major-only) versions in the semver helpers (#5027)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(shared): support shorthand (major-only) versions in the semver helpers (#5027))."
+    },
+    {
+      "upstreamSha": "34b15a9acec5519425c81bdd2a10f11e9ba3d23d",
+      "subject": "perf(server): cache default branch name and origin existence across status refreshes (#5008)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 2.5 Git metadata caching; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "fbecb7365ede9892045dec4d03805d20ef9859f8",
+      "subject": "fix(desktop): bump Clerk Electron SDK to 0.0.24 and register t3code:// scheme on Linux (#5015)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): bump Clerk Electron SDK to 0.0.24 and register t3code:// scheme on Linux (#5015))."
+    },
+    {
+      "upstreamSha": "4029b858eaaa3f029d30a02a930f887853239169",
+      "subject": "fix(ci): drop sparse-checkout from EAS workflows",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(ci): drop sparse-checkout from EAS workflows)."
+    },
+    {
+      "upstreamSha": "5b2577f6a941527e4db4ae32d6d0992e435d58a4",
+      "subject": "style(web): make scroll-to-end pill translucent (#5036)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (style(web): make scroll-to-end pill translucent (#5036))."
+    },
+    {
+      "upstreamSha": "bc142f84a2f1ab47b7bca2c363b72f9115d76bda",
+      "subject": "chore(mobile): bump app version to 1.0.1",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "e4829603ff70bdeac96780e1512ac2c09638e5a3",
+      "subject": "perf(ci): cut stale runs and redundant setup (#4802)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (perf(ci): cut stale runs and redundant setup (#4802))."
+    },
+    {
+      "upstreamSha": "1d77cec991971d3113918e896b1c871e8b044da7",
+      "subject": "fix: cache project favicons across web and mobile (#4767)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "4ba4871af76081f0e830a91b8f747ff2de53ba7d",
+      "subject": "fix(web): fill fast mode icon (#5004)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): fill fast mode icon (#5004))."
+    },
+    {
+      "upstreamSha": "edc503a7a8ea5284a2711981c1a10a6b9999f5e4",
+      "subject": "fix(server): restore PR detection without HOME (#4985)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): restore PR detection without HOME (#4985))."
+    },
+    {
+      "upstreamSha": "323dc321a2f8bec2160e6e35f94d07c5bb949084",
+      "subject": "fix(mobile): support pre-Liquid-Glass iOS bottom toolbar (#4984)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "6154b46cb86b038f1b54c32690a794ac639520ca",
+      "subject": "Check for mobile app updates on launch (#4958)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "abc409c2d4a072c2de46c9015f5cffff00dcc46b",
+      "subject": "Add project file picker (⌘P) and project content search (⇧⌘F) (#4855)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 5.2 project content search; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "1877237c7ae99ecf2163b4c5bb7d3e14bebcca4d",
+      "subject": "fix(connect): reboots no longer strand the relay link, 403s now say why (#4988)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "e0513d29839f934df1d5a13551e6ccd76d11006b",
+      "subject": "fix(web): server updates no longer look like warnings (#4992)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): server updates no longer look like warnings (#4992))."
+    },
+    {
+      "upstreamSha": "9dd425b2234c062b4767583e42d4b2c1aabab15d",
+      "subject": "docs: split user and maintainer docs, fix 100+ stale claims (#4807)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (docs: split user and maintainer docs, fix 100+ stale claims (#4807))."
+    },
+    {
+      "upstreamSha": "50871eb5de641ffd41b1f9d0151668982d276393",
+      "subject": "fix: marketing site Vercel builds no longer die after ~100 deploys (#4975)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: marketing site Vercel builds no longer die after ~100 deploys (#4975))."
+    },
+    {
+      "upstreamSha": "4b71a2ae2ffbbb7b6936051552094b71364cefd4",
+      "subject": "feat(search): find threads by conversation content (#4959)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.4 global full-text search; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "197d3487116372ca2f16661f57d4e869fc3cb6c0",
+      "subject": "fix(web): show server update progress through reconnect (#4903)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show server update progress through reconnect (#4903))."
+    },
+    {
+      "upstreamSha": "5c9358acaa34f8619513bba1e6821f0fdec27f74",
+      "subject": "feat(web): regenerate thread titles from sidebar (#4810)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.2 race-safe titles; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "cbe8052020aa0c02c63fbe090e7f1f25603622d1",
+      "subject": "feat(web): pasting a huge screenshot now compresses it instead of erroring (#4967)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.2 pasted-image compression; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "69a18ce912ac3ae93cf498cfe0cee40beb49fb9f",
+      "subject": "perf(mobile): reconnect environments immediately on resume (#4878)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "f0c6ba994670bbd9eeab97eab6701d5c3589178d",
+      "subject": "fix(web): keep worktree default when switching a draft's machine (#4964)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep worktree default when switching a draft's machine (#4964))."
+    },
+    {
+      "upstreamSha": "90f3913a81380af7aeafac62f8132aeb98345a12",
+      "subject": "fix(mobile): stop long iOS threads from jumping while scrolling up (#4867)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "2652fee49bdb0a7d286124cd2bd318155d4a7931",
+      "subject": "fix(mobile): support dragged images in the composer (#4953)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "2f466ffc9ca21b2d536082dd821a1f57e0f354b1",
+      "subject": "docs: seed worktrees with a copy of real userdata instead of banning it (#4949)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (docs: seed worktrees with a copy of real userdata instead of banning it (#4949))."
+    },
+    {
+      "upstreamSha": "9146ed2f49a094aa8afee7d3a66987e2a82aaaf6",
+      "subject": "fix(web): show Codex fast mode as a bolt (#4947)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): show Codex fast mode as a bolt (#4947))."
+    },
+    {
+      "upstreamSha": "f0f16e4f6e8e923dcb17fc1c25d4fb1e442f80a5",
+      "subject": "perf(mobile): sends respond instantly, thread opens stop freezing (#4882)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "00da6b57a43aef39162ff9e8205b5441c24298d0",
+      "subject": "fix(mobile): stop shared content errors in Personal Team builds (#4943)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "6ab2f16809e584449831aa5dba0b0e5ca14a2a54",
+      "subject": "fix(connect): suggest a serve command that matches how you ran connect (#4897)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "6efcf3e10c02935780af6cc06f7146b8c9731ee2",
+      "subject": "fix(web): align remote server update action (#4731)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): align remote server update action (#4731))."
+    },
+    {
+      "upstreamSha": "748203ea19fb68741709614b33b305079f0f4c05",
+      "subject": "docs: link iOS and Android app store downloads (#4902)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (docs: link iOS and Android app store downloads (#4902))."
+    },
+    {
+      "upstreamSha": "b125b7635170ec0c33f8ddf39299155a21f8c9b9",
+      "subject": "fix(composer): hide default Codex service tier (#4784)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(composer): hide default Codex service tier (#4784))."
+    },
+    {
+      "upstreamSha": "758decaa565f021f85af756669b18bd9f80cacf5",
+      "subject": "fix(clients): disable add project while disconnected (#4834)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(clients): disable add project while disconnected (#4834))."
+    },
+    {
+      "upstreamSha": "2d9066e089c241c3befd7a4632efe493fabd70d9",
+      "subject": "fix(web): settle button now works on hover, not just right-click (#4905)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): settle button now works on hover, not just right-click (#4905))."
+    },
+    {
+      "upstreamSha": "35a684000d2aa6d106aed93df52a9105883f9f3f",
+      "subject": "fix(web): restore sidebar v2 thread actions and terminal icon (#4712)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): restore sidebar v2 thread actions and terminal icon (#4712))."
+    },
+    {
+      "upstreamSha": "9e3e9bb4f081a6ad331cb94b42b2bd2d93339b81",
+      "subject": "fix(mobile): reduce thread feed scroll jank (#4874)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "a8e05cbb92633a1351529f2bc402071f615e5051",
+      "subject": "chore(release): prepare v0.0.31",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore(release): prepare v0.0.31)."
+    },
+    {
+      "upstreamSha": "e6987965f65914861f0dabd0db03729fe5cd2508",
+      "subject": "fix(web): remember the rendered-markdown choice across threads (#4853)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): remember the rendered-markdown choice across threads (#4853))."
+    },
+    {
+      "upstreamSha": "fc28abf24b034502402cba1fedf5fa38658ee2e8",
+      "subject": "Fix editable file focus and live syntax highlighting (#3979)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix editable file focus and live syntax highlighting (#3979))."
+    },
+    {
+      "upstreamSha": "85a89868703530e03c5e79797c7b952c684bd222",
+      "subject": "fix(git): disable external diff for review diff previews (#4854)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(git): disable external diff for review diff previews (#4854))."
+    },
+    {
+      "upstreamSha": "faea70aebae41f1257140c6722f1d78f12f5eb74",
+      "subject": "perf(server): merge separate staged/unstaged numstat calls into single diff HEAD --numstat (#4843)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (perf(server): merge separate staged/unstaged numstat calls into single diff HEAD --numstat (#4843))."
+    },
+    {
+      "upstreamSha": "d19039aeef6942e6eb204856c43b5354c0333e2d",
+      "subject": "fix(server): detect repositories after initialization (#4848)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): detect repositories after initialization (#4848))."
+    },
+    {
+      "upstreamSha": "49c0d96edf280f1fe6750a83161a3a2cff0f25ef",
+      "subject": "Reduce idle work and disk churn with native resource diagnostics (#2679)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Reduce idle work and disk churn with native resource diagnostics (#2679))."
+    },
+    {
+      "upstreamSha": "3137c2b162109640343a6ff88120609e061f3782",
+      "subject": "Preserve the thread shell while detail loads (#4830)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Preserve the thread shell while detail loads (#4830))."
+    },
+    {
+      "upstreamSha": "c3e8fb67d73955862ac312c801d45f2cc00c7178",
+      "subject": "Update model version from claude-opus-4-8 to claude-opus-5 (#4832)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Update model version from claude-opus-4-8 to claude-opus-5 (#4832))."
+    },
+    {
+      "upstreamSha": "72b960fa3985ec61af6a459431861a5dcb360009",
+      "subject": "build(desktop): reduce installed app size by ~300MB (#4824)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (build(desktop): reduce installed app size by ~300MB (#4824))."
+    },
+    {
+      "upstreamSha": "08e4932f0465327968368b22be343b58a07d476a",
+      "subject": "Simplify files panel header (#4828)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Simplify files panel header (#4828))."
+    },
+    {
+      "upstreamSha": "1b4830ff06bf80e505dbf669deef189af85f77d7",
+      "subject": "fix(desktop): restore T3 Connect sign-in (#4809)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "694f8d1c6eaaabafbf5c2861ae524174919ef625",
+      "subject": "chore(release): prepare v0.0.30",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore(release): prepare v0.0.30)."
+    },
+    {
+      "upstreamSha": "1b61ce1112d56358a4207322620c20ac3f3ce8a8",
+      "subject": "Fix Connect sign-in settings label (#4806)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "60af905e70c944228cb35a74fa50740ec4b2d1f7",
+      "subject": "Remove Connect waitlist and add GA announcement tooling (#4691)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "8650f05f95ac9f19254de679fdf4b380c37d7b94",
+      "subject": "refactor(server): use native HTTP compression streams (#4798)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (refactor(server): use native HTTP compression streams (#4798))."
+    },
+    {
+      "upstreamSha": "8fe8f9a9c1486528f689a7499c2eb78217d35caf",
+      "subject": "fix(mobile): defer filesystem navigation (#4799)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "936593c2583c6640a07fc310f97bd5d0c27a7c31",
+      "subject": "refactor(client): share filesystem browse navigation (#4797)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (refactor(client): share filesystem browse navigation (#4797))."
+    },
+    {
+      "upstreamSha": "2919147c80e4daae326a25f870a1c7b19cd16f42",
+      "subject": "fix(release): skip scripts during Vercel installs (#4796)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(release): skip scripts during Vercel installs (#4796))."
+    },
+    {
+      "upstreamSha": "1ba3d01bc61d142eacda7c45aa3af748e4afa1bb",
+      "subject": "fix(web): defer command palette filesystem navigation (#2109)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): defer command palette filesystem navigation (#2109))."
+    },
+    {
+      "upstreamSha": "5fcdefd057751eb511de9e61142ef797f142059b",
+      "subject": "perf(server): trim stale context-window rows and drop dead replay RPC (#4791)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 2.6 dead replayEvents RPC removal; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "38a6e3ce65b1d4fa58788faa96ff9410a8c26ffe",
+      "subject": "Fix Git ref refresh resource storms (#4727)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix Git ref refresh resource storms (#4727))."
+    },
+    {
+      "upstreamSha": "f2d2fb2f2444bcabc31bf906b5b334aee0d9d79c",
+      "subject": "fix(web): stashed prompts now survive switching providers (#4787)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.4 durable prompt stash; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "8829e2f9b960eb31dc62ddab256d5da82c5077a6",
+      "subject": "perf(server): gzip large thread snapshots (#4788)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (perf(server): gzip large thread snapshots (#4788))."
+    },
+    {
+      "upstreamSha": "2deea7abb0f9e4df71ca10da06a8d7268a4b9d42",
+      "subject": "Prevent sidebar row labels from truncating (#4789)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Prevent sidebar row labels from truncating (#4789))."
+    },
+    {
+      "upstreamSha": "b64ae880e0f88cd35e2f7e1f5fab868546fbe29b",
+      "subject": "docs: overhaul agent guidance (#4782)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (docs: overhaul agent guidance (#4782))."
+    },
+    {
+      "upstreamSha": "887dd6e455bb969c1a0c9659a6bdf2baceac030d",
+      "subject": "perf(server): negotiate permessage-deflate on the websocket (#4705)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 2.1 WebSocket compression and backpressure; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "f1a68ac9b05c93292e677f700ae3ce7f7ac7f064",
+      "subject": "Fix Android showcase capture and rebuild v2 queued rows (#4730)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix Android showcase capture and rebuild v2 queued rows (#4730))."
+    },
+    {
+      "upstreamSha": "55dd01612efc51e19de479da5a0e348cbe2521e3",
+      "subject": "Link inline code file paths in chat markdown (#4726)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Link inline code file paths in chat markdown (#4726))."
+    },
+    {
+      "upstreamSha": "3c50a6488503f3ca73e0abe6e50ebdf5cb1a8167",
+      "subject": "fix(web): prevent diff panel scroll jumping (#4724)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): prevent diff panel scroll jumping (#4724))."
+    },
+    {
+      "upstreamSha": "9ccfd9dfef4e78285f9ac2a83b0333e67df36378",
+      "subject": "fix(desktop): allow updater-controlled relaunch (#4721)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): allow updater-controlled relaunch (#4721))."
+    },
+    {
+      "upstreamSha": "4f584da0f84666bda0cd399721115b0001cc0308",
+      "subject": "feat(web): add appearance settings category (#4715)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.1 appearance settings; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "362f12792254335bfe2a015787d7cbbaa214654e",
+      "subject": "feat(web): add maria's sidebar header artwork toggle (#4652)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): add maria's sidebar header artwork toggle (#4652))."
+    },
+    {
+      "upstreamSha": "9cf9fc9c5c0f48d42f407f86cf83d0f04fbdf5a8",
+      "subject": "Settle merged PR threads immediately (#4704)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Settle merged PR threads immediately (#4704))."
+    },
+    {
+      "upstreamSha": "e00781a6619125e30f3e30ec6e17bc4c61d30502",
+      "subject": "Fix relay credential lookup for unlinked environments (#4692)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "d25b15737a058614ab6632bbad23d2497e49b62c",
+      "subject": "Fix mobile showcase workflow without Clerk (#4718)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "b0c4992c79605ec310ed9fee6b60fad6e145def4",
+      "subject": "Make mobile Thread List v2 the default (#4717)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "dd5ea324885aea4980a49bb42d28f83023c40ea7",
+      "subject": "fix(web): 33 web UI fixes (#4700)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): 33 web UI fixes (#4700))."
+    },
+    {
+      "upstreamSha": "c13a021e432e94728fe88ff983fb9601c6d6b943",
+      "subject": "feat: default sidebar v2 on for nightly and dev builds (#4491)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat: default sidebar v2 on for nightly and dev builds (#4491))."
+    },
+    {
+      "upstreamSha": "476d69cd1d5d89b4aad77df8fc01c71e34af930c",
+      "subject": "fix(mobile): threads load snapped to bottom on iOS (#4689)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "a148e08197fc38b24e59c10c7cd5ba06dd182dab",
+      "subject": "Add OTA update checks to mobile settings (#4686)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "831eb66fee91e397f5f8d6ae179408291e8f28b0",
+      "subject": "chore(release): prepare v0.0.29",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (chore(release): prepare v0.0.29)."
+    },
+    {
+      "upstreamSha": "1153afb4fb694944b5c25e2153b904a85cf47d70",
+      "subject": "fix(mobile): match react version to react-native 0.85.3 vendored renderer (19.2.3) (#4675)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "a2ffb122e2041731d1efe24d999aefe4e1ff7c03",
+      "subject": "Show origin ref in branch trigger label (#4680)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Show origin ref in branch trigger label (#4680))."
+    },
+    {
+      "upstreamSha": "3957a958184650656dbbab6d73d9882de9855bd5",
+      "subject": "Use glass surfaces for web toasts (#4681)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Use glass surfaces for web toasts (#4681))."
+    },
+    {
+      "upstreamSha": "6a3df51707b67c3435f86b3b83a093aec8b03415",
+      "subject": "Fix sidebar highlighting for draft threads (#4679)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix sidebar highlighting for draft threads (#4679))."
+    },
+    {
+      "upstreamSha": "6afbed3c36bbb731b9551ec60d7d12ed1fd1d2ee",
+      "subject": "Clear provider update actions while updating (#4676)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Clear provider update actions while updating (#4676))."
+    },
+    {
+      "upstreamSha": "eea3ea4c6ffc4567ab1037cbf53feb33af0bb132",
+      "subject": "feat(diff-panel): show total line additions and deletions (#4674)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.1 diff presentation policy; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "10bca3f44e1be6a874438fe80badbad45cd00279",
+      "subject": "feat: add configurable source control writing settings (#4204)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 5.7 source-control writing preferences; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "e77f42c111dc40e0b208393957ebb23863330e2e",
+      "subject": "Prevent draft thread detail polling before shell registration (#4670)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Prevent draft thread detail polling before shell registration (#4670))."
+    },
+    {
+      "upstreamSha": "6e3b73884bf40eeb2859cb16f1200c8e2f9cf7c3",
+      "subject": "fix(server): bound editor discovery during config loading (#4291)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): bound editor discovery during config loading (#4291))."
+    },
+    {
+      "upstreamSha": "5ba6ef7f84a5586e3795264cae348404dd408cb5",
+      "subject": "Use tarball archiving for hosted web deploys (#4669)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "80ead5f3a7743010cdab6ad84fa4dcbd4c021038",
+      "subject": "Add glass styling for thread tooltips and simplify preview tab handling (#4665)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add glass styling for thread tooltips and simplify preview tab handling (#4665))."
+    },
+    {
+      "upstreamSha": "32af2f002468c320d40ab730b575dea872f1d86d",
+      "subject": "fix(preview): stabilize PiP viewport identity (#4661)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(preview): stabilize PiP viewport identity (#4661))."
+    },
+    {
+      "upstreamSha": "f0121f31d0e7c069f4007480fc13907c28efd4d5",
+      "subject": "fix: close actions dropdown when editing (#4660)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: close actions dropdown when editing (#4660))."
+    },
+    {
+      "upstreamSha": "0e19c103ef07b6a2c143839d2d2a9cf223915d1e",
+      "subject": "Keep MCP credentials alive across provider turns (#4659)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Keep MCP credentials alive across provider turns (#4659))."
+    },
+    {
+      "upstreamSha": "32843c2551bd5832d436ef46bff5ab1198cdc39c",
+      "subject": "fix(web): constrain branch toolbar context (#4657)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): constrain branch toolbar context (#4657))."
+    },
+    {
+      "upstreamSha": "da11342e03dbf2bf46058d66b9c4f4eab8047a5a",
+      "subject": "Fix live sidebar resize limits and defer Alchemy runtime context (#4655)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix live sidebar resize limits and defer Alchemy runtime context (#4655))."
+    },
+    {
+      "upstreamSha": "180620e43688843e694c6fd155d4e113886698a0",
+      "subject": "Fix Relay Worker RuntimeContext wiring (#4653)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "96398e3775fc6c74525e4a211e75e580c6cf4225",
+      "subject": "feat(connect): release the Cloudflare tunnel when the environment shuts down (#4531)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "d2d40b6c1aa2464b38357d52b7f991cfb422a669",
+      "subject": "Drop redundant Relay user indexes (#4648)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "724887717f1b5ded5b60bd5abe7e41a9ce5b47e5",
+      "subject": "fix(web): scope PR state to the thread branch (#4460)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): scope PR state to the thread branch (#4460))."
+    },
+    {
+      "upstreamSha": "bdf99c17bf7ae634728481677cf1bca8db65d00e",
+      "subject": "feat: allow new thread creation through project breadcrumbs (#4638)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.5 new-window thread creation; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "108e01746c585d98703df5fe76cb6c213ecb6b8f",
+      "subject": "Upgrade Effect and Alchemy betas (#4643)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Upgrade Effect and Alchemy betas (#4643))."
+    },
+    {
+      "upstreamSha": "200fa826b02cf0503c6f6c2bd7250a58747bff2d",
+      "subject": "feat(web): prompt stash — cmd+S saves the composer to a per-provider queue (#4453)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.4 prompt stash; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "f4c394323d458224b25898ef784ca0a0cc2969af",
+      "subject": "Add background preview capture and picture-in-picture support (#4397)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add background preview capture and picture-in-picture support (#4397))."
+    },
+    {
+      "upstreamSha": "2b06c08a4bdc1ffa46a37710d3bf27c80802a949",
+      "subject": "Add managed tunnel limits migration (#4635)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add managed tunnel limits migration (#4635))."
+    },
+    {
+      "upstreamSha": "a78f245dffc3123af36fb66cd2c95aac1a48ffd9",
+      "subject": "feat(relay): limit managed tunnels per user (#4530)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "23ea08daf27a2f56b85e605dd3d36f66bd1a132d",
+      "subject": "test: account for lazy thread feed details (#4628)",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (test: account for lazy thread feed details (#4628))."
+    },
+    {
+      "upstreamSha": "b4680cbfd064d59fdd2386a5ac6fc75e26e8c96b",
+      "subject": "perf(mobile): defer work-log detail serialization (#4607)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 7.1 activity pagination; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "d60f6e971f8f982836f26507275d651e2e7af4a5",
+      "subject": "fix: cut websocket throughput in half by pruning activity payloads (#4622)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: cut websocket throughput in half by pruning activity payloads (#4622))."
+    },
+    {
+      "upstreamSha": "89c5a192f4d36bcf4201e8b490ab5ad37a4adac7",
+      "subject": "fix(dev): skip browser-blocked ports (#4608)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(dev): skip browser-blocked ports (#4608))."
+    },
+    {
+      "upstreamSha": "23b55022175e69938514934f65c5a607d38f1e47",
+      "subject": "feat(dev): Make t3 code dev instances shareable over Tailscale (#4556)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(dev): Make t3 code dev instances shareable over Tailscale (#4556))."
+    },
+    {
+      "upstreamSha": "a17cbc3b4022b824cda9b199e4c53a8c9a608923",
+      "subject": "feat(dev): keep worktree dev state isolated on T3 Code dev servers (#4555)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(dev): keep worktree dev state isolated on T3 Code dev servers (#4555))."
+    },
+    {
+      "upstreamSha": "5719e8ac4020dda0e375ef61d044b61f55a0df8a",
+      "subject": "feat(web): show fast mode as a bolt instead of a \"Normal\" label (#4488)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.6 fast-mode icon; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "38cfc25e5422e468303f2010f639cf3de9ad89ba",
+      "subject": "feat(web): add collapse-all toggle to diff panel (#4475)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.1 diff presentation policy; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "41a430a88e8dde9c428f59d54dd328aa6a66a8fd",
+      "subject": "Add Claude Opus 5 model (#4472)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add Claude Opus 5 model (#4472))."
+    },
+    {
+      "upstreamSha": "ece05087a70e94efcd57441337fa1249559362ba",
+      "subject": "[codex] Fix glass hover compositing artifacts (#4446)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] Fix glass hover compositing artifacts (#4446))."
+    },
+    {
+      "upstreamSha": "a7ee3092c3c4383a65a16a51de7e0328d6e027c9",
+      "subject": "Color settled PR labels on hover (#4451)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Color settled PR labels on hover (#4451))."
+    },
+    {
+      "upstreamSha": "f7cc7764887a3c0616973043fa77e12671e3f9ef",
+      "subject": "Restore model picker layout and retain iterative test state (#4450)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Restore model picker layout and retain iterative test state (#4450))."
+    },
+    {
+      "upstreamSha": "15e875a2d9bdda2fc08909c4b1582a363d288403",
+      "subject": "Increase light-mode contrast for user message bubbles (#4441)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Increase light-mode contrast for user message bubbles (#4441))."
+    },
+    {
+      "upstreamSha": "5d173547ff50a97eb9bdb50609fb76cd641c5aa0",
+      "subject": "Upgrade Clerk packages and Expo integration (#4440)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Upgrade Clerk packages and Expo integration (#4440))."
+    },
+    {
+      "upstreamSha": "202e5609ffb294bc0aa86c08ce1d3751de567226",
+      "subject": "feat(sidebar-v2): thread snoozing (#4311)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 3.1 pins and snoozes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "bb38c3320d0a4eec4e9097fdc400970d881ff559",
+      "subject": "fix(web): keep settled threads reachable when opened directly (#4413)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep settled threads reachable when opened directly (#4413))."
+    },
+    {
+      "upstreamSha": "6b9a5987f686d0d904abe6f51b4be3bf873907e9",
+      "subject": "fix: Claude Code skills discoverable for the composer $ picker (#4414)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: Claude Code skills discoverable for the composer $ picker (#4414))."
+    },
+    {
+      "upstreamSha": "fc3f78f5d917fdeee6271d2f6fd42961369c7d9f",
+      "subject": "fix: tone down branch-mismatch banner (#4416)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: tone down branch-mismatch banner (#4416))."
+    },
+    {
+      "upstreamSha": "2f41c073a2f846e9a96082e76cd1b2c3a7e44c18",
+      "subject": "Stop new threads inheriting checkout/branch from viewed thread (#4411)",
+      "disposition": "not-applicable",
+      "reason": "Divergent direction: f5 deliberately inherits new-thread workspace context."
+    },
+    {
+      "upstreamSha": "51672b6ecb9d927d57d0b12dd071ca0d4a34ef36",
+      "subject": "feat(web): collapse large git diffs by default to make chat more readable (#4409)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.1 diff presentation policy; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "67a7b1a1d3443beeedc6a3bd7fe9dd875f016b11",
+      "subject": "Improve composer glass fallbacks (#4406)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Improve composer glass fallbacks (#4406))."
+    },
+    {
+      "upstreamSha": "ce467da9cfae3d7952ce13a9e2450e2908e9f224",
+      "subject": "Polish iOS git progress overlay with glass effects (#4387)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Polish iOS git progress overlay with glass effects (#4387))."
+    },
+    {
+      "upstreamSha": "6ef7aa8399640fd2bf10fcb126c0db93fee47ff0",
+      "subject": "Fix composer context strip alignment and glass shell (#4404)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix composer context strip alignment and glass shell (#4404))."
+    },
+    {
+      "upstreamSha": "193e3c62e6d52fcc200d823ca6d9061d13f81f23",
+      "subject": "fix(client-runtime): keep a warm thread un-settled despite a merged/closed PR (#4309)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(client-runtime): keep a warm thread un-settled despite a merged/closed PR (#4309))."
+    },
+    {
+      "upstreamSha": "91dfe60a99b7bf6cc44138a237e663ba158062b7",
+      "subject": "Fix thread loading flash (#4396)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix thread loading flash (#4396))."
+    },
+    {
+      "upstreamSha": "edb12401e547be4806836077f336295c58097c9b",
+      "subject": "fix(cli): publish nightly branded favicons (#4372)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(cli): publish nightly branded favicons (#4372))."
+    },
+    {
+      "upstreamSha": "79fe11bc1c586029dfe052df25f4b2d6227b3b33",
+      "subject": "Add preview color scheme controls and simplify project grouping (#4385)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 8.3 preview color scheme; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "b3e51317e404109ebc41fe1c9e487d5d73367e76",
+      "subject": "Fix logical project grouping labels on mobile (#4391)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "ddd5a46f3942df302f8a13310cdfa47838b0ca81",
+      "subject": "fix(web): sidebar v2 polish — jump hints, working duration, in-flight fade, settled sort (#4274)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): sidebar v2 polish — jump hints, working duration, in-flight fade, settled sort (#4274))."
+    },
+    {
+      "upstreamSha": "88c69ffff6ca3a025eec6a2ea597d4048e851266",
+      "subject": "fix(server): parse CLI version in update preflight (#4389)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): parse CLI version in update preflight (#4389))."
+    },
+    {
+      "upstreamSha": "979854895cc539269213915cd6581cf444089bdc",
+      "subject": "Fix thread tooltip folder icon color (#4383)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Fix thread tooltip folder icon color (#4383))."
+    },
+    {
+      "upstreamSha": "9cbe50d10de90684f4322d467dd1eafe9f726045",
+      "subject": "fix(web): restore dark composer toolbar styling",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): restore dark composer toolbar styling)."
+    },
+    {
+      "upstreamSha": "9d9208cec5ac6a3ddb61647644da2b99eee59bff",
+      "subject": "[codex] Group projects in new-thread pickers (#4312)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] Group projects in new-thread pickers (#4312))."
+    },
+    {
+      "upstreamSha": "57100fba854fb1214ae7a413111efae14443d445",
+      "subject": "[codex] restore Sidebar V2 project actions (#4373)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] restore Sidebar V2 project actions (#4373))."
+    },
+    {
+      "upstreamSha": "3afb4a9ef9e71ddf44035797cd224301bc5645a1",
+      "subject": "Restore grouped project filtering in Sidebar V2 (#4282)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Restore grouped project filtering in Sidebar V2 (#4282))."
+    },
+    {
+      "upstreamSha": "315b27385d7eb36a56b410fa8b624fc2ed246278",
+      "subject": "[codex] Deduplicate connection failure messaging (#4367)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] Deduplicate connection failure messaging (#4367))."
+    },
+    {
+      "upstreamSha": "719c905eacdcb04e11dd4ce1e515a44455ed0874",
+      "subject": "[codex] Move mobile project grouping to General settings (#4315)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "0542abc75e378428165cf8a492d02dd4cc3dc348",
+      "subject": "[codex] Group project scopes in mobile thread lists (#4314)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "7609495bf70a51dd4d8608e3f71da636a7348aa6",
+      "subject": "[codex] Move project grouping to General settings (#4313)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] Move project grouping to General settings (#4313))."
+    },
+    {
+      "upstreamSha": "b41e89eba9cd232cc3257b400fc30972a9b53438",
+      "subject": "fix(web): warn before silent Windows updates (#4350)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): warn before silent Windows updates (#4350))."
+    },
+    {
+      "upstreamSha": "4d83436415c0f6020afe84c127b88874b6f0103c",
+      "subject": "Unify dialog glass and fix composer overlays (#4365)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Unify dialog glass and fix composer overlays (#4365))."
+    },
+    {
+      "upstreamSha": "e51538b812392d522947494ae32dacf3f3859f5e",
+      "subject": "Restore light-mode surfaces and refine dialog styling",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Restore light-mode surfaces and refine dialog styling)."
+    },
+    {
+      "upstreamSha": "1c9a6de26eb41f77dbf2f6039427f50f2e9f8b39",
+      "subject": "Add shared t3.json project configuration support (#4317)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 5.4 checked-in project configuration; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "fbd77420f27c1322d49726dd927861b8b5903494",
+      "subject": "feat: add \"Auto\" runtime mode — AI-reviewed approvals for Codex and Claude (#4272)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 1.1 four runtime modes; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "16491a84b9bb2842ad6db41635d087647fc2df5b",
+      "subject": "fix(web): new-thread defaults ignored for remote environments (#4276)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): new-thread defaults ignored for remote environments (#4276))."
+    },
+    {
+      "upstreamSha": "b44ed835c63caafae619e303ca019a251c2698b2",
+      "subject": "fix(web): sync provider banner dismissal",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): sync provider banner dismissal)."
+    },
+    {
+      "upstreamSha": "9c9916aefe18586b305e1d973d609e60bd6de4c0",
+      "subject": "fix(web): address redesign review findings",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): address redesign review findings)."
+    },
+    {
+      "upstreamSha": "936394b6f2cdd430d809f09a28f14b9a7c230a28",
+      "subject": "test(desktop): include glass opacity in settings fixture",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (test(desktop): include glass opacity in settings fixture)."
+    },
+    {
+      "upstreamSha": "c38225ef1cd462ce79034f6b76f9acd9eac0349b",
+      "subject": "style(web): fade settings content beneath navbar",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (style(web): fade settings content beneath navbar)."
+    },
+    {
+      "upstreamSha": "39cd15b9543af45dd8aed75612bf9baebe92abbd",
+      "subject": "test(web): stabilize timeline module setup",
+      "disposition": "not-applicable",
+      "reason": "No user-facing port: upstream-only maintenance (test(web): stabilize timeline module setup)."
+    },
+    {
+      "upstreamSha": "160d97f4031bcbe8a74615de6222a95ea53840e1",
+      "subject": "fix(web): honor composer glass opacity",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): honor composer glass opacity)."
+    },
+    {
+      "upstreamSha": "d330759f58bad677b9296d4dd9134ccc902821ce",
+      "subject": "fix(web): add glass composer alerts",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): add glass composer alerts)."
+    },
+    {
+      "upstreamSha": "5961d36769b1147604ac0fb847f7c058697447e0",
+      "subject": "fix(web): apply glass opacity to command palette",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): apply glass opacity to command palette)."
+    },
+    {
+      "upstreamSha": "0b1ce588246c1e38124598d9fcac4bc5e4063ce3",
+      "subject": "style(web): polish glass opacity slider",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (style(web): polish glass opacity slider)."
+    },
+    {
+      "upstreamSha": "10da67b9da3e366acf827518423978e4d762a337",
+      "subject": "fix(web): apply glass opacity to model picker",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): apply glass opacity to model picker)."
+    },
+    {
+      "upstreamSha": "6e5df67f15f4d214350977335a806ee153b620d4",
+      "subject": "fix(web): override thread tooltip background",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): override thread tooltip background)."
+    },
+    {
+      "upstreamSha": "29b1abc45eabe13a930dda58f845fea86dafeec1",
+      "subject": "fix(web): apply glass opacity to thread tooltip",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): apply glass opacity to thread tooltip)."
+    },
+    {
+      "upstreamSha": "14b6bfdf157c0ce020a5a55e1c8d3d68552931ef",
+      "subject": "fix(web): unify and tune glass surfaces",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): unify and tune glass surfaces)."
+    },
+    {
+      "upstreamSha": "b6a2563db7c0cd1b2df56540852d48c3c96aeaac",
+      "subject": "style(web): polish dark mode dialogs",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (style(web): polish dark mode dialogs)."
+    },
+    {
+      "upstreamSha": "c5ff51ec1fff1a9f0447b0336d645ab0f089db62",
+      "subject": "feat(web): refresh application surfaces",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): refresh application surfaces)."
+    },
+    {
+      "upstreamSha": "2d31cb022dee43e5a729273a6936228f30077e29",
+      "subject": "improve and prevent silent thread branch drift and PR fetching (#2284)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (improve and prevent silent thread branch drift and PR fetching (#2284))."
+    },
+    {
+      "upstreamSha": "bc9428a06a60db59cfddb99c6d7044a9db47eb1c",
+      "subject": "fix(mobile): don't mark Android VPN/Tailscale as offline when connected (#3949)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "593289c3c771ec1987b3f904eb95305d7ccaecf6",
+      "subject": "Refine light-mode sidebar surfaces (#4268)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Refine light-mode sidebar surfaces (#4268))."
+    },
+    {
+      "upstreamSha": "ab4a88386d5227706fadc4feb045dfb3e7fe6e1d",
+      "subject": "Add remote server updates and standalone service management (#4286)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Add remote server updates and standalone service management (#4286))."
+    },
+    {
+      "upstreamSha": "78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3",
+      "subject": "feat(web): copy branch name via right-click in the branch selector (#4275)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (feat(web): copy branch name via right-click in the branch selector (#4275))."
+    },
+    {
+      "upstreamSha": "9a0a07167f0623c3a7db0ffeff2e3939760309df",
+      "subject": "fix(server): don't drop sticky PR fallback when remote URL can't be resolved (#4289)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): don't drop sticky PR fallback when remote URL can't be resolved (#4289))."
+    },
+    {
+      "upstreamSha": "9fe4832a3f87e48152f915cfac9f85ec78e14e24",
+      "subject": "fix: open command palette instead of custom dialog for new thread picker in SidebarV2 (#4269)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: open command palette instead of custom dialog for new thread picker in SidebarV2 (#4269))."
+    },
+    {
+      "upstreamSha": "376c149eac201fd1492c7b7512a1de96c3b345b7",
+      "subject": "Stabilize PR status lookups and provider session lifecycle (#4281)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Stabilize PR status lookups and provider session lifecycle (#4281))."
+    },
+    {
+      "upstreamSha": "7e2bb475042ccfd196779831e69f5b19a38a2423",
+      "subject": "Move mobile working timer into the thread timeline (#4285)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    },
+    {
+      "upstreamSha": "18fa89c4adaae722e619f6abde093becf80efc08",
+      "subject": "Preserve draft thread highlighting during promotion (#4283)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Preserve draft thread highlighting during promotion (#4283))."
+    },
+    {
+      "upstreamSha": "f74eb62661734927aea45a243e2c3effced43fb9",
+      "subject": "fix(desktop): handle EPIPE errors on stdout/stderr to prevent crash dialog (#4213)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): handle EPIPE errors on stdout/stderr to prevent crash dialog (#4213))."
+    },
+    {
+      "upstreamSha": "e5fba263e6820350e4edc7e5d93955aabef53df1",
+      "subject": "Restore Copy Link in chat link context menu (#4161)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Restore Copy Link in chat link context menu (#4161))."
+    },
+    {
+      "upstreamSha": "18b468871e6a3bfad207109898011ea330afeadb",
+      "subject": "Stabilize sidebar settling animations (#4280)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Stabilize sidebar settling animations (#4280))."
+    },
+    {
+      "upstreamSha": "020179c19a0073d130c30083c7623cf1196688e7",
+      "subject": "fix(web): use message-square icon for settled icon-less project threads in sidebar v2 (#4279)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): use message-square icon for settled icon-less project threads in sidebar v2 (#4279))."
+    },
+    {
+      "upstreamSha": "571a8b44bdd4f0f0b0464ef24240021689616e7d",
+      "subject": "Unify temporary worktree branch naming (#4278)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Unify temporary worktree branch naming (#4278))."
+    },
+    {
+      "upstreamSha": "b6e1b39335ffd34583c94f5b1e5e2c80520729fe",
+      "subject": "fix(web): default provider selection for users without Codex (#4117)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): default provider selection for users without Codex (#4117))."
+    },
+    {
+      "upstreamSha": "c7b21ff172f8e64318ec681e8839ee60ca660fa4",
+      "subject": "[codex] keep scoped package references as text (#4167)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] keep scoped package references as text (#4167))."
+    },
+    {
+      "upstreamSha": "4e09cddb40eb1bb1e111a0374b46e73b38ffbb29",
+      "subject": "fix(server): stop restoring stale OpenCode models (#4095)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop restoring stale OpenCode models (#4095))."
+    },
+    {
+      "upstreamSha": "783692afc10dd63693b3f65ca334322762293e67",
+      "subject": "Preserve connecting status while a turn starts (#4101)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Preserve connecting status while a turn starts (#4101))."
+    },
+    {
+      "upstreamSha": "aa5ec8036451a8dcf16d93294c69f524907c42c8",
+      "subject": "fix(claude): isolate capability probe from user MCP servers (#4015)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(claude): isolate capability probe from user MCP servers (#4015))."
+    },
+    {
+      "upstreamSha": "282ecb317877e6cce296976a03278cc388b7ca37",
+      "subject": "fix(settings): validate the add-provider wizard step before advancing (#2813) (#3100)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(settings): validate the add-provider wizard step before advancing (#2813) (#3100))."
+    },
+    {
+      "upstreamSha": "32c6012dabdbd0eb178b25ea4225d889ec8f6475",
+      "subject": "Sidebar v2 beta: flat thread list with a server-backed settled lifecycle (#4026)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Sidebar v2 beta: flat thread list with a server-backed settled lifecycle (#4026))."
+    },
+    {
+      "upstreamSha": "6f34ad3e87eba2ffba66cac5593dae8b680e5b84",
+      "subject": "fix(claude): handle all SDK stream messages; stop spurious work-log warning rows (#4244)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(claude): handle all SDK stream messages; stop spurious work-log warning rows (#4244))."
+    },
+    {
+      "upstreamSha": "62cf4617594c2a0d8c9c5dc4bbc2012d0ead802d",
+      "subject": "fix: better defaults — Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix: better defaults — Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240))."
+    },
+    {
+      "upstreamSha": "23c18fda7a969634a30888e36b2da45f6d66a83b",
+      "subject": "fix(web): keep composer editable while disconnected (#4241)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep composer editable while disconnected (#4241))."
+    },
+    {
+      "upstreamSha": "c0bb2373450231e3931937d2f703e35ce906ed85",
+      "subject": "fix(web): always show environment chip for remote projects (#4217)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): always show environment chip for remote projects (#4217))."
+    },
+    {
+      "upstreamSha": "5d34f9ff235115d43a6cb4b4561d10badf218b87",
+      "subject": "Pass CLI OAuth config to hosted web deploy (#4186)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 uses its existing remote-access model and has no managed relay product line."
+    },
+    {
+      "upstreamSha": "c8a04bd59b7e1a18124468f1592b4c925839a9de",
+      "subject": "Finale: upgrade changed files card to fix various UI issues (#4113)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Finale: upgrade changed files card to fix various UI issues (#4113))."
+    },
+    {
+      "upstreamSha": "db4b2d8a0f23b00f19774dda33e0b02627272c90",
+      "subject": "perf(orchestration): speed up new-chat propagation and offline catch-up (#4177)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (perf(orchestration): speed up new-chat propagation and offline catch-up (#4177))."
+    },
+    {
+      "upstreamSha": "2c199aacac3244adc93c5f4a9c838683e93946dd",
+      "subject": "fix(desktop): preserve main window bounds (#3851)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(desktop): preserve main window bounds (#3851))."
+    },
+    {
+      "upstreamSha": "8ca4eec9ca46e1dd2f2427ae2405f5f417e8f95d",
+      "subject": "feat(web): drag files from the explorer into the chat composer (#4140)",
+      "disposition": "deferred",
+      "reason": "Scheduled for merged plan item 4.3 explorer drag into composer; pending its f5-native implementation commit."
+    },
+    {
+      "upstreamSha": "0936fd271f866f5f58cce067865c8d0262b9ea20",
+      "subject": "fix(web): preview workspace images in the file panel (#3996)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): preview workspace images in the file panel (#3996))."
+    },
+    {
+      "upstreamSha": "fa69f05b69d05003a6994194c12edd1d8aee080c",
+      "subject": "[codex] preserve custom model slugs (#4168)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] preserve custom model slugs (#4168))."
+    },
+    {
+      "upstreamSha": "c710167bde19e665c8517b606718bfbd406f2dd1",
+      "subject": "fix(web): paint text selection over composer chips (#4139)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): paint text selection over composer chips (#4139))."
+    },
+    {
+      "upstreamSha": "a135f2c2d32bcded09fca32d4147c06df90ec84d",
+      "subject": "[codex] show complete approval details (#4111)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] show complete approval details (#4111))."
+    },
+    {
+      "upstreamSha": "946b867666be94482e9e41015a304f55fe1e4754",
+      "subject": "fix(web): scope timeline minimap hover target to the side gutter (#3869)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): scope timeline minimap hover target to the side gutter (#3869))."
+    },
+    {
+      "upstreamSha": "0ca3240691bf1773802b3ed70330515d68b0a6b8",
+      "subject": "fix(server): use CLI for OpenCode health check instead of spawning server (#4153)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): use CLI for OpenCode health check instead of spawning server (#4153))."
+    },
+    {
+      "upstreamSha": "f4da4f3b4037260bbb0d8914acbebafd2206607a",
+      "subject": "fix(opencode): resume the OpenCode session on follow-ups instead of starting an empty one (#3617)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(opencode): resume the OpenCode session on follow-ups instead of starting an empty one (#3617))."
+    },
+    {
+      "upstreamSha": "b6d9ce325c4586ea3ab2d2ea5cfd5e8f8c167aeb",
+      "subject": "Gate iOS glass layout on native support (#4032)",
+      "disposition": "deferred",
+      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (Gate iOS glass layout on native support (#4032))."
+    },
+    {
+      "upstreamSha": "8e3467fe60c49ee739b278229156108032b72e25",
+      "subject": "Synchronize mobile threads with authoritative shell snapshots (#4163)",
+      "disposition": "not-applicable",
+      "reason": "Not applicable: f5 has no mobile application product line."
+    }
+  ],
+  "olderBacklog": [
+    {
+      "category": "pre-schema-ledger",
+      "selection": "Upstream SHAs tracked before the frozen 500-commit window",
+      "disposition": "deferred",
+      "reason": "Historical claims are retained for provenance but require f5 commit and file:line evidence before they can be promoted to completed dispositions."
+    },
+    {
+      "category": "mobile",
+      "selection": "Older feat/fix/mobile commits after 86c94b48 and before the frozen window",
+      "disposition": "not-applicable",
+      "reason": "f5 has no mobile application product line."
+    },
+    {
+      "category": "connect-relay-hosted",
+      "selection": "Older Connect, relay, pairing, and hosted-frontend commits",
+      "disposition": "not-applicable",
+      "reason": "f5 uses its existing remote-access model and has no managed relay product line."
+    }
+  ]
 }

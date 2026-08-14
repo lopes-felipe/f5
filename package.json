@@ -44,6 +44,7 @@
     "test:server:git:extended": "bun run --cwd apps/server test:git:extended",
     "protocol:audit": "bun scripts/audit-codex-protocol.ts",
     "protocol:audit:baseline": "bun scripts/audit-codex-protocol.ts --install-baseline",
+    "upstream-ports:check": "bun scripts/check-upstream-ports.ts",
     "test:server:integration": "bun run --cwd apps/server test:integration",
     "test:server:shard": "bun run --cwd apps/server test:unit:shard",
     "test:desktop-smoke": "turbo run smoke-test --filter=@t3tools/desktop",
