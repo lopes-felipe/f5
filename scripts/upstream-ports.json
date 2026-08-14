@@ -1181,8 +1181,8 @@
     {
       "upstreamSha": "c471145e96fc2399b4df57ce78c72aa7fb7ccabf",
       "subject": "fix(server): stopping a Claude thread no longer shows an ede_diagnostic error (#5557)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stopping a Claude thread no longer shows an ede_diagnostic error (#5557))."
+      "disposition": "ported",
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "upstreamSha": "64a991ad455234e6fdd808a5a3caadc51f18a152",
@@ -1193,8 +1193,8 @@
     {
       "upstreamSha": "0ec4fbc4a376cbf6465e59b05506ce9d89b3d078",
       "subject": "fix(server): stop showing commit/push/PR notices as errors in the work log (#5559)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop showing commit/push/PR notices as errors in the work log (#5559))."
+      "disposition": "ported",
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "upstreamSha": "ea50b695a749d6a0d44ef96b479b6dfceb8881e3",
@@ -1229,8 +1229,8 @@
     {
       "upstreamSha": "99d91ddaa4996203b675cbd086d5acaa642d4827",
       "subject": "fix(acp): keep unknown approvals actionable (#5430)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(acp): keep unknown approvals actionable (#5430))."
+      "disposition": "ported",
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "upstreamSha": "ab3b55e29ac20a6212f09e38f1983b856fd77695",
@@ -1505,8 +1505,9 @@
     {
       "upstreamSha": "82b76e2138db7fcf8f8c1613184dc94777b2196e",
       "subject": "fix(server): use a Cursor todo's title when its content is blank (#5073)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): use a Cursor todo's title when its content is blank (#5073))."
+      "disposition": "already-present",
+      "f5Shas": ["c0e97fadf4a6820ca0f670bbc2b88e8a1823d763"],
+      "evidence": ["apps/server/src/provider/acp/CursorAcpExtension.ts:86"]
     },
     {
       "upstreamSha": "8a16cadbafb2ec98f79e7cb1300a3ad09ca394e5",
@@ -2867,8 +2868,8 @@
     {
       "upstreamSha": "4e09cddb40eb1bb1e111a0374b46e73b38ffbb29",
       "subject": "fix(server): stop restoring stale OpenCode models (#4095)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop restoring stale OpenCode models (#4095))."
+      "disposition": "ported",
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "upstreamSha": "783692afc10dd63693b3f65ca334322762293e67",
@@ -2897,8 +2898,8 @@
     {
       "upstreamSha": "6f34ad3e87eba2ffba66cac5593dae8b680e5b84",
       "subject": "fix(claude): handle all SDK stream messages; stop spurious work-log warning rows (#4244)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(claude): handle all SDK stream messages; stop spurious work-log warning rows (#4244))."
+      "disposition": "ported",
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "upstreamSha": "62cf4617594c2a0d8c9c5dc4bbc2012d0ead802d",
@@ -2969,8 +2970,8 @@
     {
       "upstreamSha": "a135f2c2d32bcded09fca32d4147c06df90ec84d",
       "subject": "[codex] show complete approval details (#4111)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment ([codex] show complete approval details (#4111))."
+      "disposition": "ported",
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "upstreamSha": "946b867666be94482e9e41015a304f55fe1e4754",
@@ -3011,6 +3012,14 @@
       "reason": "Reimplemented with f5-native argv validation, managed-flag precedence, provider-instance hydration, and persisted launch fingerprints.",
       "upstreamShas": ["40c0ab088308fb010a3db488c545f10aa7179ed2"],
       "f5Shas": ["75a825f28e168e459e5d217ca29f6550f14512ca"]
+    },
+    {
+      "category": "provider-normalization-non-first-parent",
+      "selection": "Reviewed provider-normalization implementation SHAs reachable from upstream head but outside the frozen first-parent manifest",
+      "disposition": "ported",
+      "reason": "Reimplemented the final Codex web-search detail resolution behavior in f5's provider adapter.",
+      "upstreamShas": ["33f1cb422461bf0f072b9f181734e9b654d1ca69"],
+      "f5Shas": ["8aa2f45a0d632e829832984ae0f1d9877ada8b40"]
     },
     {
       "category": "pre-schema-ledger",
