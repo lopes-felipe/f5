@@ -126,7 +126,6 @@ import { ProviderRegistry } from "./provider/Services/ProviderRegistry.ts";
 import { ProviderUpdateAdvisor } from "./provider/Services/ProviderUpdateAdvisor.ts";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { CheckpointStore } from "./checkpointing/Services/CheckpointStore";
-import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
@@ -2128,19 +2127,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.getThreadFileChange: {
         const body = stripRequestTag(request.body);
         return yield* threadFileChangeQuery.getThreadFileChange(body);
-      }
-
-      case ORCHESTRATION_WS_METHODS.replayEvents: {
-        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
-        const { fromSequenceExclusive } = request.body;
-        return yield* Stream.runCollect(
-          orchestrationEngine.readEvents(
-            clamp(fromSequenceExclusive, {
-              maximum: Number.MAX_SAFE_INTEGER,
-              minimum: 0,
-            }),
-          ),
-        ).pipe(Effect.map((events) => Array.from(events)));
       }
 
       case ORCHESTRATION_WS_METHODS.createWorkflow: {

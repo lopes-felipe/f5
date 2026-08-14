@@ -40,7 +40,6 @@ export const ORCHESTRATION_WS_METHODS = {
   getThreadCommandExecution: "orchestration.getThreadCommandExecution",
   getThreadFileChanges: "orchestration.getThreadFileChanges",
   getThreadFileChange: "orchestration.getThreadFileChange",
-  replayEvents: "orchestration.replayEvents",
   createWorkflow: "orchestration.createWorkflow",
   archiveWorkflow: "orchestration.archiveWorkflow",
   unarchiveWorkflow: "orchestration.unarchiveWorkflow",
@@ -2189,14 +2188,6 @@ export const OrchestrationGetThreadFileChangeResult = Schema.Struct({
 export type OrchestrationGetThreadFileChangeResult =
   typeof OrchestrationGetThreadFileChangeResult.Type;
 
-export const OrchestrationReplayEventsInput = Schema.Struct({
-  fromSequenceExclusive: NonNegativeInt,
-});
-export type OrchestrationReplayEventsInput = typeof OrchestrationReplayEventsInput.Type;
-
-const OrchestrationReplayEventsResult = Schema.Array(OrchestrationEvent);
-export type OrchestrationReplayEventsResult = typeof OrchestrationReplayEventsResult.Type;
-
 export const OrchestrationCreateWorkflowInput = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
@@ -2401,10 +2392,6 @@ export const OrchestrationRpcSchemas = {
   getThreadFileChange: {
     input: OrchestrationGetThreadFileChangeInput,
     output: OrchestrationGetThreadFileChangeResult,
-  },
-  replayEvents: {
-    input: OrchestrationReplayEventsInput,
-    output: OrchestrationReplayEventsResult,
   },
   createWorkflow: {
     input: OrchestrationCreateWorkflowInput,

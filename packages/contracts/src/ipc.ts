@@ -574,7 +574,6 @@ export interface NativeApi {
     getThreadFileChange: (
       input: OrchestrationGetThreadFileChangeInput,
     ) => Promise<OrchestrationGetThreadFileChangeResult>;
-    replayEvents: (fromSequenceExclusive: number) => Promise<OrchestrationEvent[]>;
     createWorkflow: (
       input: OrchestrationCreateWorkflowInput,
     ) => Promise<OrchestrationCreateWorkflowResult>;

@@ -578,8 +578,6 @@ export function createWsNativeApi(): NativeApi {
         transport.request(ORCHESTRATION_WS_METHODS.getThreadFileChanges, input),
       getThreadFileChange: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.getThreadFileChange, input),
-      replayEvents: (fromSequenceExclusive) =>
-        transport.request(ORCHESTRATION_WS_METHODS.replayEvents, { fromSequenceExclusive }),
       createWorkflow: (input) => transport.request(ORCHESTRATION_WS_METHODS.createWorkflow, input),
       archiveWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.archiveWorkflow, input),
