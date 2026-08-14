@@ -123,6 +123,7 @@ function knownWindowsInstallDirectories(environment: NodeJS.ProcessEnv): Readonl
     programFiles ? NodePath.win32.join(programFiles, "nodejs") : undefined,
     voltaHome ? NodePath.win32.join(voltaHome, "bin") : undefined,
     userProfile ? NodePath.win32.join(userProfile, ".volta", "bin") : undefined,
+    userProfile ? NodePath.win32.join(userProfile, ".local", "bin") : undefined,
     userProfile ? NodePath.win32.join(userProfile, "scoop", "shims") : undefined,
     fnmDir,
     localAppData ? NodePath.win32.join(localAppData, "fnm") : undefined,

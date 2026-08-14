@@ -42,4 +42,19 @@ describe("Windows PATH hydration", () => {
     ).toBe("C:\\Inherited");
     expect(warn).toHaveBeenCalledOnce();
   });
+
+  it("finds native provider shims under the user-local bin directory", () => {
+    const env: NodeJS.ProcessEnv = {
+      PATH: "C:\\Windows\\System32",
+      USERPROFILE: "C:\\Users\\Test",
+    };
+
+    hydrateWindowsPath(env, {
+      platform: "win32",
+      readRegistryPaths: () => undefined,
+      pathExists: (candidate) => candidate === "C:\\Users\\Test\\.local\\bin",
+    });
+
+    expect(env.PATH).toBe("C:\\Windows\\System32;C:\\Users\\Test\\.local\\bin");
+  });
 });

@@ -722,13 +722,7 @@ function runtimeItemStatusFromClaudeTaskStatus(
 }
 
 function backgroundToolTitle(tool: ToolInFlight, status: ClaudeBackgroundStatus): string {
-  const subject =
-    tool.itemType === "command_execution"
-      ? "command"
-      : tool.itemType === "collab_agent_tool_call"
-        ? "agent"
-        : "task";
-  return `Background ${subject} ${status}`;
+  return `${tool.title} — ${status}`;
 }
 
 function backgroundTaskResult(input: {

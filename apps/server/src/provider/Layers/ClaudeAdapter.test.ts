@@ -3538,7 +3538,7 @@ describe("ClaudeAdapterLive", () => {
         (event): event is Extract<ProviderRuntimeEvent, { type: "item.updated" }> =>
           event.type === "item.updated" &&
           String(event.itemId) === "tool-bg-running" &&
-          event.payload.title === "Background command running",
+          event.payload.title === "Command run — running",
       );
       assert.equal(backgroundUpdates.length, 2);
       for (const event of backgroundUpdates) {
@@ -3559,6 +3559,79 @@ describe("ClaudeAdapterLive", () => {
         ),
         false,
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("preserves the subagent descriptor in background work-log titles", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const runtimeEvents: Array<ProviderRuntimeEvent> = [];
+      const runtimeEventsFiber = yield* Stream.runForEach(adapter.streamEvents, (event) =>
+        Effect.sync(() => runtimeEvents.push(event)),
+      ).pipe(Effect.forkChild);
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "delegate an exploration",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "stream_event",
+        session_id: BACKGROUND_SESSION_ID,
+        uuid: "stream-tool-bg-agent-start",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "tool-bg-agent",
+            name: "Task",
+            input: {
+              description: "Explore the provider runtime",
+              prompt: "Inspect the adapter",
+              subagent_type: "explore",
+            },
+          },
+        },
+      } as unknown as SDKMessage);
+      emitClaudeTaskStarted(harness.query, {
+        taskId: "task-bg-agent",
+        toolUseId: "tool-bg-agent",
+      });
+      emitClaudeTaskUpdated(harness.query, {
+        taskId: "task-bg-agent",
+        patch: { is_backgrounded: true },
+      });
+      emitBackgroundToolResult(harness.query, {
+        taskId: "task-bg-agent",
+        toolUseId: "tool-bg-agent",
+      });
+
+      yield* Effect.yieldNow;
+      yield* Effect.yieldNow;
+      const updates = runtimeEvents.filter(
+        (event) => event.type === "item.updated" && String(event.itemId) === "tool-bg-agent",
+      );
+      assert.equal(updates.length, 2);
+      assert.equal(
+        updates.every(
+          (event) =>
+            event.type === "item.updated" && event.payload.title === "Explore agent — running",
+        ),
+        true,
+      );
+      runtimeEventsFiber.interruptUnsafe();
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -3623,7 +3696,7 @@ describe("ClaudeAdapterLive", () => {
       if (completion?.type === "item.completed") {
         assert.equal(String(completion.turnId), String(turn.turnId));
         assert.equal(completion.payload.status, "completed");
-        assert.equal(completion.payload.title, "Background command completed");
+        assert.equal(completion.payload.title, "Command run — completed");
         const data = completion.payload.data as { result?: Record<string, unknown> } | undefined;
         assert.equal(data?.result?.backgroundTaskId, "task-bg-complete");
         assert.equal(data?.result?.backgroundStatus, "completed");
@@ -3687,7 +3760,7 @@ describe("ClaudeAdapterLive", () => {
         if (completion?.type === "item.completed") {
           assert.equal(String(completion.turnId), String(turn.turnId));
           assert.equal(completion.payload.status, "failed");
-          assert.equal(completion.payload.title, "Background command failed");
+          assert.equal(completion.payload.title, "Command run — failed");
           const data = completion.payload.data as { result?: Record<string, unknown> } | undefined;
           assert.equal(data?.result?.backgroundTaskId, "task-bg-failed");
           assert.equal(data?.result?.backgroundStatus, "failed");
