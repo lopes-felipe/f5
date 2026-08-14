@@ -2154,8 +2154,9 @@
     {
       "upstreamSha": "887dd6e455bb969c1a0c9659a6bdf2baceac030d",
       "subject": "perf(server): negotiate permessage-deflate on the websocket (#4705)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 2.1 WebSocket compression and backpressure; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["ab583f2906e9e8c5ba7e9ecf7be63bc742ccbf55"],
+      "reason": "Ported with Node-runtime permessage-deflate negotiation, explicit Bun gating and negotiation logs, bounded zlib settings, and shared 4 MiB transport/logical-byte backpressure with 1013 slow-client eviction."
     },
     {
       "upstreamSha": "f1a68ac9b05c93292e677f700ae3ce7f7ac7f064",
