@@ -11,6 +11,16 @@ const decodeServerValidateHarnessesResult = Schema.decodeUnknownEffect(
   ServerValidateHarnessesResult,
 );
 
+it.effect("accepts lightweight server probe requests", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeWebSocketRequest({
+      id: "probe-1",
+      body: { _tag: WS_METHODS.serverProbe },
+    });
+    assert.strictEqual(parsed.body._tag, WS_METHODS.serverProbe);
+  }),
+);
+
 it.effect("accepts getTurnDiff requests when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWebSocketRequest({

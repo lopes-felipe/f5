@@ -1,4 +1,4 @@
-import { ORCHESTRATION_WS_METHODS, WS_CHANNELS } from "@t3tools/contracts";
+import { ORCHESTRATION_WS_METHODS, WS_CHANNELS, WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -7,7 +7,7 @@ import {
   SLOW_RPC_THRESHOLD_MS,
 } from "./requestLatencyState";
 import { getWsConnectionState, resetWsConnectionStateForTests } from "./wsConnectionState";
-import { WsTransport } from "./wsTransport";
+import { jitterReconnectDelay, WsTransport } from "./wsTransport";
 
 type WsEventType = "open" | "message" | "close" | "error";
 type WsEvent = { data?: unknown; type?: string };
@@ -68,6 +68,8 @@ class MockWebSocket {
 
 const originalWebSocket = globalThis.WebSocket;
 const originalFetch = globalThis.fetch;
+const originalWindow = globalThis.window;
+const originalDocument = globalThis.document;
 
 function getSocket(index = sockets.length - 1): MockWebSocket {
   const socket = sockets[index];
@@ -79,24 +81,38 @@ function getSocket(index = sockets.length - 1): MockWebSocket {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.spyOn(Math, "random").mockReturnValue(0.5);
   sockets.length = 0;
   resetRequestLatencyStateForTests();
   resetWsConnectionStateForTests();
 
+  const windowTarget = new EventTarget();
+  Object.assign(windowTarget, {
+    location: {
+      hash: "",
+      hostname: "localhost",
+      pathname: "/",
+      port: "3020",
+      protocol: "http:",
+      search: "",
+    },
+    history: { replaceState: vi.fn(), state: null },
+    desktopBridge: undefined,
+  });
   Object.defineProperty(globalThis, "window", {
     configurable: true,
-    value: {
-      location: {
-        hash: "",
-        hostname: "localhost",
-        pathname: "/",
-        port: "3020",
-        protocol: "http:",
-        search: "",
-      },
-      history: { replaceState: vi.fn(), state: null },
-      desktopBridge: undefined,
-    },
+    value: windowTarget,
+  });
+
+  const documentTarget = new EventTarget();
+  Object.defineProperty(documentTarget, "visibilityState", {
+    configurable: true,
+    writable: true,
+    value: "visible",
+  });
+  Object.defineProperty(globalThis, "document", {
+    configurable: true,
+    value: documentTarget,
   });
 
   globalThis.WebSocket = MockWebSocket as unknown as typeof WebSocket;
@@ -105,6 +121,19 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.WebSocket = originalWebSocket;
   globalThis.fetch = originalFetch;
+  if (originalWindow === undefined) {
+    Reflect.deleteProperty(globalThis, "window");
+  } else {
+    Object.defineProperty(globalThis, "window", { configurable: true, value: originalWindow });
+  }
+  if (originalDocument === undefined) {
+    Reflect.deleteProperty(globalThis, "document");
+  } else {
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      value: originalDocument,
+    });
+  }
   resetRequestLatencyStateForTests();
   resetWsConnectionStateForTests();
   vi.useRealTimers();
@@ -112,6 +141,12 @@ afterEach(() => {
 });
 
 describe("WsTransport", () => {
+  it("applies bounded reconnect jitter around the existing delay ladder", () => {
+    expect(jitterReconnectDelay(1_000, () => 0)).toBe(800);
+    expect(jitterReconnectDelay(1_000, () => 0.5)).toBe(1_000);
+    expect(jitterReconnectDelay(1_000, () => 1)).toBe(1_200);
+  });
+
   it("exchanges a URL-fragment token for a cookie before opening the browser websocket", async () => {
     window.location.hash = "#token=remote-secret";
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
@@ -321,6 +356,97 @@ describe("WsTransport", () => {
     expect(sockets).toHaveLength(2);
 
     transport.dispose();
+  });
+
+  it("coalesces focus, online, and visibility probes to one per ten seconds", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+
+    window.dispatchEvent(new Event("focus"));
+    window.dispatchEvent(new Event("online"));
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    expect(socket.sent).toHaveLength(1);
+    const firstProbe = JSON.parse(socket.sent[0] ?? "{}") as {
+      id: string;
+      body: { _tag: string };
+    };
+    expect(firstProbe.body._tag).toBe(WS_METHODS.serverProbe);
+    socket.serverMessage(JSON.stringify({ id: firstProbe.id, result: {} }));
+    await Promise.resolve();
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    window.dispatchEvent(new Event("focus"));
+    expect(socket.sent).toHaveLength(1);
+
+    await vi.advanceTimersByTimeAsync(1);
+    window.dispatchEvent(new Event("focus"));
+    expect(socket.sent).toHaveLength(2);
+
+    transport.dispose();
+  });
+
+  it("does not show foreground probes as slow user RPCs", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+
+    window.dispatchEvent(new Event("focus"));
+    vi.advanceTimersByTime(SLOW_RPC_THRESHOLD_MS);
+
+    expect(getSlowRpcRequests()).toEqual([]);
+    transport.dispose();
+  });
+
+  it("closes and reconnects only the generation whose foreground probe times out", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const firstSocket = getSocket();
+    firstSocket.open();
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(firstSocket.readyState).toBe(MockWebSocket.CLOSED);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sockets).toHaveLength(2);
+    const secondSocket = getSocket();
+    secondSocket.open();
+    expect(getWsConnectionState().phase).toBe("connected");
+
+    transport.dispose();
+  });
+
+  it("does not let a stale probe failure close a newer socket generation", async () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const firstSocket = getSocket();
+    firstSocket.open();
+    window.dispatchEvent(new Event("focus"));
+
+    transport.reconnect();
+    const secondSocket = getSocket();
+    secondSocket.open();
+    await Promise.resolve();
+
+    expect(secondSocket.readyState).toBe(MockWebSocket.OPEN);
+    expect(getWsConnectionState().phase).toBe("connected");
+    transport.dispose();
+  });
+
+  it("reconnects immediately on a foreground signal and removes listeners on disposal", () => {
+    const transport = new WsTransport("ws://localhost:3020");
+    const socket = getSocket();
+    socket.open();
+    socket.close();
+
+    window.dispatchEvent(new Event("online"));
+    expect(sockets).toHaveLength(2);
+
+    transport.dispose();
+    window.dispatchEvent(new Event("online"));
+    window.dispatchEvent(new Event("focus"));
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(sockets).toHaveLength(2);
   });
 
   it("does not let a stale socket close overwrite a newer connected socket", () => {

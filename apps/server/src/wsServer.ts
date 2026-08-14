@@ -2902,6 +2902,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return undefined;
       }
 
+      case WS_METHODS.serverProbe:
+        return {};
+
       case WS_METHODS.serverGetConfig:
         const keybindingsConfig = yield* keybindingsManager.loadConfigState;
         const providers = yield* providerAdvisoryProjection.getProviders;

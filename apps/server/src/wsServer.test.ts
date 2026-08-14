@@ -1678,6 +1678,19 @@ describe("WebSocket Server", () => {
     ).toBe(true);
   });
 
+  it("responds to server.probe without waiting for provider or orchestration work", async () => {
+    server = await createTestServer();
+
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("No server address");
+    const [ws] = await connectAndAwaitWelcome(address.port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.serverProbe);
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({});
+  });
+
   it("responds to server.getConfig", async () => {
     const stateDir = makeTempDir("t3code-state-get-config-");
     const keybindingsPath = path.join(stateDir, "keybindings.json");

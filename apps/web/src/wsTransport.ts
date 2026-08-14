@@ -2,6 +2,7 @@ import {
   type WsPush,
   type WsPushChannel,
   type WsPushMessage,
+  WS_METHODS,
   WebSocketResponse,
   type WsResponse as WsResponseMessage,
   WsResponse as WsResponseSchema,
@@ -37,6 +38,7 @@ interface SubscribeOptions {
 
 interface RequestOptions {
   readonly timeoutMs?: number | null;
+  readonly trackLatency?: boolean;
 }
 
 export class WsRequestError extends Error {
@@ -55,11 +57,14 @@ interface OutboundMessage {
   readonly id: string;
   readonly encoded: string;
   readonly method: string;
+  readonly trackLatency: boolean;
 }
 
 const REQUEST_TIMEOUT_MS = 60_000;
 const MAX_OUTBOUND_QUEUE_SIZE = 256;
 const RECONNECT_DELAYS_MS = [500, 1_000, 2_000, 4_000, 8_000];
+const FOREGROUND_PROBE_COALESCE_MS = 10_000;
+const FOREGROUND_PROBE_TIMEOUT_MS = 3_000;
 const INITIAL_CONNECTION_ERROR_MESSAGE = "Unable to connect to the F5 server WebSocket.";
 const WS_CONNECTION_CLOSED_MESSAGE = "WebSocket connection closed.";
 const AUTH_STATUS_PATH = "/auth/status";
@@ -67,6 +72,11 @@ const AUTH_SESSION_PATH = "/auth/session";
 const DETACHED_SOCKET_GENERATION = -1;
 const decodeWsResponse = decodeUnknownJsonResult(WsResponseSchema);
 const isWebSocketResponseEnvelope = Schema.is(WebSocketResponse);
+
+export function jitterReconnectDelay(baseDelayMs: number, random = Math.random): number {
+  const sample = Math.min(1, Math.max(0, random()));
+  return Math.round(baseDelayMs * (0.8 + sample * 0.4));
+}
 
 const isWsPushMessage = (value: WsResponseMessage): value is WsPush =>
   "type" in value && value.type === "push";
@@ -147,8 +157,20 @@ export class WsTransport {
   private authConnectInFlight = false;
   private disposed = false;
   private unregisterReconnectHandler: (() => void) | null = null;
+  private foregroundProbeGeneration: number | null = null;
+  private lastForegroundProbe: {
+    readonly generation: number;
+    readonly startedAtMs: number;
+  } | null = null;
   private readonly url: string;
   private readonly browserSessionAuth: boolean;
+  private readonly handleWindowFocus = () => this.handleForegroundSignal();
+  private readonly handleWindowOnline = () => this.handleForegroundSignal();
+  private readonly handleVisibilityChange = () => {
+    if (document.visibilityState === "visible") {
+      this.handleForegroundSignal();
+    }
+  };
 
   constructor(url?: string) {
     const bridgeUrl = window.desktopBridge?.getWsUrl();
@@ -164,6 +186,9 @@ export class WsTransport {
       url === undefined && !(bridgeUrl && bridgeUrl.length > 0) && !(envUrl && envUrl.length > 0);
 
     this.unregisterReconnectHandler = registerWsTransportReconnectHandler(() => this.reconnect());
+    window.addEventListener("focus", this.handleWindowFocus);
+    window.addEventListener("online", this.handleWindowOnline);
+    document.addEventListener("visibilitychange", this.handleVisibilityChange);
     this.connect();
   }
 
@@ -183,6 +208,7 @@ export class WsTransport {
       id,
       encoded: JSON.stringify(envelope),
       method,
+      trackLatency: options?.trackLatency ?? true,
     };
 
     return new Promise<T>((resolve, reject) => {
@@ -307,6 +333,9 @@ export class WsTransport {
 
     this.unregisterReconnectHandler?.();
     this.unregisterReconnectHandler = null;
+    window.removeEventListener("focus", this.handleWindowFocus);
+    window.removeEventListener("online", this.handleWindowOnline);
+    document.removeEventListener("visibilitychange", this.handleVisibilityChange);
 
     const currentSocket = this.ws;
     this.failPendingRequests("Transport disposed");
@@ -365,6 +394,7 @@ export class WsTransport {
       }
 
       this.reconnectAttempt = 0;
+      this.lastForegroundProbe = null;
       noteWsConnectionOpened();
       this.flushQueue();
     });
@@ -409,6 +439,50 @@ export class WsTransport {
 
   private isAuthoritativeSocket(generation: number, ws: WebSocket): boolean {
     return this.authoritativeSocketGeneration === generation && this.ws === ws;
+  }
+
+  private handleForegroundSignal(): void {
+    if (this.disposed) return;
+
+    const ws = this.ws;
+    if (ws?.readyState !== WebSocket.OPEN) {
+      if (ws?.readyState !== WebSocket.CONNECTING) {
+        this.reconnect();
+      }
+      return;
+    }
+
+    const generation = this.authoritativeSocketGeneration;
+    const now = Date.now();
+    if (this.foregroundProbeGeneration === generation) return;
+    if (
+      this.lastForegroundProbe?.generation === generation &&
+      now - this.lastForegroundProbe.startedAtMs < FOREGROUND_PROBE_COALESCE_MS
+    ) {
+      return;
+    }
+
+    this.foregroundProbeGeneration = generation;
+    this.lastForegroundProbe = { generation, startedAtMs: now };
+    void this.request(
+      WS_METHODS.serverProbe,
+      {},
+      { timeoutMs: FOREGROUND_PROBE_TIMEOUT_MS, trackLatency: false },
+    )
+      .catch((error: unknown) => {
+        if (!this.isAuthoritativeSocket(generation, ws)) return;
+        noteWsConnectionError(
+          asError(error, "WebSocket foreground connectivity probe failed.").message,
+        );
+        if (ws.readyState < WebSocket.CLOSING) {
+          ws.close();
+        }
+      })
+      .finally(() => {
+        if (this.foregroundProbeGeneration === generation) {
+          this.foregroundProbeGeneration = null;
+        }
+      });
   }
 
   private detachAuthoritativeSocket(): void {
@@ -521,7 +595,9 @@ export class WsTransport {
       try {
         this.ws.send(message.encoded);
         this.outboundQueue.delete(id);
-        trackSlowRpcRequestSent(message.id, message.method);
+        if (message.trackLatency) {
+          trackSlowRpcRequestSent(message.id, message.method);
+        }
       } catch (error) {
         throw asError(error, "Failed to send WebSocket request.");
       }
@@ -533,9 +609,10 @@ export class WsTransport {
       return;
     }
 
-    const delay =
+    const baseDelay =
       RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)] ??
       RECONNECT_DELAYS_MS[0]!;
+    const delay = jitterReconnectDelay(baseDelay);
 
     this.reconnectAttempt += 1;
     this.reconnectTimer = setTimeout(() => {

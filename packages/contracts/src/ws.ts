@@ -223,6 +223,7 @@ export const WS_METHODS = {
   previewAutomationClearOwner: "preview.automation.clearOwner",
 
   // Server meta
+  serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
   serverUpdateSettings: "server.updateSettings",
   serverRefreshProviders: "server.refreshProviders",
@@ -445,6 +446,7 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.previewAutomationClearOwner, PreviewAutomationClearOwnerInput),
 
   // Server meta
+  tagRequestBody(WS_METHODS.serverProbe, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, ServerSettingsPatch),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
