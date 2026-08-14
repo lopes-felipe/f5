@@ -39,7 +39,6 @@ import {
   type RuntimeItemStatus,
   type RuntimeContentStreamKind,
   DEFAULT_RUNTIME_MODE,
-  type RuntimeMode,
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
@@ -4301,6 +4300,16 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   } satisfies PermissionResult;
                 case "approval-required":
                   break;
+                case "auto-accept-edits":
+                  if (classifyRequestType(toolName) === "file_change_approval") {
+                    return {
+                      behavior: "allow",
+                      updatedInput: toolInput,
+                    } satisfies PermissionResult;
+                  }
+                  break;
+                case "auto":
+                  throw new Error("Claude does not support AI-reviewed approvals.");
                 default:
                   return assertNever(runtimeMode, "Claude runtime mode");
               }
@@ -4434,7 +4443,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const runtimePermissionMode = (() => {
           switch (runtimeMode) {
             case "approval-required":
-              return undefined;
+              return "default" as const;
+            case "auto-accept-edits":
+              return "acceptEdits" as const;
+            case "auto":
+              throw new Error("Claude does not support AI-reviewed approvals.");
             case "full-access":
               return "bypassPermissions" as const;
             default:
@@ -4806,13 +4819,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           };
         } else if (input.interactionMode === "default") {
           yield* Effect.tryPromise({
-            try: () =>
-              context.query.setPermissionMode(context.basePermissionMode ?? "bypassPermissions"),
+            try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
           context.configuredBase = {
             ...context.configuredBase,
-            permissionMode: context.basePermissionMode ?? "bypassPermissions",
+            permissionMode: context.basePermissionMode ?? "default",
           };
         }
 

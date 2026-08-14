@@ -1,4 +1,4 @@
-import { ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
+import { ProviderInteractionMode, RuntimeMode, type ProviderKind } from "@t3tools/contracts";
 import { memo, type ReactNode } from "react";
 import { BotIcon, EllipsisIcon, ListTodoIcon, NotebookPenIcon } from "lucide-react";
 import { Button } from "../ui/button";
@@ -12,6 +12,7 @@ import {
   MenuSeparator as MenuDivider,
   MenuTrigger,
 } from "../ui/menu";
+import { RuntimeModeMenuItems } from "./RuntimeModePicker";
 
 export const CompactComposerControlsMenu = memo(function CompactComposerControlsMenu(props: {
   activePlan: boolean;
@@ -22,11 +23,12 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
   showInteractionModeToggle?: boolean;
   planSidebarOpen: boolean;
   runtimeMode: RuntimeMode;
+  provider: ProviderKind;
   traitsMenuContent?: ReactNode;
   onCompactConversation?: () => void;
   onToggleInteractionMode: () => void;
   onTogglePlanSidebar: () => void;
-  onToggleRuntimeMode: () => void;
+  onRuntimeModeChange: (value: RuntimeMode) => void;
 }) {
   return (
     <Menu>
@@ -77,17 +79,12 @@ export const CompactComposerControlsMenu = memo(function CompactComposerControls
         ) : null}
         <MenuGroup>
           <div className="px-2 py-1.5 font-medium text-muted-foreground text-xs">Access</div>
-          <MenuRadioGroup
+          <RuntimeModeMenuItems
+            disabled={props.disabled}
+            provider={props.provider}
             value={props.runtimeMode}
-            onValueChange={(value) => {
-              if (props.disabled) return;
-              if (!value || value === props.runtimeMode) return;
-              props.onToggleRuntimeMode();
-            }}
-          >
-            <MenuRadioItem value="approval-required">Supervised</MenuRadioItem>
-            <MenuRadioItem value="full-access">Full access</MenuRadioItem>
-          </MenuRadioGroup>
+            onValueChange={props.onRuntimeModeChange}
+          />
         </MenuGroup>
         {props.canCompactConversation ? (
           <>

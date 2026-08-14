@@ -7,10 +7,27 @@ import { ChildProcessSpawner } from "effect/unstable/process";
 import { describe, expect, it } from "vitest";
 
 import {
+  buildOpenCodePermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeLive,
   resolveOpenCodeInvocation,
 } from "./opencodeRuntime.ts";
+
+describe("buildOpenCodePermissionRules", () => {
+  it("allows edits but keeps shell and network gated in auto-accept-edits mode", () => {
+    const rules = buildOpenCodePermissionRules("auto-accept-edits");
+
+    expect(rules).toContainEqual({ permission: "edit", pattern: "*", action: "allow" });
+    expect(rules).toContainEqual({ permission: "bash", pattern: "*", action: "ask" });
+    expect(rules).toContainEqual({ permission: "webfetch", pattern: "*", action: "ask" });
+  });
+
+  it("fails closed for unsupported AI review mode", () => {
+    expect(() => buildOpenCodePermissionRules("auto")).toThrow(
+      "OpenCode does not support AI-reviewed approvals",
+    );
+  });
+});
 
 describe("resolveOpenCodeInvocation", () => {
   it("routes OpenCode commands through the shared invocation resolver", () => {

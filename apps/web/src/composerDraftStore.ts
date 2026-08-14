@@ -1,5 +1,6 @@
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
+  isRuntimeMode,
   ProjectId,
   ProviderInstanceId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
@@ -645,11 +646,9 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
           typeof createdAt === "string" && createdAt.length > 0
             ? createdAt
             : new Date().toISOString(),
-        runtimeMode:
-          candidateDraftThread.runtimeMode === "approval-required" ||
-          candidateDraftThread.runtimeMode === "full-access"
-            ? candidateDraftThread.runtimeMode
-            : DEFAULT_RUNTIME_MODE,
+        runtimeMode: isRuntimeMode(candidateDraftThread.runtimeMode)
+          ? candidateDraftThread.runtimeMode
+          : DEFAULT_RUNTIME_MODE,
         interactionMode:
           candidateDraftThread.interactionMode === "plan" ||
           candidateDraftThread.interactionMode === "default"
@@ -745,11 +744,9 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
       serviceTier:
         typeof draftCandidate.serviceTier === "string" ? draftCandidate.serviceTier : null,
     });
-    const runtimeMode =
-      draftCandidate.runtimeMode === "approval-required" ||
-      draftCandidate.runtimeMode === "full-access"
-        ? draftCandidate.runtimeMode
-        : null;
+    const runtimeMode = isRuntimeMode(draftCandidate.runtimeMode)
+      ? draftCandidate.runtimeMode
+      : null;
     const interactionMode =
       draftCandidate.interactionMode === "plan" || draftCandidate.interactionMode === "default"
         ? draftCandidate.interactionMode
@@ -1440,8 +1437,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         if (threadId.length === 0) {
           return;
         }
-        const nextRuntimeMode =
-          runtimeMode === "approval-required" || runtimeMode === "full-access" ? runtimeMode : null;
+        const nextRuntimeMode = isRuntimeMode(runtimeMode) ? runtimeMode : null;
         set((state) => {
           const existing = state.draftsByThreadId[threadId];
           if (!existing && nextRuntimeMode === null) {

@@ -240,6 +240,9 @@ function resolveRequestedModeId(input: {
         modeState.availableModes.find((mode) => !isPlanMode(mode))?.id ??
         modeState.currentModeId
       );
+    case "auto-accept-edits":
+    case "auto":
+      throw new Error(`Cursor does not support runtime mode '${input.runtimeMode}'.`);
     default:
       return assertNever(input.runtimeMode, "Cursor runtime mode");
   }
@@ -715,6 +718,9 @@ export function makeCursorAdapter(
                   }
                   case "approval-required":
                     break;
+                  case "auto-accept-edits":
+                  case "auto":
+                    throw new Error(`Cursor does not support runtime mode '${input.runtimeMode}'.`);
                   default:
                     return assertNever(input.runtimeMode, "Cursor approval mode");
                 }

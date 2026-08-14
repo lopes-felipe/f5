@@ -164,8 +164,6 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   ListTodoIcon,
-  LockIcon,
-  LockOpenIcon,
   NotebookPenIcon,
   XIcon,
 } from "lucide-react";
@@ -222,6 +220,7 @@ import { selectThreadTerminalState, useTerminalStateStore } from "../terminalSta
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
+import { RuntimeModePicker } from "./chat/RuntimeModePicker";
 import { ChatHeader } from "./chat/ChatHeader";
 import {
   buildExpandedImagePreview,
@@ -2774,11 +2773,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const toggleInteractionMode = useCallback(() => {
     handleInteractionModeChange(interactionMode === "plan" ? "default" : "plan");
   }, [handleInteractionModeChange, interactionMode]);
-  const toggleRuntimeMode = useCallback(() => {
-    void handleRuntimeModeChange(
-      runtimeMode === "full-access" ? "approval-required" : "full-access",
-    );
-  }, [handleRuntimeModeChange, runtimeMode]);
   const togglePlanSidebar = useCallback(() => {
     if (planSidebarOpen) {
       const turnKey = activePlan?.turnId ?? activeProposedPlan?.turnId ?? null;
@@ -5713,6 +5707,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                               interactionMode={interactionMode}
                               showInteractionModeToggle={showInteractionModeToggle}
                               planSidebarOpen={planSidebarOpen}
+                              provider={selectedProvider}
                               runtimeMode={runtimeMode}
                               traitsMenuContent={
                                 selectedProvider === "codex" ? (
@@ -5731,7 +5726,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                               onCompactConversation={onCompactConversation}
                               onToggleInteractionMode={toggleInteractionMode}
                               onTogglePlanSidebar={togglePlanSidebar}
-                              onToggleRuntimeMode={toggleRuntimeMode}
+                              onRuntimeModeChange={handleRuntimeModeChange}
                             />
                           ) : (
                             <>
@@ -5799,30 +5794,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                 className="mx-0.5 hidden h-4 sm:block"
                               />
 
-                              <Button
-                                variant="ghost"
-                                className="shrink-0 whitespace-nowrap px-2 text-muted-foreground/70 hover:text-foreground/80 sm:px-3"
-                                size="sm"
-                                type="button"
-                                onClick={() =>
-                                  void handleRuntimeModeChange(
-                                    runtimeMode === "full-access"
-                                      ? "approval-required"
-                                      : "full-access",
-                                  )
-                                }
+                              <RuntimeModePicker
                                 disabled={isPendingTurnDispatchBlocked}
-                                title={
-                                  runtimeMode === "full-access"
-                                    ? "Full access — click to require approvals"
-                                    : "Approval required — click for full access"
-                                }
-                              >
-                                {runtimeMode === "full-access" ? <LockOpenIcon /> : <LockIcon />}
-                                <span className="sr-only sm:not-sr-only">
-                                  {runtimeMode === "full-access" ? "Full access" : "Supervised"}
-                                </span>
-                              </Button>
+                                provider={selectedProvider}
+                                value={runtimeMode}
+                                onValueChange={handleRuntimeModeChange}
+                              />
 
                               {activePlan || activeProposedPlan || planSidebarOpen ? (
                                 <>

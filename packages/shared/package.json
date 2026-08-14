@@ -163,6 +163,10 @@
     "./exhaustive": {
       "types": "./src/exhaustive.ts",
       "import": "./src/exhaustive.ts"
+    },
+    "./runtimeMode": {
+      "types": "./src/runtimeMode.ts",
+      "import": "./src/runtimeMode.ts"
     }
   },
   "scripts": {

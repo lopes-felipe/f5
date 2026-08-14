@@ -6,6 +6,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Four runtime safety modes: Supervised, Auto-accept edits, Codex Auto review, and Full access,
+  with provider-specific capability gating.
 - Durable per-thread next-turn queues with pause/resume, editing, reordering, run-now,
   duplication, retry, bulk clear/undo, queue badges, keyboard shortcuts, and queue visibility
   outside the active thread.
@@ -22,6 +24,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Changed
 
+- **Breaking:** `RuntimeMode` now includes `auto-accept-edits` and `auto`. Older clients reject
+  threads, queued turns, or events carrying either literal cleanly and must be upgraded before
+  using those modes.
 - **Breaking:** the old `nextTurnQueue.enqueue` and `nextTurnQueue.resume` WebSocket methods were
   replaced by server-owned `nextTurnQueue.submit`, `nextTurnQueue.setPaused`, and the expanded
   queue mutation API. Established-thread sends now always pass through durable admission.

@@ -10,6 +10,7 @@
  * @module ProviderServiceLive
  */
 import {
+  DEFAULT_RUNTIME_MODE,
   NonNegativeInt,
   ProjectId,
   ProviderKind,
@@ -32,6 +33,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
 import { Effect, Layer, Option, PubSub, Queue, Ref, Schema, SchemaIssue, Stream } from "effect";
 
 import {
@@ -521,6 +523,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           projectMcpServers: resolvedProjectMcp?.servers,
         });
 
+        const recoveredRuntimeMode = input.binding.runtimeMode ?? DEFAULT_RUNTIME_MODE;
+        const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
+          input.binding.provider,
+          recoveredRuntimeMode,
+        );
+        if (unsupportedRuntimeMode) {
+          return yield* toValidationError(input.operation, unsupportedRuntimeMode);
+        }
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
@@ -532,7 +542,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           ...(persistedModelOptions ? { modelOptions: persistedModelOptions } : {}),
           ...(resumedProviderOptions ? { providerOptions: resumedProviderOptions } : {}),
           ...(hasResumeCursor ? { resumeCursor: input.binding.resumeCursor } : {}),
-          runtimeMode: input.binding.runtimeMode ?? "full-access",
+          runtimeMode: recoveredRuntimeMode,
         });
         if (resumed.provider !== adapter.provider) {
           return yield* toValidationError(
@@ -702,6 +712,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               "ProviderService.startSession",
               `Provider instance '${requestedInstanceId}' is disabled in settings.`,
             );
+          }
+          const unsupportedRuntimeMode = runtimeModeUnsupportedReason(
+            resolvedProvider,
+            parsed.runtimeMode,
+          );
+          if (unsupportedRuntimeMode) {
+            return yield* toValidationError("ProviderService.startSession", unsupportedRuntimeMode);
           }
           const input = {
             ...parsed,

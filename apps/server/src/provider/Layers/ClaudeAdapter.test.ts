@@ -578,6 +578,60 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("auto-accepts edits while keeping shell commands gated", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "auto-accept-edits",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.permissionMode, "acceptEdits");
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) return;
+
+      const editPermission = yield* Effect.promise(() =>
+        canUseTool(
+          "Edit",
+          { file_path: "/tmp/example.ts", old_string: "old", new_string: "new" },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "tool-auto-edit-1",
+            requestId: "request-auto-edit-1",
+          },
+        ),
+      );
+      assert.equal(editPermission.behavior, "allow");
+
+      const shellAbort = new AbortController();
+      let shellResolved = false;
+      const shellPermission = canUseTool(
+        "Bash",
+        { command: "pwd" },
+        {
+          signal: shellAbort.signal,
+          toolUseID: "tool-auto-shell-1",
+          requestId: "request-auto-shell-1",
+        },
+      ).then((result) => {
+        shellResolved = true;
+        return result;
+      });
+      yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 0)));
+      assert.equal(shellResolved, false);
+      shellAbort.abort();
+      const shellResult = yield* Effect.promise(() => shellPermission);
+      assert.equal(shellResult.behavior, "deny");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("keeps explicit claude permission mode over runtime-derived defaults", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

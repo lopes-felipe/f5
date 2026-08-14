@@ -420,24 +420,68 @@ export function readCodexAccountSnapshot(response: unknown): CodexAccountSnapsho
   };
 }
 
-function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
-  readonly approvalPolicy: "on-request" | "never";
-  readonly sandbox: "workspace-write" | "danger-full-access";
+export function mapCodexRuntimeMode(runtimeMode: RuntimeMode): {
+  readonly approvalPolicy: "untrusted" | "on-request" | "never";
+  readonly sandbox: "read-only" | "workspace-write" | "danger-full-access";
+  readonly approvalsReviewer: "user" | "auto_review";
 } {
   switch (runtimeMode) {
     case "approval-required":
       return {
+        approvalPolicy: "untrusted",
+        sandbox: "read-only",
+        approvalsReviewer: "user",
+      };
+    case "auto-accept-edits":
+      return {
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
+        approvalsReviewer: "user",
+      };
+    case "auto":
+      return {
+        approvalPolicy: "on-request",
+        sandbox: "workspace-write",
+        approvalsReviewer: "auto_review",
       };
     case "full-access":
       return {
         approvalPolicy: "never",
         sandbox: "danger-full-access",
+        approvalsReviewer: "user",
       };
     default:
       return assertNever(runtimeMode, "Codex runtime mode");
   }
+}
+
+export function buildCodexThreadOpenRequestParams(input: {
+  readonly cwd?: string;
+  readonly model?: string;
+  readonly resumeThreadId?: string;
+  readonly runtimeMode: RuntimeMode;
+  readonly serviceTier?: string;
+}) {
+  const overrides = {
+    model: input.model ?? null,
+    ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
+    cwd: input.cwd ?? null,
+    ...mapCodexRuntimeMode(input.runtimeMode),
+  };
+  return {
+    start: {
+      ...overrides,
+      experimentalRawEvents: false,
+    },
+    ...(input.resumeThreadId
+      ? {
+          resume: {
+            ...overrides,
+            threadId: input.resumeThreadId,
+          },
+        }
+      : {}),
+  };
 }
 
 export function resolveCodexModelForAccount(
@@ -768,17 +812,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       }
 
       const normalizedModel = resolveCodexModelForAccount(fallbackModel, context.account);
-      const sessionOverrides = {
-        model: normalizedModel ?? null,
+      const threadOpenParams = buildCodexThreadOpenRequestParams({
+        ...(normalizedModel ? { model: normalizedModel } : {}),
         ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
-        cwd: input.cwd ?? null,
-        ...mapCodexRuntimeMode(input.runtimeMode ?? DEFAULT_RUNTIME_MODE),
-      };
-
-      const threadStartParams = {
-        ...sessionOverrides,
-        experimentalRawEvents: false,
-      };
+        ...(input.cwd ? { cwd: input.cwd } : {}),
+        ...(resumeThreadId ? { resumeThreadId } : {}),
+        runtimeMode: input.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+      });
       this.emitLifecycleEvent(
         context,
         "session/threadOpenRequested",
@@ -799,10 +839,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       if (resumeThreadId) {
         try {
           threadOpenMethod = "thread/resume";
-          threadOpenResponse = await this.sendRequest(context, "thread/resume", {
-            ...sessionOverrides,
-            threadId: resumeThreadId,
-          });
+          threadOpenResponse = await this.sendRequest(
+            context,
+            "thread/resume",
+            threadOpenParams.resume!,
+          );
         } catch (error) {
           if (!isRecoverableThreadResumeError(error)) {
             this.emitErrorEvent(
@@ -833,11 +874,19 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
             recoverable: true,
             cause: error instanceof Error ? error.message : String(error),
           }).pipe(this.runPromise);
-          threadOpenResponse = await this.sendRequest(context, "thread/start", threadStartParams);
+          threadOpenResponse = await this.sendRequest(
+            context,
+            "thread/start",
+            threadOpenParams.start,
+          );
         }
       } else {
         threadOpenMethod = "thread/start";
-        threadOpenResponse = await this.sendRequest(context, "thread/start", threadStartParams);
+        threadOpenResponse = await this.sendRequest(
+          context,
+          "thread/start",
+          threadOpenParams.start,
+        );
       }
 
       const threadOpenRecord = this.readObject(threadOpenResponse);

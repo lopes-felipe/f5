@@ -890,6 +890,17 @@ describe("composerDraftStore runtime and interaction settings", () => {
     );
   });
 
+  it.each(["auto-accept-edits", "auto"] as const)(
+    "persists the %s runtime mode without dropping it",
+    (runtimeMode) => {
+      useComposerDraftStore.getState().setRuntimeMode(threadId, runtimeMode);
+
+      expect(useComposerDraftStore.getState().draftsByThreadId[threadId]?.runtimeMode).toBe(
+        runtimeMode,
+      );
+    },
+  );
+
   it("stores interaction mode overrides in the composer draft", () => {
     const store = useComposerDraftStore.getState();
 

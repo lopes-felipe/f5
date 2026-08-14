@@ -490,6 +490,9 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     }
                     case "approval-required":
                       break;
+                    case "auto-accept-edits":
+                    case "auto":
+                      throw new Error(`Grok does not support runtime mode '${runtimeMode}'.`);
                     default:
                       return assertNever(runtimeMode, "Grok approval mode");
                   }

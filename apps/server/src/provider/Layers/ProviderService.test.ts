@@ -533,6 +533,30 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("rejects unsupported runtime modes before starting a provider", () => {
+    const cursor = makeFakeCodexAdapter("cursor");
+    const layer = makeProviderServiceLayerForAdapters(new Map([["cursor", cursor.adapter]]));
+
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-cursor-auto");
+      const result = yield* provider
+        .startSession(threadId, {
+          threadId,
+          provider: "cursor",
+          runtimeMode: "auto",
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ProviderValidationError");
+        assert.equal(result.failure.message.includes("Auto review is not available"), true);
+      }
+      assert.equal(cursor.startSession.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("stops stale cross-provider sessions before starting a new provider session", () => {
     const codex = makeFakeCodexAdapter("codex");
     const claude = makeFakeCodexAdapter("claudeAgent");

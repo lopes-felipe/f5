@@ -4,8 +4,11 @@ import type {
   PlanningWorkflow,
   ProviderKind,
   ProviderModelOptions,
+  RuntimeMode,
 } from "@t3tools/contracts";
+import { RUNTIME_MODE_VALUES } from "@t3tools/contracts";
 import { normalizeModelSlug } from "@t3tools/shared/model";
+import { runtimeModeCapabilities } from "@t3tools/shared/runtimeMode";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDownIcon } from "lucide-react";
 
@@ -42,6 +45,7 @@ import {
   DialogTitle,
 } from "../ui/dialog";
 import { ProviderFields, normalizeWorkflowSlotModelOptions } from "./WorkflowCreateDialog";
+import { RUNTIME_MODE_PRESENTATION } from "../chat/runtimeModePresentation";
 
 function getSingleProviderModelOptions(
   provider: ProviderKind,
@@ -180,7 +184,7 @@ export function WorkflowImplementDialog(props: {
   const [modelOptions, setModelOptions] = useState<ProviderModelOptions | undefined>(
     initialDefaults.modelOptions,
   );
-  const [requireApproval, setRequireApproval] = useState(false);
+  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>("full-access");
   const [codeReviewEnabled, setCodeReviewEnabled] = useState(true);
   const [envMode, setEnvMode] = useState<EnvModeChoice>("local");
   const [baseBranch, setBaseBranch] = useState<string | null>(null);
@@ -212,12 +216,18 @@ export function WorkflowImplementDialog(props: {
   const projectCwd = project?.cwd ?? null;
 
   useEffect(() => {
+    if (!runtimeModeCapabilities(provider).has(runtimeMode)) {
+      setRuntimeMode("full-access");
+    }
+  }, [provider, runtimeMode]);
+
+  useEffect(() => {
     if (props.open && !wasOpenRef.current) {
       const defaults = resolveImplementationDefaults(props.workflow);
       setProvider(defaults.provider);
       setModel(defaults.model);
       setModelOptions(defaults.modelOptions);
-      setRequireApproval(false);
+      setRuntimeMode("full-access");
       setCodeReviewEnabled(true);
       setEnvMode("local");
       setBaseBranch(null);
@@ -282,7 +292,7 @@ export function WorkflowImplementDialog(props: {
         model: selection,
         ...(normalizedModelOptions ? { modelOptions: normalizedModelOptions } : {}),
         ...(providerOptions ? { providerOptions } : {}),
-        runtimeMode: requireApproval ? "approval-required" : "full-access",
+        runtimeMode,
         codeReviewEnabled,
         envMode,
         ...(envMode === "worktree" && baseBranch ? { baseBranch } : {}),
@@ -326,19 +336,31 @@ export function WorkflowImplementDialog(props: {
             }}
           />
           <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
-            <label className="flex items-start gap-3">
-              <Checkbox
-                checked={requireApproval}
-                onCheckedChange={(checked) => setRequireApproval(checked === true)}
-              />
-              <span className="space-y-1">
-                <span className="block text-sm font-medium text-foreground">Require approval</span>
-                <span className="block text-sm text-muted-foreground">
-                  Use approval-required runtime mode instead of full-access for the implementation
-                  thread.
-                </span>
-              </span>
+            <label
+              className="block text-sm font-medium text-foreground"
+              htmlFor="workflow-runtime-mode"
+            >
+              Access mode
             </label>
+            <select
+              id="workflow-runtime-mode"
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+              value={runtimeMode}
+              onChange={(event) => setRuntimeMode(event.currentTarget.value as RuntimeMode)}
+            >
+              {RUNTIME_MODE_VALUES.map((mode) => (
+                <option
+                  key={mode}
+                  value={mode}
+                  disabled={!runtimeModeCapabilities(provider).has(mode)}
+                >
+                  {RUNTIME_MODE_PRESENTATION[mode].label}
+                </option>
+              ))}
+            </select>
+            <p className="text-sm text-muted-foreground">
+              {RUNTIME_MODE_PRESENTATION[runtimeMode].description}
+            </p>
           </div>
           <div className="space-y-2 rounded-md border border-input bg-background px-3 py-3">
             <label className="flex items-start gap-3">

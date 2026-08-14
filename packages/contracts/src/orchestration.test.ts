@@ -16,6 +16,7 @@ import {
   OrchestrationRetryWorkflowResult,
   OrchestrationMessage,
   OrchestrationSession,
+  RuntimeMode,
   TaskItem,
   ProjectCreateCommand,
   ThreadArchivedPayload,
@@ -764,6 +765,15 @@ it.effect("decodes orchestration session runtime mode defaults", () =>
     assert.strictEqual(parsed.runtimeMode, DEFAULT_RUNTIME_MODE);
   }),
 );
+
+it("widens runtime modes with an explicit clean legacy-client failure", () => {
+  const LegacyRuntimeMode = Schema.Literals(["approval-required", "full-access"]);
+
+  assert.equal(Schema.decodeUnknownSync(RuntimeMode)("auto"), "auto");
+  assert.equal(Schema.decodeUnknownSync(RuntimeMode)("auto-accept-edits"), "auto-accept-edits");
+  assert.throws(() => Schema.decodeUnknownSync(LegacyRuntimeMode)("auto"));
+  assert.equal(Schema.decodeUnknownSync(RuntimeMode)("approval-required"), "approval-required");
+});
 
 it.effect("defaults proposed plan implementation metadata for historical rows", () =>
   Effect.gen(function* () {

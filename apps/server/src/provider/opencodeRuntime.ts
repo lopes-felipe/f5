@@ -233,6 +233,20 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
         { permission: "doom_loop", pattern: "*", action: "ask" },
         { permission: "question", pattern: "*", action: "allow" },
       ];
+    case "auto-accept-edits":
+      return [
+        { permission: "*", pattern: "*", action: "ask" },
+        { permission: "bash", pattern: "*", action: "ask" },
+        { permission: "edit", pattern: "*", action: "allow" },
+        { permission: "webfetch", pattern: "*", action: "ask" },
+        { permission: "websearch", pattern: "*", action: "ask" },
+        { permission: "codesearch", pattern: "*", action: "ask" },
+        { permission: "external_directory", pattern: "*", action: "ask" },
+        { permission: "doom_loop", pattern: "*", action: "ask" },
+        { permission: "question", pattern: "*", action: "allow" },
+      ];
+    case "auto":
+      throw new Error("OpenCode does not support AI-reviewed approvals.");
     default:
       return assertNever(runtimeMode, "OpenCode runtime mode");
   }

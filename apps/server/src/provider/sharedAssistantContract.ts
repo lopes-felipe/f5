@@ -4,6 +4,7 @@ import {
   type RuntimeMode,
   type ThreadSessionNotes,
 } from "@t3tools/contracts";
+import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v2";
 export const CODEX_SUPPLEMENT_VERSION = "v2";
@@ -337,7 +338,9 @@ function buildRuntimeContextSection(input: SharedInstructionInput): string | und
       ? `- Recorded turns in this thread before this session: ${input.turnCount}`
       : null,
     input.cwd ? `- Working directory: ${formatClaudeRuntimeString(input.cwd)}` : null,
-    input.runtimeMode ? `- Runtime mode: ${input.runtimeMode}` : null,
+    input.runtimeMode
+      ? `- Runtime mode: ${input.runtimeMode} (${runtimeModeGloss(input.runtimeMode)})`
+      : null,
     input.model ? `- Active model: ${input.model}` : null,
     input.effort ? `- Active reasoning effort: ${input.effort}` : null,
   ].filter((line): line is string => line !== null);

@@ -4,6 +4,7 @@ import type {
   NextTurnQueueSnapshot,
   RuntimeMode,
 } from "@t3tools/contracts";
+import { RUNTIME_MODE_VALUES } from "@t3tools/contracts";
 import { CSS } from "@dnd-kit/utilities";
 import { useSortable } from "@dnd-kit/sortable";
 import {
@@ -23,6 +24,7 @@ import { Textarea } from "../ui/textarea";
 import { SkillInlineChip } from "./SkillInlineChip";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { buildQueueRowDisplay } from "./NextTurnQueuePanel.logic";
+import { RUNTIME_MODE_PRESENTATION } from "./runtimeModePresentation";
 
 export function NextTurnQueueRow({
   item,
@@ -166,8 +168,11 @@ export function NextTurnQueueRow({
               value={editRuntimeMode}
               onChange={(event) => setEditRuntimeMode(event.currentTarget.value as RuntimeMode)}
             >
-              <option value="approval-required">Ask approval</option>
-              <option value="full-access">Full access</option>
+              {RUNTIME_MODE_VALUES.map((mode) => (
+                <option key={mode} value={mode}>
+                  {RUNTIME_MODE_PRESENTATION[mode].label}
+                </option>
+              ))}
             </select>
           </div>
           {display.contextCount > 0 || display.attachedFilePaths.length > 0 ? (

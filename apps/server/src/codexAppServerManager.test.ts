@@ -12,6 +12,7 @@ import {
 
 import {
   buildCodexInitializeParams,
+  buildCodexThreadOpenRequestParams,
   codexRequestTimeoutMs,
   CodexAppServerManager,
   classifyCodexStderrLine,
@@ -352,6 +353,26 @@ describe("isRecoverableThreadResumeError", () => {
       ),
     ).toBe(false);
   });
+});
+
+describe("Codex runtime-mode thread configuration", () => {
+  it.each([
+    ["approval-required", "untrusted", "read-only", "user"],
+    ["auto-accept-edits", "on-request", "workspace-write", "user"],
+    ["auto", "on-request", "workspace-write", "auto_review"],
+    ["full-access", "never", "danger-full-access", "user"],
+  ] as const)(
+    "sends explicit reviewer state for %s on start and resume",
+    (runtimeMode, approvalPolicy, sandbox, approvalsReviewer) => {
+      const params = buildCodexThreadOpenRequestParams({
+        runtimeMode,
+        resumeThreadId: "provider-thread-1",
+      });
+      const expected = { approvalPolicy, sandbox, approvalsReviewer };
+      expect(params.start).toMatchObject(expected);
+      expect(params.resume).toMatchObject(expected);
+    },
+  );
 });
 
 describe("readCodexAccountSnapshot", () => {

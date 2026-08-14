@@ -126,8 +126,15 @@ export const ModelSelection = ModelSelectionSource.pipe(
 );
 export type ModelSelection = typeof ModelSelection.Type;
 
-export const RuntimeMode = Schema.Literals(["approval-required", "full-access"]);
+export const RUNTIME_MODE_VALUES = [
+  "approval-required",
+  "auto-accept-edits",
+  "auto",
+  "full-access",
+] as const;
+export const RuntimeMode = Schema.Literals(RUNTIME_MODE_VALUES);
 export type RuntimeMode = typeof RuntimeMode.Type;
+export const isRuntimeMode = Schema.is(RuntimeMode);
 export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
