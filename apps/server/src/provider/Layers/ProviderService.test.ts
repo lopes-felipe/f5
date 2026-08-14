@@ -3,9 +3,9 @@ import os from "node:os";
 import path from "node:path";
 
 import type {
+  ChatAttachment,
   ProviderApprovalDecision,
   ProviderRuntimeEvent,
-  ProviderSendTurnInput,
   ProviderSession,
   ProviderTurnStartResult,
 } from "@t3tools/contracts";
@@ -30,6 +30,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type { ProviderAdapterSendTurnInput } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
@@ -48,6 +49,12 @@ import {
   SqlitePersistenceMemory,
 } from "../../persistence/Layers/Sqlite.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
+import { ServerConfig } from "../../config.ts";
+
+const providerServiceConfigLayer = ServerConfig.layerTest(
+  process.cwd(),
+  path.join(os.tmpdir(), `f5-provider-service-tests-${process.pid}`),
+).pipe(Layer.provide(NodeServices.layer));
 
 const asRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.makeUnsafe(value);
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
@@ -153,7 +160,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
 
   const sendTurn = vi.fn(
     (
-      input: ProviderSendTurnInput,
+      input: ProviderAdapterSendTurnInput,
     ): Effect.Effect<ProviderTurnStartResult, ProviderAdapterError> => {
       if (!sessions.has(input.threadId)) {
         return Effect.fail(
@@ -337,6 +344,7 @@ function makeProviderServiceLayer() {
   const layer = it.layer(
     Layer.mergeAll(
       makeProviderServiceLive().pipe(
+        Layer.provide(providerServiceConfigLayer),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
@@ -369,6 +377,7 @@ function makeProviderServiceLayerForAdapters(
 
   return Layer.mergeAll(
     makeProviderServiceLive().pipe(
+      Layer.provide(providerServiceConfigLayer),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
@@ -404,6 +413,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
     }).pipe(Effect.provide(directoryLayer));
 
     const providerLayer = makeProviderServiceLive().pipe(
+      Layer.provide(providerServiceConfigLayer),
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(makeProjectMcpConfigServiceTestLayer()),
@@ -458,6 +468,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const firstProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(providerServiceConfigLayer),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
@@ -491,6 +502,7 @@ it.effect(
         Layer.provide(runtimeRepositoryLayer),
       );
       const secondProviderLayer = makeProviderServiceLive().pipe(
+        Layer.provide(providerServiceConfigLayer),
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(makeProjectMcpConfigServiceTestLayer()),
@@ -533,6 +545,58 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("adds authorized local attachment paths only at the adapter boundary", () => {
+    const codex = makeFakeCodexAdapter("codex");
+    const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));
+    const attachment: ChatAttachment = {
+      type: "image",
+      id: "thread-provider-context-12345678-1234-1234-1234-123456789abc",
+      name: "screen shot.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+    const attachmentPath = path.join(
+      os.tmpdir(),
+      `f5-provider-service-tests-${process.pid}`,
+      "attachments",
+      `${attachment.id}.png`,
+    );
+
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-provider-context");
+      fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
+      fs.writeFileSync(attachmentPath, Uint8Array.from([1, 2, 3, 4]));
+
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "Inspect this image",
+        attachments: [attachment],
+      });
+
+      const adapterInput = codex.sendTurn.mock.calls.at(-1)?.[0];
+      assert.equal(adapterInput?.resolvedAttachments?.length, 1);
+      assert.deepEqual(adapterInput?.resolvedAttachments?.[0], {
+        ...attachment,
+        localPath: attachmentPath,
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (fs.existsSync(attachmentPath)) {
+            fs.unlinkSync(attachmentPath);
+          }
+        }),
+      ),
+      Effect.provide(layer),
+    );
+  });
+
   it.effect("rejects unsupported runtime modes before starting a provider", () => {
     const cursor = makeFakeCodexAdapter("cursor");
     const layer = makeProviderServiceLayerForAdapters(new Map([["cursor", cursor.adapter]]));

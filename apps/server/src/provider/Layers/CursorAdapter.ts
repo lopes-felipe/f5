@@ -84,6 +84,7 @@ import {
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 
 const PROVIDER: ProviderKind = "cursor";
 const CURSOR_RESUME_VERSION = 1 as const;
@@ -1011,35 +1012,50 @@ export function makeCursorAdapter(
         if (input.input?.trim()) {
           promptParts.push({ type: "text", text: input.input.trim() });
         }
+        const attachmentContext = buildProviderAttachmentRuntimeContext(
+          input.resolvedAttachments ?? [],
+        );
+        if (attachmentContext) {
+          promptParts.push({ type: "text", text: attachmentContext });
+        }
         if (input.attachments && input.attachments.length > 0) {
           for (const attachment of input.attachments) {
-            const attachmentPath = resolveAttachmentPath({
-              attachmentsDir: serverConfig.attachmentsDir,
-              attachment,
-            });
-            if (!attachmentPath) {
-              return yield* new ProviderAdapterRequestError({
-                provider: PROVIDER,
-                method: "session/prompt",
-                detail: `Invalid attachment id '${attachment.id}'.`,
-              });
-            }
-            const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ProviderAdapterRequestError({
+            switch (attachment.type) {
+              case "image": {
+                const attachmentPath = resolveAttachmentPath({
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  attachment,
+                });
+                if (!attachmentPath) {
+                  return yield* new ProviderAdapterRequestError({
                     provider: PROVIDER,
                     method: "session/prompt",
-                    detail: cause.message,
-                    cause,
-                  }),
-              ),
-            );
-            promptParts.push({
-              type: "image",
-              data: Buffer.from(bytes).toString("base64"),
-              mimeType: attachment.mimeType,
-            });
+                    detail: `Invalid attachment id '${attachment.id}'.`,
+                  });
+                }
+                const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderAdapterRequestError({
+                        provider: PROVIDER,
+                        method: "session/prompt",
+                        detail: cause.message,
+                        cause,
+                      }),
+                  ),
+                );
+                promptParts.push({
+                  type: "image",
+                  data: Buffer.from(bytes).toString("base64"),
+                  mimeType: attachment.mimeType,
+                });
+                break;
+              }
+              default:
+                throw new Error(
+                  `Unsupported Cursor attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+                );
+            }
           }
         }
 

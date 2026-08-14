@@ -8,6 +8,7 @@
  */
 import { Schema } from "effect";
 import type { ChatAttachment } from "@t3tools/contracts";
+import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import { limitSection } from "./Utils.ts";
 
@@ -128,8 +129,8 @@ interface PromptFromMessageInput {
 }
 
 function buildPromptFromMessage(input: PromptFromMessageInput): string {
-  const attachmentLines = (input.attachments ?? []).map(
-    (attachment) => `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+  const attachmentLines = formatAttachmentMetadata(
+    (input.attachments ?? []).map((attachment) => ({ attachment })),
   );
 
   const promptSections = [

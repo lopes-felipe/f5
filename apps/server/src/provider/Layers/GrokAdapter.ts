@@ -69,6 +69,7 @@ import {
 } from "../acp/XAiAcpExtension.ts";
 import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 
 const PROVIDER: ProviderKind = "grok";
 const GROK_RESUME_VERSION = 1 as const;
@@ -725,37 +726,49 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 input.attachments ?? [],
                 (attachment) =>
                   Effect.gen(function* () {
-                    const attachmentPath = resolveAttachmentPath({
-                      attachmentsDir: serverConfig.attachmentsDir,
-                      attachment,
-                    });
-                    if (!attachmentPath) {
-                      return yield* new ProviderAdapterRequestError({
-                        provider: PROVIDER,
-                        method: "session/prompt",
-                        detail: `Invalid attachment id '${attachment.id}'.`,
-                      });
-                    }
-                    const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterRequestError({
+                    switch (attachment.type) {
+                      case "image": {
+                        const attachmentPath = resolveAttachmentPath({
+                          attachmentsDir: serverConfig.attachmentsDir,
+                          attachment,
+                        });
+                        if (!attachmentPath) {
+                          return yield* new ProviderAdapterRequestError({
                             provider: PROVIDER,
                             method: "session/prompt",
-                            detail: cause.message,
-                            cause,
-                          }),
-                      ),
-                    );
-                    return {
-                      type: "image",
-                      data: Buffer.from(bytes).toString("base64"),
-                      mimeType: attachment.mimeType,
-                    } satisfies EffectAcpSchema.ContentBlock;
+                            detail: `Invalid attachment id '${attachment.id}'.`,
+                          });
+                        }
+                        const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                          Effect.mapError(
+                            (cause) =>
+                              new ProviderAdapterRequestError({
+                                provider: PROVIDER,
+                                method: "session/prompt",
+                                detail: cause.message,
+                                cause,
+                              }),
+                          ),
+                        );
+                        return {
+                          type: "image",
+                          data: Buffer.from(bytes).toString("base64"),
+                          mimeType: attachment.mimeType,
+                        } satisfies EffectAcpSchema.ContentBlock;
+                      }
+                      default:
+                        throw new Error(
+                          `Unsupported Grok attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+                        );
+                    }
                   }),
+              );
+              const attachmentContext = buildProviderAttachmentRuntimeContext(
+                input.resolvedAttachments ?? [],
               );
               const promptParts: Array<EffectAcpSchema.ContentBlock> = [
                 ...(text ? [{ type: "text" as const, text }] : []),
+                ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
                 ...imagePromptParts,
               ];
 

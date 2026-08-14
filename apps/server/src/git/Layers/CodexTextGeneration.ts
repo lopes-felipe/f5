@@ -13,6 +13,7 @@ import {
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -501,9 +502,8 @@ export const makeCodexTextGeneration = (
           "generateBranchName",
           input.attachments,
         );
-        const attachmentLines = (input.attachments ?? []).map(
-          (attachment) =>
-            `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+        const attachmentLines = formatAttachmentMetadata(
+          (input.attachments ?? []).map((attachment) => ({ attachment })),
         );
 
         const promptSections = [
@@ -551,9 +551,8 @@ export const makeCodexTextGeneration = (
           "generateThreadTitle",
           input.attachments,
         );
-        const attachmentLines = (input.attachments ?? []).map(
-          (attachment) =>
-            `- ${attachment.name} (${attachment.mimeType}, ${attachment.sizeBytes} bytes)`,
+        const attachmentLines = formatAttachmentMetadata(
+          (input.attachments ?? []).map((attachment) => ({ attachment })),
         );
 
         const promptSections = [

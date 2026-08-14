@@ -167,6 +167,10 @@
     "./runtimeMode": {
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
+    },
+    "./attachmentMetadata": {
+      "types": "./src/attachmentMetadata.ts",
+      "import": "./src/attachmentMetadata.ts"
     }
   },
   "scripts": {

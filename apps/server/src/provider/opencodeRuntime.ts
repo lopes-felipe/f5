@@ -201,17 +201,26 @@ export function toOpenCodeFileParts(input: {
   const parts: Array<FilePartInput> = [];
 
   for (const attachment of input.attachments ?? []) {
-    const attachmentPath = input.resolveAttachmentPath(attachment);
-    if (!attachmentPath) {
-      continue;
-    }
+    switch (attachment.type) {
+      case "image": {
+        const attachmentPath = input.resolveAttachmentPath(attachment);
+        if (!attachmentPath) {
+          continue;
+        }
 
-    parts.push({
-      type: "file",
-      mime: attachment.mimeType,
-      filename: attachment.name,
-      url: pathToFileURL(attachmentPath).href,
-    });
+        parts.push({
+          type: "file",
+          mime: attachment.mimeType,
+          filename: attachment.name,
+          url: pathToFileURL(attachmentPath).href,
+        });
+        break;
+      }
+      default:
+        throw new Error(
+          `Unsupported OpenCode attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+        );
+    }
   }
 
   return parts;

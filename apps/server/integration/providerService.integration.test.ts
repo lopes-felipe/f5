@@ -16,6 +16,7 @@ import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
 import { ProviderSessionRuntimeRepositoryLive } from "../src/persistence/Layers/ProviderSessionRuntime.ts";
 import { ProjectMcpConfigService } from "../src/mcp/ProjectMcpConfigService.ts";
 import { makeAdapterRegistryMock } from "../src/provider/testUtils/providerAdapterRegistryMock.ts";
+import { ServerConfig } from "../src/config.ts";
 
 import {
   makeTestProviderAdapterHarness,
@@ -117,7 +118,13 @@ const makeIntegrationFixture = Effect.gen(function* () {
     AnalyticsService.layerTest,
   ).pipe(Layer.provide(SqlitePersistenceMemory));
 
-  const layer = makeProviderServiceLive().pipe(Layer.provide(shared));
+  const serverConfigLayer = ServerConfig.layerTest(cwd, nodePath.join(cwd, ".f5-state")).pipe(
+    Layer.provide(NodeServices.layer),
+  );
+  const layer = makeProviderServiceLive().pipe(
+    Layer.provide(shared),
+    Layer.provide(serverConfigLayer),
+  );
 
   return {
     cwd,
@@ -349,3 +356,4 @@ it.effect("rolls back provider conversation state only", () =>
     }).pipe(Effect.provide(fixture.layer));
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+import nodePath from "node:path";

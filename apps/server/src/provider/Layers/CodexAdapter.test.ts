@@ -441,6 +441,37 @@ sessionErrorLayer("CodexAdapterLive session errors", (it) => {
       });
     }),
   );
+
+  it.effect("appends provider-only attachment paths to the Codex turn input", () =>
+    Effect.gen(function* () {
+      sessionErrorManager.sendTurnImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      const localPath = "/tmp/f5/attachments/screenshot.png";
+
+      yield* Effect.ignore(
+        adapter.sendTurn({
+          threadId: asThreadId("sess-missing"),
+          input: "inspect this image",
+          attachments: [],
+          resolvedAttachments: [
+            {
+              type: "image",
+              id: "thread-context-12345678-1234-1234-1234-123456789abc",
+              name: "screenshot.png",
+              mimeType: "image/png",
+              sizeBytes: 4,
+              localPath,
+            },
+          ],
+        }),
+      );
+
+      const managerInput = sessionErrorManager.sendTurnImpl.mock.calls[0]?.[0];
+      assert.equal(managerInput?.input?.startsWith("inspect this image\n\n"), true);
+      assert.equal(managerInput?.input?.includes("sandbox may prevent opening"), true);
+      assert.equal(managerInput?.input?.includes(JSON.stringify(localPath)), true);
+    }),
+  );
 });
 
 const lifecycleManager = new FakeCodexManager();

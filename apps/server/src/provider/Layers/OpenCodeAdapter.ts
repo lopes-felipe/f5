@@ -40,6 +40,7 @@ import {
   toOpenCodeQuestionAnswers,
   type OpenCodeServerConnection,
 } from "../opencodeRuntime.ts";
+import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 
 const PROVIDER: ProviderKind = "opencode";
 
@@ -1168,6 +1169,9 @@ export function makeOpenCodeAdapter(
       }
 
       const text = input.input?.trim();
+      const attachmentContext = buildProviderAttachmentRuntimeContext(
+        input.resolvedAttachments ?? [],
+      );
       const fileParts = toOpenCodeFileParts({
         attachments: input.attachments,
         resolveAttachmentPath: (attachment) =>
@@ -1215,7 +1219,11 @@ export function makeOpenCodeAdapter(
           model: parsedModel,
           ...(context.activeAgent ? { agent: context.activeAgent } : {}),
           ...(context.activeVariant ? { variant: context.activeVariant } : {}),
-          parts: [...(text ? [{ type: "text" as const, text }] : []), ...fileParts],
+          parts: [
+            ...(text ? [{ type: "text" as const, text }] : []),
+            ...(attachmentContext ? [{ type: "text" as const, text: attachmentContext }] : []),
+            ...fileParts,
+          ],
         }),
       ).pipe(
         Effect.mapError(toRequestError),

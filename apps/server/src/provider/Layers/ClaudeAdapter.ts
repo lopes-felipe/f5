@@ -33,7 +33,6 @@ import {
   type ProviderRequestKind,
   type ProviderRuntimeEvent,
   type ProviderRuntimeTurnStatus,
-  type ProviderSendTurnInput,
   type ProviderSession,
   type ProviderUserInputAnswers,
   type RuntimeItemStatus,
@@ -118,9 +117,11 @@ import {
 } from "../Errors.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
 import type {
+  ProviderAdapterSendTurnInput,
   ProviderConversationCompactionResult,
   ProviderOneOffPromptResult,
 } from "../Services/ProviderAdapter.ts";
+import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 import { buildClaudeFileChangeStructuredChanges } from "./claudeFileChangePatch.ts";
 import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -1156,7 +1157,7 @@ function buildClaudeTurnRuntimeContext(model: string | undefined): string | unde
   ].join("\n");
 }
 
-function buildPromptText(input: ProviderSendTurnInput, activeModel?: string): string {
+function buildPromptText(input: ProviderAdapterSendTurnInput, activeModel?: string): string {
   const requestedEffort = resolveReasoningEffortForProvider(
     "claudeAgent",
     input.modelOptions?.claudeAgent?.effort ?? null,
@@ -1174,7 +1175,12 @@ function buildPromptText(input: ProviderSendTurnInput, activeModel?: string): st
   const runtimeContext = userPrompt.startsWith("/")
     ? undefined
     : buildClaudeTurnRuntimeContext(activeModel);
-  return runtimeContext ? `${runtimeContext}\n\n${userPrompt}` : userPrompt;
+  return (
+    appendProviderAttachmentRuntimeContext(
+      runtimeContext ? `${runtimeContext}\n\n${userPrompt}` : userPrompt,
+      input.resolvedAttachments ?? [],
+    ) ?? ""
+  );
 }
 
 function buildUserMessage(input: {
@@ -1206,7 +1212,7 @@ function buildClaudeImageContentBlock(input: {
 }
 
 function buildUserMessageEffect(
-  input: ProviderSendTurnInput,
+  input: ProviderAdapterSendTurnInput,
   dependencies: {
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
@@ -1222,48 +1228,53 @@ function buildUserMessageEffect(
     }
 
     for (const attachment of input.attachments ?? []) {
-      if (attachment.type !== "image") {
-        continue;
-      }
-
-      if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
-        return yield* new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "turn/start",
-          detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
-        });
-      }
-
-      const attachmentPath = resolveAttachmentPath({
-        attachmentsDir: dependencies.attachmentsDir,
-        attachment,
-      });
-      if (!attachmentPath) {
-        return yield* new ProviderAdapterRequestError({
-          provider: PROVIDER,
-          method: "turn/start",
-          detail: `Invalid attachment id '${attachment.id}'.`,
-        });
-      }
-
-      const bytes = yield* dependencies.fileSystem.readFile(attachmentPath).pipe(
-        Effect.mapError(
-          (cause) =>
-            new ProviderAdapterRequestError({
+      switch (attachment.type) {
+        case "image": {
+          if (!SUPPORTED_CLAUDE_IMAGE_MIME_TYPES.has(attachment.mimeType)) {
+            return yield* new ProviderAdapterRequestError({
               provider: PROVIDER,
               method: "turn/start",
-              detail: toMessage(cause, "Failed to read attachment file."),
-              cause,
-            }),
-        ),
-      );
+              detail: `Unsupported Claude image attachment type '${attachment.mimeType}'.`,
+            });
+          }
 
-      sdkContent.push(
-        buildClaudeImageContentBlock({
-          mimeType: attachment.mimeType,
-          bytes,
-        }),
-      );
+          const attachmentPath = resolveAttachmentPath({
+            attachmentsDir: dependencies.attachmentsDir,
+            attachment,
+          });
+          if (!attachmentPath) {
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/start",
+              detail: `Invalid attachment id '${attachment.id}'.`,
+            });
+          }
+
+          const bytes = yield* dependencies.fileSystem.readFile(attachmentPath).pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "turn/start",
+                  detail: toMessage(cause, "Failed to read attachment file."),
+                  cause,
+                }),
+            ),
+          );
+
+          sdkContent.push(
+            buildClaudeImageContentBlock({
+              mimeType: attachment.mimeType,
+              bytes,
+            }),
+          );
+          break;
+        }
+        default:
+          throw new Error(
+            `Unsupported Claude attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+          );
+      }
     }
 
     return buildUserMessage({ sdkContent });

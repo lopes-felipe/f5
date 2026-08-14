@@ -53,6 +53,7 @@ import type {
   PreviewMcpSessionConfig,
 } from "../../mcp/PreviewMcpHttpServer.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 
 const PROVIDER = "codex" as const;
 
@@ -2214,41 +2215,53 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           input.attachments ?? [],
           (attachment) =>
             Effect.gen(function* () {
-              const attachmentPath = resolveAttachmentPath({
-                attachmentsDir: serverConfig.attachmentsDir,
-                attachment,
-              });
-              if (!attachmentPath) {
-                return yield* toRequestError(
-                  input.threadId,
-                  "turn/start",
-                  new Error(`Invalid attachment id '${attachment.id}'.`),
-                );
+              switch (attachment.type) {
+                case "image": {
+                  const attachmentPath = resolveAttachmentPath({
+                    attachmentsDir: serverConfig.attachmentsDir,
+                    attachment,
+                  });
+                  if (!attachmentPath) {
+                    return yield* toRequestError(
+                      input.threadId,
+                      "turn/start",
+                      new Error(`Invalid attachment id '${attachment.id}'.`),
+                    );
+                  }
+                  const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderAdapterRequestError({
+                          provider: PROVIDER,
+                          method: "turn/start",
+                          detail: toMessage(cause, "Failed to read attachment file."),
+                          cause,
+                        }),
+                    ),
+                  );
+                  return {
+                    type: "image" as const,
+                    url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
+                  };
+                }
+                default:
+                  throw new Error(
+                    `Unsupported Codex attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+                  );
               }
-              const bytes = yield* fileSystem.readFile(attachmentPath).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapterRequestError({
-                      provider: PROVIDER,
-                      method: "turn/start",
-                      detail: toMessage(cause, "Failed to read attachment file."),
-                      cause,
-                    }),
-                ),
-              );
-              return {
-                type: "image" as const,
-                url: `data:${attachment.mimeType};base64,${Buffer.from(bytes).toString("base64")}`,
-              };
             }),
           { concurrency: 1 },
+        );
+        const providerInput = appendProviderAttachmentRuntimeContext(
+          input.input,
+          input.resolvedAttachments ?? [],
         );
 
         return yield* Effect.tryPromise({
           try: () => {
             const managerInput = {
               threadId: input.threadId,
-              ...(input.input !== undefined ? { input: input.input } : {}),
+              ...(providerInput !== undefined ? { input: providerInput } : {}),
               ...(input.model !== undefined ? { model: input.model } : {}),
               ...(input.modelOptions?.codex?.reasoningEffort !== undefined
                 ? { effort: input.modelOptions.codex.reasoningEffort }

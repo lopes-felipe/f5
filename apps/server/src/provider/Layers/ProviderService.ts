@@ -9,6 +9,8 @@
  *
  * @module ProviderServiceLive
  */
+import { existsSync } from "node:fs";
+
 import {
   DEFAULT_RUNTIME_MODE,
   NonNegativeInt,
@@ -76,6 +78,8 @@ import {
   type PersistedStartConfigValue,
 } from "../runtimePayload.ts";
 import { computeProviderLaunchFingerprint } from "../providerLaunchFingerprint.ts";
+import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { ServerConfig } from "../../config.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
@@ -252,6 +256,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const registry = yield* ProviderAdapterRegistry;
     const directory = yield* ProviderSessionDirectory;
     const projectMcpConfigService = yield* ProjectMcpConfigService;
+    const serverConfig = yield* ServerConfig;
     const runtimeEventQueue = yield* Queue.unbounded<{
       readonly source: {
         readonly instanceId: ProviderInstanceId;
@@ -931,7 +936,27 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             ...(input.model ? { "provider.model": input.model } : {}),
           });
-          const turn = yield* routed.adapter.sendTurn(input);
+          const resolvedAttachments = input.attachments.flatMap((attachment) => {
+            switch (attachment.type) {
+              case "image": {
+                const localPath = resolveAttachmentPath({
+                  attachmentsDir: serverConfig.attachmentsDir,
+                  attachment,
+                });
+                return localPath === null || !existsSync(localPath)
+                  ? []
+                  : [{ ...attachment, localPath }];
+              }
+              default:
+                throw new Error(
+                  `Unsupported provider attachment type '${String((attachment as { type?: unknown }).type)}'.`,
+                );
+            }
+          });
+          const turn = yield* routed.adapter.sendTurn({
+            ...input,
+            resolvedAttachments,
+          });
           const persistedBinding = yield* directory.getBinding(input.threadId);
           const persistedRuntimePayload = Option.match(persistedBinding, {
             onNone: () => undefined,

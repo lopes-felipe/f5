@@ -9,6 +9,7 @@
  */
 import type {
   ApprovalRequestId,
+  ChatAttachment,
   ProviderApprovalDecision,
   ProviderKind,
   ProviderStartOptions,
@@ -65,6 +66,19 @@ export interface ProviderConversationCompactionResult {
   readonly summary: string;
 }
 
+export type ProviderResolvedAttachment = ChatAttachment & {
+  /**
+   * Server-authorized local copy. This field is provider-only and must never
+   * be persisted into orchestration messages or returned over the wire.
+   */
+  readonly localPath: string;
+};
+
+export type ProviderAdapterSendTurnInput = ProviderSendTurnInput & {
+  /** Populated by ProviderService; optional for direct adapter harnesses. */
+  readonly resolvedAttachments?: ReadonlyArray<ProviderResolvedAttachment>;
+};
+
 export interface ProviderAdapterShape<TError> {
   /**
    * Provider kind implemented by this adapter.
@@ -83,7 +97,7 @@ export interface ProviderAdapterShape<TError> {
    * Send a turn to an active provider session.
    */
   readonly sendTurn: (
-    input: ProviderSendTurnInput,
+    input: ProviderAdapterSendTurnInput,
   ) => Effect.Effect<ProviderTurnStartResult, TError>;
 
   /**
