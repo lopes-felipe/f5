@@ -1319,8 +1319,12 @@
     {
       "upstreamSha": "3da315e7b5c4537cbc7280f33dadb3f5f0e3baf0",
       "subject": "perf(server): stop shipping full MCP tool results in thread payloads (#5482)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 7.1 bounded activity payloads; pending its f5-native implementation commit."
+      "disposition": "already-present",
+      "f5Shas": ["8168bd456ae23521e21bf68b08d0d860a6abd901"],
+      "evidence": [
+        "packages/shared/src/orchestrationActivityPayload.ts:20",
+        "packages/shared/src/orchestrationActivityPayload.ts:601"
+      ]
     },
     {
       "upstreamSha": "a2ca89aa10f13a2222e08afd98c66285121d5ba2",
@@ -2426,8 +2430,9 @@
     {
       "upstreamSha": "b4680cbfd064d59fdd2386a5ac6fc75e26e8c96b",
       "subject": "perf(mobile): defer work-log detail serialization (#4607)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 7.1 activity pagination; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["d01bdf171efd1bfe4c4845cae0418e8b88a00148"],
+      "reason": "Bounded f5 thread activity tails to the newest 500 rows and added stable null-sequence-aware cursor pages with explicit client loading for older activity history."
     },
     {
       "upstreamSha": "d60f6e971f8f982836f26507275d651e2e7af4a5",
