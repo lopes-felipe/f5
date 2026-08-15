@@ -895,8 +895,9 @@
     {
       "upstreamSha": "2c7267ad43a05cf3e30343400c76fd9ac47698e7",
       "subject": "fix(server): stop the reaper from silently killing live background subagents (#5677)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(server): stop the reaper from silently killing live background subagents (#5677))."
+      "disposition": "ported",
+      "f5Shas": ["3737bf895e3000e695b37d9790557953f5d7bdf4"],
+      "reason": "Ported with a durable, bounded background-work projection and indexed liveness recheck so provider sessions remain protected across settled turns and server restarts."
     },
     {
       "upstreamSha": "daf8ee0b2f684cda82e8721abe1138b219b1ef12",
