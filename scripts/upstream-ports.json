@@ -763,8 +763,9 @@
     {
       "upstreamSha": "076e9048dc57ab09b3692def050e12d690a1b027",
       "subject": "feat(web): project icons can be chosen manually (#5775)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 5.6 manual project icons; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["2f139e5be2affbacdf06c4b29129a8dee096804b"],
+      "reason": "Added schema-validated emoji and Lucide project icons with one shared manual/config/favicon/folder fallback chain across project surfaces."
     },
     {
       "upstreamSha": "05eb051184ac4d486795ac6f8be29129b8b8845f",
@@ -787,8 +788,9 @@
     {
       "upstreamSha": "6dbffa022d9e44091d0edc496181011e3acfb695",
       "subject": "feat: pick worktree or current checkout per project (#5766)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 5.5 per-project workspace mode; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["2f139e5be2affbacdf06c4b29129a8dee096804b"],
+      "reason": "Added persisted per-project workspace defaults and centralized explicit/project/config/global resolution for every new-thread path."
     },
     {
       "upstreamSha": "5bb8c0366447b1bb94c0ac41f2d4cd06730ffb94",
@@ -2670,8 +2672,9 @@
     {
       "upstreamSha": "1c9a6de26eb41f77dbf2f6039427f50f2e9f8b39",
       "subject": "Add shared t3.json project configuration support (#4317)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 5.4 checked-in project configuration; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["2f139e5be2affbacdf06c4b29129a8dee096804b"],
+      "reason": "Added authorized f5.json parsing with t3.json read compatibility for non-executable workspace and icon defaults; executable scripts and MCP definitions remain denied."
     },
     {
       "upstreamSha": "fbd77420f27c1322d49726dd927861b8b5903494",
