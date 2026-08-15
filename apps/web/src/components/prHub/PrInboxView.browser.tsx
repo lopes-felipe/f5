@@ -17,7 +17,8 @@ vi.mock("~/nativeApi", () => ({
 
 function makePr(number: number, title: string): TrackedPullRequest {
   return {
-    key: PullRequestKey.makeUnsafe(`github.com/octo/repo#${number}`),
+    key: PullRequestKey.makeUnsafe(`github:github.com/octo/repo#${number}`),
+    provider: "github",
     nodeId: `PR_${number}`,
     number,
     title,

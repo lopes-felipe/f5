@@ -155,6 +155,29 @@ describe("GitCore unit", () => {
     ).toBe(1);
   });
 
+  it("lists every configured remote with its fetch URL", async () => {
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--git-common-dir"])) return { stdout: ".git\n" };
+      if (argsEqual(input, ["remote"])) return { stdout: "origin\nupstream\n" };
+      if (argsEqual(input, ["symbolic-ref", "refs/remotes/origin/HEAD"])) {
+        return { code: 1 };
+      }
+      if (argsEqual(input, ["config", "--get", "remote.origin.url"])) {
+        return { stdout: "https://github.com/octo/repo.git\n" };
+      }
+      if (argsEqual(input, ["config", "--get", "remote.upstream.url"])) {
+        return { stdout: "git@gitlab.com:octo/repo.git\n" };
+      }
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(Effect.runPromise(core.listRemotes("/tmp/repo"))).resolves.toEqual([
+      { name: "origin", url: "https://github.com/octo/repo.git" },
+      { name: "upstream", url: "git@gitlab.com:octo/repo.git" },
+    ]);
+  });
+
   it("parses porcelain status and combines staged and unstaged numstat", async () => {
     const scripted = makeScriptedGitService((input) => {
       if (argsEqual(input, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])) {

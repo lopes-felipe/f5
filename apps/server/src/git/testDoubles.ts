@@ -31,6 +31,7 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "pushCurrentBranch",
       "readRangeContext",
       "readConfigValue",
+      "listRemotes",
       "listBranches",
       "pullCurrentBranch",
       "createWorktree",
@@ -70,6 +71,8 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     readRangeContext: () =>
       Effect.succeed({ commitSummary: "abc change", diffSummary: "1 file", diffPatch: "+change" }),
     readConfigValue: () => Effect.succeed(null),
+    listRemotes: () =>
+      Effect.succeed([{ name: "origin", url: "https://github.com/t3tools/f5.git" }]),
     listBranches: () => Effect.succeed({ branches: [], isRepo: true, hasOriginRemote: true }),
     pullCurrentBranch: () =>
       Effect.succeed({
@@ -137,6 +140,10 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
     readConfigValue: (cwd, key) => {
       record("readConfigValue", [cwd, key]);
       return implementations.readConfigValue(cwd, key);
+    },
+    listRemotes: (cwd) => {
+      record("listRemotes", [cwd]);
+      return implementations.listRemotes(cwd);
     },
     listBranches: (input) => {
       record("listBranches", [input]);

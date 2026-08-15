@@ -7,7 +7,6 @@ import {
   sanitizeBranchFragment,
   sanitizeFeatureBranchName,
 } from "@t3tools/shared/git";
-import { parseSourceControlRemoteUrl } from "@t3tools/shared/sourceControl";
 import type { ChangeRequest, SourceControlProviderIdentity } from "@t3tools/contracts";
 
 import { GitManagerError } from "../Errors.ts";
@@ -18,6 +17,15 @@ import { GitHubCli } from "../Services/GitHubCli.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
 import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
 import { ServerConfig } from "../../config.ts";
+import { makeGitHubSourceControlProvider } from "../../sourceControl/GitHubSourceControlProvider.ts";
+import {
+  makeSourceControlProviderRegistry,
+  type SourceControlProvider,
+} from "../../sourceControl/SourceControlProvider.ts";
+import {
+  discoverSourceControlProviderIdentities,
+  selectPrimarySourceControlProviderIdentity,
+} from "../../sourceControl/discovery.ts";
 
 interface OpenPrInfo {
   number: number;
@@ -382,12 +390,17 @@ function toPullRequestHeadRemoteInfo(pr: {
 export const makeGitManager = Effect.gen(function* () {
   const gitCore = yield* GitCore;
   const gitHubCli = yield* GitHubCli;
+  const sourceControlProviders = makeSourceControlProviderRegistry([
+    makeGitHubSourceControlProvider(gitHubCli),
+  ]);
+  const githubProvider = yield* sourceControlProviders.get("github");
   const textGeneration = yield* TextGeneration;
   const serverConfig = yield* ServerConfig;
 
   const configurePullRequestHeadUpstream = (
     cwd: string,
     pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
+    provider: SourceControlProvider,
     localBranch = pullRequest.headBranch,
   ) =>
     Effect.gen(function* () {
@@ -396,7 +409,7 @@ export const makeGitManager = Effect.gen(function* () {
         return;
       }
 
-      const cloneUrls = yield* gitHubCli.getRepositoryCloneUrls({
+      const cloneUrls = yield* provider.getRepositoryCloneUrls({
         cwd,
         repository: repositoryNameWithOwner,
       });
@@ -429,6 +442,7 @@ export const makeGitManager = Effect.gen(function* () {
   const materializePullRequestHeadBranch = (
     cwd: string,
     pullRequest: ResolvedPullRequest & PullRequestHeadRemoteInfo,
+    provider: SourceControlProvider,
     localBranch = pullRequest.headBranch,
   ) =>
     Effect.gen(function* () {
@@ -443,7 +457,7 @@ export const makeGitManager = Effect.gen(function* () {
         return;
       }
 
-      const cloneUrls = yield* gitHubCli.getRepositoryCloneUrls({
+      const cloneUrls = yield* provider.getRepositoryCloneUrls({
         cwd,
         repository: repositoryNameWithOwner,
       });
@@ -490,17 +504,29 @@ export const makeGitManager = Effect.gen(function* () {
 
   const resolveSourceControlProviderIdentity = (cwd: string) =>
     Effect.gen(function* () {
-      const originUrl = yield* readConfigValueNullable(cwd, "remote.origin.url");
-      const parsed = parseSourceControlRemoteUrl(originUrl);
-      return {
-        kind: parsed.kind,
-        ...(originUrl ? { remoteName: "origin" } : {}),
-        ...(parsed.host ? { host: parsed.host } : {}),
-        ...(parsed.owner ? { owner: parsed.owner } : {}),
-        ...(parsed.repository ? { repository: parsed.repository } : {}),
-        ...(parsed.webUrl ? { webUrl: parsed.webUrl } : {}),
-      } satisfies SourceControlProviderIdentity;
+      const discoveredRemotes = yield* gitCore
+        .listRemotes(cwd)
+        .pipe(Effect.catch(() => Effect.succeed([])));
+      const remotes =
+        discoveredRemotes.length > 0
+          ? discoveredRemotes
+          : yield* readConfigValueNullable(cwd, "remote.origin.url").pipe(
+              Effect.map((url) => (url ? [{ name: "origin", url }] : [])),
+            );
+      return selectPrimarySourceControlProviderIdentity(
+        discoverSourceControlProviderIdentities(remotes, {
+          githubHosts: process.env.GH_HOST ? [process.env.GH_HOST] : [],
+        }),
+      );
     });
+
+  // Preserve the historical GitHub CLI fallback when Git cannot identify the
+  // remote host (for example, a local-path remote). Positively identified
+  // non-GitHub providers still fail closed until their adapters exist.
+  const sourceControlProviderForIdentity = (identity: SourceControlProviderIdentity) =>
+    identity.kind === "unknown"
+      ? Effect.succeed(githubProvider)
+      : sourceControlProviders.getForIdentity(identity);
 
   const resolveRemoteRepositoryContext = (cwd: string, remoteName: string | null) =>
     Effect.gen(function* () {
@@ -588,10 +614,14 @@ export const makeGitManager = Effect.gen(function* () {
       } satisfies BranchHeadContext;
     });
 
-  const findOpenPr = (cwd: string, headSelectors: ReadonlyArray<string>) =>
+  const findOpenPr = (
+    cwd: string,
+    headSelectors: ReadonlyArray<string>,
+    provider: SourceControlProvider,
+  ) =>
     Effect.gen(function* () {
       for (const headSelector of headSelectors) {
-        const pullRequests = yield* gitHubCli.listOpenPullRequests({
+        const pullRequests = yield* provider.listOpenPullRequests({
           cwd,
           headSelector,
           limit: 1,
@@ -615,13 +645,17 @@ export const makeGitManager = Effect.gen(function* () {
       return null;
     });
 
-  const findLatestPr = (cwd: string, details: { branch: string; upstreamRef: string | null }) =>
+  const findLatestPr = (
+    cwd: string,
+    details: { branch: string; upstreamRef: string | null },
+    provider: SourceControlProvider,
+  ) =>
     Effect.gen(function* () {
       const headContext = yield* resolveBranchHeadContext(cwd, details);
       const parsedByNumber = new Map<number, PullRequestInfo>();
 
       for (const headSelector of headContext.headSelectors) {
-        const stdout = yield* gitHubCli
+        const stdout = yield* provider
           .execute({
             cwd,
             args: [
@@ -684,6 +718,7 @@ export const makeGitManager = Effect.gen(function* () {
     branch: string,
     upstreamRef: string | null,
     headContext: Pick<BranchHeadContext, "isCrossRepository">,
+    provider: SourceControlProvider,
   ) =>
     Effect.gen(function* () {
       const configured = yield* gitCore.readConfigValue(cwd, `branch.${branch}.gh-merge-base`);
@@ -696,7 +731,7 @@ export const makeGitManager = Effect.gen(function* () {
         }
       }
 
-      const defaultFromGh = yield* gitHubCli
+      const defaultFromGh = yield* provider
         .getDefaultBranch({ cwd })
         .pipe(Effect.catch(() => Effect.succeed(null)));
       if (defaultFromGh) {
@@ -784,6 +819,8 @@ export const makeGitManager = Effect.gen(function* () {
 
   const runPrStep = (cwd: string, fallbackBranch: string | null, model?: string) =>
     Effect.gen(function* () {
+      const sourceControlIdentity = yield* resolveSourceControlProviderIdentity(cwd);
+      const sourceControlProvider = yield* sourceControlProviderForIdentity(sourceControlIdentity);
       const details = yield* gitCore.statusDetails(cwd);
       const branch = details.branch ?? fallbackBranch;
       if (!branch) {
@@ -804,7 +841,7 @@ export const makeGitManager = Effect.gen(function* () {
         upstreamRef: details.upstreamRef,
       });
 
-      const existing = yield* findOpenPr(cwd, headContext.headSelectors);
+      const existing = yield* findOpenPr(cwd, headContext.headSelectors, sourceControlProvider);
       if (existing) {
         return {
           status: "opened_existing" as const,
@@ -816,7 +853,13 @@ export const makeGitManager = Effect.gen(function* () {
         };
       }
 
-      const baseBranch = yield* resolveBaseBranch(cwd, branch, details.upstreamRef, headContext);
+      const baseBranch = yield* resolveBaseBranch(
+        cwd,
+        branch,
+        details.upstreamRef,
+        headContext,
+        sourceControlProvider,
+      );
       const rangeContext = yield* gitCore.readRangeContext(cwd, baseBranch);
 
       const generated = yield* textGeneration.generatePrContent({
@@ -837,7 +880,7 @@ export const makeGitManager = Effect.gen(function* () {
             gitManagerError("runPrStep", "Failed to write pull request body temp file.", cause),
           ),
         );
-      yield* gitHubCli
+      yield* sourceControlProvider
         .createPullRequest({
           cwd,
           baseBranch,
@@ -847,7 +890,7 @@ export const makeGitManager = Effect.gen(function* () {
         })
         .pipe(Effect.ensuring(fileSystem.remove(bodyFile).pipe(Effect.catch(() => Effect.void))));
 
-      const created = yield* findOpenPr(cwd, headContext.headSelectors);
+      const created = yield* findOpenPr(cwd, headContext.headSelectors, sourceControlProvider);
       if (!created) {
         return {
           status: "created" as const,
@@ -872,16 +915,21 @@ export const makeGitManager = Effect.gen(function* () {
     const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
 
     const latestPr =
-      details.branch !== null
-        ? yield* findLatestPr(input.cwd, {
-            branch: details.branch,
-            upstreamRef: details.upstreamRef,
-          }).pipe(
+      details.branch !== null &&
+      (sourceControlProvider.kind === "github" || sourceControlProvider.kind === "unknown")
+        ? yield* findLatestPr(
+            input.cwd,
+            {
+              branch: details.branch,
+              upstreamRef: details.upstreamRef,
+            },
+            githubProvider,
+          ).pipe(
             Effect.flatMap((latest) => {
               if (!latest) return Effect.succeed(null);
               if (latest.state === "open") return Effect.succeed(latest);
 
-              return gitHubCli.getDefaultBranch({ cwd: input.cwd }).pipe(
+              return githubProvider.getDefaultBranch({ cwd: input.cwd }).pipe(
                 Effect.map((defaultBranch) =>
                   defaultBranch !== null && details.branch === defaultBranch ? null : latest,
                 ),
@@ -908,7 +956,9 @@ export const makeGitManager = Effect.gen(function* () {
 
   const resolvePullRequest: GitManagerShape["resolvePullRequest"] = Effect.fnUntraced(
     function* (input) {
-      const resolved = yield* gitHubCli.getPullRequest({
+      const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
+      const provider = yield* sourceControlProviderForIdentity(sourceControlProvider);
+      const resolved = yield* provider.getPullRequest({
         cwd: input.cwd,
         reference: normalizePullRequestReference(input.reference),
       });
@@ -917,8 +967,6 @@ export const makeGitManager = Effect.gen(function* () {
         ...pullRequest,
         ...toPullRequestHeadRemoteInfo(resolved),
       };
-      const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
-
       return {
         pullRequest,
         changeRequest: toChangeRequest(pullRequestWithRemoteInfo, sourceControlProvider),
@@ -930,7 +978,9 @@ export const makeGitManager = Effect.gen(function* () {
     function* (input) {
       const normalizedReference = normalizePullRequestReference(input.reference);
       const rootWorktreePath = canonicalizeExistingPath(input.cwd);
-      const pullRequestSummary = yield* gitHubCli.getPullRequest({
+      const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
+      const provider = yield* sourceControlProviderForIdentity(sourceControlProvider);
+      const pullRequestSummary = yield* provider.getPullRequest({
         cwd: input.cwd,
         reference: normalizedReference,
       });
@@ -947,11 +997,10 @@ export const makeGitManager = Effect.gen(function* () {
         ...pullRequest,
         ...toPullRequestHeadRemoteInfo(pullRequestSummary),
       };
-      const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
       const changeRequest = toChangeRequest(pullRequestWithRemoteInfo, sourceControlProvider);
 
       if (input.mode === "local") {
-        yield* gitHubCli.checkoutPullRequest({
+        yield* provider.checkoutPullRequest({
           cwd: input.cwd,
           reference: normalizedReference,
           force: true,
@@ -960,6 +1009,7 @@ export const makeGitManager = Effect.gen(function* () {
         yield* configurePullRequestHeadUpstream(
           input.cwd,
           pullRequestWithRemoteInfo,
+          provider,
           details.branch ?? pullRequest.headBranch,
         );
         return {
@@ -976,6 +1026,7 @@ export const makeGitManager = Effect.gen(function* () {
           yield* configurePullRequestHeadUpstream(
             worktreePath,
             pullRequestWithRemoteInfo,
+            provider,
             details.branch ?? pullRequest.headBranch,
           );
         });
@@ -1033,6 +1084,7 @@ export const makeGitManager = Effect.gen(function* () {
       yield* materializePullRequestHeadBranch(
         input.cwd,
         pullRequestWithRemoteInfo,
+        provider,
         localPullRequestBranch,
       );
 

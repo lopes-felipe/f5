@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { PrHubAdvisory, PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
+import { sourceControlPullRequestKeysEqual } from "@t3tools/shared/sourceControl";
 
 import { Button } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
@@ -48,7 +49,9 @@ export function PrFocusView({
       return;
     }
     if (honoredDeepLinkRef.current === focusedPrKey) return;
-    const deepLinked = ordered.findIndex((pr) => pr.key === focusedPrKey);
+    const deepLinked = ordered.findIndex((pr) =>
+      sourceControlPullRequestKeysEqual(pr.key, focusedPrKey),
+    );
     if (deepLinked < 0) return;
     honoredDeepLinkRef.current = focusedPrKey;
     setIndex(deepLinked);

@@ -26,6 +26,8 @@ import { ServerConfig } from "../../config.ts";
 import { GitHubCli } from "../../git/Services/GitHubCli.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { makeGitHubSourceControlProvider } from "../../sourceControl/GitHubSourceControlProvider.ts";
+import { makeSourceControlProviderRegistry } from "../../sourceControl/SourceControlProvider.ts";
 import { PrHubService } from "../Services/PrHubService.ts";
 import {
   PrHubAdvisoryService,
@@ -239,11 +241,13 @@ function parseFindings(value: string | null | undefined): PrHubAdvisoryCommentFi
 }
 
 function keyParts(pr: TrackedPullRequest): {
+  readonly provider: TrackedPullRequest["provider"];
   readonly host: string;
   readonly repo: string;
   readonly number: number;
 } {
   return {
+    provider: pr.provider,
     host: pr.host,
     repo: pr.repository.nameWithOwner,
     number: pr.number,
@@ -1176,10 +1180,15 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const serverConfig = yield* ServerConfig;
   const prHub = yield* PrHubService;
-  const github = yield* GitHubCli;
+  const githubCli = yield* GitHubCli;
+  const sourceControlProviders = makeSourceControlProviderRegistry([
+    makeGitHubSourceControlProvider(githubCli),
+  ]);
+  const github = yield* sourceControlProviders.get("github");
   const textGeneration = yield* TextGeneration;
   const serverSettings = yield* ServerSettingsService;
   const host = DEFAULT_HOST;
+  const providerKind = "github" as const;
   const cwd = accountCwd(serverConfig.cwd);
   const pubSub = yield* PubSub.unbounded<PrHubAdvisorySnapshot>();
 
@@ -1188,6 +1197,7 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
     const now = new Date().toISOString();
     return sql`
       INSERT INTO pr_hub_advisories (
+        provider_kind,
         host,
         viewer_login,
         repo,
@@ -1209,6 +1219,7 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
         updated_at
       )
       VALUES (
+        ${parts.provider},
         ${parts.host},
         ${viewerLogin},
         ${parts.repo},
@@ -1231,6 +1242,7 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
       )
       ON CONFLICT (host, viewer_login, repo, number)
       DO UPDATE SET
+        provider_kind = excluded.provider_kind,
         key = excluded.key,
         fingerprint = excluded.fingerprint,
         status = excluded.status,
@@ -1267,7 +1279,8 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
         error_message,
         payload_json
       FROM pr_hub_advisories
-      WHERE host = ${host}
+      WHERE provider_kind = ${providerKind}
+        AND host = ${host}
         AND viewer_login = ${viewerLogin}
       ORDER BY updated_at DESC
     `;
@@ -1363,9 +1376,9 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
       }
 
       const result = yield* Effect.exit(
-        github.runGraphql({
+        github.query({
           cwd,
-          query: request.query,
+          document: request.query,
           variables: request.variables,
         }),
       );

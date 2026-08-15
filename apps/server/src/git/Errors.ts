@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import type { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 
 /**
  * GitCommandError - Git command execution failed.
@@ -77,4 +78,5 @@ export type GitManagerServiceError =
   | GitManagerError
   | GitCommandError
   | GitHubCliError
+  | SourceControlProviderError
   | TextGenerationError;

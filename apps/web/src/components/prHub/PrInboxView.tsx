@@ -6,6 +6,7 @@ import type {
   ThreadId,
   TrackedPullRequest,
 } from "@t3tools/contracts";
+import { sourceControlPullRequestKeysEqual } from "@t3tools/shared/sourceControl";
 
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import { Kbd } from "../ui/kbd";
@@ -65,7 +66,7 @@ export function PrInboxView({
       return;
     }
     if (focusedPrKey && honoredDeepLinkRef.current !== focusedPrKey) {
-      const match = ordered.find((pr) => pr.key === focusedPrKey);
+      const match = ordered.find((pr) => sourceControlPullRequestKeysEqual(pr.key, focusedPrKey));
       if (match) {
         honoredDeepLinkRef.current = focusedPrKey;
         setSelectedKey(match.key);

@@ -1692,6 +1692,18 @@ const makeGitCore = Effect.gen(function* () {
       ),
     );
 
+  const listRemotes: GitCoreShape["listRemotes"] = (cwd) =>
+    listRemoteNames(cwd).pipe(
+      Effect.flatMap((remoteNames) =>
+        Effect.forEach(
+          remoteNames,
+          (name) =>
+            readConfigValue(cwd, `remote.${name}.url`).pipe(Effect.map((url) => ({ name, url }))),
+          { concurrency: "unbounded" },
+        ),
+      ),
+    );
+
   return {
     status,
     statusDetails,
@@ -1701,6 +1713,7 @@ const makeGitCore = Effect.gen(function* () {
     pullCurrentBranch,
     readRangeContext,
     readConfigValue,
+    listRemotes,
     listBranches,
     createWorktree,
     hasRemote,

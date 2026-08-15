@@ -14,19 +14,31 @@ import {
   type PrRepositoryRef,
   type PrReviewDecision,
   type PrViewerRole,
+  type SourceControlHostAuthState,
   type TrackedPullRequest,
 } from "@t3tools/contracts";
 import { derivePrAttention } from "@t3tools/shared/prHub";
-import { parseSourceControlRemoteUrl } from "@t3tools/shared/sourceControl";
+import {
+  formatSourceControlPullRequestKey,
+  parseSourceControlPullRequestKey,
+} from "@t3tools/shared/sourceControl";
 import { Cause, Deferred, Effect, Exit, Layer, PubSub, Ref, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
-import { GitHubCliError } from "../../git/Errors.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { GitHubCli } from "../../git/Services/GitHubCli.ts";
 import { ProjectionProjectRepository } from "../../persistence/Services/ProjectionProjects.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  GITHUB_SOURCE_CONTROL_CAPABILITIES,
+  makeGitHubSourceControlProvider,
+} from "../../sourceControl/GitHubSourceControlProvider.ts";
+import {
+  SourceControlProviderError,
+  makeSourceControlProviderRegistry,
+} from "../../sourceControl/SourceControlProvider.ts";
+import { discoverSourceControlProviderIdentities } from "../../sourceControl/discovery.ts";
 import { PrHubService, type PrHubServiceShape } from "../Services/PrHubService.ts";
 
 const DEFAULT_HOST = process.env.GH_HOST?.trim() || "github.com";
@@ -60,6 +72,7 @@ interface ViewerStateRow {
 }
 
 interface PrDbRow {
+  readonly provider_kind: "github";
   readonly host: string;
   readonly repo: string;
   readonly number: number;
@@ -180,15 +193,50 @@ function emptySnapshot(input?: {
   readonly errorKind?: string | undefined;
   readonly errorMessage?: string | undefined;
 }): PrHubSnapshot {
+  const host = input?.host ?? DEFAULT_HOST;
+  const viewerLogin = input?.viewerLogin ?? null;
+  const status = input?.status ?? "ok";
   return {
-    status: input?.status ?? "ok",
-    viewerLogin: input?.viewerLogin ?? null,
-    host: input?.host ?? DEFAULT_HOST,
+    status,
+    viewerLogin,
+    host,
+    authStates: [githubAuthState({ ...input, host, viewerLogin, status })],
     pullRequests: [],
     recentlyResolved: [],
     lastPolledAt: null,
     ...(input?.errorKind ? { errorKind: input.errorKind } : {}),
     ...(input?.errorMessage ? { errorMessage: input.errorMessage } : {}),
+  };
+}
+
+function githubAuthState(input: {
+  readonly host: string;
+  readonly viewerLogin: string | null;
+  readonly status: PrHubSnapshot["status"];
+  readonly errorKind?: string | undefined;
+  readonly errorMessage?: string | undefined;
+}): SourceControlHostAuthState {
+  const status = (() => {
+    switch (input.status) {
+      case "ok":
+        return "ok" as const;
+      case "auth_required":
+        return "auth-required" as const;
+      case "gh_missing":
+        return "provider-missing" as const;
+      case "degraded":
+        return "degraded" as const;
+      case "error":
+        return "error" as const;
+    }
+  })();
+  return {
+    provider: "github",
+    host: input.host,
+    status,
+    viewerLogin: input.viewerLogin,
+    ...(input.errorKind ? { errorKind: input.errorKind } : {}),
+    ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}),
   };
 }
 
@@ -274,7 +322,38 @@ function parseRepositoryNameWithOwner(
 }
 
 function keyFor(host: string, repo: string, number: number): PullRequestKey {
-  return PullRequestKey.makeUnsafe(`${host}/${repo}#${number}`);
+  return formatSourceControlPullRequestKey({
+    provider: "github",
+    host,
+    repository: repo,
+    number,
+  });
+}
+
+function githubProviderFields(input: {
+  readonly host: string;
+  readonly repository: string;
+  readonly number: number;
+  readonly nodeId: string | null;
+  readonly reviewDecision: PrReviewDecision;
+  readonly mergeStateStatus: string;
+}) {
+  return {
+    provider: "github" as const,
+    ref: {
+      provider: "github" as const,
+      host: input.host,
+      repository: input.repository,
+      number: input.number,
+    },
+    capabilities: [...GITHUB_SOURCE_CONTROL_CAPABILITIES],
+    providerDetails: {
+      provider: "github" as const,
+      nodeId: input.nodeId,
+      reviewDecision: input.reviewDecision,
+      mergeStateStatus: input.mergeStateStatus,
+    },
+  };
 }
 
 function normalizePullRequestState(value: unknown): PrPullRequestState {
@@ -531,6 +610,14 @@ function buildTrackedPullRequest(
 
   return {
     key: keyFor(pr.host, pr.repository.nameWithOwner, pr.number),
+    ...githubProviderFields({
+      host: pr.host,
+      repository: pr.repository.nameWithOwner,
+      number: pr.number,
+      nodeId: pr.nodeId,
+      reviewDecision: pr.reviewDecision,
+      mergeStateStatus: pr.mergeStateStatus,
+    }),
     nodeId: pr.nodeId,
     number: pr.number,
     title: pr.title,
@@ -868,10 +955,15 @@ const makePrHubService = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const serverConfig = yield* ServerConfig;
   const settings = yield* ServerSettingsService;
-  const github = yield* GitHubCli;
+  const githubCli = yield* GitHubCli;
+  const sourceControlProviders = makeSourceControlProviderRegistry([
+    makeGitHubSourceControlProvider(githubCli),
+  ]);
+  const github = yield* sourceControlProviders.get("github");
   const git = yield* GitCore;
   const projects = yield* ProjectionProjectRepository;
   const host = DEFAULT_HOST;
+  const providerKind = "github" as const;
   const cwd = accountCwd(serverConfig.cwd);
   const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
   const snapshotPubSub = yield* PubSub.unbounded<PrHubSnapshot>();
@@ -897,7 +989,8 @@ const makePrHubService = Effect.gen(function* () {
             error_message,
             capped_buckets_json
           FROM pr_hub_refresh_state
-          WHERE host = ${host}
+          WHERE provider_kind = ${providerKind}
+            AND host = ${host}
             AND viewer_login = ${viewerLogin}
           LIMIT 1
         `;
@@ -913,7 +1006,8 @@ const makePrHubService = Effect.gen(function* () {
         error_message,
         capped_buckets_json
       FROM pr_hub_refresh_state
-      WHERE host = ${host}
+      WHERE provider_kind = ${providerKind}
+        AND host = ${host}
       ORDER BY COALESCE(last_polled_at, '') DESC
       LIMIT 1
     `;
@@ -934,7 +1028,8 @@ const makePrHubService = Effect.gen(function* () {
           ignored_at,
           no_longer_relevant_at
         FROM pr_hub_viewer_state
-        WHERE host = ${host}
+        WHERE provider_kind = ${providerKind}
+          AND host = ${host}
           AND viewer_login = ${viewerLogin}
       `;
       return new Map(rows.map((row) => [`${row.repo}#${row.number}`, row] as const));
@@ -948,6 +1043,7 @@ const makePrHubService = Effect.gen(function* () {
 
       const rows = yield* sql<PrDbRow>`
         SELECT
+          p.provider_kind,
           p.host,
           p.repo,
           p.number,
@@ -980,10 +1076,12 @@ const makePrHubService = Effect.gen(function* () {
           v.no_longer_relevant_at
         FROM pr_hub_viewer_state v
         INNER JOIN pr_hub_prs p
-          ON p.host = v.host
+          ON p.provider_kind = v.provider_kind
+          AND p.host = v.host
           AND p.repo = v.repo
           AND p.number = v.number
-        WHERE v.host = ${host}
+        WHERE v.provider_kind = ${providerKind}
+          AND v.host = ${host}
           AND v.viewer_login = ${resolvedViewer}
       `;
 
@@ -1002,6 +1100,14 @@ const makePrHubService = Effect.gen(function* () {
         return {
           ...payload,
           key: keyFor(row.host, row.repo, row.number),
+          ...githubProviderFields({
+            host: row.host,
+            repository: row.repo,
+            number: row.number,
+            nodeId: row.node_id,
+            reviewDecision: row.review_decision,
+            mergeStateStatus: row.merge_state_status,
+          }),
           nodeId: row.node_id,
           number: row.number,
           title: row.title,
@@ -1057,6 +1163,15 @@ const makePrHubService = Effect.gen(function* () {
         status: refresh?.status ?? "ok",
         viewerLogin: resolvedViewer,
         host,
+        authStates: [
+          githubAuthState({
+            host,
+            viewerLogin: resolvedViewer,
+            status: refresh?.status ?? "ok",
+            ...(refresh?.error_kind ? { errorKind: refresh.error_kind } : {}),
+            ...(refresh?.error_message ? { errorMessage: refresh.error_message } : {}),
+          }),
+        ],
         pullRequests: sortTrackedPrs(pullRequests),
         recentlyResolved: sortTrackedPrs(recentlyResolved),
         lastPolledAt: refresh?.last_polled_at ?? null,
@@ -1095,7 +1210,7 @@ const makePrHubService = Effect.gen(function* () {
           const kind = causeErrorKind(viewerExit.cause) ?? "generic";
           const message = causeUserMessage(viewerExit.cause, "Failed to resolve GitHub account.");
           const status =
-            kind === "binary_missing"
+            kind === "provider_missing"
               ? "gh_missing"
               : kind === "unauthenticated"
                 ? "auth_required"
@@ -1152,9 +1267,9 @@ const makePrHubService = Effect.gen(function* () {
         Effect.gen(function* () {
           if (ids.length === 0) return;
           const result = yield* Effect.exit(
-            github.runGraphql({
+            github.query({
               cwd,
-              query: PR_HUB_DETAILS_QUERY,
+              document: PR_HUB_DETAILS_QUERY,
               variables: { ids },
             }),
           );
@@ -1220,9 +1335,9 @@ const makePrHubService = Effect.gen(function* () {
       const queries = buildSearchQueries(viewer.login, viewer.teams);
       const teamListCapped = viewer.teams.length > TEAM_QUERY_CHUNK_SIZE * TEAM_QUERY_CHUNK_COUNT;
       const result = yield* Effect.exit(
-        github.runGraphql({
+        github.query({
           cwd,
-          query: PR_HUB_SEARCH_QUERY,
+          document: PR_HUB_SEARCH_QUERY,
           variables: queries,
         }),
       );
@@ -1348,7 +1463,7 @@ const makePrHubService = Effect.gen(function* () {
       const nodesByUrl = new Map<string, { node: Record<string, unknown>; aliases: Set<string> }>();
       for (const bucket of buckets) {
         const exit = yield* Effect.exit(
-          github.searchPullRequests({ cwd, args: bucket.args, limit: 50 }),
+          github.searchPullRequests({ cwd, qualifiers: bucket.args, limit: 50 }),
         );
         if (Exit.isFailure(exit)) continue;
         for (const rawNode of asArray(exit.value)) {
@@ -1397,9 +1512,9 @@ const makePrHubService = Effect.gen(function* () {
         const ids = nodeIds.slice(index, index + RECONCILE_NODE_CHUNK_SIZE);
         if (ids.length === 0) continue;
         const result = yield* Effect.exit(
-          github.runGraphql({
+          github.query({
             cwd,
-            query: PR_HUB_RECONCILE_QUERY,
+            document: PR_HUB_RECONCILE_QUERY,
             variables: { ids },
           }),
         );
@@ -1427,9 +1542,9 @@ const makePrHubService = Effect.gen(function* () {
         );
         if (!request) continue;
         const result = yield* Effect.exit(
-          github.runGraphql({
+          github.query({
             cwd,
-            query: request.query,
+            document: request.query,
             variables: request.variables,
           }),
         );
@@ -1458,6 +1573,7 @@ const makePrHubService = Effect.gen(function* () {
   }) =>
     sql`
       INSERT INTO pr_hub_refresh_state (
+        provider_kind,
         host,
         viewer_login,
         status,
@@ -1468,6 +1584,7 @@ const makePrHubService = Effect.gen(function* () {
         capped_buckets_json
       )
       VALUES (
+        ${providerKind},
         ${host},
         ${input.viewerLogin},
         ${input.status},
@@ -1479,6 +1596,7 @@ const makePrHubService = Effect.gen(function* () {
       )
       ON CONFLICT (host, viewer_login)
       DO UPDATE SET
+        provider_kind = excluded.provider_kind,
         status = excluded.status,
         last_polled_at = excluded.last_polled_at,
         last_success_at = COALESCE(excluded.last_success_at, pr_hub_refresh_state.last_success_at),
@@ -1503,6 +1621,7 @@ const makePrHubService = Effect.gen(function* () {
       for (const pr of pullRequests) {
         yield* sql`
           INSERT INTO pr_hub_prs (
+            provider_kind,
             host,
             repo,
             number,
@@ -1525,6 +1644,7 @@ const makePrHubService = Effect.gen(function* () {
             payload_json
           )
           VALUES (
+            ${pr.provider},
             ${pr.host},
             ${pr.repository.nameWithOwner},
             ${pr.number},
@@ -1548,6 +1668,7 @@ const makePrHubService = Effect.gen(function* () {
           )
           ON CONFLICT (host, repo, number)
           DO UPDATE SET
+            provider_kind = excluded.provider_kind,
             title = excluded.title,
             node_id = excluded.node_id,
             url = excluded.url,
@@ -1568,6 +1689,7 @@ const makePrHubService = Effect.gen(function* () {
         `;
         yield* sql`
           INSERT INTO pr_hub_viewer_state (
+            provider_kind,
             host,
             viewer_login,
             repo,
@@ -1590,6 +1712,7 @@ const makePrHubService = Effect.gen(function* () {
             stale_inaccessible_at
           )
           VALUES (
+            ${pr.provider},
             ${pr.host},
             ${viewer.login},
             ${pr.repository.nameWithOwner},
@@ -1613,6 +1736,7 @@ const makePrHubService = Effect.gen(function* () {
           )
           ON CONFLICT (host, viewer_login, repo, number)
           DO UPDATE SET
+            provider_kind = excluded.provider_kind,
             roles_json = excluded.roles_json,
             attention_state = excluded.attention_state,
             attention_bucket = excluded.attention_bucket,
@@ -1633,13 +1757,15 @@ const makePrHubService = Effect.gen(function* () {
         yield* sql`
           UPDATE pr_hub_viewer_state
           SET no_longer_relevant_at = ${now}
-          WHERE host = ${host}
+          WHERE provider_kind = ${providerKind}
+            AND host = ${host}
             AND viewer_login = ${viewer.login}
             AND lower(repo) = ${repo}
         `;
         yield* sql`
           DELETE FROM pr_hub_prs
-          WHERE host = ${host}
+          WHERE provider_kind = ${providerKind}
+            AND host = ${host}
             AND lower(repo) = ${repo}
         `;
       }
@@ -1669,7 +1795,8 @@ const makePrHubService = Effect.gen(function* () {
               updated_at = ${terminal.updatedAt},
               closed_at = ${terminal.closedAt},
               payload_json = ${nextPayload}
-            WHERE host = ${host}
+            WHERE provider_kind = ${providerKind}
+              AND host = ${host}
               AND repo = ${row.repo}
               AND number = ${row.number}
           `;
@@ -1686,7 +1813,8 @@ const makePrHubService = Effect.gen(function* () {
               no_longer_relevant_at = NULL,
               stale_inaccessible_count = 0,
               stale_inaccessible_at = NULL
-            WHERE host = ${host}
+            WHERE provider_kind = ${providerKind}
+              AND host = ${host}
               AND viewer_login = ${viewer.login}
               AND repo = ${row.repo}
               AND number = ${row.number}
@@ -1702,10 +1830,12 @@ const makePrHubService = Effect.gen(function* () {
           p.payload_json
         FROM pr_hub_viewer_state v
         INNER JOIN pr_hub_prs p
-          ON p.host = v.host
+          ON p.provider_kind = v.provider_kind
+          AND p.host = v.host
           AND p.repo = v.repo
           AND p.number = v.number
-        WHERE v.host = ${host}
+        WHERE v.provider_kind = ${providerKind}
+          AND v.host = ${host}
           AND v.viewer_login = ${viewer.login}
           AND v.no_longer_relevant_at IS NULL
       `;
@@ -1735,7 +1865,8 @@ const makePrHubService = Effect.gen(function* () {
               WHEN ${nextMissCount} >= 3 THEN ${now}
               ELSE no_longer_relevant_at
             END
-          WHERE host = ${host}
+          WHERE provider_kind = ${providerKind}
+            AND host = ${host}
             AND viewer_login = ${viewer.login}
             AND repo = ${row.repo}
             AND number = ${row.number}
@@ -1745,14 +1876,16 @@ const makePrHubService = Effect.gen(function* () {
       const irrelevantBefore = new Date(Date.now() - NO_LONGER_RELEVANT_RETENTION_MS).toISOString();
       yield* sql`
         DELETE FROM pr_hub_viewer_state
-        WHERE host = ${host}
+        WHERE provider_kind = ${providerKind}
+          AND host = ${host}
           AND viewer_login = ${viewer.login}
           AND no_longer_relevant_at IS NOT NULL
           AND no_longer_relevant_at < ${irrelevantBefore}
       `;
       yield* sql`
         DELETE FROM pr_hub_prs
-        WHERE host = ${host}
+        WHERE provider_kind = ${providerKind}
+          AND host = ${host}
           AND state IN ('closed', 'merged')
           AND closed_at IS NOT NULL
           AND closed_at < ${resolvedBefore}
@@ -1785,7 +1918,7 @@ const makePrHubService = Effect.gen(function* () {
         const kind = stringValue(errorRecord?.kind) ?? "generic";
         const message = causeUserMessage(viewerExit.cause, "Failed to resolve GitHub account.");
         const status =
-          kind === "binary_missing"
+          kind === "provider_missing"
             ? "gh_missing"
             : kind === "unauthenticated"
               ? "auth_required"
@@ -1796,6 +1929,15 @@ const makePrHubService = Effect.gen(function* () {
           host,
           errorKind: kind,
           errorMessage: message,
+          authStates: [
+            githubAuthState({
+              host,
+              viewerLogin: existing.viewerLogin,
+              status,
+              errorKind: kind,
+              errorMessage: message,
+            }),
+          ],
         } satisfies PrHubSnapshot;
         return yield* publishSnapshot(snapshot);
       }
@@ -1854,6 +1996,15 @@ const makePrHubService = Effect.gen(function* () {
             status: "error",
             errorKind: "error",
             errorMessage: message,
+            authStates: [
+              githubAuthState({
+                host,
+                viewerLogin: existing.viewerLogin,
+                status: "error",
+                errorKind: "error",
+                errorMessage: message,
+              }),
+            ],
           });
         }),
       ),
@@ -1919,14 +2070,16 @@ const makePrHubService = Effect.gen(function* () {
     });
 
   const prHubActionError = (detail: string) =>
-    new GitHubCliError({
+    new SourceControlProviderError({
+      provider: "github",
       operation: "prHub.action",
       detail,
       kind: "forbidden",
     });
 
   const prHubPersistenceError = (operation: string, cause: unknown) =>
-    new GitHubCliError({
+    new SourceControlProviderError({
+      provider: "github",
       operation,
       detail: "Could not persist PR Hub state.",
       kind: "generic",
@@ -1946,7 +2099,9 @@ const makePrHubService = Effect.gen(function* () {
         Effect.mapError((error) => prHubPersistenceError(operation, error)),
       );
 
-  const trackedPrByUrl = (url: string): Effect.Effect<TrackedPullRequest, GitHubCliError> =>
+  const trackedPrByUrl = (
+    url: string,
+  ): Effect.Effect<TrackedPullRequest, SourceControlProviderError> =>
     getSnapshot.pipe(
       Effect.flatMap((snapshot) => {
         const pr =
@@ -1962,7 +2117,7 @@ const makePrHubService = Effect.gen(function* () {
     url: string,
     predicate: (pr: TrackedPullRequest) => boolean,
     detail: string,
-  ): Effect.Effect<TrackedPullRequest, GitHubCliError> =>
+  ): Effect.Effect<TrackedPullRequest, SourceControlProviderError> =>
     trackedPrByUrl(url).pipe(
       Effect.flatMap((pr) =>
         predicate(pr) ? Effect.succeed(pr) : Effect.fail(prHubActionError(detail)),
@@ -1975,7 +2130,7 @@ const makePrHubService = Effect.gen(function* () {
 
   const validateReviewers = (
     reviewers: ReadonlyArray<string>,
-  ): Effect.Effect<ReadonlyArray<string>, GitHubCliError> => {
+  ): Effect.Effect<ReadonlyArray<string>, SourceControlProviderError> => {
     const normalized = normalizeReviewerInputs(reviewers);
     if (normalized.length === 0) {
       return Effect.fail(prHubActionError("No reviewers are available to re-request."));
@@ -2006,16 +2161,17 @@ const makePrHubService = Effect.gen(function* () {
 
   const markSeen: PrHubServiceShape["markSeen"] = (input) =>
     Effect.gen(function* () {
-      const parsed = parsePullRequestKey(input.key);
+      const parsed = parseSourceControlPullRequestKey(input.key);
       const snapshot = yield* getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
       if (!parsed || !viewerLogin) return snapshot;
       yield* sql`
         UPDATE pr_hub_viewer_state
         SET last_seen_fingerprint = ${input.attentionFingerprint}
-        WHERE host = ${parsed.host}
+        WHERE provider_kind = ${parsed.provider}
+          AND host = ${parsed.host}
           AND viewer_login = ${viewerLogin}
-          AND repo = ${parsed.repo}
+          AND repo = ${parsed.repository}
           AND number = ${parsed.number}
       `.pipe(persistPrHubState("prHub.markSeen"));
       return yield* mutateLocalState(input.key, () => ({ notificationPending: false }));
@@ -2023,7 +2179,7 @@ const makePrHubService = Effect.gen(function* () {
 
   const markNotified: PrHubServiceShape["markNotified"] = (input) =>
     Effect.gen(function* () {
-      const parsed = parsePullRequestKey(input.key);
+      const parsed = parseSourceControlPullRequestKey(input.key);
       const snapshot = yield* getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
       if (!parsed || !viewerLogin) return snapshot;
@@ -2032,9 +2188,10 @@ const makePrHubService = Effect.gen(function* () {
         SET
           last_notified_fingerprint = ${input.attentionFingerprint},
           last_notified_at = ${new Date().toISOString()}
-        WHERE host = ${parsed.host}
+        WHERE provider_kind = ${parsed.provider}
+          AND host = ${parsed.host}
           AND viewer_login = ${viewerLogin}
-          AND repo = ${parsed.repo}
+          AND repo = ${parsed.repository}
           AND number = ${parsed.number}
       `.pipe(persistPrHubState("prHub.markNotified"));
       return yield* mutateLocalState(input.key, () => ({ notificationPending: false }));
@@ -2042,16 +2199,17 @@ const makePrHubService = Effect.gen(function* () {
 
   const snooze: PrHubServiceShape["snooze"] = (input) =>
     Effect.gen(function* () {
-      const parsed = parsePullRequestKey(input.key);
+      const parsed = parseSourceControlPullRequestKey(input.key);
       const snapshot = yield* getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
       if (!parsed || !viewerLogin) return snapshot;
       yield* sql`
         UPDATE pr_hub_viewer_state
         SET snoozed_until = ${input.until}
-        WHERE host = ${parsed.host}
+        WHERE provider_kind = ${parsed.provider}
+          AND host = ${parsed.host}
           AND viewer_login = ${viewerLogin}
-          AND repo = ${parsed.repo}
+          AND repo = ${parsed.repository}
           AND number = ${parsed.number}
       `.pipe(persistPrHubState("prHub.snooze"));
       return yield* mutateLocalState(input.key, () => ({
@@ -2062,16 +2220,17 @@ const makePrHubService = Effect.gen(function* () {
 
   const unsnooze: PrHubServiceShape["unsnooze"] = (input) =>
     Effect.gen(function* () {
-      const parsed = parsePullRequestKey(input.key);
+      const parsed = parseSourceControlPullRequestKey(input.key);
       const snapshot = yield* getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
       if (!parsed || !viewerLogin) return snapshot;
       yield* sql`
         UPDATE pr_hub_viewer_state
         SET snoozed_until = NULL
-        WHERE host = ${parsed.host}
+        WHERE provider_kind = ${parsed.provider}
+          AND host = ${parsed.host}
           AND viewer_login = ${viewerLogin}
-          AND repo = ${parsed.repo}
+          AND repo = ${parsed.repository}
           AND number = ${parsed.number}
       `.pipe(persistPrHubState("prHub.unsnooze"));
       return yield* hydrateSnapshot(viewerLogin).pipe(Effect.flatMap(publishSnapshot));
@@ -2079,7 +2238,7 @@ const makePrHubService = Effect.gen(function* () {
 
   const ignore: PrHubServiceShape["ignore"] = (input) =>
     Effect.gen(function* () {
-      const parsed = parsePullRequestKey(input.key);
+      const parsed = parseSourceControlPullRequestKey(input.key);
       const snapshot = yield* getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
       if (!parsed || !viewerLogin) return snapshot;
@@ -2089,9 +2248,10 @@ const makePrHubService = Effect.gen(function* () {
         SET
           ignored_at = ${ignoredAt},
           last_seen_fingerprint = attention_fingerprint
-        WHERE host = ${parsed.host}
+        WHERE provider_kind = ${parsed.provider}
+          AND host = ${parsed.host}
           AND viewer_login = ${viewerLogin}
-          AND repo = ${parsed.repo}
+          AND repo = ${parsed.repository}
           AND number = ${parsed.number}
       `.pipe(persistPrHubState("prHub.ignore"));
       return yield* hydrateSnapshot(viewerLogin).pipe(Effect.flatMap(publishSnapshot));
@@ -2108,14 +2268,23 @@ const makePrHubService = Effect.gen(function* () {
       const candidates: PrHubLocalCheckoutCandidate[] = [];
       for (const project of allProjects) {
         if (project.deletedAt !== null) continue;
-        const remote = yield* git
-          .readConfigValue(project.workspaceRoot, "remote.origin.url")
-          .pipe(Effect.catch(() => Effect.succeed(null)));
-        const parsed = parseSourceControlRemoteUrl(remote);
-        if (parsed.kind !== "github") continue;
-        if (parsed.host?.toLowerCase() !== pr.host.toLowerCase()) continue;
-        const parsedRepo = `${parsed.owner}/${parsed.repository}`.toLowerCase();
-        if (parsedRepo !== pr.repository.nameWithOwner.toLowerCase()) continue;
+        const remotes = yield* git.listRemotes(project.workspaceRoot).pipe(
+          Effect.catch(() =>
+            git.readConfigValue(project.workspaceRoot, "remote.origin.url").pipe(
+              Effect.map((url) => (url ? [{ name: "origin", url }] : [])),
+              Effect.catch(() => Effect.succeed([])),
+            ),
+          ),
+        );
+        const matches = discoverSourceControlProviderIdentities(remotes, {
+          githubHosts: [host],
+        }).some((identity) => {
+          if (identity.kind !== pr.provider) return false;
+          if (identity.host?.toLowerCase() !== pr.host.toLowerCase()) return false;
+          const repository = `${identity.owner}/${identity.repository}`.toLowerCase();
+          return repository === pr.repository.nameWithOwner.toLowerCase();
+        });
+        if (!matches) continue;
         candidates.push({
           projectId: project.projectId,
           projectTitle: project.title,
@@ -2150,46 +2319,72 @@ const makePrHubService = Effect.gen(function* () {
         input.url,
         (pr) => pr.state === "open" && !pr.roles.includes("author") && pr.viewerReviewRequested,
         "Approve is only available for tracked PRs requesting your review.",
-      ).pipe(Effect.andThen(refreshAfterAction(github.reviewPullRequest({ cwd, ...input })))),
+      ).pipe(
+        Effect.flatMap((pr) => sourceControlProviders.get(pr.provider)),
+        Effect.flatMap((provider) =>
+          refreshAfterAction(provider.approvePullRequest({ cwd, ...input })),
+        ),
+      ),
     requestChanges: (input) =>
       requireTrackedPr(
         input.url,
         (pr) => pr.state === "open" && !pr.roles.includes("author") && pr.viewerReviewRequested,
         "Request changes is only available for tracked PRs requesting your review.",
-      ).pipe(Effect.andThen(refreshAfterAction(github.requestChanges({ cwd, ...input })))),
+      ).pipe(
+        Effect.flatMap((pr) => sourceControlProviders.get(pr.provider)),
+        Effect.flatMap((provider) =>
+          refreshAfterAction(provider.requestChanges({ cwd, ...input })),
+        ),
+      ),
     comment: (input) =>
       requireTrackedPr(
         input.url,
         (pr) => pr.state === "open",
         "Comment is only available for tracked open PRs.",
-      ).pipe(Effect.andThen(refreshAfterAction(github.commentPullRequest({ cwd, ...input })))),
+      ).pipe(
+        Effect.flatMap((pr) => sourceControlProviders.get(pr.provider)),
+        Effect.flatMap((provider) =>
+          refreshAfterAction(provider.commentPullRequest({ cwd, ...input })),
+        ),
+      ),
     merge: (input) =>
       requireTrackedPr(
         input.url,
         (pr) => pr.roles.includes("author") && pr.attentionState === "ready_to_merge",
         "Merge is only available for tracked author PRs that are ready to merge.",
       ).pipe(
-        Effect.flatMap((pr) =>
-          pr.headRefOid
-            ? refreshAfterAction(
-                github.mergePullRequest({
+        Effect.flatMap((pr) => {
+          const headRefOid = pr.headRefOid;
+          if (!headRefOid) {
+            return Effect.fail(
+              prHubActionError("Cannot merge because the tracked PR head commit is unknown."),
+            );
+          }
+          return sourceControlProviders.get(pr.provider).pipe(
+            Effect.flatMap((provider) =>
+              refreshAfterAction(
+                provider.mergePullRequest({
                   cwd,
                   url: input.url,
                   method: input.method,
-                  expectedHeadOid: pr.headRefOid,
+                  expectedHeadOid: headRefOid,
                 }),
-              )
-            : Effect.fail(
-                prHubActionError("Cannot merge because the tracked PR head commit is unknown."),
               ),
-        ),
+            ),
+          );
+        }),
       ),
     markReady: (input) =>
       requireTrackedPr(
         input.url,
         (pr) => pr.roles.includes("author") && pr.attentionState === "draft",
         "Mark ready is only available for tracked draft PRs you authored.",
-      ).pipe(Effect.andThen(refreshAfterAction(github.markPullRequestReady({ cwd, ...input })))),
+      ).pipe(
+        Effect.flatMap((pr) => sourceControlProviders.get(pr.provider)),
+        Effect.flatMap((provider) =>
+          refreshAfterAction(provider.markPullRequestReady({ cwd, ...input })),
+        ),
+      ),
     reRequestReview: (input) =>
       requireTrackedPr(
         input.url,
@@ -2201,12 +2396,16 @@ const makePrHubService = Effect.gen(function* () {
             input.reviewers?.length ? input.reviewers : pr.reviewRequestReviewers,
           ).pipe(
             Effect.flatMap((reviewers) =>
-              refreshAfterAction(
-                github.addPullRequestReviewers({
-                  cwd,
-                  url: input.url,
-                  reviewers,
-                }),
+              sourceControlProviders.get(pr.provider).pipe(
+                Effect.flatMap((provider) =>
+                  refreshAfterAction(
+                    provider.addPullRequestReviewers({
+                      cwd,
+                      url: input.url,
+                      reviewers,
+                    }),
+                  ),
+                ),
               ),
             ),
           ),
@@ -2221,28 +2420,5 @@ const makePrHubService = Effect.gen(function* () {
     clearData,
   } satisfies PrHubServiceShape;
 });
-
-function parsePullRequestKey(key: PullRequestKey): {
-  readonly host: string;
-  readonly repo: string;
-  readonly number: number;
-} | null {
-  const raw = String(key);
-  const hashIndex = raw.lastIndexOf("#");
-  const slashIndex = raw.indexOf("/");
-  if (hashIndex < 0 || slashIndex < 0) return null;
-  const numberText = raw.slice(hashIndex + 1);
-  if (!/^\d+$/.test(numberText)) return null;
-  const number = Number(numberText);
-  if (!Number.isSafeInteger(number)) return null;
-  const hostAndRepo = raw.slice(0, hashIndex);
-  const firstSlash = hostAndRepo.indexOf("/");
-  if (firstSlash <= 0 || firstSlash === hostAndRepo.length - 1) return null;
-  return {
-    host: hostAndRepo.slice(0, firstSlash),
-    repo: hostAndRepo.slice(firstSlash + 1),
-    number,
-  };
-}
 
 export const PrHubServiceLive = Layer.effect(PrHubService, makePrHubService);

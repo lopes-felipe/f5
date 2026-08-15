@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
+import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
 
 export const SourceControlProviderKind = Schema.Literals([
   "github",
@@ -9,6 +9,79 @@ export const SourceControlProviderKind = Schema.Literals([
   "unknown",
 ]);
 export type SourceControlProviderKind = typeof SourceControlProviderKind.Type;
+
+export const SourceControlPullRequestRef = Schema.Struct({
+  provider: SourceControlProviderKind,
+  host: TrimmedNonEmptyString,
+  repository: TrimmedNonEmptyString,
+  number: PositiveInt,
+});
+export type SourceControlPullRequestRef = typeof SourceControlPullRequestRef.Type;
+
+export const SOURCE_CONTROL_PULL_REQUEST_ACTIONS = [
+  "approve",
+  "request-changes",
+  "comment",
+  "merge",
+  "mark-ready",
+  "request-reviewers",
+  "update-branch",
+  "edit-comment",
+  "react",
+  "change-reviewers",
+] as const;
+export const SourceControlPullRequestAction = Schema.Literals(SOURCE_CONTROL_PULL_REQUEST_ACTIONS);
+export type SourceControlPullRequestAction = typeof SourceControlPullRequestAction.Type;
+
+export const SourceControlCapability = Schema.Union([
+  Schema.Struct({
+    action: SourceControlPullRequestAction,
+    supported: Schema.Literal(true),
+  }),
+  Schema.Struct({
+    action: SourceControlPullRequestAction,
+    supported: Schema.Literal(false),
+    reason: TrimmedNonEmptyString,
+  }),
+]);
+export type SourceControlCapability = typeof SourceControlCapability.Type;
+
+export const SourceControlAuthStatus = Schema.Literals([
+  "ok",
+  "auth-required",
+  "provider-missing",
+  "rate-limited",
+  "degraded",
+  "error",
+]);
+export type SourceControlAuthStatus = typeof SourceControlAuthStatus.Type;
+
+export const SourceControlRateLimit = Schema.Struct({
+  remaining: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  limit: Schema.optional(Schema.NullOr(NonNegativeInt)),
+  resetAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  retryAfterSeconds: Schema.optional(Schema.NullOr(NonNegativeInt)),
+});
+export type SourceControlRateLimit = typeof SourceControlRateLimit.Type;
+
+export const SourceControlHostAuthState = Schema.Struct({
+  provider: SourceControlProviderKind,
+  host: TrimmedNonEmptyString,
+  status: SourceControlAuthStatus,
+  viewerLogin: Schema.NullOr(TrimmedNonEmptyString),
+  errorKind: Schema.optional(TrimmedNonEmptyString),
+  errorMessage: Schema.optional(TrimmedNonEmptyString),
+  rateLimit: Schema.optional(SourceControlRateLimit),
+});
+export type SourceControlHostAuthState = typeof SourceControlHostAuthState.Type;
+
+export const SourceControlPageInfo = Schema.Struct({
+  hasNextPage: Schema.Boolean,
+  endCursor: Schema.NullOr(TrimmedNonEmptyString),
+  truncated: Schema.Boolean,
+  rateLimit: Schema.optional(SourceControlRateLimit),
+});
+export type SourceControlPageInfo = typeof SourceControlPageInfo.Type;
 
 export const ChangeRequestState = Schema.Literals(["open", "closed", "merged", "draft", "unknown"]);
 export type ChangeRequestState = typeof ChangeRequestState.Type;

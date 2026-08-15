@@ -95,6 +95,11 @@ export interface GitSetBranchUpstreamInput {
   remoteBranch: string;
 }
 
+export interface GitRemote {
+  readonly name: string;
+  readonly url: string | null;
+}
+
 /**
  * GitCoreShape - Service API for low-level Git repository interactions.
  */
@@ -149,6 +154,9 @@ export interface GitCoreShape {
     cwd: string,
     key: string,
   ) => Effect.Effect<string | null, GitCommandError>;
+
+  /** List every configured remote in Git's stable order, including its fetch URL. */
+  readonly listRemotes: (cwd: string) => Effect.Effect<ReadonlyArray<GitRemote>, GitCommandError>;
 
   /**
    * List local + remote branches and branch metadata.

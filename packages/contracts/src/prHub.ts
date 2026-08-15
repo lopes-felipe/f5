@@ -1,5 +1,11 @@
 import { Schema } from "effect";
 import { IsoDateTime, makeEntityId, NonNegativeInt, ProjectId } from "./baseSchemas";
+import {
+  SourceControlCapability,
+  SourceControlHostAuthState,
+  SourceControlProviderKind,
+  SourceControlPullRequestRef,
+} from "./sourceControl";
 
 export const PullRequestKey = makeEntityId("PullRequestKey");
 export type PullRequestKey = typeof PullRequestKey.Type;
@@ -62,8 +68,27 @@ export const PrRepositoryRef = Schema.Struct({
 });
 export type PrRepositoryRef = typeof PrRepositoryRef.Type;
 
+export const PrProviderDetails = Schema.Union([
+  Schema.Struct({
+    provider: Schema.Literal("github"),
+    nodeId: Schema.NullOr(Schema.String),
+    reviewDecision: PrReviewDecision,
+    mergeStateStatus: Schema.String,
+  }),
+  Schema.Struct({
+    provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "unknown"]),
+    externalId: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+]);
+export type PrProviderDetails = typeof PrProviderDetails.Type;
+
 export const TrackedPullRequest = Schema.Struct({
   key: PullRequestKey,
+  provider: SourceControlProviderKind.pipe(Schema.withDecodingDefault(() => "github" as const)),
+  ref: Schema.optional(SourceControlPullRequestRef),
+  capabilities: Schema.optional(Schema.Array(SourceControlCapability)),
+  providerDetails: Schema.optional(PrProviderDetails),
+  /** @deprecated Read providerDetails for provider-native identity. */
   nodeId: Schema.NullOr(Schema.String),
   number: NonNegativeInt,
   title: Schema.String,
@@ -118,6 +143,7 @@ export const PrHubSnapshot = Schema.Struct({
   status: PrHubStatus,
   viewerLogin: Schema.NullOr(Schema.String),
   host: Schema.String,
+  authStates: Schema.optional(Schema.Array(SourceControlHostAuthState)),
   pullRequests: Schema.Array(TrackedPullRequest),
   recentlyResolved: Schema.Array(TrackedPullRequest),
   lastPolledAt: Schema.NullOr(IsoDateTime),

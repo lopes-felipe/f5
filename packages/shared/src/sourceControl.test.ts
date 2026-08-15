@@ -1,6 +1,45 @@
 import { describe, expect, it } from "vitest";
 
-import { parseSourceControlRemoteUrl, resolveChangeRequestWebUrl } from "./sourceControl";
+import {
+  formatSourceControlPullRequestKey,
+  parseSourceControlPullRequestKey,
+  parseSourceControlRemoteUrl,
+  resolveChangeRequestWebUrl,
+  sourceControlPullRequestKeysEqual,
+} from "./sourceControl";
+
+describe("source-control pull-request keys", () => {
+  it("formats provider-qualified keys and parses legacy GitHub keys", () => {
+    expect(
+      formatSourceControlPullRequestKey({
+        provider: "gitlab",
+        host: "gitlab.example.com",
+        repository: "platform/f5",
+        number: 42,
+      }),
+    ).toBe("gitlab:gitlab.example.com/platform/f5#42");
+    expect(parseSourceControlPullRequestKey("github.com/octo/f5#7")).toEqual({
+      provider: "github",
+      host: "github.com",
+      repository: "octo/f5",
+      number: 7,
+    });
+  });
+
+  it("matches legacy links to provider-qualified GitHub keys", () => {
+    expect(
+      sourceControlPullRequestKeysEqual("github.com/octo/f5#7", "github:github.com/Octo/F5#7"),
+    ).toBe(true);
+    expect(
+      sourceControlPullRequestKeysEqual("github.com/octo/f5#7", "gitlab:github.com/octo/f5#7"),
+    ).toBe(false);
+  });
+
+  it("rejects malformed and non-positive pull-request numbers", () => {
+    expect(parseSourceControlPullRequestKey("github:github.com/octo/f5#0")).toBeNull();
+    expect(parseSourceControlPullRequestKey("github:github.com/octo/f5#nope")).toBeNull();
+  });
+});
 
 describe("parseSourceControlRemoteUrl", () => {
   it("parses GitHub SSH remotes", () => {

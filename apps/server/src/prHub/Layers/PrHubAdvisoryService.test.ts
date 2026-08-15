@@ -22,7 +22,8 @@ function makePr(input: Partial<TrackedPullRequest> = {}): TrackedPullRequest {
   const repo = input.repository?.nameWithOwner ?? "octo/repo";
   const number = input.number ?? 1;
   return {
-    key: input.key ?? PullRequestKey.makeUnsafe(`github.com/${repo}#${number}`),
+    key: input.key ?? PullRequestKey.makeUnsafe(`github:github.com/${repo}#${number}`),
+    provider: input.provider ?? "github",
     nodeId: input.nodeId ?? `PR_${number}`,
     number,
     title: input.title ?? `PR ${number}`,

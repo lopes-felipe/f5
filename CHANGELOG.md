@@ -35,8 +35,14 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   30-day, and 90-day ranges. New turn facts are captured at provider-event ingestion, historical
   event-log costs remain visible with explicit partial-coverage diagnostics, and missing prices are
   shown as unreported rather than estimated or treated as zero.
+- Pull-request identity, authentication state, capabilities, and provider-native metadata now pass
+  through a provider-neutral source-control seam. GitHub behavior is preserved, unsupported
+  providers fail closed, and repository discovery considers every configured Git remote.
 
 ### Changed
+
+- PR Hub keys are now provider-qualified (for example, `github:github.com/owner/repo#123`). Existing
+  GitHub rows are migrated automatically, and legacy unqualified command keys remain accepted.
 
 - **Breaking:** `RuntimeMode` now includes `auto-accept-edits` and `auto`. Older clients reject
   threads, queued turns, or events carrying either literal cleanly and must be upgraded before

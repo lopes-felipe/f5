@@ -18,33 +18,49 @@ import type {
   PrHubUnsnoozeInput,
 } from "@t3tools/contracts";
 
-import type { GitHubCliError } from "../../git/Errors.ts";
+import type { SourceControlProviderError } from "../../sourceControl/SourceControlProvider.ts";
 
 export interface PrHubServiceShape {
   readonly getSnapshot: Effect.Effect<PrHubSnapshot>;
   readonly refreshNow: (input: PrHubRefreshInput) => Effect.Effect<PrHubSnapshot>;
   readonly streamSnapshots: Stream.Stream<PrHubSnapshot>;
-  readonly approve: (input: PrHubReviewInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
+  readonly approve: (
+    input: PrHubReviewInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
   readonly requestChanges: (
     input: PrHubRequestChangesInput,
-  ) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly comment: (input: PrHubCommentInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly merge: (input: PrHubMergeInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly markReady: (input: PrHubMarkReadyInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly comment: (
+    input: PrHubCommentInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly merge: (
+    input: PrHubMergeInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly markReady: (
+    input: PrHubMarkReadyInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
   readonly reRequestReview: (
     input: PrHubReRequestInput,
-  ) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly snooze: (input: PrHubSnoozeInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly unsnooze: (input: PrHubUnsnoozeInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly ignore: (input: PrHubIgnoreInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
-  readonly markSeen: (input: PrHubMarkSeenInput) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly snooze: (
+    input: PrHubSnoozeInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly unsnooze: (
+    input: PrHubUnsnoozeInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly ignore: (
+    input: PrHubIgnoreInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly markSeen: (
+    input: PrHubMarkSeenInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
   readonly markNotified: (
     input: PrHubMarkNotifiedInput,
-  ) => Effect.Effect<PrHubSnapshot, GitHubCliError>;
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
   readonly listLocalCheckoutCandidates: (
     input: PrHubLocalCandidatesInput,
   ) => Effect.Effect<ReadonlyArray<PrHubLocalCheckoutCandidate>>;
-  readonly clearData: () => Effect.Effect<PrHubSnapshot, GitHubCliError>;
+  readonly clearData: () => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
 }
 
 export class PrHubService extends ServiceMap.Service<PrHubService, PrHubServiceShape>()(

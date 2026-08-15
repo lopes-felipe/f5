@@ -205,6 +205,7 @@ function makeLayer(input: {
   const github = makeGithubStub(input);
   const gitCore = {
     readConfigValue: () => Effect.succeed(null),
+    listRemotes: () => Effect.succeed([]),
   } as unknown as GitCoreShape;
   const projects = {
     upsert: () => Effect.void,

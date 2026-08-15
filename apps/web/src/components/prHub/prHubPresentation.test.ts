@@ -8,7 +8,8 @@ function makePr(
   overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
 ): TrackedPullRequest {
   return {
-    key: PullRequestKey.makeUnsafe("github.com/octo/repo#1"),
+    key: PullRequestKey.makeUnsafe("github:github.com/octo/repo#1"),
+    provider: "github",
     nodeId: "PR_1",
     number: 1,
     title: "Test",

@@ -1,4 +1,17 @@
-import type { ChangeRequest, SourceControlProviderKind } from "@t3tools/contracts";
+import {
+  PullRequestKey,
+  type ChangeRequest,
+  type SourceControlProviderKind,
+  type SourceControlPullRequestRef,
+} from "@t3tools/contracts";
+
+const SOURCE_CONTROL_PROVIDER_KINDS = [
+  "github",
+  "gitlab",
+  "azure-devops",
+  "bitbucket",
+  "unknown",
+] as const satisfies ReadonlyArray<SourceControlProviderKind>;
 
 export interface ParsedSourceControlRemote {
   readonly kind: SourceControlProviderKind;
@@ -12,7 +25,7 @@ function stripGitSuffix(value: string): string {
   return value.replace(/\.git$/i, "").replace(/\/+$/g, "");
 }
 
-function providerKindFromHost(host: string): SourceControlProviderKind {
+export function providerKindFromHost(host: string): SourceControlProviderKind {
   const normalized = host.toLowerCase();
   const labels = normalized.split(".").filter(Boolean);
   if (normalized === "github.com") return "github";
@@ -26,6 +39,56 @@ function providerKindFromHost(host: string): SourceControlProviderKind {
     return "azure-devops";
   }
   return "unknown";
+}
+
+export function formatSourceControlPullRequestKey(
+  reference: SourceControlPullRequestRef,
+): PullRequestKey {
+  return PullRequestKey.makeUnsafe(
+    `${reference.provider}:${reference.host}/${reference.repository}#${reference.number}`,
+  );
+}
+
+/** Parse provider-qualified keys and legacy GitHub keys emitted before migration 069. */
+export function parseSourceControlPullRequestKey(
+  key: PullRequestKey | string,
+): SourceControlPullRequestRef | null {
+  const rawValue = String(key);
+  const provider = SOURCE_CONTROL_PROVIDER_KINDS.find((candidate) =>
+    rawValue.startsWith(`${candidate}:`),
+  );
+  const raw = provider ? rawValue.slice(provider.length + 1) : rawValue;
+  const hashIndex = raw.lastIndexOf("#");
+  if (hashIndex < 0) return null;
+  const numberText = raw.slice(hashIndex + 1);
+  if (!/^\d+$/.test(numberText)) return null;
+  const number = Number(numberText);
+  if (!Number.isSafeInteger(number) || number <= 0) return null;
+  const hostAndRepository = raw.slice(0, hashIndex);
+  const firstSlash = hostAndRepository.indexOf("/");
+  if (firstSlash <= 0 || firstSlash === hostAndRepository.length - 1) return null;
+  return {
+    provider: provider ?? "github",
+    host: hostAndRepository.slice(0, firstSlash),
+    repository: hostAndRepository.slice(firstSlash + 1),
+    number,
+  };
+}
+
+export function sourceControlPullRequestKeysEqual(
+  left: PullRequestKey | string | null | undefined,
+  right: PullRequestKey | string | null | undefined,
+): boolean {
+  if (left == null || right == null) return left === right;
+  const leftRef = parseSourceControlPullRequestKey(left);
+  const rightRef = parseSourceControlPullRequestKey(right);
+  if (!leftRef || !rightRef) return String(left) === String(right);
+  return (
+    leftRef.provider === rightRef.provider &&
+    leftRef.host.toLowerCase() === rightRef.host.toLowerCase() &&
+    leftRef.repository.toLowerCase() === rightRef.repository.toLowerCase() &&
+    leftRef.number === rightRef.number
+  );
 }
 
 function parsePathParts(pathname: string): Pick<ParsedSourceControlRemote, "owner" | "repository"> {

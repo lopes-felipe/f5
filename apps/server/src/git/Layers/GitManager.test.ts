@@ -116,7 +116,30 @@ describe("GitManager unit", () => {
       headBranch: "feature/test",
       state: "open",
     });
-    expect(status.changeRequest).toMatchObject({ id: "42", provider: { kind: "unknown" } });
+    expect(status.changeRequest).toMatchObject({
+      id: "42",
+      provider: { kind: "github", remoteName: "origin" },
+    });
+  });
+
+  it("fails closed instead of dispatching GitHub operations for unsupported remotes", async () => {
+    const { manager, github } = await makeManager({
+      gitCore: {
+        statusDetails: () => Effect.succeed(cleanStatus),
+        listRemotes: () =>
+          Effect.succeed([{ name: "origin", url: "git@gitlab.com:octo/repo.git" }]),
+      },
+    });
+
+    const status = await Effect.runPromise(manager.status({ cwd }));
+    expect(status.pr).toBeNull();
+    expect(status.changeRequest).toBeNull();
+    expect(github.calls).toEqual([]);
+
+    await expect(
+      Effect.runPromise(manager.resolvePullRequest({ cwd, reference: "7" })),
+    ).rejects.toThrow("provider 'gitlab' is not available");
+    expect(github.calls).toEqual([]);
   });
 
   it("keeps status usable when pull-request lookup fails", async () => {
