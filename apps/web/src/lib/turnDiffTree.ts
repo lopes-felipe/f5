@@ -43,7 +43,7 @@ function compareByName(a: { name: string }, b: { name: string }): number {
   return a.name.localeCompare(b.name, undefined, SORT_LOCALE_OPTIONS);
 }
 
-function readStat(file: TurnDiffFileChange): TurnDiffStat | null {
+function readStat(file: DiffStatSource): TurnDiffStat | null {
   if (typeof file.additions !== "number" || typeof file.deletions !== "number") {
     return null;
   }
@@ -96,8 +96,15 @@ function toTreeNodes(directory: MutableDirectoryNode): TurnDiffTreeNode[] {
   return [...subdirectories, ...files];
 }
 
-export function summarizeTurnDiffStats(files: ReadonlyArray<TurnDiffFileChange>): TurnDiffStat {
-  return files.reduce(
+export interface DiffStatSource {
+  additions?: number | undefined;
+  deletions?: number | undefined;
+}
+
+export function summarizeDiffStats<T extends DiffStatSource>(
+  files: ReadonlyArray<T>,
+): TurnDiffStat {
+  return files.reduce<TurnDiffStat>(
     (acc, file) => {
       const stat = readStat(file);
       if (!stat) return acc;
@@ -108,6 +115,12 @@ export function summarizeTurnDiffStats(files: ReadonlyArray<TurnDiffFileChange>)
     },
     { additions: 0, deletions: 0 },
   );
+}
+
+export const summarizeTurnDiffStats = summarizeDiffStats;
+
+export function changedLineCount(stat: TurnDiffStat): number {
+  return stat.additions + stat.deletions;
 }
 
 export function buildTurnDiffTree(files: ReadonlyArray<TurnDiffFileChange>): TurnDiffTreeNode[] {

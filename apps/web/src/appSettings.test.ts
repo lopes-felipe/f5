@@ -392,6 +392,13 @@ describe("parsePersistedAppSettings", () => {
     expect(parsed.showFileChangeDiffsInline).toBe(true);
   });
 
+  it("restores the persisted diff render mode and defaults old settings to stacked", () => {
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ diffRenderMode: "split" })).diffRenderMode,
+    ).toBe("split");
+    expect(parsePersistedAppSettings(JSON.stringify({})).diffRenderMode).toBe("stacked");
+  });
+
   it("restores a persisted thread title model selection", () => {
     const parsed = parsePersistedAppSettings(
       JSON.stringify({

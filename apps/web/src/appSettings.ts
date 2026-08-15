@@ -283,6 +283,10 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(false)),
     Schema.withDecodingDefault(() => false),
   ),
+  diffRenderMode: Schema.Literals(["stacked", "split"]).pipe(
+    Schema.withConstructorDefault(() => Option.some("stacked")),
+    Schema.withDecodingDefault(() => "stacked" as const),
+  ),
   sidebarThreadPreviewCount: SidebarThreadPreviewCountSchema,
   showReasoningExpanded: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_SHOW_REASONING_EXPANDED)),

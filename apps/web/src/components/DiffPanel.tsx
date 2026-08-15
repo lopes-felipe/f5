@@ -32,10 +32,10 @@ import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSea
 import { useTheme } from "../hooks/useTheme";
 import { resolveDiffThemeName } from "../lib/diffRendering";
 import {
-  buildFileDiffRenderKey,
   DIFF_PANEL_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
+  summarizeFileDiffMetadataStats,
 } from "../lib/diffPatch";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import { useStore } from "../store";
@@ -43,8 +43,14 @@ import { formatShortTimestamp } from "../timestampFormat";
 import { DiffPanelLoadingState, DiffPanelShell, type DiffPanelMode } from "./DiffPanelShell";
 import { ToggleGroup, Toggle } from "./ui/toggle-group";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
+import { Button } from "./ui/button";
+import { DiffStatLabel, hasNonZeroStat } from "./chat/DiffStatLabel";
+import {
+  isChangedFileExpandedByDefault,
+  resolveChangedFilesPresentation,
+} from "./chat/changedFilesPresentation";
+import { changedLineCount } from "../lib/turnDiffTree";
 
-type DiffRenderMode = "stacked" | "split";
 type DiffThemeType = "light" | "dark";
 
 interface DiffPanelProps {
@@ -63,8 +69,10 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
   const navigate = useNavigate();
   const { resolvedTheme } = useTheme();
   const { settings, updateSettings } = useAppSettings();
-  const [diffRenderMode, setDiffRenderMode] = useState<DiffRenderMode>("stacked");
-  const [collapsedFileKeys, setCollapsedFileKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const diffRenderMode = settings.diffRenderMode;
+  const [collapsedFileOverrides, setCollapsedFileOverrides] = useState<
+    Readonly<Record<string, boolean>>
+  >({});
   const patchViewportRef = useRef<HTMLDivElement>(null);
   const turnStripRef = useRef<HTMLDivElement>(null);
   const [canScrollTurnStripLeft, setCanScrollTurnStripLeft] = useState(false);
@@ -230,10 +238,10 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       getRenderablePatch(
         selectedPatch,
         isExactFileChangeMode && selectedFileChangeId
-          ? `file-change:${selectedFileChangeId}:${resolvedTheme}`
-          : `diff-panel:${resolvedTheme}`,
+          ? `file-change:${selectedFileChangeId}`
+          : "diff-panel",
       ),
-    [isExactFileChangeMode, resolvedTheme, selectedFileChangeId, selectedPatch],
+    [isExactFileChangeMode, selectedFileChangeId, selectedPatch],
   );
   const renderableFiles = useMemo(() => {
     if (!renderablePatch || renderablePatch.kind !== "files") {
@@ -246,33 +254,41 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       }),
     );
   }, [renderablePatch]);
-  const patchIdentity = useMemo(() => {
-    if (!renderablePatch || renderablePatch.kind !== "files") {
-      return null;
+  const diffLogicalScope = useMemo(() => {
+    if (isExactFileChangeMode) {
+      return `file-change:${selectedFileChangeId ?? ""}`;
     }
-    const sourceIdentity = isExactFileChangeMode
-      ? `file-change:${selectedFileChangeId ?? ""}`
-      : reviewDiffResult?.kind === "success"
-        ? `review:${reviewDiffResult.source.kind}:${reviewDiffResult.diffHash}`
-        : `checkpoint:${activeThreadId}:${activeCheckpointRange?.fromTurnCount ?? ""}:${
-            activeCheckpointRange?.toTurnCount ?? ""
-          }:${settings.diffIgnoreWhitespace ? "ignore-whitespace" : "default-whitespace"}`;
-    return `${sourceIdentity}:${renderableFiles.map((file) => buildFileDiffRenderKey(file)).join("|")}`;
+    if (isReviewScope) {
+      return `review:${selectedReviewScope ?? ""}:${diffSearch.diffBaseRef ?? ""}`;
+    }
+    return selectedTurn
+      ? `turn:${selectedTurn.turnId}`
+      : `conversation:${activeCheckpointRange?.fromTurnCount ?? ""}:${
+          activeCheckpointRange?.toTurnCount ?? ""
+        }`;
   }, [
     activeCheckpointRange?.fromTurnCount,
     activeCheckpointRange?.toTurnCount,
-    activeThreadId,
+    diffSearch.diffBaseRef,
     isExactFileChangeMode,
-    renderableFiles,
-    renderablePatch,
-    reviewDiffResult,
+    isReviewScope,
     selectedFileChangeId,
-    settings.diffIgnoreWhitespace,
+    selectedReviewScope,
+    selectedTurn,
   ]);
-
-  useEffect(() => {
-    setCollapsedFileKeys(new Set());
-  }, [patchIdentity]);
+  const aggregateDiffStat = useMemo(
+    () => summarizeFileDiffMetadataStats(renderableFiles),
+    [renderableFiles],
+  );
+  const defaultPresentation = resolveChangedFilesPresentation({
+    fileCount: renderableFiles.length,
+    changedLineCount: changedLineCount(aggregateDiffStat),
+    isNewest: !selectedTurn || selectedTurn.turnId === orderedTurnDiffSummaries[0]?.turnId,
+  });
+  const logicalFileKey = useCallback(
+    (filePath: string) => `${activeThreadId ?? "unknown"}:${diffLogicalScope}:${filePath}`,
+    [activeThreadId, diffLogicalScope],
+  );
 
   useEffect(() => {
     if (!selectedFilePath || !patchViewportRef.current) {
@@ -296,17 +312,20 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     [activeCwd],
   );
 
-  const toggleCollapsedFileKey = useCallback((fileKey: string) => {
-    setCollapsedFileKeys((previous) => {
-      const next = new Set(previous);
-      if (next.has(fileKey)) {
-        next.delete(fileKey);
-      } else {
-        next.add(fileKey);
-      }
-      return next;
-    });
+  const toggleCollapsedFileKey = useCallback((fileKey: string, isCollapsed: boolean) => {
+    setCollapsedFileOverrides((previous) => ({ ...previous, [fileKey]: !isCollapsed }));
   }, []);
+  const setAllFilesCollapsed = useCallback(
+    (collapsed: boolean) => {
+      setCollapsedFileOverrides((previous) => ({
+        ...previous,
+        ...Object.fromEntries(
+          renderableFiles.map((file) => [logicalFileKey(resolveFileDiffPath(file)), collapsed]),
+        ),
+      }));
+    },
+    [logicalFileKey, renderableFiles],
+  );
 
   const selectTurn = (turnId: TurnId) => {
     if (!activeThread) return;
@@ -433,45 +452,6 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       ? reviewDiffQuery.isLoading
       : isLoadingCheckpointDiff;
 
-  const exactHeaderRow = (
-    <>
-      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
-        <span className="truncate">
-          {exactFileChangeQuery.data?.fileChange?.title ?? "File change diff"}
-        </span>
-      </div>
-      <ToggleGroup
-        className="shrink-0 [-webkit-app-region:no-drag]"
-        variant="outline"
-        size="xs"
-        value={[diffRenderMode]}
-        onValueChange={(value) => {
-          const next = value[0];
-          if (next === "stacked" || next === "split") {
-            setDiffRenderMode(next);
-          }
-        }}
-      >
-        <Toggle aria-label="Stacked diff view" value="stacked">
-          <Rows3Icon className="size-3" />
-        </Toggle>
-        <Toggle aria-label="Split diff view" value="split">
-          <Columns2Icon className="size-3" />
-        </Toggle>
-      </ToggleGroup>
-      <Toggle
-        aria-label="Wrap long lines"
-        className="shrink-0 [-webkit-app-region:no-drag]"
-        variant="outline"
-        size="xs"
-        pressed={settings.diffWordWrap}
-        onPressedChange={(pressed) => updateSettings({ diffWordWrap: Boolean(pressed) })}
-      >
-        <WrapTextIcon className="size-3" />
-      </Toggle>
-    </>
-  );
-
   const scopeControls = !isExactFileChangeMode ? (
     <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
       <ToggleGroup
@@ -513,23 +493,43 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     </div>
   ) : null;
 
-  const headerRow = isExactFileChangeMode ? (
-    exactHeaderRow
-  ) : isReviewScope ? (
-    <>
-      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
-        {selectedReviewScope === "working-tree" ? "Working tree changes" : "Branch changes"}
-      </div>
-      {scopeControls}
-      <Toggle
-        aria-label="Ignore whitespace"
-        variant="outline"
-        size="xs"
-        pressed={settings.diffIgnoreWhitespace}
-        onPressedChange={(pressed) => updateSettings({ diffIgnoreWhitespace: Boolean(pressed) })}
-      >
-        <PilcrowIcon className="size-3" />
-      </Toggle>
+  const diffPresentationControls = (
+    <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
+      {renderableFiles.length > 0 ? (
+        <span className="whitespace-nowrap px-1 text-[10px] text-muted-foreground/70">
+          {renderableFiles.length} {renderableFiles.length === 1 ? "file" : "files"}
+          {hasNonZeroStat(aggregateDiffStat) ? (
+            <>
+              <span className="mx-1">·</span>
+              <DiffStatLabel
+                additions={aggregateDiffStat.additions}
+                deletions={aggregateDiffStat.deletions}
+              />
+            </>
+          ) : null}
+        </span>
+      ) : null}
+      {renderableFiles.length > 0 ? (
+        <>
+          <Button size="xs" variant="outline" onClick={() => setAllFilesCollapsed(false)}>
+            Expand all
+          </Button>
+          <Button size="xs" variant="outline" onClick={() => setAllFilesCollapsed(true)}>
+            Collapse all
+          </Button>
+        </>
+      ) : null}
+      {!isExactFileChangeMode ? (
+        <Toggle
+          aria-label="Ignore whitespace"
+          variant="outline"
+          size="xs"
+          pressed={settings.diffIgnoreWhitespace}
+          onPressedChange={(pressed) => updateSettings({ diffIgnoreWhitespace: Boolean(pressed) })}
+        >
+          <PilcrowIcon className="size-3" />
+        </Toggle>
+      ) : null}
       <Toggle
         aria-label="Wrap long lines"
         variant="outline"
@@ -539,6 +539,43 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       >
         <WrapTextIcon className="size-3" />
       </Toggle>
+      <ToggleGroup
+        variant="outline"
+        size="xs"
+        value={[diffRenderMode]}
+        onValueChange={(value) => {
+          const next = value[0];
+          if (next === "stacked" || next === "split") {
+            updateSettings({ diffRenderMode: next });
+          }
+        }}
+      >
+        <Toggle aria-label="Stacked diff view" value="stacked">
+          <Rows3Icon className="size-3" />
+        </Toggle>
+        <Toggle aria-label="Split diff view" value="split">
+          <Columns2Icon className="size-3" />
+        </Toggle>
+      </ToggleGroup>
+    </div>
+  );
+
+  const headerRow = isExactFileChangeMode ? (
+    <>
+      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
+        <span className="truncate">
+          {exactFileChangeQuery.data?.fileChange?.title ?? "File change diff"}
+        </span>
+      </div>
+      {diffPresentationControls}
+    </>
+  ) : isReviewScope ? (
+    <>
+      <div className="min-w-0 flex-1 px-1 text-[11px] text-muted-foreground/80 [-webkit-app-region:no-drag]">
+        {selectedReviewScope === "working-tree" ? "Working tree changes" : "Branch changes"}
+      </div>
+      {scopeControls}
+      {diffPresentationControls}
     </>
   ) : (
     <>
@@ -632,45 +669,8 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
           ))}
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-1 [-webkit-app-region:no-drag]">
-        {scopeControls}
-        <Toggle
-          aria-label="Ignore whitespace"
-          variant="outline"
-          size="xs"
-          pressed={settings.diffIgnoreWhitespace}
-          onPressedChange={(pressed) => updateSettings({ diffIgnoreWhitespace: Boolean(pressed) })}
-        >
-          <PilcrowIcon className="size-3" />
-        </Toggle>
-        <Toggle
-          aria-label="Wrap long lines"
-          variant="outline"
-          size="xs"
-          pressed={settings.diffWordWrap}
-          onPressedChange={(pressed) => updateSettings({ diffWordWrap: Boolean(pressed) })}
-        >
-          <WrapTextIcon className="size-3" />
-        </Toggle>
-        <ToggleGroup
-          variant="outline"
-          size="xs"
-          value={[diffRenderMode]}
-          onValueChange={(value) => {
-            const next = value[0];
-            if (next === "stacked" || next === "split") {
-              setDiffRenderMode(next);
-            }
-          }}
-        >
-          <Toggle aria-label="Stacked diff view" value="stacked">
-            <Rows3Icon className="size-3" />
-          </Toggle>
-          <Toggle aria-label="Split diff view" value="split">
-            <Columns2Icon className="size-3" />
-          </Toggle>
-        </ToggleGroup>
-      </div>
+      {scopeControls}
+      {diffPresentationControls}
     </>
   );
 
@@ -736,14 +736,18 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                   intersectionObserverMargin: 1200,
                 }}
               >
-                {renderableFiles.map((fileDiff) => {
+                {renderableFiles.map((fileDiff, fileIndex) => {
                   const filePath = resolveFileDiffPath(fileDiff);
-                  const fileKey = buildFileDiffRenderKey(fileDiff);
-                  const themedFileKey = `${fileKey}:${resolvedTheme}`;
-                  const isCollapsed = collapsedFileKeys.has(fileKey);
+                  const fileKey = logicalFileKey(filePath);
+                  const isCollapsed =
+                    collapsedFileOverrides[fileKey] ??
+                    !isChangedFileExpandedByDefault({
+                      presentation: defaultPresentation,
+                      fileIndex,
+                    });
                   return (
                     <div
-                      key={themedFileKey}
+                      key={fileKey}
                       data-diff-file-path={filePath}
                       className="diff-render-file relative mb-2 rounded-md first:mt-2 last:mb-0"
                       onClickCapture={(event) => {
@@ -762,7 +766,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                           return node.hasAttribute("data-diffs-header");
                         });
                         if (!clickedFileHeader) return;
-                        toggleCollapsedFileKey(fileKey);
+                        toggleCollapsedFileKey(fileKey, isCollapsed);
                       }}
                     >
                       <button
@@ -772,7 +776,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
                         aria-label={`${isCollapsed ? "Expand" : "Collapse"} ${filePath}`}
                         onClick={(event) => {
                           event.stopPropagation();
-                          toggleCollapsedFileKey(fileKey);
+                          toggleCollapsedFileKey(fileKey, isCollapsed);
                         }}
                       >
                         {isCollapsed ? (

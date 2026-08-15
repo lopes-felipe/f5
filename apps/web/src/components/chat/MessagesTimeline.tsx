@@ -22,7 +22,7 @@ import type { InlineFileChangeDiffProps } from "./InlineFileChangeDiff";
 import { LegendList, type LegendListRef, type OnViewableItemsChanged } from "@legendapp/list/react";
 import { deriveTimelineEntries, formatDuration, formatElapsed } from "../../session-logic";
 import { type TurnDiffSummary } from "../../types";
-import { summarizeTurnDiffStats } from "../../lib/turnDiffTree";
+import { changedLineCount, summarizeTurnDiffStats } from "../../lib/turnDiffTree";
 import ChatMarkdown from "../ChatMarkdown";
 import {
   BotIcon,
@@ -90,6 +90,11 @@ import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 import { VscodeEntryIcon } from "./VscodeEntryIcon";
 import { classifyCompactCommand, isGenericCommandTitle } from "@t3tools/shared/commandSummary";
 import { WORK_LOG_PAGE_SIZE } from "./workLogConstants";
+import {
+  CHANGED_FILES_COMPACT_PREVIEW_COUNT,
+  resolveChangedFilesPresentation,
+  type ChangedFilesPresentation,
+} from "./changedFilesPresentation";
 
 type InlineExactFileChangeDiffComponent =
   (typeof import("./InlineExactFileChangeDiff"))["InlineExactFileChangeDiff"];
@@ -262,7 +267,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const ownedEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
   const resolvedEntryRowIndexMapRef = entryRowIndexMapRef ?? ownedEntryRowIndexMapRef;
   const [initialScrollAtEndEnabled, setInitialScrollAtEndEnabled] = useState(true);
+  const [changedFilesPresentationOverrides, setChangedFilesPresentationOverrides] = useState<
+    Readonly<Record<string, ChangedFilesPresentation>>
+  >({});
   const isAtEndRef = useRef(true);
+  const newestTurnDiffId = useMemo(
+    () =>
+      [...turnDiffSummaryByAssistantMessageId.values()].toSorted((left, right) =>
+        right.completedAt.localeCompare(left.completedAt),
+      )[0]?.turnId ?? null,
+    [turnDiffSummaryByAssistantMessageId],
+  );
 
   useEffect(() => {
     if (!initialScrollAtEndEnabled) {
@@ -598,6 +613,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       revertTurnCountByUserMessageId,
       turnDiffSummaryByAssistantMessageId,
       turnDiffSummaryByTurnId,
+      changedFilesPresentationOverrides,
+      newestTurnDiffId,
     ],
     [
       allDirectoriesExpanded,
@@ -615,6 +632,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       timestampFormat,
       turnDiffSummaryByAssistantMessageId,
       turnDiffSummaryByTurnId,
+      changedFilesPresentationOverrides,
+      newestTurnDiffId,
       revertTurnCountByUserMessageId,
       workspaceRoot,
     ],
@@ -943,6 +962,25 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                   if (checkpointFiles.length === 0) return null;
                   const summaryStat = summarizeTurnDiffStats(checkpointFiles);
                   const changedFileCountLabel = String(checkpointFiles.length);
+                  const presentationKey = `${threadId ?? "unknown"}:${turnSummary.turnId}`;
+                  const defaultPresentation = resolveChangedFilesPresentation({
+                    fileCount: checkpointFiles.length,
+                    changedLineCount: changedLineCount(summaryStat),
+                    isNewest: turnSummary.turnId === newestTurnDiffId,
+                  });
+                  const presentation =
+                    changedFilesPresentationOverrides[presentationKey] ?? defaultPresentation;
+                  const isExpanded = presentation === "expanded";
+                  const togglePresentation = () => {
+                    setChangedFilesPresentationOverrides((current) => ({
+                      ...current,
+                      [presentationKey]: isExpanded
+                        ? defaultPresentation === "expanded"
+                          ? "collapsed"
+                          : defaultPresentation
+                        : "expanded",
+                    }));
+                  };
                   return (
                     <div className="relative mt-2 rounded-lg border border-border/80 bg-card/45 p-2.5">
                       <div className="sticky top-0 z-[2] -mx-2.5 -mt-2.5 mb-1.5 flex items-center justify-between gap-2 rounded-t-lg border-b border-border/60 bg-card/95 px-2.5 py-1.5 backdrop-blur supports-[backdrop-filter]:bg-card/80">
@@ -959,13 +997,23 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                           )}
                         </p>
                         <div className="flex items-center gap-1.5">
+                          {isExpanded ? (
+                            <Button
+                              type="button"
+                              size="xs"
+                              variant="outline"
+                              onClick={() => onToggleAllDirectories()}
+                            >
+                              {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
+                            </Button>
+                          ) : null}
                           <Button
                             type="button"
                             size="xs"
-                            variant="outline"
-                            onClick={() => onToggleAllDirectories()}
+                            variant="ghost"
+                            onClick={togglePresentation}
                           >
-                            {allDirectoriesExpanded ? "Collapse all" : "Expand all"}
+                            {isExpanded ? "Show less" : "Show more"}
                           </Button>
                           <Button
                             type="button"
@@ -979,14 +1027,37 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                           </Button>
                         </div>
                       </div>
-                      <ChangedFilesTree
-                        key={`changed-files-tree:${turnSummary.turnId}`}
-                        turnId={turnSummary.turnId}
-                        files={checkpointFiles}
-                        allDirectoriesExpanded={allDirectoriesExpanded}
-                        resolvedTheme={resolvedTheme}
-                        onOpenTurnDiff={onOpenTurnDiff}
-                      />
+                      {presentation === "expanded" ? (
+                        <ChangedFilesTree
+                          key={`changed-files-tree:${turnSummary.turnId}`}
+                          turnId={turnSummary.turnId}
+                          files={checkpointFiles}
+                          allDirectoriesExpanded={allDirectoriesExpanded}
+                          resolvedTheme={resolvedTheme}
+                          onOpenTurnDiff={onOpenTurnDiff}
+                        />
+                      ) : presentation === "compact" ? (
+                        <div className="flex flex-wrap gap-1 pt-0.5">
+                          {checkpointFiles
+                            .slice(0, CHANGED_FILES_COMPACT_PREVIEW_COUNT)
+                            .map((file) => (
+                              <button
+                                key={`${turnSummary.turnId}:${file.path}`}
+                                type="button"
+                                className="max-w-56 truncate rounded border border-border/55 bg-background/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/75 hover:text-foreground"
+                                title={file.path}
+                                onClick={() => onOpenTurnDiff(turnSummary.turnId, file.path)}
+                              >
+                                {file.path}
+                              </button>
+                            ))}
+                          {checkpointFiles.length > CHANGED_FILES_COMPACT_PREVIEW_COUNT ? (
+                            <span className="px-1 py-0.5 text-[10px] text-muted-foreground/55">
+                              +{checkpointFiles.length - CHANGED_FILES_COMPACT_PREVIEW_COUNT}
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                     </div>
                   );
                 })()}

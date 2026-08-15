@@ -2,6 +2,7 @@ import { parsePatchFiles } from "@pierre/diffs";
 import type { FileDiffMetadata } from "@pierre/diffs/react";
 
 import { buildPatchCacheKey } from "./diffRendering";
+import { summarizeDiffStats, type TurnDiffStat } from "./turnDiffTree";
 
 export const DIFF_PANEL_UNSAFE_CSS = `
 [data-diffs-header],
@@ -120,4 +121,18 @@ export function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
 
 export function buildFileDiffRenderKey(fileDiff: FileDiffMetadata): string {
   return fileDiff.cacheKey ?? `${fileDiff.prevName ?? "none"}:${fileDiff.name}`;
+}
+
+export function summarizeFileDiffMetadataStats(
+  files: ReadonlyArray<FileDiffMetadata>,
+): TurnDiffStat {
+  return summarizeDiffStats(
+    files.map((file) => {
+      const hunks = file.hunks ?? [];
+      return {
+        additions: hunks.reduce((total, hunk) => total + hunk.additionLines, 0),
+        deletions: hunks.reduce((total, hunk) => total + hunk.deletionLines, 0),
+      };
+    }),
+  );
 }

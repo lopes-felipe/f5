@@ -80,11 +80,12 @@ vi.mock("@pierre/diffs/react", () => ({
     options,
   }: {
     fileDiff: { name?: string; cacheKey?: string };
-    options: { collapsed?: boolean; overflow?: string };
+    options: { collapsed?: boolean; diffStyle?: string; overflow?: string };
   }) => (
     <div
       data-testid={`file-diff-${fileDiff.cacheKey}`}
       data-collapsed={String(options.collapsed ?? false)}
+      data-diff-style={options.diffStyle ?? "unified"}
       data-overflow={options.overflow ?? "scroll"}
     >
       <div data-diffs-header data-testid={`diff-header-${fileDiff.cacheKey}`}>
@@ -276,6 +277,22 @@ describe("DiffPanel", () => {
         .element(page.getByTestId("file-diff-example"))
         .toHaveAttribute("data-overflow", "wrap");
 
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-diff-style", "unified");
+      await page.getByLabelText("Split diff view").click();
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-diff-style", "split");
+
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-collapsed", "false");
+      await page.getByRole("button", { name: "Collapse all", exact: true }).click();
+      await expect
+        .element(page.getByTestId("file-diff-example"))
+        .toHaveAttribute("data-collapsed", "true");
+      await page.getByRole("button", { name: "Expand all", exact: true }).click();
       await expect
         .element(page.getByTestId("file-diff-example"))
         .toHaveAttribute("data-collapsed", "false");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildTurnDiffTree, summarizeTurnDiffStats } from "./turnDiffTree";
+import { buildTurnDiffTree, changedLineCount, summarizeTurnDiffStats } from "./turnDiffTree";
 
 describe("summarizeTurnDiffStats", () => {
   it("sums only files with numeric additions/deletions", () => {
@@ -11,6 +11,7 @@ describe("summarizeTurnDiffStats", () => {
     ]);
 
     expect(stat).toEqual({ additions: 8, deletions: 3 });
+    expect(changedLineCount(stat)).toBe(11);
   });
 });
 
