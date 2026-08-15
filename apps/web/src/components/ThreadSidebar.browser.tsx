@@ -9,7 +9,7 @@ import {
   type OrchestrationReadModel,
   type ProjectId,
   type ServerConfig,
-  type ThreadId,
+  ThreadId,
   type WsWelcomePayload,
   WS_CHANNELS,
   WS_METHODS,
@@ -391,6 +391,9 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.projectsSearchEntries) {
     return { entries: [], truncated: false };
   }
+  if (tag === WS_METHODS.globalSearchQuery) {
+    return { results: [] };
+  }
   if (tag === WS_METHODS.filesystemBrowse) {
     return { parentPath: "/", entries: [] };
   }
@@ -523,6 +526,12 @@ async function waitForElement<T extends Element>(
   }
 
   return element;
+}
+
+function setInputValue(input: HTMLInputElement, value: string): void {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+  valueSetter?.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
 async function waitForPath(
@@ -1275,7 +1284,7 @@ describe("Thread sidebar", () => {
     }
   });
 
-  it("opens the command palette from the sidebar search button", async () => {
+  it("opens the command palette from the sidebar search input", async () => {
     const mounted = await mountApp({
       width: 1_400,
       initialEntries: ["/"],
@@ -1296,7 +1305,12 @@ describe("Thread sidebar", () => {
     try {
       const trigger = await waitForElement(
         () => document.querySelector<HTMLButtonElement>('[data-testid="command-palette-trigger"]'),
-        "Sidebar search button should render.",
+        "Sidebar full-search button should render.",
+      );
+      const searchInput = await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>('[data-testid="sidebar-thread-search-input"]'),
+        "Sidebar thread search input should render.",
       );
       const homeButton = await waitForElement(
         () =>
@@ -1309,7 +1323,8 @@ describe("Thread sidebar", () => {
       expect(
         Boolean(homeButton.compareDocumentPosition(trigger) & Node.DOCUMENT_POSITION_FOLLOWING),
       ).toBe(true);
-      expect(trigger.textContent).toContain("Search");
+      expect(searchInput.placeholder).toBe("Search");
+      expect(trigger.getAttribute("aria-label")).toBe("Open full search");
       expect(trigger.querySelector("kbd")?.textContent?.trim()).toBeTruthy();
 
       trigger.click();
@@ -1322,6 +1337,102 @@ describe("Thread sidebar", () => {
         () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
         "Command palette root search input should render.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("filters threads immediately and escalates to conversation FTS", async () => {
+    const retryThreadId = ThreadId.makeUnsafe("thread-retry-search");
+    const reconnectThreadId = ThreadId.makeUnsafe("thread-reconnect-search");
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = createSnapshot([
+          createSnapshotThread({ id: retryThreadId, title: "Retry provider startup" }),
+          createSnapshotThread({ id: reconnectThreadId, title: "Reconnect websocket" }),
+        ]);
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag !== WS_METHODS.globalSearchQuery) return null;
+          return {
+            type: "result",
+            result: {
+              results: [
+                {
+                  documentKey: "message:search-match",
+                  kind: "message",
+                  projectId: PROJECT_ID,
+                  projectTitle: "Project",
+                  threadId: reconnectThreadId,
+                  workflowId: null,
+                  messageId: "message-search-match",
+                  turnId: null,
+                  fileChangeId: null,
+                  title: "Reconnect websocket",
+                  snippet: "Retry after the connection resumes",
+                  path: null,
+                  role: "assistant",
+                  model: "gpt-5",
+                  providerInstanceId: "codex",
+                  status: "ready",
+                  createdAt: NOW_ISO,
+                  rank: -1,
+                },
+              ],
+            },
+          };
+        };
+      },
+    });
+
+    try {
+      const input = await waitForElement(
+        () =>
+          document.querySelector<HTMLInputElement>('[data-testid="sidebar-thread-search-input"]'),
+        "Sidebar thread search input should render.",
+      );
+      setInputValue(input, "retry");
+
+      await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            `[data-testid="sidebar-thread-search-result-${retryThreadId}"]`,
+          ),
+        "The matching thread should appear without waiting for FTS.",
+      );
+      expect(
+        document.querySelector(`[data-testid="sidebar-thread-search-result-${reconnectThreadId}"]`),
+      ).toBeNull();
+
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === WS_METHODS.globalSearchQuery && request.query === "retry",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+      const contentResult = await waitForElement(
+        () =>
+          document.querySelector<HTMLButtonElement>(
+            '[data-testid="sidebar-global-search-result-message:search-match"]',
+          ),
+        "The conversation-content result should render after the debounced query.",
+      );
+      expect(contentResult.querySelector("mark")?.textContent?.toLowerCase()).toBe("retry");
+
+      contentResult.click();
+      await waitForPath(
+        mounted.router,
+        (pathname) => pathname.endsWith(`/${reconnectThreadId}`),
+        "Conversation result should navigate to its thread.",
+      );
+      expect(mounted.router.state.location.search.timelineEntryId).toBe("message-search-match");
+      expect(input.value).toBe("");
     } finally {
       await mounted.cleanup();
     }

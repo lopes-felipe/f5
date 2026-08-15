@@ -1,3 +1,7 @@
+import { type GlobalSearchQueryInput, ProviderInstanceId } from "@t3tools/contracts";
+
+import type { Project } from "../types";
+
 export interface ParsedGlobalSearchQuery {
   readonly text: string;
   readonly project: string | null;
@@ -39,5 +43,48 @@ export function parseGlobalSearchQuery(input: string): ParsedGlobalSearchQuery {
     dateFrom: filters.has("after") ? normalizeDate(filters.get("after")!, false) : null,
     dateTo: filters.has("before") ? normalizeDate(filters.get("before")!, true) : null,
     includeArchived: archived === "true" || archived === "yes" || archived === "1",
+  };
+}
+
+export function buildGlobalSearchQueryInput(input: {
+  parsed: ParsedGlobalSearchQuery;
+  projects: ReadonlyArray<Pick<Project, "id" | "name">>;
+  limit?: number;
+}): GlobalSearchQueryInput | null {
+  if (input.parsed.text.length < 2) {
+    return null;
+  }
+
+  const normalizedProjectFilter = input.parsed.project?.toLowerCase() ?? null;
+  const project = normalizedProjectFilter
+    ? input.projects.find(
+        (candidate) =>
+          candidate.id.toLowerCase() === normalizedProjectFilter ||
+          candidate.name.toLowerCase() === normalizedProjectFilter,
+      )
+    : null;
+  if (normalizedProjectFilter && !project) {
+    return null;
+  }
+
+  let providerInstanceId: ProviderInstanceId | undefined;
+  if (input.parsed.provider) {
+    try {
+      providerInstanceId = ProviderInstanceId.make(input.parsed.provider);
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    query: input.parsed.text,
+    ...(project ? { projectId: project.id } : {}),
+    ...(providerInstanceId ? { providerInstanceId } : {}),
+    ...(input.parsed.model ? { model: input.parsed.model } : {}),
+    ...(input.parsed.status ? { status: input.parsed.status } : {}),
+    ...(input.parsed.dateFrom ? { dateFrom: input.parsed.dateFrom } : {}),
+    ...(input.parsed.dateTo ? { dateTo: input.parsed.dateTo } : {}),
+    ...(input.parsed.includeArchived ? { includeArchived: true } : {}),
+    limit: input.limit ?? 24,
   };
 }

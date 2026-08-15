@@ -171,6 +171,7 @@ import {
   useThreadActionController,
 } from "../hooks/useThreadActionController";
 import { InlineTitleEditor } from "./InlineTitleEditor";
+import { SidebarThreadSearchInput, SidebarThreadSearchResults } from "./SidebarThreadSearch";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
@@ -852,6 +853,7 @@ export default function Sidebar() {
   const suppressProjectClickAfterDragRef = useRef(false);
   const sidebarHoverAnchorRef = useRef<HTMLDivElement | null>(null);
   const [desktopUpdateState, setDesktopUpdateState] = useState<DesktopUpdateState | null>(null);
+  const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
   const toggleThreadSelection = useThreadSelectionStore((s) => s.toggleThread);
   const rangeSelectTo = useThreadSelectionStore((s) => s.rangeSelectTo);
   const clearSelection = useThreadSelectionStore((s) => s.clearSelection);
@@ -2062,21 +2064,12 @@ export default function Sidebar() {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton
-                type="button"
-                size="sm"
-                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:ring-0"
-                data-testid="command-palette-trigger"
-                onClick={handleOpenCommandPalette}
-              >
-                <SearchIcon className="size-3.5" />
-                <span className="flex-1 truncate text-left text-xs">Search</span>
-                {commandPaletteShortcutLabel ? (
-                  <Kbd className="h-4 min-w-0 rounded-sm px-1.5 text-[10px]">
-                    {commandPaletteShortcutLabel}
-                  </Kbd>
-                ) : null}
-              </SidebarMenuButton>
+              <SidebarThreadSearchInput
+                query={sidebarSearchQuery}
+                onQueryChange={setSidebarSearchQuery}
+                onOpenCommandPalette={handleOpenCommandPalette}
+                commandPaletteShortcutLabel={commandPaletteShortcutLabel}
+              />
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton
@@ -2124,7 +2117,16 @@ export default function Sidebar() {
             </Alert>
           </SidebarGroup>
         ) : null}
-        <SidebarGroup className="px-2 py-2">
+        {sidebarSearchQuery.trim().length > 0 ? (
+          <SidebarThreadSearchResults
+            query={sidebarSearchQuery}
+            projects={projects}
+            threads={threads}
+            {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
+            onResultOpened={() => setSidebarSearchQuery("")}
+          />
+        ) : null}
+        <SidebarGroup className={cn("px-2 py-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
           <div className="mb-1 flex items-center justify-between px-2">
             <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60">
               Projects
