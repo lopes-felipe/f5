@@ -642,6 +642,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             pinOrderKey: null,
             snoozedUntil: null,
             snoozedAt: null,
+            titleSource: event.payload.titleSource ?? "legacy",
+            titleRevision: event.payload.titleRevision ?? 0,
+            titleUpdatedAt: event.payload.titleUpdatedAt ?? null,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
             createdAt: event.payload.createdAt,
             lastInteractionAt: event.payload.createdAt,
             updatedAt: event.payload.updatedAt,
@@ -663,6 +668,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             pinOrderKey: null,
             snoozedUntil: null,
             snoozedAt: null,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
             updatedAt: event.occurredAt,
           });
           if (event.payload.pinRevision !== undefined) {
@@ -801,6 +808,21 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+            ...(event.payload.titleSource !== undefined
+              ? { titleSource: event.payload.titleSource }
+              : {}),
+            ...(event.payload.titleRevision !== undefined
+              ? { titleRevision: event.payload.titleRevision }
+              : {}),
+            ...(event.payload.titleUpdatedAt !== undefined
+              ? { titleUpdatedAt: event.payload.titleUpdatedAt }
+              : {}),
+            ...(event.payload.titleRegeneration !== undefined
+              ? {
+                  titleRegenerationRequestId: event.payload.titleRegeneration?.requestId ?? null,
+                  titleRegenerationStartedAt: event.payload.titleRegeneration?.startedAt ?? null,
+                }
+              : {}),
             ...(event.payload.model !== undefined ? { model: event.payload.model } : {}),
             ...(event.payload.modelSelection !== undefined
               ? { modelSelection: event.payload.modelSelection }
@@ -818,6 +840,60 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           });
           return;
         }
+
+        case "thread.title-regeneration-started": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            titleRegenerationRequestId: event.payload.titleRegeneration.requestId,
+            titleRegenerationStartedAt: event.payload.titleRegeneration.startedAt,
+            updatedAt: event.occurredAt,
+          });
+          return;
+        }
+
+        case "thread.title-regenerated": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (Option.isNone(existingRow)) return;
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            title: event.payload.title,
+            titleSource: event.payload.titleSource,
+            titleRevision: event.payload.titleRevision,
+            titleUpdatedAt: event.payload.titleUpdatedAt,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
+            updatedAt: event.payload.titleUpdatedAt,
+          });
+          return;
+        }
+
+        case "thread.title-regeneration-failed": {
+          const existingRow = yield* projectionThreadRepository.getById({
+            threadId: event.payload.threadId,
+          });
+          if (
+            Option.isNone(existingRow) ||
+            existingRow.value.titleRegenerationRequestId !== event.payload.requestId
+          ) {
+            return;
+          }
+          yield* projectionThreadRepository.upsert({
+            ...existingRow.value,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
+            updatedAt: event.payload.failedAt,
+          });
+          return;
+        }
+
+        case "thread.title-regeneration-discarded":
+          return;
 
         case "thread.runtime-mode-set": {
           const existingRow = yield* projectionThreadRepository.getById({

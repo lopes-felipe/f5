@@ -23,6 +23,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Drift test comparing the README env-var table against `turbo.json` `globalEnv`.
 - Server-authoritative thread pins and snoozes with global pin ordering, durable expiry, wake
   predicates, and one-time migration of legacy browser-local pins.
+- Race-safe thread title regeneration using current conversation context, correlated requests,
+  title provenance/revisions, and stale-result protection for manual renames and newer requests.
 
 ### Changed
 
@@ -38,6 +40,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - **Breaking:** pin and snooze lifecycle commands add new orchestration domain-event variants.
   Clients must be upgraded before using these actions; existing snapshots remain decodable because
   the new thread fields are optional.
+- **Breaking:** title regeneration adds new orchestration domain-event variants. Existing thread
+  snapshots remain decodable through optional/defaulted title-state fields.
 - Correct Claude Fast Mode availability: enabled for Opus 5 and Opus 4.8, and disabled for Opus
   4.7, 4.6, and 4.5.
 - **Breaking:** the web server now binds to `127.0.0.1` by default. Remote deployments must set an

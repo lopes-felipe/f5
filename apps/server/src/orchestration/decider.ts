@@ -653,6 +653,9 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           projectId: command.projectId,
           title: command.title,
+          titleSource: "default",
+          titleRevision: 0,
+          titleUpdatedAt: command.createdAt,
           model: command.model,
           runtimeMode: command.runtimeMode,
           interactionMode: command.interactionMode,
@@ -970,6 +973,32 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const occurredAt = nowIso();
+      if (command.regenerateTitle === true) {
+        if (thread.archivedAt !== null) {
+          return yield* new OrchestrationCommandInvariantError({
+            commandType: command.type,
+            detail: `Archived thread '${command.threadId}' cannot regenerate its title.`,
+          });
+        }
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.title-regeneration-started",
+          payload: {
+            threadId: command.threadId,
+            titleRegeneration: {
+              requestId: command.commandId,
+              startedAt: occurredAt,
+            },
+            expectedTitleRevision: thread.titleRevision ?? 0,
+            origin: "explicit",
+          },
+        };
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -980,7 +1009,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         type: "thread.meta-updated",
         payload: {
           threadId: command.threadId,
-          ...(command.title !== undefined ? { title: command.title } : {}),
+          ...(command.title !== undefined
+            ? {
+                title: command.title,
+                titleSource: "manual" as const,
+                titleRevision: (thread.titleRevision ?? 0) + 1,
+                titleUpdatedAt: occurredAt,
+                titleRegeneration: null,
+              }
+            : {}),
           ...(command.model !== undefined ? { model: command.model } : {}),
           ...(command.modelSelection !== undefined
             ? { modelSelection: command.modelSelection }
@@ -988,6 +1025,151 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           ...(command.branch !== undefined ? { branch: command.branch } : {}),
           ...(command.worktreePath !== undefined ? { worktreePath: command.worktreePath } : {}),
           updatedAt: occurredAt,
+        },
+      };
+    }
+
+    case "thread.title.generation.start": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      if (
+        thread.archivedAt !== null ||
+        thread.titleSource !== "default" ||
+        (thread.titleRevision ?? 0) !== command.expectedTitleRevision
+      ) {
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.title-regeneration-discarded",
+          payload: {
+            threadId: command.threadId,
+            requestId: command.commandId,
+            reason: "The automatic title request was superseded before it started.",
+            discardedAt: command.createdAt,
+          },
+        };
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.title-regeneration-started",
+        payload: {
+          threadId: command.threadId,
+          titleRegeneration: {
+            requestId: command.commandId,
+            startedAt: command.createdAt,
+          },
+          expectedTitleRevision: command.expectedTitleRevision,
+          origin: "first-turn",
+          ...(command.titleSourceText !== undefined
+            ? { titleSourceText: command.titleSourceText }
+            : {}),
+          ...(command.titleGenerationModel !== undefined
+            ? { titleGenerationModel: command.titleGenerationModel }
+            : {}),
+          ...(command.titleGenerationModelSelection !== undefined
+            ? { titleGenerationModelSelection: command.titleGenerationModelSelection }
+            : {}),
+        },
+      };
+    }
+
+    case "thread.title.regeneration.complete": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const isCurrent =
+        thread.archivedAt === null &&
+        thread.titleRegeneration?.requestId === command.requestId &&
+        (thread.titleRevision ?? 0) === command.expectedTitleRevision;
+      if (!isCurrent) {
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.title-regeneration-discarded",
+          payload: {
+            threadId: command.threadId,
+            requestId: command.requestId,
+            reason: "A newer title change superseded this generated result.",
+            discardedAt: command.createdAt,
+          },
+        };
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.title-regenerated",
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          title: command.title,
+          titleSource: "generated",
+          titleRevision: (thread.titleRevision ?? 0) + 1,
+          titleUpdatedAt: command.createdAt,
+        },
+      };
+    }
+
+    case "thread.title.regeneration.fail": {
+      const thread = yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      const isCurrent =
+        thread.titleRegeneration?.requestId === command.requestId &&
+        (thread.titleRevision ?? 0) === command.expectedTitleRevision;
+      if (!isCurrent) {
+        return {
+          ...withEventBase({
+            aggregateKind: "thread",
+            aggregateId: command.threadId,
+            occurredAt: command.createdAt,
+            commandId: command.commandId,
+          }),
+          type: "thread.title-regeneration-discarded",
+          payload: {
+            threadId: command.threadId,
+            requestId: command.requestId,
+            reason: "A newer title change superseded this failed request.",
+            discardedAt: command.createdAt,
+          },
+        };
+      }
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.title-regeneration-failed",
+        payload: {
+          threadId: command.threadId,
+          requestId: command.requestId,
+          reason: command.reason,
+          failedAt: command.createdAt,
         },
       };
     }

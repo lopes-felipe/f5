@@ -557,6 +557,13 @@ export const makeCodexTextGeneration = (
 
         const promptSections = [
           "You generate concise thread titles.",
+          ...(input.previousTitle !== undefined
+            ? [
+                "The user requested a new title based on the current contents of this thread.",
+                `The previous title was ${JSON.stringify(input.previousTitle)}.`,
+                "Return a different title that represents the thread's current state.",
+              ]
+            : []),
           "Return a JSON object with key: title.",
           "Rules:",
           "- Title must be a short one-line thread title.",
@@ -568,7 +575,7 @@ export const makeCodexTextGeneration = (
           "- Be specific, but do not copy the full prompt verbatim.",
           "- If images are attached, use them as primary context for visual or UI issues.",
           "",
-          "User message:",
+          input.previousTitle !== undefined ? "Thread contents:" : "User message:",
           limitSection(input.message, 8_000),
         ];
         if (attachmentLines.length > 0) {

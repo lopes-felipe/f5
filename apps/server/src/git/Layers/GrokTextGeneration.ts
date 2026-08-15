@@ -268,6 +268,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
   )(function* (input) {
     const { prompt, outputSchema } = buildThreadTitlePrompt({
       message: input.message,
+      previousTitle: input.previousTitle,
       attachments: input.attachments,
     });
 

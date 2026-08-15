@@ -1,6 +1,7 @@
 import "../index.css";
 
 import {
+  CommandId,
   type DesktopBridge,
   ORCHESTRATION_WS_METHODS,
   PR_HUB_WS_METHODS,
@@ -1614,6 +1615,71 @@ describe("Thread sidebar", () => {
       });
     } finally {
       await mounted.cleanup();
+    }
+  });
+
+  it("dispatches title regeneration and shows pending progress in the row", async () => {
+    installDesktopBridgeMock({
+      showContextMenu: (async () => "regenerate-title") as DesktopBridge["showContextMenu"],
+    });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+    });
+
+    try {
+      const row = await waitForSidebarThreadRow(LONG_THREAD_TITLE);
+      const requestCount = wsRequests.length;
+      row.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: 30,
+          clientY: 30,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        const request = wsRequests
+          .slice(requestCount)
+          .find(
+            (entry) =>
+              entry._tag === ORCHESTRATION_WS_METHODS.dispatchCommand &&
+              (entry.command as { type?: string } | undefined)?.type === "thread.meta.update",
+          );
+        expect(request?.command).toMatchObject({
+          threadId: THREAD_ID,
+          regenerateTitle: true,
+        });
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+
+    const pendingMounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.snapshot = {
+          ...nextFixture.snapshot,
+          threads: nextFixture.snapshot.threads.map((thread) => ({
+            ...thread,
+            titleRegeneration: {
+              requestId: CommandId.makeUnsafe("command-title-pending"),
+              startedAt: NOW_ISO,
+            },
+          })),
+        };
+      },
+    });
+    try {
+      await waitForElement(
+        () => document.querySelector('[aria-label="Regenerating thread title"]'),
+        "Pending title regeneration indicator should render.",
+      );
+    } finally {
+      await pendingMounted.cleanup();
     }
   });
 

@@ -23,6 +23,10 @@ import {
   ThreadSnoozedPayload as ContractsThreadSnoozedPayloadSchema,
   ThreadUnsnoozedPayload as ContractsThreadUnsnoozedPayloadSchema,
   ThreadMetaUpdatedPayload as ContractsThreadMetaUpdatedPayloadSchema,
+  ThreadTitleRegenerationStartedPayload as ContractsThreadTitleRegenerationStartedPayloadSchema,
+  ThreadTitleRegeneratedPayload as ContractsThreadTitleRegeneratedPayloadSchema,
+  ThreadTitleRegenerationFailedPayload as ContractsThreadTitleRegenerationFailedPayloadSchema,
+  ThreadTitleRegenerationDiscardedPayload as ContractsThreadTitleRegenerationDiscardedPayloadSchema,
   ThreadRuntimeModeSetPayload as ContractsThreadRuntimeModeSetPayloadSchema,
   ThreadInteractionModeSetPayload as ContractsThreadInteractionModeSetPayloadSchema,
   ThreadDeletedPayload as ContractsThreadDeletedPayloadSchema,
@@ -78,6 +82,13 @@ export const ThreadLegacyPinsImportedPayload = ContractsThreadLegacyPinsImported
 export const ThreadSnoozedPayload = ContractsThreadSnoozedPayloadSchema;
 export const ThreadUnsnoozedPayload = ContractsThreadUnsnoozedPayloadSchema;
 export const ThreadMetaUpdatedPayload = ContractsThreadMetaUpdatedPayloadSchema;
+export const ThreadTitleRegenerationStartedPayload =
+  ContractsThreadTitleRegenerationStartedPayloadSchema;
+export const ThreadTitleRegeneratedPayload = ContractsThreadTitleRegeneratedPayloadSchema;
+export const ThreadTitleRegenerationFailedPayload =
+  ContractsThreadTitleRegenerationFailedPayloadSchema;
+export const ThreadTitleRegenerationDiscardedPayload =
+  ContractsThreadTitleRegenerationDiscardedPayloadSchema;
 export const ThreadRuntimeModeSetPayload = ContractsThreadRuntimeModeSetPayloadSchema;
 export const ThreadInteractionModeSetPayload = ContractsThreadInteractionModeSetPayloadSchema;
 export const ThreadDeletedPayload = ContractsThreadDeletedPayloadSchema;

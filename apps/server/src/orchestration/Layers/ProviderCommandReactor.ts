@@ -50,7 +50,6 @@ import {
   ProviderUnsupportedError,
   ProviderValidationError,
 } from "../../provider/Errors.ts";
-import { resolveBestEffortGeneratedTitle } from "../../threadTitle.ts";
 import { TextGeneration } from "../../git/Services/TextGeneration.ts";
 import {
   ProjectMcpConfigService,
@@ -76,6 +75,11 @@ import {
   readPersistedProviderOptions,
   readPersistedStartConfig,
 } from "../../provider/runtimePayload.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  formatThreadTitleRegenerationContext,
+  resolveBestEffortGeneratedTitle,
+} from "../../threadTitle.ts";
 
 type ProviderIntentEvent = Extract<
   OrchestrationEvent,
@@ -83,6 +87,7 @@ type ProviderIntentEvent = Extract<
     type:
       | "thread.runtime-mode-set"
       | "thread.meta-updated"
+      | "thread.title-regeneration-started"
       | "thread.deleted"
       | "thread.turn-start-requested"
       | "thread.turn-interrupt-requested"
@@ -171,6 +176,8 @@ function hasEligibleFirstUserMessage(thread: OrchestrationThread, messageId: str
   const userMessages = thread.messages.filter((message) => message.role === "user");
   return (
     thread.title === DEFAULT_NEW_THREAD_TITLE &&
+    thread.titleSource === "default" &&
+    thread.titleRegeneration === null &&
     userMessages.length === 1 &&
     userMessages[0]?.id === messageId
   );
@@ -273,6 +280,7 @@ const make = Effect.gen(function* () {
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const git = yield* GitCore;
   const textGeneration = yield* TextGeneration;
+  const serverSettings = yield* ServerSettingsService;
   const threadProviderOptions = new Map<string, ProviderStartOptions>();
   const threadModelOptions = new Map<string, ProviderModelOptions>();
 
@@ -1052,7 +1060,7 @@ const make = Effect.gen(function* () {
       );
   });
 
-  const maybeGenerateThreadTitleForFirstTurn = Effect.fnUntraced(function* (input: {
+  const maybeRequestThreadTitleForFirstTurn = Effect.fnUntraced(function* (input: {
     readonly threadId: ThreadId;
     readonly messageId: string;
     readonly titleSourceText: string;
@@ -1068,45 +1076,165 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    const cwd = resolveThreadWorkspaceCwd({
-      thread: currentThread,
-      projects: readModel.projects,
+    const createdAt = new Date().toISOString();
+    yield* orchestrationEngine.dispatch({
+      type: "thread.title.generation.start",
+      commandId: serverCommandId("thread-title-generate"),
+      threadId: input.threadId,
+      expectedTitleRevision: currentThread.titleRevision ?? 0,
+      titleSourceText: input.titleSourceText,
+      ...(input.titleGenerationModel !== undefined
+        ? { titleGenerationModel: input.titleGenerationModel }
+        : {}),
+      ...(input.titleGenerationModelSelection !== undefined
+        ? { titleGenerationModelSelection: input.titleGenerationModelSelection }
+        : {}),
+      createdAt,
     });
-    const attachments = input.attachments ?? [];
-    const applyTitleIfEligible = (title: string) =>
-      Effect.gen(function* () {
-        const nextThread = yield* resolveActiveThread(input.threadId);
-        if (!nextThread || !hasEligibleFirstUserMessage(nextThread, input.messageId)) {
-          return;
-        }
+  });
 
-        if (title === DEFAULT_NEW_THREAD_TITLE) {
-          return;
-        }
+  const dispatchTitleRegenerationFailure = (input: {
+    readonly threadId: ThreadId;
+    readonly requestId: CommandId;
+    readonly expectedTitleRevision: number;
+    readonly reason: string;
+  }) => {
+    const createdAt = new Date().toISOString();
+    return orchestrationEngine.dispatch({
+      type: "thread.title.regeneration.fail",
+      commandId: serverCommandId("thread-title-regeneration-fail"),
+      threadId: input.threadId,
+      requestId: input.requestId,
+      expectedTitleRevision: input.expectedTitleRevision,
+      reason: input.reason.slice(0, 2_000),
+      createdAt,
+    });
+  };
 
-        yield* orchestrationEngine.dispatch({
-          type: "thread.meta.update",
-          commandId: serverCommandId("thread-title-generate"),
-          threadId: input.threadId,
-          title,
-        });
+  const processTitleRegenerationStarted = Effect.fnUntraced(function* (
+    event: Extract<ProviderIntentEvent, { type: "thread.title-regeneration-started" }>,
+  ) {
+    const requestId = event.payload.titleRegeneration.requestId;
+    const thread = yield* resolveThread(event.payload.threadId);
+    if (
+      !thread ||
+      thread.titleRegeneration?.requestId !== requestId ||
+      (thread.titleRevision ?? 0) !== event.payload.expectedTitleRevision
+    ) {
+      return;
+    }
+
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const cwd = resolveThreadWorkspaceCwd({ thread, projects: readModel.projects });
+    const explicitContext = formatThreadTitleRegenerationContext(thread.messages);
+    const firstUserMessage = thread.messages.find((message) => message.role === "user");
+    const titleSourceText =
+      event.payload.origin === "explicit"
+        ? explicitContext.text
+        : (event.payload.titleSourceText ?? firstUserMessage?.text ?? "").trim();
+    const attachments =
+      event.payload.origin === "explicit"
+        ? explicitContext.attachments
+        : (firstUserMessage?.attachments ?? []);
+    if (titleSourceText.length === 0) {
+      yield* dispatchTitleRegenerationFailure({
+        threadId: thread.id,
+        requestId,
+        expectedTitleRevision: event.payload.expectedTitleRevision,
+        reason: "There are no user messages available to generate a title.",
       });
+      return;
+    }
 
+    const settings = yield* serverSettings.getSettings;
+    const requestedSelection =
+      event.payload.titleGenerationModelSelection ??
+      (event.payload.titleGenerationModel !== undefined
+        ? {
+            ...settings.textGenerationModelSelection,
+            model: event.payload.titleGenerationModel,
+          }
+        : settings.textGenerationModelSelection);
     const title = yield* resolveBestEffortGeneratedTitle({
       cwd,
-      titleSourceText: input.titleSourceText,
+      titleSourceText,
       attachments,
-      titleGenerationModel: input.titleGenerationModel,
-      titleGenerationModelSelection: input.titleGenerationModelSelection,
-      defaultTitle: DEFAULT_NEW_THREAD_TITLE,
+      titleGenerationModel: requestedSelection.model,
+      titleGenerationModelSelection: requestedSelection,
+      ...(event.payload.origin === "explicit" ? { previousTitle: thread.title } : {}),
+      defaultTitle: event.payload.origin === "explicit" ? thread.title : DEFAULT_NEW_THREAD_TITLE,
       textGeneration,
       logPrefix: "provider command reactor",
-      logContext: {
-        threadId: input.threadId,
-      },
+      logContext: { threadId: thread.id, requestId, origin: event.payload.origin },
     });
-    yield* applyTitleIfEligible(title);
+
+    if (title === thread.title || title === DEFAULT_NEW_THREAD_TITLE) {
+      yield* dispatchTitleRegenerationFailure({
+        threadId: thread.id,
+        requestId,
+        expectedTitleRevision: event.payload.expectedTitleRevision,
+        reason: "No distinct title could be generated from the current conversation.",
+      });
+      return;
+    }
+
+    const latestThread = yield* resolveThread(thread.id);
+    const automaticRequestIsStillEligible =
+      event.payload.origin !== "first-turn" ||
+      (latestThread !== undefined &&
+        latestThread.deletedAt === null &&
+        latestThread.titleSource === "default" &&
+        latestThread.messages.filter((message) => message.role === "user").length === 1);
+    if (
+      !latestThread ||
+      latestThread.titleRegeneration?.requestId !== requestId ||
+      (latestThread.titleRevision ?? 0) !== event.payload.expectedTitleRevision ||
+      !automaticRequestIsStillEligible
+    ) {
+      yield* dispatchTitleRegenerationFailure({
+        threadId: thread.id,
+        requestId,
+        expectedTitleRevision: event.payload.expectedTitleRevision,
+        reason: "A newer thread change superseded this generated result.",
+      });
+      return;
+    }
+
+    const createdAt = new Date().toISOString();
+    yield* orchestrationEngine.dispatch({
+      type: "thread.title.regeneration.complete",
+      commandId: serverCommandId("thread-title-regeneration-complete"),
+      threadId: thread.id,
+      requestId,
+      expectedTitleRevision: event.payload.expectedTitleRevision,
+      title,
+      createdAt,
+    });
   });
+
+  const processTitleRegenerationStartedSafely = (
+    event: Extract<ProviderIntentEvent, { type: "thread.title-regeneration-started" }>,
+  ) =>
+    processTitleRegenerationStarted(event).pipe(
+      Effect.catchCause((cause) => {
+        if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+        return dispatchTitleRegenerationFailure({
+          threadId: event.payload.threadId,
+          requestId: event.payload.titleRegeneration.requestId,
+          expectedTitleRevision: event.payload.expectedTitleRevision,
+          reason: `Title generation failed: ${Cause.pretty(cause)}`,
+        }).pipe(
+          Effect.catchCause((dispatchCause) =>
+            Effect.logWarning("provider command reactor failed to clear title generation", {
+              threadId: event.payload.threadId,
+              cause: Cause.pretty(dispatchCause),
+            }),
+          ),
+        );
+      }),
+    );
+
+  const titleRegenerationWorker = yield* makeDrainableWorker(processTitleRegenerationStartedSafely);
 
   const processTurnStartRequested = Effect.fnUntraced(function* (
     event: Extract<ProviderIntentEvent, { type: "thread.turn-start-requested" }>,
@@ -1168,7 +1296,7 @@ const make = Effect.gen(function* () {
       ...(message.attachments !== undefined ? { attachments: message.attachments } : {}),
     }).pipe(Effect.forkScoped);
 
-    yield* maybeGenerateThreadTitleForFirstTurn({
+    yield* maybeRequestThreadTitleForFirstTurn({
       threadId: event.payload.threadId,
       messageId: message.id,
       titleSourceText:
@@ -1633,6 +1761,9 @@ const make = Effect.gen(function* () {
         "orchestration.event_type": event.type,
       });
       switch (event.type) {
+        case "thread.title-regeneration-started":
+          yield* titleRegenerationWorker.enqueue(event);
+          break;
         case "thread.runtime-mode-set": {
           const thread = yield* resolveThread(event.payload.threadId);
           if (!thread?.session || thread.session.status === "stopped") {
@@ -1704,24 +1835,50 @@ const make = Effect.gen(function* () {
 
   const worker = yield* makeDrainableWorker(processDomainEventSafely);
 
-  const start: ProviderCommandReactorShape["start"] = Effect.forkScoped(
-    Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
-      if (
-        event.type !== "thread.runtime-mode-set" &&
-        event.type !== "thread.meta-updated" &&
-        event.type !== "thread.deleted" &&
-        event.type !== "thread.turn-interrupt-requested" &&
-        event.type !== "thread.approval-response-requested" &&
-        event.type !== "thread.user-input-response-requested" &&
-        event.type !== "thread.session-stop-requested" &&
-        event.type !== "thread.archived"
-      ) {
-        return Effect.void;
-      }
+  const start: ProviderCommandReactorShape["start"] = Effect.gen(function* () {
+    yield* Effect.forkScoped(
+      Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
+        if (
+          event.type !== "thread.runtime-mode-set" &&
+          event.type !== "thread.meta-updated" &&
+          event.type !== "thread.title-regeneration-started" &&
+          event.type !== "thread.deleted" &&
+          event.type !== "thread.turn-interrupt-requested" &&
+          event.type !== "thread.approval-response-requested" &&
+          event.type !== "thread.user-input-response-requested" &&
+          event.type !== "thread.session-stop-requested" &&
+          event.type !== "thread.archived"
+        ) {
+          return Effect.void;
+        }
 
-      return worker.enqueue(event);
-    }),
-  ).pipe(Effect.asVoid);
+        return worker.enqueue(event);
+      }),
+    );
+
+    const readModel = yield* orchestrationEngine.getReadModel();
+    yield* Effect.forEach(
+      readModel.threads,
+      (thread) => {
+        const pending = thread.titleRegeneration;
+        if (pending == null) return Effect.void;
+        return dispatchTitleRegenerationFailure({
+          threadId: thread.id,
+          requestId: pending.requestId,
+          expectedTitleRevision: thread.titleRevision ?? 0,
+          reason: "The server restarted before title generation completed.",
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("provider command reactor failed to clear orphaned title request", {
+              threadId: thread.id,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        );
+      },
+      { discard: true },
+    );
+  });
 
   const deliverTurnStart: ProviderCommandReactorShape["deliverTurnStart"] = (event) =>
     processTurnStartRequested(event).pipe(
@@ -1752,7 +1909,10 @@ const make = Effect.gen(function* () {
 
   return {
     start,
-    drain: worker.drain,
+    drain: Effect.all([worker.drain, titleRegenerationWorker.drain], {
+      discard: true,
+      concurrency: 2,
+    }),
     deliverTurnStart,
     recordTurnStartFailure,
     applyMcpConfigToLiveSessions,

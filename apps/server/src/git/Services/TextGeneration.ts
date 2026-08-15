@@ -64,6 +64,7 @@ export interface BranchNameGenerationResult {
 export interface ThreadTitleGenerationInput {
   cwd: string;
   message: string;
+  previousTitle?: string | undefined;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
   model?: string;
   modelSelection?: ModelSelection;

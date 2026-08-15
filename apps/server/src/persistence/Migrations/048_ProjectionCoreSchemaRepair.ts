@@ -78,6 +78,11 @@ export default Effect.gen(function* () {
       pin_order_key INTEGER,
       snoozed_until TEXT,
       snoozed_at TEXT,
+      title_source TEXT NOT NULL DEFAULT 'legacy',
+      title_revision INTEGER NOT NULL DEFAULT 0,
+      title_updated_at TEXT,
+      title_regeneration_request_id TEXT,
+      title_regeneration_started_at TEXT,
       created_at TEXT NOT NULL,
       last_interaction_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -205,6 +210,46 @@ export default Effect.gen(function* () {
     yield* sql`
       ALTER TABLE projection_threads
       ADD COLUMN snoozed_at TEXT
+    `;
+  }
+
+  if (!threadColumns.has("title_source")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN title_source TEXT NOT NULL DEFAULT 'legacy'
+    `;
+  }
+
+  if (!threadColumns.has("title_revision")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN title_revision INTEGER NOT NULL DEFAULT 0
+    `;
+  }
+
+  if (!threadColumns.has("title_updated_at")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN title_updated_at TEXT
+    `;
+  }
+
+  if (!threadColumns.has("title_regeneration_request_id")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN title_regeneration_request_id TEXT
+    `;
+  }
+
+  if (!threadColumns.has("title_regeneration_started_at")) {
+    resetProjectors("projection.threads");
+    yield* sql`
+      ALTER TABLE projection_threads
+      ADD COLUMN title_regeneration_started_at TEXT
     `;
   }
 

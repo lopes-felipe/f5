@@ -649,6 +649,15 @@ export const OrchestrationLatestTurn = Schema.Struct({
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
+export const ThreadTitleSource = Schema.Literals(["default", "generated", "manual", "legacy"]);
+export type ThreadTitleSource = typeof ThreadTitleSource.Type;
+
+export const ThreadTitleRegeneration = Schema.Struct({
+  requestId: CommandId,
+  startedAt: IsoDateTime,
+});
+export type ThreadTitleRegeneration = typeof ThreadTitleRegeneration.Type;
+
 export const OrchestrationThread = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -667,6 +676,16 @@ export const OrchestrationThread = Schema.Struct({
   pinOrderKey: Schema.optional(Schema.NullOr(NonNegativeInt)),
   snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
   snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  titleSource: Schema.optional(ThreadTitleSource).pipe(
+    Schema.withDecodingDefault(() => "legacy" as const),
+  ),
+  titleRevision: Schema.optional(NonNegativeInt).pipe(Schema.withDecodingDefault(() => 0)),
+  titleUpdatedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   createdAt: IsoDateTime,
   lastInteractionAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -960,6 +979,7 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  regenerateTitle: Schema.optional(Schema.Literal(true)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
@@ -967,7 +987,13 @@ const ThreadMetaUpdateCommand = Schema.Struct({
   expectedArchivedAt: Schema.optional(IsoDateTime),
   expectedBranch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   expectedWorktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
-});
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      !(input.title !== undefined && input.regenerateTitle === true) ||
+      "title and regenerateTitle cannot be specified together",
+  ),
+);
 
 const ThreadRuntimeModeSetCommand = Schema.Struct({
   type: Schema.Literal("thread.runtime-mode.set"),
@@ -1285,6 +1311,37 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadTitleGenerationStartCommand = Schema.Struct({
+  type: Schema.Literal("thread.title.generation.start"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  expectedTitleRevision: NonNegativeInt,
+  titleSourceText: Schema.optional(Schema.String),
+  titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
+  titleGenerationModelSelection: Schema.optional(ModelSelection),
+  createdAt: IsoDateTime,
+});
+
+const ThreadTitleRegenerationCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.title.regeneration.complete"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  expectedTitleRevision: NonNegativeInt,
+  title: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
+const ThreadTitleRegenerationFailCommand = Schema.Struct({
+  type: Schema.Literal("thread.title.regeneration.fail"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  requestId: CommandId,
+  expectedTitleRevision: NonNegativeInt,
+  reason: Schema.String.check(Schema.isMaxLength(2_000)),
+  createdAt: IsoDateTime,
+});
+
 const ThreadCommandExecutionRecordCommand = Schema.Struct({
   type: Schema.Literal("thread.command-execution.record"),
   commandId: CommandId,
@@ -1342,6 +1399,9 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadCompactedRecordCommand,
   ThreadSessionNotesRecordCommand,
   ThreadRevertCompleteCommand,
+  ThreadTitleGenerationStartCommand,
+  ThreadTitleRegenerationCompleteCommand,
+  ThreadTitleRegenerationFailCommand,
   ThreadCommandExecutionRecordCommand,
   ThreadCommandExecutionOutputAppendCommand,
   ThreadFileChangeRecordCommand,
@@ -1383,6 +1443,10 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.snoozed",
   "thread.unsnoozed",
   "thread.meta-updated",
+  "thread.title-regeneration-started",
+  "thread.title-regenerated",
+  "thread.title-regeneration-failed",
+  "thread.title-regeneration-discarded",
   "thread.runtime-mode-set",
   "thread.interaction-mode-set",
   "thread.message-sent",
@@ -1525,6 +1589,13 @@ export const ThreadCreatedPayload = Schema.Struct({
   threadReferences: Schema.optional(Schema.Array(ThreadReference)).pipe(
     Schema.withDecodingDefault(() => []),
   ),
+  titleSource: Schema.optional(ThreadTitleSource).pipe(
+    Schema.withDecodingDefault(() => "legacy" as const),
+  ),
+  titleRevision: Schema.optional(NonNegativeInt).pipe(Schema.withDecodingDefault(() => 0)),
+  titleUpdatedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -1577,11 +1648,48 @@ export const ThreadUnsnoozedPayload = Schema.Struct({
 export const ThreadMetaUpdatedPayload = Schema.Struct({
   threadId: ThreadId,
   title: Schema.optional(TrimmedNonEmptyString),
+  titleSource: Schema.optional(ThreadTitleSource),
+  titleRevision: Schema.optional(NonNegativeInt),
+  titleUpdatedAt: Schema.optional(IsoDateTime),
+  titleRegeneration: Schema.optional(Schema.NullOr(ThreadTitleRegeneration)),
   model: Schema.optional(TrimmedNonEmptyString),
   modelSelection: Schema.optional(ModelSelection),
   branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   updatedAt: IsoDateTime,
+});
+
+export const ThreadTitleRegenerationStartedPayload = Schema.Struct({
+  threadId: ThreadId,
+  titleRegeneration: ThreadTitleRegeneration,
+  expectedTitleRevision: NonNegativeInt,
+  origin: Schema.Literals(["first-turn", "explicit"]),
+  titleSourceText: Schema.optional(Schema.String),
+  titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
+  titleGenerationModelSelection: Schema.optional(ModelSelection),
+});
+
+export const ThreadTitleRegeneratedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: CommandId,
+  title: TrimmedNonEmptyString,
+  titleSource: Schema.Literal("generated"),
+  titleRevision: NonNegativeInt,
+  titleUpdatedAt: IsoDateTime,
+});
+
+export const ThreadTitleRegenerationFailedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: CommandId,
+  reason: Schema.String.check(Schema.isMaxLength(2_000)),
+  failedAt: IsoDateTime,
+});
+
+export const ThreadTitleRegenerationDiscardedPayload = Schema.Struct({
+  threadId: ThreadId,
+  requestId: CommandId,
+  reason: Schema.String.check(Schema.isMaxLength(2_000)),
+  discardedAt: IsoDateTime,
 });
 
 export const ThreadRuntimeModeSetPayload = Schema.Struct({
@@ -1900,6 +2008,26 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.meta-updated"),
     payload: ThreadMetaUpdatedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.title-regeneration-started"),
+    payload: ThreadTitleRegenerationStartedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.title-regenerated"),
+    payload: ThreadTitleRegeneratedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.title-regeneration-failed"),
+    payload: ThreadTitleRegenerationFailedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.title-regeneration-discarded"),
+    payload: ThreadTitleRegenerationDiscardedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

@@ -44,6 +44,10 @@ import {
   ThreadDeletedPayload,
   ThreadInteractionModeSetPayload,
   ThreadMetaUpdatedPayload,
+  ThreadTitleRegenerationStartedPayload,
+  ThreadTitleRegeneratedPayload,
+  ThreadTitleRegenerationFailedPayload,
+  ThreadTitleRegenerationDiscardedPayload,
   ThreadPinsReplacedPayload,
   ThreadLegacyPinsImportedPayload,
   ThreadProposedPlanUpsertedPayload,
@@ -649,6 +653,10 @@ export function projectEvent(
             pinOrderKey: null,
             snoozedUntil: null,
             snoozedAt: null,
+            titleSource: payload.titleSource ?? "legacy",
+            titleRevision: payload.titleRevision ?? 0,
+            titleUpdatedAt: payload.titleUpdatedAt ?? null,
+            titleRegeneration: null,
             createdAt: payload.createdAt,
             lastInteractionAt: payload.createdAt,
             updatedAt: payload.updatedAt,
@@ -698,6 +706,16 @@ export function projectEvent(
             ...nextBase,
             threads: updateThread(nextBase.threads, payload.threadId, {
               ...(payload.title !== undefined ? { title: payload.title } : {}),
+              ...(payload.titleSource !== undefined ? { titleSource: payload.titleSource } : {}),
+              ...(payload.titleRevision !== undefined
+                ? { titleRevision: payload.titleRevision }
+                : {}),
+              ...(payload.titleUpdatedAt !== undefined
+                ? { titleUpdatedAt: payload.titleUpdatedAt }
+                : {}),
+              ...(payload.titleRegeneration !== undefined
+                ? { titleRegeneration: payload.titleRegeneration }
+                : {}),
               ...(payload.model !== undefined ? { model: payload.model } : {}),
               ...(payload.modelSelection !== undefined
                 ? { modelSelection: payload.modelSelection }
@@ -718,6 +736,72 @@ export function projectEvent(
         }),
       );
 
+    case "thread.title-regeneration-started":
+      return decodeForEvent(
+        ThreadTitleRegenerationStartedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            titleRegeneration: payload.titleRegeneration,
+            updatedAt: event.occurredAt,
+          }),
+        })),
+      );
+
+    case "thread.title-regenerated":
+      return decodeForEvent(
+        ThreadTitleRegeneratedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => ({
+          ...nextBase,
+          threads: updateThread(nextBase.threads, payload.threadId, {
+            title: payload.title,
+            titleSource: payload.titleSource,
+            titleRevision: payload.titleRevision,
+            titleUpdatedAt: payload.titleUpdatedAt,
+            titleRegeneration: null,
+            updatedAt: payload.titleUpdatedAt,
+          }),
+        })),
+      );
+
+    case "thread.title-regeneration-failed":
+      return decodeForEvent(
+        ThreadTitleRegenerationFailedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(
+        Effect.map((payload) => {
+          const current = nextBase.threads.find((thread) => thread.id === payload.threadId);
+          return {
+            ...nextBase,
+            threads:
+              current?.titleRegeneration?.requestId === payload.requestId
+                ? updateThread(nextBase.threads, payload.threadId, {
+                    titleRegeneration: null,
+                    updatedAt: payload.failedAt,
+                  })
+                : [...nextBase.threads],
+          };
+        }),
+      );
+
+    case "thread.title-regeneration-discarded":
+      return decodeForEvent(
+        ThreadTitleRegenerationDiscardedPayload,
+        event.payload,
+        event.type,
+        "payload",
+      ).pipe(Effect.as(nextBase));
+
     case "thread.archived":
       return decodeForEvent(ThreadArchivedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
@@ -729,6 +813,7 @@ export function projectEvent(
             pinOrderKey: null,
             snoozedUntil: null,
             snoozedAt: null,
+            titleRegeneration: null,
             updatedAt: event.occurredAt,
           }),
         })),

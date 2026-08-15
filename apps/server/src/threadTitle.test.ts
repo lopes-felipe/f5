@@ -2,18 +2,22 @@ import { describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  MessageId,
   ProviderInstanceId,
+  type OrchestrationMessage,
 } from "@t3tools/contracts";
 
 import { TextGenerationError } from "./git/Errors.ts";
 import {
   buildFallbackTitle,
   buildFallbackThreadTitle,
+  formatThreadTitleRegenerationContext,
   isUnsupportedCodexChatGptModelError,
   resolveBestEffortGeneratedTitle,
   sanitizeThreadTitle,
   stripWrappingQuotes,
   THREAD_TITLE_MAX_CHARS,
+  THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS,
   trimToMaxChars,
 } from "./threadTitle.ts";
 
@@ -91,6 +95,40 @@ describe("buildFallbackTitle", () => {
         defaultTitle: "New workflow",
       }),
     ).toBe("New workflow");
+  });
+});
+
+describe("formatThreadTitleRegenerationContext", () => {
+  const userMessage = (index: number, text: string): OrchestrationMessage => ({
+    id: MessageId.makeUnsafe(`message-${index}`),
+    role: "user",
+    text,
+    turnId: null,
+    streaming: false,
+    createdAt: `2026-08-15T09:0${index}:00.000Z`,
+    updatedAt: `2026-08-15T09:0${index}:00.000Z`,
+  });
+
+  it("uses the first and four most recent user messages", () => {
+    const context = formatThreadTitleRegenerationContext(
+      Array.from({ length: 7 }, (_, index) => userMessage(index + 1, `request ${index + 1}`)),
+    );
+    expect(context.text).toContain("request 1");
+    expect(context.text).not.toContain("request 2");
+    expect(context.text).not.toContain("request 3");
+    expect(context.text).toContain("request 4");
+    expect(context.text).toContain("request 7");
+  });
+
+  it("preserves the beginning and latest context within the fixed budget", () => {
+    const context = formatThreadTitleRegenerationContext([
+      userMessage(1, `first-${"a".repeat(8_000)}`),
+      userMessage(2, `latest-${"z".repeat(8_000)}`),
+    ]);
+    expect(context.text.length).toBeLessThanOrEqual(THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS);
+    expect(context.text).toContain("first-");
+    expect(context.text).toContain("latest-");
+    expect(context.text).toContain("truncated");
   });
 });
 

@@ -63,6 +63,7 @@ import { ProviderCommandReactor } from "../Services/ProviderCommandReactor.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { makeLocalFileTracer } from "../../observability/LocalFileTracer.ts";
 import { dispatchBootstrapTurnStart } from "../../wsServer/bootstrapTurnStart.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asApprovalRequestId = (value: string): ApprovalRequestId =>
@@ -177,6 +178,7 @@ describe("ProviderCommandReactor", () => {
     readonly threadModel?: string;
     readonly createThread?: boolean;
     readonly tracePath?: string;
+    readonly orphanedTitleRegenerationBeforeStart?: boolean;
   }) {
     const now = new Date().toISOString();
     const stateDir = input?.stateDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "t3code-reactor-"));
@@ -500,6 +502,7 @@ describe("ProviderCommandReactor", () => {
       Layer.provide(SqlitePersistenceMemory),
     );
     const layer = ProviderCommandReactorLive.pipe(
+      Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(
         Layer.succeed(ProjectMcpConfigService, {
@@ -579,6 +582,42 @@ describe("ProviderCommandReactor", () => {
 
     const engine = await runtime.runPromise(Effect.service(OrchestrationEngineService));
     const reactor = await runtime.runPromise(Effect.service(ProviderCommandReactor));
+    if (input?.orphanedTitleRegenerationBeforeStart) {
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("cmd-project-create-before-reactor"),
+          projectId: asProjectId("project-1"),
+          title: "Provider Project",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("cmd-thread-create-before-reactor"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          projectId: asProjectId("project-1"),
+          title: input.threadTitle ?? "Thread",
+          model: input.threadModel ?? "gpt-5-codex",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+        }),
+      );
+      await Effect.runPromise(
+        engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-title-orphaned-before-reactor"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          regenerateTitle: true,
+        }),
+      );
+    }
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(reactor.start.pipe(Scope.provide(scope)));
     // Turn delivery is outbox-owned in production. These focused reactor tests
@@ -594,33 +633,35 @@ describe("ProviderCommandReactor", () => {
     );
     const drain = () => Effect.runPromise(reactor.drain);
 
-    await Effect.runPromise(
-      engine.dispatch({
-        type: "project.create",
-        commandId: CommandId.makeUnsafe("cmd-project-create"),
-        projectId: asProjectId("project-1"),
-        title: "Provider Project",
-        workspaceRoot,
-        defaultModel: "gpt-5-codex",
-        createdAt: now,
-      }),
-    );
-    if (input?.createThread !== false) {
+    if (!input?.orphanedTitleRegenerationBeforeStart) {
       await Effect.runPromise(
         engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.makeUnsafe("cmd-thread-create"),
-          threadId: ThreadId.makeUnsafe("thread-1"),
+          type: "project.create",
+          commandId: CommandId.makeUnsafe("cmd-project-create"),
           projectId: asProjectId("project-1"),
-          title: input?.threadTitle ?? "Thread",
-          model: input?.threadModel ?? "gpt-5-codex",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
-          runtimeMode: "approval-required",
-          branch: null,
-          worktreePath: null,
+          title: "Provider Project",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
           createdAt: now,
         }),
       );
+      if (input?.createThread !== false) {
+        await Effect.runPromise(
+          engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.makeUnsafe("cmd-thread-create"),
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            projectId: asProjectId("project-1"),
+            title: input?.threadTitle ?? "Thread",
+            model: input?.threadModel ?? "gpt-5-codex",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            runtimeMode: "approval-required",
+            branch: null,
+            worktreePath: null,
+            createdAt: now,
+          }),
+        );
+      }
     }
 
     return {
@@ -2405,6 +2446,9 @@ describe("ProviderCommandReactor", () => {
     let readModel = await Effect.runPromise(harness.engine.getReadModel());
     let thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     expect(thread?.title).toBe(DEFAULT_NEW_THREAD_TITLE);
+    expect(thread?.titleRegeneration).toMatchObject({
+      requestId: expect.stringContaining("server:thread-title-generate:"),
+    });
 
     titleResult.resolve({ title: "Fix sidebar layout" });
 
@@ -2418,7 +2462,12 @@ describe("ProviderCommandReactor", () => {
 
     readModel = await Effect.runPromise(harness.engine.getReadModel());
     thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
-    expect(thread?.title).toBe("Fix sidebar layout");
+    expect(thread).toMatchObject({
+      title: "Fix sidebar layout",
+      titleSource: "generated",
+      titleRevision: 1,
+      titleRegeneration: null,
+    });
   });
 
   it("generates a first-thread title after draft-thread bootstrap", async () => {
@@ -2626,6 +2675,73 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.generateThreadTitle.mock.calls.length).toBe(1);
+  });
+
+  it("regenerates a title from the current conversation with correlation state", async () => {
+    const harness = await createHarness({ threadTitle: "Initial title" });
+    const now = new Date().toISOString();
+    harness.generateThreadTitle.mockImplementationOnce(() =>
+      Effect.succeed({ title: "Current conversation title" }),
+    );
+
+    for (const [index, text] of ["initial request", "later change"].entries()) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe(`cmd-turn-title-context-${index}`),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          message: {
+            messageId: asMessageId(`user-message-title-context-${index}`),
+            role: "user",
+            text,
+            attachments: [],
+          },
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          runtimeMode: "approval-required",
+          createdAt: now,
+        }),
+      );
+    }
+
+    const requestId = CommandId.makeUnsafe("cmd-explicit-title-regeneration");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: requestId,
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        regenerateTitle: true,
+      }),
+    );
+
+    await waitFor(() => harness.generateThreadTitle.mock.calls.length === 1);
+    expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
+      previousTitle: "Initial title",
+      message: expect.stringContaining("initial request"),
+    });
+    expect(harness.generateThreadTitle.mock.calls[0]?.[0].message).toContain("later change");
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return readModel.threads[0]?.title === "Current conversation title";
+    });
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+    expect(thread).toMatchObject({
+      titleSource: "generated",
+      titleRevision: 1,
+      titleRegeneration: null,
+    });
+  });
+
+  it("clears orphaned title regeneration state when the reactor restarts", async () => {
+    const harness = await createHarness({
+      threadTitle: "Existing title",
+      orphanedTitleRegenerationBeforeStart: true,
+    });
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads[0];
+    expect(thread).toMatchObject({
+      title: "Existing title",
+      titleRegeneration: null,
+    });
+    expect(harness.generateThreadTitle).not.toHaveBeenCalled();
   });
 
   it("does not overwrite a manual rename when the generated title arrives later", async () => {

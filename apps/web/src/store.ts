@@ -959,6 +959,10 @@ function buildThreadFromReadModel(
   const pinOrderKey = thread.pinOrderKey ?? null;
   const snoozedUntil = thread.snoozedUntil ?? null;
   const snoozedAt = thread.snoozedAt ?? null;
+  const titleSource = thread.titleSource ?? "legacy";
+  const titleRevision = thread.titleRevision ?? 0;
+  const titleUpdatedAt = thread.titleUpdatedAt ?? null;
+  const titleRegeneration = thread.titleRegeneration ?? null;
   const existingCompaction = existing?.compaction ?? null;
   const nextDetailFields = detailFields ?? preserveThreadDetailFields(existing);
 
@@ -982,6 +986,11 @@ function buildThreadFromReadModel(
     (existing.pinOrderKey ?? null) === pinOrderKey &&
     (existing.snoozedUntil ?? null) === snoozedUntil &&
     (existing.snoozedAt ?? null) === snoozedAt &&
+    (existing.titleSource ?? "legacy") === titleSource &&
+    (existing.titleRevision ?? 0) === titleRevision &&
+    (existing.titleUpdatedAt ?? null) === titleUpdatedAt &&
+    existing.titleRegeneration?.requestId === titleRegeneration?.requestId &&
+    existing.titleRegeneration?.startedAt === titleRegeneration?.startedAt &&
     existing.lastInteractionAt === thread.lastInteractionAt &&
     existing.estimatedContextTokens === estimatedContextTokens &&
     existing.estimatedThinkingTokens === estimatedThinkingTokens &&
@@ -1024,6 +1033,10 @@ function buildThreadFromReadModel(
     pinOrderKey,
     snoozedUntil,
     snoozedAt,
+    titleSource,
+    titleRevision,
+    titleUpdatedAt,
+    titleRegeneration,
     lastInteractionAt: thread.lastInteractionAt,
     estimatedContextTokens,
     estimatedThinkingTokens,

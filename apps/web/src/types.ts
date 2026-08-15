@@ -17,6 +17,8 @@ import type {
   ThreadId,
   ThreadReference as ContractThreadReference,
   ThreadSessionNotes as ContractThreadSessionNotes,
+  ThreadTitleRegeneration as ContractThreadTitleRegeneration,
+  ThreadTitleSource,
   ProjectId,
   TurnId,
   MessageId,
@@ -46,6 +48,7 @@ export type ProjectSkill = ContractProjectSkill;
 export type ThreadReference = ContractThreadReference;
 export type ThreadSessionNotes = ContractThreadSessionNotes;
 export type ThreadCompaction = ContractThreadCompaction;
+export type ThreadTitleRegeneration = ContractThreadTitleRegeneration;
 export type ThreadHistoryMessageCursor = OrchestrationMessageCursor;
 export type ThreadHistoryCommandExecutionCursor = OrchestrationCommandExecutionCursor;
 export type UserMessageSkillCall = ContractUserMessageSkillCall;
@@ -155,6 +158,10 @@ export interface Thread {
   pinOrderKey?: number | null;
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
+  titleSource?: ThreadTitleSource;
+  titleRevision?: number;
+  titleUpdatedAt?: string | null;
+  titleRegeneration?: ThreadTitleRegeneration | null;
   lastInteractionAt: string;
   estimatedContextTokens: number | null;
   estimatedThinkingTokens: number | null;

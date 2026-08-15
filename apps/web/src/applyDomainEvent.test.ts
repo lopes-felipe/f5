@@ -1,4 +1,5 @@
 import {
+  CommandId,
   EventId,
   InvestigationWorkflowId,
   MessageId,
@@ -212,6 +213,56 @@ describe("applyDomainEvent", () => {
     expect(awake.threads.find((thread) => thread.id === threadOne.id)).toMatchObject({
       snoozedUntil: null,
       snoozedAt: null,
+    });
+  });
+
+  it("tracks correlated title regeneration state", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const requestId = CommandId.makeUnsafe("command-title-regenerate");
+    const pending = applyDomainEvent(
+      makeState({
+        threads: [
+          makeThread({
+            title: "Old title",
+            titleSource: "manual",
+            titleRevision: 2,
+            titleUpdatedAt: "2026-04-01T09:00:00.000Z",
+            titleRegeneration: null,
+          }),
+        ],
+      }),
+      makeEvent("thread.title-regeneration-started", {
+        threadId,
+        titleRegeneration: {
+          requestId,
+          startedAt: "2026-04-01T09:05:00.000Z",
+        },
+        expectedTitleRevision: 2,
+        origin: "explicit",
+      }),
+    );
+    expect(pending.threads[0]?.titleRegeneration?.requestId).toBe(requestId);
+
+    const completed = applyDomainEvent(
+      pending,
+      makeEvent(
+        "thread.title-regenerated",
+        {
+          threadId,
+          requestId,
+          title: "Current title",
+          titleSource: "generated",
+          titleRevision: 3,
+          titleUpdatedAt: "2026-04-01T09:06:00.000Z",
+        },
+        { sequence: 2 },
+      ),
+    );
+    expect(completed.threads[0]).toMatchObject({
+      title: "Current title",
+      titleSource: "generated",
+      titleRevision: 3,
+      titleRegeneration: null,
     });
   });
 

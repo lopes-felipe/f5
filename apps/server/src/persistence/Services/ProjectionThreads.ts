@@ -7,6 +7,7 @@
  * @module ProjectionThreadRepository
  */
 import {
+  CommandId,
   IsoDateTime,
   ModelSelection,
   NonNegativeInt,
@@ -18,6 +19,7 @@ import {
   ThreadId,
   ThreadReference,
   ThreadSessionNotes,
+  ThreadTitleSource,
   TurnId,
 } from "@t3tools/contracts";
 import { Option, Schema, ServiceMap } from "effect";
@@ -51,6 +53,11 @@ export const ProjectionThread = Schema.Struct({
   pinOrderKey: Schema.NullOr(NonNegativeInt),
   snoozedUntil: Schema.NullOr(IsoDateTime),
   snoozedAt: Schema.NullOr(IsoDateTime),
+  titleSource: ThreadTitleSource,
+  titleRevision: NonNegativeInt,
+  titleUpdatedAt: Schema.NullOr(IsoDateTime),
+  titleRegenerationRequestId: Schema.NullOr(CommandId),
+  titleRegenerationStartedAt: Schema.NullOr(IsoDateTime),
   createdAt: IsoDateTime,
   lastInteractionAt: IsoDateTime,
   updatedAt: IsoDateTime,

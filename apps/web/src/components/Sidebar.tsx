@@ -6,6 +6,7 @@ import {
   FolderIcon,
   GitPullRequestIcon,
   HomeIcon,
+  LoaderCircleIcon,
   MoonIcon,
   PinIcon,
   RocketIcon,
@@ -501,7 +502,7 @@ function resolveThreadRecencyTextClassName(input: {
 }
 
 function ThreadRowTrailingMeta(props: {
-  thread: Pick<Thread, "id" | "branch" | "worktreePath">;
+  thread: Pick<Thread, "id" | "branch" | "worktreePath" | "titleRegeneration">;
   lastInteractionAt: string;
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
@@ -519,6 +520,12 @@ function ThreadRowTrailingMeta(props: {
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-1.5">
+      {props.thread.titleRegeneration ? (
+        <LoaderCircleIcon
+          aria-label="Regenerating thread title"
+          className="size-3 animate-spin text-muted-foreground"
+        />
+      ) : null}
       <ThreadWorktreeIndicator thread={props.thread} />
       {props.terminalStatus ? (
         <span
@@ -1542,6 +1549,10 @@ export default function Sidebar() {
       const clicked = await api.contextMenu.show(
         [
           { id: "rename", label: "Rename thread" },
+          {
+            id: thread.titleRegeneration ? "title-regeneration-pending" : "regenerate-title",
+            label: thread.titleRegeneration ? "Regenerating title…" : "Regenerate title",
+          },
           ...(thread.archivedAt === null
             ? [
                 { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" },
@@ -1568,6 +1579,24 @@ export default function Sidebar() {
 
       if (clicked === "rename") {
         startThreadRename(threadId);
+        return;
+      }
+
+      if (clicked === "regenerate-title") {
+        await api.orchestration
+          .dispatchCommand({
+            type: "thread.meta.update",
+            commandId: newCommandId(),
+            threadId,
+            regenerateTitle: true,
+          })
+          .catch((error) => {
+            toastManager.add({
+              type: "error",
+              title: "Failed to regenerate title",
+              description: error instanceof Error ? error.message : "An error occurred.",
+            });
+          });
         return;
       }
 

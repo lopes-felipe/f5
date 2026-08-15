@@ -372,6 +372,34 @@ it.effect("decodes threads without persisted token usage and defaults to null", 
     assert.strictEqual(parsed.pinOrderKey, undefined);
     assert.strictEqual(parsed.snoozedUntil, undefined);
     assert.strictEqual(parsed.snoozedAt, undefined);
+    assert.strictEqual(parsed.titleSource, "legacy");
+    assert.strictEqual(parsed.titleRevision, 0);
+    assert.strictEqual(parsed.titleUpdatedAt, null);
+    assert.strictEqual(parsed.titleRegeneration, null);
+  }),
+);
+
+it.effect("accepts title regeneration intent and rejects title plus regeneration", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeClientOrchestrationCommand({
+      type: "thread.meta.update",
+      commandId: "cmd-title-regenerate",
+      threadId: "thread-1",
+      regenerateTitle: true,
+    });
+    assert.strictEqual(parsed.type, "thread.meta.update");
+    assert.strictEqual(parsed.regenerateTitle, true);
+
+    const rejected = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        type: "thread.meta.update",
+        commandId: "cmd-title-conflict",
+        threadId: "thread-1",
+        title: "Manual title",
+        regenerateTitle: true,
+      }),
+    );
+    assert.strictEqual(rejected._tag, "Failure");
   }),
 );
 

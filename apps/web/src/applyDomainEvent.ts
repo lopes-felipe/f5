@@ -772,6 +772,10 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         pinOrderKey: null,
         snoozedUntil: null,
         snoozedAt: null,
+        titleSource: event.payload.titleSource ?? "legacy",
+        titleRevision: event.payload.titleRevision ?? 0,
+        titleUpdatedAt: event.payload.titleUpdatedAt ?? null,
+        titleRegeneration: null,
         lastInteractionAt: event.payload.createdAt,
         estimatedContextTokens: null,
         estimatedThinkingTokens: null,
@@ -813,7 +817,8 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
         thread.archivedAt === event.payload.archivedAt &&
         (thread.pinnedAt ?? null) === null &&
-        (thread.snoozedUntil ?? null) === null
+        (thread.snoozedUntil ?? null) === null &&
+        thread.titleRegeneration === null
           ? thread
           : {
               ...thread,
@@ -822,6 +827,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
               pinOrderKey: null,
               snoozedUntil: null,
               snoozedAt: null,
+              titleRegeneration: null,
             },
       );
       const pinRevision = event.payload.pinRevision ?? state.pinRevision ?? 0;
@@ -903,6 +909,11 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             : thread.modelSelection;
         if (
           (event.payload.title ?? thread.title) === thread.title &&
+          (event.payload.titleSource ?? thread.titleSource) === thread.titleSource &&
+          (event.payload.titleRevision ?? thread.titleRevision) === thread.titleRevision &&
+          (event.payload.titleUpdatedAt ?? thread.titleUpdatedAt) === thread.titleUpdatedAt &&
+          (event.payload.titleRegeneration === undefined ||
+            event.payload.titleRegeneration?.requestId === thread.titleRegeneration?.requestId) &&
           model === thread.model &&
           areUnknownEqual(modelSelection ?? null, thread.modelSelection ?? null) &&
           modelContextWindowTokens === thread.modelContextWindowTokens &&
@@ -914,6 +925,18 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         return {
           ...thread,
           ...(event.payload.title !== undefined ? { title: event.payload.title } : {}),
+          ...(event.payload.titleSource !== undefined
+            ? { titleSource: event.payload.titleSource }
+            : {}),
+          ...(event.payload.titleRevision !== undefined
+            ? { titleRevision: event.payload.titleRevision }
+            : {}),
+          ...(event.payload.titleUpdatedAt !== undefined
+            ? { titleUpdatedAt: event.payload.titleUpdatedAt }
+            : {}),
+          ...(event.payload.titleRegeneration !== undefined
+            ? { titleRegeneration: event.payload.titleRegeneration }
+            : {}),
           ...(model !== thread.model ? { model } : {}),
           ...(!areUnknownEqual(modelSelection ?? null, thread.modelSelection ?? null)
             ? { modelSelection }
@@ -929,6 +952,38 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       });
       return threads === state.threads ? state : { ...state, threads };
     }
+
+    case "thread.title-regeneration-started": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        titleRegeneration: event.payload.titleRegeneration,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
+
+    case "thread.title-regenerated": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
+        ...thread,
+        title: event.payload.title,
+        titleSource: event.payload.titleSource,
+        titleRevision: event.payload.titleRevision,
+        titleUpdatedAt: event.payload.titleUpdatedAt,
+        titleRegeneration: null,
+      }));
+      return threads === state.threads ? state : { ...state, threads };
+    }
+
+    case "thread.title-regeneration-failed": {
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
+        thread.titleRegeneration?.requestId === event.payload.requestId
+          ? { ...thread, titleRegeneration: null }
+          : thread,
+      );
+      return threads === state.threads ? state : { ...state, threads };
+    }
+
+    case "thread.title-regeneration-discarded":
+      return state;
 
     case "thread.runtime-mode-set": {
       const threads = updateThread(state.threads, event.payload.threadId, (thread) =>

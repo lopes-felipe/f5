@@ -179,15 +179,26 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
 
 export interface ThreadTitlePromptInput {
   message: string;
+  previousTitle?: string | undefined;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
 }
 
 export function buildThreadTitlePrompt(input: ThreadTitlePromptInput) {
+  const isRegeneration = input.previousTitle !== undefined;
   const prompt = buildPromptFromMessage({
-    instruction: "You write concise thread titles for coding conversations.",
+    instruction: isRegeneration
+      ? [
+          "You write concise thread titles for coding conversations.",
+          "The user requested a new title based on the current contents of this thread.",
+          `The previous title was ${JSON.stringify(input.previousTitle)}.`,
+        ].join("\n")
+      : "You write concise thread titles for coding conversations.",
     responseShape: "Return a JSON object with key: title.",
     rules: [
-      "Title should summarize the user's request, not restate it verbatim.",
+      isRegeneration
+        ? "Title should summarize the thread's current state, not just its initial request."
+        : "Title should summarize the user's request, not restate it verbatim.",
+      ...(isRegeneration ? ["Return a different title from the previous title."] : []),
       "Keep it short and specific (3-8 words).",
       "Avoid quotes, filler, prefixes, and trailing punctuation.",
       "If images are attached, use them as primary context for visual/UI issues.",

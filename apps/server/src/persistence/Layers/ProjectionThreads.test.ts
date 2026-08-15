@@ -47,6 +47,11 @@ layer("ProjectionThreadRepository", (it) => {
         pinOrderKey: 2,
         snoozedUntil: "2026-03-11T08:50:00.000Z",
         snoozedAt: "2026-03-10T08:55:00.000Z",
+        titleSource: "generated",
+        titleRevision: 2,
+        titleUpdatedAt: "2026-03-10T08:40:00.000Z",
+        titleRegenerationRequestId: null,
+        titleRegenerationStartedAt: null,
         createdAt: "2026-03-10T08:00:00.000Z",
         lastInteractionAt: "2026-03-10T08:30:00.000Z",
         updatedAt: "2026-03-10T09:00:00.000Z",
@@ -65,6 +70,8 @@ layer("ProjectionThreadRepository", (it) => {
       assert.equal(row.value.pinOrderKey, 2);
       assert.equal(row.value.snoozedUntil, "2026-03-11T08:50:00.000Z");
       assert.equal(row.value.snoozedAt, "2026-03-10T08:55:00.000Z");
+      assert.equal(row.value.titleSource, "generated");
+      assert.equal(row.value.titleRevision, 2);
       assert.equal(row.value.compaction, null);
       assert.equal(row.value.estimatedContextTokens, 72_000);
       assert.equal(row.value.modelContextWindowTokens, 400_000);

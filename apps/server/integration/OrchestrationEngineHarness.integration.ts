@@ -78,6 +78,7 @@ import {
   type TestProviderAdapterHarness,
 } from "./TestProviderAdapter.integration.ts";
 import { ServerConfig } from "../src/config.ts";
+import { ServerSettingsService } from "../src/serverSettings.ts";
 import { NextTurnQueueDispatcher } from "../src/nextTurnQueue/Services/NextTurnQueueDispatcher.ts";
 
 function runGit(cwd: string, args: ReadonlyArray<string>) {
@@ -437,6 +438,7 @@ export const makeOrchestrationIntegrationHarness = (
     const layer = orchestrationReactorLayer.pipe(
       Layer.provide(persistenceLayer),
       Layer.provide(projectMcpConfigServiceLayer),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
       Layer.provideMerge(ServerConfig.layerTest(workspaceDir, stateDir)),
       Layer.provideMerge(NodeServices.layer),
     );
