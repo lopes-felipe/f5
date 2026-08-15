@@ -1,6 +1,7 @@
 import "../index.css";
 
 import {
+  AGENTS_WS_METHODS,
   CodeReviewWorkflowId,
   ORCHESTRATION_WS_METHODS,
   PR_HUB_WS_METHODS,
@@ -357,6 +358,9 @@ function buildFixture(
 
 function resolveWsRpc(body: { _tag: string; threadId?: string }): unknown {
   const tag = body._tag;
+  if (tag === AGENTS_WS_METHODS.getSnapshot) {
+    return { entries: [], generatedAt: NOW_ISO };
+  }
   // After e513502 (lazy thread detail loading) the client first calls
   // `getStartupSnapshot` and then `getThreadTailDetails` per-thread instead of
   // the legacy `getSnapshot`. We respond to the new methods as well so these

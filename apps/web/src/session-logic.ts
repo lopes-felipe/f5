@@ -957,6 +957,8 @@ function correlateSubagentActivities(entries: ReadonlyArray<WorkLogEntry>): Work
     if (parent.providerItemId) {
       metadataByProviderItemId.set(parent.providerItemId, metadata);
     }
+    // Hide the child only from the compact work-log rollup. The Agents panel
+    // derives its own index from the authoritative activities and retains it.
     dropped.add(index);
   });
   return correlated.filter((_entry, index) => !dropped.has(index));

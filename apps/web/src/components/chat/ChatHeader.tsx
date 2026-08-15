@@ -8,6 +8,7 @@ import {
 import { memo, useState } from "react";
 import GitActionsControl from "../GitActionsControl";
 import {
+  BotIcon,
   DiffIcon,
   EllipsisIcon,
   FilesIcon,
@@ -53,6 +54,8 @@ interface ChatHeaderProps {
   terminalOpen: boolean;
   workspaceFilesAvailable: boolean;
   filesOpen: boolean;
+  agentsOpen: boolean;
+  liveAgentCount: number;
   terminalToggleShortcutLabel: string | null;
   diffToggleShortcutLabel: string | null;
   gitCwd: string | null;
@@ -66,6 +69,7 @@ interface ChatHeaderProps {
   onDeleteProjectScript: (scriptId: string) => Promise<void>;
   onToggleTerminal: () => void;
   onToggleFiles: () => void;
+  onToggleAgents: () => void;
   onToggleDiff: () => void;
 }
 
@@ -93,6 +97,8 @@ export const ChatHeader = memo(function ChatHeader({
   terminalOpen,
   workspaceFilesAvailable,
   filesOpen,
+  agentsOpen,
+  liveAgentCount,
   terminalToggleShortcutLabel,
   diffToggleShortcutLabel,
   gitCwd,
@@ -106,6 +112,7 @@ export const ChatHeader = memo(function ChatHeader({
   onDeleteProjectScript,
   onToggleTerminal,
   onToggleFiles,
+  onToggleAgents,
   onToggleDiff,
 }: ChatHeaderProps) {
   const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
@@ -208,6 +215,37 @@ export const ChatHeader = memo(function ChatHeader({
           />
         )}
         {activeProjectName && <GitActionsControl gitCwd={gitCwd} activeThreadId={activeThreadId} />}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Toggle
+                className="relative shrink-0"
+                pressed={agentsOpen}
+                onPressedChange={onToggleAgents}
+                aria-label={
+                  liveAgentCount > 0
+                    ? `Toggle Agents panel, ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
+                    : "Toggle Agents panel"
+                }
+                variant="outline"
+                size="xs"
+              >
+                <BotIcon className="size-3" />
+                {liveAgentCount > 0 ? (
+                  <span className="absolute -top-1.5 -right-1.5 flex h-3.5 min-w-3.5 items-center justify-center rounded-full bg-sky-500 px-1 text-[9px] font-semibold text-white">
+                    {liveAgentCount}
+                  </span>
+                ) : null}
+              </Toggle>
+            }
+          />
+          <TooltipPopup side="bottom">
+            Toggle Agents panel
+            {liveAgentCount > 0
+              ? ` · ${liveAgentCount} ${liveAgentCount === 1 ? "agent" : "agents"} working`
+              : ""}
+          </TooltipPopup>
+        </Tooltip>
         <Tooltip>
           <TooltipTrigger
             render={

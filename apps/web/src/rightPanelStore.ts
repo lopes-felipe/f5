@@ -13,7 +13,8 @@ export type RightPanelSurface =
       column?: number | undefined;
     }
   | { id: "plan"; kind: "plan" }
-  | { id: "preview"; kind: "preview" };
+  | { id: "preview"; kind: "preview" }
+  | { id: "agents"; kind: "agents" };
 
 export type RightPanelSurfaceKind = RightPanelSurface["kind"];
 
@@ -63,6 +64,8 @@ function singletonSurface(kind: Exclude<RightPanelSurfaceKind, "file">): RightPa
       return { id: "plan", kind };
     case "preview":
       return { id: "preview", kind };
+    case "agents":
+      return { id: "agents", kind };
   }
 }
 

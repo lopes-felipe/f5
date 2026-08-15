@@ -1,5 +1,6 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import {
+  BotIcon,
   ClipboardListIcon,
   FileDiffIcon,
   FilesIcon,
@@ -24,7 +25,7 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { ScrollArea } from "./ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
-type AddableSurface = "preview" | "files" | "diff" | "plan";
+type AddableSurface = "preview" | "files" | "diff" | "plan" | "agents";
 type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
 
 const SURFACE_DISABLED_REASONS = {
@@ -32,6 +33,7 @@ const SURFACE_DISABLED_REASONS = {
   files: "Workspace files are available after opening a project thread.",
   diff: "Diff is available after opening a thread.",
   plan: "Plan is available after opening a thread.",
+  agents: "Agent activity is unavailable until the server connection is ready.",
 } as const satisfies Record<AddableSurface, string>;
 
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
@@ -77,6 +79,8 @@ function surfaceTitle(surface: RightPanelSurface): string {
       return "Plan";
     case "preview":
       return "Preview";
+    case "agents":
+      return "Agents";
   }
 }
 
@@ -92,6 +96,8 @@ function SurfaceIcon({ surface }: { surface: RightPanelSurface }) {
       return <ClipboardListIcon className="size-3.5 shrink-0" />;
     case "preview":
       return <Globe2Icon className="size-3.5 shrink-0" />;
+    case "agents":
+      return <BotIcon className="size-3.5 shrink-0" />;
   }
 }
 
@@ -100,12 +106,23 @@ function RightPanelEmptyState(props: {
   onAddFiles: () => void;
   onAddDiff: () => void;
   onAddPlan: () => void;
+  onAddAgents: () => void;
   previewAvailable: boolean;
   filesAvailable: boolean;
   diffAvailable: boolean;
   planAvailable: boolean;
+  agentsAvailable: boolean;
+  liveAgentCount: number;
 }) {
   const actions = [
+    {
+      kind: "agents",
+      label: "Agents",
+      icon: BotIcon,
+      available: props.agentsAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.agents,
+      onClick: props.onAddAgents,
+    },
     {
       kind: "diff",
       label: "Diff",
@@ -149,6 +166,11 @@ function RightPanelEmptyState(props: {
             <>
               <Icon className="size-4" />
               <span className="text-sm font-medium">{action.label}</span>
+              {action.kind === "agents" && props.liveAgentCount > 0 ? (
+                <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                  {props.liveAgentCount} working
+                </span>
+              ) : null}
             </>
           );
           if (action.available) {
@@ -198,10 +220,13 @@ export function RightPanelTabs(props: {
   onAddFiles: () => void;
   onAddDiff: () => void;
   onAddPlan: () => void;
+  onAddAgents: () => void;
   previewAvailable: boolean;
   filesAvailable: boolean;
   diffAvailable: boolean;
   planAvailable: boolean;
+  agentsAvailable: boolean;
+  liveAgentCount: number;
   children: ReactNode;
 }) {
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -319,6 +344,11 @@ export function RightPanelTabs(props: {
                           >
                             <SurfaceIcon surface={surface} />
                             <span className="truncate">{title}</span>
+                            {surface.kind === "agents" && props.liveAgentCount > 0 ? (
+                              <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-sky-500 px-1 text-[9px] font-semibold text-white">
+                                {props.liveAgentCount}
+                              </span>
+                            ) : null}
                           </button>
                         }
                       />
@@ -345,6 +375,14 @@ export function RightPanelTabs(props: {
                   <PlusIcon className="size-4" />
                 </MenuTrigger>
                 <MenuPopup align="start" side="bottom" sideOffset={6} className="min-w-44">
+                  <SurfaceMenuItem
+                    available={props.agentsAvailable}
+                    disabledReason={SURFACE_DISABLED_REASONS.agents}
+                    onClick={props.onAddAgents}
+                  >
+                    <BotIcon />
+                    Agents
+                  </SurfaceMenuItem>
                   <SurfaceMenuItem
                     available={props.diffAvailable}
                     disabledReason={SURFACE_DISABLED_REASONS.diff}
@@ -390,10 +428,13 @@ export function RightPanelTabs(props: {
             onAddFiles={props.onAddFiles}
             onAddDiff={props.onAddDiff}
             onAddPlan={props.onAddPlan}
+            onAddAgents={props.onAddAgents}
             previewAvailable={props.previewAvailable}
             filesAvailable={props.filesAvailable}
             diffAvailable={props.diffAvailable}
             planAvailable={props.planAvailable}
+            agentsAvailable={props.agentsAvailable}
+            liveAgentCount={props.liveAgentCount}
           />
         ) : (
           props.children

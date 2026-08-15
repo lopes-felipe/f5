@@ -17,10 +17,13 @@ export function RightPanelHost(props: {
   onAddFiles: () => void;
   onAddDiff: () => void;
   onAddPlan: () => void;
+  onAddAgents: () => void;
   previewAvailable: boolean;
   filesAvailable: boolean;
   diffAvailable: boolean;
   planAvailable: boolean;
+  agentsAvailable: boolean;
+  liveAgentCount: number;
 }) {
   const activeSurface =
     props.state.surfaces.find((surface) => surface.id === props.state.activeSurfaceId) ?? null;
@@ -43,10 +46,13 @@ export function RightPanelHost(props: {
       onAddFiles={props.onAddFiles}
       onAddDiff={props.onAddDiff}
       onAddPlan={props.onAddPlan}
+      onAddAgents={props.onAddAgents}
       previewAvailable={props.previewAvailable}
       filesAvailable={props.filesAvailable}
       diffAvailable={props.diffAvailable}
       planAvailable={props.planAvailable}
+      agentsAvailable={props.agentsAvailable}
+      liveAgentCount={props.liveAgentCount}
     >
       {activeSurface || inactivePreviewSurface ? (
         <div className="relative flex min-h-0 flex-1 flex-col">

@@ -17,6 +17,7 @@ export default mergeConfig(
     test: {
       include: [
         "src/components/ChatView.browser.tsx",
+        "src/components/AgentsPanel.browser.tsx",
         "src/components/ThreadSidebar.browser.tsx",
         "src/components/ThreadRecencyController.browser.tsx",
         "src/components/ThreadStatusNotificationController.browser.tsx",

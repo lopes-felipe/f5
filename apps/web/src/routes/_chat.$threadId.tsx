@@ -42,6 +42,7 @@ import {
 } from "../diffRouteSearch";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import { useAgentsPanelModel } from "../lib/agentsReactQuery";
 import { useThreadDetail } from "../lib/orchestrationReactQuery";
 import { useStartupReady } from "../lib/startupReady";
 import { RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY } from "../rightPanelLayout";
@@ -70,6 +71,9 @@ import {
 } from "~/components/ui/sidebar";
 
 const DiffPanel = lazy(() => import("../components/DiffPanel"));
+const AgentsPanel = lazy(() =>
+  import("../components/AgentsPanel").then((module) => ({ default: module.AgentsPanel })),
+);
 const FileBrowserPanel = lazy(() => import("../components/FileBrowserPanel"));
 const FileViewPanel = lazy(() => import("../components/FileViewPanel"));
 const RIGHT_PANEL_INLINE_SIDEBAR_WIDTH_STORAGE_KEY = "chat_right_panel_sidebar_width";
@@ -309,6 +313,7 @@ function ChatThreadRouteView() {
   });
   const search = Route.useSearch();
   const { settings } = useAppSettings();
+  const { model: agentsPanelModel, snapshotQuery: agentsSnapshotQuery } = useAgentsPanelModel();
   const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
   const threadExists = useStore((store) => store.threads.some((thread) => thread.id === threadId));
   const draftThread = useComposerDraftStore(
@@ -513,6 +518,13 @@ function ChatThreadRouteView() {
     useRightPanelStore.getState().open(threadId, "preview");
   }, [threadId]);
 
+  const openAgents = useCallback(() => {
+    useRightPanelStore.getState().open(threadId, "agents");
+  }, [threadId]);
+  const retryAgents = useCallback(() => {
+    void agentsSnapshotQuery.refetch();
+  }, [agentsSnapshotQuery.refetch]);
+
   const openWorkspaceFile = useCallback(
     (relativePath: string) => {
       const surface = openFileRightPanelSurface(threadId, { relativePath });
@@ -651,14 +663,33 @@ function ChatThreadRouteView() {
                 onClose={() => closeRightPanelSurface(surface)}
               />
             );
+          case "agents":
+            return loadingOnly ? (
+              <DiffPanelLoadingState label="Loading agent activity..." />
+            ) : (
+              <Suspense fallback={<DiffPanelLoadingState label="Loading agent activity..." />}>
+                <AgentsPanel
+                  model={agentsPanelModel}
+                  loading={agentsSnapshotQuery.isLoading}
+                  error={agentsSnapshotQuery.isError}
+                  fetching={agentsSnapshotQuery.isFetching}
+                  onRetry={retryAgents}
+                />
+              </Suspense>
+            );
         }
       },
     [
       activePlan,
       activeProposedPlan,
+      agentsPanelModel,
+      agentsSnapshotQuery.isError,
+      agentsSnapshotQuery.isFetching,
+      agentsSnapshotQuery.isLoading,
       closeRightPanelSurface,
       markdownCwd,
       openWorkspaceFile,
+      retryAgents,
       rightPanelState.activeSurfaceId,
       rightPanelState.isOpen,
       settings.timestampFormat,
@@ -687,10 +718,13 @@ function ChatThreadRouteView() {
         onAddFiles={openFiles}
         onAddDiff={openDiff}
         onAddPlan={openPlan}
+        onAddAgents={openAgents}
         previewAvailable={previewAvailable}
         filesAvailable={routeThreadExists && !!workspaceBrowserRoot}
         diffAvailable={routeThreadExists}
         planAvailable={routeThreadExists}
+        agentsAvailable={true}
+        liveAgentCount={agentsPanelModel.liveCount}
       />
     ),
     [
@@ -703,8 +737,10 @@ function ChatThreadRouteView() {
       openDiff,
       openFiles,
       openPlan,
+      openAgents,
       openPreview,
       previewAvailable,
+      agentsPanelModel.liveCount,
       renderRightPanelSurface,
       rightPanelState,
       routeThreadExists,
@@ -771,6 +807,7 @@ function ChatThreadRouteView() {
           <ChatView
             key={threadId}
             threadId={threadId}
+            liveAgentCount={agentsPanelModel.liveCount}
             focusTimelineEntryId={search.timelineEntryId}
           />
         </SidebarInset>
@@ -791,6 +828,7 @@ function ChatThreadRouteView() {
         <ChatView
           key={threadId}
           threadId={threadId}
+          liveAgentCount={agentsPanelModel.liveCount}
           focusTimelineEntryId={search.timelineEntryId}
         />
       </SidebarInset>

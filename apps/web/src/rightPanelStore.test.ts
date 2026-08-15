@@ -14,14 +14,16 @@ describe("rightPanelStore", () => {
   it("opens singleton surfaces and focuses the last opened surface", () => {
     useRightPanelStore.getState().open(THREAD_A, "diff");
     useRightPanelStore.getState().open(THREAD_A, "plan");
+    useRightPanelStore.getState().open(THREAD_A, "agents");
 
     expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadId, THREAD_A)).toEqual(
       {
         isOpen: true,
-        activeSurfaceId: "plan",
+        activeSurfaceId: "agents",
         surfaces: [
           { id: "diff", kind: "diff" },
           { id: "plan", kind: "plan" },
+          { id: "agents", kind: "agents" },
         ],
       },
     );

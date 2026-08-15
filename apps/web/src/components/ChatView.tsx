@@ -580,6 +580,7 @@ function ThreadTasksPanel(input: {
 
 interface ChatViewProps {
   threadId: ThreadId;
+  liveAgentCount: number;
   focusTimelineEntryId?: string | undefined;
 }
 
@@ -641,7 +642,11 @@ function providerKindForDriver(driver: ProviderDriverKind): ProviderKind | null 
     : null;
 }
 
-export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewProps) {
+export default function ChatView({
+  threadId,
+  liveAgentCount,
+  focusTimelineEntryId,
+}: ChatViewProps) {
   const nextTurnQueueState = useNextTurnQueueStore(
     (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
   );
@@ -1012,6 +1017,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const filesOpen = useRightPanelStore((store) => {
     const state = selectThreadRightPanelState(store.byThreadId, threadId);
     return state.isOpen && state.surfaces.some((surface) => surface.id === "files");
+  });
+  const agentsOpen = useRightPanelStore((store) => {
+    const state = selectThreadRightPanelState(store.byThreadId, threadId);
+    return state.isOpen && state.surfaces.some((surface) => surface.id === "agents");
   });
   const activeThreadId = activeThread?.id ?? null;
   const activeLatestTurn = activeThread?.latestTurn ?? null;
@@ -2354,6 +2363,13 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
     useRightPanelStore.getState().open(threadId, "files");
   }, [filesOpen, threadId]);
+  const onToggleAgents = useCallback(() => {
+    if (agentsOpen) {
+      useRightPanelStore.getState().closeSurface(threadId, "agents");
+      return;
+    }
+    useRightPanelStore.getState().open(threadId, "agents");
+  }, [agentsOpen, threadId]);
 
   const envLocked = Boolean(
     activeThread &&
@@ -5474,6 +5490,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             terminalOpen={terminalState.terminalOpen}
             workspaceFilesAvailable={workspaceRoot !== undefined}
             filesOpen={filesOpen}
+            agentsOpen={agentsOpen}
+            liveAgentCount={liveAgentCount}
             terminalToggleShortcutLabel={terminalToggleShortcutLabel}
             diffToggleShortcutLabel={diffPanelShortcutLabel}
             gitCwd={gitCwd}
@@ -5493,6 +5511,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             onDeleteProjectScript={deleteProjectScript}
             onToggleTerminal={toggleTerminalVisibility}
             onToggleFiles={onToggleFiles}
+            onToggleAgents={onToggleAgents}
             onToggleDiff={onToggleDiff}
           />
         </header>

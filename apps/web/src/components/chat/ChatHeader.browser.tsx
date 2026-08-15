@@ -47,6 +47,8 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     terminalOpen: false,
     workspaceFilesAvailable: false,
     filesOpen: false,
+    agentsOpen: false,
+    liveAgentCount: 0,
     terminalToggleShortcutLabel: null,
     diffToggleShortcutLabel: null,
     gitCwd: null,
@@ -60,6 +62,7 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     onDeleteProjectScript: async () => {},
     onToggleTerminal: () => {},
     onToggleFiles: () => {},
+    onToggleAgents: () => {},
     onToggleDiff: () => {},
     ...overrides,
   };
@@ -126,6 +129,23 @@ describe("ChatHeader", () => {
       await expect.element(filesToggle).toBeEnabled();
       await filesToggle.click();
       expect(onToggleFiles).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("shows the live agent count and toggles the Agents panel", async () => {
+    const onToggleAgents = vi.fn();
+    const screen = await renderHeader({ liveAgentCount: 3, onToggleAgents });
+
+    try {
+      const agentsToggle = page.getByRole("button", {
+        name: "Toggle Agents panel, 3 agents working",
+      });
+      await expect.element(agentsToggle).toBeEnabled();
+      expect(agentsToggle.element().textContent).toContain("3");
+      await agentsToggle.click();
+      expect(onToggleAgents).toHaveBeenCalledTimes(1);
     } finally {
       await screen.unmount();
     }

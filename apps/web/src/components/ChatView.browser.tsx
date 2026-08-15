@@ -2,6 +2,7 @@
 import "../index.css";
 
 import {
+  AGENTS_WS_METHODS,
   CommandId,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   EventId,
@@ -1203,6 +1204,9 @@ function createThreadTailDetailsResult(threadId: ThreadId) {
 
 function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   const tag = body._tag;
+  if (tag === AGENTS_WS_METHODS.getSnapshot) {
+    return { entries: [], generatedAt: NOW_ISO };
+  }
   if (tag === WS_METHODS.nextTurnQueueSummary) {
     return { threads: [] };
   }
