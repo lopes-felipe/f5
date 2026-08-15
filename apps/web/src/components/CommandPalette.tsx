@@ -118,10 +118,10 @@ function getLocalFileManagerName(platform: string): string {
   return "Files";
 }
 
-function ProjectFaviconIcon({ cwd, className }: { cwd: string; className: string }) {
+function ProjectFaviconIcon({ projectId, className }: { projectId: ProjectId; className: string }) {
   const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
   const origin = useMemo(() => getServerHttpOrigin(), []);
-  const src = `${origin}/api/project-favicon?cwd=${encodeURIComponent(cwd)}`;
+  const src = `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
 
   if (status === "error") {
     return <FolderIcon className={className} />;
@@ -425,7 +425,7 @@ function OpenCommandPaletteDialog() {
 
   const projectIcon = useCallback(
     (project: (typeof projects)[number]) => (
-      <ProjectFaviconIcon cwd={project.cwd} className={ITEM_ICON_CLASS} />
+      <ProjectFaviconIcon projectId={project.id} className={ITEM_ICON_CLASS} />
     ),
     [],
   );

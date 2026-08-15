@@ -1076,6 +1076,45 @@ describe("WebSocket Server", () => {
     expect(bytes).toEqual(Buffer.from("hello-encoded-attachment"));
   });
 
+  it("serves project favicons only through registered project identities", async () => {
+    const workspaceRoot = makeTempDir("f5-ws-project-favicon-");
+    fs.writeFileSync(path.join(workspaceRoot, "favicon.svg"), "<svg>registered</svg>", "utf8");
+    const projectId = ProjectId.makeUnsafe("project-favicon-route");
+    server = await createTestServer({ cwd: "/test/project" });
+    const address = server.address();
+    const port = typeof address === "object" && address !== null ? address.port : 0;
+    const [socket] = await connectAndAwaitWelcome(port);
+    connections.push(socket);
+
+    const createProjectResponse = await sendRequest(
+      socket,
+      ORCHESTRATION_WS_METHODS.dispatchCommand,
+      {
+        type: "project.create",
+        commandId: "cmd-project-favicon-route",
+        projectId,
+        title: "Favicon project",
+        workspaceRoot,
+        defaultModel: "gpt-5-codex",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      },
+    );
+    expect(createProjectResponse.error).toBeUndefined();
+
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/project-favicon?projectId=${projectId}`,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toContain("private");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await response.text()).toBe("<svg>registered</svg>");
+
+    const arbitraryRootResponse = await fetch(
+      `http://127.0.0.1:${port}/api/project-favicon?projectId=${encodeURIComponent(workspaceRoot)}`,
+    );
+    expect(arbitraryRootResponse.status).toBe(404);
+  });
+
   it("serves static index for root path", async () => {
     const stateDir = makeTempDir("t3code-state-static-root-");
     const staticDir = makeTempDir("t3code-static-root-");

@@ -648,10 +648,10 @@ function F5Wordmark() {
 
 const serverHttpOrigin = getServerHttpOrigin();
 
-function ProjectFavicon({ cwd }: { cwd: string }) {
+function ProjectFavicon({ projectId }: { projectId: ProjectId }) {
   const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
 
-  const src = `${serverHttpOrigin}/api/project-favicon?cwd=${encodeURIComponent(cwd)}`;
+  const src = `${serverHttpOrigin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
 
   if (status === "error") {
     return <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/50" />;
@@ -2336,7 +2336,7 @@ export default function Sidebar() {
                                   project.expanded ? "rotate-90" : ""
                                 }`}
                               />
-                              <ProjectFavicon cwd={project.cwd} />
+                              <ProjectFavicon projectId={project.id} />
                               {renamingProjectId === project.id ? (
                                 <InlineTitleEditor
                                   initialValue={project.name}

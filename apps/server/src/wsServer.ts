@@ -130,6 +130,7 @@ import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
+import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
 import {
   ProjectSetupScriptRunner,
   type ProjectSetupScriptRunnerShape,
@@ -1345,7 +1346,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           );
           return;
         }
-        if (tryHandleProjectFaviconRequest(url, res)) {
+        if (
+          yield* Effect.promise(() =>
+            tryHandleProjectFaviconRequest(url, res, workspaceAssetAuthorizer),
+          )
+        ) {
           return;
         }
 
@@ -1522,6 +1527,28 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const listenOptions = host ? { host, port } : { port };
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
+  const workspaceAssetAuthorizer = makeWorkspaceAssetAuthorizer({
+    resolveProjectWorkspaceRoot: async (projectId) => {
+      const snapshot = await Effect.runPromise(projectionReadModelQuery.getSnapshot());
+      return (
+        snapshot.projects.find((project) => project.id === projectId && project.deletedAt === null)
+          ?.workspaceRoot ?? null
+      );
+    },
+    resolveThreadWorkspaceRoot: async (threadId) => {
+      const snapshot = await Effect.runPromise(projectionReadModelQuery.getSnapshot());
+      const thread = snapshot.threads.find(
+        (candidate) => candidate.id === threadId && candidate.deletedAt === null,
+      );
+      if (!thread) return null;
+      if (thread.worktreePath) return thread.worktreePath;
+      return (
+        snapshot.projects.find(
+          (project) => project.id === thread.projectId && project.deletedAt === null,
+        )?.workspaceRoot ?? null
+      );
+    },
+  });
   const threadCommandExecutionQuery = yield* ThreadCommandExecutionQuery;
   const threadFileChangeQuery = yield* ThreadFileChangeQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;

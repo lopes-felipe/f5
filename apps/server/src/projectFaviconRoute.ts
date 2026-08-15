@@ -1,17 +1,13 @@
-import fs from "node:fs";
 import http from "node:http";
-import path from "node:path";
 
-const FAVICON_MIME_TYPES: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".svg": "image/svg+xml",
-  ".ico": "image/x-icon",
-};
+import {
+  type WorkspaceAssetAuthorizer,
+  WorkspaceAssetAuthorizationError,
+  WORKSPACE_FAVICON_MAX_BYTES,
+} from "./WorkspaceAssetAuthorizer";
 
 const FALLBACK_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#6b728080" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" data-fallback="project-favicon"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2Z"/></svg>`;
 
-// Well-known favicon paths checked in order.
 const FAVICON_CANDIDATES = [
   "favicon.svg",
   "favicon.ico",
@@ -33,9 +29,8 @@ const FAVICON_CANDIDATES = [
   "assets/icon.png",
   "assets/logo.svg",
   "assets/logo.png",
-];
+] as const;
 
-// Files that may contain a <link rel="icon"> or icon metadata declaration.
 const ICON_SOURCE_FILES = [
   "index.html",
   "public/index.html",
@@ -44,9 +39,11 @@ const ICON_SOURCE_FILES = [
   "app/root.tsx",
   "src/root.tsx",
   "src/index.html",
-];
+] as const;
 
-// Matches <link ...> tags or object-like icon metadata where rel/href can appear in any order.
+const ICON_SOURCE_FILE_MAX_BYTES = 256 * 1024;
+const WORKSPACE_ASSET_ROUTE_PREFIX = "/api/workspace-assets/";
+
 const LINK_ICON_HTML_RE =
   /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
 const LINK_ICON_OBJ_RE =
@@ -60,112 +57,141 @@ function extractIconHref(source: string): string | null {
   return null;
 }
 
-function resolveIconHref(projectCwd: string, href: string): string[] {
-  const clean = href.replace(/^\//, "");
-  return [path.join(projectCwd, "public", clean), path.join(projectCwd, clean)];
+function resolveIconHref(href: string): string[] {
+  const normalizedHref = href.trim();
+  if (
+    normalizedHref.length === 0 ||
+    normalizedHref.includes("\0") ||
+    /^[a-z][a-z\d+.-]*:/iu.test(normalizedHref) ||
+    normalizedHref.startsWith("//")
+  ) {
+    return [];
+  }
+  const clean = normalizedHref.replace(/^\/+/, "");
+  return [`public/${clean}`, clean];
 }
 
-function isPathWithinProject(projectCwd: string, candidatePath: string): boolean {
-  const relative = path.relative(path.resolve(projectCwd), path.resolve(candidatePath));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function serveFaviconFile(filePath: string, res: http.ServerResponse): void {
-  const ext = path.extname(filePath).toLowerCase();
-  const contentType = FAVICON_MIME_TYPES[ext] ?? "application/octet-stream";
-  fs.readFile(filePath, (readErr, data) => {
-    if (readErr) {
-      res.writeHead(500, { "Content-Type": "text/plain" });
-      res.end("Read error");
-      return;
-    }
-    res.writeHead(200, {
-      "Content-Type": contentType,
-      "Cache-Control": "public, max-age=3600",
-    });
-    res.end(data);
-  });
-}
-
-function serveFallbackFavicon(res: http.ServerResponse): void {
+function sendFallbackFavicon(res: http.ServerResponse): void {
   res.writeHead(200, {
+    "Cache-Control": "private, max-age=3600",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
     "Content-Type": "image/svg+xml",
-    "Cache-Control": "public, max-age=3600",
+    "X-Content-Type-Options": "nosniff",
   });
   res.end(FALLBACK_FAVICON_SVG);
 }
 
-export function tryHandleProjectFaviconRequest(url: URL, res: http.ServerResponse): boolean {
-  if (url.pathname !== "/api/project-favicon") {
-    return false;
+function sendAssetError(res: http.ServerResponse, error: unknown): void {
+  const statusCode =
+    error instanceof WorkspaceAssetAuthorizationError &&
+    (error.failure === "expired_handle" ||
+      error.failure === "not_found" ||
+      error.failure === "identity_not_found")
+      ? 404
+      : 400;
+  res.writeHead(statusCode, {
+    "Cache-Control": "no-store",
+    "Content-Type": "text/plain; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
+  });
+  res.end(statusCode === 404 ? "Not Found" : "Invalid workspace asset");
+}
+
+async function findFaviconRelativePath(
+  authorizer: WorkspaceAssetAuthorizer,
+  projectId: string,
+): Promise<string | null> {
+  const reader = await authorizer.forProject(projectId);
+  for (const relativePath of FAVICON_CANDIDATES) {
+    try {
+      await reader.readImage({ relativePath, maxBytes: WORKSPACE_FAVICON_MAX_BYTES });
+      return relativePath;
+    } catch {
+      // Missing, oversized, escaped, and spoofed candidates all fall through.
+    }
   }
 
-  const projectCwd = url.searchParams.get("cwd");
-  if (!projectCwd) {
-    res.writeHead(400, { "Content-Type": "text/plain" });
-    res.end("Missing cwd parameter");
+  for (const sourcePath of ICON_SOURCE_FILES) {
+    let source: string;
+    try {
+      source = await reader.readText({
+        relativePath: sourcePath,
+        maxBytes: ICON_SOURCE_FILE_MAX_BYTES,
+      });
+    } catch {
+      continue;
+    }
+    const href = extractIconHref(source);
+    if (!href) continue;
+    for (const relativePath of resolveIconHref(href)) {
+      try {
+        await reader.readImage({ relativePath, maxBytes: WORKSPACE_FAVICON_MAX_BYTES });
+        return relativePath;
+      } catch {
+        // Continue looking for an authorized favicon candidate.
+      }
+    }
+  }
+  return null;
+}
+
+export async function tryHandleProjectFaviconRequest(
+  url: URL,
+  res: http.ServerResponse,
+  authorizer: WorkspaceAssetAuthorizer,
+): Promise<boolean> {
+  if (url.pathname.startsWith(WORKSPACE_ASSET_ROUTE_PREFIX)) {
+    const handle = url.pathname.slice(WORKSPACE_ASSET_ROUTE_PREFIX.length);
+    if (!handle || handle.includes("/")) {
+      sendAssetError(res, new Error("Invalid handle"));
+      return true;
+    }
+    try {
+      const asset = await authorizer.readHandle(handle);
+      res.writeHead(200, {
+        "Cache-Control": "private, max-age=300",
+        "Content-Length": String(asset.bytes.byteLength),
+        "Content-Security-Policy": "default-src 'none'; sandbox",
+        "Content-Type": asset.mimeType,
+        ETag: `"${asset.contentSha256}"`,
+        "X-Content-Type-Options": "nosniff",
+      });
+      res.end(asset.bytes);
+    } catch (error) {
+      sendAssetError(res, error);
+    }
     return true;
   }
 
-  const tryResolvedPaths = (paths: string[], index: number, onExhausted: () => void): void => {
-    if (index >= paths.length) {
-      onExhausted();
-      return;
-    }
-    const candidate = paths[index]!;
-    if (!isPathWithinProject(projectCwd, candidate)) {
-      tryResolvedPaths(paths, index + 1, onExhausted);
-      return;
-    }
-    fs.stat(candidate, (err, stats) => {
-      if (err || !stats?.isFile()) {
-        tryResolvedPaths(paths, index + 1, onExhausted);
-        return;
-      }
-      serveFaviconFile(candidate, res);
-    });
-  };
+  if (url.pathname !== "/api/project-favicon") {
+    return false;
+  }
+  const projectId = url.searchParams.get("projectId")?.trim() ?? "";
+  if (!projectId) {
+    res.writeHead(400, { "Cache-Control": "no-store", "Content-Type": "text/plain" });
+    res.end("Missing projectId parameter");
+    return true;
+  }
 
-  const trySourceFiles = (index: number): void => {
-    if (index >= ICON_SOURCE_FILES.length) {
-      serveFallbackFavicon(res);
-      return;
+  try {
+    const relativePath = await findFaviconRelativePath(authorizer, projectId);
+    if (!relativePath) {
+      sendFallbackFavicon(res);
+      return true;
     }
-    const sourceFile = path.join(projectCwd, ICON_SOURCE_FILES[index]!);
-    fs.readFile(sourceFile, "utf8", (err, content) => {
-      if (err) {
-        trySourceFiles(index + 1);
-        return;
-      }
-      const href = extractIconHref(content);
-      if (!href) {
-        trySourceFiles(index + 1);
-        return;
-      }
-      const candidates = resolveIconHref(projectCwd, href);
-      tryResolvedPaths(candidates, 0, () => trySourceFiles(index + 1));
+    const reader = await authorizer.forProject(projectId);
+    const issued = reader.issueImageHandle({
+      relativePath,
+      maxBytes: WORKSPACE_FAVICON_MAX_BYTES,
     });
-  };
-
-  const tryCandidates = (index: number): void => {
-    if (index >= FAVICON_CANDIDATES.length) {
-      trySourceFiles(0);
-      return;
-    }
-    const candidate = path.join(projectCwd, FAVICON_CANDIDATES[index]!);
-    if (!isPathWithinProject(projectCwd, candidate)) {
-      tryCandidates(index + 1);
-      return;
-    }
-    fs.stat(candidate, (err, stats) => {
-      if (err || !stats?.isFile()) {
-        tryCandidates(index + 1);
-        return;
-      }
-      serveFaviconFile(candidate, res);
+    res.writeHead(302, {
+      "Cache-Control": "private, no-store",
+      Location: `${WORKSPACE_ASSET_ROUTE_PREFIX}${encodeURIComponent(issued.handle)}`,
+      "Referrer-Policy": "no-referrer",
     });
-  };
-
-  tryCandidates(0);
+    res.end();
+  } catch (error) {
+    sendAssetError(res, error);
+  }
   return true;
 }
