@@ -455,8 +455,8 @@
     {
       "upstreamSha": "c842c6f5b90122ad88b1d2295df6a99e94954571",
       "subject": "Add hourly past-24-hour usage view (#6170)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 7.3 hourly usage reporting; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["7e3558cd4c855c03a629651b462c4e757ed5dedd"]
     },
     {
       "upstreamSha": "6676f9c83b6a6dd1e2076eaa68dff48845ad955b",
@@ -873,14 +873,14 @@
     {
       "upstreamSha": "a20923ce463335e89e92f5983d98a180536e8e7d",
       "subject": "fix(web): usage chart no longer makes Claude look like the bigger spender (#5697)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): usage chart no longer makes Claude look like the bigger spender (#5697))."
+      "disposition": "ported",
+      "f5Shas": ["7e3558cd4c855c03a629651b462c4e757ed5dedd"]
     },
     {
       "upstreamSha": "8101cd044911c7dc2a2adf7c7a9ba7962abf57b6",
       "subject": "feat(usage): usage page reading provider transcripts across environments (#5684)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 7.3 usage reporting; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["7e3558cd4c855c03a629651b462c4e757ed5dedd"]
     },
     {
       "upstreamSha": "30164cb1ba8ea05fdd6be69215dba2cc2f0e2aa8",
