@@ -1853,8 +1853,8 @@
     {
       "upstreamSha": "abc409c2d4a072c2de46c9015f5cffff00dcc46b",
       "subject": "Add project file picker (⌘P) and project content search (⇧⌘F) (#4855)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 5.2 project content search; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["a1b619b1604fee4c6437a3947a7744165c0b3f3d"]
     },
     {
       "upstreamSha": "1877237c7ae99ecf2163b4c5bb7d3e14bebcca4d",
