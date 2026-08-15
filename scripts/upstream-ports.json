@@ -2288,8 +2288,8 @@
     {
       "upstreamSha": "eea3ea4c6ffc4567ab1037cbf53feb33af0bb132",
       "subject": "feat(diff-panel): show total line additions and deletions (#4674)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.1 diff presentation policy; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["5ecc34a93618497760082cbd552c6bb7b5991867"]
     },
     {
       "upstreamSha": "10bca3f44e1be6a874438fe80badbad45cd00279",
@@ -2458,8 +2458,8 @@
     {
       "upstreamSha": "38cfc25e5422e468303f2010f639cf3de9ad89ba",
       "subject": "feat(web): add collapse-all toggle to diff panel (#4475)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.1 diff presentation policy; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["5ecc34a93618497760082cbd552c6bb7b5991867"]
     },
     {
       "upstreamSha": "41a430a88e8dde9c428f59d54dd328aa6a66a8fd",
@@ -2530,8 +2530,8 @@
     {
       "upstreamSha": "51672b6ecb9d927d57d0b12dd071ca0d4a34ef36",
       "subject": "feat(web): collapse large git diffs by default to make chat more readable (#4409)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.1 diff presentation policy; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["5ecc34a93618497760082cbd552c6bb7b5991867"]
     },
     {
       "upstreamSha": "67a7b1a1d3443beeedc6a3bd7fe9dd875f016b11",
