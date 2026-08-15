@@ -5,9 +5,9 @@ import {
   type ResolvedKeybindingsConfig,
   type ThreadId,
 } from "@t3tools/contracts";
-import { memo } from "react";
+import { memo, useState } from "react";
 import GitActionsControl from "../GitActionsControl";
-import { DiffIcon, FilesIcon, TerminalSquareIcon } from "lucide-react";
+import { DiffIcon, EllipsisIcon, FilesIcon, TerminalSquareIcon } from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -17,6 +17,10 @@ import { OpenInPicker } from "./OpenInPicker";
 import ContextWindowBadge from "./ContextWindowBadge";
 import ThinkingTokenBadge from "./ThinkingTokenBadge";
 import { ThreadQueueCountBadge } from "../thread/ThreadQueueCountBadge";
+import { Button } from "../ui/button";
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
+import { InlineTitleEditor } from "../InlineTitleEditor";
+import type { ThreadActionId, ThreadActionMenuItem } from "../../hooks/useThreadActionController";
 
 interface ChatHeaderProps {
   activeThreadId: ThreadId;
@@ -44,6 +48,9 @@ interface ChatHeaderProps {
   diffToggleShortcutLabel: string | null;
   gitCwd: string | null;
   diffOpen: boolean;
+  threadActionItems: ReadonlyArray<ThreadActionMenuItem>;
+  onThreadAction: (actionId: ThreadActionId) => void;
+  onRenameThread: (title: string) => void;
   onRunProjectScript: (script: ProjectScript) => void;
   onAddProjectScript: (input: NewProjectScriptInput) => Promise<void>;
   onUpdateProjectScript: (scriptId: string, input: NewProjectScriptInput) => Promise<void>;
@@ -79,6 +86,9 @@ export const ChatHeader = memo(function ChatHeader({
   diffToggleShortcutLabel,
   gitCwd,
   diffOpen,
+  threadActionItems,
+  onThreadAction,
+  onRenameThread,
   onRunProjectScript,
   onAddProjectScript,
   onUpdateProjectScript,
@@ -87,16 +97,33 @@ export const ChatHeader = memo(function ChatHeader({
   onToggleFiles,
   onToggleDiff,
 }: ChatHeaderProps) {
+  const [renamingThreadId, setRenamingThreadId] = useState<ThreadId | null>(null);
+  const isRenaming = renamingThreadId === activeThreadId;
+
   return (
     <div className="flex min-w-0 flex-1 items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden sm:gap-3">
         <SidebarTrigger className="size-7 shrink-0 md:hidden" />
-        <h2
-          className="min-w-0 shrink truncate text-sm font-medium text-foreground"
-          title={activeThreadTitle}
-        >
-          {activeThreadTitle}
-        </h2>
+        {isRenaming ? (
+          <InlineTitleEditor
+            key={activeThreadId}
+            ariaLabel="Rename thread"
+            className="min-w-24 max-w-72 flex-1 truncate rounded border border-ring bg-transparent px-1 text-sm font-medium text-foreground outline-none"
+            initialValue={activeThreadTitle}
+            onCancel={() => setRenamingThreadId(null)}
+            onCommit={(title) => {
+              setRenamingThreadId(null);
+              onRenameThread(title);
+            }}
+          />
+        ) : (
+          <h2
+            className="min-w-0 shrink truncate text-sm font-medium text-foreground"
+            title={activeThreadTitle}
+          >
+            {activeThreadTitle}
+          </h2>
+        )}
         <ThreadQueueCountBadge threadId={activeThreadId} />
         {activeProjectName && (
           <Badge variant="outline" className="min-w-0 shrink truncate">
@@ -214,6 +241,39 @@ export const ChatHeader = memo(function ChatHeader({
                 : "Toggle diff panel"}
           </TooltipPopup>
         </Tooltip>
+        <Menu>
+          <MenuTrigger
+            render={
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="outline"
+                aria-label="Thread actions"
+                title="Thread actions"
+              />
+            }
+          >
+            <EllipsisIcon aria-hidden="true" className="size-3.5" />
+          </MenuTrigger>
+          <MenuPopup side="bottom" align="end">
+            {threadActionItems.map((item) => (
+              <MenuItem
+                key={item.id}
+                disabled={item.disabled}
+                variant={item.destructive ? "destructive" : "default"}
+                onClick={() => {
+                  if (item.id === "rename") {
+                    setRenamingThreadId(activeThreadId);
+                    return;
+                  }
+                  onThreadAction(item.id);
+                }}
+              >
+                {item.label}
+              </MenuItem>
+            ))}
+          </MenuPopup>
+        </Menu>
       </div>
     </div>
   );

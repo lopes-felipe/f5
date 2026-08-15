@@ -61,7 +61,7 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { isArchivedWorkflow, partitionWorkflowsByArchive } from "@t3tools/shared/workflowArchive";
-import { useMutation, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
 import {
@@ -94,7 +94,7 @@ import { isTerminalFocused } from "../lib/terminalFocus";
 import { useStore } from "../store";
 import { resolveShortcutCommand, shortcutLabelForCommand } from "../keybindings";
 import { derivePendingApprovals, derivePendingUserInputs } from "../session-logic";
-import { gitRemoveWorktreeMutationOptions, gitStatusQueryOptions } from "../lib/gitReactQuery";
+import { gitStatusQueryOptions } from "../lib/gitReactQuery";
 import { serverConfigQueryOptions } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
@@ -136,11 +136,7 @@ import {
 } from "./ui/sidebar";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
-import {
-  deleteThreadWithCleanup,
-  setThreadArchived as setThreadArchivedAction,
-  setWorkflowArchived,
-} from "../archiveActions";
+import { setWorkflowArchived } from "../archiveActions";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   reconcileFrozenOrder,
@@ -155,7 +151,6 @@ import {
   threadBucketExpansionKey,
   type SidebarThreadBucket,
 } from "./Sidebar.logic";
-import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { isWsInteractionBlocked, useWsConnectionState } from "../wsConnectionState";
 import { ThreadStatusPillBadge } from "./thread/ThreadStatusPillBadge";
 import { ThreadQueueCountBadge } from "./thread/ThreadQueueCountBadge";
@@ -166,15 +161,13 @@ import { threadIdsForInvestigationWorkflow } from "./workflow/investigationWorkf
 import { threadIdsForWorkflow, workflowThreadDisplayTitle } from "./workflow/workflowUtils";
 import { resolveSettingsNavigationSearch } from "./settings/settingsCategories";
 import { Kbd } from "./ui/kbd";
-import {
-  orderedPinnedThreadIds,
-  replacePinnedThreads,
-  snoozeThread,
-  toggleThreadPin,
-  wakeThread,
-} from "../threadPinSnooze";
-import { resolveSnoozePreset } from "../lib/snoozePresets";
+import { orderedPinnedThreadIds, replacePinnedThreads } from "../threadPinSnooze";
 import { orderActiveSidebarThreads, projectSnoozedThreads } from "./Sidebar.pinSnooze.logic";
+import {
+  nativeThreadActionMenuItems,
+  useThreadActionController,
+} from "../hooks/useThreadActionController";
+import { InlineTitleEditor } from "./InlineTitleEditor";
 
 const EMPTY_KEYBINDINGS: ResolvedKeybindingsConfig = [];
 
@@ -717,79 +710,6 @@ function PinnedThreadDragHandle({ threadId }: { threadId: ThreadId }) {
   );
 }
 
-type InlineTitleEditorProps = {
-  initialValue: string;
-  onCommit: (nextValue: string) => void;
-  onCancel: () => void;
-  className?: string;
-  ariaLabel?: string;
-};
-
-/**
- * Shared inline-rename text input: focus + select on mount, Enter commits,
- * Escape cancels, blur commits unless Enter/Escape already fired. Owns its own
- * draft state so callers only see the final value when the user commits.
- */
-function InlineTitleEditor({
-  initialValue,
-  onCommit,
-  onCancel,
-  className,
-  ariaLabel,
-}: InlineTitleEditorProps) {
-  const [value, setValue] = useState(initialValue);
-  const committedRef = useRef(false);
-  const onCommitRef = useRef(onCommit);
-  onCommitRef.current = onCommit;
-
-  const handleRef = useCallback((el: HTMLInputElement | null) => {
-    if (!el) return;
-    el.focus();
-    el.select();
-  }, []);
-
-  return (
-    <input
-      ref={handleRef}
-      aria-label={ariaLabel}
-      className={
-        className ??
-        "min-w-0 flex-1 truncate border border-ring rounded bg-transparent px-0.5 text-base outline-none sm:text-xs"
-      }
-      value={value}
-      onChange={(e) => setValue(e.target.value)}
-      onKeyDown={(e) => {
-        e.stopPropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          if (committedRef.current) return;
-          committedRef.current = true;
-          onCommitRef.current(value);
-        } else if (e.key === "Escape") {
-          e.preventDefault();
-          if (committedRef.current) return;
-          committedRef.current = true;
-          onCancel();
-        }
-      }}
-      onBlur={() => {
-        if (committedRef.current) return;
-        committedRef.current = true;
-        // Treat a blur with an empty/whitespace input as cancel so users can
-        // bail out of a rename by clearing the field + clicking elsewhere,
-        // rather than triggering a rename-to-empty warning or round-trip.
-        if (value.trim().length === 0) {
-          onCancel();
-          return;
-        }
-        onCommitRef.current(value);
-      }}
-      onClick={(e) => e.stopPropagation()}
-      onDoubleClick={(e) => e.stopPropagation()}
-    />
-  );
-}
-
 function SidebarThreadTitle({ thread }: { thread: Thread }) {
   const suppressTooltip = useMediaQuery("(hover: none), (pointer: coarse)");
   const title = (
@@ -838,19 +758,14 @@ export default function Sidebar() {
   const toggleProject = useStore((store) => store.toggleProject);
   const setProjectExpanded = useStore((store) => store.setProjectExpanded);
   const reorderProjects = useStore((store) => store.reorderProjects);
-  const clearComposerDraftForThread = useComposerDraftStore((store) => store.clearThreadDraft);
   const draftThreadsByThreadId = useComposerDraftStore((store) => store.draftThreadsByThreadId);
   const getDraftThreadByProjectId = useComposerDraftStore(
     (store) => store.getDraftThreadByProjectId,
   );
   const getDraftThread = useComposerDraftStore((store) => store.getDraftThread);
   const terminalStateByThreadId = useTerminalStateStore((state) => state.terminalStateByThreadId);
-  const clearTerminalState = useTerminalStateStore((state) => state.clearTerminalState);
   const clearProjectDraftThreadId = useComposerDraftStore(
     (store) => store.clearProjectDraftThreadId,
-  );
-  const clearProjectDraftThreadById = useComposerDraftStore(
-    (store) => store.clearProjectDraftThreadById,
   );
   const navigate = useNavigate();
   const settingsLocation = useLocation({
@@ -876,9 +791,7 @@ export default function Sidebar() {
     ...serverConfigQueryOptions(),
     select: (config) => config.keybindings,
   });
-  const queryClient = useQueryClient();
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
-  const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
   const [addingProject, setAddingProject] = useState(false);
   const [newCwd, setNewCwd] = useState("");
   const [isPickingFolder, setIsPickingFolder] = useState(false);
@@ -1277,44 +1190,23 @@ export default function Sidebar() {
     setRenamingThreadId(threadId);
   }, []);
 
-  const commitRename = useCallback(
-    async (threadId: ThreadId, newTitle: string, originalTitle: string) => {
-      const finishRename = () => {
-        setRenamingThreadId((current) => (current === threadId ? null : current));
-      };
+  const {
+    archiveThread,
+    deleteThread,
+    executeAction: executeThreadAction,
+    menuItemsForThread: threadActionMenuItems,
+    renameThread,
+  } = useThreadActionController({
+    activeThreadId: routeThreadId,
+    onRenameRequested: startThreadRename,
+  });
 
-      const trimmed = newTitle.trim();
-      if (trimmed.length === 0) {
-        toastManager.add({ type: "warning", title: "Thread title cannot be empty" });
-        finishRename();
-        return;
-      }
-      if (trimmed === originalTitle) {
-        finishRename();
-        return;
-      }
-      const api = readNativeApi();
-      if (!api) {
-        finishRename();
-        return;
-      }
-      try {
-        await api.orchestration.dispatchCommand({
-          type: "thread.meta.update",
-          commandId: newCommandId(),
-          threadId,
-          title: trimmed,
-        });
-      } catch (error) {
-        toastManager.add({
-          type: "error",
-          title: "Failed to rename thread",
-          description: error instanceof Error ? error.message : "An error occurred.",
-        });
-      }
-      finishRename();
+  const commitRename = useCallback(
+    async (threadId: ThreadId, newTitle: string) => {
+      await renameThread(threadId, newTitle);
+      setRenamingThreadId((current) => (current === threadId ? null : current));
     },
-    [],
+    [renameThread],
   );
 
   const cancelProjectRename = useCallback(() => {
@@ -1413,54 +1305,6 @@ export default function Sidebar() {
     [],
   );
 
-  const setThreadArchived = useCallback(async (threadId: ThreadId, archived: boolean) => {
-    await setThreadArchivedAction({ threadId, archived });
-  }, []);
-
-  /**
-   * Delete a single thread: stop session, close terminal, dispatch delete,
-   * clean up drafts/state, and optionally remove orphaned worktree.
-   * Callers handle thread-level confirmation; this still prompts for worktree removal.
-   */
-  const deleteThread = useCallback(
-    async (
-      threadId: ThreadId,
-      opts: { deletedThreadIds?: ReadonlySet<ThreadId> } = {},
-    ): Promise<void> => {
-      await deleteThreadWithCleanup({
-        threadId,
-        threads,
-        projects,
-        activeThreadId: routeThreadId,
-        deletedThreadIds: opts.deletedThreadIds,
-        clearComposerDraftForThread,
-        clearProjectDraftThreadById,
-        clearTerminalState,
-        navigateToThread: (fallbackThreadId) => {
-          void navigate({
-            to: "/$threadId",
-            params: { threadId: fallbackThreadId },
-            replace: true,
-          });
-        },
-        navigateHome: () => {
-          void navigate({ to: "/", replace: true });
-        },
-        removeWorktree: (input) => removeWorktreeMutation.mutateAsync(input),
-      });
-    },
-    [
-      clearComposerDraftForThread,
-      clearProjectDraftThreadById,
-      clearTerminalState,
-      navigate,
-      projects,
-      removeWorktreeMutation,
-      routeThreadId,
-      threads,
-    ],
-  );
-
   const removeProjectWithThreads = useCallback(
     async (project: Project, projectThreads: ReadonlyArray<Thread>): Promise<void> => {
       const api = readNativeApi();
@@ -1504,203 +1348,19 @@ export default function Sidebar() {
     [clearProjectDraftThreadId, deleteThread],
   );
 
-  const { copyToClipboard: copyThreadIdToClipboard } = useCopyToClipboard<{ threadId: ThreadId }>({
-    onCopy: (ctx) => {
-      toastManager.add({
-        type: "success",
-        title: "Thread ID copied",
-        description: ctx.threadId,
-      });
-    },
-    onError: (error) => {
-      toastManager.add({
-        type: "error",
-        title: "Failed to copy thread ID",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      });
-    },
-  });
-  const { copyToClipboard: copyPathToClipboard } = useCopyToClipboard<{ path: string }>({
-    onCopy: (ctx) => {
-      toastManager.add({
-        type: "success",
-        title: "Path copied",
-        description: ctx.path,
-      });
-    },
-    onError: (error) => {
-      toastManager.add({
-        type: "error",
-        title: "Failed to copy path",
-        description: error instanceof Error ? error.message : "An error occurred.",
-      });
-    },
-  });
   const handleThreadContextMenu = useCallback(
     async (threadId: ThreadId, position: { x: number; y: number }) => {
       const api = readNativeApi();
       if (!api) return;
-      const thread = threads.find((t) => t.id === threadId);
+      const thread = threads.find((entry) => entry.id === threadId);
       if (!thread) return;
-      const threadWorkspacePath =
-        thread.worktreePath ?? projectCwdById.get(thread.projectId) ?? null;
-      const pinned = orderedPinnedThreadIds(threads).includes(thread.id);
-      const snoozed = isSnoozedThread(thread);
       const clicked = await api.contextMenu.show(
-        [
-          { id: "rename", label: "Rename thread" },
-          {
-            id: thread.titleRegeneration ? "title-regeneration-pending" : "regenerate-title",
-            label: thread.titleRegeneration ? "Regenerating title…" : "Regenerate title",
-          },
-          ...(thread.archivedAt === null
-            ? [
-                { id: pinned ? "unpin" : "pin", label: pinned ? "Unpin" : "Pin" },
-                ...(snoozed
-                  ? [{ id: "wake", label: "Wake" }]
-                  : [
-                      { id: "snooze-three-hours", label: "Snooze for 3 hours" },
-                      { id: "snooze-tomorrow", label: "Snooze until tomorrow morning" },
-                      { id: "snooze-next-week", label: "Snooze until next week" },
-                    ]),
-              ]
-            : []),
-          {
-            id: thread.archivedAt === null ? "archive" : "unarchive",
-            label: thread.archivedAt === null ? "Archive" : "Unarchive",
-          },
-          { id: "mark-unread", label: "Mark unread" },
-          { id: "copy-path", label: "Copy Path" },
-          { id: "copy-thread-id", label: "Copy Thread ID" },
-          { id: "delete", label: "Delete", destructive: true },
-        ],
+        nativeThreadActionMenuItems(threadActionMenuItems(thread)),
         position,
       );
-
-      if (clicked === "rename") {
-        startThreadRename(threadId);
-        return;
-      }
-
-      if (clicked === "regenerate-title") {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.meta.update",
-            commandId: newCommandId(),
-            threadId,
-            regenerateTitle: true,
-          })
-          .catch((error) => {
-            toastManager.add({
-              type: "error",
-              title: "Failed to regenerate title",
-              description: error instanceof Error ? error.message : "An error occurred.",
-            });
-          });
-        return;
-      }
-
-      if (clicked === "pin" || clicked === "unpin") {
-        await toggleThreadPin({
-          threadId,
-          threads,
-          expectedRevision: pinRevision,
-        }).catch((error) => {
-          toastManager.add({
-            type: "error",
-            title: "Failed to update pinned threads",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
-        });
-        return;
-      }
-
-      if (clicked === "wake") {
-        await wakeThread(thread).catch((error) => {
-          toastManager.add({
-            type: "error",
-            title: "Failed to wake thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
-        });
-        return;
-      }
-
-      const snoozePreset =
-        clicked === "snooze-three-hours"
-          ? "three-hours"
-          : clicked === "snooze-tomorrow"
-            ? "tomorrow-morning"
-            : clicked === "snooze-next-week"
-              ? "next-week"
-              : null;
-      if (snoozePreset !== null) {
-        await snoozeThread(threadId, resolveSnoozePreset(snoozePreset)).catch((error) => {
-          toastManager.add({
-            type: "error",
-            title: "Failed to snooze thread",
-            description: error instanceof Error ? error.message : "An error occurred.",
-          });
-        });
-        return;
-      }
-
-      if (clicked === "archive") {
-        await setThreadArchived(threadId, true);
-        return;
-      }
-
-      if (clicked === "unarchive") {
-        await setThreadArchived(threadId, false);
-        return;
-      }
-
-      if (clicked === "mark-unread") {
-        markThreadUnread(threadId);
-        return;
-      }
-      if (clicked === "copy-path") {
-        if (!threadWorkspacePath) {
-          toastManager.add({
-            type: "error",
-            title: "Path unavailable",
-            description: "This thread does not have a workspace path to copy.",
-          });
-          return;
-        }
-        copyPathToClipboard(threadWorkspacePath, { path: threadWorkspacePath });
-        return;
-      }
-      if (clicked === "copy-thread-id") {
-        copyThreadIdToClipboard(threadId, { threadId });
-        return;
-      }
-      if (clicked !== "delete") return;
-      if (appSettings.confirmThreadDelete) {
-        const confirmed = await api.dialogs.confirm(
-          [
-            `Delete thread "${thread.title}"?`,
-            "This permanently clears conversation history for this thread.",
-          ].join("\n"),
-        );
-        if (!confirmed) {
-          return;
-        }
-      }
-      await deleteThread(threadId);
+      if (clicked) await executeThreadAction(threadId, clicked);
     },
-    [
-      appSettings.confirmThreadDelete,
-      copyPathToClipboard,
-      copyThreadIdToClipboard,
-      deleteThread,
-      markThreadUnread,
-      pinRevision,
-      projectCwdById,
-      setThreadArchived,
-      startThreadRename,
-      threads,
-    ],
+    [executeThreadAction, threadActionMenuItems, threads],
   );
 
   const handleMultiSelectContextMenu = useCallback(
@@ -3150,11 +2810,7 @@ export default function Sidebar() {
                                                     <InlineTitleEditor
                                                       initialValue={thread.title}
                                                       onCommit={(nextValue) => {
-                                                        void commitRename(
-                                                          thread.id,
-                                                          nextValue,
-                                                          thread.title,
-                                                        );
+                                                        void commitRename(thread.id, nextValue);
                                                       }}
                                                       onCancel={cancelRename}
                                                     />
@@ -3173,7 +2829,7 @@ export default function Sidebar() {
                                                           label: "Archive",
                                                           ariaLabel: `Archive ${thread.title}`,
                                                           onClick: () => {
-                                                            void setThreadArchived(thread.id, true);
+                                                            void archiveThread(thread.id, true);
                                                           },
                                                         }
                                                       : undefined
@@ -3537,11 +3193,7 @@ export default function Sidebar() {
                                                       <InlineTitleEditor
                                                         initialValue={thread.title}
                                                         onCommit={(nextValue) => {
-                                                          void commitRename(
-                                                            thread.id,
-                                                            nextValue,
-                                                            thread.title,
-                                                          );
+                                                          void commitRename(thread.id, nextValue);
                                                         }}
                                                         onCancel={cancelRename}
                                                       />
@@ -3573,7 +3225,7 @@ export default function Sidebar() {
                                                       label: "Unarchive",
                                                       ariaLabel: `Unarchive ${thread.title}`,
                                                       onClick: () => {
-                                                        void setThreadArchived(thread.id, false);
+                                                        void archiveThread(thread.id, false);
                                                       },
                                                     }}
                                                   />

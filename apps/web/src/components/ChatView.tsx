@@ -136,6 +136,7 @@ import {
 } from "../types";
 import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
+import { useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
   fetchThreadFileChangesDelta,
@@ -148,6 +149,7 @@ import { buildLocalDraftThread } from "../lib/draftThreads";
 import { ensureThreadHistoryState } from "../lib/threadHistory";
 import { finishThreadOpenTrace } from "../lib/threadOpenTrace";
 import { isTerminalFocused } from "../lib/terminalFocus";
+import { isKeyboardEventComposing } from "../lib/keyboardComposition";
 import { recordModelSelection } from "../modelPreferencesStore";
 import { getCustomModelOptionsByInstance } from "../modelSelection";
 import { useSettings } from "../hooks/useSettings";
@@ -305,10 +307,6 @@ const COMPOSER_PATH_QUERY_DEBOUNCE_MS = 120;
 const SCRIPT_TERMINAL_COLS = 120;
 type SendIntent = "auto" | "queue-tail" | "queue-head" | "send-now";
 const SCRIPT_TERMINAL_ROWS = 30;
-
-function isComposerKeyboardEventComposing(event: KeyboardEvent): boolean {
-  return event.isComposing || event.keyCode === 229;
-}
 
 const WorkflowImplementDialog = lazy(() =>
   import("./workflow/WorkflowImplementDialog").then((module) => ({
@@ -657,6 +655,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const wsConnectionState = useWsConnectionState();
   const wsInteractionBlocked = isWsInteractionBlocked(wsConnectionState.phase);
   const navigate = useNavigate();
+  const threadActionController = useThreadActionController({ activeThreadId: threadId });
   const { resolvedTheme } = useTheme();
   const queryClient = useQueryClient();
   const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(threadId);
@@ -5076,7 +5075,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       return true;
     }
 
-    if (key === "Enter" && isComposerKeyboardEventComposing(event)) {
+    if (key === "Enter" && isKeyboardEventComposing(event)) {
       return true;
     }
 
@@ -5294,6 +5293,13 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             diffToggleShortcutLabel={diffPanelShortcutLabel}
             gitCwd={gitCwd}
             diffOpen={diffOpen}
+            threadActionItems={threadActionController.menuItemsForThread(activeThread)}
+            onThreadAction={(actionId) => {
+              void threadActionController.executeAction(activeThread.id, actionId);
+            }}
+            onRenameThread={(title) => {
+              void threadActionController.renameThread(activeThread.id, title);
+            }}
             onRunProjectScript={(script) => {
               void runProjectScript(script);
             }}

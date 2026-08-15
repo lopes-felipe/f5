@@ -66,6 +66,7 @@ import {
   type TerminalContextDraft,
 } from "~/lib/terminalContext";
 import { cn } from "~/lib/utils";
+import { isKeyboardEventComposing } from "~/lib/keyboardComposition";
 import { basenameOfPath, getVscodeIconUrlForEntry, inferEntryKindFromPath } from "~/vscode-icons";
 import {
   COMPOSER_INLINE_CHIP_CLASS_NAME,
@@ -76,10 +77,6 @@ import { ComposerPendingTerminalContextChip } from "./chat/ComposerPendingTermin
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
 
 const COMPOSER_EDITOR_HMR_KEY = `composer-editor-${Math.random().toString(36).slice(2)}`;
-
-function isKeyboardEventComposing(event: KeyboardEvent, compositionFallback: boolean): boolean {
-  return compositionFallback || event.isComposing || event.keyCode === 229;
-}
 
 type SerializedComposerMentionNode = Spread<
   {

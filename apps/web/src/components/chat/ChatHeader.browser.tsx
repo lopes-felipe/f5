@@ -51,6 +51,9 @@ function makeProps(overrides: Partial<ChatHeaderProps> = {}): ChatHeaderProps {
     diffToggleShortcutLabel: null,
     gitCwd: null,
     diffOpen: false,
+    threadActionItems: [],
+    onThreadAction: () => {},
+    onRenameThread: () => {},
     onRunProjectScript: () => {},
     onAddProjectScript: async () => {},
     onUpdateProjectScript: async () => {},
@@ -123,6 +126,45 @@ describe("ChatHeader", () => {
       await expect.element(filesToggle).toBeEnabled();
       await filesToggle.click();
       expect(onToggleFiles).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("offers thread actions and commits an IME-safe inline rename", async () => {
+    const onThreadAction = vi.fn();
+    const onRenameThread = vi.fn();
+    const screen = await renderHeader({
+      threadActionItems: [
+        { id: "rename", label: "Rename thread" },
+        { id: "regenerate-title", label: "Regenerate title" },
+      ],
+      onThreadAction,
+      onRenameThread,
+    });
+
+    try {
+      await page.getByRole("button", { name: "Thread actions" }).click();
+      await page.getByRole("menuitem", { name: "Regenerate title" }).click();
+      expect(onThreadAction).toHaveBeenCalledWith("regenerate-title");
+
+      await page.getByRole("button", { name: "Thread actions" }).click();
+      await page.getByRole("menuitem", { name: "Rename thread" }).click();
+      const input = document.querySelector<HTMLInputElement>('[aria-label="Rename thread"]');
+      expect(input).not.toBeNull();
+      if (!input) return;
+      await page.getByRole("textbox", { name: "Rename thread" }).fill("Renamed thread");
+
+      const composingEnter = new KeyboardEvent("keydown", {
+        bubbles: true,
+        key: "Enter",
+      });
+      Object.defineProperty(composingEnter, "isComposing", { value: true });
+      input.dispatchEvent(composingEnter);
+      expect(onRenameThread).not.toHaveBeenCalled();
+
+      input.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" }));
+      expect(onRenameThread).toHaveBeenCalledWith("Renamed thread");
     } finally {
       await screen.unmount();
     }
