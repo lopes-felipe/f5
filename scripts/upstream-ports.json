@@ -504,8 +504,8 @@
     {
       "upstreamSha": "f9730979c1046e3e69ac89aa86882ebf8b2be9a6",
       "subject": "perf(web): skip base64 for oversized image candidates (#5220)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.2 deferred base64 encoding; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["b41cc4466ee04202edabffd037ffc04a4d862a9a"]
     },
     {
       "upstreamSha": "59d0c922e9363b209bcb004444c05e70fa9fdd8b",
@@ -1901,8 +1901,8 @@
     {
       "upstreamSha": "cbe8052020aa0c02c63fbe090e7f1f25603622d1",
       "subject": "feat(web): pasting a huge screenshot now compresses it instead of erroring (#4967)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.2 pasted-image compression; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["b41cc4466ee04202edabffd037ffc04a4d862a9a"]
     },
     {
       "upstreamSha": "69a18ce912ac3ae93cf498cfe0cee40beb49fb9f",
