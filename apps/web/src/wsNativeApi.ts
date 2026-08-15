@@ -371,6 +371,9 @@ export function createWsNativeApi(): NativeApi {
       authorizeEntry: (input) => transport.request(WS_METHODS.projectsAuthorizeEntry, input),
       listEntries: (input) => transport.request(WS_METHODS.projectsListEntries, input),
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),
+      searchContents: (input) => transport.request(WS_METHODS.projectsSearchContents, input),
+      cancelContentSearch: (input) =>
+        transport.request(WS_METHODS.projectsCancelContentSearch, input),
       writeFile: (input) => transport.request(WS_METHODS.projectsWriteFile, input),
       readFile: (input) => transport.request(WS_METHODS.projectsReadFile, input),
     },

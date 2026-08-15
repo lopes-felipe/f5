@@ -205,6 +205,10 @@ describe("formatKeybindingCommandLabel", () => {
     expect(formatKeybindingCommandLabel("chat.new")).toBe("New thread");
     expect(formatKeybindingCommandLabel("dialog.primaryAction")).toBe("Dialog primary action");
     expect(formatKeybindingCommandLabel("prHub.open")).toBe("Open Pull Requests");
+    expect(formatKeybindingCommandLabel("palette.files")).toBe("Search project files");
+    expect(formatKeybindingCommandLabel("projectContentSearch.toggle")).toBe(
+      "Search project content",
+    );
     expect(formatKeybindingCommandLabel("modelPicker.toggle")).toBe("Toggle model picker");
     expect(formatKeybindingCommandLabel("modelPicker.jump.4")).toBe("Pick model 4");
     expect(

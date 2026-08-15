@@ -197,6 +197,52 @@ describe("buildFileSearchActionItems", () => {
     expect(runFile).toHaveBeenCalledWith("apps/web/src/components/CommandPalette.tsx");
   });
 
+  it("uses dedicated file and content modes without mixing root actions", () => {
+    const fileItem = buildFileSearchActionItems({
+      entries: [{ path: "src/index.ts", kind: "file" }],
+      icon: null,
+      runFile: async () => undefined,
+    })[0]!;
+    const contentItem = {
+      kind: "action" as const,
+      value: "content:src/index.ts:1",
+      searchTerms: ["needle"],
+      title: "needle",
+      icon: null,
+      run: async () => undefined,
+    };
+    const rootGroup: CommandPaletteGroup = {
+      value: "actions",
+      label: "Actions",
+      items: [contentItem],
+    };
+
+    expect(
+      filterCommandPaletteGroups({
+        activeGroups: [rootGroup],
+        query: "",
+        isInSubmenu: false,
+        searchMode: "files",
+        fileSearchItems: [fileItem],
+        contentSearchItems: [contentItem],
+        projectSearchItems: [],
+        threadSearchItems: [],
+      }).map((group) => group.value),
+    ).toEqual(["files-search"]);
+    expect(
+      filterCommandPaletteGroups({
+        activeGroups: [rootGroup],
+        query: "needle",
+        isInSubmenu: false,
+        searchMode: "content",
+        fileSearchItems: [fileItem],
+        contentSearchItems: [contentItem],
+        projectSearchItems: [],
+        threadSearchItems: [],
+      }).map((group) => group.value),
+    ).toEqual(["project-content-search"]);
+  });
+
   it("keeps backend-ranked file items even when the query is a typo", () => {
     const fileItems = buildFileSearchActionItems({
       entries: [{ path: "apps/web/src/components/CommandPalette.tsx", kind: "file" }],

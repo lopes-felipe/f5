@@ -2940,6 +2940,75 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("searches project contents through registered identities", async () => {
+    const workspace = makeTempDir("f5-ws-content-search-");
+    fs.mkdirSync(path.join(workspace, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspace, "src", "unicode.ts"),
+      "export const value = '😀 café needle';\n",
+      "utf8",
+    );
+
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const createdAt = new Date().toISOString();
+    const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-content-project-create",
+      projectId: "project-content",
+      title: "Content Project",
+      workspaceRoot: workspace,
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(created.error).toBeUndefined();
+
+    const response = await sendRequest(ws, WS_METHODS.projectsSearchContents, {
+      requestId: "content-search-1",
+      projectId: "project-content",
+      query: "café",
+      limit: 500,
+      caseSensitive: false,
+      wholeWord: false,
+      useRegex: false,
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual(
+      expect.objectContaining({
+        requestId: "content-search-1",
+        truncated: false,
+        matches: [
+          expect.objectContaining({
+            path: "src/unicode.ts",
+            lineNumber: 1,
+            matchRanges: [{ start: 24, end: 28 }],
+          }),
+        ],
+      }),
+    );
+
+    const unavailable = await sendRequest(ws, WS_METHODS.projectsSearchContents, {
+      requestId: "content-search-outside",
+      projectId: workspace,
+      query: "needle",
+      limit: 10,
+      caseSensitive: false,
+      wholeWord: false,
+      useRegex: false,
+    });
+    expect(unavailable.result).toBeUndefined();
+    expect(unavailable.error?.message).toBe("Project content search target is unavailable.");
+
+    const cancelled = await sendRequest(ws, WS_METHODS.projectsCancelContentSearch, {
+      requestId: "missing-content-search",
+    });
+    expect(cancelled.result).toEqual({ cancelled: false });
+  });
+
   it("supports projects.listEntries", async () => {
     const workspace = makeTempDir("t3code-ws-workspace-list-entries-");
     fs.mkdirSync(path.join(workspace, "src", "components"), { recursive: true });

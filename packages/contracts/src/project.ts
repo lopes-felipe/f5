@@ -1,7 +1,16 @@
 import { Schema } from "effect";
-import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas";
+import {
+  NonNegativeInt,
+  PositiveInt,
+  ProjectId,
+  ThreadId,
+  TrimmedNonEmptyString,
+  TrimmedString,
+} from "./baseSchemas";
 
 export const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
+export const PROJECT_SEARCH_CONTENTS_MAX_LIMIT = 500;
+export const PROJECT_SEARCH_CONTENTS_MAX_MATCHES_PER_FILE = 100;
 export const PROJECT_LIST_ENTRIES_DEFAULT_LIMIT = 5_000;
 export const PROJECT_LIST_ENTRIES_MAX_LIMIT = 100_000;
 const PROJECT_WRITE_FILE_PATH_MAX_LENGTH = 512;
@@ -11,7 +20,7 @@ const Sha256HexString = TrimmedNonEmptyString.check(Schema.isPattern(/^[0-9a-f]{
 
 export const ProjectSearchEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,
-  query: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
+  query: TrimmedString.check(Schema.isMaxLength(256)),
   limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_ENTRIES_MAX_LIMIT)),
 });
 export type ProjectSearchEntriesInput = typeof ProjectSearchEntriesInput.Type;
@@ -30,6 +39,60 @@ export const ProjectSearchEntriesResult = Schema.Struct({
   truncated: Schema.Boolean,
 });
 export type ProjectSearchEntriesResult = typeof ProjectSearchEntriesResult.Type;
+
+const ProjectContentSearchRequestId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
+
+export const ProjectSearchContentsInput = Schema.Struct({
+  requestId: ProjectContentSearchRequestId,
+  projectId: ProjectId,
+  threadId: Schema.optional(ThreadId),
+  // Whitespace is significant in content queries, so this deliberately does
+  // not use TrimmedNonEmptyString.
+  query: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
+  limit: PositiveInt.check(Schema.isLessThanOrEqualTo(PROJECT_SEARCH_CONTENTS_MAX_LIMIT)),
+  caseSensitive: Schema.Boolean,
+  wholeWord: Schema.Boolean,
+  useRegex: Schema.Boolean,
+});
+export type ProjectSearchContentsInput = typeof ProjectSearchContentsInput.Type;
+
+export const ProjectContentMatchRange = Schema.Struct({
+  // Ranges are zero-based Unicode code-point offsets, not UTF-8 bytes or JS
+  // UTF-16 code units.
+  start: NonNegativeInt,
+  end: NonNegativeInt,
+});
+export type ProjectContentMatchRange = typeof ProjectContentMatchRange.Type;
+
+export const ProjectContentMatch = Schema.Struct({
+  path: TrimmedNonEmptyString,
+  lineNumber: PositiveInt,
+  lineContent: Schema.String,
+  matchRanges: Schema.Array(ProjectContentMatchRange).check(Schema.isMaxLength(256)),
+});
+export type ProjectContentMatch = typeof ProjectContentMatch.Type;
+
+export const ProjectSearchContentsResult = Schema.Struct({
+  requestId: ProjectContentSearchRequestId,
+  matches: Schema.Array(ProjectContentMatch).check(
+    Schema.isMaxLength(PROJECT_SEARCH_CONTENTS_MAX_LIMIT),
+  ),
+  truncated: Schema.Boolean,
+  indexedPathCount: NonNegativeInt,
+  indexTruncated: Schema.Boolean,
+  regexFallbackError: Schema.optional(Schema.String),
+});
+export type ProjectSearchContentsResult = typeof ProjectSearchContentsResult.Type;
+
+export const ProjectCancelContentSearchInput = Schema.Struct({
+  requestId: ProjectContentSearchRequestId,
+});
+export type ProjectCancelContentSearchInput = typeof ProjectCancelContentSearchInput.Type;
+
+export const ProjectCancelContentSearchResult = Schema.Struct({
+  cancelled: Schema.Boolean,
+});
+export type ProjectCancelContentSearchResult = typeof ProjectCancelContentSearchResult.Type;
 
 export const ProjectListEntriesInput = Schema.Struct({
   cwd: TrimmedNonEmptyString,

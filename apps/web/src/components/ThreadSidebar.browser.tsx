@@ -391,6 +391,18 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
   if (tag === WS_METHODS.projectsSearchEntries) {
     return { entries: [], truncated: false };
   }
+  if (tag === WS_METHODS.projectsSearchContents) {
+    return {
+      requestId: body.requestId,
+      matches: [],
+      truncated: false,
+      indexedPathCount: 0,
+      indexTruncated: false,
+    };
+  }
+  if (tag === WS_METHODS.projectsCancelContentSearch) {
+    return { cancelled: false };
+  }
   if (tag === WS_METHODS.globalSearchQuery) {
     return { results: [] };
   }
@@ -929,6 +941,7 @@ describe("Thread sidebar", () => {
     useRecoveryStateStore.getState().reset();
     useCommandPaletteStore.setState({
       open: false,
+      mode: "command",
       openIntent: null,
     });
     useStore.setState({
@@ -943,6 +956,7 @@ describe("Thread sidebar", () => {
     useRecoveryStateStore.getState().reset();
     useCommandPaletteStore.setState({
       open: false,
+      mode: "command",
       openIntent: null,
     });
     Reflect.deleteProperty(window, "desktopBridge");
@@ -1337,6 +1351,122 @@ describe("Thread sidebar", () => {
         () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
         "Command palette root search input should render.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("searches project files and contents from dedicated palette modes", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) => {
+          if (body._tag !== WS_METHODS.projectsSearchContents) return null;
+          return {
+            type: "result",
+            result: {
+              requestId: body.requestId,
+              matches: [
+                {
+                  path: "src/search.ts",
+                  lineNumber: 7,
+                  lineContent: "const needle = true;",
+                  matchRanges: [{ start: 6, end: 12 }],
+                },
+              ],
+              truncated: false,
+              indexedPathCount: 42,
+              indexTruncated: false,
+            },
+          };
+        };
+      },
+    });
+
+    try {
+      useCommandPaletteStore.getState().toggleMode("files");
+      const filePalette = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid="command-palette"][data-palette-mode="files"]',
+          ),
+        "File palette should open in file mode.",
+      );
+      expect(filePalette.querySelector('[aria-label="Search project"]')?.textContent).toContain(
+        "Project",
+      );
+      const fileInput = filePalette.querySelector<HTMLInputElement>("input");
+      if (!fileInput) throw new Error("File palette input should render.");
+      setInputValue(fileInput, "src");
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === WS_METHODS.projectsSearchEntries &&
+                request.cwd === "/repo/project" &&
+                request.query === "src",
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      useCommandPaletteStore.getState().setOpen(false);
+      useCommandPaletteStore.getState().toggleMode("content");
+      const contentPalette = await waitForElement(
+        () =>
+          document.querySelector<HTMLElement>(
+            '[data-testid="command-palette"][data-palette-mode="content"]',
+          ),
+        "Content palette should open in content mode.",
+      );
+      const contentInput = contentPalette.querySelector<HTMLInputElement>("input");
+      if (!contentInput) throw new Error("Content palette input should render.");
+      setInputValue(contentInput, "needle");
+
+      const highlightedMatch = await waitForElement(
+        () => contentPalette.querySelector<HTMLElement>("mark"),
+        "Content palette should highlight the exact match range.",
+      );
+      expect(highlightedMatch.textContent).toBe("needle");
+      expect(contentPalette.textContent).toContain("src/search.ts:7");
+      expect(
+        wsRequests.some(
+          (request) =>
+            request._tag === WS_METHODS.projectsSearchContents &&
+            request.projectId === PROJECT_ID &&
+            request.query === "needle",
+        ),
+      ).toBe(true);
+      contentPalette
+        .querySelector<HTMLButtonElement>('[aria-label="Use regular expression"]')
+        ?.click();
+      await vi.waitFor(
+        () => {
+          expect(
+            wsRequests.some(
+              (request) =>
+                request._tag === WS_METHODS.projectsSearchContents &&
+                request.query === "needle" &&
+                request.useRegex === true,
+            ),
+          ).toBe(true);
+        },
+        { timeout: 4_000, interval: 16 },
+      );
+
+      useCommandPaletteStore.getState().setOpen(false);
+      useCommandPaletteStore.getState().toggleOpen();
+      const rootPalette = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="command-palette"]'),
+        "Root palette should open.",
+      );
+      const rootInput = rootPalette.querySelector<HTMLInputElement>("input");
+      if (!rootInput) throw new Error("Root palette input should render.");
+      setInputValue(rootInput, "?another");
+      await vi.waitFor(() => expect(rootPalette.dataset.paletteMode).toBe("content"));
     } finally {
       await mounted.cleanup();
     }

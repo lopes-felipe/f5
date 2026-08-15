@@ -21,6 +21,34 @@ it.effect("accepts lightweight server probe requests", () =>
   }),
 );
 
+it.effect("accepts project content search and cancellation requests", () =>
+  Effect.gen(function* () {
+    const search = yield* decodeWebSocketRequest({
+      id: "content-search",
+      body: {
+        _tag: WS_METHODS.projectsSearchContents,
+        requestId: "request-1",
+        projectId: "project-1",
+        query: "needle",
+        limit: 500,
+        caseSensitive: false,
+        wholeWord: false,
+        useRegex: false,
+      },
+    });
+    assert.strictEqual(search.body._tag, WS_METHODS.projectsSearchContents);
+
+    const cancel = yield* decodeWebSocketRequest({
+      id: "content-cancel",
+      body: {
+        _tag: WS_METHODS.projectsCancelContentSearch,
+        requestId: "request-1",
+      },
+    });
+    assert.strictEqual(cancel.body._tag, WS_METHODS.projectsCancelContentSearch);
+  }),
+);
+
 it.effect("accepts getTurnDiff requests when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWebSocketRequest({

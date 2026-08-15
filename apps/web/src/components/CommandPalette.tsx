@@ -3,6 +3,7 @@
 import {
   DEFAULT_MODEL_BY_PROVIDER,
   type FilesystemBrowseResult,
+  type ProjectContentMatch,
   type ProjectId,
   type ProjectEntry,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import {
   MessageSquareIcon,
   PauseCircleIcon,
   RocketIcon,
+  SearchIcon,
   SettingsIcon,
   SquarePenIcon,
   Trash2Icon,
@@ -61,6 +63,7 @@ import {
 import { cn, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
 import {
   filesystemBrowseQueryOptions,
+  projectSearchContentsQueryOptions,
   projectSearchEntriesQueryOptions,
 } from "../lib/projectReactQuery";
 import { resolveShortcutCommand, useServerKeybindings } from "../keybindings";
@@ -100,12 +103,15 @@ import {
 } from "./ui/command";
 import { Button } from "./ui/button";
 import { Kbd, KbdGroup } from "./ui/kbd";
+import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./ui/select";
 import { toastManager } from "./ui/toast";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
+import { HighlightedText } from "./HighlightedText";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
 const FILE_SEARCH_DEBOUNCE_MS = 180;
+const CONTENT_SEARCH_DEBOUNCE_MS = 180;
 const FILE_SEARCH_LIMIT = 100;
 
 function getLocalFileManagerName(platform: string): string {
@@ -145,6 +151,7 @@ export function CommandPalette({ children }: { children: ReactNode }) {
   const open = useCommandPaletteStore((store) => store.open);
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
   const toggleOpen = useCommandPaletteStore((store) => store.toggleOpen);
+  const toggleMode = useCommandPaletteStore((store) => store.toggleMode);
   const keybindings = useServerKeybindings();
   const routeThreadId = useHandleNewThread().routeThreadId;
   const terminalOpen = useTerminalStateStore((state) =>
@@ -162,16 +169,29 @@ export function CommandPalette({ children }: { children: ReactNode }) {
           terminalOpen,
         },
       });
-      if (command !== "commandPalette.toggle") {
-        return;
+      switch (command) {
+        case "commandPalette.toggle":
+          event.preventDefault();
+          event.stopPropagation();
+          toggleOpen();
+          return;
+        case "palette.files":
+          event.preventDefault();
+          event.stopPropagation();
+          toggleMode("files");
+          return;
+        case "projectContentSearch.toggle":
+          event.preventDefault();
+          event.stopPropagation();
+          toggleMode("content");
+          return;
+        default:
+          return;
       }
-      event.preventDefault();
-      event.stopPropagation();
-      toggleOpen();
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [keybindings, terminalOpen, toggleOpen]);
+  }, [keybindings, terminalOpen, toggleMode, toggleOpen]);
 
   // Close the palette when this container unmounts (e.g. on route change).
   // Hoisted here so the cleanup fires once at unmount rather than every time
@@ -202,15 +222,18 @@ export function CommandPalette({ children }: { children: ReactNode }) {
 
 function CommandPaletteDialog() {
   const open = useCommandPaletteStore((store) => store.open);
+  const mode = useCommandPaletteStore((store) => store.mode);
 
   if (!open) {
     return null;
   }
 
-  return <OpenCommandPaletteDialog />;
+  return <OpenCommandPaletteDialog key={mode} surfaceMode={mode} />;
 }
 
-function OpenCommandPaletteDialog() {
+function OpenCommandPaletteDialog(props: {
+  readonly surfaceMode: "command" | "files" | "content";
+}) {
   const location = useLocation();
   const navigate = useNavigate();
   const setOpen = useCommandPaletteStore((store) => store.setOpen);
@@ -219,7 +242,15 @@ function OpenCommandPaletteDialog() {
   const openWorkflowCreateDialog = useWorkflowCreateDialogStore((store) => store.open);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
-  const isActionsOnly = deferredQuery.startsWith(">");
+  const isContentPrefix = props.surfaceMode === "command" && deferredQuery.startsWith("?");
+  const searchMode =
+    props.surfaceMode === "files"
+      ? "files"
+      : props.surfaceMode === "content" || isContentPrefix
+        ? "content"
+        : "all";
+  const effectiveQuery = isContentPrefix ? deferredQuery.slice(1) : deferredQuery;
+  const isActionsOnly = searchMode === "all" && deferredQuery.startsWith(">");
   const queryClient = useQueryClient();
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
   const { settings } = useAppSettings();
@@ -238,9 +269,17 @@ function OpenCommandPaletteDialog() {
   const currentView = viewStack.at(-1) ?? null;
   const [browseGeneration, setBrowseGeneration] = useState(0);
   const [isPickingProjectFolder, setIsPickingProjectFolder] = useState(false);
+  const [contentSearchOptions, setContentSearchOptions] = useState({
+    caseSensitive: false,
+    wholeWord: false,
+    useRegex: false,
+  });
 
   const browsePlatform = typeof navigator === "undefined" ? "" : navigator.platform;
-  const isBrowsing = isFilesystemBrowseQuery(query, browsePlatform);
+  const isBrowsing =
+    props.surfaceMode === "command" &&
+    !query.startsWith("?") &&
+    isFilesystemBrowseQuery(query, browsePlatform);
   const paletteMode = getCommandPaletteMode({ currentView, isBrowsing });
   const getAddProjectInitialQuery = useCallback((): string => {
     const baseDirectory = settings.addProjectBaseDirectory?.trim() ?? "";
@@ -271,30 +310,46 @@ function OpenCommandPaletteDialog() {
   const activeThreadId = activeThread?.id;
   const currentProjectId = activeThread?.projectId ?? activeDraftThread?.projectId ?? null;
   const workflowProjectId = currentProjectId ?? projects[0]?.id ?? null;
+  const [requestedSearchProjectId, setRequestedSearchProjectId] = useState<ProjectId | null>(null);
   const currentProjectCwd = currentProjectId
     ? (projectCwdById.get(currentProjectId) ?? null)
     : null;
-  const activeWorkspaceCwd =
-    activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? currentProjectCwd;
+  const searchProject =
+    (requestedSearchProjectId
+      ? projects.find((project) => project.id === requestedSearchProjectId)
+      : null) ??
+    (currentProjectId ? projects.find((project) => project.id === currentProjectId) : null) ??
+    projects[0] ??
+    null;
+  const activeThreadInSearchProject =
+    activeThread?.projectId === searchProject?.id ? activeThread : null;
+  const activeDraftThreadInSearchProject =
+    activeDraftThread?.projectId === searchProject?.id ? activeDraftThread : null;
+  const searchTargetThreadId =
+    activeThreadInSearchProject?.id ?? (activeDraftThreadInSearchProject ? routeThreadId : null);
+  const searchWorkspaceCwd =
+    activeThreadInSearchProject?.worktreePath ??
+    activeDraftThreadInSearchProject?.worktreePath ??
+    searchProject?.cwd ??
+    null;
   const relativePathNeedsActiveProject =
     isExplicitRelativeProjectPath(query.trim()) && currentProjectCwd === null;
-  const trimmedQuery = query.trim();
+  const trimmedQuery = effectiveQuery.trim();
   const canSearchFiles =
     currentView === null &&
     !isBrowsing &&
-    routeThreadId !== null &&
-    activeWorkspaceCwd !== null &&
-    trimmedQuery.length > 0 &&
-    !trimmedQuery.startsWith(">");
+    searchWorkspaceCwd !== null &&
+    (searchMode === "files" ||
+      (searchMode === "all" && trimmedQuery.length > 0 && !trimmedQuery.startsWith(">")));
   const [debouncedFileSearchQuery] = useDebouncedValue(trimmedQuery, {
     wait: FILE_SEARCH_DEBOUNCE_MS,
   });
   const activeFileSearchQuery = canSearchFiles ? debouncedFileSearchQuery : "";
   const fileSearchQuery = useQuery(
     projectSearchEntriesQueryOptions({
-      cwd: activeWorkspaceCwd,
+      cwd: searchWorkspaceCwd,
       query: activeFileSearchQuery,
-      enabled: canSearchFiles && activeFileSearchQuery.length > 0,
+      enabled: canSearchFiles && (searchMode === "files" || activeFileSearchQuery.length > 0),
       limit: FILE_SEARCH_LIMIT,
     }),
   );
@@ -307,11 +362,38 @@ function OpenCommandPaletteDialog() {
     [debouncedFileSearchQuery],
   );
   const globalSearchInput = useMemo(() => {
-    if (currentView !== null || isBrowsing || isActionsOnly || parsedGlobalSearch.text.length < 2) {
+    if (
+      searchMode !== "all" ||
+      currentView !== null ||
+      isBrowsing ||
+      isActionsOnly ||
+      parsedGlobalSearch.text.length < 2
+    ) {
       return null;
     }
     return buildGlobalSearchQueryInput({ parsed: parsedGlobalSearch, projects });
-  }, [currentView, isActionsOnly, isBrowsing, parsedGlobalSearch, projects]);
+  }, [currentView, isActionsOnly, isBrowsing, parsedGlobalSearch, projects, searchMode]);
+
+  const contentSearchInput = searchMode === "content" ? effectiveQuery : "";
+  const [debouncedContentSearchQuery] = useDebouncedValue(contentSearchInput, {
+    wait: CONTENT_SEARCH_DEBOUNCE_MS,
+  });
+  const contentSearchQuery = useQuery(
+    projectSearchContentsQueryOptions({
+      projectId: searchProject?.id ?? null,
+      threadId: searchTargetThreadId,
+      query: debouncedContentSearchQuery,
+      caseSensitive: contentSearchOptions.caseSensitive,
+      wholeWord: contentSearchOptions.wholeWord,
+      useRegex: contentSearchOptions.useRegex,
+      enabled: searchMode === "content" && debouncedContentSearchQuery.trim().length > 0,
+    }),
+  );
+  const contentSearchResultsMatchInput =
+    searchMode === "content" && debouncedContentSearchQuery === contentSearchInput;
+  const contentSearchMatches = contentSearchResultsMatchInput
+    ? (contentSearchQuery.data?.matches ?? [])
+    : [];
   const globalSearchQuery = useQuery({
     queryKey: ["globalSearch", globalSearchInput],
     enabled: globalSearchInput !== null,
@@ -491,19 +573,31 @@ function OpenCommandPaletteDialog() {
   const recentThreadItems = allThreadItems.slice(0, RECENT_THREAD_LIMIT);
 
   const openFileFromSearch = useCallback(
-    async (relativePath: string) => {
-      if (!routeThreadId) {
-        return;
+    async (
+      relativePath: string,
+      position?: { readonly line: number; readonly column?: number },
+    ) => {
+      let targetThreadId = searchTargetThreadId;
+      if (!targetThreadId) {
+        if (!searchProject) return;
+        const created = await handleNewThread(searchProject.id, {
+          envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
+        });
+        targetThreadId = created.threadId;
       }
-      const surface = openFileRightPanelSurface(routeThreadId, { relativePath });
+      const surface = openFileRightPanelSurface(targetThreadId, {
+        relativePath,
+        ...(position ? { line: position.line } : {}),
+        ...(position?.column ? { column: position.column } : {}),
+      });
       await navigate({
         to: "/$threadId",
-        params: { threadId: routeThreadId },
+        params: { threadId: targetThreadId },
         replace: true,
         search: (previous) => setSearchParamsForSurface(previous, surface),
       });
     },
-    [navigate, routeThreadId],
+    [handleNewThread, navigate, searchProject, searchTargetThreadId, settings.defaultThreadEnvMode],
   );
 
   const fileSearchItems = useMemo(
@@ -514,6 +608,29 @@ function OpenCommandPaletteDialog() {
         runFile: openFileFromSearch,
       }),
     [fileSearchEntries, openFileFromSearch],
+  );
+
+  const contentSearchItems = useMemo<CommandPaletteActionItem[]>(
+    () =>
+      contentSearchMatches.map((match: ProjectContentMatch, index: number) => ({
+        kind: "action",
+        value: `content:${match.path}:${match.lineNumber}:${index}`,
+        searchTerms: [match.path, match.lineContent],
+        title: (
+          <span className="font-mono whitespace-pre">
+            <HighlightedText text={match.lineContent} ranges={match.matchRanges} />
+          </span>
+        ),
+        description: `${match.path}:${match.lineNumber}`,
+        icon: <SearchIcon className={ITEM_ICON_CLASS} />,
+        run: async () => {
+          await openFileFromSearch(match.path, {
+            line: match.lineNumber,
+            ...(match.matchRanges[0] ? { column: match.matchRanges[0].start + 1 } : {}),
+          });
+        },
+      })),
+    [contentSearchMatches, openFileFromSearch],
   );
 
   const openGlobalSearchResult = useOpenGlobalSearchResult();
@@ -748,9 +865,11 @@ function OpenCommandPaletteDialog() {
 
   const filteredGroups = filterCommandPaletteGroups({
     activeGroups,
-    query: deferredQuery,
+    query: effectiveQuery,
     isInSubmenu: currentView !== null,
     fileSearchItems,
+    contentSearchItems,
+    searchMode,
     projectSearchItems: projectSearchItems,
     threadSearchItems: allThreadItems,
   });
@@ -891,7 +1010,16 @@ function OpenCommandPaletteDialog() {
   });
 
   let displayedGroups = filteredGroups;
-  if (globalSearchInput && globalSearchItems.length > 0) {
+  if (searchMode === "content" && displayedGroups[0]) {
+    const resultCount = contentSearchMatches.length;
+    displayedGroups = [
+      {
+        ...displayedGroups[0],
+        label: `${searchProject?.name ?? "Project"} · ${resultCount.toLocaleString()}${contentSearchQuery.data?.truncated ? "+" : ""} matches${contentSearchQuery.data?.indexTruncated ? " · first 25,000 files" : ""}${contentSearchQuery.data?.regexFallbackError ? " · regex fallback" : ""}`,
+      },
+    ];
+  }
+  if (searchMode === "all" && globalSearchInput && globalSearchItems.length > 0) {
     displayedGroups = [
       ...displayedGroups,
       { value: "global-search", label: "Messages and workflows", items: globalSearchItems },
@@ -901,7 +1029,12 @@ function OpenCommandPaletteDialog() {
     displayedGroups = relativePathNeedsActiveProject ? [] : browseGroups;
   }
 
-  const inputPlaceholder = getCommandPaletteInputPlaceholder(paletteMode);
+  const inputPlaceholder =
+    searchMode === "files"
+      ? `Search files${searchProject ? ` in ${searchProject.name}` : ""}...`
+      : searchMode === "content"
+        ? `Search content${searchProject ? ` in ${searchProject.name}` : ""}...`
+        : getCommandPaletteInputPlaceholder(paletteMode);
   const isSubmenu = paletteMode === "submenu" || paletteMode === "submenu-browse";
   const hasHighlightedBrowseItem = highlightedItemValue?.startsWith("browse:") ?? false;
   const canSubmitBrowsePath = isBrowsing && !relativePathNeedsActiveProject;
@@ -989,10 +1122,11 @@ function OpenCommandPaletteDialog() {
     <CommandDialogPopup
       aria-label="Command palette"
       className="overflow-hidden p-0"
+      data-palette-mode={searchMode}
       data-testid="command-palette"
     >
       <Command
-        key={`${viewStack.length}-${browseGeneration}-${isBrowsing}`}
+        key={`${props.surfaceMode}-${viewStack.length}-${browseGeneration}-${isBrowsing}`}
         aria-label="Command palette"
         autoHighlight={isBrowsing ? false : "always"}
         mode="none"
@@ -1026,7 +1160,11 @@ function OpenCommandPaletteDialog() {
                 ? {
                     startAddon: <FolderPlusIcon />,
                   }
-                : {})}
+                : searchMode === "files"
+                  ? { startAddon: <FileIcon /> }
+                  : searchMode === "content"
+                    ? { startAddon: <SearchIcon /> }
+                    : {})}
             onKeyDown={handleKeyDown}
           />
           {isBrowsing ? (
@@ -1065,13 +1203,30 @@ function OpenCommandPaletteDialog() {
             isActionsOnly={isActionsOnly}
             keybindings={keybindings}
             onExecuteItem={executeItem}
-            {...(relativePathNeedsActiveProject
-              ? { emptyStateMessage: "Relative paths require an active project." }
-              : willCreateProjectPath
-                ? {
-                    emptyStateMessage: "Press Enter to create this folder and add it as a project.",
-                  }
-                : {})}
+            {...(searchMode !== "all" && !searchProject
+              ? { emptyStateMessage: "Add a project to search its files." }
+              : searchMode === "files" && fileSearchQuery.isFetching
+                ? { emptyStateMessage: "Indexing project files..." }
+                : searchMode === "content" &&
+                    (contentSearchQuery.isFetching ||
+                      debouncedContentSearchQuery !== contentSearchInput)
+                  ? { emptyStateMessage: "Searching project content..." }
+                  : searchMode === "content" && contentSearchQuery.error
+                    ? { emptyStateMessage: "Project content search failed." }
+                    : searchMode === "content" && contentSearchInput.trim().length === 0
+                      ? { emptyStateMessage: "Type to search across the project." }
+                      : searchMode === "content"
+                        ? { emptyStateMessage: "No matching project content." }
+                        : searchMode === "files"
+                          ? { emptyStateMessage: "No matching project files." }
+                          : relativePathNeedsActiveProject
+                            ? { emptyStateMessage: "Relative paths require an active project." }
+                            : willCreateProjectPath
+                              ? {
+                                  emptyStateMessage:
+                                    "Press Enter to create this folder and add it as a project.",
+                                }
+                              : {})}
           />
         </CommandPanel>
         <CommandFooter className="gap-3 max-sm:flex-col max-sm:items-start">
@@ -1102,7 +1257,62 @@ function OpenCommandPaletteDialog() {
               <span className={cn("text-muted-foreground/80")}>Close</span>
             </KbdGroup>
           </div>
-          {canOpenProjectFromFileManager ? (
+          {searchMode !== "all" && searchProject ? (
+            <div className="flex items-center gap-1">
+              {searchMode === "content" ? (
+                <div className="flex items-center gap-0.5" aria-label="Content search options">
+                  {(
+                    [
+                      ["caseSensitive", "Aa", "Match case"],
+                      ["wholeWord", "ab", "Match whole word"],
+                      ["useRegex", ".*", "Use regular expression"],
+                    ] as const
+                  ).map(([option, label, title]) => (
+                    <Button
+                      key={option}
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      aria-label={title}
+                      aria-pressed={contentSearchOptions[option]}
+                      className={cn(
+                        "min-w-7 px-1.5 font-mono",
+                        contentSearchOptions[option] && "bg-accent text-foreground",
+                      )}
+                      onClick={() =>
+                        setContentSearchOptions((current) => ({
+                          ...current,
+                          [option]: !current[option],
+                        }))
+                      }
+                    >
+                      {label}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+              <Select
+                value={searchProject.id}
+                onValueChange={(value) => setRequestedSearchProjectId(value as ProjectId)}
+              >
+                <SelectTrigger
+                  aria-label="Search project"
+                  className="max-w-48"
+                  size="xs"
+                  variant="ghost"
+                >
+                  <SelectValue>{searchProject.name}</SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end">
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            </div>
+          ) : canOpenProjectFromFileManager ? (
             <Button
               variant="ghost"
               size="xs"

@@ -79,6 +79,8 @@ Invalid rules are ignored. Invalid config files are ignored. Warnings are logged
 - `thread.switchRecentPrevious`: cycle to the previous recent tab/page (`Ctrl+Shift+Tab` by default)
 - `model.switchRecent`: cycle to the next recent model (`Alt+Tab` by default)
 - `commandPalette.toggle`: open or close the command palette
+- `palette.files`: open the command palette in project-file mode
+- `projectContentSearch.toggle`: open the command palette in project-content mode
 - `script.{id}.run`: run a project script by id (for example `script.test.run`)
 
 ### Key Syntax

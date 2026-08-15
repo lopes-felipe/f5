@@ -21,6 +21,8 @@ import type {
   GitStatusResult,
 } from "./git";
 import type {
+  ProjectCancelContentSearchInput,
+  ProjectCancelContentSearchResult,
   ProjectAuthorizeEntryInput,
   ProjectAuthorizeEntryResult,
   ProjectListEntriesInput,
@@ -29,6 +31,8 @@ import type {
   ProjectReadFileResult,
   ProjectSearchEntriesInput,
   ProjectSearchEntriesResult,
+  ProjectSearchContentsInput,
+  ProjectSearchContentsResult,
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project";
@@ -409,6 +413,10 @@ export interface NativeApi {
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
+    searchContents: (input: ProjectSearchContentsInput) => Promise<ProjectSearchContentsResult>;
+    cancelContentSearch: (
+      input: ProjectCancelContentSearchInput,
+    ) => Promise<ProjectCancelContentSearchResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
     readFile: (input: ProjectReadFileInput) => Promise<ProjectReadFileResult>;
   };

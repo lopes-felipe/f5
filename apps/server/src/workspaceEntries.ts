@@ -58,6 +58,7 @@ interface RankedWorkspaceEntry {
 
 const workspaceIndexCache = new Map<string, WorkspaceIndex>();
 const inFlightWorkspaceIndexBuilds = new Map<string, Promise<WorkspaceIndex>>();
+const workspaceContentIndexInvalidators = new Set<(cwd: string) => void>();
 
 type FffItemType = "file" | "directory";
 
@@ -738,6 +739,16 @@ export function clearWorkspaceIndexCache(
   if (options.destroySearchIndex ?? true) {
     destroyWorkspaceFffIndex(cwd);
   }
+  for (const invalidate of workspaceContentIndexInvalidators) {
+    invalidate(cwd);
+  }
+}
+
+export function registerWorkspaceContentIndexInvalidator(
+  invalidate: (cwd: string) => void,
+): () => void {
+  workspaceContentIndexInvalidators.add(invalidate);
+  return () => workspaceContentIndexInvalidators.delete(invalidate);
 }
 
 export function setWorkspaceFffModuleLoaderForTests(

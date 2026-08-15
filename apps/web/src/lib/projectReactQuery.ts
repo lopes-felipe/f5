@@ -1,7 +1,10 @@
 import type {
   FilesystemBrowseResult,
+  ProjectId,
   ProjectListEntriesResult,
+  ProjectSearchContentsResult,
   ProjectSearchEntriesResult,
+  ThreadId,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { ensureNativeApi } from "~/nativeApi";
@@ -12,6 +15,26 @@ export const projectQueryKeys = {
     ["projects", "list-entries", cwd, limit ?? null] as const,
   searchEntries: (cwd: string | null, query: string, limit: number) =>
     ["projects", "search-entries", cwd, query, limit] as const,
+  searchContents: (input: {
+    projectId: ProjectId | null;
+    threadId: ThreadId | null;
+    query: string;
+    caseSensitive: boolean;
+    wholeWord: boolean;
+    useRegex: boolean;
+    limit: number;
+  }) =>
+    [
+      "projects",
+      "search-contents",
+      input.projectId,
+      input.threadId,
+      input.query,
+      input.caseSensitive,
+      input.wholeWord,
+      input.useRegex,
+      input.limit,
+    ] as const,
   filesystemBrowse: (partialPath: string, cwd: string | null) =>
     ["filesystem", "browse", partialPath, cwd] as const,
 };
@@ -74,9 +97,78 @@ export function projectSearchEntriesQueryOptions(input: {
         limit,
       });
     },
-    enabled: (input.enabled ?? true) && input.cwd !== null && input.query.length > 0,
+    enabled: (input.enabled ?? true) && input.cwd !== null,
     staleTime: input.staleTime ?? DEFAULT_SEARCH_ENTRIES_STALE_TIME,
     placeholderData: (previous) => previous ?? EMPTY_SEARCH_ENTRIES_RESULT,
+  });
+}
+
+const EMPTY_SEARCH_CONTENTS_RESULT: ProjectSearchContentsResult = {
+  requestId: "empty",
+  matches: [],
+  truncated: false,
+  indexedPathCount: 0,
+  indexTruncated: false,
+};
+
+export function projectSearchContentsQueryOptions(input: {
+  projectId: ProjectId | null;
+  threadId: ThreadId | null;
+  query: string;
+  caseSensitive?: boolean;
+  wholeWord?: boolean;
+  useRegex?: boolean;
+  limit?: number;
+  enabled?: boolean;
+}) {
+  const caseSensitive = input.caseSensitive ?? false;
+  const wholeWord = input.wholeWord ?? false;
+  const useRegex = input.useRegex ?? false;
+  const limit = input.limit ?? 500;
+  return queryOptions({
+    queryKey: projectQueryKeys.searchContents({
+      projectId: input.projectId,
+      threadId: input.threadId,
+      query: input.query,
+      caseSensitive,
+      wholeWord,
+      useRegex,
+      limit,
+    }),
+    queryFn: async ({ signal }) => {
+      if (!input.projectId) throw new Error("Project content search is unavailable.");
+      const api = ensureNativeApi();
+      const requestId = globalThis.crypto.randomUUID();
+      const cancel = () => {
+        void api.projects.cancelContentSearch({ requestId }).catch(() => undefined);
+      };
+      if (signal.aborted) {
+        cancel();
+        throw new DOMException("Project content search was cancelled.", "AbortError");
+      }
+      signal.addEventListener("abort", cancel, { once: true });
+      try {
+        const result = await api.projects.searchContents({
+          requestId,
+          projectId: input.projectId,
+          ...(input.threadId ? { threadId: input.threadId } : {}),
+          query: input.query,
+          limit,
+          caseSensitive,
+          wholeWord,
+          useRegex,
+        });
+        if (result.requestId !== requestId) {
+          throw new Error("Project content search returned a stale response.");
+        }
+        return result;
+      } finally {
+        signal.removeEventListener("abort", cancel);
+      }
+    },
+    enabled: (input.enabled ?? true) && input.projectId !== null && input.query.trim().length > 0,
+    staleTime: 5_000,
+    placeholderData: EMPTY_SEARCH_CONTENTS_RESULT,
   });
 }
 

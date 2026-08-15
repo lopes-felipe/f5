@@ -198,6 +198,10 @@ export function formatKeybindingCommandLabel(
       return "Switch recent model";
     case "prHub.open":
       return "Open Pull Requests";
+    case "palette.files":
+      return "Search project files";
+    case "projectContentSearch.toggle":
+      return "Search project content";
     case "modelPicker.toggle":
       return "Toggle model picker";
     case "modelPicker.jump.1":

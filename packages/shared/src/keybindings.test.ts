@@ -63,6 +63,19 @@ describe("shared keybinding helpers", () => {
     });
   });
 
+  it("uses distinct defaults for project file and content search", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+p",
+      command: "palette.files",
+      when: "!terminalFocus",
+    });
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+shift+f",
+      command: "projectContentSearch.toggle",
+      when: "!terminalFocus",
+    });
+  });
+
   it("scopes modified-enter defaults by dialog focus", () => {
     expect(DEFAULT_KEYBINDINGS).toContainEqual({
       key: "mod+enter",

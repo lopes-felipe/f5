@@ -77,10 +77,12 @@ import {
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
 import {
+  ProjectCancelContentSearchInput,
   ProjectAuthorizeEntryInput,
   ProjectListEntriesInput,
   ProjectReadFileInput,
   ProjectSearchEntriesInput,
+  ProjectSearchContentsInput,
   ProjectWriteFileInput,
 } from "./project";
 import {
@@ -178,6 +180,8 @@ export const WS_METHODS = {
   projectsRemove: "projects.remove",
   projectsListEntries: "projects.listEntries",
   projectsSearchEntries: "projects.searchEntries",
+  projectsSearchContents: "projects.searchContents",
+  projectsCancelContentSearch: "projects.cancelContentSearch",
   projectsWriteFile: "projects.writeFile",
   projectsReadFile: "projects.readFile",
   projectsAuthorizeEntry: "projects.authorizeEntry",
@@ -402,6 +406,8 @@ const WebSocketRequestBody = Schema.Union([
   // Project Search
   tagRequestBody(WS_METHODS.projectsListEntries, ProjectListEntriesInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
+  tagRequestBody(WS_METHODS.projectsSearchContents, ProjectSearchContentsInput),
+  tagRequestBody(WS_METHODS.projectsCancelContentSearch, ProjectCancelContentSearchInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
   tagRequestBody(WS_METHODS.projectsAuthorizeEntry, ProjectAuthorizeEntryInput),

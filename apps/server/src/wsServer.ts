@@ -83,8 +83,10 @@ import {
   browseWorkspaceEntries,
   clearWorkspaceIndexCache,
   listWorkspaceEntries,
+  registerWorkspaceContentIndexInvalidator,
   searchWorkspaceEntries,
 } from "./workspaceEntries";
+import { makeProjectContentSearchManager } from "./projectContentSearch";
 import {
   OrchestrationEngineService,
   type OrchestrationEngineShape,
@@ -1549,6 +1551,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       );
     },
   });
+  const projectContentSearchManager = makeProjectContentSearchManager();
+  const unregisterWorkspaceContentInvalidator = registerWorkspaceContentIndexInvalidator(
+    projectContentSearchManager.invalidateWorkspaceRoot,
+  );
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      unregisterWorkspaceContentInvalidator();
+      await projectContentSearchManager.dispose();
+    }),
+  );
+  const activeContentSearchesByClient = new WeakMap<WebSocket, Map<string, string>>();
+  let nextContentSearchKey = 1;
   const threadCommandExecutionQuery = yield* ThreadCommandExecutionQuery;
   const threadFileChangeQuery = yield* ThreadFileChangeQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
@@ -2411,6 +2425,74 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               message: `Failed to search workspace entries: ${String(cause)}`,
             }),
         });
+      }
+
+      case WS_METHODS.projectsSearchContents: {
+        const body = stripRequestTag(request.body);
+        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        const project = snapshot.projects.find(
+          (candidate) => candidate.id === body.projectId && candidate.deletedAt === null,
+        );
+        if (!project) {
+          return yield* new RouteRequestError({
+            message: "Project content search target is unavailable.",
+          });
+        }
+        const thread = body.threadId
+          ? snapshot.threads.find(
+              (candidate) =>
+                candidate.id === body.threadId &&
+                candidate.projectId === body.projectId &&
+                candidate.deletedAt === null,
+            )
+          : null;
+        if (body.threadId && !thread) {
+          return yield* new RouteRequestError({
+            message: "Project content search target is unavailable.",
+          });
+        }
+        const workspaceRoot = thread?.worktreePath ?? project.workspaceRoot;
+        let searches = activeContentSearchesByClient.get(ws);
+        if (!searches) {
+          searches = new Map();
+          activeContentSearchesByClient.set(ws, searches);
+        }
+        const previousKey = searches.get(body.requestId);
+        if (previousKey) {
+          yield* Effect.promise(() => projectContentSearchManager.cancel(previousKey));
+        }
+        const requestKey = `content-search-${nextContentSearchKey++}`;
+        searches.set(body.requestId, requestKey);
+        return yield* Effect.tryPromise({
+          try: async () => {
+            try {
+              return await projectContentSearchManager.search({
+                requestKey,
+                workspaceRoot,
+                request: body,
+              });
+            } finally {
+              if (searches?.get(body.requestId) === requestKey) {
+                searches.delete(body.requestId);
+              }
+            }
+          },
+          catch: () =>
+            new RouteRequestError({
+              message: "Project content search failed.",
+            }),
+        });
+      }
+
+      case WS_METHODS.projectsCancelContentSearch: {
+        const body = stripRequestTag(request.body);
+        const searches = activeContentSearchesByClient.get(ws);
+        const requestKey = searches?.get(body.requestId);
+        if (!requestKey) return { cancelled: false };
+        searches?.delete(body.requestId);
+        return {
+          cancelled: yield* Effect.promise(() => projectContentSearchManager.cancel(requestKey)),
+        };
       }
 
       case WS_METHODS.filesystemBrowse: {
@@ -3835,6 +3917,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return;
       }
       disconnectRecorded = true;
+      const activeContentSearches = activeContentSearchesByClient.get(ws);
+      activeContentSearchesByClient.delete(ws);
+      if (activeContentSearches) {
+        for (const requestKey of activeContentSearches.values()) {
+          void projectContentSearchManager.cancel(requestKey);
+        }
+      }
       void runPromise(
         increment(websocketConnectionsTotal, {
           event: "disconnect",

@@ -40,6 +40,8 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   { key: "ctrl+shift+tab", command: "thread.switchRecentPrevious" },
   { key: "alt+tab", command: "model.switchRecent" },
   { key: "mod+shift+p", command: "prHub.open", when: "!terminalFocus" },
+  { key: "mod+p", command: "palette.files", when: "!terminalFocus" },
+  { key: "mod+shift+f", command: "projectContentSearch.toggle", when: "!terminalFocus" },
   { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
   ...MODEL_PICKER_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,

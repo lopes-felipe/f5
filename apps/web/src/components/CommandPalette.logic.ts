@@ -50,6 +50,8 @@ export interface CommandPaletteView {
   readonly initialQuery?: string;
 }
 
+export type CommandPaletteFilterMode = "all" | "files" | "content";
+
 export type CommandPaletteMode = "root" | "root-browse" | "submenu" | "submenu-browse";
 
 export function filterBrowseEntries(input: {
@@ -234,9 +236,28 @@ export function filterCommandPaletteGroups(input: {
   query: string;
   isInSubmenu: boolean;
   fileSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
+  contentSearchItems?: ReadonlyArray<CommandPaletteActionItem>;
+  searchMode?: CommandPaletteFilterMode;
   projectSearchItems: ReadonlyArray<CommandPaletteActionItem>;
   threadSearchItems: ReadonlyArray<CommandPaletteActionItem>;
 }): CommandPaletteGroup[] {
+  const searchMode = input.searchMode ?? "all";
+  if (searchMode === "files") {
+    return input.fileSearchItems?.length
+      ? [{ value: "files-search", label: "Files", items: input.fileSearchItems }]
+      : [];
+  }
+  if (searchMode === "content") {
+    return input.contentSearchItems?.length
+      ? [
+          {
+            value: "project-content-search",
+            label: "Project content",
+            items: input.contentSearchItems,
+          },
+        ]
+      : [];
+  }
   const isActionsFilter = input.query.startsWith(">");
   const searchQuery = isActionsFilter ? input.query.slice(1) : input.query;
   const normalizedQuery = normalizeSearchText(searchQuery);

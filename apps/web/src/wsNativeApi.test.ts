@@ -375,6 +375,37 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("forwards project content searches and cancellation", async () => {
+    requestMock
+      .mockResolvedValueOnce({
+        requestId: "search-1",
+        matches: [],
+        truncated: false,
+        indexedPathCount: 10,
+        indexTruncated: false,
+      })
+      .mockResolvedValueOnce({ cancelled: true });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    const input = {
+      requestId: "search-1",
+      projectId: ProjectId.makeUnsafe("project-1"),
+      query: "needle",
+      limit: 500,
+      caseSensitive: false,
+      wholeWord: false,
+      useRegex: false,
+    } as const;
+
+    await api.projects.searchContents(input);
+    await api.projects.cancelContentSearch({ requestId: "search-1" });
+
+    expect(requestMock).toHaveBeenNthCalledWith(1, WS_METHODS.projectsSearchContents, input);
+    expect(requestMock).toHaveBeenNthCalledWith(2, WS_METHODS.projectsCancelContentSearch, {
+      requestId: "search-1",
+    });
+  });
+
   it("forwards workspace file reads to the websocket project method", async () => {
     requestMock.mockResolvedValue({
       relativePath: "plan.md",
