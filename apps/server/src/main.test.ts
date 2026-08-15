@@ -52,6 +52,7 @@ const testLayer = Layer.mergeAll(
   Layer.succeed(Open, {
     openBrowser: (_target: string) => Effect.void,
     openInEditor: () => Effect.void,
+    revealInFileManager: () => Effect.void,
   } satisfies OpenShape),
   AnalyticsService.layerTest,
   FetchHttpClient.layer,

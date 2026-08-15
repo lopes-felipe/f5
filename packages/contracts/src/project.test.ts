@@ -1,9 +1,14 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { PROJECT_LIST_ENTRIES_MAX_LIMIT, ProjectListEntriesInput } from "./project";
+import {
+  PROJECT_LIST_ENTRIES_MAX_LIMIT,
+  ProjectAuthorizeEntryInput,
+  ProjectListEntriesInput,
+} from "./project";
 
 const decodeProjectListEntriesInput = Schema.decodeUnknownSync(ProjectListEntriesInput);
+const decodeProjectAuthorizeEntryInput = Schema.decodeUnknownSync(ProjectAuthorizeEntryInput);
 
 describe("ProjectListEntriesInput", () => {
   it("accepts the maximum workspace file tree entry limit", () => {
@@ -22,5 +27,17 @@ describe("ProjectListEntriesInput", () => {
         limit: PROJECT_LIST_ENTRIES_MAX_LIMIT + 1,
       }),
     ).toThrow();
+  });
+});
+
+describe("ProjectAuthorizeEntryInput", () => {
+  it("accepts a bounded relative path and optional expected kind", () => {
+    expect(
+      decodeProjectAuthorizeEntryInput({
+        cwd: "/workspace",
+        relativePath: "src/index.ts",
+        kind: "file",
+      }),
+    ).toEqual({ cwd: "/workspace", relativePath: "src/index.ts", kind: "file" });
   });
 });

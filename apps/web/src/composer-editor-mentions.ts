@@ -196,3 +196,12 @@ export function splitPromptIntoComposerSegments(
 
   return segments;
 }
+
+export function collectComposerMentionPaths(prompt: string): string[] {
+  return splitPromptIntoComposerSegments(prompt)
+    .filter(
+      (segment): segment is Extract<ComposerPromptSegment, { type: "mention" }> =>
+        segment.type === "mention",
+    )
+    .map((segment) => segment.path);
+}

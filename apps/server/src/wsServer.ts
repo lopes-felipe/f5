@@ -1525,7 +1525,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const threadCommandExecutionQuery = yield* ThreadCommandExecutionQuery;
   const threadFileChangeQuery = yield* ThreadFileChangeQuery;
   const checkpointDiffQuery = yield* CheckpointDiffQuery;
-  const { openInEditor } = yield* Open;
+  const { openInEditor, revealInFileManager } = yield* Open;
   const orchestrationRuntime = yield* Deferred.make<
     OrchestrationRuntimeServices,
     ServerLifecycleError
@@ -2516,9 +2516,43 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         };
       }
 
+      case WS_METHODS.projectsAuthorizeEntry: {
+        const body = stripRequestTag(request.body);
+        const target = yield* resolveWorkspaceReadPath({
+          workspaceRoot: body.cwd,
+          relativePath: body.relativePath,
+          path,
+          fileSystem,
+        });
+        const stat = yield* fileSystem
+          .stat(target.absolutePath)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: `File not found: ${target.relativePath}` }),
+            ),
+          );
+        if (stat.type !== "File" && stat.type !== "Directory") {
+          return yield* new RouteRequestError({
+            message: `Unsupported workspace entry type: ${target.relativePath}`,
+          });
+        }
+        const kind = stat.type === "Directory" ? ("directory" as const) : ("file" as const);
+        if (body.kind !== undefined && body.kind !== kind) {
+          return yield* new RouteRequestError({
+            message: `Workspace entry type changed: ${target.relativePath}`,
+          });
+        }
+        return { relativePath: target.relativePath, kind };
+      }
+
       case WS_METHODS.shellOpenInEditor: {
         const body = stripRequestTag(request.body);
         return yield* openInEditor(body);
+      }
+
+      case WS_METHODS.shellRevealInFileManager: {
+        const body = stripRequestTag(request.body);
+        return yield* revealInFileManager(body.path);
       }
 
       case WS_METHODS.gitStatus: {

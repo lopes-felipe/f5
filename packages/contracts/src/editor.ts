@@ -28,3 +28,8 @@ export const OpenInEditorInput = Schema.Struct({
   editor: EditorId,
 });
 export type OpenInEditorInput = typeof OpenInEditorInput.Type;
+
+export const RevealInFileManagerInput = Schema.Struct({
+  path: TrimmedNonEmptyString,
+});
+export type RevealInFileManagerInput = typeof RevealInFileManagerInput.Type;

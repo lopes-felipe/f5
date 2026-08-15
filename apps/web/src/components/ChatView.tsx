@@ -75,7 +75,10 @@ import {
   parseStandaloneComposerSlashCommand,
   replaceTextRange,
 } from "../composer-logic";
-import { serializeComposerMentionPath } from "../composer-editor-mentions";
+import {
+  collectComposerMentionPaths,
+  serializeComposerMentionPath,
+} from "../composer-editor-mentions";
 import {
   derivePendingApprovals,
   derivePendingUserInputs,
@@ -223,6 +226,15 @@ import {
 import { shouldUseCompactComposerFooter } from "./composerFooterLayout";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { ComposerPromptEditor, type ComposerPromptEditorHandle } from "./ComposerPromptEditor";
+import {
+  authorizeComposerMentionPaths,
+  authorizeFileTreeMention,
+  composerFileMention,
+  dataTransferHasFileTreeMention,
+  readFileTreeDragMention,
+  workspaceIdentityForRoot,
+} from "./fileTreeDragMention";
+import { registerComposerFileMentionInserter } from "./composerFileMentionInsertion";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
 import { RuntimeModePicker } from "./chat/RuntimeModePicker";
@@ -804,6 +816,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const timelineEntryRowIndexMapRef = useRef<ReadonlyMap<string, number> | null>(null);
   const isAtEndRef = useRef(true);
   const composerEditorRef = useRef<ComposerPromptEditorHandle>(null);
+  const composerFileMentionInserterRef = useRef<(relativePath: string) => boolean>(() => false);
   const composerFormRef = useRef<HTMLFormElement>(null);
   const onSendRef = useRef<
     ((event?: { preventDefault: () => void }, intent?: SendIntent) => Promise<void>) | null
@@ -3788,6 +3801,66 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     }
   };
 
+  const claimFileTreeMentionDrag = (event: React.DragEvent<HTMLDivElement>): boolean => {
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopPropagation();
+    return true;
+  };
+
+  const onComposerFileMentionDragEnterCapture = (event: React.DragEvent<HTMLDivElement>) => {
+    if (claimFileTreeMentionDrag(event)) setIsDragOverComposer(true);
+  };
+
+  const onComposerFileMentionDragOverCapture = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!claimFileTreeMentionDrag(event)) return;
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragOverComposer(true);
+  };
+
+  const onComposerFileMentionDragLeaveCapture = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return;
+    event.stopPropagation();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setIsDragOverComposer(false);
+  };
+
+  const onComposerFileMentionDropCapture = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return;
+    const payload = readFileTreeDragMention(event.dataTransfer);
+    claimFileTreeMentionDrag(event);
+    dragDepthRef.current = 0;
+    setIsDragOverComposer(false);
+
+    const api = readNativeApi();
+    const workspaceRoot = activeThread?.worktreePath ?? activeProject?.cwd ?? null;
+    if (!payload || !api || !activeProject || !workspaceRoot) {
+      toastManager.add({ type: "error", title: "Unable to add the dragged file to chat." });
+      return;
+    }
+    void authorizeFileTreeMention({
+      api,
+      payload,
+      expectedProjectId: activeProject.id,
+      expectedWorkspaceIdentity: workspaceIdentityForRoot(activeProject.id, workspaceRoot),
+      workspaceRoot,
+    })
+      .then((relativePath) => {
+        if (!composerFileMentionInserterRef.current(relativePath)) {
+          throw new Error("The composer is not ready to accept input.");
+        }
+      })
+      .catch((error) => {
+        toastManager.add({
+          type: "error",
+          title: "Unable to add the dragged file to chat.",
+          description: error instanceof Error ? error.message : "The file could not be authorized.",
+        });
+      });
+  };
+
   const onComposerDrop = (event: React.DragEvent<HTMLDivElement>) => {
     if (!event.dataTransfer.types.includes("Files")) {
       return;
@@ -3987,6 +4060,23 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       return;
     }
     if (!activeProject) return;
+    const mentionedPaths = collectComposerMentionPaths(promptForSend);
+    if (mentionedPaths.length > 0) {
+      try {
+        await authorizeComposerMentionPaths({
+          api,
+          workspaceRoot: activeThread.worktreePath ?? activeProject.cwd,
+          relativePaths: mentionedPaths,
+        });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "A mentioned workspace path is no longer available.",
+          description: error instanceof Error ? error.message : "Re-add the path and try again.",
+        });
+        return;
+      }
+    }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     if (isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
@@ -4939,6 +5029,42 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     [activePendingProgress?.activeQuestion, activePendingUserInput, setPrompt],
   );
 
+  const insertComposerFileMention = useCallback(
+    (relativePath: string): boolean => {
+      const mention = composerFileMention(relativePath);
+      if (
+        mention === null ||
+        isConnecting ||
+        isComposerApprovalState ||
+        isPendingTurnDispatchBlocked ||
+        pendingUserInputs.length > 0 ||
+        !activeProject
+      ) {
+        return false;
+      }
+      const currentText = promptRef.current;
+      const leadingBoundary = currentText.length > 0 && !/\s$/.test(currentText) ? " " : "";
+      return applyPromptReplacement(
+        currentText.length,
+        currentText.length,
+        `${leadingBoundary}${mention} `,
+      );
+    },
+    [
+      activeProject,
+      applyPromptReplacement,
+      isComposerApprovalState,
+      isConnecting,
+      isPendingTurnDispatchBlocked,
+      pendingUserInputs.length,
+    ],
+  );
+  composerFileMentionInserterRef.current = insertComposerFileMention;
+  useEffect(
+    () => registerComposerFileMentionInserter(threadId, insertComposerFileMention),
+    [insertComposerFileMention, threadId],
+  );
+
   const readComposerSnapshot = useCallback((): {
     value: string;
     cursor: number;
@@ -5519,6 +5645,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                     onDragOver={onComposerDragOver}
                     onDragLeave={onComposerDragLeave}
                     onDrop={onComposerDrop}
+                    onDragEnterCapture={onComposerFileMentionDragEnterCapture}
+                    onDragOverCapture={onComposerFileMentionDragOverCapture}
+                    onDragLeaveCapture={onComposerFileMentionDragLeaveCapture}
+                    onDropCapture={onComposerFileMentionDropCapture}
                   >
                     {activePendingApproval ? (
                       <div className="rounded-t-[19px] border-b border-border/65 bg-muted/20">

@@ -1,4 +1,4 @@
-import type { ProjectEntry } from "@t3tools/contracts";
+import type { ProjectEntry, ProjectId, ThreadId } from "@t3tools/contracts";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -10,7 +10,11 @@ import {
   SearchIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent as ReactKeyboardEvent } from "react";
+import type {
+  DragEvent as ReactDragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+} from "react";
 
 import {
   projectListEntriesQueryOptions,
@@ -18,12 +22,19 @@ import {
   projectSearchEntriesQueryOptions,
 } from "../lib/projectReactQuery";
 import { cn } from "../lib/utils";
+import { readNativeApi } from "../nativeApi";
+import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
+import { showFileEntryContextMenu } from "./fileEntryActions";
+import { writeFileTreeDragMention } from "./fileTreeDragMention";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { ScrollArea } from "./ui/scroll-area";
 
 interface FileBrowserPanelProps {
   cwd: string | null;
+  projectId: ProjectId | null;
+  threadId: ThreadId;
+  workspaceIdentity: string | null;
   projectName: string;
   entryLimit: number;
   onOpenFile: (relativePath: string) => void;
@@ -150,6 +161,9 @@ export function resolveSearchEntryForEnter(
 
 export default function FileBrowserPanel({
   cwd,
+  projectId,
+  threadId,
+  workspaceIdentity,
   projectName,
   entryLimit,
   onOpenFile,
@@ -350,6 +364,41 @@ export default function FileBrowserPanel({
     }
   }, [activeSearchQuery, cwd, entryLimit, queryClient]);
 
+  const handleEntryDragStart = useCallback(
+    (event: ReactDragEvent<HTMLButtonElement>, entry: ProjectEntry) => {
+      if (
+        entry.kind !== "file" ||
+        projectId === null ||
+        workspaceIdentity === null ||
+        !writeFileTreeDragMention(event.dataTransfer, {
+          projectId,
+          workspaceIdentity,
+          relativePath: entry.path,
+        })
+      ) {
+        event.preventDefault();
+      }
+    },
+    [projectId, workspaceIdentity],
+  );
+
+  const handleEntryContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLButtonElement>, entry: ProjectEntry) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const api = readNativeApi();
+      if (!api || !cwd) return;
+      void showFileEntryContextMenu({
+        api,
+        cwd,
+        entry,
+        position: { x: event.clientX, y: event.clientY },
+        onAddToChat: (relativePath) => insertFileMentionIntoComposer(threadId, relativePath),
+      });
+    },
+    [cwd, threadId],
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background">
       <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border/60 px-3">
@@ -435,6 +484,9 @@ export default function FileBrowserPanel({
                     highlighted && "bg-accent text-foreground",
                   )}
                   aria-selected={highlighted}
+                  draggable={!isDirectory && projectId !== null && workspaceIdentity !== null}
+                  onDragStart={(event) => handleEntryDragStart(event, entry)}
+                  onContextMenu={(event) => handleEntryContextMenu(event, entry)}
                   onMouseEnter={() => setHighlightedSearchIndex(index)}
                   onClick={() => handleSearchEntryAction(entry)}
                 >
@@ -479,6 +531,9 @@ export default function FileBrowserPanel({
                   data-file-browser-path={node.entry.path}
                   className="flex h-7 w-full min-w-0 items-center gap-1.5 px-2 text-left text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                   style={{ paddingLeft: 8 + depth * 14 }}
+                  draggable={!isDirectory && projectId !== null && workspaceIdentity !== null}
+                  onDragStart={(event) => handleEntryDragStart(event, node.entry)}
+                  onContextMenu={(event) => handleEntryContextMenu(event, node.entry)}
                   onClick={() => {
                     if (isDirectory) {
                       toggleDirectory(node.entry.path);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  collectComposerMentionPaths,
   COMPOSER_SURROUND_PAIRS,
   doesSelectionTouchInlineToken,
   serializeComposerMentionPath,
@@ -76,6 +77,14 @@ describe("serializeComposerMentionPath", () => {
 
   it("escapes quoted mention path content", () => {
     expect(serializeComposerMentionPath('docs/My "File".md')).toBe('"docs/My \\"File\\".md"');
+  });
+});
+
+describe("collectComposerMentionPaths", () => {
+  it("returns serialized mention paths without ordinary at-sign text", () => {
+    expect(
+      collectComposerMentionPaths('Review @src/app.ts and @"docs/My File.md" please '),
+    ).toEqual(["src/app.ts", "docs/My File.md"]);
   });
 });
 

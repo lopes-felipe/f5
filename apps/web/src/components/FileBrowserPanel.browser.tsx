@@ -1,12 +1,27 @@
 import "../index.css";
 
-import type { NativeApi, ProjectEntry, ProjectListEntriesResult } from "@t3tools/contracts";
+import {
+  ProjectId,
+  ThreadId,
+  type NativeApi,
+  type ProjectEntry,
+  type ProjectListEntriesResult,
+} from "@t3tools/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import FileBrowserPanel from "./FileBrowserPanel";
+import { registerComposerFileMentionInserter } from "./composerFileMentionInsertion";
+import {
+  F5_FILE_MENTION_MIME,
+  parseFileTreeDragMentionPayload,
+  workspaceIdentityForRoot,
+} from "./fileTreeDragMention";
+
+const PROJECT_ID = ProjectId.makeUnsafe("project-file-browser");
+const THREAD_ID = ThreadId.makeUnsafe("thread-file-browser");
 
 const { nativeApiRef } = vi.hoisted(() => ({
   nativeApiRef: {
@@ -21,10 +36,12 @@ vi.mock("~/nativeApi", () => ({
     }
     return nativeApiRef.current;
   },
+  readNativeApi: () => nativeApiRef.current,
 }));
 
 const listEntries = vi.fn();
 const searchEntries = vi.fn();
+const showContextMenu = vi.fn();
 
 const TREE_ENTRIES: ProjectEntry[] = [
   { path: "src", kind: "directory" },
@@ -49,10 +66,14 @@ async function renderPanel(options: { cwd?: string | null; entryLimit?: number }
     },
   });
   const onOpenFile = vi.fn();
+  const cwd = options.cwd === undefined ? "/repo/project" : options.cwd;
   const screen = await render(
     <QueryClientProvider client={queryClient}>
       <FileBrowserPanel
-        cwd={options.cwd === undefined ? "/repo/project" : options.cwd}
+        cwd={cwd}
+        projectId={PROJECT_ID}
+        threadId={THREAD_ID}
+        workspaceIdentity={cwd ? workspaceIdentityForRoot(PROJECT_ID, cwd) : null}
         projectName="Project"
         entryLimit={options.entryLimit ?? 5_000}
         onOpenFile={onOpenFile}
@@ -109,6 +130,7 @@ describe("FileBrowserPanel", () => {
         listEntries,
         searchEntries,
       },
+      contextMenu: { show: showContextMenu },
     } as unknown as NativeApi;
   });
 
@@ -116,6 +138,7 @@ describe("FileBrowserPanel", () => {
     nativeApiRef.current = undefined;
     listEntries.mockReset();
     searchEntries.mockReset();
+    showContextMenu.mockReset();
     document.body.innerHTML = "";
   });
 
@@ -201,6 +224,65 @@ describe("FileBrowserPanel", () => {
 
       expect(mounted.onOpenFile).toHaveBeenCalledWith("src/components/FileBrowserPanel.tsx");
     } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("writes a relative-only f5 mention payload when dragging one file", async () => {
+    const mounted = await renderPanel();
+    try {
+      await expect.element(page.getByText("README.md")).toBeInTheDocument();
+      const transfer = new DataTransfer();
+      page
+        .getByRole("button", { name: /README\.md/ })
+        .element()
+        .dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer: transfer }));
+
+      expect(Array.from(transfer.types)).toContain(F5_FILE_MENTION_MIME);
+      expect(parseFileTreeDragMentionPayload(transfer.getData(F5_FILE_MENTION_MIME))).toEqual({
+        version: 1,
+        projectId: PROJECT_ID,
+        workspaceIdentity: workspaceIdentityForRoot(PROJECT_ID, "/repo/project"),
+        relativePath: "README.md",
+      });
+      expect(transfer.getData(F5_FILE_MENTION_MIME)).not.toContain("/repo/project");
+      expect(transfer.getData("text/plain")).toBe("@README.md ");
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers file actions and routes Add to chat through the active composer", async () => {
+    showContextMenu.mockResolvedValue("add-to-chat");
+    const insert = vi.fn(() => true);
+    const unregister = registerComposerFileMentionInserter(THREAD_ID, insert);
+    const mounted = await renderPanel();
+    try {
+      await expect.element(page.getByText("README.md")).toBeInTheDocument();
+      page
+        .getByRole("button", { name: /README\.md/ })
+        .element()
+        .dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: 16,
+            clientY: 24,
+          }),
+        );
+      await vi.waitFor(() => expect(insert).toHaveBeenCalledWith("README.md"));
+      expect(showContextMenu).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "add-to-chat" }),
+          expect.objectContaining({ id: "copy-path" }),
+          expect.objectContaining({ id: "copy-relative-path" }),
+          expect.objectContaining({ id: "open-in-editor" }),
+          expect.objectContaining({ id: "reveal-in-file-manager" }),
+        ]),
+        { x: 16, y: 24 },
+      );
+    } finally {
+      unregister();
       await mounted.cleanup();
     }
   });

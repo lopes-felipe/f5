@@ -15,6 +15,7 @@ import {
   launchDetached,
   resolveAvailableEditors,
   resolveEditorLaunch,
+  resolveFileManagerRevealLaunch,
 } from "./open";
 
 it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
@@ -260,6 +261,21 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       });
     }),
   );
+});
+
+it("builds platform-specific file reveal commands", () => {
+  expect(resolveFileManagerRevealLaunch("/tmp/workspace/src/app.ts", "darwin")).toEqual({
+    command: "open",
+    args: ["-R", "/tmp/workspace/src/app.ts"],
+  });
+  expect(resolveFileManagerRevealLaunch("C:\\workspace\\src\\app.ts", "win32")).toEqual({
+    command: "explorer",
+    args: ["/select,C:\\workspace\\src\\app.ts"],
+  });
+  expect(resolveFileManagerRevealLaunch("/tmp/workspace/src/app.ts", "linux")).toEqual({
+    command: "xdg-open",
+    args: ["/tmp/workspace/src"],
+  });
 });
 
 it.layer(NodeServices.layer)("launchDetached", (it) => {

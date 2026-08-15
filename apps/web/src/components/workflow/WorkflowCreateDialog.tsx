@@ -44,6 +44,7 @@ import {
   relativePathForDisplay,
   sanitizeAttachedFileReferencePaths,
 } from "../../lib/attachedFiles";
+import { collectComposerMentionPaths } from "../../composer-editor-mentions";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { cn } from "../../lib/utils";
 import {
@@ -87,6 +88,14 @@ import { Kbd } from "../ui/kbd";
 import { Menu, MenuGroup, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../ui/menu";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { toastManager } from "../ui/toast";
+import {
+  authorizeComposerMentionPaths,
+  authorizeFileTreeMention,
+  composerFileMention,
+  dataTransferHasFileTreeMention,
+  readFileTreeDragMention,
+  workspaceIdentityForRoot,
+} from "../fileTreeDragMention";
 import { ChevronDownIcon, XIcon } from "lucide-react";
 
 const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
@@ -726,6 +735,68 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
     }
   };
 
+  const claimFileTreeMentionDrag = (event: ReactDragEvent<HTMLDivElement>): boolean => {
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    event.nativeEvent.stopPropagation();
+    return true;
+  };
+
+  const onPromptFileMentionDragEnterCapture = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (claimFileTreeMentionDrag(event)) setIsDragOverPrompt(true);
+  };
+
+  const onPromptFileMentionDragOverCapture = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!claimFileTreeMentionDrag(event)) return;
+    event.dataTransfer.dropEffect = "copy";
+    setIsDragOverPrompt(true);
+  };
+
+  const onPromptFileMentionDragLeaveCapture = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return;
+    event.stopPropagation();
+    const nextTarget = event.relatedTarget;
+    if (nextTarget instanceof Node && event.currentTarget.contains(nextTarget)) return;
+    setIsDragOverPrompt(false);
+  };
+
+  const onPromptFileMentionDropCapture = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!dataTransferHasFileTreeMention(event.dataTransfer.types)) return;
+    const payload = readFileTreeDragMention(event.dataTransfer);
+    claimFileTreeMentionDrag(event);
+    dragDepthRef.current = 0;
+    setIsDragOverPrompt(false);
+    const api = readNativeApi();
+    if (!payload || !api || !project) {
+      toastManager.add({ type: "error", title: "Unable to add the dragged file." });
+      return;
+    }
+    void authorizeFileTreeMention({
+      api,
+      payload,
+      expectedProjectId: project.id,
+      expectedWorkspaceIdentity: workspaceIdentityForRoot(project.id, project.cwd),
+      workspaceRoot: project.cwd,
+    })
+      .then((relativePath) => {
+        const mention = composerFileMention(relativePath);
+        if (mention === null) throw new Error("The file path is invalid.");
+        setRequirementPrompt(
+          (current) =>
+            `${current}${current.length > 0 && !/\s$/.test(current) ? " " : ""}${mention} `,
+        );
+        window.requestAnimationFrame(focusPromptEditor);
+      })
+      .catch((cause) => {
+        toastManager.add({
+          type: "error",
+          title: "Unable to add the dragged file.",
+          description: cause instanceof Error ? cause.message : "The file could not be authorized.",
+        });
+      });
+  };
+
   const onPromptDrop = (event: ReactDragEvent<HTMLDivElement>) => {
     if (!event.dataTransfer.types.includes("Files")) {
       return;
@@ -769,6 +840,25 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         submittingRef.current = false;
         setSubmitting(false);
         return;
+      }
+      const mentionedPaths = collectComposerMentionPaths(requirementPrompt);
+      if (mentionedPaths.length > 0 && project) {
+        try {
+          await authorizeComposerMentionPaths({
+            api,
+            workspaceRoot: project.cwd,
+            relativePaths: mentionedPaths,
+          });
+        } catch (cause) {
+          setError(
+            cause instanceof Error
+              ? `A mentioned workspace path is unavailable: ${cause.message}`
+              : "A mentioned workspace path is unavailable.",
+          );
+          submittingRef.current = false;
+          setSubmitting(false);
+          return;
+        }
       }
       const promptForSubmission = appendAttachedFilesToPrompt(
         requirementPrompt,
@@ -939,6 +1029,10 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
               onDragOver={onPromptDragOver}
               onDragLeave={onPromptDragLeave}
               onDrop={onPromptDrop}
+              onDragEnterCapture={onPromptFileMentionDragEnterCapture}
+              onDragOverCapture={onPromptFileMentionDragOverCapture}
+              onDragLeaveCapture={onPromptFileMentionDragLeaveCapture}
+              onDropCapture={onPromptFileMentionDropCapture}
             >
               {attachedFilePaths.length > 0 ? (
                 <div className="flex flex-wrap gap-1.5">

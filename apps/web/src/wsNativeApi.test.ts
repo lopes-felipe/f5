@@ -397,6 +397,36 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("forwards workspace entry authorization without reading file contents", async () => {
+    requestMock.mockResolvedValue({ relativePath: "plan.md", kind: "file" });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    await api.projects.authorizeEntry({
+      cwd: "/tmp/project",
+      relativePath: "plan.md",
+      kind: "file",
+    });
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsAuthorizeEntry, {
+      cwd: "/tmp/project",
+      relativePath: "plan.md",
+      kind: "file",
+    });
+  });
+
+  it("forwards file reveal requests to the websocket shell method", async () => {
+    requestMock.mockResolvedValue(undefined);
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    await api.shell.revealInFileManager("/tmp/project/plan.md");
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.shellRevealInFileManager, {
+      path: "/tmp/project/plan.md",
+    });
+  });
+
   it("forwards harness validation requests to the websocket server method", async () => {
     requestMock.mockResolvedValue({ results: [] });
     const { createWsNativeApi } = await import("./wsNativeApi");

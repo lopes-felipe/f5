@@ -21,6 +21,8 @@ import type {
   GitStatusResult,
 } from "./git";
 import type {
+  ProjectAuthorizeEntryInput,
+  ProjectAuthorizeEntryResult,
   ProjectListEntriesInput,
   ProjectListEntriesResult,
   ProjectReadFileInput,
@@ -404,6 +406,7 @@ export interface NativeApi {
     onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;
   };
   projects: {
+    authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;
     writeFile: (input: ProjectWriteFileInput) => Promise<ProjectWriteFileResult>;
@@ -414,6 +417,7 @@ export interface NativeApi {
   };
   shell: {
     openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
+    revealInFileManager: (path: string) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
   };
   git: {

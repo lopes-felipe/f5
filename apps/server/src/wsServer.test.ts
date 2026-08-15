@@ -105,6 +105,7 @@ const asTurnId = (value: string): TurnId => TurnId.makeUnsafe(value);
 const defaultOpenService: OpenShape = {
   openBrowser: () => Effect.void,
   openInEditor: () => Effect.void,
+  revealInFileManager: () => Effect.void,
 };
 
 const defaultProviderSnapshots: ReadonlyArray<ServerProvider> = [
@@ -2065,6 +2066,7 @@ describe("WebSocket Server", () => {
         openCalls.push({ cwd: input.cwd, editor: input.editor });
         return Effect.void;
       },
+      revealInFileManager: () => Effect.void,
     };
 
     server = await createTestServer({ cwd: "/my/workspace", open: openService });
@@ -2080,6 +2082,29 @@ describe("WebSocket Server", () => {
     });
     expect(response.error).toBeUndefined();
     expect(openCalls).toEqual([{ cwd: "/my/workspace", editor: "cursor" }]);
+  });
+
+  it("routes shell.revealInFileManager through the injected open service", async () => {
+    const revealCalls: string[] = [];
+    const openService: OpenShape = {
+      openBrowser: () => Effect.void,
+      openInEditor: () => Effect.void,
+      revealInFileManager: (targetPath) => {
+        revealCalls.push(targetPath);
+        return Effect.void;
+      },
+    };
+    server = await createTestServer({ cwd: "/my/workspace", open: openService });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.shellRevealInFileManager, {
+      path: "/my/workspace/src/app.ts",
+    });
+    expect(response.error).toBeUndefined();
+    expect(revealCalls).toEqual(["/my/workspace/src/app.ts"]);
   });
 
   it("reads keybindings from the configured state directory", async () => {
@@ -2769,6 +2794,7 @@ describe("WebSocket Server", () => {
       openBrowser: () => Effect.void,
       openInEditor: () =>
         Effect.sync(() => BigInt(1)).pipe(Effect.map((result) => result as unknown as void)),
+      revealInFileManager: () => Effect.void,
     };
 
     try {
@@ -3065,6 +3091,53 @@ describe("WebSocket Server", () => {
       truncated: false,
       contentSha256: sha256Hex("# Plan\n\n- step 1\n"),
     });
+  });
+
+  it("authorizes binary workspace files without reading their contents", async () => {
+    const workspace = makeTempDir("t3code-ws-authorize-entry-");
+    fs.writeFileSync(path.join(workspace, "image.bin"), Buffer.from([0, 1, 2, 3]));
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.projectsAuthorizeEntry, {
+      cwd: workspace,
+      relativePath: "image.bin",
+      kind: "file",
+    });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual({ relativePath: "image.bin", kind: "file" });
+  });
+
+  it("rejects changed kinds and symlink escapes when authorizing workspace entries", async () => {
+    const workspace = makeTempDir("t3code-ws-authorize-entry-symlink-");
+    const outside = makeTempDir("t3code-ws-authorize-entry-outside-");
+    fs.mkdirSync(path.join(workspace, "docs"));
+    fs.writeFileSync(path.join(outside, "secret.txt"), "outside\n", "utf8");
+    fs.symlinkSync(path.join(outside, "secret.txt"), path.join(workspace, "secret-link.txt"));
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const changedKind = await sendRequest(ws, WS_METHODS.projectsAuthorizeEntry, {
+      cwd: workspace,
+      relativePath: "docs",
+      kind: "file",
+    });
+    expect(changedKind.error?.message).toContain("Workspace entry type changed: docs");
+
+    const symlinkEscape = await sendRequest(ws, WS_METHODS.projectsAuthorizeEntry, {
+      cwd: workspace,
+      relativePath: "secret-link.txt",
+      kind: "file",
+    });
+    expect(symlinkEscape.error?.message).toContain(
+      "Workspace file path must stay within the project root.",
+    );
   });
 
   it("resolves projects.readFile targets to the validated real path before reading", async () => {

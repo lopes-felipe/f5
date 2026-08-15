@@ -11,6 +11,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { MouseEvent as ReactMouseEvent } from "react";
 import { openInPreferredEditor } from "../editorPreferences";
 import { clearFileViewSearchParams, parseDiffRouteSearch } from "../diffRouteSearch";
 import { useDiffWordWrap } from "../appSettings";
@@ -27,6 +28,8 @@ import { DiffPanelShell, DiffPanelLoadingState, type DiffPanelMode } from "./Dif
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 import { DIFF_PANEL_UNSAFE_CSS } from "./DiffPanel";
+import { insertFileMentionIntoComposer } from "./composerFileMentionInsertion";
+import { showFileEntryContextMenu } from "./fileEntryActions";
 
 interface FileViewPanelProps {
   mode: DiffPanelMode;
@@ -302,6 +305,24 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
     });
   }, [fileColumn, fileLine, filePath, workspaceRoot]);
 
+  const showFileContextMenu = useCallback(
+    (event: ReactMouseEvent<HTMLElement>) => {
+      if (!filePath || !workspaceRoot || !activeThreadId) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const api = readNativeApi();
+      if (!api) return;
+      void showFileEntryContextMenu({
+        api,
+        cwd: workspaceRoot,
+        entry: { path: filePath, kind: "file" },
+        position: { x: event.clientX, y: event.clientY },
+        onAddToChat: (relativePath) => insertFileMentionIntoComposer(activeThreadId, relativePath),
+      });
+    },
+    [activeThreadId, filePath, workspaceRoot],
+  );
+
   const closeFileView = useCallback(() => {
     if (onClose) {
       onClose();
@@ -472,7 +493,10 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
               ) : null}
             </div>
           ) : null}
-          <div className="file-view-surface flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border/60 bg-card/25">
+          <div
+            className="file-view-surface flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border/60 bg-card/25"
+            onContextMenu={showFileContextMenu}
+          >
             {editing && canEditFile ? (
               <Textarea
                 unstyled

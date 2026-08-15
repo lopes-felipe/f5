@@ -27,6 +27,7 @@ import {
   useModelPreferencesStore,
 } from "../../modelPreferencesStore";
 import { useStore } from "../../store";
+import { workspaceIdentityForRoot, writeFileTreeDragMention } from "../fileTreeDragMention";
 
 const nativeApiMocks = vi.hoisted(() => ({
   createWorkflow: vi.fn<
@@ -40,6 +41,10 @@ const nativeApiMocks = vi.hoisted(() => ({
   >(async () => ({ workflowId: "workflow-3" })),
   getConfig: vi.fn(async () => ({
     keybindings: [],
+  })),
+  authorizeEntry: vi.fn(async (input: { relativePath: string }) => ({
+    relativePath: input.relativePath,
+    kind: "file" as const,
   })),
 }));
 
@@ -81,6 +86,9 @@ vi.mock("../../nativeApi", () => {
     },
     server: {
       getConfig: nativeApiMocks.getConfig,
+    },
+    projects: {
+      authorizeEntry: nativeApiMocks.authorizeEntry,
     },
   };
   return {
@@ -380,6 +388,7 @@ describe("WorkflowCreateDialog", () => {
     nativeApiMocks.createCodeReviewWorkflow.mockClear();
     nativeApiMocks.createInvestigationWorkflow.mockClear();
     nativeApiMocks.getConfig.mockClear();
+    nativeApiMocks.authorizeEntry.mockClear();
     useStore.setState({
       projects: [],
       threads: [],
@@ -1104,6 +1113,50 @@ describe("WorkflowCreateDialog", () => {
         expect(document.body.textContent ?? "").not.toContain("AGENTS.md");
       });
       expect(createWorkflowButton().disabled).toBe(true);
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
+  it("accepts an authorized internal file drag and rechecks it on submit", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      { container: host },
+    );
+
+    try {
+      const transfer = new DataTransfer();
+      writeFileTreeDragMention(transfer, {
+        projectId: "project-1",
+        workspaceIdentity: workspaceIdentityForRoot("project-1", "/repo/project"),
+        relativePath: "docs/AGENTS.md",
+      });
+      getRequirementEditorSurface().dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(document.querySelector("textarea")?.value).toBe("@docs/AGENTS.md ");
+      });
+      expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledWith({
+        cwd: "/repo/project",
+        relativePath: "docs/AGENTS.md",
+        kind: "file",
+      });
+
+      createWorkflowButton().click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.authorizeEntry).toHaveBeenCalledWith({
+        cwd: "/repo/project",
+        relativePath: "docs/AGENTS.md",
+      });
     } finally {
       await screen.unmount();
       host.remove();

@@ -57,6 +57,7 @@ import { getRouter } from "../router";
 import { useStore } from "../store";
 import { createTestServerProvider } from "../testServerProvider";
 import { createPlanningWorkflow } from "../test/workflowFixtures";
+import { workspaceIdentityForRoot, writeFileTreeDragMention } from "./fileTreeDragMention";
 
 vi.mock("./DiffWorkerPoolProvider", () => ({
   DiffWorkerPoolProvider: ({ children }: { children?: ReactNode }) => children ?? null,
@@ -1352,6 +1353,12 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
     return {
       entries: [],
       truncated: false,
+    };
+  }
+  if (tag === WS_METHODS.projectsAuthorizeEntry) {
+    return {
+      relativePath: typeof body.relativePath === "string" ? body.relativePath : "",
+      kind: body.kind === "directory" ? "directory" : "file",
     };
   }
   if (tag === WS_METHODS.terminalOpen) {
@@ -3476,6 +3483,63 @@ describe("ChatView timeline (full app)", () => {
         },
         { timeout: 8_000, interval: 16 },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("inserts an authorized internal file drag and reauthorizes the mention before send", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-internal-file-drag" as MessageId,
+        targetText: "internal file drag target",
+      }),
+    });
+
+    try {
+      const transfer = new DataTransfer();
+      writeFileTreeDragMention(transfer, {
+        projectId: PROJECT_ID,
+        workspaceIdentity: workspaceIdentityForRoot(PROJECT_ID, "/repo/project"),
+        relativePath: "src/index.ts",
+      });
+      (await waitForComposerShell()).dispatchEvent(
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: transfer,
+        }),
+      );
+
+      await vi.waitFor(() => {
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+          "@src/index.ts ",
+        );
+      });
+      expect(
+        wsRequests.filter((request) => request._tag === WS_METHODS.projectsAuthorizeEntry),
+      ).toContainEqual(
+        expect.objectContaining({
+          cwd: "/repo/project",
+          relativePath: "src/index.ts",
+          kind: "file",
+        }),
+      );
+
+      (await waitForSendButton()).click();
+      await vi.waitFor(() => {
+        const authorizationRequests = wsRequests.filter(
+          (request) => request._tag === WS_METHODS.projectsAuthorizeEntry,
+        );
+        expect(authorizationRequests.length).toBeGreaterThanOrEqual(2);
+        expect(authorizationRequests).toContainEqual(
+          expect.objectContaining({
+            cwd: "/repo/project",
+            relativePath: "src/index.ts",
+          }),
+        );
+      });
     } finally {
       await mounted.cleanup();
     }

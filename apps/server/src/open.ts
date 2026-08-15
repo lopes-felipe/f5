@@ -7,6 +7,7 @@
  * @module Open
  */
 import spawn from "cross-spawn";
+import NodePath from "node:path";
 
 import { EDITORS, type EditorId } from "@t3tools/contracts";
 import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
@@ -33,6 +34,20 @@ export interface OpenInEditorInput {
 interface EditorLaunch {
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+}
+
+export function resolveFileManagerRevealLaunch(
+  targetPath: string,
+  platform: NodeJS.Platform = process.platform,
+): EditorLaunch {
+  switch (platform) {
+    case "darwin":
+      return { command: "open", args: ["-R", targetPath] };
+    case "win32":
+      return { command: "explorer", args: [`/select,${targetPath}`] };
+    default:
+      return { command: "xdg-open", args: [NodePath.posix.dirname(targetPath)] };
+  }
 }
 
 // Treat a trailing :line[:column] suffix as editor navigation metadata. This is
@@ -165,6 +180,9 @@ export interface OpenShape {
    * Launches the editor as a detached process so server startup is not blocked.
    */
   readonly openInEditor: (input: OpenInEditorInput) => Effect.Effect<void, OpenError>;
+
+  /** Reveal a file in the platform file manager without opening the file itself. */
+  readonly revealInFileManager: (targetPath: string) => Effect.Effect<void, OpenError>;
 }
 
 /**
@@ -286,6 +304,23 @@ const make = Effect.gen(function* () {
     });
   });
 
+  const revealInFileManager = Effect.fn("open.reveal-in-file-manager")(function* (
+    targetPath: string,
+  ) {
+    const detachedExit = yield* Effect.exit(
+      launchDetached(resolveFileManagerRevealLaunch(targetPath)),
+    );
+    if (Exit.isFailure(detachedExit)) {
+      const error = Cause.squash(detachedExit.cause) as OpenError;
+      yield* increment(editorLaunchTotal, {
+        editorId: "file-manager",
+        outcome: classifyEditorLaunchFailure(error),
+      });
+      return yield* Effect.failCause(detachedExit.cause);
+    }
+    yield* increment(editorLaunchTotal, { editorId: "file-manager", outcome: "success" });
+  });
+
   return {
     openBrowser: (target) =>
       Effect.tryPromise({
@@ -293,6 +328,8 @@ const make = Effect.gen(function* () {
         catch: (cause) => new OpenError({ message: "Browser auto-open failed", cause }),
       }),
     openInEditor: (input) => openInEditor(input).pipe(Effect.withSpan("open.in-editor")),
+    revealInFileManager: (targetPath) =>
+      revealInFileManager(targetPath).pipe(Effect.withSpan("open.reveal-in-file-manager")),
   } satisfies OpenShape;
 });
 

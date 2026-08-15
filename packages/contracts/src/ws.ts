@@ -77,6 +77,7 @@ import {
 } from "./terminal";
 import { KeybindingRule } from "./keybindings";
 import {
+  ProjectAuthorizeEntryInput,
   ProjectListEntriesInput,
   ProjectReadFileInput,
   ProjectSearchEntriesInput,
@@ -101,7 +102,7 @@ import {
   PreviewAutomationResponse,
 } from "./previewAutomation";
 import { FilesystemBrowseInput } from "./filesystem";
-import { OpenInEditorInput } from "./editor";
+import { OpenInEditorInput, RevealInFileManagerInput } from "./editor";
 import {
   ServerProviderAdvisoriesUpdatedPayload,
   ServerAddKeybindingInput,
@@ -179,12 +180,14 @@ export const WS_METHODS = {
   projectsSearchEntries: "projects.searchEntries",
   projectsWriteFile: "projects.writeFile",
   projectsReadFile: "projects.readFile",
+  projectsAuthorizeEntry: "projects.authorizeEntry",
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
+  shellRevealInFileManager: "shell.revealInFileManager",
 
   // Git methods
   gitPull: "git.pull",
@@ -401,12 +404,14 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsWriteFile, ProjectWriteFileInput),
   tagRequestBody(WS_METHODS.projectsReadFile, ProjectReadFileInput),
+  tagRequestBody(WS_METHODS.projectsAuthorizeEntry, ProjectAuthorizeEntryInput),
 
   // Filesystem methods
   tagRequestBody(WS_METHODS.filesystemBrowse, FilesystemBrowseInput),
 
   // Shell methods
   tagRequestBody(WS_METHODS.shellOpenInEditor, OpenInEditorInput),
+  tagRequestBody(WS_METHODS.shellRevealInFileManager, RevealInFileManagerInput),
 
   // Git methods
   tagRequestBody(WS_METHODS.gitPull, GitPullInput),

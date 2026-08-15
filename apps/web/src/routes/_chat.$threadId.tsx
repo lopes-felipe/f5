@@ -1,4 +1,9 @@
-import { ThreadId, type OrchestrationThreadActivity, type TaskItem } from "@t3tools/contracts";
+import {
+  ThreadId,
+  type OrchestrationThreadActivity,
+  type ProjectId,
+  type TaskItem,
+} from "@t3tools/contracts";
 import { createFileRoute, retainSearchParams, useNavigate } from "@tanstack/react-router";
 import {
   Suspense,
@@ -27,6 +32,7 @@ import {
 } from "../components/DiffPanelShell";
 import { Button } from "../components/ui/button";
 import { toastManager } from "../components/ui/toast";
+import { workspaceIdentityForRoot } from "../components/fileTreeDragMention";
 import { useComposerDraftStore } from "../composerDraftStore";
 import {
   clearFileViewSearchParams,
@@ -109,6 +115,9 @@ const LazyFileViewPanel = (props: {
 
 const LazyFileBrowserPanel = (props: {
   cwd: string | null;
+  projectId: ProjectId | null;
+  threadId: ThreadId;
+  workspaceIdentity: string | null;
   projectName: string;
   entryLimit: number;
   onOpenFile: (relativePath: string) => void;
@@ -117,6 +126,9 @@ const LazyFileBrowserPanel = (props: {
     <Suspense fallback={<DiffPanelLoadingState label="Loading workspace files..." />}>
       <FileBrowserPanel
         cwd={props.cwd}
+        projectId={props.projectId}
+        threadId={props.threadId}
+        workspaceIdentity={props.workspaceIdentity}
         projectName={props.projectName}
         entryLimit={props.entryLimit}
         onOpenFile={props.onOpenFile}
@@ -347,6 +359,10 @@ function ChatThreadRouteView() {
   const workspaceRoot = activeProject?.cwd ?? undefined;
   const workspaceBrowserRoot = effectiveWorktreePath ?? activeProject?.cwd ?? null;
   const workspaceBrowserName = activeProject?.name ?? "Workspace";
+  const workspaceBrowserIdentity =
+    effectiveProjectId && workspaceBrowserRoot
+      ? workspaceIdentityForRoot(effectiveProjectId, workspaceBrowserRoot)
+      : null;
   const previewAvailable = typeof window !== "undefined" && Boolean(window.desktopBridge?.preview);
   const { copyToClipboard } = useCopyToClipboard<{ relativePath: string }>({
     onCopy: ({ relativePath }) => {
@@ -617,6 +633,9 @@ function ChatThreadRouteView() {
             return (
               <LazyFileBrowserPanel
                 cwd={workspaceBrowserRoot}
+                projectId={effectiveProjectId}
+                threadId={threadId}
+                workspaceIdentity={workspaceBrowserIdentity}
                 projectName={workspaceBrowserName}
                 entryLimit={settings.workspaceFileTreeEntryLimit}
                 onOpenFile={openWorkspaceFile}
@@ -646,6 +665,8 @@ function ChatThreadRouteView() {
       threadId,
       workspaceBrowserName,
       workspaceBrowserRoot,
+      workspaceBrowserIdentity,
+      effectiveProjectId,
       workspaceRoot,
     ],
   );
