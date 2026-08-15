@@ -473,8 +473,9 @@
     {
       "upstreamSha": "752acbf6549e6dd422ac8d8ed11c0fa02577965b",
       "subject": "feat: add ability to create a new thread in the current project with shift+click and show shortcut in tooltip (#5994)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.5 new-thread affordances; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["bd007db478f1ec2346de57c6e29eaaad296bea17"],
+      "reason": "The per-project button now interprets Shift-click as an explicit non-default workspace mode and Cmd/Ctrl+Shift-click as a persisted draft opened in a new desktop window, without interacting with thread range selection."
     },
     {
       "upstreamSha": "f5fce74169a5629f701aeb8c4535cab6f7bd3c92",
@@ -984,8 +985,9 @@
     {
       "upstreamSha": "239ef1c54df2f657912ccb5b8e25193d49d90417",
       "subject": "fix(web): show the correctly matching shortcut in new thread button's tooltip (#5594)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.5 new-thread shortcut copy; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["bd007db478f1ec2346de57c6e29eaaad296bea17"],
+      "reason": "The project new-thread tooltip uses the resolved chat.new shortcut and documents the alternate-environment and desktop-window modifiers."
     },
     {
       "upstreamSha": "61b51ae0e343afc42ba0424d4d74b4f9a216d620",
@@ -2376,8 +2378,9 @@
     {
       "upstreamSha": "bdf99c17bf7ae634728481677cf1bca8db65d00e",
       "subject": "feat: allow new thread creation through project breadcrumbs (#4638)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.5 new-window thread creation; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["bd007db478f1ec2346de57c6e29eaaad296bea17"],
+      "reason": "The chat-header project badge is now an action menu for creating an inherited project thread or opening Projects settings, with its orchestration extracted from ChatView."
     },
     {
       "upstreamSha": "108e01746c585d98703df5fe76cb6c213ecb6b8f",
