@@ -1,4 +1,5 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
+import { nonDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import {
   type ThreadStatusPill,
   hasUnseenCompletion,
@@ -37,6 +38,26 @@ export function resolveSidebarNewThreadEnvMode(input: {
   defaultEnvMode: SidebarNewThreadEnvMode;
 }): SidebarNewThreadEnvMode {
   return input.requestedEnvMode ?? input.defaultEnvMode;
+}
+
+export function resolveSidebarNewThreadIntent(input: {
+  readonly shiftKey: boolean;
+  readonly metaKey: boolean;
+  readonly ctrlKey: boolean;
+  readonly defaultEnvMode: SidebarNewThreadEnvMode;
+}): {
+  readonly envMode: SidebarNewThreadEnvMode;
+  readonly openInNewWindow: boolean;
+} {
+  return {
+    envMode: resolveSidebarNewThreadEnvMode({
+      defaultEnvMode: input.defaultEnvMode,
+      ...(input.shiftKey
+        ? { requestedEnvMode: nonDefaultThreadEnvMode(input.defaultEnvMode) }
+        : {}),
+    }),
+    openInNewWindow: input.shiftKey && (input.metaKey || input.ctrlKey),
+  };
 }
 
 export function reconcileFrozenOrder<T, Key extends string>(input: {

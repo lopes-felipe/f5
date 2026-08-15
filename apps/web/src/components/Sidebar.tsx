@@ -61,12 +61,14 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { isArchivedWorkflow, partitionWorkflowsByArchive } from "@t3tools/shared/workflowArchive";
+import { resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
 import {
   type DraftThreadEnvMode,
   type DraftThreadState,
+  flushComposerDraftPersistence,
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { isElectron } from "../env";
@@ -140,7 +142,7 @@ import { setWorkflowArchived } from "../archiveActions";
 import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   reconcileFrozenOrder,
-  resolveSidebarNewThreadEnvMode,
+  resolveSidebarNewThreadIntent,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   resolveWorkflowThreadListExpanded,
@@ -787,6 +789,10 @@ export default function Sidebar() {
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
   });
+  const activeThread = routeThreadId
+    ? threads.find((thread) => thread.id === routeThreadId)
+    : undefined;
+  const activeDraftThread = routeThreadId ? getDraftThread(routeThreadId) : null;
   const { data: keybindings = EMPTY_KEYBINDINGS } = useQuery({
     ...serverConfigQueryOptions(),
     select: (config) => config.keybindings,
@@ -1008,9 +1014,9 @@ export default function Sidebar() {
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
       },
-    ): Promise<void> => {
+    ) => {
       setProjectExpanded(projectId, true);
-      return createProjectBackedDraftThread(projectId, options).then(() => undefined);
+      return createProjectBackedDraftThread(projectId, options);
     },
     [createProjectBackedDraftThread, setProjectExpanded],
   );
@@ -1118,7 +1124,7 @@ export default function Sidebar() {
           createdAt,
         });
         await handleNewThread(projectId, {
-          envMode: appSettings.defaultThreadEnvMode,
+          envMode: resolveThreadEnvMode({ globalDefault: appSettings.defaultThreadEnvMode }),
         }).catch((error) => {
           console.warn("Failed to open the new thread after creating a project", error);
         });
@@ -1639,10 +1645,6 @@ export default function Sidebar() {
         return;
       }
 
-      const activeThread = routeThreadId
-        ? threads.find((thread) => thread.id === routeThreadId)
-        : undefined;
-      const activeDraftThread = routeThreadId ? getDraftThread(routeThreadId) : null;
       const command = resolveShortcutCommand(event, keybindings, {
         context: {
           terminalFocus: isTerminalFocused(),
@@ -1678,7 +1680,13 @@ export default function Sidebar() {
         if (!projectId) return;
         event.preventDefault();
         event.stopPropagation();
-        void handleNewThread(projectId);
+        void handleNewThread(projectId, {
+          branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
+          worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
+          envMode: resolveThreadEnvMode({
+            globalDefault: appSettings.defaultThreadEnvMode,
+          }),
+        });
         return;
       }
 
@@ -1686,14 +1694,12 @@ export default function Sidebar() {
       if (!projectId) return;
       event.preventDefault();
       event.stopPropagation();
-      if (appSettings.defaultThreadEnvMode === "worktree") {
-        void handleNewThread(projectId, { envMode: "worktree" });
-        return;
-      }
       void handleNewThread(projectId, {
         branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
         worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
-        envMode: activeDraftThread?.envMode ?? (activeThread?.worktreePath ? "worktree" : "local"),
+        envMode: resolveThreadEnvMode({
+          globalDefault: appSettings.defaultThreadEnvMode,
+        }),
       });
     };
     const onMouseDown = (event: globalThis.MouseEvent) => {
@@ -1710,10 +1716,11 @@ export default function Sidebar() {
       window.removeEventListener("mousedown", onMouseDown);
     };
   }, [
+    activeDraftThread,
+    activeThread,
     appSettings.defaultThreadEnvMode,
     clearSelection,
     firstProjectId,
-    getDraftThread,
     handleNewThread,
     keybindings,
     mostRecentProjectId,
@@ -1721,7 +1728,6 @@ export default function Sidebar() {
     openWorkflowCreateDialog,
     routeThreadId,
     terminalStateByThreadId,
-    threads,
     wsInteractionBlocked,
   ]);
 
@@ -2338,11 +2344,57 @@ export default function Sidebar() {
                                     onClick={(event) => {
                                       event.preventDefault();
                                       event.stopPropagation();
-                                      void handleNewThread(project.id, {
-                                        envMode: resolveSidebarNewThreadEnvMode({
-                                          defaultEnvMode: appSettings.defaultThreadEnvMode,
-                                        }),
+                                      const intent = resolveSidebarNewThreadIntent({
+                                        shiftKey: event.shiftKey,
+                                        metaKey: event.metaKey,
+                                        ctrlKey: event.ctrlKey,
+                                        defaultEnvMode: appSettings.defaultThreadEnvMode,
                                       });
+                                      const activeProjectThread =
+                                        activeThread?.projectId === project.id
+                                          ? activeThread
+                                          : undefined;
+                                      const activeProjectDraft =
+                                        activeDraftThread?.projectId === project.id
+                                          ? activeDraftThread
+                                          : null;
+                                      void handleNewThread(project.id, {
+                                        branch:
+                                          activeProjectThread?.branch ??
+                                          activeProjectDraft?.branch ??
+                                          null,
+                                        worktreePath:
+                                          activeProjectThread?.worktreePath ??
+                                          activeProjectDraft?.worktreePath ??
+                                          null,
+                                        envMode: intent.envMode,
+                                      })
+                                        .then(async ({ threadId }) => {
+                                          if (!intent.openInNewWindow) return;
+                                          const openThreadInNewWindow =
+                                            window.desktopBridge?.openThreadInNewWindow;
+                                          if (!openThreadInNewWindow) return;
+                                          flushComposerDraftPersistence();
+                                          const opened = await openThreadInNewWindow(threadId);
+                                          if (!opened) {
+                                            toastManager.add({
+                                              type: "warning",
+                                              title: "Could not open a new window",
+                                              description:
+                                                "The new thread remains open in this window.",
+                                            });
+                                          }
+                                        })
+                                        .catch((error) => {
+                                          toastManager.add({
+                                            type: "error",
+                                            title: "Could not create thread",
+                                            description:
+                                              error instanceof Error
+                                                ? error.message
+                                                : "An unexpected error occurred.",
+                                          });
+                                        });
                                     }}
                                   >
                                     <SquarePenIcon className="size-3.5" />
@@ -2350,9 +2402,15 @@ export default function Sidebar() {
                                 }
                               />
                               <TooltipPopup side="top">
-                                {newThreadShortcutLabel
-                                  ? `New thread (${newThreadShortcutLabel})`
-                                  : "New thread"}
+                                {`${
+                                  newThreadShortcutLabel
+                                    ? `New thread (${newThreadShortcutLabel})`
+                                    : "New thread"
+                                }. Shift-click uses ${
+                                  appSettings.defaultThreadEnvMode === "local"
+                                    ? "a worktree"
+                                    : "the local workspace"
+                                }; Cmd/Ctrl+Shift-click opens a new window.`}
                               </TooltipPopup>
                             </Tooltip>
                             <Tooltip>

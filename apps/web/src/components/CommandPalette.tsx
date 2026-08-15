@@ -12,6 +12,7 @@ import {
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "@tanstack/react-router";
+import { resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import {
   ArrowDownIcon,
   ArrowLeftIcon,
@@ -438,7 +439,7 @@ function OpenCommandPaletteDialog() {
       }
 
       await handleNewThread(project.id, {
-        envMode: settings.defaultThreadEnvMode,
+        envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
       });
     },
     [
@@ -478,7 +479,7 @@ function OpenCommandPaletteDialog() {
         icon: projectIcon,
         runProject: async (project) => {
           await handleNewThread(project.id, {
-            envMode: settings.defaultThreadEnvMode,
+            envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
           });
         },
       }),
@@ -687,15 +688,12 @@ function OpenCommandPaletteDialog() {
         shortcutCommand: "chat.new",
         run: async () => {
           if (!currentProjectId) return;
-          if (settings.defaultThreadEnvMode === "worktree") {
-            await handleNewThread(currentProjectId, { envMode: "worktree" });
-            return;
-          }
           await handleNewThread(currentProjectId, {
             branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
             worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
-            envMode:
-              activeDraftThread?.envMode ?? (activeThread?.worktreePath ? "worktree" : "local"),
+            envMode: resolveThreadEnvMode({
+              globalDefault: settings.defaultThreadEnvMode,
+            }),
           });
         },
       });
@@ -864,7 +862,7 @@ function OpenCommandPaletteDialog() {
           });
         } else {
           await handleNewThread(existing.id, {
-            envMode: settings.defaultThreadEnvMode,
+            envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
           }).catch(() => undefined);
         }
         setOpen(false);
@@ -883,7 +881,7 @@ function OpenCommandPaletteDialog() {
           createdAt: new Date().toISOString(),
         });
         await handleNewThread(projectId, {
-          envMode: settings.defaultThreadEnvMode,
+          envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
         }).catch(() => undefined);
         setOpen(false);
       } catch (error) {

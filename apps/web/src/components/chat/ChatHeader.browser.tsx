@@ -170,6 +170,28 @@ describe("ChatHeader", () => {
     }
   });
 
+  it("offers project-scoped actions from the project badge", async () => {
+    const onNewThreadInProject = vi.fn();
+    const onOpenProjectSettings = vi.fn();
+    const screen = await renderHeader({
+      activeProjectName: "Project Alpha",
+      onNewThreadInProject,
+      onOpenProjectSettings,
+    });
+
+    try {
+      await page.getByRole("button", { name: "Project actions for Project Alpha" }).click();
+      await page.getByRole("menuitem", { name: "New thread in Project Alpha" }).click();
+      expect(onNewThreadInProject).toHaveBeenCalledTimes(1);
+
+      await page.getByRole("button", { name: "Project actions for Project Alpha" }).click();
+      await page.getByRole("menuitem", { name: "Project settings" }).click();
+      expect(onOpenProjectSettings).toHaveBeenCalledTimes(1);
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("renders the badge with threshold colors and a tooltip describing the model window", async () => {
     const screen = await renderHeader({
       estimatedContextTokens: 38_000,

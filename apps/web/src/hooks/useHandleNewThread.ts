@@ -35,7 +35,7 @@ export function useHandleNewThread() {
         worktreePath?: string | null;
         envMode?: DraftThreadEnvMode;
       },
-    ): Promise<void> => createProjectBackedDraftThread(projectId, options).then(() => undefined),
+    ) => createProjectBackedDraftThread(projectId, options),
     [createProjectBackedDraftThread],
   );
 

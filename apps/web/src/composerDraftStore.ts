@@ -145,6 +145,10 @@ if (typeof window !== "undefined") {
   });
 }
 
+export function flushComposerDraftPersistence(): void {
+  composerDebouncedStorage.flush();
+}
+
 export interface PersistedComposerImageAttachment {
   id: string;
   name: string;

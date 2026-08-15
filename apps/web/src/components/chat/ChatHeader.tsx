@@ -7,7 +7,14 @@ import {
 } from "@t3tools/contracts";
 import { memo, useState } from "react";
 import GitActionsControl from "../GitActionsControl";
-import { DiffIcon, EllipsisIcon, FilesIcon, TerminalSquareIcon } from "lucide-react";
+import {
+  DiffIcon,
+  EllipsisIcon,
+  FilesIcon,
+  SettingsIcon,
+  SquarePenIcon,
+  TerminalSquareIcon,
+} from "lucide-react";
 import { Badge } from "../ui/badge";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import ProjectScriptsControl, { type NewProjectScriptInput } from "../ProjectScriptsControl";
@@ -32,6 +39,8 @@ interface ChatHeaderProps {
   provider: ProviderKind | null;
   tokenUsageSource?: "provider" | "estimated" | null | undefined;
   activeProjectName: string | undefined;
+  onNewThreadInProject?: (() => void) | undefined;
+  onOpenProjectSettings?: (() => void) | undefined;
   workflowTitle?: string | undefined;
   onOpenWorkflow?: (() => void) | undefined;
   isGitRepo: boolean;
@@ -70,6 +79,8 @@ export const ChatHeader = memo(function ChatHeader({
   provider,
   tokenUsageSource,
   activeProjectName,
+  onNewThreadInProject,
+  onOpenProjectSettings,
   workflowTitle,
   onOpenWorkflow,
   isGitRepo,
@@ -125,11 +136,37 @@ export const ChatHeader = memo(function ChatHeader({
           </h2>
         )}
         <ThreadQueueCountBadge threadId={activeThreadId} />
-        {activeProjectName && (
+        {activeProjectName && onNewThreadInProject && onOpenProjectSettings ? (
+          <Menu>
+            <MenuTrigger
+              render={
+                <button
+                  type="button"
+                  className="min-w-0 shrink cursor-pointer"
+                  aria-label={`Project actions for ${activeProjectName}`}
+                />
+              }
+            >
+              <Badge variant="outline" className="min-w-0 max-w-44 truncate hover:bg-accent">
+                {activeProjectName}
+              </Badge>
+            </MenuTrigger>
+            <MenuPopup side="bottom" align="start">
+              <MenuItem onClick={onNewThreadInProject}>
+                <SquarePenIcon aria-hidden="true" />
+                New thread in {activeProjectName}
+              </MenuItem>
+              <MenuItem onClick={onOpenProjectSettings}>
+                <SettingsIcon aria-hidden="true" />
+                Project settings
+              </MenuItem>
+            </MenuPopup>
+          </Menu>
+        ) : activeProjectName ? (
           <Badge variant="outline" className="min-w-0 shrink truncate">
             {activeProjectName}
           </Badge>
-        )}
+        ) : null}
         {workflowTitle && onOpenWorkflow ? (
           <button type="button" onClick={onOpenWorkflow} className="min-w-0 shrink">
             <Badge variant="outline" className="min-w-0 shrink truncate">

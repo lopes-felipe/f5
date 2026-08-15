@@ -70,6 +70,7 @@ import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavi
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
+import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
 
 const shellEnvironmentReady = syncShellEnvironment();
 
@@ -80,6 +81,7 @@ const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const COPY_IMAGE_CHANNEL = "desktop:copy-image";
 const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
@@ -2157,6 +2159,19 @@ function registerIpcHandlers(): void {
     }
   });
 
+  ipcMain.removeHandler(OPEN_THREAD_WINDOW_CHANNEL);
+  ipcMain.handle(OPEN_THREAD_WINDOW_CHANNEL, async (_event, rawThreadId: unknown) => {
+    const threadId = normalizeThreadIdForDesktopWindow(rawThreadId);
+    if (!threadId) return false;
+    try {
+      createWindow(threadId);
+      return true;
+    } catch (error) {
+      console.error(`[desktop] failed to open thread window: ${formatErrorMessage(error)}`);
+      return false;
+    }
+  });
+
   ipcMain.removeHandler(UPDATE_GET_STATE_CHANNEL);
   ipcMain.handle(UPDATE_GET_STATE_CHANNEL, async () => updateState);
 
@@ -2253,7 +2268,8 @@ function mainRendererUrl(): string {
     : `${DESKTOP_SCHEME}://app/index.html`;
 }
 
-function createWindow(): BrowserWindow {
+function createWindow(initialThreadId: string | null = null): BrowserWindow {
+  const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
   const window = new BrowserWindow({
     width: 1100,
     height: 780,
@@ -2335,12 +2351,12 @@ function createWindow(): BrowserWindow {
     cleanupRendererResources: () => previewRuntime.resetRendererOwnedResources(),
     reloadRenderer: async () => {
       if (!window.isDestroyed()) {
-        await window.loadURL(mainRendererUrl());
+        await window.loadURL(rendererUrl);
       }
     },
     showCrashScreen: async () => {
       if (!window.isDestroyed()) {
-        await window.loadURL(mainRendererCrashScreenUrl(mainRendererUrl()));
+        await window.loadURL(mainRendererCrashScreenUrl(rendererUrl));
       }
     },
     reportError: (operation, error) => {
@@ -2369,7 +2385,7 @@ function createWindow(): BrowserWindow {
     window.show();
   });
 
-  void window.loadURL(mainRendererUrl());
+  void window.loadURL(rendererUrl);
   if (isDevelopment) {
     window.webContents.openDevTools({ mode: "detach" });
   }

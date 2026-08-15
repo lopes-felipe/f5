@@ -8,6 +8,7 @@ const CONTEXT_MENU_CHANNEL = "desktop:context-menu";
 const COPY_IMAGE_CHANNEL = "desktop:copy-image";
 const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
+const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
@@ -56,6 +57,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   copyImage: (pngBytes) => ipcRenderer.invoke(COPY_IMAGE_CHANNEL, pngBytes),
   downloadImage: (bytes, filename) => ipcRenderer.invoke(DOWNLOAD_IMAGE_CHANNEL, bytes, filename),
   openExternal: (url: string) => ipcRenderer.invoke(OPEN_EXTERNAL_CHANNEL, url),
+  openThreadInNewWindow: (threadId: string) =>
+    ipcRenderer.invoke(OPEN_THREAD_WINDOW_CHANNEL, threadId),
   onMenuAction: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, action: unknown) => {
       if (typeof action !== "string") return;

@@ -839,7 +839,10 @@ function seedAppSettings(settings: Record<string, unknown>): void {
 
 function installDesktopBridgeMock(
   overrides: Partial<
-    Pick<DesktopBridge, "pickFolder" | "showContextMenu" | "confirm" | "openExternal">
+    Pick<
+      DesktopBridge,
+      "pickFolder" | "showContextMenu" | "confirm" | "openExternal" | "openThreadInNewWindow"
+    >
   > = {},
 ): void {
   const idleUpdateState = {
@@ -1366,6 +1369,76 @@ describe("Thread sidebar", () => {
     }
   });
 
+  it("uses the non-default environment for shift-click", async () => {
+    seedAppSettings({ defaultThreadEnvMode: "local" });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+    });
+
+    try {
+      const newThreadButton = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="new-thread-button"]'),
+        "New-thread button should render.",
+      );
+      newThreadButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true }),
+      );
+
+      await waitForPath(
+        mounted.router,
+        (pathname) => UUID_ROUTE_RE.test(pathname),
+        "Shift-click should navigate to the alternate-mode draft.",
+      );
+      expect(useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)).toMatchObject({
+        branch: "main",
+        envMode: "worktree",
+        worktreePath: null,
+      });
+      expect(useThreadSelectionStore.getState().selectedThreadIds.size).toBe(0);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("opens a mod-shift-click draft in a desktop window after persisting it", async () => {
+    seedAppSettings({ defaultThreadEnvMode: "local" });
+    const openThreadInNewWindow = vi.fn(async () => true);
+    installDesktopBridgeMock({ openThreadInNewWindow });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+    });
+
+    try {
+      const newThreadButton = await waitForElement(
+        () => document.querySelector<HTMLElement>('[data-testid="new-thread-button"]'),
+        "New-thread button should render.",
+      );
+      newThreadButton.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          shiftKey: true,
+          metaKey: true,
+        }),
+      );
+
+      const pathname = await waitForPath(
+        mounted.router,
+        (nextPathname) => UUID_ROUTE_RE.test(nextPathname),
+        "Mod-shift-click should create the draft before opening a new window.",
+      );
+      await vi.waitFor(() => {
+        expect(openThreadInNewWindow).toHaveBeenCalledWith(pathname.slice(1));
+      });
+      const persisted = localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
+      expect(persisted).toContain(pathname.slice(1));
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("creates a project-scoped draft from chat.new and preserves branch context", async () => {
     const mounted = await mountApp({
       width: 1_400,
@@ -1396,6 +1469,36 @@ describe("Thread sidebar", () => {
       expect(draftThread?.branch).toBe("main");
       expect(draftThread?.worktreePath).toBeNull();
       expect(querySidebarThreadRowsByTitle("New thread")).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("preserves branch inheritance when the default environment is a worktree", async () => {
+    seedAppSettings({ defaultThreadEnvMode: "worktree" });
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: [`/${THREAD_ID}`],
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: createSidebarShortcutBindings(),
+        };
+      },
+    });
+
+    try {
+      await dispatchShortcut({ key: "n" });
+      await waitForPath(
+        mounted.router,
+        (pathname) => UUID_ROUTE_RE.test(pathname),
+        "chat.new should navigate to the worktree draft.",
+      );
+      expect(useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID)).toMatchObject({
+        branch: "main",
+        envMode: "worktree",
+        worktreePath: null,
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -1434,7 +1537,7 @@ describe("Thread sidebar", () => {
       const draftThread = useComposerDraftStore.getState().getDraftThreadByProjectId(PROJECT_ID);
 
       expect(secondPath).toBe(firstPath);
-      expect(draftThread?.branch).toBeNull();
+      expect(draftThread?.branch).toBe("main");
       expect(draftThread?.worktreePath).toBeNull();
       expect(querySidebarThreadRowsByTitle("New thread")).toHaveLength(1);
     } finally {

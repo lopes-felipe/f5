@@ -168,6 +168,10 @@
       "types": "./src/runtimeMode.ts",
       "import": "./src/runtimeMode.ts"
     },
+    "./threadEnvMode": {
+      "types": "./src/threadEnvMode.ts",
+      "import": "./src/threadEnvMode.ts"
+    },
     "./attachmentMetadata": {
       "types": "./src/attachmentMetadata.ts",
       "import": "./src/attachmentMetadata.ts"

@@ -137,6 +137,7 @@ import {
 import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
 import { usePromptStashController } from "../hooks/usePromptStashController";
+import { useProjectBreadcrumbActions } from "../hooks/useProjectBreadcrumbActions";
 import { useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
@@ -1007,6 +1008,11 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const activeLatestTurn = activeThread?.latestTurn ?? null;
   const latestTurnSettled = isLatestTurnSettled(activeLatestTurn, activeThread?.session ?? null);
   const activeProject = projects.find((p) => p.id === activeThread?.projectId);
+  const projectBreadcrumbActions = useProjectBreadcrumbActions({
+    project: activeProject,
+    thread: activeThread,
+    globalDefaultEnvMode: settings.defaultThreadEnvMode,
+  });
   const workspaceRoot = activeThread?.worktreePath ?? activeProject?.cwd ?? undefined;
   const workflowThreadSlot = useMemo(() => {
     if (!activeThread || !activeWorkflow) {
@@ -5326,6 +5332,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
             provider={activeThread.session?.provider ?? null}
             tokenUsageSource={activeThread.session?.tokenUsageSource}
             activeProjectName={activeProject?.name}
+            onNewThreadInProject={projectBreadcrumbActions.createThread}
+            onOpenProjectSettings={projectBreadcrumbActions.openSettings}
             workflowTitle={activeWorkflow?.workflow.title}
             onOpenWorkflow={
               activeWorkflow
