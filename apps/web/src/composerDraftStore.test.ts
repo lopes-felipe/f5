@@ -265,6 +265,166 @@ describe("composerDraftStore syncPersistedAttachments", () => {
   });
 });
 
+describe("composerDraftStore prompt stash", () => {
+  const projectId = ProjectId.makeUnsafe("project-stash");
+  const sourceThreadId = ThreadId.makeUnsafe("thread-dedupe");
+  const destinationThreadId = ThreadId.makeUnsafe("thread-stash-destination");
+  let baseStorage: ReturnType<typeof createMockStorage>;
+
+  beforeEach(() => {
+    baseStorage = createMockStorage();
+    setComposerDraftBaseStorageForTesting(baseStorage);
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+      promptStashes: [],
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    resetComposerDraftBaseStorageForTesting();
+  });
+
+  it("stores the complete draft and clears only sendable composer content", async () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(sourceThreadId, `Review ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`);
+    store.addFilePaths(sourceThreadId, ["src/example.ts"]);
+    store.addTerminalContext(sourceThreadId, makeTerminalContext({ id: "ctx-stash" }));
+    store.addImage(
+      sourceThreadId,
+      makeImage({ id: "image-stash", previewUrl: "blob:image-stash" }),
+    );
+    store.setProvider(sourceThreadId, "codex");
+    store.setProviderInstance(sourceThreadId, ProviderInstanceId.make("codex-work"));
+    store.setModel(sourceThreadId, "gpt-5.1");
+    store.setRuntimeMode(sourceThreadId, "auto");
+
+    const result = await store.stashPromptDraft({
+      threadId: sourceThreadId,
+      projectId,
+      workspaceRoot: "/repo",
+    });
+
+    expect(result.status).toBe("stored");
+    expect(useComposerDraftStore.getState().promptStashes).toHaveLength(1);
+    expect(useComposerDraftStore.getState().promptStashes[0]?.draft).toMatchObject({
+      prompt: `Review ${INLINE_TERMINAL_CONTEXT_PLACEHOLDER}`,
+      filePaths: ["src/example.ts"],
+      provider: "codex",
+      providerInstanceId: "codex-work",
+      model: "gpt-5.1",
+      runtimeMode: "auto",
+      attachments: [{ id: "image-stash" }],
+      terminalContexts: [{ id: "ctx-stash", text: "git status\nOn branch main" }],
+    });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]).toMatchObject({
+      prompt: "",
+      filePaths: [],
+      terminalContexts: [],
+      provider: "codex",
+      model: "gpt-5.1",
+    });
+    expect(baseStorage.setItem).toHaveBeenCalled();
+
+    const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+    const restored = await useComposerDraftStore.getState().restorePromptStash({
+      stashId,
+      threadId: sourceThreadId,
+      projectId,
+      workspaceRoots: ["/repo"],
+    });
+    expect(restored).toMatchObject({ status: "restored" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.images).toHaveLength(
+      1,
+    );
+  });
+
+  it("requires confirmations before replacing content or dropping cross-thread terminals", async () => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(sourceThreadId, INLINE_TERMINAL_CONTEXT_PLACEHOLDER);
+    store.addTerminalContext(sourceThreadId, makeTerminalContext({ id: "ctx-cross-thread" }));
+    store.addFilePaths(sourceThreadId, ["src/example.ts"]);
+    const stored = await store.stashPromptDraft({
+      threadId: sourceThreadId,
+      projectId,
+      workspaceRoot: "/repo",
+    });
+    expect(stored.status).toBe("stored");
+    const stashId = useComposerDraftStore.getState().promptStashes[0]!.id;
+    useComposerDraftStore.getState().setPrompt(destinationThreadId, "keep this first");
+
+    expect(
+      await useComposerDraftStore.getState().restorePromptStash({
+        stashId,
+        threadId: destinationThreadId,
+        projectId,
+        workspaceRoots: ["/other"],
+      }),
+    ).toMatchObject({ status: "needs-replace-confirmation" });
+    expect(
+      await useComposerDraftStore.getState().restorePromptStash({
+        stashId,
+        threadId: destinationThreadId,
+        projectId,
+        workspaceRoots: ["/other"],
+        replaceNonEmpty: true,
+      }),
+    ).toMatchObject({ status: "needs-terminal-confirmation", invalidTerminalContextCount: 1 });
+
+    const restored = await useComposerDraftStore.getState().restorePromptStash({
+      stashId,
+      threadId: destinationThreadId,
+      projectId,
+      workspaceRoots: ["/other"],
+      replaceNonEmpty: true,
+      dropInvalidTerminalContexts: true,
+    });
+    expect(restored).toMatchObject({ status: "restored" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[destinationThreadId]).toMatchObject({
+      prompt: "",
+      filePaths: ["src/example.ts"],
+      terminalContexts: [],
+    });
+    expect(useComposerDraftStore.getState().promptStashes).toHaveLength(1);
+  });
+
+  it("rolls back the composer if durable stash persistence fails", async () => {
+    useComposerDraftStore.getState().setPrompt(sourceThreadId, "Never lose this");
+    baseStorage.setItem.mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+
+    const result = await useComposerDraftStore.getState().stashPromptDraft({
+      threadId: sourceThreadId,
+      projectId,
+    });
+
+    expect(result).toMatchObject({ status: "failed" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.prompt).toBe(
+      "Never lose this",
+    );
+    expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
+  });
+
+  it("keeps only the twenty newest saved prompts", async () => {
+    for (let index = 0; index < 21; index += 1) {
+      useComposerDraftStore.getState().setPrompt(sourceThreadId, `Prompt ${index}`);
+      const result = await useComposerDraftStore.getState().stashPromptDraft({
+        threadId: sourceThreadId,
+        projectId,
+      });
+      expect(result.status).toBe("stored");
+    }
+
+    const stashes = useComposerDraftStore.getState().promptStashes;
+    expect(stashes).toHaveLength(20);
+    expect(stashes[0]?.preview).toBe("Prompt 20");
+    expect(stashes.at(-1)?.preview).toBe("Prompt 1");
+  });
+});
+
 describe("composerDraftStore file paths", () => {
   const threadId = ThreadId.makeUnsafe("thread-files");
 
@@ -375,7 +535,7 @@ describe("composerDraftStore terminal contexts", () => {
     expect(draft?.terminalContexts.map((context) => context.id)).toEqual(["ctx-2", "ctx-1"]);
   });
 
-  it("omits terminal context text from persisted drafts", () => {
+  it("persists terminal context text so restored drafts remain sendable", () => {
     useComposerDraftStore
       .getState()
       .addTerminalContext(threadId, makeTerminalContext({ id: "ctx-persist" }));
@@ -406,9 +566,9 @@ describe("composerDraftStore terminal contexts", () => {
       lineEnd: 5,
     });
     expect(persistedState.draftsByThreadId?.[threadId]?.filePaths).toBeUndefined();
-    expect(
-      persistedState.draftsByThreadId?.[threadId]?.terminalContexts?.[0]?.text,
-    ).toBeUndefined();
+    expect(persistedState.draftsByThreadId?.[threadId]?.terminalContexts?.[0]?.text).toBe(
+      "git status\nOn branch main",
+    );
   });
 
   it("persists and hydrates file paths", () => {

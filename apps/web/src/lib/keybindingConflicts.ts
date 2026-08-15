@@ -184,6 +184,8 @@ export function formatKeybindingCommandLabel(
       return "Queue turn at end";
     case "chat.queueTurnNext":
       return "Queue turn next";
+    case "composer.stash":
+      return "Stash prompt";
     case "dialog.primaryAction":
       return "Dialog primary action";
     case "editor.openFavorite":

@@ -19,6 +19,14 @@ describe("shared keybinding helpers", () => {
     });
   });
 
+  it("scopes prompt stash to the focused composer", () => {
+    expect(DEFAULT_KEYBINDINGS).toContainEqual({
+      key: "mod+s",
+      command: "composer.stash",
+      when: "composerFocus && !dialogFocus",
+    });
+  });
+
   it("matches equivalent shortcut aliases and canonical when expressions", () => {
     expect(
       matchesKeybindingTarget(

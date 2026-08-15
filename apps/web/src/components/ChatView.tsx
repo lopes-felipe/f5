@@ -136,6 +136,7 @@ import {
 } from "../types";
 import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
+import { usePromptStashController } from "../hooks/usePromptStashController";
 import { useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
@@ -194,6 +195,7 @@ import {
   type ComposerImageAttachment,
   type DraftThreadEnvMode,
   type PersistedComposerImageAttachment,
+  type PromptStashDraftSelection,
   useComposerDraftStore,
   useComposerThreadDraft,
 } from "../composerDraftStore";
@@ -252,6 +254,7 @@ import {
 } from "./chat/ClaudeTraitsPicker";
 import { CodexTraitsMenuContent, CodexTraitsPicker } from "./chat/CodexTraitsPicker";
 import { CompactComposerControlsMenu } from "./chat/CompactComposerControlsMenu";
+import { PromptStashMenu } from "./chat/PromptStashMenu";
 import { ComposerPendingApprovalPanel } from "./chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./chat/ComposerPlanFollowUpBanner";
@@ -2378,6 +2381,61 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       focusComposer();
     });
   }, [focusComposer]);
+  const promptStashFallbackSelection = useMemo<PromptStashDraftSelection>(
+    () => ({
+      provider: selectedProvider,
+      providerInstanceId: selectedProviderInstanceId,
+      model: selectedModel,
+      modelOptions: composerDraft.modelOptions,
+      runtimeMode,
+      interactionMode,
+      effort: composerDraft.effort,
+      codexFastMode: composerDraft.codexFastMode,
+    }),
+    [
+      composerDraft.codexFastMode,
+      composerDraft.effort,
+      composerDraft.modelOptions,
+      interactionMode,
+      runtimeMode,
+      selectedModel,
+      selectedProvider,
+      selectedProviderInstanceId,
+    ],
+  );
+  const onPromptStashed = useCallback(() => {
+    promptRef.current = "";
+    setComposerCursor(0);
+    setComposerTrigger(null);
+    scheduleComposerFocus();
+  }, [scheduleComposerFocus]);
+  const onPromptStashRestored = useCallback(
+    (restoredPrompt: string) => {
+      promptRef.current = restoredPrompt;
+      const cursor = collapseExpandedComposerCursor(restoredPrompt, restoredPrompt.length);
+      setComposerCursor(cursor);
+      setComposerTrigger(detectComposerTrigger(restoredPrompt, restoredPrompt.length));
+      scheduleComposerFocus();
+    },
+    [scheduleComposerFocus],
+  );
+  const {
+    remove: onDeletePromptStash,
+    restore: onRestorePromptStash,
+    shortcutLabel: promptStashShortcutLabel,
+    stash: onStashPrompt,
+    stashes: promptStashes,
+  } = usePromptStashController({
+    activeThread,
+    activeProject,
+    disabled: isPendingTurnDispatchBlocked,
+    keybindings,
+    providers: providerStatuses,
+    modelOptionsByInstance,
+    fallbackSelection: promptStashFallbackSelection,
+    onStashed: onPromptStashed,
+    onRestored: onPromptStashRestored,
+  });
   const addTerminalContextToDraft = useCallback(
     (selection: TerminalContextSelection) => {
       if (pendingTurnDispatchRef.current) {
@@ -3428,17 +3486,31 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   useEffect(() => {
     const handler = (event: globalThis.KeyboardEvent) => {
       if (!activeThreadId || event.defaultPrevented) return;
-      if (wsInteractionBlocked) return;
       const eventTarget = event.target instanceof Node ? event.target : null;
       const dialogFocus = isEventInDialogKeybindingContext(event);
+      const composerForm = composerFormRef.current;
+      const activeElement = document.activeElement;
+      const composerFocused = Boolean(
+        composerForm &&
+        ((eventTarget && composerForm.contains(eventTarget)) ||
+          (activeElement instanceof Node && composerForm.contains(activeElement))),
+      );
 
       const command = resolveShortcutCommand(event, keybindings, {
         context: {
           terminalFocus: isTerminalFocused(),
           terminalOpen: Boolean(terminalState.terminalOpen),
           dialogFocus,
+          composerFocus: composerFocused,
         },
       });
+      if (command === "composer.stash" && composerFocused) {
+        event.preventDefault();
+        event.stopPropagation();
+        void onStashPrompt();
+        return;
+      }
+      if (wsInteractionBlocked) return;
       if (command === "chat.queueTurn" || command === "chat.queueTurnNext") {
         event.preventDefault();
         event.stopPropagation();
@@ -3449,14 +3521,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
         return;
       }
       if (command !== "chat.scrollToBottom") return;
-
-      const composerForm = composerFormRef.current;
-      const activeElement = document.activeElement;
-      const composerFocused = Boolean(
-        composerForm &&
-        ((eventTarget && composerForm.contains(eventTarget)) ||
-          (activeElement instanceof Node && composerForm.contains(activeElement))),
-      );
 
       if (showScrollToBottom) {
         event.preventDefault();
@@ -3475,6 +3539,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   }, [
     activeThreadId,
     keybindings,
+    onStashPrompt,
     scrollToEnd,
     showScrollToBottom,
     terminalState.terminalOpen,
@@ -5720,6 +5785,20 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                             onOpenChange={setIsModelPickerOpen}
                             disabled={isPendingTurnDispatchBlocked}
                             onInstanceModelChange={onProviderModelSelect}
+                          />
+
+                          <PromptStashMenu
+                            stashes={promptStashes}
+                            canStash={composerSendState.hasSendableContent}
+                            disabled={isPendingTurnDispatchBlocked}
+                            stashShortcutLabel={promptStashShortcutLabel}
+                            onStash={() => {
+                              void onStashPrompt();
+                            }}
+                            onRestore={(stashId) => {
+                              void onRestorePromptStash(stashId);
+                            }}
+                            onDelete={onDeletePromptStash}
                           />
 
                           {isComposerFooterCompact ? (

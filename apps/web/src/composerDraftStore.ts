@@ -17,11 +17,12 @@ import { normalizeModelSlug } from "@t3tools/shared/model";
 import { areProviderModelOptionsEqual } from "@t3tools/shared/providerOptions";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type ChatImageAttachment } from "./types";
 import {
+  INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   type TerminalContextDraft,
   ensureInlineTerminalContextPlaceholders,
   normalizeTerminalContextText,
 } from "./lib/terminalContext";
-import { normalizeAttachedFilePaths } from "./lib/attachedFiles";
+import { normalizeAttachedFilePaths, resolveAttachedFileReferencePath } from "./lib/attachedFiles";
 import {
   normalizeProviderModelOptions,
   providerSelectionsToModelOptions,
@@ -30,8 +31,10 @@ import { recordModelSelection, useModelPreferencesStore } from "./modelPreferenc
 import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
+import { randomUUID } from "./lib/utils";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
+export const MAX_PROMPT_STASH_ENTRIES = 20;
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
@@ -163,6 +166,7 @@ interface PersistedTerminalContextDraft {
   terminalLabel: string;
   lineStart: number;
   lineEnd: number;
+  text?: string;
 }
 
 interface PersistedComposerThreadDraftState {
@@ -195,6 +199,7 @@ interface PersistedComposerDraftStoreState {
   draftsByThreadId: Record<ThreadId, PersistedComposerThreadDraftState>;
   draftThreadsByThreadId: Record<ThreadId, PersistedDraftThreadState>;
   projectDraftThreadIdByProjectId: Record<string, ThreadId>;
+  promptStashes: PromptStashEntry[];
 }
 
 interface ComposerThreadDraftState {
@@ -213,6 +218,48 @@ interface ComposerThreadDraftState {
   effort: CodexReasoningEffort | null;
   codexFastMode: boolean;
 }
+
+export interface PromptStashDraftSelection {
+  readonly provider: ProviderKind | null;
+  readonly providerInstanceId: ProviderInstanceId | null;
+  readonly model: string | null;
+  readonly modelOptions: ProviderModelOptions | null;
+  readonly runtimeMode: RuntimeMode | null;
+  readonly interactionMode: ProviderInteractionMode | null;
+  readonly effort: CodexReasoningEffort | null;
+  readonly codexFastMode: boolean;
+}
+
+export interface PromptStashEntry {
+  readonly version: 1;
+  readonly id: string;
+  readonly sourceThreadId: ThreadId;
+  readonly sourceProjectId: ProjectId;
+  readonly sourceWorkspaceRoot: string | null;
+  readonly createdAt: string;
+  readonly preview: string;
+  readonly draft: PromptStashDraftSelection & {
+    readonly prompt: string;
+    readonly attachments: PersistedComposerImageAttachment[];
+    readonly filePaths: string[];
+    readonly terminalContexts: TerminalContextDraft[];
+  };
+}
+
+export type PromptStashCreateResult =
+  | { readonly status: "stored"; readonly stash: PromptStashEntry }
+  | { readonly status: "empty" | "changed"; readonly message: string }
+  | { readonly status: "failed"; readonly message: string };
+
+export type PromptStashRestoreResult =
+  | { readonly status: "restored"; readonly warnings: string[] }
+  | { readonly status: "not-found" | "needs-replace-confirmation"; readonly message: string }
+  | {
+      readonly status: "needs-terminal-confirmation";
+      readonly invalidTerminalContextCount: number;
+      readonly message: string;
+    }
+  | { readonly status: "failed"; readonly message: string };
 
 export interface DraftThreadState {
   projectId: ProjectId;
@@ -274,6 +321,7 @@ interface ComposerDraftStoreState {
   draftsByThreadId: Record<ThreadId, ComposerThreadDraftState>;
   draftThreadsByThreadId: Record<ThreadId, DraftThreadState>;
   projectDraftThreadIdByProjectId: Record<string, ThreadId>;
+  promptStashes: PromptStashEntry[];
   getDraftThreadByProjectId: (
     projectId: ProjectId,
     options?: {
@@ -357,12 +405,32 @@ interface ComposerDraftStoreState {
   ) => void;
   clearComposerContent: (threadId: ThreadId) => void;
   clearThreadDraft: (threadId: ThreadId) => void;
+  stashPromptDraft: (input: {
+    threadId: ThreadId;
+    projectId: ProjectId;
+    workspaceRoot?: string | null;
+  }) => Promise<PromptStashCreateResult>;
+  restorePromptStash: (input: {
+    stashId: string;
+    threadId: ThreadId;
+    projectId: ProjectId;
+    workspaceRoots: ReadonlyArray<string | null | undefined>;
+    normalizeAbsolutePathForComparison?:
+      | ((pathValue: string) => string | null | undefined)
+      | undefined;
+    selection?: PromptStashDraftSelection | undefined;
+    replaceNonEmpty?: boolean | undefined;
+    dropInvalidTerminalContexts?: boolean | undefined;
+    warnings?: ReadonlyArray<string> | undefined;
+  }) => Promise<PromptStashRestoreResult>;
+  deletePromptStash: (stashId: string) => void;
 }
 
 const EMPTY_PERSISTED_DRAFT_STORE_STATE: PersistedComposerDraftStoreState = {
   draftsByThreadId: {},
   draftThreadsByThreadId: {},
   projectDraftThreadIdByProjectId: {},
+  promptStashes: [],
 };
 
 const EMPTY_IMAGES: ComposerImageAttachment[] = [];
@@ -497,6 +565,147 @@ function shouldRemoveDraft(draft: ComposerThreadDraftState): boolean {
   );
 }
 
+export function hasSendableComposerDraftContent(
+  draft: Pick<ComposerThreadDraftState, "prompt" | "images" | "filePaths" | "terminalContexts">,
+): boolean {
+  return (
+    draft.prompt.replaceAll(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, "").trim().length > 0 ||
+    draft.images.length > 0 ||
+    draft.filePaths.length > 0 ||
+    draft.terminalContexts.some((context) => normalizeTerminalContextText(context.text).length > 0)
+  );
+}
+
+function promptStashPreview(draft: ComposerThreadDraftState): string {
+  const textPreview = draft.prompt
+    .replaceAll(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (textPreview.length > 0) {
+    return textPreview.length > 80 ? `${textPreview.slice(0, 77)}...` : textPreview;
+  }
+  const parts: string[] = [];
+  if (draft.images.length > 0) {
+    parts.push(`${draft.images.length} image${draft.images.length === 1 ? "" : "s"}`);
+  }
+  if (draft.filePaths.length > 0) {
+    parts.push(`${draft.filePaths.length} file${draft.filePaths.length === 1 ? "" : "s"}`);
+  }
+  if (draft.terminalContexts.length > 0) {
+    parts.push(
+      `${draft.terminalContexts.length} terminal context${draft.terminalContexts.length === 1 ? "" : "s"}`,
+    );
+  }
+  return parts.join(" · ") || "Saved prompt";
+}
+
+function clearSendableComposerDraftContent(
+  draft: ComposerThreadDraftState,
+): ComposerThreadDraftState {
+  return {
+    ...draft,
+    prompt: "",
+    images: [],
+    nonPersistedImageIds: [],
+    persistedAttachments: [],
+    filePaths: [],
+    terminalContexts: [],
+  };
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  if (typeof FileReader === "undefined") {
+    return file.arrayBuffer().then((buffer) => {
+      const bytes = new Uint8Array(buffer);
+      let binary = "";
+      for (const byte of bytes) binary += String.fromCharCode(byte);
+      return `data:${file.type || "application/octet-stream"};base64,${btoa(binary)}`;
+    });
+  }
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error("Could not read image data."));
+    });
+    reader.addEventListener("error", () => {
+      reject(reader.error ?? new Error("Failed to read image."));
+    });
+    reader.readAsDataURL(file);
+  });
+}
+
+async function serializeComposerDraftAttachments(
+  draft: ComposerThreadDraftState,
+): Promise<PersistedComposerImageAttachment[]> {
+  const persistedById = new Map(
+    draft.persistedAttachments.map((attachment) => [attachment.id, attachment]),
+  );
+  return Promise.all(
+    draft.images.map(async (image) => {
+      const persisted = persistedById.get(image.id);
+      if (persisted) return persisted;
+      return {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        dataUrl: await readFileAsDataUrl(image.file),
+      } satisfies PersistedComposerImageAttachment;
+    }),
+  );
+}
+
+function filterPromptTerminalContextPlaceholders(
+  prompt: string,
+  keepContextByIndex: ReadonlyArray<boolean>,
+): string {
+  let contextIndex = 0;
+  let nextPrompt = "";
+  for (const character of prompt) {
+    if (character !== INLINE_TERMINAL_CONTEXT_PLACEHOLDER) {
+      nextPrompt += character;
+      continue;
+    }
+    if (keepContextByIndex[contextIndex] === true) {
+      nextPrompt += character;
+    }
+    contextIndex += 1;
+  }
+  return nextPrompt;
+}
+
+function isAbsoluteFileReference(filePath: string): boolean {
+  return (
+    filePath.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(filePath) || filePath.startsWith("\\\\")
+  );
+}
+
+function reauthorizePromptStashFilePaths(input: {
+  filePaths: ReadonlyArray<string>;
+  workspaceRoots: ReadonlyArray<string | null | undefined>;
+  normalizeAbsolutePathForComparison?:
+    | ((pathValue: string) => string | null | undefined)
+    | undefined;
+}): { filePaths: string[]; invalidPathCount: number } {
+  const filePaths: string[] = [];
+  let invalidPathCount = 0;
+  for (const filePath of input.filePaths) {
+    const resolved = resolveAttachedFileReferencePath(filePath, input.workspaceRoots, {
+      normalizeAbsolutePathForComparison: input.normalizeAbsolutePathForComparison,
+    });
+    if (!resolved || isAbsoluteFileReference(resolved)) {
+      invalidPathCount += 1;
+      continue;
+    }
+    filePaths.push(resolved);
+  }
+  return { filePaths: normalizeAttachedFilePaths(filePaths), invalidPathCount };
+}
+
 function normalizeProviderKind(value: unknown): ProviderKind | null {
   return value === "codex" ||
     value === "claudeAgent" ||
@@ -599,6 +808,91 @@ function normalizePersistedTerminalContextDraft(
     terminalLabel,
     lineStart: normalizedLineStart,
     lineEnd: normalizedLineEnd,
+    ...(typeof candidate.text === "string"
+      ? { text: normalizeTerminalContextText(candidate.text) }
+      : {}),
+  };
+}
+
+function normalizePromptStashTerminalContext(value: unknown): TerminalContextDraft | null {
+  const persisted = normalizePersistedTerminalContextDraft(value);
+  if (!persisted) return null;
+  return {
+    ...persisted,
+    text: persisted.text ?? "",
+  };
+}
+
+function normalizePromptStashEntry(value: unknown): PromptStashEntry | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Record<string, unknown>;
+  if (candidate.version !== 1 || typeof candidate.id !== "string" || candidate.id.length === 0) {
+    return null;
+  }
+  if (
+    typeof candidate.sourceThreadId !== "string" ||
+    candidate.sourceThreadId.length === 0 ||
+    typeof candidate.sourceProjectId !== "string" ||
+    candidate.sourceProjectId.length === 0 ||
+    typeof candidate.createdAt !== "string" ||
+    candidate.createdAt.length === 0 ||
+    typeof candidate.preview !== "string" ||
+    !candidate.draft ||
+    typeof candidate.draft !== "object"
+  ) {
+    return null;
+  }
+  const draft = candidate.draft as Record<string, unknown>;
+  const provider = normalizeProviderKind(draft.provider);
+  const providerInstanceId = normalizeProviderInstanceId(draft.providerInstanceId);
+  const model =
+    typeof draft.model === "string" ? normalizeModelSlug(draft.model, provider ?? "codex") : null;
+  const attachments = Array.isArray(draft.attachments)
+    ? draft.attachments.flatMap((attachment) => {
+        const normalized = normalizePersistedAttachment(attachment);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  const terminalContexts = Array.isArray(draft.terminalContexts)
+    ? draft.terminalContexts.flatMap((context) => {
+        const normalized = normalizePromptStashTerminalContext(context);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  const effortCandidate = typeof draft.effort === "string" ? draft.effort : null;
+  return {
+    version: 1,
+    id: candidate.id,
+    sourceThreadId: candidate.sourceThreadId as ThreadId,
+    sourceProjectId: candidate.sourceProjectId as ProjectId,
+    sourceWorkspaceRoot:
+      typeof candidate.sourceWorkspaceRoot === "string" ? candidate.sourceWorkspaceRoot : null,
+    createdAt: candidate.createdAt,
+    preview: candidate.preview.slice(0, 80),
+    draft: {
+      prompt: typeof draft.prompt === "string" ? draft.prompt : "",
+      attachments,
+      filePaths: Array.isArray(draft.filePaths)
+        ? normalizeAttachedFilePaths(
+            draft.filePaths.filter((entry): entry is string => typeof entry === "string"),
+          )
+        : [],
+      terminalContexts,
+      provider,
+      providerInstanceId,
+      model,
+      modelOptions: normalizeProviderModelOptions(draft.modelOptions) ?? null,
+      runtimeMode: isRuntimeMode(draft.runtimeMode) ? draft.runtimeMode : null,
+      interactionMode:
+        draft.interactionMode === "default" || draft.interactionMode === "plan"
+          ? draft.interactionMode
+          : null,
+      effort:
+        effortCandidate && REASONING_EFFORT_VALUES.has(effortCandidate as CodexReasoningEffort)
+          ? (effortCandidate as CodexReasoningEffort)
+          : null,
+      codexFastMode: draft.codexFastMode === true,
+    },
   };
 }
 
@@ -620,6 +914,14 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
   const rawDraftMap = candidate.draftsByThreadId;
   const rawDraftThreadsByThreadId = candidate.draftThreadsByThreadId;
   const rawProjectDraftThreadIdByProjectId = candidate.projectDraftThreadIdByProjectId;
+  const promptStashes = Array.isArray(candidate.promptStashes)
+    ? candidate.promptStashes
+        .flatMap((entry) => {
+          const normalized = normalizePromptStashEntry(entry);
+          return normalized ? [normalized] : [];
+        })
+        .slice(0, MAX_PROMPT_STASH_ENTRIES)
+    : [];
   const draftThreadsByThreadId: PersistedComposerDraftStoreState["draftThreadsByThreadId"] = {};
   if (rawDraftThreadsByThreadId && typeof rawDraftThreadsByThreadId === "object") {
     for (const [threadId, rawDraftThread] of Object.entries(
@@ -700,7 +1002,12 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     }
   }
   if (!rawDraftMap || typeof rawDraftMap !== "object") {
-    return { draftsByThreadId: {}, draftThreadsByThreadId, projectDraftThreadIdByProjectId };
+    return {
+      draftsByThreadId: {},
+      draftThreadsByThreadId,
+      projectDraftThreadIdByProjectId,
+      promptStashes,
+    };
   }
   const nextDraftsByThreadId: PersistedComposerDraftStoreState["draftsByThreadId"] = {};
   for (const [threadId, draftValue] of Object.entries(rawDraftMap as Record<string, unknown>)) {
@@ -799,6 +1106,7 @@ function normalizePersistedComposerDraftState(value: unknown): PersistedComposer
     draftsByThreadId: nextDraftsByThreadId,
     draftThreadsByThreadId,
     projectDraftThreadIdByProjectId,
+    promptStashes,
   };
 }
 
@@ -832,6 +1140,36 @@ function readPersistedAttachmentIdsFromStorage(threadId: ThreadId): string[] {
     );
   } catch {
     return [];
+  }
+}
+
+function readPersistedPromptStashIdsFromStorage(): string[] {
+  try {
+    const raw = composerDebouncedStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
+    if (raw instanceof Promise) return [];
+    return parsePersistedDraftStateRaw(raw).promptStashes.map((stash) => stash.id);
+  } catch {
+    return [];
+  }
+}
+
+function persistedDraftMatches(threadId: ThreadId, draft: ComposerThreadDraftState): boolean {
+  try {
+    const raw = composerDebouncedStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
+    if (raw instanceof Promise) return false;
+    const persisted = parsePersistedDraftStateRaw(raw).draftsByThreadId[threadId];
+    if (!persisted) return false;
+    return (
+      persisted.prompt === draft.prompt &&
+      areComposerFilePathsEqual(persisted.filePaths ?? [], draft.filePaths) &&
+      persisted.attachments.length === draft.persistedAttachments.length &&
+      persisted.attachments.every(
+        (attachment, index) => attachment.id === draft.persistedAttachments[index]?.id,
+      ) &&
+      (persisted.terminalContexts ?? []).length === draft.terminalContexts.length
+    );
+  } catch {
+    return false;
   }
 }
 
@@ -900,7 +1238,7 @@ function toHydratedThreadDraft(
     terminalContexts:
       persistedDraft.terminalContexts?.map((context) => ({
         ...context,
-        text: "",
+        text: context.text ?? "",
       })) ?? [],
     provider: persistedDraft.provider ?? null,
     providerInstanceId: persistedDraft.providerInstanceId ?? null,
@@ -919,6 +1257,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      promptStashes: [],
       getDraftThreadByProjectId: (projectId, options) => {
         if (projectId.length === 0) {
           return null;
@@ -1960,6 +2299,237 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           };
         });
       },
+      stashPromptDraft: async ({ threadId, projectId, workspaceRoot }) => {
+        const sourceDraft = get().draftsByThreadId[threadId];
+        if (!sourceDraft || !hasSendableComposerDraftContent(sourceDraft)) {
+          return {
+            status: "empty",
+            message: "There is no sendable composer content to stash.",
+          };
+        }
+
+        let attachments: PersistedComposerImageAttachment[];
+        try {
+          attachments = await serializeComposerDraftAttachments(sourceDraft);
+        } catch (error) {
+          return {
+            status: "failed",
+            message: error instanceof Error ? error.message : "Failed to save prompt images.",
+          };
+        }
+        if (get().draftsByThreadId[threadId] !== sourceDraft) {
+          return {
+            status: "changed",
+            message: "The composer changed while the prompt was being saved. Try again.",
+          };
+        }
+
+        const stash: PromptStashEntry = {
+          version: 1,
+          id: randomUUID(),
+          sourceThreadId: threadId,
+          sourceProjectId: projectId,
+          sourceWorkspaceRoot: workspaceRoot?.trim() || null,
+          createdAt: new Date().toISOString(),
+          preview: promptStashPreview(sourceDraft),
+          draft: {
+            prompt: sourceDraft.prompt,
+            attachments,
+            filePaths: [...sourceDraft.filePaths],
+            terminalContexts: sourceDraft.terminalContexts.map((context) => ({ ...context })),
+            provider: sourceDraft.provider,
+            providerInstanceId: sourceDraft.providerInstanceId,
+            model: sourceDraft.model,
+            modelOptions: sourceDraft.modelOptions,
+            runtimeMode: sourceDraft.runtimeMode,
+            interactionMode: sourceDraft.interactionMode,
+            effort: sourceDraft.effort,
+            codexFastMode: sourceDraft.codexFastMode,
+          },
+        };
+        const previousStashes = get().promptStashes;
+        const clearedDraft = clearSendableComposerDraftContent(sourceDraft);
+        set((state) => {
+          const nextDraftsByThreadId = { ...state.draftsByThreadId };
+          if (shouldRemoveDraft(clearedDraft)) {
+            delete nextDraftsByThreadId[threadId];
+          } else {
+            nextDraftsByThreadId[threadId] = clearedDraft;
+          }
+          return {
+            draftsByThreadId: nextDraftsByThreadId,
+            promptStashes: [
+              stash,
+              ...state.promptStashes.filter((entry) => entry.id !== stash.id),
+            ].slice(0, MAX_PROMPT_STASH_ENTRIES),
+          };
+        });
+
+        try {
+          composerDebouncedStorage.flush();
+          if (!readPersistedPromptStashIdsFromStorage().includes(stash.id)) {
+            throw new Error("The prompt stash could not be saved to local storage.");
+          }
+        } catch (error) {
+          set((state) => ({
+            draftsByThreadId: { ...state.draftsByThreadId, [threadId]: sourceDraft },
+            promptStashes: previousStashes,
+          }));
+          try {
+            composerDebouncedStorage.flush();
+          } catch {
+            // The in-memory rollback still preserves the user's draft.
+          }
+          return {
+            status: "failed",
+            message:
+              error instanceof Error ? error.message : "The prompt stash could not be saved.",
+          };
+        }
+
+        for (const image of sourceDraft.images) {
+          revokeObjectPreviewUrl(image.previewUrl);
+        }
+        return { status: "stored", stash };
+      },
+      restorePromptStash: async (input) => {
+        const stash = get().promptStashes.find((entry) => entry.id === input.stashId);
+        if (!stash) {
+          return { status: "not-found", message: "This saved prompt is no longer available." };
+        }
+        const currentDraft = get().draftsByThreadId[input.threadId];
+        if (
+          currentDraft &&
+          hasSendableComposerDraftContent(currentDraft) &&
+          input.replaceNonEmpty !== true
+        ) {
+          return {
+            status: "needs-replace-confirmation",
+            message: "Restoring this prompt will replace the current composer contents.",
+          };
+        }
+
+        const keepTerminalContextByIndex = stash.draft.terminalContexts.map(
+          (context) => context.threadId === input.threadId,
+        );
+        const invalidTerminalContextCount = keepTerminalContextByIndex.filter(
+          (keep) => !keep,
+        ).length;
+        if (invalidTerminalContextCount > 0 && input.dropInvalidTerminalContexts !== true) {
+          return {
+            status: "needs-terminal-confirmation",
+            invalidTerminalContextCount,
+            message: "Terminal selections can only be restored to their original thread.",
+          };
+        }
+
+        const terminalContexts = stash.draft.terminalContexts
+          .filter((_, index) => keepTerminalContextByIndex[index] === true)
+          .map((context) => ({ ...context, threadId: input.threadId }));
+        const prompt = filterPromptTerminalContextPlaceholders(
+          stash.draft.prompt,
+          keepTerminalContextByIndex,
+        );
+        const authorizedFiles = reauthorizePromptStashFilePaths({
+          filePaths: stash.draft.filePaths,
+          workspaceRoots: input.workspaceRoots,
+          normalizeAbsolutePathForComparison: input.normalizeAbsolutePathForComparison,
+        });
+        const images = hydrateImagesFromPersisted(stash.draft.attachments);
+        if (images.length !== stash.draft.attachments.length) {
+          return {
+            status: "failed",
+            message: "One or more saved images could not be restored. The stash was kept.",
+          };
+        }
+
+        const selection = input.selection ?? stash.draft;
+        const provider = normalizeProviderKind(selection.provider);
+        const restoredDraft: ComposerThreadDraftState = {
+          prompt: ensureInlineTerminalContextPlaceholders(prompt, terminalContexts.length),
+          images,
+          nonPersistedImageIds: [],
+          persistedAttachments: stash.draft.attachments,
+          filePaths: authorizedFiles.filePaths,
+          terminalContexts: normalizeTerminalContextsForThread(input.threadId, terminalContexts),
+          provider,
+          providerInstanceId: normalizeProviderInstanceId(selection.providerInstanceId),
+          model:
+            typeof selection.model === "string"
+              ? (normalizeModelSlug(selection.model, provider ?? "codex") ?? null)
+              : null,
+          modelOptions: normalizeProviderModelOptions(selection.modelOptions) ?? null,
+          runtimeMode: isRuntimeMode(selection.runtimeMode) ? selection.runtimeMode : null,
+          interactionMode:
+            selection.interactionMode === "default" || selection.interactionMode === "plan"
+              ? selection.interactionMode
+              : null,
+          effort:
+            selection.effort && REASONING_EFFORT_VALUES.has(selection.effort)
+              ? selection.effort
+              : null,
+          codexFastMode: selection.codexFastMode === true,
+        };
+        const warnings = [...(input.warnings ?? [])];
+        if (stash.sourceProjectId !== input.projectId && stash.draft.filePaths.length > 0) {
+          warnings.push("Saved file references were re-authorized for this project.");
+        }
+        if (invalidTerminalContextCount > 0) {
+          warnings.push(
+            `${invalidTerminalContextCount} terminal context${invalidTerminalContextCount === 1 ? " was" : "s were"} omitted because it belongs to another thread.`,
+          );
+        }
+        if (authorizedFiles.invalidPathCount > 0) {
+          warnings.push(
+            `${authorizedFiles.invalidPathCount} file reference${authorizedFiles.invalidPathCount === 1 ? " was" : "s were"} omitted because it is outside this workspace.`,
+          );
+        }
+
+        set((state) => ({
+          draftsByThreadId: {
+            ...state.draftsByThreadId,
+            [input.threadId]: restoredDraft,
+          },
+        }));
+        try {
+          composerDebouncedStorage.flush();
+          if (!persistedDraftMatches(input.threadId, restoredDraft)) {
+            throw new Error("The restored prompt could not be saved to local storage.");
+          }
+        } catch (error) {
+          set((state) => {
+            const draftsByThreadId = { ...state.draftsByThreadId };
+            if (currentDraft) {
+              draftsByThreadId[input.threadId] = currentDraft;
+            } else {
+              delete draftsByThreadId[input.threadId];
+            }
+            return { draftsByThreadId };
+          });
+          try {
+            composerDebouncedStorage.flush();
+          } catch {
+            // The stash remains available even if durable rollback also fails.
+          }
+          return {
+            status: "failed",
+            message:
+              error instanceof Error ? error.message : "The saved prompt could not be restored.",
+          };
+        }
+
+        if (currentDraft) {
+          for (const image of currentDraft.images) {
+            revokeObjectPreviewUrl(image.previewUrl);
+          }
+        }
+        return { status: "restored", warnings };
+      },
+      deletePromptStash: (stashId) => {
+        set((state) => ({
+          promptStashes: state.promptStashes.filter((stash) => stash.id !== stashId),
+        }));
+      },
     }),
     {
       name: COMPOSER_DRAFT_STORAGE_KEY,
@@ -2003,6 +2573,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               terminalLabel: context.terminalLabel,
               lineStart: context.lineStart,
               lineEnd: context.lineEnd,
+              text: context.text,
             }));
           }
           if (draft.model) {
@@ -2035,6 +2606,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           draftsByThreadId: persistedDraftsByThreadId,
           draftThreadsByThreadId: state.draftThreadsByThreadId,
           projectDraftThreadIdByProjectId: state.projectDraftThreadIdByProjectId,
+          promptStashes: state.promptStashes,
         };
       },
       merge: (persistedState, currentState) => {
@@ -2050,6 +2622,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           draftsByThreadId,
           draftThreadsByThreadId: normalizedPersisted.draftThreadsByThreadId,
           projectDraftThreadIdByProjectId: normalizedPersisted.projectDraftThreadIdByProjectId,
+          promptStashes: normalizedPersisted.promptStashes,
         };
       },
     },

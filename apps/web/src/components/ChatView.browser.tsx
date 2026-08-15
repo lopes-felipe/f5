@@ -1884,6 +1884,7 @@ describe("ChatView timeline (full app)", () => {
       draftsByThreadId: {},
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
+      promptStashes: [],
     });
     useModelPreferencesStore.setState({
       lastProvider: null,
@@ -3807,6 +3808,82 @@ describe("ChatView timeline (full app)", () => {
         (path) => UUID_ROUTE_RE.test(path),
         "Route should have changed to a new draft thread UUID from the shortcut.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("stashes with mod+s only while the composer is focused", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-user-prompt-stash-shortcut" as MessageId,
+        targetText: "prompt stash shortcut target",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.serverConfig = {
+          ...nextFixture.serverConfig,
+          keybindings: [
+            createModKeybinding("composer.stash", "s", {
+              whenAst: {
+                type: "and",
+                left: { type: "identifier", name: "composerFocus" },
+                right: {
+                  type: "not",
+                  node: { type: "identifier", name: "dialogFocus" },
+                },
+              },
+            }),
+          ],
+        };
+      },
+    });
+
+    try {
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Save this prompt for later");
+      const composerEditor = await waitForComposerEditor();
+      composerEditor.focus();
+      const useMetaForMod = isMacPlatform(navigator.platform);
+      composerEditor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "s",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+
+      await vi.waitFor(
+        () => {
+          expect(useComposerDraftStore.getState().promptStashes).toHaveLength(1);
+          expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(
+            "",
+          );
+        },
+        { timeout: 8_000, interval: 16 },
+      );
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "Keep this active prompt");
+      composerEditor.blur();
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "s",
+          metaKey: useMetaForMod,
+          ctrlKey: !useMetaForMod,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+
+      expect(useComposerDraftStore.getState().promptStashes).toHaveLength(1);
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Keep this active prompt",
+      );
+
+      await page.getByRole("button", { name: "Saved prompts" }).click();
+      await expect.element(page.getByText("Save this prompt for later")).toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

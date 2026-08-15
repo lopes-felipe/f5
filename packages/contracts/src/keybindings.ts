@@ -40,6 +40,7 @@ export const STATIC_KEYBINDING_COMMANDS = [
   "chat.scrollToBottom",
   "chat.queueTurn",
   "chat.queueTurnNext",
+  "composer.stash",
   "dialog.primaryAction",
   "editor.openFavorite",
   "thread.switchRecentNext",
