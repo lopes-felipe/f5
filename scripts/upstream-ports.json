@@ -861,8 +861,8 @@
     {
       "upstreamSha": "c2f8cb7ca1576afd70294b98dfe1de9be17aacae",
       "subject": "feat(web): show how many subagents are running at a glance (#5745)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 6.2 running subagent count; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["4b65e9c22ccd75732b0bddfef199d65750a64ddf"]
     },
     {
       "upstreamSha": "89ee692bf0436505d008c1d70215e70836eba4e2",
@@ -1329,8 +1329,8 @@
     {
       "upstreamSha": "a2ca89aa10f13a2222e08afd98c66285121d5ba2",
       "subject": "feat: native subagent & workflow observability (#5219)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 6.2 Agents observability; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["4b65e9c22ccd75732b0bddfef199d65750a64ddf"]
     },
     {
       "upstreamSha": "990bb0b689b23a33f8e53f12962fe2542b3f4005",
