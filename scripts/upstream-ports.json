@@ -305,8 +305,8 @@
     {
       "upstreamSha": "b73232bdd31e83914a8a943960c7dc4b6390b39b",
       "subject": "feat(web): reset sidebar width on double click (#6320)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.8 reset sidebar width; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["869c236c297268cf74b00b1d741a2018823132cd"]
     },
     {
       "upstreamSha": "f131228a5908974c90d9b80a4d8ef866bb29e973",
@@ -769,8 +769,8 @@
     {
       "upstreamSha": "05eb051184ac4d486795ac6f8be29129b8b8845f",
       "subject": "feat(web): keep unsent drafts one click away in the sidebar (#5777)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.7 unsent drafts in sidebar; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["869c236c297268cf74b00b1d741a2018823132cd"]
     },
     {
       "upstreamSha": "ddaa6afef55e0da53950c7ed45f7d91b717475a5",
@@ -2452,8 +2452,8 @@
     {
       "upstreamSha": "5719e8ac4020dda0e375ef61d044b61f55a0df8a",
       "subject": "feat(web): show fast mode as a bolt instead of a \"Normal\" label (#4488)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.6 fast-mode icon; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["869c236c297268cf74b00b1d741a2018823132cd"]
     },
     {
       "upstreamSha": "38cfc25e5422e468303f2010f639cf3de9ad89ba",
@@ -3046,6 +3046,14 @@
       "reason": "Added f5's lightweight server.probe route, generation-safe foreground/focus/online probing, ten-second coalescing, listener disposal, and bounded reconnect jitter on the existing WebSocket transport.",
       "upstreamShas": ["2640e6dcfcb6a5ba2f01f20295ce8bacd2fdb05e"],
       "f5Shas": ["f57e2499596c4b9ee7c65bc4c0774000241d60dc"]
+    },
+    {
+      "category": "terminal-selection-actions",
+      "selection": "Upstream 1735e27d9e5106bbb35d5b1dd10363604a54b69e (#2904), which predates the frozen first-parent window",
+      "disposition": "ported",
+      "reason": "Added Copy and Copy and add to chat to f5's existing native terminal-selection menu without introducing a conflicting keybinding.",
+      "upstreamShas": ["1735e27d9e5106bbb35d5b1dd10363604a54b69e"],
+      "f5Shas": ["869c236c297268cf74b00b1d741a2018823132cd"]
     },
     {
       "category": "pre-schema-ledger",
