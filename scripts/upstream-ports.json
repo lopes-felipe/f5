@@ -359,8 +359,8 @@
     {
       "upstreamSha": "d37a9b09b8ea6b014e9ea2d6b00d9b25cde0efc6",
       "subject": "feat(mobile): add thread title regeneration (#6253)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.2 title regeneration; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["e58e1083496707e6b415efc76c0910155f5d52f3"]
     },
     {
       "upstreamSha": "560d4a4560ddb5f42c8f8e0e35fa7827c0e46f80",
@@ -1893,8 +1893,8 @@
     {
       "upstreamSha": "5c9358acaa34f8619513bba1e6821f0fdec27f74",
       "subject": "feat(web): regenerate thread titles from sidebar (#4810)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.2 race-safe titles; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["e58e1083496707e6b415efc76c0910155f5d52f3"]
     },
     {
       "upstreamSha": "cbe8052020aa0c02c63fbe090e7f1f25603622d1",
