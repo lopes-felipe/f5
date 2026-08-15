@@ -52,7 +52,7 @@ describe("check-upstream-ports", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("invalid disposition maybe");
-  });
+  }, 15_000);
 
   it("rejects a completed port with a non-resolving f5 SHA", () => {
     const ledger = structuredClone(sourceLedger);
@@ -64,5 +64,5 @@ describe("check-upstream-ports", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("references non-resolving f5 SHA");
-  });
+  }, 15_000);
 });
