@@ -139,6 +139,7 @@ import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import { makeWorkspaceAssetAuthorizer } from "./WorkspaceAssetAuthorizer";
+import { makeCheckedInProjectFileService } from "./project/CheckedInProjectFileService";
 import {
   ProjectSetupScriptRunner,
   type ProjectSetupScriptRunnerShape,
@@ -1360,7 +1361,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         }
         if (
           yield* Effect.promise(() =>
-            tryHandleProjectFaviconRequest(url, res, workspaceAssetAuthorizer),
+            tryHandleProjectFaviconRequest(
+              url,
+              res,
+              workspaceAssetAuthorizer,
+              checkedInProjectFileService,
+            ),
           )
         ) {
           return;
@@ -1561,6 +1567,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       );
     },
   });
+  const checkedInProjectFileService = makeCheckedInProjectFileService(workspaceAssetAuthorizer);
   const projectContentSearchManager = makeProjectContentSearchManager();
   const unregisterWorkspaceContentInvalidator = registerWorkspaceContentIndexInvalidator(
     projectContentSearchManager.invalidateWorkspaceRoot,
@@ -2471,6 +2478,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           catch: (cause) =>
             new RouteRequestError({
               message: `Failed to search workspace entries: ${String(cause)}`,
+            }),
+        });
+      }
+
+      case WS_METHODS.projectsGetCheckedInConfig: {
+        const body = stripRequestTag(request.body);
+        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        if (
+          !snapshot.projects.some(
+            (project) => project.id === body.projectId && project.deletedAt === null,
+          )
+        ) {
+          return yield* new RouteRequestError({ message: "Project is unavailable." });
+        }
+        return yield* Effect.tryPromise({
+          try: () => checkedInProjectFileService.load(body.projectId),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to load checked-in project configuration: ${String(cause)}`,
             }),
         });
       }

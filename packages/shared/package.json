@@ -175,6 +175,10 @@
     "./attachmentMetadata": {
       "types": "./src/attachmentMetadata.ts",
       "import": "./src/attachmentMetadata.ts"
+    },
+    "./checkedInProjectFile": {
+      "types": "./src/checkedInProjectFile.ts",
+      "import": "./src/checkedInProjectFile.ts"
     }
   },
   "scripts": {

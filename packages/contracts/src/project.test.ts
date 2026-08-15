@@ -6,6 +6,7 @@ import {
   PROJECT_LIST_ENTRIES_MAX_LIMIT,
   ProjectAuthorizeEntryInput,
   ProjectListEntriesInput,
+  ProjectIcon,
   ProjectSearchContentsInput,
   ProjectSearchContentsResult,
 } from "./project";
@@ -14,6 +15,27 @@ const decodeProjectListEntriesInput = Schema.decodeUnknownSync(ProjectListEntrie
 const decodeProjectAuthorizeEntryInput = Schema.decodeUnknownSync(ProjectAuthorizeEntryInput);
 const decodeProjectSearchContentsInput = Schema.decodeUnknownSync(ProjectSearchContentsInput);
 const decodeProjectSearchContentsResult = Schema.decodeUnknownSync(ProjectSearchContentsResult);
+const decodeProjectIcon = Schema.decodeUnknownSync(ProjectIcon);
+
+describe("ProjectIcon", () => {
+  it("accepts the bounded manual icon variants", () => {
+    expect(decodeProjectIcon({ type: "lucide", glyph: "rocket", color: "violet" })).toEqual({
+      type: "lucide",
+      glyph: "rocket",
+      color: "violet",
+    });
+    expect(decodeProjectIcon({ type: "emoji", emoji: " 🧪 " })).toEqual({
+      type: "emoji",
+      emoji: "🧪",
+    });
+  });
+
+  it("rejects unsupported glyphs and oversized emoji values", () => {
+    expect(() => decodeProjectIcon({ type: "lucide", glyph: "shell", color: "gray" })).toThrow();
+    expect(() => decodeProjectIcon({ type: "emoji", emoji: "not an emoji" })).toThrow();
+    expect(() => decodeProjectIcon({ type: "emoji", emoji: "x".repeat(17) })).toThrow();
+  });
+});
 
 describe("ProjectListEntriesInput", () => {
   it("accepts the maximum workspace file tree entry limit", () => {

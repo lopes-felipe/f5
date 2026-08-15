@@ -265,6 +265,8 @@ export function projectEvent(
             title: payload.title,
             workspaceRoot: payload.workspaceRoot,
             defaultModel: payload.defaultModel,
+            defaultEnvMode: payload.defaultEnvMode,
+            icon: payload.icon,
             scripts: payload.scripts,
             memories: [],
             skills: [],
@@ -299,6 +301,10 @@ export function projectEvent(
                   ...(payload.defaultModel !== undefined
                     ? { defaultModel: payload.defaultModel }
                     : {}),
+                  ...(payload.defaultEnvMode !== undefined
+                    ? { defaultEnvMode: payload.defaultEnvMode }
+                    : {}),
+                  ...(payload.icon !== undefined ? { icon: payload.icon } : {}),
                   ...(payload.scripts !== undefined ? { scripts: payload.scripts } : {}),
                   updatedAt: payload.updatedAt,
                 }

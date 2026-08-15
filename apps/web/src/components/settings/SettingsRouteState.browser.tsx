@@ -116,6 +116,46 @@ function createNativeApiMock(providers?: ReadonlyArray<ServerProvider>) {
         updatedAt: NOW_ISO,
       })),
       dispatchCommand: vi.fn(async () => undefined),
+      getStartupSnapshot: vi.fn(async () => ({
+        snapshot: {
+          snapshotSequence: 1,
+          projects: useStore.getState().projects.map((project) => ({
+            id: project.id,
+            title: project.name,
+            workspaceRoot: project.cwd,
+            defaultModel: project.model,
+            defaultModelSelection: null,
+            defaultEnvMode: project.defaultEnvMode ?? null,
+            icon: project.icon ?? null,
+            scripts: project.scripts,
+            memories: project.memories,
+            skills: project.skills ?? [],
+            createdAt: project.createdAt,
+            updatedAt: project.createdAt,
+            deletedAt: null,
+          })),
+          planningWorkflows: [],
+          codeReviewWorkflows: [],
+          investigationWorkflows: [],
+          threads: [],
+          updatedAt: NOW_ISO,
+        },
+        threadTailDetails: null,
+      })),
+    },
+    projects: {
+      getCheckedInConfig: vi.fn(async ({ projectId }: { projectId: ProjectId }) => ({
+        projectId,
+        sourceFile: "f5.json" as const,
+        defaultThreadEnvMode: "worktree" as const,
+        iconPath: null,
+        diagnostics: [
+          {
+            field: "scripts" as const,
+            message: "Repository-defined scripts require explicit approval.",
+          },
+        ],
+      })),
     },
   } as unknown as NativeApi;
 }
@@ -197,6 +237,59 @@ describe("useSettingsRouteState", () => {
       codeReviewWorkflows: [],
       investigationWorkflows: [],
     });
+  });
+
+  it("shows checked-in non-executable defaults and their diagnostics", async () => {
+    const { screen, queryClient } = await renderHarness();
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.body.textContent).toContain("Loaded non-executable defaults from f5.json");
+        expect(document.body.textContent).toContain("File workspace default: worktree");
+        expect(document.body.textContent).toContain(
+          "Repository-defined scripts require explicit approval.",
+        );
+      });
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
+  });
+
+  it("dispatches local workspace and manual icon overrides", async () => {
+    const { screen, queryClient } = await renderHarness();
+    const dispatchCommand = vi.mocked(nativeApiRef.current!.orchestration.dispatchCommand);
+
+    try {
+      document.querySelector<HTMLElement>('[aria-label="Project default workspace mode"]')?.click();
+      await page.getByRole("option", { name: "Worktree", exact: true }).click();
+
+      await vi.waitFor(() => {
+        expect(dispatchCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "project.meta.update",
+            projectId: PROJECT_ONE,
+            defaultEnvMode: "worktree",
+          }),
+        );
+      });
+
+      document.querySelector<HTMLElement>('[aria-label="Project icon source"]')?.click();
+      await page.getByRole("option", { name: "Emoji", exact: true }).click();
+
+      await vi.waitFor(() => {
+        expect(dispatchCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            type: "project.meta.update",
+            projectId: PROJECT_ONE,
+            icon: { type: "emoji", emoji: "📁" },
+          }),
+        );
+      });
+    } finally {
+      queryClient.clear();
+      await screen.unmount();
+    }
   });
 
   it("clears project memory edit state when the selected project changes via the shared picker", async () => {

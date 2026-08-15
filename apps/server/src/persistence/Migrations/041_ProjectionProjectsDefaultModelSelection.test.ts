@@ -81,6 +81,7 @@ const expectProjectionProjectsTable = (
     readonly updatedAt: string;
     readonly deletedAt: string | null;
   }> = [],
+  additionalColumns: ReadonlyArray<string> = [],
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -103,6 +104,7 @@ const expectProjectionProjectsTable = (
         "updated_at",
         "deleted_at",
         "default_model_selection_json",
+        ...additionalColumns,
       ],
     );
 
@@ -181,19 +183,22 @@ layer("041_ProjectionProjectsDefaultModelSelection", (it) => {
 
       yield* runMigrations;
 
-      yield* expectProjectionProjectsTable([
-        {
-          projectId: "project-1",
-          title: "",
-          workspaceRoot: "",
-          defaultModel: null,
-          defaultModelSelection: null,
-          scripts: "[]",
-          createdAt: "1970-01-01T00:00:00.000Z",
-          updatedAt: "1970-01-01T00:00:00.000Z",
-          deletedAt: null,
-        },
-      ]);
+      yield* expectProjectionProjectsTable(
+        [
+          {
+            projectId: "project-1",
+            title: "",
+            workspaceRoot: "",
+            defaultModel: null,
+            defaultModelSelection: null,
+            scripts: "[]",
+            createdAt: "1970-01-01T00:00:00.000Z",
+            updatedAt: "1970-01-01T00:00:00.000Z",
+            deletedAt: null,
+          },
+        ],
+        ["default_env_mode", "icon_json"],
+      );
 
       const latestMigration = yield* sql<{ readonly migrationId: number; readonly name: string }>`
         SELECT migration_id AS "migrationId", name

@@ -2,7 +2,7 @@ import { type ProjectId, ThreadId } from "@t3tools/contracts";
 import { useParams } from "@tanstack/react-router";
 import { useCallback } from "react";
 
-import { type DraftThreadEnvMode, useComposerDraftStore } from "../composerDraftStore";
+import { useComposerDraftStore } from "../composerDraftStore";
 import {
   seedDraftThreadFromModelPreferences,
   useCreateProjectBackedDraftThread,
@@ -28,14 +28,8 @@ export function useHandleNewThread() {
     : undefined;
 
   const handleNewThread = useCallback(
-    (
-      projectId: ProjectId,
-      options?: {
-        branch?: string | null;
-        worktreePath?: string | null;
-        envMode?: DraftThreadEnvMode;
-      },
-    ) => createProjectBackedDraftThread(projectId, options),
+    (projectId: ProjectId, options?: Parameters<typeof createProjectBackedDraftThread>[1]) =>
+      createProjectBackedDraftThread(projectId, options),
     [createProjectBackedDraftThread],
   );
 

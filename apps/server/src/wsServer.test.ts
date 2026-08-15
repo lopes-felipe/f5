@@ -2968,6 +2968,43 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("loads checked-in project defaults through a registered project identity", async () => {
+    const workspace = makeTempDir("f5-ws-project-config-");
+    fs.writeFileSync(
+      path.join(workspace, "f5.json"),
+      JSON.stringify({ defaultThreadEnvMode: "worktree", scripts: [{ command: "ignored" }] }),
+      "utf8",
+    );
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const projectId = "project-checked-in-config";
+    const createdAt = new Date().toISOString();
+    const created = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: "cmd-project-checked-in-config",
+      projectId,
+      title: "Checked-in config",
+      workspaceRoot: workspace,
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(created.error).toBeUndefined();
+
+    const response = await sendRequest(ws, WS_METHODS.projectsGetCheckedInConfig, { projectId });
+    expect(response.error).toBeUndefined();
+    expect(response.result).toMatchObject({
+      projectId,
+      sourceFile: "f5.json",
+      defaultThreadEnvMode: "worktree",
+      iconPath: null,
+      diagnostics: [expect.objectContaining({ field: "scripts" })],
+    });
+  });
+
   it("searches project contents through registered identities", async () => {
     const workspace = makeTempDir("f5-ws-content-search-");
     fs.mkdirSync(path.join(workspace, "src"), { recursive: true });

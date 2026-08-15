@@ -9,6 +9,7 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { newThreadId } from "../lib/utils";
+import { useProjectThreadEnvModeResolver } from "../lib/projectConfigReactQuery";
 import { getModelPreferences } from "../modelPreferencesStore";
 import { useStore } from "../store";
 
@@ -16,6 +17,7 @@ export interface CreateProjectBackedDraftThreadOptions {
   branch?: string | null;
   worktreePath?: string | null;
   envMode?: DraftThreadEnvMode;
+  forceNonDefaultEnvMode?: boolean;
 }
 
 interface CreateProjectBackedDraftThreadInput {
@@ -182,21 +184,36 @@ export async function createProjectBackedDraftThread({
 export function useCreateProjectBackedDraftThread() {
   const navigate = useNavigate();
   const { settings, updateSettings } = useAppSettings();
+  const resolveProjectThreadEnvMode = useProjectThreadEnvModeResolver();
   const routeThreadId = useParams({
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
   });
 
   return useCallback(
-    (projectId: ProjectId, options?: CreateProjectBackedDraftThreadOptions) =>
-      createProjectBackedDraftThread({
+    async (projectId: ProjectId, options?: CreateProjectBackedDraftThreadOptions) => {
+      const { forceNonDefaultEnvMode = false, ...draftOptions } = options ?? {};
+      const requested =
+        draftOptions.envMode ?? (draftOptions.worktreePath ? "worktree" : undefined);
+      const envMode = await resolveProjectThreadEnvMode(projectId, {
+        ...(requested ? { requested } : {}),
+        forceNonDefault: forceNonDefaultEnvMode,
+      });
+      return createProjectBackedDraftThread({
         navigate,
         onboardingLiteStatus: settings.onboardingLiteStatus,
         projectId,
         routeThreadId,
         updateSettings,
-        ...(options ? { options } : {}),
-      }),
-    [navigate, routeThreadId, settings.onboardingLiteStatus, updateSettings],
+        options: { ...draftOptions, envMode },
+      });
+    },
+    [
+      navigate,
+      resolveProjectThreadEnvMode,
+      routeThreadId,
+      settings.onboardingLiteStatus,
+      updateSettings,
+    ],
   );
 }

@@ -6,7 +6,14 @@
  *
  * @module ProjectionProjectRepository
  */
-import { IsoDateTime, ModelSelection, ProjectId, ProjectScript } from "@t3tools/contracts";
+import {
+  IsoDateTime,
+  ModelSelection,
+  ProjectIcon,
+  ProjectId,
+  ProjectScript,
+  ThreadEnvMode,
+} from "@t3tools/contracts";
 import { Option, Schema, ServiceMap } from "effect";
 import type { Effect } from "effect";
 
@@ -20,6 +27,10 @@ export const ProjectionProject = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  icon: Schema.optional(Schema.NullOr(ProjectIcon)).pipe(Schema.withDecodingDefault(() => null)),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

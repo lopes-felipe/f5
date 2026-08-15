@@ -81,6 +81,8 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
           title: "Project 1",
           workspaceRoot: "/tmp/project-1",
           defaultModel: null,
+          defaultEnvMode: "worktree",
+          icon: { type: "lucide", glyph: "rocket", color: "violet" },
           scripts: [],
           createdAt: now,
           updatedAt: now,
@@ -137,16 +139,26 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       const projectRows = yield* sql<{
         readonly projectId: string;
         readonly title: string;
+        readonly defaultEnvMode: string | null;
+        readonly iconJson: string | null;
         readonly scriptsJson: string;
       }>`
         SELECT
           project_id AS "projectId",
           title,
+          default_env_mode AS "defaultEnvMode",
+          icon_json AS "iconJson",
           scripts_json AS "scriptsJson"
         FROM projection_projects
       `;
       assert.deepEqual(projectRows, [
-        { projectId: "project-1", title: "Project 1", scriptsJson: "[]" },
+        {
+          projectId: "project-1",
+          title: "Project 1",
+          defaultEnvMode: "worktree",
+          iconJson: JSON.stringify({ type: "lucide", glyph: "rocket", color: "violet" }),
+          scriptsJson: "[]",
+        },
       ]);
 
       const messageRows = yield* sql<{

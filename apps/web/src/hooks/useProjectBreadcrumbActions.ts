@@ -1,8 +1,6 @@
-import { resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback } from "react";
 
-import type { AppSettings } from "~/appSettings";
 import { toastManager } from "~/components/ui/toast";
 import type { Project, Thread } from "~/types";
 
@@ -11,7 +9,6 @@ import { useCreateProjectBackedDraftThread } from "./useCreateProjectBackedDraft
 export function useProjectBreadcrumbActions(input: {
   readonly project: Project | null | undefined;
   readonly thread: Thread | null | undefined;
-  readonly globalDefaultEnvMode: AppSettings["defaultThreadEnvMode"];
 }) {
   const createProjectBackedDraftThread = useCreateProjectBackedDraftThread();
   const navigate = useNavigate();
@@ -21,9 +18,6 @@ export function useProjectBreadcrumbActions(input: {
     void createProjectBackedDraftThread(input.project.id, {
       branch: input.thread.branch,
       worktreePath: input.thread.worktreePath,
-      envMode: resolveThreadEnvMode({
-        globalDefault: input.globalDefaultEnvMode,
-      }),
     }).catch((error) => {
       toastManager.add({
         type: "error",
@@ -31,14 +25,15 @@ export function useProjectBreadcrumbActions(input: {
         description: error instanceof Error ? error.message : "An unexpected error occurred.",
       });
     });
-  }, [createProjectBackedDraftThread, input.globalDefaultEnvMode, input.project, input.thread]);
+  }, [createProjectBackedDraftThread, input.project, input.thread]);
 
   const openSettings = useCallback(() => {
+    if (!input.project) return;
     void navigate({
       to: "/settings",
-      search: { category: "projects" },
+      search: { category: "projects", projectId: input.project.id },
     });
-  }, [navigate]);
+  }, [input.project, navigate]);
 
   return { createThread, openSettings } as const;
 }

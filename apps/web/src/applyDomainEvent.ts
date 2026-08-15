@@ -611,6 +611,8 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         model: resolveModelSlug(event.payload.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
         createdAt: event.payload.createdAt,
         expanded: true,
+        defaultEnvMode: event.payload.defaultEnvMode ?? null,
+        icon: event.payload.icon ?? null,
         scripts: mapScripts(event.payload.scripts, []),
         memories: [],
         skills: [],
@@ -629,10 +631,17 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
           event.payload.scripts !== undefined
             ? mapScripts(event.payload.scripts, project.scripts)
             : project.scripts;
+        const defaultEnvMode =
+          event.payload.defaultEnvMode !== undefined
+            ? event.payload.defaultEnvMode
+            : project.defaultEnvMode;
+        const icon = event.payload.icon !== undefined ? event.payload.icon : project.icon;
         if (
           (event.payload.title ?? project.name) === project.name &&
           (event.payload.workspaceRoot ?? project.cwd) === project.cwd &&
           model === project.model &&
+          defaultEnvMode === project.defaultEnvMode &&
+          icon === project.icon &&
           scripts === project.scripts
         ) {
           return project;
@@ -644,6 +653,8 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
             ? { cwd: event.payload.workspaceRoot }
             : {}),
           ...(model !== project.model ? { model } : {}),
+          ...(defaultEnvMode !== project.defaultEnvMode ? { defaultEnvMode } : {}),
+          ...(icon !== project.icon ? { icon } : {}),
           ...(scripts !== project.scripts ? { scripts } : {}),
         };
       });

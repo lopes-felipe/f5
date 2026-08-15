@@ -238,6 +238,32 @@ describe("WorkflowImplementDialog", () => {
     }
   });
 
+  it("starts from the persisted per-project workspace mode", async () => {
+    useStore.setState((state) => ({
+      projects: state.projects.map((project) => ({ ...project, defaultEnvMode: "worktree" })),
+    }));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <QueryClientProvider client={makeQueryClient()}>
+        <WorkflowImplementDialog open workflow={makeWorkflow()} onOpenChange={() => {}} />
+      </QueryClientProvider>,
+      { container: host },
+    );
+
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "New worktree" }))
+        .toHaveAttribute("aria-pressed", "true");
+      await expect
+        .element(page.getByRole("button", { name: "Start implementation" }))
+        .toBeDisabled();
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("disables Start implementation in New worktree mode until a branch is chosen", async () => {
     const host = document.createElement("div");
     document.body.append(host);

@@ -155,6 +155,7 @@ F5 stores persistent state under `~/.f5` by default (`%USERPROFILE%\.f5` on Wind
 - [`docs/encyclopedia.md`](./docs/encyclopedia.md) — glossary of domain terms
 - [`docs/workspace-layout.md`](./docs/workspace-layout.md) — one-line package overview
 - [`docs/environment.md`](./docs/environment.md) — full env-var reference
+- [`docs/project-configuration.md`](./docs/project-configuration.md) — safe checked-in project defaults
 - [`docs/release.md`](./docs/release.md) — release process
 - [`KEYBINDINGS.md`](./KEYBINDINGS.md) — default keybindings and how to customize
 - [`REMOTE.md`](./REMOTE.md) — running F5 on a remote host

@@ -25,6 +25,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   predicates, and one-time migration of legacy browser-local pins.
 - Race-safe thread title regeneration using current conversation context, correlated requests,
   title provenance/revisions, and stale-result protection for manual renames and newer requests.
+- Per-project workspace defaults and manual icons, plus safe checked-in `f5.json` configuration for
+  non-executable workspace and icon fields (`t3.json` is accepted read-only for interoperability).
 
 ### Changed
 

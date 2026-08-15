@@ -3,6 +3,7 @@ import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   defaultInstanceIdForDriver,
   type ProjectId,
+  type ProjectIcon,
   type ProjectMemoryType,
   type ProviderKind,
   ProviderDriverKind,
@@ -141,6 +142,8 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   const [createMemoryError, setCreateMemoryError] = useState<string | null>(null);
   const [existingMemoryError, setExistingMemoryError] = useState<string | null>(null);
   const [memoryActionPendingId, setMemoryActionPendingId] = useState<string | null>(null);
+  const [projectMetadataPending, setProjectMetadataPending] = useState(false);
+  const [projectMetadataError, setProjectMetadataError] = useState<string | null>(null);
 
   const claudeLaunchArgsParseResult = useMemo(
     () => parseClaudeLaunchArgs(settings.claudeLaunchArgs),
@@ -350,6 +353,33 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     syncStartupSnapshot(snapshot);
   }, [syncStartupSnapshot]);
 
+  const updateSelectedProjectMetadata = useCallback(
+    async (patch: {
+      readonly defaultEnvMode?: "local" | "worktree" | null;
+      readonly icon?: ProjectIcon | null;
+    }) => {
+      if (!selectedProject) return;
+      setProjectMetadataError(null);
+      setProjectMetadataPending(true);
+      try {
+        await ensureNativeApi().orchestration.dispatchCommand({
+          type: "project.meta.update",
+          commandId: newCommandId(),
+          projectId: selectedProject.id,
+          ...patch,
+        });
+        await refreshSnapshot();
+      } catch (error) {
+        setProjectMetadataError(
+          error instanceof Error ? error.message : "Failed to update project settings.",
+        );
+      } finally {
+        setProjectMetadataPending(false);
+      }
+    },
+    [refreshSnapshot, selectedProject],
+  );
+
   const submitMemoryCreate = useCallback(async () => {
     if (!selectedProject) {
       return;
@@ -513,6 +543,9 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     selectedProjectUnavailable,
     selectedProjectSummary,
     selectedProjectMemories,
+    projectMetadataPending,
+    projectMetadataError,
+    updateSelectedProjectMetadata,
     handleSelectedProjectChange,
     notificationPermission,
     notificationPermissionSummary,

@@ -393,6 +393,24 @@ describe("wsNativeApi", () => {
     });
   });
 
+  it("forwards checked-in project configuration reads", async () => {
+    requestMock.mockResolvedValue({
+      projectId: "project-1",
+      sourceFile: "f5.json",
+      defaultThreadEnvMode: "worktree",
+      iconPath: null,
+      diagnostics: [],
+    });
+    const { createWsNativeApi } = await import("./wsNativeApi");
+
+    const api = createWsNativeApi();
+    await api.projects.getCheckedInConfig({ projectId: ProjectId.makeUnsafe("project-1") });
+
+    expect(requestMock).toHaveBeenCalledWith(WS_METHODS.projectsGetCheckedInConfig, {
+      projectId: "project-1",
+    });
+  });
+
   it("forwards project content searches and cancellation", async () => {
     requestMock
       .mockResolvedValueOnce({

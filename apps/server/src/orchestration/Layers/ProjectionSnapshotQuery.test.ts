@@ -272,6 +272,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
           workspaceRoot: "/tmp/project-1",
           defaultModel: "gpt-5-codex",
           defaultModelSelection: null,
+          defaultEnvMode: null,
+          icon: null,
           scripts: [
             {
               id: "script-1",

@@ -171,6 +171,7 @@ import {
   AgentsGetSnapshotInput,
   AgentsSnapshot,
 } from "./backgroundWork";
+import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
 import { ReviewPreviewDiffInput } from "./review";
 import {
   WorkflowPlatformCreateRunInput,
@@ -191,6 +192,7 @@ export const WS_METHODS = {
   projectsWriteFile: "projects.writeFile",
   projectsReadFile: "projects.readFile",
   projectsAuthorizeEntry: "projects.authorizeEntry",
+  projectsGetCheckedInConfig: "projects.getCheckedInConfig",
 
   // Filesystem methods
   filesystemBrowse: "filesystem.browse",
@@ -411,6 +413,7 @@ const WebSocketRequestBody = Schema.Union([
   ),
 
   // Project Search
+  tagRequestBody(WS_METHODS.projectsGetCheckedInConfig, ProjectGetCheckedInConfigInput),
   tagRequestBody(WS_METHODS.projectsListEntries, ProjectListEntriesInput),
   tagRequestBody(WS_METHODS.projectsSearchEntries, ProjectSearchEntriesInput),
   tagRequestBody(WS_METHODS.projectsSearchContents, ProjectSearchContentsInput),

@@ -328,6 +328,15 @@ function createNativeApiMock(options?: { serverConfig?: Partial<ServerConfig> })
       dispatchCommand: vi.fn(async () => undefined),
       onDomainEvent: vi.fn(() => () => {}),
     },
+    projects: {
+      getCheckedInConfig: vi.fn(async ({ projectId }: { projectId: ProjectId }) => ({
+        projectId,
+        sourceFile: null,
+        defaultThreadEnvMode: null,
+        iconPath: null,
+        diagnostics: [],
+      })),
+    },
     terminal: {
       onEvent: vi.fn(() => () => {}),
     },

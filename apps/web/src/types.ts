@@ -28,6 +28,8 @@ import type {
   ProviderInstanceId,
   ProviderInteractionMode,
   RuntimeMode,
+  ProjectIcon,
+  ThreadEnvMode,
   UserMessageSkillCall as ContractUserMessageSkillCall,
 } from "@t3tools/contracts";
 
@@ -133,6 +135,8 @@ export interface Project {
   model: string;
   createdAt: string;
   expanded: boolean;
+  defaultEnvMode?: ThreadEnvMode | null;
+  icon?: ProjectIcon | null;
   scripts: ProjectScript[];
   memories: ProjectMemory[];
   skills?: ProjectSkill[] | undefined;

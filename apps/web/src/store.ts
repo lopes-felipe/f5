@@ -225,6 +225,8 @@ function mapProjectsFromReadModel(
         existing?.model ??
         resolveModelSlug(project.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex),
       createdAt: project.createdAt,
+      defaultEnvMode: project.defaultEnvMode ?? null,
+      icon: project.icon ?? null,
       expanded:
         existing?.expanded ??
         (persistedExpanded

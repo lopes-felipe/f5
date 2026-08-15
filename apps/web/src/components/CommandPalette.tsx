@@ -10,7 +10,6 @@ import {
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import {
   ArrowDownIcon,
   ArrowLeftIcon,
@@ -70,7 +69,6 @@ import { resolveShortcutCommand, useServerKeybindings } from "../keybindings";
 import { openFileRightPanelSurface, setSearchParamsForSurface } from "../rightPanelNavigation";
 import { buildGlobalSearchQueryInput, parseGlobalSearchQuery } from "../lib/globalSearchQuery";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
-import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { useStore } from "../store";
 import { selectThreadTerminalState, useTerminalStateStore } from "../terminalStateStore";
 import { useWorkflowCreateDialogStore } from "../workflowCreateDialogStore";
@@ -107,6 +105,7 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "./u
 import { toastManager } from "./ui/toast";
 import { useNextTurnQueueStore } from "../nextTurnQueueStore";
 import { HighlightedText } from "./HighlightedText";
+import { ProjectIcon } from "./ProjectIcon";
 const EMPTY_BROWSE_ENTRIES: FilesystemBrowseResult["entries"] = [];
 const EMPTY_PROJECT_ENTRIES: ProjectEntry[] = [];
 const BROWSE_STALE_TIME_MS = 30_000;
@@ -122,29 +121,6 @@ function getLocalFileManagerName(platform: string): string {
     return "Explorer";
   }
   return "Files";
-}
-
-function ProjectFaviconIcon({ projectId, className }: { projectId: ProjectId; className: string }) {
-  const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
-  const origin = useMemo(() => getServerHttpOrigin(), []);
-  const src = `${origin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
-
-  if (status === "error") {
-    return <FolderIcon className={className} />;
-  }
-
-  return (
-    <img
-      src={src}
-      alt=""
-      className={cn(
-        "size-4 shrink-0 rounded-sm object-contain",
-        status === "loading" ? "hidden" : "",
-      )}
-      onLoad={() => setStatus("loaded")}
-      onError={() => setStatus("error")}
-    />
-  );
 }
 
 export function CommandPalette({ children }: { children: ReactNode }) {
@@ -490,9 +466,7 @@ function OpenCommandPaletteDialog(props: {
         return;
       }
 
-      await handleNewThread(project.id, {
-        envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
-      });
+      await handleNewThread(project.id);
     },
     [
       codeReviewWorkflows,
@@ -500,14 +474,13 @@ function OpenCommandPaletteDialog(props: {
       handleNewThread,
       navigate,
       planningWorkflows,
-      settings.defaultThreadEnvMode,
       threads,
     ],
   );
 
   const projectIcon = useCallback(
     (project: (typeof projects)[number]) => (
-      <ProjectFaviconIcon projectId={project.id} className={ITEM_ICON_CLASS} />
+      <ProjectIcon projectId={project.id} icon={project.icon} className={ITEM_ICON_CLASS} />
     ),
     [],
   );
@@ -530,12 +503,10 @@ function OpenCommandPaletteDialog(props: {
         valuePrefix: "new-thread-in",
         icon: projectIcon,
         runProject: async (project) => {
-          await handleNewThread(project.id, {
-            envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
-          });
+          await handleNewThread(project.id);
         },
       }),
-    [handleNewThread, projectIcon, projects, settings.defaultThreadEnvMode],
+    [handleNewThread, projectIcon, projects],
   );
 
   const sortedActiveThreads = useMemo(
@@ -580,9 +551,7 @@ function OpenCommandPaletteDialog(props: {
       let targetThreadId = searchTargetThreadId;
       if (!targetThreadId) {
         if (!searchProject) return;
-        const created = await handleNewThread(searchProject.id, {
-          envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
-        });
+        const created = await handleNewThread(searchProject.id);
         targetThreadId = created.threadId;
       }
       const surface = openFileRightPanelSurface(targetThreadId, {
@@ -597,7 +566,7 @@ function OpenCommandPaletteDialog(props: {
         search: (previous) => setSearchParamsForSurface(previous, surface),
       });
     },
-    [handleNewThread, navigate, searchProject, searchTargetThreadId, settings.defaultThreadEnvMode],
+    [handleNewThread, navigate, searchProject, searchTargetThreadId],
   );
 
   const fileSearchItems = useMemo(
@@ -743,9 +712,6 @@ function OpenCommandPaletteDialog(props: {
           await handleNewThread(currentProjectId, {
             branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
             worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
-            envMode: resolveThreadEnvMode({
-              globalDefault: settings.defaultThreadEnvMode,
-            }),
           });
         },
       });
@@ -915,9 +881,7 @@ function OpenCommandPaletteDialog(props: {
             params: { threadId: latestThread.id },
           });
         } else {
-          await handleNewThread(existing.id, {
-            envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
-          }).catch(() => undefined);
+          await handleNewThread(existing.id).catch(() => undefined);
         }
         setOpen(false);
         return;
@@ -934,9 +898,7 @@ function OpenCommandPaletteDialog(props: {
           defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
           createdAt: new Date().toISOString(),
         });
-        await handleNewThread(projectId, {
-          envMode: resolveThreadEnvMode({ globalDefault: settings.defaultThreadEnvMode }),
-        }).catch(() => undefined);
+        await handleNewThread(projectId).catch(() => undefined);
         setOpen(false);
       } catch (error) {
         toastManager.add({
@@ -956,7 +918,6 @@ function OpenCommandPaletteDialog(props: {
       planningWorkflows,
       projects,
       setOpen,
-      settings.defaultThreadEnvMode,
       threads,
     ],
   );

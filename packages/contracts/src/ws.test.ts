@@ -105,6 +105,19 @@ it.effect("accepts project content search and cancellation requests", () =>
   }),
 );
 
+it.effect("accepts checked-in project configuration requests", () =>
+  Effect.gen(function* () {
+    const request = yield* decodeWebSocketRequest({
+      id: "project-config",
+      body: {
+        _tag: WS_METHODS.projectsGetCheckedInConfig,
+        projectId: "project-1",
+      },
+    });
+    assert.strictEqual(request.body._tag, WS_METHODS.projectsGetCheckedInConfig);
+  }),
+);
+
 it.effect("accepts getTurnDiff requests when fromTurnCount <= toTurnCount", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeWebSocketRequest({

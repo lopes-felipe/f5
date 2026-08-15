@@ -36,6 +36,10 @@ import type {
   ProjectWriteFileInput,
   ProjectWriteFileResult,
 } from "./project";
+import type {
+  ProjectCheckedInConfig,
+  ProjectGetCheckedInConfigInput,
+} from "./checkedInProjectFile";
 import type { FilesystemBrowseInput, FilesystemBrowseResult } from "./filesystem";
 import type {
   ServerConfig,
@@ -411,6 +415,7 @@ export interface NativeApi {
     onLocalServersUpdated: (callback: (event: DiscoveredLocalServerList) => void) => () => void;
   };
   projects: {
+    getCheckedInConfig: (input: ProjectGetCheckedInConfigInput) => Promise<ProjectCheckedInConfig>;
     authorizeEntry: (input: ProjectAuthorizeEntryInput) => Promise<ProjectAuthorizeEntryResult>;
     listEntries: (input: ProjectListEntriesInput) => Promise<ProjectListEntriesResult>;
     searchEntries: (input: ProjectSearchEntriesInput) => Promise<ProjectSearchEntriesResult>;

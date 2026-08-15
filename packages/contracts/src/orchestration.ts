@@ -5,6 +5,8 @@ import { ProviderModelOptions, ProviderOptionSelections } from "./model";
 import { PlanningWorkflow, PlanningWorkflowId, WorkflowModelSlot } from "./planningWorkflow";
 import { ProviderInstanceId } from "./providerInstance";
 import { ProviderStartOptions } from "./providerStartOptions";
+import { ProjectIcon } from "./project";
+import { ThreadEnvMode } from "./threadEnvMode";
 export { ClaudeProviderStartOptions, ProviderStartOptions } from "./providerStartOptions";
 import {
   isKnownProviderKind as isKnownProviderKindValue,
@@ -263,6 +265,10 @@ export const OrchestrationProject = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  icon: Schema.optional(Schema.NullOr(ProjectIcon)).pipe(Schema.withDecodingDefault(() => null)),
   scripts: Schema.Array(ProjectScript),
   memories: Schema.Array(ProjectMemory).pipe(Schema.withDecodingDefault(() => [])),
   skills: Schema.optional(Schema.Array(ProjectSkill)).pipe(Schema.withDecodingDefault(() => [])),
@@ -742,6 +748,8 @@ export const ProjectCreateCommand = Schema.Struct({
   workspaceRoot: TrimmedNonEmptyString,
   defaultModel: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(ModelSelection),
+  defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
+  icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   createdAt: IsoDateTime,
 });
 
@@ -753,6 +761,8 @@ const ProjectMetaUpdateCommand = Schema.Struct({
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
   defaultModel: Schema.optional(TrimmedNonEmptyString),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
+  icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
 });
 
@@ -1484,6 +1494,10 @@ export const ProjectCreatedPayload = Schema.Struct({
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  icon: Schema.optional(Schema.NullOr(ProjectIcon)).pipe(Schema.withDecodingDefault(() => null)),
   scripts: Schema.Array(ProjectScript),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
@@ -1495,6 +1509,8 @@ export const ProjectMetaUpdatedPayload = Schema.Struct({
   workspaceRoot: Schema.optional(TrimmedNonEmptyString),
   defaultModel: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+  defaultEnvMode: Schema.optional(Schema.NullOr(ThreadEnvMode)),
+  icon: Schema.optional(Schema.NullOr(ProjectIcon)),
   scripts: Schema.optional(Schema.Array(ProjectScript)),
   updatedAt: IsoDateTime,
 });

@@ -5,6 +5,8 @@ import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas";
 import { DEFAULT_GIT_TEXT_GENERATION_MODEL, ProviderOptionSelections } from "./model";
 import { ModelSelection } from "./orchestration";
 import { ProviderInstanceConfig, ProviderInstanceId } from "./providerInstance";
+import { ThreadEnvMode, type ThreadEnvMode as ThreadEnvModeType } from "./threadEnvMode";
+export { ThreadEnvMode };
 
 // ── Client Settings (local-only) ───────────────────────────────
 
@@ -86,9 +88,6 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 
 // ── Server Settings (server-authoritative) ────────────────────
 
-export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
-export type ThreadEnvMode = typeof ThreadEnvMode.Type;
-
 const makeBinaryPathSetting = (fallback: string) =>
   TrimmedString.pipe(
     Schema.decodeTo(
@@ -164,7 +163,7 @@ export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
-    Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvMode),
+    Schema.withDecodingDefault(() => "local" as const satisfies ThreadEnvModeType),
   ),
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   textGenerationModelSelection: ModelSelection.pipe(

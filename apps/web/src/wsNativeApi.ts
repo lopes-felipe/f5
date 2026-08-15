@@ -382,6 +382,8 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     projects: {
+      getCheckedInConfig: (input) =>
+        transport.request(WS_METHODS.projectsGetCheckedInConfig, input),
       authorizeEntry: (input) => transport.request(WS_METHODS.projectsAuthorizeEntry, input),
       listEntries: (input) => transport.request(WS_METHODS.projectsListEntries, input),
       searchEntries: (input) => transport.request(WS_METHODS.projectsSearchEntries, input),

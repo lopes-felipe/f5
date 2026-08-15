@@ -221,6 +221,57 @@ describe("decider project scripts", () => {
     expect((event.payload as { scripts?: unknown[] }).scripts).toEqual(scripts);
   });
 
+  it("propagates local workspace and icon overrides in project metadata", async () => {
+    const now = new Date().toISOString();
+    const projectId = asProjectId("project-metadata");
+    const readModel = await Effect.runPromise(
+      projectEvent(createEmptyReadModel(now), {
+        sequence: 1,
+        eventId: asEventId("evt-project-create-metadata"),
+        aggregateKind: "project",
+        aggregateId: projectId,
+        type: "project.created",
+        occurredAt: now,
+        commandId: CommandId.makeUnsafe("cmd-project-create-metadata"),
+        causationEventId: null,
+        correlationId: CommandId.makeUnsafe("cmd-project-create-metadata"),
+        metadata: {},
+        payload: {
+          projectId,
+          title: "Metadata",
+          workspaceRoot: "/tmp/metadata",
+          defaultModel: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      decideOrchestrationCommand({
+        command: {
+          type: "project.meta.update",
+          commandId: CommandId.makeUnsafe("cmd-project-update-metadata"),
+          projectId,
+          defaultEnvMode: "worktree",
+          icon: { type: "emoji", emoji: "🧪" },
+        },
+        readModel,
+      }),
+    );
+
+    const event = Array.isArray(result) ? result[0] : result;
+    expect(event).toMatchObject({
+      type: "project.meta-updated",
+      payload: {
+        projectId,
+        defaultEnvMode: "worktree",
+        icon: { type: "emoji", emoji: "🧪" },
+      },
+    });
+  });
+
   it("emits user message and turn-start-requested events for thread.turn.start", async () => {
     const now = new Date().toISOString();
     const initial = createEmptyReadModel(now);

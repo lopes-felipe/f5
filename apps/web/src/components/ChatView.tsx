@@ -1019,7 +1019,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const projectBreadcrumbActions = useProjectBreadcrumbActions({
     project: activeProject,
     thread: activeThread,
-    globalDefaultEnvMode: settings.defaultThreadEnvMode,
   });
   const workspaceRoot = activeThread?.worktreePath ?? activeProject?.cwd ?? undefined;
   const workflowThreadSlot = useMemo(() => {

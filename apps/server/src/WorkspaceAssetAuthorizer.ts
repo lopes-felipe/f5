@@ -59,6 +59,7 @@ interface HandleRecord {
   readonly identity: WorkspaceAssetIdentity;
   readonly relativePath: string;
   readonly maxBytes: number;
+  readonly rejectSymlink: boolean;
   readonly expiresAt: number;
 }
 
@@ -67,11 +68,17 @@ export interface WorkspaceAssetReader {
   readonly readImage: (input: {
     relativePath: string;
     maxBytes?: number;
+    rejectSymlink?: boolean;
   }) => Promise<AuthorizedWorkspaceImageAsset>;
-  readonly readText: (input: { relativePath: string; maxBytes: number }) => Promise<string>;
+  readonly readText: (input: {
+    relativePath: string;
+    maxBytes: number;
+    rejectSymlink?: boolean;
+  }) => Promise<string>;
   readonly issueImageHandle: (input: {
     relativePath: string;
     maxBytes?: number;
+    rejectSymlink?: boolean;
   }) => WorkspaceAssetHandle;
 }
 
@@ -168,6 +175,7 @@ async function readContainedFile(input: {
   rootRealPath: string;
   relativePath: string;
   maxBytes: number;
+  rejectSymlink?: boolean;
 }): Promise<{ bytes: Uint8Array; relativePath: string }> {
   const requestedPath = resolveRequestedPath(input.rootRealPath, input.relativePath);
   let targetRealPath: string;
@@ -175,6 +183,12 @@ async function readContainedFile(input: {
     targetRealPath = await realpath(requestedPath);
   } catch {
     throw new WorkspaceAssetAuthorizationError("not_found", "Workspace asset was not found.");
+  }
+  if (input.rejectSymlink === true && targetRealPath !== requestedPath) {
+    throw new WorkspaceAssetAuthorizationError(
+      "invalid_path",
+      "Workspace asset path may not contain symbolic links.",
+    );
   }
   if (!isPathInside(input.rootRealPath, targetRealPath)) {
     throw new WorkspaceAssetAuthorizationError(
@@ -298,6 +312,7 @@ export function makeWorkspaceAssetAuthorizer(input: {
     const readImage = async (assetInput: {
       relativePath: string;
       maxBytes?: number;
+      rejectSymlink?: boolean;
     }): Promise<AuthorizedWorkspaceImageAsset> => {
       const maxBytes = normalizeMaxBytes(assetInput.maxBytes ?? WORKSPACE_IMAGE_ASSET_MAX_BYTES);
       const result = await readContainedFile({
@@ -305,6 +320,9 @@ export function makeWorkspaceAssetAuthorizer(input: {
         rootRealPath,
         relativePath: assetInput.relativePath,
         maxBytes,
+        ...(assetInput.rejectSymlink !== undefined
+          ? { rejectSymlink: assetInput.rejectSymlink }
+          : {}),
       });
       const extensionMimeType = IMAGE_MIME_BY_EXTENSION.get(
         path.extname(result.relativePath).toLowerCase(),
@@ -328,12 +346,13 @@ export function makeWorkspaceAssetAuthorizer(input: {
     return {
       identity,
       readImage,
-      readText: async ({ relativePath, maxBytes }) => {
+      readText: async ({ relativePath, maxBytes, rejectSymlink }) => {
         const result = await readContainedFile({
           rootPath,
           rootRealPath,
           relativePath,
           maxBytes: normalizeMaxBytes(maxBytes),
+          ...(rejectSymlink !== undefined ? { rejectSymlink } : {}),
         });
         try {
           return new TextDecoder("utf-8", { fatal: true }).decode(result.bytes);
@@ -344,7 +363,7 @@ export function makeWorkspaceAssetAuthorizer(input: {
           );
         }
       },
-      issueImageHandle: ({ relativePath, maxBytes }) => {
+      issueImageHandle: ({ relativePath, maxBytes, rejectSymlink }) => {
         pruneHandles();
         let handle = createHandle();
         while (handles.has(handle)) handle = createHandle();
@@ -353,6 +372,7 @@ export function makeWorkspaceAssetAuthorizer(input: {
           identity,
           relativePath,
           maxBytes: normalizeMaxBytes(maxBytes ?? WORKSPACE_IMAGE_ASSET_MAX_BYTES),
+          rejectSymlink: rejectSymlink === true,
           expiresAt,
         });
         return { handle, expiresAt };
@@ -388,6 +408,7 @@ export function makeWorkspaceAssetAuthorizer(input: {
       return reader.readImage({
         relativePath: record.relativePath,
         maxBytes: record.maxBytes,
+        rejectSymlink: record.rejectSymlink,
       });
     },
   };

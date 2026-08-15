@@ -15,6 +15,7 @@ import {
   OrchestrationRetryWorkflowInput,
   OrchestrationRetryWorkflowResult,
   OrchestrationMessage,
+  OrchestrationProject,
   OrchestrationSession,
   RuntimeMode,
   TaskItem,
@@ -39,6 +40,7 @@ const decodeThreadTurnStartRequestedPayload = Schema.decodeUnknownEffect(
   ThreadTurnStartRequestedPayload,
 );
 const decodeOrchestrationMessage = Schema.decodeUnknownEffect(OrchestrationMessage);
+const decodeOrchestrationProject = Schema.decodeUnknownEffect(OrchestrationProject);
 const decodeThreadMessageSentPayload = Schema.decodeUnknownEffect(ThreadMessageSentPayload);
 const encodeThreadMessageSentPayloadJson = Schema.encodeEffect(
   Schema.fromJsonString(ThreadMessageSentPayload),
@@ -239,6 +241,26 @@ it.effect("trims branded ids and command string fields at decode boundaries", ()
     assert.strictEqual(parsed.title, "Project Title");
     assert.strictEqual(parsed.workspaceRoot, "/tmp/workspace");
     assert.strictEqual(parsed.defaultModel, "gpt-5.2");
+  }),
+);
+
+it.effect("decodes legacy projects without local environment or icon overrides", () =>
+  Effect.gen(function* () {
+    const project = yield* decodeOrchestrationProject({
+      id: "project-legacy",
+      title: "Legacy project",
+      workspaceRoot: "/tmp/legacy",
+      defaultModel: null,
+      defaultModelSelection: null,
+      scripts: [],
+      memories: [],
+      skills: [],
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      deletedAt: null,
+    });
+    assert.strictEqual(project.defaultEnvMode, null);
+    assert.strictEqual(project.icon, null);
   }),
 );
 

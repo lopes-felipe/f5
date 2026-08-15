@@ -1903,6 +1903,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         ...(row.defaultModelSelection !== null
           ? { defaultModelSelection: row.defaultModelSelection }
           : {}),
+        defaultEnvMode: row.defaultEnvMode,
+        icon: row.icon,
         scripts: row.scripts,
         memories: memoriesByProject.get(row.projectId) ?? [],
         skills: skillsByProject.get(row.projectId) ?? [],

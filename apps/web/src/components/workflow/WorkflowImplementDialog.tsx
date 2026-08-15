@@ -14,6 +14,7 @@ import { ChevronDownIcon } from "lucide-react";
 
 import { useAppSettings } from "../../appSettings";
 import { gitBranchesQueryOptions } from "../../lib/gitReactQuery";
+import { useProjectThreadEnvModeResolver } from "../../lib/projectConfigReactQuery";
 import { serverConfigQueryOptions } from "../../lib/serverReactQuery";
 import { getModelPreferences, recordModelSelection } from "../../modelPreferencesStore";
 import { readNativeApi } from "../../nativeApi";
@@ -178,6 +179,7 @@ export function WorkflowImplementDialog(props: {
 }) {
   const { settings } = useAppSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const resolveProjectThreadEnvMode = useProjectThreadEnvModeResolver();
   const initialDefaults = resolveImplementationDefaults(props.workflow);
   const [provider, setProvider] = useState<ProviderKind>(initialDefaults.provider);
   const [model, setModel] = useState(initialDefaults.model);
@@ -209,6 +211,8 @@ export function WorkflowImplementDialog(props: {
     [settings, serverConfigQuery.data?.providers, serverConfigQuery.data?.settings],
   );
   const wasOpenRef = useRef(false);
+  const envModeTouchedRef = useRef(false);
+  const envModeResolutionRef = useRef(0);
 
   const project = useStore(
     (store) => store.projects.find((entry) => entry.id === props.workflow.projectId) ?? null,
@@ -223,6 +227,7 @@ export function WorkflowImplementDialog(props: {
 
   useEffect(() => {
     if (props.open && !wasOpenRef.current) {
+      const resolution = ++envModeResolutionRef.current;
       const defaults = resolveImplementationDefaults(props.workflow);
       setProvider(defaults.provider);
       setModel(defaults.model);
@@ -230,12 +235,19 @@ export function WorkflowImplementDialog(props: {
       setRuntimeMode("full-access");
       setCodeReviewEnabled(true);
       setEnvMode("local");
+      envModeTouchedRef.current = false;
+      void resolveProjectThreadEnvMode(props.workflow.projectId).then((resolved) => {
+        if (envModeResolutionRef.current === resolution && !envModeTouchedRef.current) {
+          setEnvMode(resolved);
+        }
+      });
       setBaseBranch(null);
       setSubmitting(false);
       setError(null);
     }
+    if (!props.open) envModeResolutionRef.current += 1;
     wasOpenRef.current = props.open;
-  }, [props.open, props.workflow]);
+  }, [props.open, props.workflow, resolveProjectThreadEnvMode]);
 
   const resolveWorkflowModelSelection = (
     nextProvider: ProviderKind,
@@ -391,6 +403,7 @@ export function WorkflowImplementDialog(props: {
                 size="sm"
                 aria-pressed={envMode === "local"}
                 onClick={() => {
+                  envModeTouchedRef.current = true;
                   setEnvMode("local");
                   setBaseBranch(null);
                 }}
@@ -402,7 +415,10 @@ export function WorkflowImplementDialog(props: {
                 variant={envMode === "worktree" ? "default" : "outline"}
                 size="sm"
                 aria-pressed={envMode === "worktree"}
-                onClick={() => setEnvMode("worktree")}
+                onClick={() => {
+                  envModeTouchedRef.current = true;
+                  setEnvMode("worktree");
+                }}
               >
                 New worktree
               </Button>

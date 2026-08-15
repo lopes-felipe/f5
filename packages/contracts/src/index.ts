@@ -30,3 +30,4 @@ export * from "./filesystem";
 export * from "./environment";
 export * from "./storage";
 export * from "./backgroundWork";
+export * from "./checkedInProjectFile";

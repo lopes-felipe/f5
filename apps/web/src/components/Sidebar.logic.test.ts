@@ -193,9 +193,8 @@ describe("resolveSidebarNewThreadIntent", () => {
         shiftKey: false,
         metaKey: false,
         ctrlKey: false,
-        defaultEnvMode: "local",
       }),
-    ).toEqual({ envMode: "local", openInNewWindow: false });
+    ).toEqual({ forceNonDefaultEnvMode: false, openInNewWindow: false });
   });
 
   it("forces the non-default mode for shift-click", () => {
@@ -204,9 +203,8 @@ describe("resolveSidebarNewThreadIntent", () => {
         shiftKey: true,
         metaKey: false,
         ctrlKey: false,
-        defaultEnvMode: "worktree",
       }),
-    ).toEqual({ envMode: "local", openInNewWindow: false });
+    ).toEqual({ forceNonDefaultEnvMode: true, openInNewWindow: false });
   });
 
   it("opens the alternate-mode thread in a new window for mod-shift-click", () => {
@@ -215,9 +213,8 @@ describe("resolveSidebarNewThreadIntent", () => {
         shiftKey: true,
         metaKey: true,
         ctrlKey: false,
-        defaultEnvMode: "local",
       }),
-    ).toEqual({ envMode: "worktree", openInNewWindow: true });
+    ).toEqual({ forceNonDefaultEnvMode: true, openInNewWindow: true });
   });
 });
 

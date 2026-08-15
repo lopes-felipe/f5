@@ -1,5 +1,4 @@
 import type { ProjectId, ThreadId } from "@t3tools/contracts";
-import { nonDefaultThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import {
   type ThreadStatusPill,
   hasUnseenCompletion,
@@ -55,18 +54,12 @@ export function resolveSidebarNewThreadIntent(input: {
   readonly shiftKey: boolean;
   readonly metaKey: boolean;
   readonly ctrlKey: boolean;
-  readonly defaultEnvMode: SidebarNewThreadEnvMode;
 }): {
-  readonly envMode: SidebarNewThreadEnvMode;
+  readonly forceNonDefaultEnvMode: boolean;
   readonly openInNewWindow: boolean;
 } {
   return {
-    envMode: resolveSidebarNewThreadEnvMode({
-      defaultEnvMode: input.defaultEnvMode,
-      ...(input.shiftKey
-        ? { requestedEnvMode: nonDefaultThreadEnvMode(input.defaultEnvMode) }
-        : {}),
-    }),
+    forceNonDefaultEnvMode: input.shiftKey,
     openInNewWindow: input.shiftKey && (input.metaKey || input.ctrlKey),
   };
 }

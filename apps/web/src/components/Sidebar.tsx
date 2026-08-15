@@ -61,12 +61,10 @@ import {
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
 import { isArchivedWorkflow, partitionWorkflowsByArchive } from "@t3tools/shared/workflowArchive";
-import { resolveThreadEnvMode } from "@t3tools/shared/threadEnvMode";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useLocation, useNavigate, useParams } from "@tanstack/react-router";
 import { useAppSettings } from "../appSettings";
 import {
-  type DraftThreadEnvMode,
   type DraftThreadState,
   flushComposerDraftPersistence,
   useComposerDraftStore,
@@ -74,7 +72,6 @@ import {
 import { isElectron } from "../env";
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
-import { getServerHttpOrigin } from "../lib/serverHttpOrigin";
 import { useStartupReady } from "../lib/startupReady";
 import { cn, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
 import { WORKFLOW_TYPE_BADGE_CLASS } from "../lib/workflowType";
@@ -105,6 +102,7 @@ import { useCreateProjectBackedDraftThread } from "../hooks/useCreateProjectBack
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { toastManager } from "./ui/toast";
 import { type Project, type Thread } from "../types";
+import { ProjectIcon } from "./ProjectIcon";
 import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
@@ -646,28 +644,6 @@ function F5Wordmark() {
   );
 }
 
-const serverHttpOrigin = getServerHttpOrigin();
-
-function ProjectFavicon({ projectId }: { projectId: ProjectId }) {
-  const [status, setStatus] = useState<"loading" | "loaded" | "error">("loading");
-
-  const src = `${serverHttpOrigin}/api/project-favicon?projectId=${encodeURIComponent(projectId)}`;
-
-  if (status === "error") {
-    return <FolderIcon className="size-3.5 shrink-0 text-muted-foreground/50" />;
-  }
-
-  return (
-    <img
-      src={src}
-      alt=""
-      className={`size-3.5 shrink-0 rounded-sm object-contain ${status === "loading" ? "hidden" : ""}`}
-      onLoad={() => setStatus("loaded")}
-      onError={() => setStatus("error")}
-    />
-  );
-}
-
 type SortableProjectHandleProps = Pick<ReturnType<typeof useSortable>, "attributes" | "listeners">;
 
 function SortableProjectItem({
@@ -1032,14 +1008,7 @@ export default function Sidebar() {
   }, []);
 
   const handleNewThread = useCallback(
-    (
-      projectId: ProjectId,
-      options?: {
-        branch?: string | null;
-        worktreePath?: string | null;
-        envMode?: DraftThreadEnvMode;
-      },
-    ) => {
+    (projectId: ProjectId, options?: Parameters<typeof createProjectBackedDraftThread>[1]) => {
       setProjectExpanded(projectId, true);
       return createProjectBackedDraftThread(projectId, options);
     },
@@ -1148,9 +1117,7 @@ export default function Sidebar() {
           defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
           createdAt,
         });
-        await handleNewThread(projectId, {
-          envMode: resolveThreadEnvMode({ globalDefault: appSettings.defaultThreadEnvMode }),
-        }).catch((error) => {
+        await handleNewThread(projectId).catch((error) => {
           console.warn("Failed to open the new thread after creating a project", error);
         });
       } catch (error) {
@@ -1176,7 +1143,6 @@ export default function Sidebar() {
       isAddingProject,
       projects,
       shouldBrowseForProjectImmediately,
-      appSettings.defaultThreadEnvMode,
     ],
   );
 
@@ -1513,6 +1479,7 @@ export default function Sidebar() {
       if (!api) return;
       const clicked = await api.contextMenu.show(
         [
+          { id: "icon", label: "Change project icon..." },
           { id: "change-path", label: "Change project path..." },
           { id: "rename", label: "Rename project" },
           { id: "delete", label: "Remove project", destructive: true },
@@ -1521,6 +1488,13 @@ export default function Sidebar() {
       );
       const project = projects.find((entry) => entry.id === projectId);
       if (!project) return;
+      if (clicked === "icon") {
+        await navigate({
+          to: "/settings",
+          search: { category: "projects", item: "projects.icon", projectId },
+        });
+        return;
+      }
       if (clicked === "change-path") {
         await changeProjectWorkspaceRoot(project);
         return;
@@ -1550,7 +1524,7 @@ export default function Sidebar() {
 
       await removeProjectWithThreads(project, []);
     },
-    [changeProjectWorkspaceRoot, projects, removeProjectWithThreads, threads],
+    [changeProjectWorkspaceRoot, navigate, projects, removeProjectWithThreads, threads],
   );
 
   const projectDnDSensors = useSensors(
@@ -1708,9 +1682,6 @@ export default function Sidebar() {
         void handleNewThread(projectId, {
           branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
           worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
-          envMode: resolveThreadEnvMode({
-            globalDefault: appSettings.defaultThreadEnvMode,
-          }),
         });
         return;
       }
@@ -1722,9 +1693,6 @@ export default function Sidebar() {
       void handleNewThread(projectId, {
         branch: activeThread?.branch ?? activeDraftThread?.branch ?? null,
         worktreePath: activeThread?.worktreePath ?? activeDraftThread?.worktreePath ?? null,
-        envMode: resolveThreadEnvMode({
-          globalDefault: appSettings.defaultThreadEnvMode,
-        }),
       });
     };
     const onMouseDown = (event: globalThis.MouseEvent) => {
@@ -1743,7 +1711,6 @@ export default function Sidebar() {
   }, [
     activeDraftThread,
     activeThread,
-    appSettings.defaultThreadEnvMode,
     clearSelection,
     firstProjectId,
     handleNewThread,
@@ -2336,7 +2303,11 @@ export default function Sidebar() {
                                   project.expanded ? "rotate-90" : ""
                                 }`}
                               />
-                              <ProjectFavicon projectId={project.id} />
+                              <ProjectIcon
+                                projectId={project.id}
+                                icon={project.icon}
+                                className="size-3.5 shrink-0 text-muted-foreground/50"
+                              />
                               {renamingProjectId === project.id ? (
                                 <InlineTitleEditor
                                   initialValue={project.name}
@@ -2373,7 +2344,6 @@ export default function Sidebar() {
                                         shiftKey: event.shiftKey,
                                         metaKey: event.metaKey,
                                         ctrlKey: event.ctrlKey,
-                                        defaultEnvMode: appSettings.defaultThreadEnvMode,
                                       });
                                       const activeProjectThread =
                                         activeThread?.projectId === project.id
@@ -2392,7 +2362,7 @@ export default function Sidebar() {
                                           activeProjectThread?.worktreePath ??
                                           activeProjectDraft?.worktreePath ??
                                           null,
-                                        envMode: intent.envMode,
+                                        forceNonDefaultEnvMode: intent.forceNonDefaultEnvMode,
                                       })
                                         .then(async ({ threadId }) => {
                                           if (!intent.openInNewWindow) return;
@@ -2431,11 +2401,7 @@ export default function Sidebar() {
                                   newThreadShortcutLabel
                                     ? `New thread (${newThreadShortcutLabel})`
                                     : "New thread"
-                                }. Shift-click uses ${
-                                  appSettings.defaultThreadEnvMode === "local"
-                                    ? "a worktree"
-                                    : "the local workspace"
-                                }; Cmd/Ctrl+Shift-click opens a new window.`}
+                                }. Shift-click forces the alternate workspace mode; Cmd/Ctrl+Shift-click opens a new window.`}
                               </TooltipPopup>
                             </Tooltip>
                             <Tooltip>

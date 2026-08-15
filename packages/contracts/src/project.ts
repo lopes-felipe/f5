@@ -8,6 +8,53 @@ import {
   TrimmedString,
 } from "./baseSchemas";
 
+export const PROJECT_ICON_GLYPHS = [
+  "folder",
+  "code",
+  "terminal",
+  "bot",
+  "rocket",
+  "flask",
+  "database",
+  "globe",
+  "briefcase",
+  "gamepad",
+] as const;
+export const ProjectIconGlyph = Schema.Literals(PROJECT_ICON_GLYPHS);
+export type ProjectIconGlyph = typeof ProjectIconGlyph.Type;
+
+export const PROJECT_ICON_COLORS = [
+  "gray",
+  "red",
+  "orange",
+  "amber",
+  "green",
+  "teal",
+  "blue",
+  "indigo",
+  "violet",
+  "pink",
+] as const;
+export const ProjectIconColor = Schema.Literals(PROJECT_ICON_COLORS);
+export type ProjectIconColor = typeof ProjectIconColor.Type;
+
+const ProjectLucideIcon = Schema.Struct({
+  type: Schema.Literal("lucide"),
+  glyph: ProjectIconGlyph,
+  color: ProjectIconColor,
+});
+
+const ProjectEmojiIcon = Schema.Struct({
+  type: Schema.Literal("emoji"),
+  emoji: TrimmedNonEmptyString.check(
+    Schema.isMaxLength(16),
+    Schema.isPattern(/^(?=.*(?:\p{Extended_Pictographic}|\p{Regional_Indicator}))[^\r\n]+$/u),
+  ),
+});
+
+export const ProjectIcon = Schema.Union([ProjectLucideIcon, ProjectEmojiIcon]);
+export type ProjectIcon = typeof ProjectIcon.Type;
+
 export const PROJECT_SEARCH_ENTRIES_MAX_LIMIT = 200;
 export const PROJECT_SEARCH_CONTENTS_MAX_LIMIT = 500;
 export const PROJECT_SEARCH_CONTENTS_MAX_MATCHES_PER_FILE = 100;

@@ -1,4 +1,12 @@
-import type { ProjectId } from "@t3tools/contracts";
+import {
+  PROJECT_ICON_COLORS,
+  PROJECT_ICON_GLYPHS,
+  type ProjectIconColor,
+  type ProjectIconGlyph,
+  type ProjectId,
+} from "@t3tools/contracts";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 
 import {
   CLAUDE_SUBAGENT_MODEL_INHERIT,
@@ -6,16 +14,80 @@ import {
   buildAppSettingsPatch,
 } from "../../../appSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
+import { projectCheckedInConfigQueryOptions } from "../../../lib/projectConfigReactQuery";
 import { EMPTY_MEMORY_DRAFT, PROJECT_MEMORY_TYPES } from "../useSettingsRouteState";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 import { Textarea } from "../../ui/textarea";
+import { ProjectIcon } from "../../ProjectIcon";
 
 export { PROJECTS_SETTINGS_DESCRIPTORS } from "./ProjectsSettings.descriptors";
 
 const ADD_PROJECT_KEYS = ["addProjectBaseDirectory"] as const;
+
+const PROJECT_ICON_GLYPH_LABELS: Readonly<Record<ProjectIconGlyph, string>> = {
+  folder: "Folder",
+  code: "Code",
+  terminal: "Terminal",
+  bot: "Bot",
+  rocket: "Rocket",
+  flask: "Flask",
+  database: "Database",
+  globe: "Globe",
+  briefcase: "Briefcase",
+  gamepad: "Gamepad",
+};
+
+function labelProjectIconColor(color: ProjectIconColor): string {
+  return color.charAt(0).toUpperCase() + color.slice(1);
+}
+
+function CheckedInProjectConfigSummary({ projectId }: { readonly projectId: ProjectId }) {
+  const configQuery = useQuery(projectCheckedInConfigQueryOptions(projectId));
+  if (configQuery.isPending) {
+    return <p className="text-xs text-muted-foreground">Checking f5.json…</p>;
+  }
+  if (configQuery.isError) {
+    return (
+      <p className="text-xs text-destructive">
+        Could not inspect the checked-in project configuration.
+      </p>
+    );
+  }
+
+  const config = configQuery.data;
+  const diagnostics = config.diagnostics ?? [];
+  return (
+    <div className="space-y-2 text-xs text-muted-foreground">
+      <p>
+        {config.sourceFile
+          ? `Loaded non-executable defaults from ${config.sourceFile}.`
+          : "No f5.json or compatible t3.json file was found."}
+      </p>
+      {config.defaultThreadEnvMode ? (
+        <p>
+          File workspace default: <span className="font-medium">{config.defaultThreadEnvMode}</span>
+        </p>
+      ) : null}
+      {config.iconPath ? (
+        <p>
+          File icon: <span className="font-mono">{config.iconPath}</span>
+        </p>
+      ) : null}
+      {diagnostics.length > 0 ? (
+        <ul className="space-y-1 text-amber-700 dark:text-amber-300">
+          {diagnostics.map((diagnostic, index) => (
+            <li key={`${diagnostic.field}:${index}`}>
+              <span className="font-medium">{diagnostic.field}:</span> {diagnostic.message}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
 
 export function ProjectsSettings() {
   const {
@@ -28,6 +100,9 @@ export function ProjectsSettings() {
     selectedProjectUnavailable,
     handleSelectedProjectChange,
     selectedProjectMemories,
+    projectMetadataPending,
+    projectMetadataError,
+    updateSelectedProjectMetadata,
     selectedProjectClaudeSettings,
     effectiveClaudeSubagentModel,
     claudeSubagentModelOptions,
@@ -48,6 +123,11 @@ export function ProjectsSettings() {
     submitMemoryUpdate,
     deleteMemory,
   } = useSettingsRouteContext();
+  const [emojiDraft, setEmojiDraft] = useState("");
+
+  useEffect(() => {
+    setEmojiDraft(selectedProject?.icon?.type === "emoji" ? selectedProject.icon.emoji : "");
+  }, [selectedProject?.icon, selectedProject?.id]);
 
   return (
     <>
@@ -98,6 +178,194 @@ export function ProjectsSettings() {
         ) : (
           <p className="rounded-lg border border-dashed border-border bg-background px-3 py-2 text-xs text-muted-foreground">
             Create a project first to configure project-scoped settings.
+          </p>
+        )}
+      </section>
+
+      <section className="rounded-2xl border border-border bg-card p-5">
+        <div className="mb-4">
+          <h2 className="text-sm font-medium text-foreground">Project defaults and icon</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Local overrides take priority over checked-in project defaults. Repository files may
+            provide only non-executable workspace and icon settings.
+          </p>
+        </div>
+
+        {selectedProject ? (
+          <div className="space-y-4">
+            <label className="block space-y-1">
+              <span className="text-xs font-medium text-foreground">Default workspace mode</span>
+              <Select
+                value={selectedProject.defaultEnvMode ?? "global"}
+                onValueChange={(value) => {
+                  if (value !== "global" && value !== "local" && value !== "worktree") return;
+                  void updateSelectedProjectMetadata({
+                    defaultEnvMode: value === "global" ? null : value,
+                  });
+                }}
+                disabled={projectMetadataPending}
+              >
+                <SelectTrigger aria-label="Project default workspace mode">
+                  <SelectValue>
+                    {selectedProject.defaultEnvMode === "local"
+                      ? "Local"
+                      : selectedProject.defaultEnvMode === "worktree"
+                        ? "Worktree"
+                        : "Use global or checked-in default"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="global">Use global or checked-in default</SelectItem>
+                  <SelectItem value="local">Local</SelectItem>
+                  <SelectItem value="worktree">Worktree</SelectItem>
+                </SelectPopup>
+              </Select>
+            </label>
+
+            <div className="space-y-3" data-settings-search-target="projects.icon">
+              <div className="flex items-center gap-3">
+                <ProjectIcon
+                  projectId={selectedProject.id}
+                  icon={selectedProject.icon}
+                  className="size-8"
+                />
+                <label className="min-w-0 flex-1 space-y-1">
+                  <span className="text-xs font-medium text-foreground">Project icon</span>
+                  <Select
+                    value={selectedProject.icon?.type ?? "automatic"}
+                    onValueChange={(value) => {
+                      if (value === "automatic") {
+                        void updateSelectedProjectMetadata({ icon: null });
+                      } else if (value === "emoji") {
+                        void updateSelectedProjectMetadata({
+                          icon: { type: "emoji", emoji: emojiDraft.trim() || "📁" },
+                        });
+                      } else if (value === "lucide") {
+                        void updateSelectedProjectMetadata({
+                          icon: { type: "lucide", glyph: "folder", color: "gray" },
+                        });
+                      }
+                    }}
+                    disabled={projectMetadataPending}
+                  >
+                    <SelectTrigger aria-label="Project icon source">
+                      <SelectValue>
+                        {selectedProject.icon?.type === "emoji"
+                          ? "Emoji"
+                          : selectedProject.icon?.type === "lucide"
+                            ? "Symbol"
+                            : "Automatic"}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup>
+                      <SelectItem value="automatic">Automatic</SelectItem>
+                      <SelectItem value="emoji">Emoji</SelectItem>
+                      <SelectItem value="lucide">Symbol</SelectItem>
+                    </SelectPopup>
+                  </Select>
+                </label>
+              </div>
+
+              {selectedProject.icon?.type === "emoji" ? (
+                <div className="flex gap-2">
+                  <Input
+                    aria-label="Project icon emoji"
+                    value={emojiDraft}
+                    onChange={(event) => setEmojiDraft(event.target.value)}
+                    maxLength={16}
+                    placeholder="📁"
+                  />
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={projectMetadataPending || emojiDraft.trim().length === 0}
+                    onClick={() =>
+                      void updateSelectedProjectMetadata({
+                        icon: { type: "emoji", emoji: emojiDraft.trim() },
+                      })
+                    }
+                  >
+                    Save emoji
+                  </Button>
+                </div>
+              ) : null}
+
+              {selectedProject.icon?.type === "lucide" ? (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Select
+                    value={selectedProject.icon.glyph}
+                    onValueChange={(value) => {
+                      if (!PROJECT_ICON_GLYPHS.includes(value as ProjectIconGlyph)) return;
+                      void updateSelectedProjectMetadata({
+                        icon: {
+                          type: "lucide",
+                          glyph: value as ProjectIconGlyph,
+                          color:
+                            selectedProject.icon?.type === "lucide"
+                              ? selectedProject.icon.color
+                              : "gray",
+                        },
+                      });
+                    }}
+                    disabled={projectMetadataPending}
+                  >
+                    <SelectTrigger aria-label="Project icon symbol">
+                      <SelectValue>
+                        {PROJECT_ICON_GLYPH_LABELS[selectedProject.icon.glyph]}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {PROJECT_ICON_GLYPHS.map((glyph) => (
+                        <SelectItem key={glyph} value={glyph}>
+                          {PROJECT_ICON_GLYPH_LABELS[glyph]}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                  <Select
+                    value={selectedProject.icon.color}
+                    onValueChange={(value) => {
+                      if (!PROJECT_ICON_COLORS.includes(value as ProjectIconColor)) return;
+                      void updateSelectedProjectMetadata({
+                        icon: {
+                          type: "lucide",
+                          glyph:
+                            selectedProject.icon?.type === "lucide"
+                              ? selectedProject.icon.glyph
+                              : "folder",
+                          color: value as ProjectIconColor,
+                        },
+                      });
+                    }}
+                    disabled={projectMetadataPending}
+                  >
+                    <SelectTrigger aria-label="Project icon color">
+                      <SelectValue>{labelProjectIconColor(selectedProject.icon.color)}</SelectValue>
+                    </SelectTrigger>
+                    <SelectPopup>
+                      {PROJECT_ICON_COLORS.map((color) => (
+                        <SelectItem key={color} value={color}>
+                          {labelProjectIconColor(color)}
+                        </SelectItem>
+                      ))}
+                    </SelectPopup>
+                  </Select>
+                </div>
+              ) : null}
+            </div>
+
+            {projectMetadataError ? (
+              <p className="text-xs text-destructive">{projectMetadataError}</p>
+            ) : null}
+
+            <div className="rounded-lg border border-border bg-background p-3">
+              <p className="mb-2 text-xs font-medium text-foreground">Checked-in configuration</p>
+              <CheckedInProjectConfigSummary projectId={selectedProject.id} />
+            </div>
+          </div>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            Select an available project to configure its workspace default and icon.
           </p>
         )}
       </section>
