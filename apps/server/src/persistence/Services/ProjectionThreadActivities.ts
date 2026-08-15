@@ -10,6 +10,7 @@ import {
   EventId,
   IsoDateTime,
   NonNegativeInt,
+  OrchestrationThreadActivityCursor,
   OrchestrationThreadActivityTone,
   ThreadId,
   TurnId,
@@ -36,6 +37,14 @@ export const ListProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
 });
 export type ListProjectionThreadActivitiesInput = typeof ListProjectionThreadActivitiesInput.Type;
+
+export const ListProjectionThreadActivityPageInput = Schema.Struct({
+  threadId: ThreadId,
+  activityCursor: Schema.NullOr(OrchestrationThreadActivityCursor),
+  limit: NonNegativeInt,
+});
+export type ListProjectionThreadActivityPageInput =
+  typeof ListProjectionThreadActivityPageInput.Type;
 
 export const DeleteProjectionThreadActivitiesInput = Schema.Struct({
   threadId: ThreadId,
@@ -64,6 +73,14 @@ export interface ProjectionThreadActivityRepositoryShape {
    */
   readonly listByThreadId: (
     input: ListProjectionThreadActivitiesInput,
+  ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
+
+  /**
+   * List a newest-first bounded activity page. A null cursor returns the tail;
+   * otherwise only rows strictly older than the cursor are returned.
+   */
+  readonly listPage: (
+    input: ListProjectionThreadActivityPageInput,
   ) => Effect.Effect<ReadonlyArray<ProjectionThreadActivity>, ProjectionRepositoryError>;
 
   /**

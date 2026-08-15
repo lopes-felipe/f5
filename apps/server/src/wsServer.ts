@@ -2095,8 +2095,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             detailSequence: result.detailSequence,
             messageCount: result.messages.length,
             checkpointCount: result.checkpoints.length,
+            activityCount: result.activities.length,
             hasOlderMessages: result.hasOlderMessages,
             hasOlderCheckpoints: result.hasOlderCheckpoints,
+            hasOlderActivities: result.hasOlderActivities,
           }),
         });
       }
@@ -2111,8 +2113,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             detailSequence: result.detailSequence,
             messageCount: result.messages.length,
             checkpointCount: result.checkpoints.length,
+            activityCount: result.activities.length,
             hasOlderMessages: result.hasOlderMessages,
             hasOlderCheckpoints: result.hasOlderCheckpoints,
+            hasOlderActivities: result.hasOlderActivities,
           }),
         });
       }

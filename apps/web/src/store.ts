@@ -564,6 +564,7 @@ type ReadModelThread = OrchestrationReadModel["threads"][number];
 type ThreadTailSource = {
   readonly messages: OrchestrationThreadTailDetails["messages"];
   readonly checkpoints: OrchestrationThreadTailDetails["checkpoints"];
+  readonly activities: OrchestrationThreadTailDetails["activities"];
   readonly commandExecutions: OrchestrationThreadTailDetails["commandExecutions"];
   readonly tasks: OrchestrationThreadTailDetails["tasks"];
   readonly tasksTurnId: OrchestrationThreadTailDetails["tasksTurnId"];
@@ -572,9 +573,11 @@ type ThreadTailSource = {
   readonly threadReferences?: OrchestrationThreadTailDetails["threadReferences"];
   readonly hasOlderMessages: OrchestrationThreadTailDetails["hasOlderMessages"];
   readonly hasOlderCheckpoints: OrchestrationThreadTailDetails["hasOlderCheckpoints"];
+  readonly hasOlderActivities: OrchestrationThreadTailDetails["hasOlderActivities"];
   readonly hasOlderCommandExecutions: OrchestrationThreadTailDetails["hasOlderCommandExecutions"];
   readonly oldestLoadedMessageCursor: OrchestrationThreadTailDetails["oldestLoadedMessageCursor"];
   readonly oldestLoadedCheckpointTurnCount: OrchestrationThreadTailDetails["oldestLoadedCheckpointTurnCount"];
+  readonly oldestLoadedActivityCursor: OrchestrationThreadTailDetails["oldestLoadedActivityCursor"];
   readonly oldestLoadedCommandExecutionCursor: OrchestrationThreadTailDetails["oldestLoadedCommandExecutionCursor"];
 };
 
@@ -583,9 +586,11 @@ function mapThreadHistoryStateFromTail(
     ThreadTailSource,
     | "hasOlderMessages"
     | "hasOlderCheckpoints"
+    | "hasOlderActivities"
     | "hasOlderCommandExecutions"
     | "oldestLoadedMessageCursor"
     | "oldestLoadedCheckpointTurnCount"
+    | "oldestLoadedActivityCursor"
     | "oldestLoadedCommandExecutionCursor"
   >,
   existing: Thread | undefined,
@@ -594,15 +599,20 @@ function mapThreadHistoryStateFromTail(
   const generation = existingHistory.generation + 1;
   const hasOlderMessages = incoming.hasOlderMessages;
   const hasOlderCheckpoints = incoming.hasOlderCheckpoints;
+  const hasOlderActivities = incoming.hasOlderActivities;
   const hasOlderCommandExecutions = incoming.hasOlderCommandExecutions;
   return {
     stage:
-      hasOlderMessages || hasOlderCheckpoints || hasOlderCommandExecutions ? "tail" : "complete",
+      hasOlderMessages || hasOlderCheckpoints || hasOlderActivities || hasOlderCommandExecutions
+        ? "tail"
+        : "complete",
     hasOlderMessages,
     hasOlderCheckpoints,
+    hasOlderActivities,
     hasOlderCommandExecutions,
     oldestLoadedMessageCursor: incoming.oldestLoadedMessageCursor,
     oldestLoadedCheckpointTurnCount: incoming.oldestLoadedCheckpointTurnCount,
+    oldestLoadedActivityCursor: incoming.oldestLoadedActivityCursor,
     oldestLoadedCommandExecutionCursor: incoming.oldestLoadedCommandExecutionCursor,
     generation,
   };
@@ -613,6 +623,7 @@ function preserveThreadDetailFields(
 ): Pick<
   Thread,
   | "messages"
+  | "activities"
   | "commandExecutions"
   | "turnDiffSummaries"
   | "detailsLoaded"
@@ -626,6 +637,7 @@ function preserveThreadDetailFields(
   if (existing?.detailsLoaded) {
     return {
       messages: existing.messages,
+      activities: existing.activities,
       commandExecutions: existing.commandExecutions,
       turnDiffSummaries: existing.turnDiffSummaries,
       detailsLoaded: true,
@@ -640,6 +652,7 @@ function preserveThreadDetailFields(
 
   return {
     messages: [],
+    activities: [],
     commandExecutions: [],
     turnDiffSummaries: [],
     detailsLoaded: false,
@@ -657,6 +670,7 @@ function clearThreadDetailFields(
 ): Pick<
   Thread,
   | "messages"
+  | "activities"
   | "commandExecutions"
   | "turnDiffSummaries"
   | "detailsLoaded"
@@ -669,6 +683,7 @@ function clearThreadDetailFields(
 > {
   return {
     messages: [],
+    activities: [],
     commandExecutions: [],
     turnDiffSummaries: [],
     detailsLoaded: false,
@@ -715,6 +730,53 @@ function mergeMessagesFromTail(
       ? existing.messages
       : mergedMessages,
     preservedOlderMessages: true,
+  };
+}
+
+function compareActivityToCursor(
+  activity: Thread["activities"][number],
+  cursor: NonNullable<ThreadHistoryState["oldestLoadedActivityCursor"]>,
+): number {
+  const activitySequence = activity.sequence;
+  if (cursor.sequenceIsNull) {
+    if (activitySequence !== undefined) return 1;
+  } else {
+    if (activitySequence === undefined) return -1;
+    const sequenceOrder = activitySequence - (cursor.sequence ?? 0);
+    if (sequenceOrder !== 0) return sequenceOrder;
+  }
+  return (
+    activity.createdAt.localeCompare(cursor.createdAt) ||
+    activity.id.localeCompare(cursor.activityId)
+  );
+}
+
+function mergeActivitiesFromTail(
+  incomingActivities: ThreadTailSource["activities"],
+  existing: Thread | undefined,
+  oldestLoadedActivityCursor: ThreadTailSource["oldestLoadedActivityCursor"],
+): { activities: Thread["activities"]; preservedOlderActivities: boolean } {
+  const mappedTailActivities = mapActivitiesFromReadModel(
+    incomingActivities,
+    existing?.activities ?? [],
+  );
+  if (!existing?.detailsLoaded || oldestLoadedActivityCursor === null) {
+    return { activities: mappedTailActivities, preservedOlderActivities: false };
+  }
+
+  const preservedOlderActivities = existing.activities.filter(
+    (activity) => compareActivityToCursor(activity, oldestLoadedActivityCursor) < 0,
+  );
+  if (preservedOlderActivities.length === 0) {
+    return { activities: mappedTailActivities, preservedOlderActivities: false };
+  }
+
+  const mergedActivities = [...preservedOlderActivities, ...mappedTailActivities];
+  return {
+    activities: arraysShallowEqual(mergedActivities, existing.activities)
+      ? existing.activities
+      : mergedActivities,
+    preservedOlderActivities: true,
   };
 }
 
@@ -808,6 +870,7 @@ function mapThreadTailFieldsFromReadModel(
 ): Pick<
   Thread,
   | "messages"
+  | "activities"
   | "commandExecutions"
   | "turnDiffSummaries"
   | "detailsLoaded"
@@ -818,10 +881,21 @@ function mapThreadTailFieldsFromReadModel(
   | "threadReferences"
   | "history"
 > {
+  // Network decoding supplies these defaults. Keep the store boundary tolerant
+  // as well because a pre-upgrade startup payload may already be cached and
+  // native API test doubles do not pass through the wire decoder.
+  const incomingActivities = incoming.activities ?? [];
+  const incomingHasOlderActivities = incoming.hasOlderActivities ?? false;
+  const incomingOldestLoadedActivityCursor = incoming.oldestLoadedActivityCursor ?? null;
   const { messages, preservedOlderMessages } = mergeMessagesFromTail(
     incoming.messages,
     existing,
     incoming.oldestLoadedMessageCursor,
+  );
+  const { activities, preservedOlderActivities } = mergeActivitiesFromTail(
+    incomingActivities,
+    existing,
+    incomingOldestLoadedActivityCursor,
   );
   const { turnDiffSummaries, preservedOlderCheckpoints } = mergeTurnDiffSummariesFromTail(
     incoming.checkpoints,
@@ -851,6 +925,10 @@ function mapThreadTailFieldsFromReadModel(
     preservedOlderCheckpoints && existingHistory.oldestLoadedCheckpointTurnCount !== null
       ? existingHistory.hasOlderCheckpoints
       : incoming.hasOlderCheckpoints;
+  const hasOlderActivities =
+    preservedOlderActivities && existingHistory.oldestLoadedActivityCursor !== null
+      ? existingHistory.hasOlderActivities
+      : incomingHasOlderActivities;
   const hasOlderCommandExecutions =
     preservedOlderCommandExecutions && existingHistory.oldestLoadedCommandExecutionCursor !== null
       ? existingHistory.hasOlderCommandExecutions
@@ -863,6 +941,10 @@ function mapThreadTailFieldsFromReadModel(
     preservedOlderCheckpoints && existingHistory.oldestLoadedCheckpointTurnCount !== null
       ? existingHistory.oldestLoadedCheckpointTurnCount
       : incoming.oldestLoadedCheckpointTurnCount;
+  const oldestLoadedActivityCursor =
+    preservedOlderActivities && existingHistory.oldestLoadedActivityCursor !== null
+      ? existingHistory.oldestLoadedActivityCursor
+      : incomingOldestLoadedActivityCursor;
   const oldestLoadedCommandExecutionCursor =
     preservedOlderCommandExecutions && existingHistory.oldestLoadedCommandExecutionCursor !== null
       ? existingHistory.oldestLoadedCommandExecutionCursor
@@ -870,6 +952,7 @@ function mapThreadTailFieldsFromReadModel(
   const historyUnchanged =
     existing?.detailsLoaded === true &&
     existing.messages === messages &&
+    existing.activities === activities &&
     existing.commandExecutions === commandExecutions &&
     existing.turnDiffSummaries === turnDiffSummaries &&
     existing.tasks === tasks &&
@@ -879,9 +962,11 @@ function mapThreadTailFieldsFromReadModel(
     existing.threadReferences === threadReferences &&
     existingHistory.hasOlderMessages === hasOlderMessages &&
     existingHistory.hasOlderCheckpoints === hasOlderCheckpoints &&
+    existingHistory.hasOlderActivities === hasOlderActivities &&
     existingHistory.hasOlderCommandExecutions === hasOlderCommandExecutions &&
     areUnknownEqual(existingHistory.oldestLoadedMessageCursor, oldestLoadedMessageCursor) &&
     existingHistory.oldestLoadedCheckpointTurnCount === oldestLoadedCheckpointTurnCount &&
+    areUnknownEqual(existingHistory.oldestLoadedActivityCursor, oldestLoadedActivityCursor) &&
     areUnknownEqual(
       existingHistory.oldestLoadedCommandExecutionCursor,
       oldestLoadedCommandExecutionCursor,
@@ -889,6 +974,7 @@ function mapThreadTailFieldsFromReadModel(
 
   return {
     messages,
+    activities,
     commandExecutions,
     turnDiffSummaries,
     detailsLoaded: true,
@@ -903,9 +989,11 @@ function mapThreadTailFieldsFromReadModel(
           {
             hasOlderMessages,
             hasOlderCheckpoints,
+            hasOlderActivities,
             hasOlderCommandExecutions,
             oldestLoadedMessageCursor,
             oldestLoadedCheckpointTurnCount,
+            oldestLoadedActivityCursor,
             oldestLoadedCommandExecutionCursor,
           },
           existing,
@@ -920,6 +1008,7 @@ function buildThreadFromReadModel(
     | Pick<
         Thread,
         | "messages"
+        | "activities"
         | "commandExecutions"
         | "turnDiffSummaries"
         | "detailsLoaded"
@@ -945,10 +1034,11 @@ function buildThreadFromReadModel(
     existing?.proposedPlans ?? [],
   );
   const latestTurn = mapLatestTurnFromReadModel(thread.latestTurn, existing?.latestTurn);
-  const activities =
-    options?.preserveExistingActivitiesWhenIncomingEmpty &&
-    thread.activities.length === 0 &&
-    existing
+  const activities = detailFields
+    ? detailFields.activities
+    : options?.preserveExistingActivitiesWhenIncomingEmpty &&
+        thread.activities.length === 0 &&
+        existing
       ? existing.activities
       : mapActivitiesFromReadModel(thread.activities, existing?.activities ?? []);
   const error = sanitizeThreadErrorMessage(thread.session?.lastError);
@@ -1189,10 +1279,6 @@ export function syncThreadTailDetails(
   }
 
   const detailFields = mapThreadTailFieldsFromReadModel(details, existingThread);
-  const activities = mapActivitiesFromReadModel(
-    details.activities ?? [],
-    existingThread.activities,
-  );
   // Thread-tail RPCs can hydrate one thread without proving that the router
   // has actually observed every intervening global event. Background live
   // warms therefore opt out of advancing the app-wide sequence cursor.
@@ -1205,7 +1291,7 @@ export function syncThreadTailDetails(
       thread.messages === detailFields.messages &&
       thread.commandExecutions === detailFields.commandExecutions &&
       thread.turnDiffSummaries === detailFields.turnDiffSummaries &&
-      thread.activities === activities &&
+      thread.activities === detailFields.activities &&
       thread.detailsLoaded === detailFields.detailsLoaded &&
       thread.tasks === detailFields.tasks &&
       thread.tasksTurnId === detailFields.tasksTurnId &&
@@ -1221,7 +1307,7 @@ export function syncThreadTailDetails(
       messages: detailFields.messages,
       commandExecutions: detailFields.commandExecutions,
       turnDiffSummaries: detailFields.turnDiffSummaries,
-      activities,
+      activities: detailFields.activities,
       detailsLoaded: detailFields.detailsLoaded,
       tasks: detailFields.tasks,
       tasksTurnId: detailFields.tasksTurnId,
@@ -1309,6 +1395,21 @@ function prependOlderCommandExecutions(
   return [...mapCommandExecutionsFromReadModel(nextIncoming, []), ...existing];
 }
 
+function prependOlderActivities(
+  existing: Thread["activities"],
+  incoming: OrchestrationThreadHistoryPage["activities"],
+): Thread["activities"] {
+  if (incoming.length === 0) {
+    return existing;
+  }
+  const existingIds = new Set(existing.map((activity) => activity.id));
+  const nextIncoming = incoming.filter((activity) => !existingIds.has(activity.id));
+  if (nextIncoming.length === 0) {
+    return existing;
+  }
+  return [...mapActivitiesFromReadModel(nextIncoming, []), ...existing];
+}
+
 export function prependOlderThreadHistoryPage(
   state: AppState,
   threadId: ThreadId,
@@ -1378,6 +1479,62 @@ export function prependOlderThreadHistoryPage(
   };
 }
 
+export function prependOlderThreadActivitiesPage(
+  state: AppState,
+  threadId: ThreadId,
+  page: OrchestrationThreadHistoryPage,
+  expectedGeneration: number,
+): AppState {
+  const existingThread = state.threads.find((thread) => thread.id === threadId);
+  if (!existingThread || !existingThread.detailsLoaded) {
+    return state;
+  }
+  const existingHistory = ensureThreadHistoryState(existingThread.history);
+  if (existingHistory.generation !== expectedGeneration) {
+    return state;
+  }
+
+  const activities = prependOlderActivities(existingThread.activities, page.activities);
+  const hasOlderActivities = page.hasOlderActivities;
+  const oldestLoadedActivityCursor = page.oldestLoadedActivityCursor;
+  const hasAnyOlderHistory =
+    existingHistory.hasOlderMessages ||
+    existingHistory.hasOlderCheckpoints ||
+    hasOlderActivities ||
+    existingHistory.hasOlderCommandExecutions;
+  const stage =
+    existingHistory.stage === "backfilling" || existingHistory.stage === "error"
+      ? existingHistory.stage
+      : hasAnyOlderHistory
+        ? "tail"
+        : "complete";
+  const nextHistory: ThreadHistoryState = {
+    ...existingHistory,
+    stage,
+    hasOlderActivities,
+    oldestLoadedActivityCursor,
+  };
+  if (
+    activities === existingThread.activities &&
+    existingHistory.stage === nextHistory.stage &&
+    existingHistory.hasOlderActivities === hasOlderActivities &&
+    areUnknownEqual(existingHistory.oldestLoadedActivityCursor, oldestLoadedActivityCursor)
+  ) {
+    return state.lastAppliedSequence >= page.detailSequence
+      ? state
+      : { ...state, lastAppliedSequence: page.detailSequence };
+  }
+
+  const threads = updateThread(state.threads, threadId, (thread) =>
+    thread !== existingThread ? thread : { ...thread, activities, history: nextHistory },
+  );
+  return {
+    ...state,
+    threads,
+    lastAppliedSequence: Math.max(state.lastAppliedSequence, page.detailSequence),
+  };
+}
+
 export function markThreadHistoryBackfilling(state: AppState, threadId: ThreadId): AppState {
   const threads = updateThread(state.threads, threadId, (thread) => {
     const history = ensureThreadHistoryState(thread.history);
@@ -1405,14 +1562,15 @@ export function markThreadHistoryComplete(
     if (!thread.detailsLoaded || history.generation !== expectedGeneration) {
       return thread;
     }
-    if (history.stage === "complete") {
+    const nextStage = history.hasOlderActivities ? "tail" : "complete";
+    if (history.stage === nextStage) {
       return thread;
     }
     return {
       ...thread,
       history: {
         ...history,
-        stage: "complete",
+        stage: nextStage,
       },
     };
   });
@@ -1495,12 +1653,14 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
         {
           messages: thread.messages,
           checkpoints: thread.checkpoints,
+          activities: thread.activities,
           commandExecutions: existingThread?.commandExecutions ?? [],
           tasks: thread.tasks,
           tasksTurnId: thread.tasksTurnId,
           tasksUpdatedAt: thread.tasksUpdatedAt,
           hasOlderMessages: false,
           hasOlderCheckpoints: false,
+          hasOlderActivities: false,
           hasOlderCommandExecutions: ensureThreadHistoryState(existingThread?.history)
             .hasOlderCommandExecutions,
           oldestLoadedMessageCursor:
@@ -1511,6 +1671,15 @@ export function syncServerReadModel(state: AppState, readModel: OrchestrationRea
                 }
               : null,
           oldestLoadedCheckpointTurnCount: thread.checkpoints[0]?.checkpointTurnCount ?? null,
+          oldestLoadedActivityCursor:
+            thread.activities.length > 0
+              ? {
+                  sequenceIsNull: thread.activities[0]!.sequence === undefined,
+                  sequence: thread.activities[0]!.sequence ?? null,
+                  createdAt: thread.activities[0]!.createdAt,
+                  activityId: thread.activities[0]!.id,
+                }
+              : null,
           oldestLoadedCommandExecutionCursor: ensureThreadHistoryState(existingThread?.history)
             .oldestLoadedCommandExecutionCursor,
           ...(thread.sessionNotes !== undefined ? { sessionNotes: thread.sessionNotes } : {}),
@@ -1715,6 +1884,11 @@ interface AppStore extends AppState {
     page: OrchestrationThreadHistoryPage,
     expectedGeneration: number,
   ) => void;
+  prependOlderThreadActivitiesPage: (
+    threadId: ThreadId,
+    page: OrchestrationThreadHistoryPage,
+    expectedGeneration: number,
+  ) => void;
   markThreadHistoryBackfilling: (threadId: ThreadId) => void;
   markThreadHistoryComplete: (threadId: ThreadId, expectedGeneration: number) => void;
   markThreadHistoryError: (threadId: ThreadId, expectedGeneration: number) => void;
@@ -1744,6 +1918,8 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncThreadTailDetails(state, threadId, details, options)),
   prependOlderThreadHistoryPage: (threadId, page, expectedGeneration) =>
     set((state) => prependOlderThreadHistoryPage(state, threadId, page, expectedGeneration)),
+  prependOlderThreadActivitiesPage: (threadId, page, expectedGeneration) =>
+    set((state) => prependOlderThreadActivitiesPage(state, threadId, page, expectedGeneration)),
   markThreadHistoryBackfilling: (threadId) =>
     set((state) => markThreadHistoryBackfilling(state, threadId)),
   markThreadHistoryComplete: (threadId, expectedGeneration) =>

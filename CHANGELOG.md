@@ -27,6 +27,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   title provenance/revisions, and stale-result protection for manual renames and newer requests.
 - Per-project workspace defaults and manual icons, plus safe checked-in `f5.json` configuration for
   non-executable workspace and icon fields (`t3.json` is accepted read-only for interoperability).
+- Thread activity tails are capped at the newest 500 rows, with explicit null-safe cursor pages for
+  loading older work-log entries without materializing the full activity history on thread open.
 
 ### Changed
 

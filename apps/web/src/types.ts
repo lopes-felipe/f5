@@ -7,6 +7,7 @@ import type {
   OrchestrationProposedPlanId,
   OrchestrationSessionStatus,
   OrchestrationThreadActivity,
+  OrchestrationThreadActivityCursor,
   OrchestrationMessageCursor,
   ThreadCompaction as ContractThreadCompaction,
   PlanningWorkflow as ContractPlanningWorkflow,
@@ -53,6 +54,7 @@ export type ThreadCompaction = ContractThreadCompaction;
 export type ThreadTitleRegeneration = ContractThreadTitleRegeneration;
 export type ThreadHistoryMessageCursor = OrchestrationMessageCursor;
 export type ThreadHistoryCommandExecutionCursor = OrchestrationCommandExecutionCursor;
+export type ThreadHistoryActivityCursor = OrchestrationThreadActivityCursor;
 export type UserMessageSkillCall = ContractUserMessageSkillCall;
 
 export type ThreadHistoryStage = "empty" | "tail" | "backfilling" | "complete" | "error";
@@ -61,9 +63,11 @@ export interface ThreadHistoryState {
   stage: ThreadHistoryStage;
   hasOlderMessages: boolean;
   hasOlderCheckpoints: boolean;
+  hasOlderActivities: boolean;
   hasOlderCommandExecutions: boolean;
   oldestLoadedMessageCursor: ThreadHistoryMessageCursor | null;
   oldestLoadedCheckpointTurnCount: number | null;
+  oldestLoadedActivityCursor: ThreadHistoryActivityCursor | null;
   oldestLoadedCommandExecutionCursor: ThreadHistoryCommandExecutionCursor | null;
   generation: number;
 }

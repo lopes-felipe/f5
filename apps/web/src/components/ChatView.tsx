@@ -237,6 +237,7 @@ import {
 import { registerComposerFileMentionInserter } from "./composerFileMentionInsertion";
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
+import { OlderActivityHistoryControl } from "./chat/OlderActivityHistoryControl";
 import { RuntimeModePicker } from "./chat/RuntimeModePicker";
 import { ChatHeader } from "./chat/ChatHeader";
 import {
@@ -5565,6 +5566,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                   listHeaderContent={
                     <>
                       {historyStatusContent}
+                      <OlderActivityHistoryControl threadId={activeThread.id} />
                       {
                         // Tasks come only from the detail payload, so keep this
                         // gated on `detailsLoaded` even though the timeline can

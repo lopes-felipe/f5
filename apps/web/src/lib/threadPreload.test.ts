@@ -33,6 +33,7 @@ import {
 import {
   clearInFlightOrchestrationRpcRequests,
   ensureThreadHistoryBackfill,
+  loadOlderThreadActivitiesPage,
   orchestrationQueryKeys,
   threadDetailQueryOptions,
   resetProvisionalThreadDetailRefreshesForTests,
@@ -94,9 +95,11 @@ function makeDetails(
     threadReferences: [],
     hasOlderMessages: false,
     hasOlderCheckpoints: false,
+    hasOlderActivities: false,
     hasOlderCommandExecutions: false,
     oldestLoadedMessageCursor: null,
     oldestLoadedCheckpointTurnCount: null,
+    oldestLoadedActivityCursor: null,
     oldestLoadedCommandExecutionCursor: null,
     detailSequence: 1,
     ...overrides,
@@ -181,12 +184,15 @@ function mockOrchestrationQueries(options?: {
         threadId,
         messages: [],
         checkpoints: [],
+        activities: [],
         commandExecutions: [],
         hasOlderMessages: false,
         hasOlderCheckpoints: false,
+        hasOlderActivities: false,
         hasOlderCommandExecutions: false,
         oldestLoadedMessageCursor: null,
         oldestLoadedCheckpointTurnCount: null,
+        oldestLoadedActivityCursor: null,
         oldestLoadedCommandExecutionCursor: null,
         detailSequence: 1,
       })),
@@ -582,6 +588,102 @@ describe("preloadRecentThreadDetails", () => {
     expect(useStore.getState().detailEventBufferByThreadId.size).toBe(0);
   });
 
+  it("loads one older activity page without backfilling unrelated streams", async () => {
+    const threadId = ThreadId.makeUnsafe("thread-00");
+    const tailActivityId = EventId.makeUnsafe("activity-tail");
+    const olderActivityId = EventId.makeUnsafe("activity-older");
+    seedStore({
+      threads: [
+        makeThread({
+          id: threadId,
+          detailsLoaded: true,
+          activities: [
+            {
+              id: tailActivityId,
+              tone: "info",
+              kind: "runtime.note",
+              summary: "tail",
+              payload: {},
+              turnId: null,
+              sequence: 2,
+              createdAt: "2026-03-01T00:02:00.000Z",
+            },
+          ],
+          history: {
+            stage: "tail",
+            hasOlderMessages: false,
+            hasOlderCheckpoints: false,
+            hasOlderActivities: true,
+            hasOlderCommandExecutions: false,
+            oldestLoadedMessageCursor: null,
+            oldestLoadedCheckpointTurnCount: null,
+            oldestLoadedActivityCursor: {
+              sequenceIsNull: false,
+              sequence: 2,
+              createdAt: "2026-03-01T00:02:00.000Z",
+              activityId: tailActivityId,
+            },
+            oldestLoadedCommandExecutionCursor: null,
+            generation: 1,
+          },
+        }),
+      ],
+    });
+    const { getThreadHistoryPage } = mockOrchestrationQueries({
+      getThreadHistoryPage: async ({ threadId: requestedThreadId }) => ({
+        threadId: requestedThreadId,
+        messages: [],
+        checkpoints: [],
+        activities: [
+          {
+            id: olderActivityId,
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "older",
+            payload: {},
+            turnId: null,
+            createdAt: "2026-03-01T00:01:00.000Z",
+          },
+        ],
+        commandExecutions: [],
+        hasOlderMessages: false,
+        hasOlderCheckpoints: false,
+        hasOlderActivities: false,
+        hasOlderCommandExecutions: false,
+        oldestLoadedMessageCursor: null,
+        oldestLoadedCheckpointTurnCount: null,
+        oldestLoadedActivityCursor: {
+          sequenceIsNull: true,
+          sequence: null,
+          createdAt: "2026-03-01T00:01:00.000Z",
+          activityId: olderActivityId,
+        },
+        oldestLoadedCommandExecutionCursor: null,
+        detailSequence: 2,
+      }),
+    });
+
+    await loadOlderThreadActivitiesPage(threadId);
+
+    expect(getThreadHistoryPage).toHaveBeenCalledWith({
+      threadId,
+      beforeMessageCursor: null,
+      beforeCheckpointTurnCount: null,
+      activityCursor: {
+        sequenceIsNull: false,
+        sequence: 2,
+        createdAt: "2026-03-01T00:02:00.000Z",
+        activityId: tailActivityId,
+      },
+      beforeCommandExecutionCursor: null,
+    });
+    expect(useStore.getState().threads[0]?.activities.map((activity) => activity.id)).toEqual([
+      olderActivityId,
+      tailActivityId,
+    ]);
+    expect(useStore.getState().threads[0]?.history?.hasOlderActivities).toBe(false);
+  });
+
   it("starts a fresh history backfill after the tail generation changes", async () => {
     const threadId = ThreadId.makeUnsafe("thread-00");
     const deferredFirstPage = createDeferred<OrchestrationThreadHistoryPage>();
@@ -607,12 +709,14 @@ describe("preloadRecentThreadDetails", () => {
             stage: "tail",
             hasOlderMessages: true,
             hasOlderCheckpoints: false,
+            hasOlderActivities: false,
             hasOlderCommandExecutions: false,
             oldestLoadedMessageCursor: {
               createdAt: "2026-03-01T00:04:00.000Z",
               messageId: firstTailMessageId,
             },
             oldestLoadedCheckpointTurnCount: null,
+            oldestLoadedActivityCursor: null,
             oldestLoadedCommandExecutionCursor: null,
             generation: 1,
           },
@@ -632,12 +736,15 @@ describe("preloadRecentThreadDetails", () => {
           threadId: requestedThreadId,
           messages: [],
           checkpoints: [],
+          activities: [],
           commandExecutions: [],
           hasOlderMessages: false,
           hasOlderCheckpoints: false,
+          hasOlderActivities: false,
           hasOlderCommandExecutions: false,
           oldestLoadedMessageCursor: null,
           oldestLoadedCheckpointTurnCount: null,
+          oldestLoadedActivityCursor: null,
           oldestLoadedCommandExecutionCursor: null,
           detailSequence: 1,
         };
@@ -669,12 +776,14 @@ describe("preloadRecentThreadDetails", () => {
         ],
         hasOlderMessages: true,
         hasOlderCheckpoints: false,
+        hasOlderActivities: false,
         hasOlderCommandExecutions: false,
         oldestLoadedMessageCursor: {
           createdAt: "2026-03-01T00:05:00.000Z",
           messageId: secondTailMessageId,
         },
         oldestLoadedCheckpointTurnCount: null,
+        oldestLoadedActivityCursor: null,
         oldestLoadedCommandExecutionCursor: null,
         detailSequence: 2,
       }),
@@ -688,12 +797,15 @@ describe("preloadRecentThreadDetails", () => {
       threadId,
       messages: [],
       checkpoints: [],
+      activities: [],
       commandExecutions: [],
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderActivities: false,
       hasOlderCommandExecutions: false,
       oldestLoadedMessageCursor: null,
       oldestLoadedCheckpointTurnCount: null,
+      oldestLoadedActivityCursor: null,
       oldestLoadedCommandExecutionCursor: null,
       detailSequence: 3,
     });

@@ -20,6 +20,7 @@ import {
   markThreadUnread,
   markThreadVisited,
   persistState,
+  prependOlderThreadActivitiesPage,
   pruneChangedFilesExpandedForThreads,
   reorderProjects,
   setChangedFilesExpandedForThread,
@@ -31,7 +32,7 @@ import {
   type AppState,
 } from "./store";
 import { DEFAULT_INTERACTION_MODE, DEFAULT_RUNTIME_MODE, type Thread } from "./types";
-import { createEmptyThreadHistoryState } from "./lib/threadHistory";
+import { createEmptyThreadHistoryState, ensureThreadHistoryState } from "./lib/threadHistory";
 
 function createLocalStorageStub(): Storage {
   const store = new Map<string, string>();
@@ -275,9 +276,11 @@ function makeThreadDetails(
     threadReferences: [],
     hasOlderMessages: false,
     hasOlderCheckpoints: false,
+    hasOlderActivities: false,
     hasOlderCommandExecutions: false,
     oldestLoadedMessageCursor: null,
     oldestLoadedCheckpointTurnCount: null,
+    oldestLoadedActivityCursor: null,
     oldestLoadedCommandExecutionCursor: null,
     detailSequence: 1,
     ...overrides,
@@ -1615,12 +1618,14 @@ describe("store read model sync", () => {
             stage: "complete",
             hasOlderMessages: false,
             hasOlderCheckpoints: false,
+            hasOlderActivities: false,
             hasOlderCommandExecutions: false,
             oldestLoadedMessageCursor: {
               createdAt: "2026-04-01T09:02:00.000Z",
               messageId: MessageId.makeUnsafe("assistant-older"),
             },
             oldestLoadedCheckpointTurnCount: 1,
+            oldestLoadedActivityCursor: null,
             oldestLoadedCommandExecutionCursor: null,
             generation: 1,
           },
@@ -1691,6 +1696,107 @@ describe("store read model sync", () => {
       generation: 2,
     });
     expect(next.lastAppliedSequence).toBe(12);
+  });
+
+  it("prepends older activities and preserves them across a fresh tail sync", () => {
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const tailActivityId = EventId.makeUnsafe("activity-tail");
+    const olderActivityId = EventId.makeUnsafe("activity-older");
+    const initialState = makeState(
+      makeThread({
+        id: threadId,
+        activities: [
+          {
+            id: tailActivityId,
+            tone: "info",
+            kind: "runtime.note",
+            summary: "tail",
+            payload: {},
+            turnId: null,
+            sequence: 2,
+            createdAt: "2026-04-01T09:02:00.000Z",
+          },
+        ],
+        history: {
+          stage: "tail",
+          hasOlderMessages: false,
+          hasOlderCheckpoints: false,
+          hasOlderActivities: true,
+          hasOlderCommandExecutions: false,
+          oldestLoadedMessageCursor: null,
+          oldestLoadedCheckpointTurnCount: null,
+          oldestLoadedActivityCursor: {
+            sequenceIsNull: false,
+            sequence: 2,
+            createdAt: "2026-04-01T09:02:00.000Z",
+            activityId: tailActivityId,
+          },
+          oldestLoadedCommandExecutionCursor: null,
+          generation: 1,
+        },
+      }),
+    );
+
+    const withOlder = prependOlderThreadActivitiesPage(
+      initialState,
+      threadId,
+      {
+        threadId,
+        messages: [],
+        checkpoints: [],
+        activities: [
+          {
+            id: olderActivityId,
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "older",
+            payload: {},
+            turnId: null,
+            createdAt: "2026-04-01T09:01:00.000Z",
+          },
+        ],
+        commandExecutions: [],
+        hasOlderMessages: false,
+        hasOlderCheckpoints: false,
+        hasOlderActivities: false,
+        hasOlderCommandExecutions: false,
+        oldestLoadedMessageCursor: null,
+        oldestLoadedCheckpointTurnCount: null,
+        oldestLoadedActivityCursor: {
+          sequenceIsNull: true,
+          sequence: null,
+          createdAt: "2026-04-01T09:01:00.000Z",
+          activityId: olderActivityId,
+        },
+        oldestLoadedCommandExecutionCursor: null,
+        detailSequence: 3,
+      },
+      1,
+    );
+    const refreshed = syncThreadTailDetails(
+      withOlder,
+      threadId,
+      makeThreadDetails({
+        activities: initialState.threads[0]!.activities,
+        hasOlderActivities: true,
+        oldestLoadedActivityCursor: ensureThreadHistoryState(initialState.threads[0]!.history)
+          .oldestLoadedActivityCursor,
+        detailSequence: 4,
+      }),
+    );
+
+    expect(refreshed.threads[0]?.activities.map((activity) => activity.id)).toEqual([
+      olderActivityId,
+      tailActivityId,
+    ]);
+    expect(refreshed.threads[0]?.history).toMatchObject({
+      stage: "complete",
+      hasOlderActivities: false,
+      oldestLoadedActivityCursor: {
+        sequenceIsNull: true,
+        activityId: olderActivityId,
+      },
+    });
   });
 
   it("beginThreadDetailLoad retains an existing buffer until all owners release it", () => {

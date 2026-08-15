@@ -17,6 +17,7 @@ import {
   OrchestrationMessage,
   OrchestrationProject,
   OrchestrationSession,
+  OrchestrationThreadActivityCursor,
   RuntimeMode,
   TaskItem,
   ProjectCreateCommand,
@@ -829,6 +830,32 @@ it("widens runtime modes with an explicit clean legacy-client failure", () => {
   assert.equal(Schema.decodeUnknownSync(RuntimeMode)("auto-accept-edits"), "auto-accept-edits");
   assert.throws(() => Schema.decodeUnknownSync(LegacyRuntimeMode)("auto"));
   assert.equal(Schema.decodeUnknownSync(RuntimeMode)("approval-required"), "approval-required");
+});
+
+it("validates nullable activity cursor sequence identity", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationThreadActivityCursor);
+  assert.deepStrictEqual(
+    decode({
+      sequenceIsNull: true,
+      sequence: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      activityId: "activity-1",
+    }),
+    {
+      sequenceIsNull: true,
+      sequence: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      activityId: "activity-1",
+    },
+  );
+  assert.throws(() =>
+    decode({
+      sequenceIsNull: true,
+      sequence: 1,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      activityId: "activity-1",
+    }),
+  );
 });
 
 it.effect("defaults proposed plan implementation metadata for historical rows", () =>

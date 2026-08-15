@@ -4,9 +4,11 @@ export const EMPTY_THREAD_HISTORY_STATE: ThreadHistoryState = Object.freeze({
   stage: "empty",
   hasOlderMessages: false,
   hasOlderCheckpoints: false,
+  hasOlderActivities: false,
   hasOlderCommandExecutions: false,
   oldestLoadedMessageCursor: null,
   oldestLoadedCheckpointTurnCount: null,
+  oldestLoadedActivityCursor: null,
   oldestLoadedCommandExecutionCursor: null,
   generation: 0,
 });

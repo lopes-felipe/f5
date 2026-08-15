@@ -2250,6 +2250,20 @@ export const OrchestrationCommandExecutionCursor = Schema.Struct({
 });
 export type OrchestrationCommandExecutionCursor = typeof OrchestrationCommandExecutionCursor.Type;
 
+export const OrchestrationThreadActivityCursor = Schema.Struct({
+  sequenceIsNull: Schema.Boolean,
+  sequence: Schema.NullOr(NonNegativeInt),
+  createdAt: IsoDateTime,
+  activityId: EventId,
+}).check(
+  Schema.makeFilter(
+    (input) =>
+      input.sequenceIsNull === (input.sequence === null) ||
+      "sequenceIsNull must match whether sequence is null",
+  ),
+);
+export type OrchestrationThreadActivityCursor = typeof OrchestrationThreadActivityCursor.Type;
+
 export const OrchestrationThreadDetails = Schema.Struct({
   threadId: ThreadId,
   messages: Schema.Array(OrchestrationMessage),
@@ -2267,6 +2281,7 @@ export const OrchestrationGetThreadTailDetailsInput = Schema.Struct({
   threadId: ThreadId,
   messageLimit: Schema.optional(NonNegativeInt),
   checkpointLimit: Schema.optional(NonNegativeInt),
+  activityLimit: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationGetThreadTailDetailsInput =
   typeof OrchestrationGetThreadTailDetailsInput.Type;
@@ -2286,11 +2301,15 @@ export const OrchestrationThreadTailDetails = Schema.Struct({
   threadReferences: Schema.Array(ThreadReference).pipe(Schema.withDecodingDefault(() => [])),
   hasOlderMessages: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderCheckpoints: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  hasOlderActivities: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderCommandExecutions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   oldestLoadedMessageCursor: Schema.NullOr(OrchestrationMessageCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   oldestLoadedCheckpointTurnCount: Schema.NullOr(NonNegativeInt).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  oldestLoadedActivityCursor: Schema.NullOr(OrchestrationThreadActivityCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   oldestLoadedCommandExecutionCursor: Schema.NullOr(OrchestrationCommandExecutionCursor).pipe(
@@ -2311,8 +2330,12 @@ export const OrchestrationGetThreadHistoryPageInput = Schema.Struct({
   beforeCommandExecutionCursor: Schema.NullOr(OrchestrationCommandExecutionCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  activityCursor: Schema.NullOr(OrchestrationThreadActivityCursor).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   messageLimit: Schema.optional(NonNegativeInt),
   checkpointLimit: Schema.optional(NonNegativeInt),
+  activityLimit: Schema.optional(NonNegativeInt),
   commandExecutionLimit: Schema.optional(NonNegativeInt),
 });
 export type OrchestrationGetThreadHistoryPageInput =
@@ -2322,16 +2345,21 @@ export const OrchestrationThreadHistoryPage = Schema.Struct({
   threadId: ThreadId,
   messages: Schema.Array(OrchestrationMessage),
   checkpoints: Schema.Array(OrchestrationCheckpointSummary),
+  activities: Schema.Array(OrchestrationThreadActivity).pipe(Schema.withDecodingDefault(() => [])),
   commandExecutions: Schema.Array(OrchestrationCommandExecutionSummary).pipe(
     Schema.withDecodingDefault(() => []),
   ),
   hasOlderMessages: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderCheckpoints: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  hasOlderActivities: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderCommandExecutions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   oldestLoadedMessageCursor: Schema.NullOr(OrchestrationMessageCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   oldestLoadedCheckpointTurnCount: Schema.NullOr(NonNegativeInt).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  oldestLoadedActivityCursor: Schema.NullOr(OrchestrationThreadActivityCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
   oldestLoadedCommandExecutionCursor: Schema.NullOr(OrchestrationCommandExecutionCursor).pipe(

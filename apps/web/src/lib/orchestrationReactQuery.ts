@@ -153,6 +153,7 @@ function getThreadHistoryPageRequestKey(input: {
   threadId: ThreadId;
   beforeMessageCursor: OrchestrationThreadHistoryPage["oldestLoadedMessageCursor"];
   beforeCheckpointTurnCount: number | null;
+  activityCursor: OrchestrationThreadHistoryPage["oldestLoadedActivityCursor"];
   beforeCommandExecutionCursor: OrchestrationThreadHistoryPage["oldestLoadedCommandExecutionCursor"];
 }): string {
   const messageCursorKey = input.beforeMessageCursor
@@ -161,7 +162,10 @@ function getThreadHistoryPageRequestKey(input: {
   const commandCursorKey = input.beforeCommandExecutionCursor
     ? `${input.beforeCommandExecutionCursor.startedAt}:${input.beforeCommandExecutionCursor.startedSequence}:${input.beforeCommandExecutionCursor.commandExecutionId}`
     : "null";
-  return `history:${input.threadId}:${messageCursorKey}:${input.beforeCheckpointTurnCount ?? "null"}:${commandCursorKey}`;
+  const activityCursorKey = input.activityCursor
+    ? `${input.activityCursor.sequenceIsNull ? "null" : input.activityCursor.sequence}:${input.activityCursor.createdAt}:${input.activityCursor.activityId}`
+    : "null";
+  return `history:${input.threadId}:${messageCursorKey}:${input.beforeCheckpointTurnCount ?? "null"}:${activityCursorKey}:${commandCursorKey}`;
 }
 
 function getThreadHistoryBackfillKey(threadId: ThreadId, generation: number): string {
@@ -197,47 +201,38 @@ async function fetchThreadTailDetailsRpc(
     getThreadTailRequestKey(threadId),
     () => api.orchestration.getThreadTailDetails({ threadId }),
   );
-  if (!signal) {
-    return request;
-  }
-
-  const details = await Promise.race([request, waitForAbort(signal)]);
-  if (signal.aborted) {
+  const details = signal ? await Promise.race([request, waitForAbort(signal)]) : await request;
+  if (signal?.aborted) {
     throw makeAbortError();
   }
-  return details;
+  return {
+    ...details,
+    activities: details.activities ?? [],
+    hasOlderActivities: details.hasOlderActivities ?? false,
+    oldestLoadedActivityCursor: details.oldestLoadedActivityCursor ?? null,
+  };
 }
 
 async function fetchThreadHistoryPageRpc(
-  input: {
-    threadId: ThreadId;
-    beforeMessageCursor: OrchestrationThreadHistoryPage["oldestLoadedMessageCursor"];
-    beforeCheckpointTurnCount: number | null;
-    beforeCommandExecutionCursor: OrchestrationThreadHistoryPage["oldestLoadedCommandExecutionCursor"];
-  },
+  input: OrchestrationGetThreadHistoryPageInput,
   signal?: AbortSignal,
 ): Promise<OrchestrationThreadHistoryPage> {
   const api = ensureNativeApi();
   const request = getOrStartInFlightRequest(
     inFlightThreadHistoryPageRequests,
     getThreadHistoryPageRequestKey(input),
-    () =>
-      api.orchestration.getThreadHistoryPage({
-        threadId: input.threadId,
-        beforeMessageCursor: input.beforeMessageCursor,
-        beforeCheckpointTurnCount: input.beforeCheckpointTurnCount,
-        beforeCommandExecutionCursor: input.beforeCommandExecutionCursor,
-      }),
+    () => api.orchestration.getThreadHistoryPage(input),
   );
-  if (!signal) {
-    return request;
-  }
-
-  const page = await Promise.race([request, waitForAbort(signal)]);
-  if (signal.aborted) {
+  const page = signal ? await Promise.race([request, waitForAbort(signal)]) : await request;
+  if (signal?.aborted) {
     throw makeAbortError();
   }
-  return page;
+  return {
+    ...page,
+    activities: page.activities ?? [],
+    hasOlderActivities: page.hasOlderActivities ?? false,
+    oldestLoadedActivityCursor: page.oldestLoadedActivityCursor ?? null,
+  };
 }
 
 async function fetchThreadCommandExecutionRpc(
@@ -596,6 +591,7 @@ export function buildThreadHistoryBackfillInput(
     beforeCheckpointTurnCount: history.hasOlderCheckpoints
       ? history.oldestLoadedCheckpointTurnCount
       : null,
+    activityCursor: null,
     beforeCommandExecutionCursor:
       (options?.includeCommandExecutionHistory ?? false) && history.hasOlderCommandExecutions
         ? history.oldestLoadedCommandExecutionCursor
@@ -711,6 +707,39 @@ export function retryThreadHistoryBackfill(
   return ensureThreadHistoryBackfill(queryClient, threadId, options);
 }
 
+export async function loadOlderThreadActivitiesPage(
+  threadId: ThreadId,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return;
+  const thread = useStore.getState().threads.find((entry) => entry.id === threadId);
+  const history = ensureThreadHistoryState(thread?.history);
+  if (
+    !thread?.detailsLoaded ||
+    !history.hasOlderActivities ||
+    history.oldestLoadedActivityCursor === null
+  ) {
+    return;
+  }
+
+  const expectedGeneration = history.generation;
+  const page = await fetchThreadHistoryPageRpc(
+    {
+      threadId,
+      beforeMessageCursor: null,
+      beforeCheckpointTurnCount: null,
+      activityCursor: history.oldestLoadedActivityCursor,
+      beforeCommandExecutionCursor: null,
+    },
+    signal,
+  );
+  if (signal?.aborted) return;
+  if (page.activities.length === 0 && page.hasOlderActivities) {
+    throw new Error("Activity history page made no progress.");
+  }
+  useStore.getState().prependOlderThreadActivitiesPage(threadId, page, expectedGeneration);
+}
+
 export function clearInFlightOrchestrationRpcRequests(): void {
   inFlightThreadDetailRequests.clear();
   inFlightThreadHistoryPageRequests.clear();
@@ -770,9 +799,11 @@ export function useThreadDetail(
         durationMs: Math.round(performance.now() - startedAtMs),
         messageCount: details.messages.length,
         checkpointCount: details.checkpoints.length,
+        activityCount: details.activities.length,
         commandExecutionCount: details.commandExecutions.length,
         hasOlderMessages: details.hasOlderMessages,
         hasOlderCheckpoints: details.hasOlderCheckpoints,
+        hasOlderActivities: details.hasOlderActivities,
         hasOlderCommandExecutions: details.hasOlderCommandExecutions,
       });
       return details;
@@ -793,9 +824,11 @@ export function useThreadDetail(
       detailSequence: query.data.detailSequence,
       messageCount: query.data.messages.length,
       checkpointCount: query.data.checkpoints.length,
+      activityCount: query.data.activities?.length ?? 0,
       commandExecutionCount: query.data.commandExecutions.length,
       hasOlderMessages: query.data.hasOlderMessages,
       hasOlderCheckpoints: query.data.hasOlderCheckpoints,
+      hasOlderActivities: query.data.hasOlderActivities,
       hasOlderCommandExecutions: query.data.hasOlderCommandExecutions,
     });
     if (!isProvisionalThreadDetail(query.data)) {

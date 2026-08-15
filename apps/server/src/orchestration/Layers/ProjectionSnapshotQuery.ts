@@ -176,9 +176,11 @@ const ProjectionLatestTurnDbRowSchema = Schema.Struct({
 });
 const DEFAULT_THREAD_TAIL_MESSAGE_LIMIT = 120;
 const DEFAULT_THREAD_TAIL_CHECKPOINT_LIMIT = 40;
+const DEFAULT_THREAD_TAIL_ACTIVITY_LIMIT = MAX_THREAD_ACTIVITIES;
 const DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT = 120;
 const MAX_THREAD_HISTORY_MESSAGE_LIMIT = DEFAULT_THREAD_TAIL_MESSAGE_LIMIT;
 const MAX_THREAD_HISTORY_CHECKPOINT_LIMIT = DEFAULT_THREAD_TAIL_CHECKPOINT_LIMIT;
+const MAX_THREAD_HISTORY_ACTIVITY_LIMIT = DEFAULT_THREAD_TAIL_ACTIVITY_LIMIT;
 const MAX_THREAD_HISTORY_COMMAND_EXECUTION_LIMIT = DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT;
 const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionPlanningWorkflowDbRowSchema = Schema.Struct({
@@ -510,6 +512,21 @@ function resolveOldestLoadedCheckpointTurnCount(
   return checkpoints[0]?.checkpointTurnCount ?? null;
 }
 
+function resolveOldestLoadedActivityCursor(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): OrchestrationThreadTailDetails["oldestLoadedActivityCursor"] {
+  const oldestActivity = activities[0];
+  if (!oldestActivity) {
+    return null;
+  }
+  return {
+    sequenceIsNull: oldestActivity.sequence === undefined,
+    sequence: oldestActivity.sequence ?? null,
+    createdAt: oldestActivity.createdAt,
+    activityId: oldestActivity.id,
+  };
+}
+
 function resolveOldestLoadedCommandExecutionCursor(
   commandExecutions: ReadonlyArray<OrchestrationCommandExecutionSummary>,
 ): OrchestrationCommandExecutionCursor | null {
@@ -593,6 +610,16 @@ function resolveThreadHistoryCheckpointLimit(checkpointLimit?: number): number {
   );
 }
 
+function resolveThreadHistoryActivityLimit(activityLimit?: number): number {
+  return Math.max(
+    1,
+    Math.min(
+      activityLimit ?? DEFAULT_THREAD_TAIL_ACTIVITY_LIMIT,
+      MAX_THREAD_HISTORY_ACTIVITY_LIMIT,
+    ),
+  );
+}
+
 function resolveThreadHistoryCommandExecutionLimit(commandExecutionLimit?: number): number {
   return Math.min(
     commandExecutionLimit ?? DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT,
@@ -610,6 +637,7 @@ function buildThreadTailDetailsResult(params: {
   readonly commandExecutions: ReadonlyArray<OrchestrationCommandExecutionSummary>;
   readonly hasOlderMessages: boolean;
   readonly hasOlderCheckpoints: boolean;
+  readonly hasOlderActivities: boolean;
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadTailDetails, ProjectionRepositoryError> {
@@ -626,9 +654,11 @@ function buildThreadTailDetailsResult(params: {
     threadReferences: params.thread?.threadReferences ?? [],
     hasOlderMessages: params.hasOlderMessages,
     hasOlderCheckpoints: params.hasOlderCheckpoints,
+    hasOlderActivities: params.hasOlderActivities,
     hasOlderCommandExecutions: params.hasOlderCommandExecutions,
     oldestLoadedMessageCursor: resolveOldestLoadedMessageCursor(params.messages),
     oldestLoadedCheckpointTurnCount: resolveOldestLoadedCheckpointTurnCount(params.checkpoints),
+    oldestLoadedActivityCursor: resolveOldestLoadedActivityCursor(params.activities),
     oldestLoadedCommandExecutionCursor: resolveOldestLoadedCommandExecutionCursor(
       params.commandExecutions,
     ),
@@ -644,9 +674,11 @@ function buildThreadHistoryPageResult(params: {
   readonly threadId: OrchestrationThreadHistoryPage["threadId"];
   readonly messages: ReadonlyArray<ProjectionThreadMessage>;
   readonly checkpoints: ReadonlyArray<ProjectionCheckpoint>;
+  readonly activities: ReadonlyArray<OrchestrationThreadActivity>;
   readonly commandExecutions: ReadonlyArray<OrchestrationCommandExecutionSummary>;
   readonly hasOlderMessages: boolean;
   readonly hasOlderCheckpoints: boolean;
+  readonly hasOlderActivities: boolean;
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadHistoryPage, ProjectionRepositoryError> {
@@ -654,12 +686,15 @@ function buildThreadHistoryPageResult(params: {
     threadId: params.threadId,
     messages: mapThreadDetailMessages(params.messages),
     checkpoints: params.checkpoints,
+    activities: params.activities,
     commandExecutions: params.commandExecutions,
     hasOlderMessages: params.hasOlderMessages,
     hasOlderCheckpoints: params.hasOlderCheckpoints,
+    hasOlderActivities: params.hasOlderActivities,
     hasOlderCommandExecutions: params.hasOlderCommandExecutions,
     oldestLoadedMessageCursor: resolveOldestLoadedMessageCursor(params.messages),
     oldestLoadedCheckpointTurnCount: resolveOldestLoadedCheckpointTurnCount(params.checkpoints),
+    oldestLoadedActivityCursor: resolveOldestLoadedActivityCursor(params.activities),
     oldestLoadedCommandExecutionCursor: resolveOldestLoadedCommandExecutionCursor(
       params.commandExecutions,
     ),
@@ -1432,20 +1467,71 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       }),
     );
 
-  const readThreadActivities = (input: { readonly threadId: OrchestrationThread["id"] }) =>
-    projectionThreadActivityRepository.listByThreadId(input).pipe(
-      Effect.mapError(
-        toPersistenceSqlError("ProjectionSnapshotQuery.getThreadTailDetails:listThreadActivities"),
-      ),
-      Effect.map((rows) =>
-        rows.map((row) =>
-          toReadModelActivity({
-            ...row,
-            sequence: row.sequence ?? null,
-          }),
+  const readThreadTailActivities = (input: OrchestrationGetThreadTailDetailsInput) => {
+    const limit = resolveThreadHistoryActivityLimit(input.activityLimit);
+    return projectionThreadActivityRepository
+      .listPage({
+        threadId: input.threadId,
+        activityCursor: null,
+        limit: limit + 1,
+      })
+      .pipe(
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionSnapshotQuery.getThreadTailDetails:listThreadActivities",
+          ),
         ),
-      ),
-    );
+        Effect.map((rows) => {
+          const hasOlderActivities = rows.length > limit;
+          const activities = rows
+            .slice(0, limit)
+            .toReversed()
+            .map((row) =>
+              toReadModelActivity({
+                ...row,
+                sequence: row.sequence ?? null,
+              }),
+            );
+          return { activities, hasOlderActivities };
+        }),
+      );
+  };
+
+  const readThreadHistoryActivities = (input: OrchestrationGetThreadHistoryPageInput) => {
+    if (input.activityCursor === null) {
+      return Effect.succeed({
+        activities: [] as ReadonlyArray<OrchestrationThreadActivity>,
+        hasOlderActivities: false,
+      });
+    }
+    const limit = resolveThreadHistoryActivityLimit(input.activityLimit);
+    return projectionThreadActivityRepository
+      .listPage({
+        threadId: input.threadId,
+        activityCursor: input.activityCursor,
+        limit: limit + 1,
+      })
+      .pipe(
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionSnapshotQuery.getThreadHistoryPage:listThreadActivities",
+          ),
+        ),
+        Effect.map((rows) => {
+          const hasOlderActivities = rows.length > limit;
+          const activities = rows
+            .slice(0, limit)
+            .toReversed()
+            .map((row) =>
+              toReadModelActivity({
+                ...row,
+                sequence: row.sequence ?? null,
+              }),
+            );
+          return { activities, hasOlderActivities };
+        }),
+      );
+  };
 
   const readThreadHistoryCommandExecutions = (input: OrchestrationGetThreadHistoryPageInput) =>
     input.beforeCommandExecutionCursor === null
@@ -2042,11 +2128,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             threadId: detailThreadId,
           }),
         });
-        const activities = yield* withTimedLog({
+        const activityResult = yield* withTimedLog({
           kind: "query",
           scope: "getStartupSnapshot",
           name: "listThreadActivitiesById",
-          effect: readThreadActivities({
+          effect: readThreadTailActivities({
             threadId: detailThreadId,
           }),
         });
@@ -2069,10 +2155,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread,
           messages: messageResult.messages,
           checkpoints: checkpointResult.checkpoints,
-          activities,
+          activities: activityResult.activities,
           commandExecutions: commandExecutionResult.commandExecutions,
           hasOlderMessages: messageResult.hasOlderMessages,
           hasOlderCheckpoints: checkpointResult.hasOlderCheckpoints,
+          hasOlderActivities: activityResult.hasOlderActivities,
           hasOlderCommandExecutions: commandExecutionResult.hasOlderCommandExecutions,
           detailSequence: snapshot.snapshotSequence,
         });
@@ -2127,13 +2214,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           name: "listTailCommandExecutions",
           effect: readThreadTailCommandExecutions(input),
         });
-        const activities = yield* withTimedLog({
+        const activityResult = yield* withTimedLog({
           kind: "query",
           scope: "getThreadTailDetails",
           name: "listThreadActivities",
-          effect: readThreadActivities({
-            threadId: input.threadId,
-          }),
+          effect: readThreadTailActivities(input),
         });
 
         const thread = Option.match(threadOption, {
@@ -2147,10 +2232,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           thread,
           messages: thread === null ? [] : messageResult.messages,
           checkpoints: thread === null ? [] : checkpointResult.checkpoints,
-          activities: thread === null ? [] : activities,
+          activities: thread === null ? [] : activityResult.activities,
           commandExecutions: thread === null ? [] : commandExecutionResult.commandExecutions,
           hasOlderMessages: thread !== null && messageResult.hasOlderMessages,
           hasOlderCheckpoints: thread !== null && checkpointResult.hasOlderCheckpoints,
+          hasOlderActivities: thread !== null && activityResult.hasOlderActivities,
           hasOlderCommandExecutions:
             thread !== null && commandExecutionResult.hasOlderCommandExecutions,
           detailSequence: detailSequence ?? 0,
@@ -2195,6 +2281,12 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           name: "listHistoryCheckpoints",
           effect: readThreadHistoryCheckpoints(input),
         });
+        const activityResult = yield* withTimedLog({
+          kind: "query",
+          scope: "getThreadHistoryPage",
+          name: "listHistoryActivities",
+          effect: readThreadHistoryActivities(input),
+        });
         const commandExecutionResult = yield* withTimedLog({
           kind: "query",
           scope: "getThreadHistoryPage",
@@ -2207,9 +2299,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           threadId: input.threadId,
           messages: threadExists ? messageResult.messages : [],
           checkpoints: threadExists ? checkpointResult.checkpoints : [],
+          activities: threadExists ? activityResult.activities : [],
           commandExecutions: threadExists ? commandExecutionResult.commandExecutions : [],
           hasOlderMessages: threadExists && messageResult.hasOlderMessages,
           hasOlderCheckpoints: threadExists && checkpointResult.hasOlderCheckpoints,
+          hasOlderActivities: threadExists && activityResult.hasOlderActivities,
           hasOlderCommandExecutions:
             threadExists && commandExecutionResult.hasOlderCommandExecutions,
           detailSequence: detailSequence ?? 0,

@@ -504,12 +504,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         ],
         hasOlderMessages: false,
         hasOlderCheckpoints: false,
+        hasOlderActivities: false,
         hasOlderCommandExecutions: false,
         oldestLoadedMessageCursor: {
           createdAt: "2026-04-01T09:00:04.000Z",
           messageId: asMessageId("message-1"),
         },
         oldestLoadedCheckpointTurnCount: 1,
+        oldestLoadedActivityCursor: {
+          sequenceIsNull: false,
+          sequence: 11,
+          createdAt: "2026-04-01T09:00:06.000Z",
+          activityId: asEventId("activity-1"),
+        },
         oldestLoadedCommandExecutionCursor: null,
         detailSequence: startupResult.snapshot.snapshotSequence,
       });
@@ -647,6 +654,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
 
         const bootstrapSnapshot = yield* snapshotQuery.getBootstrapSnapshot();
         const bootstrapThread = bootstrapSnapshot.threads[0];
+        const tail = yield* snapshotQuery.getThreadTailDetails({
+          threadId: asThreadId("thread-1"),
+        });
 
         assert.isDefined(bootstrapThread);
 
@@ -677,6 +687,9 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         assert.equal(bootstrapThread.proposedPlans[0]?.id, "plan-4");
         assert.equal(bootstrapThread.activities.length, MAX_THREAD_ACTIVITIES);
         assert.equal(bootstrapThread.activities[0]?.id, asEventId("activity-5"));
+        assert.equal(tail.activities.length, MAX_THREAD_ACTIVITIES);
+        assert.equal(tail.activities[0]?.id, asEventId("activity-5"));
+        assert.equal(tail.hasOlderActivities, true);
         assert.equal(bootstrapThread.checkpoints.length, MAX_THREAD_CHECKPOINTS);
         assert.equal(bootstrapThread.checkpoints[0]?.turnId, asTurnId("turn-4"));
         assert.equal(
@@ -783,11 +796,48 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
           '[]'
         )
       `;
+      yield* sql`
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        VALUES
+          (
+            'activity-legacy',
+            'thread-1',
+            'turn-0',
+            'info',
+            'runtime.note',
+            'Legacy activity',
+            '{}',
+            NULL,
+            '2026-04-01T09:00:02.000Z'
+          ),
+          (
+            'activity-0',
+            'thread-1',
+            'turn-0',
+            'info',
+            'runtime.note',
+            'Older sequenced activity',
+            '{}',
+            10,
+            '2026-04-01T09:00:03.000Z'
+          )
+      `;
 
       const tail = yield* snapshotQuery.getThreadTailDetails({
         threadId: asThreadId("thread-1"),
         messageLimit: 1,
         checkpointLimit: 1,
+        activityLimit: 1,
       });
 
       assert.deepEqual(
@@ -804,21 +854,30 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
       );
       assert.equal(tail.hasOlderMessages, true);
       assert.equal(tail.hasOlderCheckpoints, true);
+      assert.equal(tail.hasOlderActivities, true);
       assert.equal(tail.hasOlderCommandExecutions, false);
       assert.deepEqual(tail.oldestLoadedMessageCursor, {
         createdAt: "2026-04-01T09:00:04.000Z",
         messageId: asMessageId("message-1"),
       });
       assert.equal(tail.oldestLoadedCheckpointTurnCount, 1);
+      assert.deepEqual(tail.oldestLoadedActivityCursor, {
+        sequenceIsNull: false,
+        sequence: 11,
+        createdAt: "2026-04-01T09:00:06.000Z",
+        activityId: asEventId("activity-1"),
+      });
       assert.equal(tail.oldestLoadedCommandExecutionCursor, null);
 
       const page = yield* snapshotQuery.getThreadHistoryPage({
         threadId: asThreadId("thread-1"),
         beforeMessageCursor: tail.oldestLoadedMessageCursor,
         beforeCheckpointTurnCount: tail.oldestLoadedCheckpointTurnCount,
+        activityCursor: tail.oldestLoadedActivityCursor,
         beforeCommandExecutionCursor: null,
         messageLimit: 1,
         checkpointLimit: 1,
+        activityLimit: 1,
       });
 
       assert.deepEqual(
@@ -829,15 +888,46 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         page.checkpoints.map((checkpoint) => checkpoint.turnId),
         [asTurnId("turn-0")],
       );
+      assert.deepEqual(
+        page.activities.map((activity) => activity.id),
+        [asEventId("activity-0")],
+      );
       assert.equal(page.hasOlderMessages, false);
       assert.equal(page.hasOlderCheckpoints, false);
+      assert.equal(page.hasOlderActivities, true);
       assert.equal(page.hasOlderCommandExecutions, false);
       assert.deepEqual(page.oldestLoadedMessageCursor, {
         createdAt: "2026-04-01T09:00:03.000Z",
         messageId: asMessageId("message-0"),
       });
       assert.equal(page.oldestLoadedCheckpointTurnCount, 0);
+      assert.deepEqual(page.oldestLoadedActivityCursor, {
+        sequenceIsNull: false,
+        sequence: 10,
+        createdAt: "2026-04-01T09:00:03.000Z",
+        activityId: asEventId("activity-0"),
+      });
       assert.equal(page.oldestLoadedCommandExecutionCursor, null);
+
+      const legacyPage = yield* snapshotQuery.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        beforeMessageCursor: null,
+        beforeCheckpointTurnCount: null,
+        activityCursor: page.oldestLoadedActivityCursor,
+        beforeCommandExecutionCursor: null,
+        activityLimit: 1,
+      });
+      assert.deepEqual(
+        legacyPage.activities.map((activity) => activity.id),
+        [asEventId("activity-legacy")],
+      );
+      assert.equal(legacyPage.hasOlderActivities, false);
+      assert.deepEqual(legacyPage.oldestLoadedActivityCursor, {
+        sequenceIsNull: true,
+        sequence: null,
+        createdAt: "2026-04-01T09:00:02.000Z",
+        activityId: asEventId("activity-legacy"),
+      });
     }),
   );
 
@@ -921,6 +1011,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
               threadId: asThreadId("thread-1"),
               beforeMessageCursor: tail.oldestLoadedMessageCursor,
               beforeCheckpointTurnCount: tail.oldestLoadedCheckpointTurnCount,
+              activityCursor: null,
               beforeCommandExecutionCursor: null,
               messageLimit: 1,
               checkpointLimit: 1,

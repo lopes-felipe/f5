@@ -306,9 +306,11 @@ describe("thread history backfill helpers", () => {
       stage: "tail",
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderActivities: false,
       hasOlderCommandExecutions: true,
       oldestLoadedMessageCursor: null,
       oldestLoadedCheckpointTurnCount: null,
+      oldestLoadedActivityCursor: null,
       oldestLoadedCommandExecutionCursor: {
         startedAt: "2026-03-20T10:00:00.000Z",
         startedSequence: 1,
@@ -326,9 +328,11 @@ describe("thread history backfill helpers", () => {
       stage: "tail",
       hasOlderMessages: false,
       hasOlderCheckpoints: false,
+      hasOlderActivities: false,
       hasOlderCommandExecutions: true,
       oldestLoadedMessageCursor: null,
       oldestLoadedCheckpointTurnCount: null,
+      oldestLoadedActivityCursor: null,
       oldestLoadedCommandExecutionCursor: {
         startedAt: "2026-03-20T10:00:00.000Z",
         startedSequence: 1,
@@ -345,6 +349,7 @@ describe("thread history backfill helpers", () => {
       threadId,
       beforeMessageCursor: null,
       beforeCheckpointTurnCount: null,
+      activityCursor: null,
       beforeCommandExecutionCursor: history.oldestLoadedCommandExecutionCursor,
     });
   });
