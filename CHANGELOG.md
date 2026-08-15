@@ -31,6 +31,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   loading older work-log entries without materializing the full activity history on thread open.
 - An Agents right-panel surface groups durable workflow and direct-subagent work, shows live counts,
   and links each entry back to its source timeline activity across threads and restarts.
+- A Usage dashboard reports provider-supplied tokens and API-equivalent cost over 24-hour, 7-day,
+  30-day, and 90-day ranges. New turn facts are captured at provider-event ingestion, historical
+  event-log costs remain visible with explicit partial-coverage diagnostics, and missing prices are
+  shown as unreported rather than estimated or treated as zero.
 
 ### Changed
 

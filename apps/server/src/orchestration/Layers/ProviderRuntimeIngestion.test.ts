@@ -37,6 +37,8 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
+import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import { ThreadBackgroundWorkLive } from "./ThreadBackgroundWork.ts";
 import { buildClaudeFileChangeStructuredChanges } from "../../provider/Layers/claudeFileChangePatch.ts";
 import { ThreadCommandExecutionQueryLive } from "./ThreadCommandExecutionQuery.ts";
@@ -174,7 +176,8 @@ describe("ProviderRuntimeIngestion", () => {
     | ProviderRuntimeIngestionService
     | ProviderSessionDirectory
     | ThreadCommandExecutionQuery
-    | ThreadFileChangeQuery,
+    | ThreadFileChangeQuery
+    | UsageFactRepository,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -231,6 +234,7 @@ describe("ProviderRuntimeIngestion", () => {
       ),
       Layer.provideMerge(providerSessionDirectoryLayer),
       Layer.provideMerge(threadBackgroundWorkLayer),
+      Layer.provideMerge(UsageFactRepositoryLive),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
@@ -246,6 +250,7 @@ describe("ProviderRuntimeIngestion", () => {
       Effect.service(ThreadCommandExecutionQuery),
     );
     const threadFileChangeQuery = await runtime.runPromise(Effect.service(ThreadFileChangeQuery));
+    const usageFactRepository = await runtime.runPromise(Effect.service(UsageFactRepository));
     scope = await Effect.runPromise(Scope.make("sequential"));
     await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
@@ -311,6 +316,7 @@ describe("ProviderRuntimeIngestion", () => {
       setThreadSnapshot: provider.setThreadSnapshot,
       threadCommandExecutionQuery,
       threadFileChangeQuery,
+      usageFactRepository,
       drain,
       workspaceRoot,
     };
@@ -392,6 +398,51 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.estimatedContextTokens).toBe(550);
     expect(thread.session?.tokenUsageSource).toBe("provider");
     expect(thread.estimatedContextTokens).toBe(550);
+  });
+
+  it("persists canonical completion usage before lifecycle metrics are collapsed", async () => {
+    const harness = await createHarness();
+    const completedAt = "2026-08-15T10:15:00.000Z";
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-usage-fact"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAt,
+      turnId: asTurnId("turn-usage-fact"),
+      payload: {
+        state: "completed",
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          cache_creation_input_tokens: 10,
+          cache_read_input_tokens: 30,
+        },
+        totalCostUsd: 0.5,
+      },
+    });
+
+    await harness.drain();
+    const rows = await Effect.runPromise(
+      harness.usageFactRepository.summarizeHourly({
+        startedAt: "2026-08-15T10:00:00.000Z",
+        endedAt: "2026-08-15T11:00:00.000Z",
+      }),
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      provider: "claudeAgent",
+      model: "gpt-5-codex",
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheReadTokens: 30,
+      cacheWriteTokens: 10,
+      totalTokens: 160,
+      providerReportedCostUsd: 0.5,
+      pricedTurnCount: 1,
+    });
   });
 
   it("does not treat Claude turn.completed usage totals as context occupancy", async () => {

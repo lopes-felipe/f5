@@ -56,6 +56,7 @@ import type {
 import type { ServerSettings, ServerSettingsPatch } from "./settings";
 import type { ReviewPreviewDiffInput, ReviewPreviewDiffResult } from "./review";
 import type { ProviderStartOptions } from "./orchestration";
+import type { UsageGetSummaryInput, UsageSummary } from "./usage";
 import type {
   McpApplyToLiveSessionsRequest,
   McpApplyToLiveSessionsResult,
@@ -535,6 +536,9 @@ export interface NativeApi {
   agents: {
     getSnapshot: () => Promise<AgentsSnapshot>;
     onSnapshotUpdated: (callback: (snapshot: AgentsSnapshot) => void) => () => void;
+  };
+  usage: {
+    getSummary: (input: UsageGetSummaryInput) => Promise<UsageSummary>;
   };
   workflowPlatform: {
     listTemplates: () => Promise<WorkflowPlatformListTemplatesResult>;

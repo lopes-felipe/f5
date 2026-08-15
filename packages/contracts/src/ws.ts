@@ -171,6 +171,7 @@ import {
   AgentsGetSnapshotInput,
   AgentsSnapshot,
 } from "./backgroundWork";
+import { USAGE_WS_METHODS, UsageGetSummaryInput } from "./usage";
 import { ProjectGetCheckedInConfigInput } from "./checkedInProjectFile";
 import { ReviewPreviewDiffInput } from "./review";
 import {
@@ -328,6 +329,7 @@ const tagRequestBody = <const Tag extends string, const Fields extends Schema.St
 
 const WebSocketRequestBody = Schema.Union([
   tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
+  tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
   // Orchestration methods
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.dispatchCommand,

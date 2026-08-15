@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as ChatRouteImport } from './routes/_chat'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
+import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
 import { Route as ChatThreadIdRouteImport } from './routes/_chat.$threadId'
@@ -26,6 +27,11 @@ const ChatRoute = ChatRouteImport.update({
 const ChatIndexRoute = ChatIndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => ChatRoute,
+} as any)
+const ChatUsageRoute = ChatUsageRouteImport.update({
+  id: '/usage',
+  path: '/usage',
   getParentRoute: () => ChatRoute,
 } as any)
 const ChatSettingsRoute = ChatSettingsRouteImport.update({
@@ -71,6 +77,7 @@ export interface FileRoutesByFullPath {
   '/$threadId': typeof ChatThreadIdRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRoute
+  '/usage': typeof ChatUsageRoute
   '/code-review/$workflowId': typeof ChatCodeReviewWorkflowIdRoute
   '/debug/$workflowId': typeof ChatDebugWorkflowIdRoute
   '/investigation/$workflowId': typeof ChatInvestigationWorkflowIdRoute
@@ -80,6 +87,7 @@ export interface FileRoutesByTo {
   '/$threadId': typeof ChatThreadIdRoute
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRoute
+  '/usage': typeof ChatUsageRoute
   '/': typeof ChatIndexRoute
   '/code-review/$workflowId': typeof ChatCodeReviewWorkflowIdRoute
   '/debug/$workflowId': typeof ChatDebugWorkflowIdRoute
@@ -92,6 +100,7 @@ export interface FileRoutesById {
   '/_chat/$threadId': typeof ChatThreadIdRoute
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRoute
+  '/_chat/usage': typeof ChatUsageRoute
   '/_chat/': typeof ChatIndexRoute
   '/_chat/code-review/$workflowId': typeof ChatCodeReviewWorkflowIdRoute
   '/_chat/debug/$workflowId': typeof ChatDebugWorkflowIdRoute
@@ -105,6 +114,7 @@ export interface FileRouteTypes {
     | '/$threadId'
     | '/pull-requests'
     | '/settings'
+    | '/usage'
     | '/code-review/$workflowId'
     | '/debug/$workflowId'
     | '/investigation/$workflowId'
@@ -114,6 +124,7 @@ export interface FileRouteTypes {
     | '/$threadId'
     | '/pull-requests'
     | '/settings'
+    | '/usage'
     | '/'
     | '/code-review/$workflowId'
     | '/debug/$workflowId'
@@ -125,6 +136,7 @@ export interface FileRouteTypes {
     | '/_chat/$threadId'
     | '/_chat/pull-requests'
     | '/_chat/settings'
+    | '/_chat/usage'
     | '/_chat/'
     | '/_chat/code-review/$workflowId'
     | '/_chat/debug/$workflowId'
@@ -150,6 +162,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof ChatIndexRouteImport
+      parentRoute: typeof ChatRoute
+    }
+    '/_chat/usage': {
+      id: '/_chat/usage'
+      path: '/usage'
+      fullPath: '/usage'
+      preLoaderRoute: typeof ChatUsageRouteImport
       parentRoute: typeof ChatRoute
     }
     '/_chat/settings': {
@@ -208,6 +227,7 @@ interface ChatRouteChildren {
   ChatThreadIdRoute: typeof ChatThreadIdRoute
   ChatPullRequestsRoute: typeof ChatPullRequestsRoute
   ChatSettingsRoute: typeof ChatSettingsRoute
+  ChatUsageRoute: typeof ChatUsageRoute
   ChatIndexRoute: typeof ChatIndexRoute
   ChatCodeReviewWorkflowIdRoute: typeof ChatCodeReviewWorkflowIdRoute
   ChatDebugWorkflowIdRoute: typeof ChatDebugWorkflowIdRoute
@@ -219,6 +239,7 @@ const ChatRouteChildren: ChatRouteChildren = {
   ChatThreadIdRoute: ChatThreadIdRoute,
   ChatPullRequestsRoute: ChatPullRequestsRoute,
   ChatSettingsRoute: ChatSettingsRoute,
+  ChatUsageRoute: ChatUsageRoute,
   ChatIndexRoute: ChatIndexRoute,
   ChatCodeReviewWorkflowIdRoute: ChatCodeReviewWorkflowIdRoute,
   ChatDebugWorkflowIdRoute: ChatDebugWorkflowIdRoute,

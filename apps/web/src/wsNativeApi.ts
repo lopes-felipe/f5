@@ -1,6 +1,7 @@
 import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
+  USAGE_WS_METHODS,
   type AgentsSnapshot,
   type GitActionProgressEvent,
   type GitStatusInvalidatedPayload,
@@ -559,6 +560,9 @@ export function createWsNativeApi(): NativeApi {
           agentsSnapshotUpdatedListeners.delete(callback);
         };
       },
+    },
+    usage: {
+      getSummary: (input) => transport.request(USAGE_WS_METHODS.getSummary, input),
     },
     workflowPlatform: {
       listTemplates: () => transport.request(WS_METHODS.workflowPlatformListTemplates),

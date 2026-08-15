@@ -4,6 +4,7 @@ import {
   ChevronRightIcon,
   FolderPlusIcon,
   FolderIcon,
+  GaugeIcon,
   GitPullRequestIcon,
   HomeIcon,
   LoaderCircleIcon,
@@ -779,6 +780,7 @@ export default function Sidebar() {
   const isOnSettings = useLocation({ select: (loc) => loc.pathname === "/settings" });
   const isOnHome = useLocation({ select: (loc) => loc.pathname === "/" });
   const isOnPullRequests = useLocation({ select: (loc) => loc.pathname === "/pull-requests" });
+  const isOnUsage = useLocation({ select: (loc) => loc.pathname === "/usage" });
   const pathname = useLocation({ select: (loc) => loc.pathname });
   const { settings: appSettings } = useAppSettings();
   const threadPreviewLimit = appSettings.sidebarThreadPreviewCount;
@@ -2057,6 +2059,17 @@ export default function Sidebar() {
                     {pullRequestsShortcutLabel}
                   </Kbd>
                 ) : null}
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                size="sm"
+                className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"
+                isActive={isOnUsage}
+                onClick={() => void navigate({ to: "/usage" })}
+              >
+                <GaugeIcon className="size-3.5" />
+                <span className="flex-1 truncate text-xs">Usage</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
           </SidebarMenu>
@@ -3361,7 +3374,7 @@ export default function Sidebar() {
         <SidebarFooter className="p-2">
           <SidebarMenu>
             <SidebarMenuItem>
-              {isOnSettings ? (
+              {isOnSettings || isOnUsage ? (
                 <SidebarMenuButton
                   size="sm"
                   className="gap-2 px-2 py-1.5 text-muted-foreground/70 hover:bg-accent hover:text-foreground"

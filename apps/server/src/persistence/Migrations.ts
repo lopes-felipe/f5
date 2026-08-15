@@ -79,6 +79,7 @@ import Migration0064 from "./Migrations/064_ThreadPinsAndSnoozes.ts";
 import Migration0065 from "./Migrations/065_ThreadTitleRegeneration.ts";
 import Migration0066 from "./Migrations/066_ThreadBackgroundWork.ts";
 import Migration0067 from "./Migrations/067_ProjectEnvironmentAndIconOverrides.ts";
+import Migration0068 from "./Migrations/068_UsageFacts.ts";
 import { Effect } from "effect";
 
 /**
@@ -159,6 +160,7 @@ export const MIGRATIONS = {
   "65_ThreadTitleRegeneration": Migration0065,
   "66_ThreadBackgroundWork": Migration0066,
   "67_ProjectEnvironmentAndIconOverrides": Migration0067,
+  "68_UsageFacts": Migration0068,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

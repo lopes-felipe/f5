@@ -15,6 +15,7 @@ import Mime from "@effect/platform-node/Mime";
 import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
+  USAGE_WS_METHODS,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   PROJECT_READ_FILE_MAX_SIZE,
@@ -98,6 +99,7 @@ import {
   ThreadBackgroundWork,
   type ThreadBackgroundWorkShape,
 } from "./orchestration/Services/ThreadBackgroundWork";
+import { UsageService, type UsageServiceShape } from "./usage/Services/UsageService";
 import { ThreadCommandExecutionQuery } from "./orchestration/Services/ThreadCommandExecutionQuery";
 import { ThreadFileChangeQuery } from "./orchestration/Services/ThreadFileChangeQuery";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
@@ -687,6 +689,7 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
 
 interface OrchestrationRuntimeServices {
   readonly threadBackgroundWork: ThreadBackgroundWorkShape;
+  readonly usageService: UsageServiceShape;
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly providerCommandReactor: ProviderCommandReactorShape;
   readonly providerTurnDeliveryWorker: ProviderTurnDeliveryWorkerShape;
@@ -1686,6 +1689,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         ThreadBackgroundWork,
       );
+      const usageService = ServiceMap.get(orchestrationRuntimeServices, UsageService);
       const providerCommandReactor = ServiceMap.get(
         orchestrationRuntimeServices,
         ProviderCommandReactor,
@@ -1781,6 +1785,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
         threadBackgroundWork,
+        usageService,
         orchestrationEngine,
         providerCommandReactor,
         providerTurnDeliveryWorker,
@@ -2048,6 +2053,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             (error) =>
               new RouteRequestError({
                 message: `Unable to load background work: ${error.message}`,
+              }),
+          ),
+        );
+      }
+
+      case USAGE_WS_METHODS.getSummary: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService.getSummary(stripRequestTag(request.body)).pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: `Unable to load usage: ${error.message}`,
               }),
           ),
         );

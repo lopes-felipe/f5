@@ -34,6 +34,7 @@ export default mergeConfig(
         "src/components/onboarding/HarnessValidationPanel.browser.tsx",
         "src/components/prHub/PrInboxView.browser.tsx",
         "src/components/prHub/PrFocusView.browser.tsx",
+        "src/components/usage/UsageDashboard.browser.tsx",
         "src/routes/-_chat.settings.browser.tsx",
         "src/routes/-_chat.index.browser.tsx",
         "src/components/chat/AssistantMessageActions.browser.tsx",

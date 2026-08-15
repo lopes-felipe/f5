@@ -28,6 +28,7 @@ import {
   ProjectId,
   ThreadId,
   TurnId,
+  USAGE_WS_METHODS,
   WS_CHANNELS,
   WS_METHODS,
   type WebSocketResponse,
@@ -902,6 +903,31 @@ describe("WebSocket Server", () => {
     });
   });
 
+  it("returns a bounded usage summary with explicit coverage", async () => {
+    server = await createTestServer({ cwd: "/test/project" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const response = await sendRequest(ws, USAGE_WS_METHODS.getSummary, {
+      range: "24h",
+      timeZone: "UTC",
+    });
+
+    expect(response.error).toBeUndefined();
+    expect(response.result).toEqual(
+      expect.objectContaining({
+        range: "24h",
+        timeZone: "UTC",
+        metrics: expect.objectContaining({ turnCount: 0, providerReportedCostUsd: null }),
+        buckets: expect.arrayContaining([expect.objectContaining({ metrics: expect.any(Object) })]),
+        coverage: expect.objectContaining({ coverageStartedAt: expect.any(String) }),
+      }),
+    );
+    expect((response.result as { buckets: unknown[] }).buckets).toHaveLength(24);
+  });
+
   it("writes rpc and websocket observability records when enabled", async () => {
     const stateDir = makeTempDir("t3code-ws-observability-");
     server = await createTestServer({
@@ -1356,6 +1382,9 @@ describe("WebSocket Server", () => {
       const threadBackgroundWorkModule = await vi.importActual<
         typeof import("./orchestration/Services/ThreadBackgroundWork.ts")
       >("./orchestration/Services/ThreadBackgroundWork.ts");
+      const usageServiceModule = await vi.importActual<
+        typeof import("./usage/Services/UsageService.ts")
+      >("./usage/Services/UsageService.ts");
       const nextTurnQueueDispatcherModule = await vi.importActual<
         typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
       >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
@@ -1389,6 +1418,9 @@ describe("WebSocket Server", () => {
           listProtectedThreadIds: () => Effect.succeed(new Set()),
           hasFreshProtectingWork: () => Effect.succeed(false),
           changes: Stream.empty,
+        }),
+        Layer.succeed(usageServiceModule.UsageService, {
+          getSummary: () => Effect.die("unused usage summary"),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
@@ -1550,6 +1582,9 @@ describe("WebSocket Server", () => {
       const threadBackgroundWorkModule = await vi.importActual<
         typeof import("./orchestration/Services/ThreadBackgroundWork.ts")
       >("./orchestration/Services/ThreadBackgroundWork.ts");
+      const usageServiceModule = await vi.importActual<
+        typeof import("./usage/Services/UsageService.ts")
+      >("./usage/Services/UsageService.ts");
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
@@ -1631,6 +1666,9 @@ describe("WebSocket Server", () => {
           listProtectedThreadIds: () => Effect.succeed(new Set()),
           hasFreshProtectingWork: () => Effect.succeed(false),
           changes: Stream.empty,
+        }),
+        Layer.succeed(usageServiceModule.UsageService, {
+          getSummary: () => Effect.die("unused usage summary"),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>

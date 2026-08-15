@@ -45,6 +45,8 @@ import {
 } from "../../provider/modelContextWindowMetadata.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
+import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -56,6 +58,7 @@ import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { validateThreadTasks } from "../threadTasks.ts";
 import { ThreadBackgroundWork } from "../Services/ThreadBackgroundWork.ts";
+import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
@@ -2045,6 +2048,7 @@ const make = Effect.gen(function* () {
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
+  const usageFactRepository = yield* UsageFactRepository;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -3069,6 +3073,36 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
 
+      if (event.type === "turn.completed" && eventTurnId !== undefined) {
+        const usage = normalizeTurnUsage(event);
+        yield* usageFactRepository
+          .record({
+            turnId: eventTurnId,
+            threadId: thread.id,
+            projectId: thread.projectId,
+            provider: event.provider,
+            providerInstanceId:
+              event.providerInstanceId ??
+              thread.session?.providerInstanceId ??
+              thread.modelSelection?.instanceId ??
+              null,
+            model: thread.model || null,
+            ...usage,
+            completedAt: event.createdAt,
+            sourceEventId: event.eventId,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("provider runtime ingestion failed to persist turn usage", {
+                eventId: event.eventId,
+                threadId: event.threadId,
+                turnId: eventTurnId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          );
+      }
+
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
@@ -4058,4 +4092,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provide(UsageFactRepositoryLive));

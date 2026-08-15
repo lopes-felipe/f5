@@ -676,6 +676,16 @@ const makeStorageMaintenance = Effect.gen(function* () {
             WHERE thread_id IN (SELECT thread_id FROM deleted_threads)
           ) +
           (
+            SELECT COALESCE(SUM(
+              LENGTH(turn_id) + LENGTH(thread_id) + LENGTH(project_id) + LENGTH(provider_name) +
+              COALESCE(LENGTH(provider_instance_id), 0) + COALESCE(LENGTH(model), 0) +
+              LENGTH(token_provenance) + LENGTH(cost_provenance) + LENGTH(completed_at) +
+              LENGTH(source_event_id)
+            ), 0)
+            FROM projection_turn_usage_facts
+            WHERE thread_id IN (SELECT thread_id FROM deleted_threads)
+          ) +
+          (
             SELECT COALESCE(SUM(LENGTH(request_id) + LENGTH(thread_id) + COALESCE(LENGTH(turn_id), 0) +
               LENGTH(status) + COALESCE(LENGTH(decision), 0) + LENGTH(created_at) +
               COALESCE(LENGTH(resolved_at), 0)), 0)
@@ -784,6 +794,16 @@ const makeStorageMaintenance = Effect.gen(function* () {
               COALESCE(LENGTH(started_at), 0) + COALESCE(LENGTH(completed_at), 0) +
               COALESCE(LENGTH(checkpoint_ref), 0) + LENGTH(checkpoint_files_json)), 0)
             FROM projection_turns
+            WHERE thread_id IN (SELECT thread_id FROM archived_threads)
+          ) +
+          (
+            SELECT COALESCE(SUM(
+              LENGTH(turn_id) + LENGTH(thread_id) + LENGTH(project_id) + LENGTH(provider_name) +
+              COALESCE(LENGTH(provider_instance_id), 0) + COALESCE(LENGTH(model), 0) +
+              LENGTH(token_provenance) + LENGTH(cost_provenance) + LENGTH(completed_at) +
+              LENGTH(source_event_id)
+            ), 0)
+            FROM projection_turn_usage_facts
             WHERE thread_id IN (SELECT thread_id FROM archived_threads)
           ) +
           (
@@ -1860,6 +1880,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
               yield* sql`DELETE FROM projection_thread_sessions WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_pending_approvals WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_turns WHERE thread_id = ${thread.threadId}`;
+              yield* sql`DELETE FROM projection_turn_usage_facts WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM provider_session_runtime WHERE thread_id = ${thread.threadId}`;
               for (const commandId of commandIds) {
                 yield* sql`

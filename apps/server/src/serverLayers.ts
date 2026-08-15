@@ -93,6 +93,7 @@ import { CodexOAuthManager } from "./codex/CodexOAuthManager";
 import { ServerSettingsLive, ServerSettingsService } from "./serverSettings";
 import { NextTurnQueueStoreLive } from "./nextTurnQueue/Layers/NextTurnQueueStore";
 import { NextTurnQueueDispatcherLive } from "./nextTurnQueue/Layers/NextTurnQueueDispatcher";
+import { UsageServiceLive } from "./usage/Layers/UsageService";
 import { ProviderTurnDeliveryRepositoryLive } from "./orchestration/Layers/ProviderTurnDeliveryRepository";
 import { ProviderTurnDeliveryWorkerLive } from "./orchestration/Layers/ProviderTurnDeliveryWorker";
 import { SecretStoreError } from "./auth/Services/ServerSecretStore";
@@ -312,6 +313,7 @@ export function makeServerOrchestrationRuntimeLayer() {
   const threadBackgroundWorkLayer = ThreadBackgroundWorkLive.pipe(
     Layer.provideMerge(providerSessionDirectoryLayer),
   );
+  const usageServiceLayer = UsageServiceLive;
   const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(projectionSnapshotQueryLayer),
@@ -405,6 +407,7 @@ export function makeServerOrchestrationRuntimeLayer() {
   return Layer.mergeAll(
     orchestrationLayer,
     threadBackgroundWorkLayer,
+    usageServiceLayer,
     workflowServiceLayer,
     codeReviewWorkflowServiceLayer,
     investigationWorkflowServiceLayer,
