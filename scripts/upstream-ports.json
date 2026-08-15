@@ -3077,6 +3077,17 @@
       ]
     },
     {
+      "category": "provider-neutral-source-control-seam",
+      "selection": "Upstream 0ce7e56e436ba31e2f0b51f3203a09758c866cd1 (#2462) and 91a03e074751e9dc732d0dddcd7b3a291caba34f (#2473), which predate the frozen first-parent window",
+      "disposition": "ported",
+      "reason": "Added provider-qualified pull-request identity, typed capabilities and provider-neutral errors, all-remote discovery, a GitHub adapter and registry, GitHub Enterprise host recognition, and migration 069 while preserving existing GitHub behavior. Non-GitHub detail providers remain deliberately deferred.",
+      "upstreamShas": [
+        "0ce7e56e436ba31e2f0b51f3203a09758c866cd1",
+        "91a03e074751e9dc732d0dddcd7b3a291caba34f"
+      ],
+      "f5Shas": ["64795d44e797c8b15e4e6ad5a3b8a75d4269a3ac"]
+    },
+    {
       "category": "pre-schema-ledger",
       "selection": "Upstream SHAs tracked before the frozen 500-commit window",
       "disposition": "deferred",
