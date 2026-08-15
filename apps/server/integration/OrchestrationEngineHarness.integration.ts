@@ -54,6 +54,7 @@ import { RuntimeReceiptBusLive } from "../src/orchestration/Layers/RuntimeReceip
 import { OrchestrationReactorLive } from "../src/orchestration/Layers/OrchestrationReactor.ts";
 import { ProviderCommandReactorLive } from "../src/orchestration/Layers/ProviderCommandReactor.ts";
 import { ProviderRuntimeIngestionLive } from "../src/orchestration/Layers/ProviderRuntimeIngestion.ts";
+import { ThreadBackgroundWorkLive } from "../src/orchestration/Layers/ThreadBackgroundWork.ts";
 import { ProviderTurnDeliveryRepositoryLive } from "../src/orchestration/Layers/ProviderTurnDeliveryRepository.ts";
 import { ProviderTurnDeliveryWorkerLive } from "../src/orchestration/Layers/ProviderTurnDeliveryWorker.ts";
 import { ProjectSkillSyncServiceLive } from "../src/orchestration/Layers/ProjectSkillSyncService.ts";
@@ -357,6 +358,7 @@ export const makeOrchestrationIntegrationHarness = (
       ProjectionPendingApprovalRepositoryLive,
       CheckpointStoreLive,
       providerSessionDirectoryLayer,
+      ThreadBackgroundWorkLive.pipe(Layer.provideMerge(providerSessionDirectoryLayer)),
       providerLayer,
       RuntimeReceiptBusLive,
       ProviderTurnDeliveryRepositoryLive,

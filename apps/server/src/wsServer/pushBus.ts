@@ -1,4 +1,5 @@
 import {
+  AGENTS_WS_CHANNELS,
   PR_HUB_WS_CHANNELS,
   WsPush,
   WS_CHANNELS,
@@ -113,6 +114,7 @@ export function makeWebSocketSendController(input: {
 // value with a newer one is safe and prevents a burst of invalidations or
 // progress frames from crowding lossless orchestration/terminal events.
 const COALESCIBLE_BROADCAST_CHANNELS = new Set<WsPushChannel>([
+  AGENTS_WS_CHANNELS.snapshotUpdated,
   WS_CHANNELS.serverConfigUpdated,
   WS_CHANNELS.providerAdvisoriesUpdated,
   WS_CHANNELS.gitStatusInvalidated,

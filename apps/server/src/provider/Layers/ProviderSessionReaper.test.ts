@@ -16,6 +16,10 @@ import {
 import { ProviderService, type ProviderServiceShape } from "../Services/ProviderService.ts";
 import { ProviderSessionReaper } from "../Services/ProviderSessionReaper.ts";
 import { makeProviderSessionReaperLive } from "./ProviderSessionReaper.ts";
+import {
+  ThreadBackgroundWork,
+  type ThreadBackgroundWorkShape,
+} from "../../orchestration/Services/ThreadBackgroundWork.ts";
 
 const makeReadModel = (threadSessionActiveTurnId: string | null = null): OrchestrationReadModel =>
   ({
@@ -82,6 +86,8 @@ function makeLayer(input: {
   readonly listedBindings?: ReadonlyArray<ProviderRuntimeBindingWithMetadata>;
   readonly currentBinding?: Option.Option<ProviderRuntimeBindingWithMetadata>;
   readonly stopTimeoutMs?: number;
+  readonly protectedThreadIds?: ReadonlySet<ThreadId>;
+  readonly hasFreshProtectingWork?: boolean;
 }) {
   const listedBindings = input.listedBindings ?? [idleBinding];
   const currentBinding = input.currentBinding ?? Option.some(idleBinding);
@@ -103,6 +109,14 @@ function makeLayer(input: {
   const provider = {
     stopSession: input.stopSession,
   } as unknown as ProviderServiceShape;
+  const backgroundWork: ThreadBackgroundWorkShape = {
+    recordProviderEvent: () => Effect.void,
+    getSnapshot: Effect.succeed({ entries: [], generatedAt: "1970-01-01T00:00:00.000Z" }),
+    expireStale: () => Effect.void,
+    listProtectedThreadIds: () => Effect.succeed(input.protectedThreadIds ?? new Set()),
+    hasFreshProtectingWork: () => Effect.succeed(input.hasFreshProtectingWork ?? false),
+    changes: Stream.empty,
+  };
 
   return makeProviderSessionReaperLive({
     inactivityThresholdMs: 1,
@@ -112,6 +126,7 @@ function makeLayer(input: {
     Layer.provide(Layer.succeed(ProviderSessionDirectory, directory)),
     Layer.provide(Layer.succeed(OrchestrationEngineService, engine)),
     Layer.provide(Layer.succeed(ProviderService, provider)),
+    Layer.provide(Layer.succeed(ThreadBackgroundWork, backgroundWork)),
   );
 }
 
@@ -156,6 +171,48 @@ it.effect("ProviderSessionReaperLive does not terminate sessions with an active 
       makeLayer({
         readModel: makeReadModel("turn-active"),
         stopSession: stopSession as unknown as ProviderServiceShape["stopSession"],
+      }),
+    ),
+  );
+});
+
+it.effect("ProviderSessionReaperLive protects persisted live background work", () => {
+  const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(() => Effect.void);
+
+  return Effect.gen(function* () {
+    const reaper = yield* ProviderSessionReaper;
+
+    yield* TestClock.adjust("2 millis");
+    yield* reaper.sweep();
+
+    assert.strictEqual(stopSession.mock.calls.length, 0);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        readModel: makeReadModel(),
+        stopSession: stopSession as unknown as ProviderServiceShape["stopSession"],
+        protectedThreadIds: new Set([ThreadId.makeUnsafe("thread-idle")]),
+      }),
+    ),
+  );
+});
+
+it.effect("ProviderSessionReaperLive rechecks background liveness before stopping", () => {
+  const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(() => Effect.void);
+
+  return Effect.gen(function* () {
+    const reaper = yield* ProviderSessionReaper;
+
+    yield* TestClock.adjust("2 millis");
+    yield* reaper.sweep();
+
+    assert.strictEqual(stopSession.mock.calls.length, 0);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        readModel: makeReadModel(),
+        stopSession: stopSession as unknown as ProviderServiceShape["stopSession"],
+        hasFreshProtectingWork: true,
       }),
     ),
   );

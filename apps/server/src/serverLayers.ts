@@ -24,6 +24,7 @@ import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderComma
 import { OrchestrationProjectionPipelineLive } from "./orchestration/Layers/ProjectionPipeline";
 import { OrchestrationProjectionSnapshotQueryLive } from "./orchestration/Layers/ProjectionSnapshotQuery";
 import { SessionNotesServiceLive } from "./orchestration/Layers/SessionNotesService";
+import { ThreadBackgroundWorkLive } from "./orchestration/Layers/ThreadBackgroundWork";
 import { ThreadCommandExecutionQueryLive } from "./orchestration/Layers/ThreadCommandExecutionQuery";
 import { ThreadFileChangeQueryLive } from "./orchestration/Layers/ThreadFileChangeQuery";
 import { ProviderRuntimeIngestionLive } from "./orchestration/Layers/ProviderRuntimeIngestion";
@@ -308,6 +309,9 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provide(ProviderSessionRuntimeRepositoryLive),
   );
   const projectionSnapshotQueryLayer = OrchestrationProjectionSnapshotQueryLive;
+  const threadBackgroundWorkLayer = ThreadBackgroundWorkLive.pipe(
+    Layer.provideMerge(providerSessionDirectoryLayer),
+  );
   const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(projectionSnapshotQueryLayer),
@@ -322,6 +326,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     RuntimeReceiptBusLive,
     ProviderTurnDeliveryRepositoryLive,
     ProjectionTurnRepositoryLive,
+    threadBackgroundWorkLayer,
     StorageMaintenanceLive.pipe(
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(gitCoreLayer),
@@ -399,6 +404,7 @@ export function makeServerOrchestrationRuntimeLayer() {
 
   return Layer.mergeAll(
     orchestrationLayer,
+    threadBackgroundWorkLayer,
     workflowServiceLayer,
     codeReviewWorkflowServiceLayer,
     investigationWorkflowServiceLayer,

@@ -13,6 +13,8 @@ import type { Duplex } from "node:stream";
 
 import Mime from "@effect/platform-node/Mime";
 import {
+  AGENTS_WS_CHANNELS,
+  AGENTS_WS_METHODS,
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   PROJECT_READ_FILE_MAX_SIZE,
@@ -92,6 +94,10 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import {
+  ThreadBackgroundWork,
+  type ThreadBackgroundWorkShape,
+} from "./orchestration/Services/ThreadBackgroundWork";
 import { ThreadCommandExecutionQuery } from "./orchestration/Services/ThreadCommandExecutionQuery";
 import { ThreadFileChangeQuery } from "./orchestration/Services/ThreadFileChangeQuery";
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
@@ -490,6 +496,9 @@ function stripRequestTag<T extends { _tag: string }>(body: T) {
 }
 
 function deriveRpcGroup(method: string): string {
+  if (method.startsWith("agents.")) {
+    return "agents";
+  }
   if (method.startsWith("orchestration.")) {
     return "orchestration";
   }
@@ -676,6 +685,7 @@ function formatServerLifecycleRouteFailure(error: ServerLifecycleError): string 
 }
 
 interface OrchestrationRuntimeServices {
+  readonly threadBackgroundWork: ThreadBackgroundWorkShape;
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly providerCommandReactor: ProviderCommandReactorShape;
   readonly providerTurnDeliveryWorker: ProviderTurnDeliveryWorkerShape;
@@ -1665,6 +1675,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         orchestrationRuntimeServices,
         ProviderSessionReaper,
       );
+      const threadBackgroundWork = ServiceMap.get(
+        orchestrationRuntimeServices,
+        ThreadBackgroundWork,
+      );
       const providerCommandReactor = ServiceMap.get(
         orchestrationRuntimeServices,
         ProviderCommandReactor,
@@ -1732,12 +1746,34 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ),
         ),
       ).pipe(Effect.forkIn(subscriptionsScope));
+      yield* Stream.runForEach(
+        threadBackgroundWork.changes.pipe(
+          Stream.throttle({
+            cost: () => 1,
+            units: 1,
+            duration: Duration.millis(100),
+            strategy: "enforce",
+          }),
+        ),
+        () =>
+          threadBackgroundWork.getSnapshot.pipe(
+            Effect.flatMap((snapshot) =>
+              pushBus.publishAll(AGENTS_WS_CHANNELS.snapshotUpdated, snapshot),
+            ),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("failed to publish background-work snapshot", {
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
+      ).pipe(Effect.forkIn(subscriptionsScope));
 
       yield* Scope.provide(orchestrationReactor.start, subscriptionsScope);
       yield* Scope.provide(providerSessionReaper.start(), subscriptionsScope);
       yield* Ref.set(nextTurnQueueDispatcherRef, nextTurnQueueDispatcher);
       yield* readiness.markOrchestrationSubscriptionsReady;
       yield* Deferred.succeed(orchestrationRuntime, {
+        threadBackgroundWork,
         orchestrationEngine,
         providerCommandReactor,
         providerTurnDeliveryWorker,
@@ -1998,6 +2034,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
+      case AGENTS_WS_METHODS.getSnapshot: {
+        const { threadBackgroundWork } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* threadBackgroundWork.getSnapshot.pipe(
+          Effect.mapError(
+            (error) =>
+              new RouteRequestError({
+                message: `Unable to load background work: ${error.message}`,
+              }),
+          ),
+        );
+      }
+
       case ORCHESTRATION_WS_METHODS.getSnapshot:
         return yield* projectionReadModelQuery.getSnapshot();
 

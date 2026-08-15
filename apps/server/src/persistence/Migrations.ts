@@ -77,6 +77,7 @@ import Migration0062 from "./Migrations/062_LegacyTurnQuiescenceBackfill.ts";
 import Migration0063 from "./Migrations/063_ProviderSessionLaunchFingerprint.ts";
 import Migration0064 from "./Migrations/064_ThreadPinsAndSnoozes.ts";
 import Migration0065 from "./Migrations/065_ThreadTitleRegeneration.ts";
+import Migration0066 from "./Migrations/066_ThreadBackgroundWork.ts";
 import { Effect } from "effect";
 
 /**
@@ -155,6 +156,7 @@ export const MIGRATIONS = {
   "63_ProviderSessionLaunchFingerprint": Migration0063,
   "64_ThreadPinsAndSnoozes": Migration0064,
   "65_ThreadTitleRegeneration": Migration0065,
+  "66_ThreadBackgroundWork": Migration0066,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

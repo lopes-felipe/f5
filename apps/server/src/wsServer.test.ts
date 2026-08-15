@@ -1353,6 +1353,9 @@ describe("WebSocket Server", () => {
       const providerSessionReaperModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionReaper.ts")
       >("./provider/Services/ProviderSessionReaper.ts");
+      const threadBackgroundWorkModule = await vi.importActual<
+        typeof import("./orchestration/Services/ThreadBackgroundWork.ts")
+      >("./orchestration/Services/ThreadBackgroundWork.ts");
       const nextTurnQueueDispatcherModule = await vi.importActual<
         typeof import("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts")
       >("./nextTurnQueue/Services/NextTurnQueueDispatcher.ts");
@@ -1375,6 +1378,17 @@ describe("WebSocket Server", () => {
         Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
           sweep: () => Effect.void,
           start: () => Effect.void,
+        }),
+        Layer.succeed(threadBackgroundWorkModule.ThreadBackgroundWork, {
+          recordProviderEvent: () => Effect.void,
+          getSnapshot: Effect.succeed({
+            entries: [],
+            generatedAt: "2026-01-01T00:00:00.000Z",
+          }),
+          expireStale: () => Effect.void,
+          listProtectedThreadIds: () => Effect.succeed(new Set()),
+          hasFreshProtectingWork: () => Effect.succeed(false),
+          changes: Stream.empty,
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
@@ -1533,6 +1547,9 @@ describe("WebSocket Server", () => {
       const providerSessionReaperModule = await vi.importActual<
         typeof import("./provider/Services/ProviderSessionReaper.ts")
       >("./provider/Services/ProviderSessionReaper.ts");
+      const threadBackgroundWorkModule = await vi.importActual<
+        typeof import("./orchestration/Services/ThreadBackgroundWork.ts")
+      >("./orchestration/Services/ThreadBackgroundWork.ts");
       const storageMaintenanceModule = await vi.importActual<
         typeof import("./storage/StorageMaintenance.ts")
       >("./storage/StorageMaintenance.ts");
@@ -1603,6 +1620,17 @@ describe("WebSocket Server", () => {
         Layer.succeed(providerSessionReaperModule.ProviderSessionReaper, {
           sweep: () => Effect.void,
           start: () => Effect.void,
+        }),
+        Layer.succeed(threadBackgroundWorkModule.ThreadBackgroundWork, {
+          recordProviderEvent: () => Effect.void,
+          getSnapshot: Effect.succeed({
+            entries: [],
+            generatedAt: "2026-01-01T00:00:00.000Z",
+          }),
+          expireStale: () => Effect.void,
+          listProtectedThreadIds: () => Effect.succeed(new Set()),
+          hasFreshProtectingWork: () => Effect.succeed(false),
+          changes: Stream.empty,
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>

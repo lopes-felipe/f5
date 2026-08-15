@@ -55,6 +55,7 @@ import {
 import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { validateThreadTasks } from "../threadTasks.ts";
+import { ThreadBackgroundWork } from "../Services/ThreadBackgroundWork.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
 const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
@@ -2043,6 +2044,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const threadBackgroundWork = yield* ThreadBackgroundWork;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -2966,6 +2968,17 @@ const make = Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
       const thread = readModel.threads.find((entry) => entry.id === event.threadId);
       if (!thread) return;
+
+      yield* threadBackgroundWork.recordProviderEvent(event).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("provider runtime ingestion failed to persist background work", {
+            eventId: event.eventId,
+            eventType: event.type,
+            threadId: event.threadId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
 
       yield* Effect.gen(function* () {
         if (event.type !== "thread.started") {

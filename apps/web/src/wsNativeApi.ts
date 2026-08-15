@@ -1,4 +1,7 @@
 import {
+  AGENTS_WS_CHANNELS,
+  AGENTS_WS_METHODS,
+  type AgentsSnapshot,
   type GitActionProgressEvent,
   type GitStatusInvalidatedPayload,
   type McpStatusUpdatedPayload,
@@ -48,6 +51,7 @@ const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) =
 const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
 const prHubSnapshotUpdatedListeners = new Set<(payload: PrHubSnapshot) => void>();
 const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisorySnapshot) => void>();
+const agentsSnapshotUpdatedListeners = new Set<(payload: AgentsSnapshot) => void>();
 
 /**
  * Subscribe to the server welcome message. If a welcome was already received
@@ -161,6 +165,16 @@ export function createWsNativeApi(): NativeApi {
   transport.subscribe(WS_CHANNELS.serverWelcome, (message) => {
     const payload = message.data;
     for (const listener of welcomeListeners) {
+      try {
+        listener(payload);
+      } catch {
+        // Swallow listener errors
+      }
+    }
+  });
+  transport.subscribe(AGENTS_WS_CHANNELS.snapshotUpdated, (message) => {
+    const payload = message.data;
+    for (const listener of agentsSnapshotUpdatedListeners) {
       try {
         listener(payload);
       } catch {
@@ -532,6 +546,17 @@ export function createWsNativeApi(): NativeApi {
     },
     globalSearch: {
       query: (input) => transport.request(WS_METHODS.globalSearchQuery, input),
+    },
+    agents: {
+      getSnapshot: () => transport.request(AGENTS_WS_METHODS.getSnapshot),
+      onSnapshotUpdated: (callback) => {
+        agentsSnapshotUpdatedListeners.add(callback);
+        const latest = transport.getLatestPush(AGENTS_WS_CHANNELS.snapshotUpdated)?.data ?? null;
+        if (latest) callback(latest);
+        return () => {
+          agentsSnapshotUpdatedListeners.delete(callback);
+        };
+      },
     },
     workflowPlatform: {
       listTemplates: () => transport.request(WS_METHODS.workflowPlatformListTemplates),

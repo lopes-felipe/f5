@@ -151,6 +151,7 @@ import type {
   TurnSubmissionResult,
 } from "./nextTurnQueue";
 import type { GlobalSearchQueryInput, GlobalSearchQueryResult } from "./globalSearch";
+import type { AgentsSnapshot } from "./backgroundWork";
 import type {
   WorkflowPlatformCreateRunInput,
   WorkflowPlatformCreateRunResult,
@@ -525,6 +526,10 @@ export interface NativeApi {
   };
   globalSearch: {
     query: (input: GlobalSearchQueryInput) => Promise<GlobalSearchQueryResult>;
+  };
+  agents: {
+    getSnapshot: () => Promise<AgentsSnapshot>;
+    onSnapshotUpdated: (callback: (snapshot: AgentsSnapshot) => void) => () => void;
   };
   workflowPlatform: {
     listTemplates: () => Promise<WorkflowPlatformListTemplatesResult>;

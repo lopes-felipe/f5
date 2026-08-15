@@ -165,6 +165,12 @@ import {
   NextTurnQueueUpdateInput,
 } from "./nextTurnQueue";
 import { GlobalSearchQueryInput } from "./globalSearch";
+import {
+  AGENTS_WS_CHANNELS,
+  AGENTS_WS_METHODS,
+  AgentsGetSnapshotInput,
+  AgentsSnapshot,
+} from "./backgroundWork";
 import { ReviewPreviewDiffInput } from "./review";
 import {
   WorkflowPlatformCreateRunInput,
@@ -319,6 +325,7 @@ const tagRequestBody = <const Tag extends string, const Fields extends Schema.St
   );
 
 const WebSocketRequestBody = Schema.Union([
+  tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
   // Orchestration methods
   tagRequestBody(
     ORCHESTRATION_WS_METHODS.dispatchCommand,
@@ -555,6 +562,7 @@ export const WsWelcomePayload = Schema.Struct({
 export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 
 export interface WsPushPayloadByChannel {
+  readonly [AGENTS_WS_CHANNELS.snapshotUpdated]: typeof AgentsSnapshot.Type;
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
   readonly [WS_CHANNELS.providerAdvisoriesUpdated]: typeof ServerProviderAdvisoriesUpdatedPayload.Type;
@@ -589,6 +597,10 @@ const makeWsPushSchema = <const Channel extends string, Payload extends Schema.S
   });
 
 export const WsPushServerWelcome = makeWsPushSchema(WS_CHANNELS.serverWelcome, WsWelcomePayload);
+export const WsPushAgentsSnapshotUpdated = makeWsPushSchema(
+  AGENTS_WS_CHANNELS.snapshotUpdated,
+  AgentsSnapshot,
+);
 export const WsPushServerConfigUpdated = makeWsPushSchema(
   WS_CHANNELS.serverConfigUpdated,
   ServerConfigUpdatedPayload,
@@ -649,6 +661,7 @@ export const WsPushPrHubAdvisoriesUpdated = makeWsPushSchema(
 );
 
 export const WsPushChannelSchema = Schema.Literals([
+  AGENTS_WS_CHANNELS.snapshotUpdated,
   WS_CHANNELS.gitActionProgress,
   WS_CHANNELS.gitStatusInvalidated,
   WS_CHANNELS.serverWelcome,
@@ -670,6 +683,7 @@ export const WsPushChannelSchema = Schema.Literals([
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
 export const WsPush = Schema.Union([
+  WsPushAgentsSnapshotUpdated,
   WsPushServerWelcome,
   WsPushServerConfigUpdated,
   WsPushProviderAdvisoriesUpdated,

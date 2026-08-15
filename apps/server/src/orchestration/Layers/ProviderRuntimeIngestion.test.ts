@@ -37,6 +37,7 @@ import { OrchestrationEngineLive } from "./OrchestrationEngine.ts";
 import { OrchestrationProjectionPipelineLive } from "./ProjectionPipeline.ts";
 import { OrchestrationProjectionSnapshotQueryLive } from "./ProjectionSnapshotQuery.ts";
 import { ProviderRuntimeIngestionLive } from "./ProviderRuntimeIngestion.ts";
+import { ThreadBackgroundWorkLive } from "./ThreadBackgroundWork.ts";
 import { buildClaudeFileChangeStructuredChanges } from "../../provider/Layers/claudeFileChangePatch.ts";
 import { ThreadCommandExecutionQueryLive } from "./ThreadCommandExecutionQuery.ts";
 import { ThreadFileChangeQueryLive } from "./ThreadFileChangeQuery.ts";
@@ -206,6 +207,9 @@ describe("ProviderRuntimeIngestion", () => {
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
+    const threadBackgroundWorkLayer = ThreadBackgroundWorkLive.pipe(
+      Layer.provideMerge(providerSessionDirectoryLayer),
+    );
     const orchestrationLayer = OrchestrationEngineLive.pipe(
       Layer.provide(OrchestrationProjectionSnapshotQueryLive),
       Layer.provide(OrchestrationProjectionPipelineLive),
@@ -226,6 +230,7 @@ describe("ProviderRuntimeIngestion", () => {
         ),
       ),
       Layer.provideMerge(providerSessionDirectoryLayer),
+      Layer.provideMerge(threadBackgroundWorkLayer),
       Layer.provideMerge(SqlitePersistenceMemory),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
       Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),

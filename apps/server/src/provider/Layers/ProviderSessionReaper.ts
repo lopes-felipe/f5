@@ -1,6 +1,7 @@
 import { Clock, Duration, Effect, Layer, Option, Schedule } from "effect";
 
 import { OrchestrationEngineService } from "../../orchestration/Services/OrchestrationEngine.ts";
+import { ThreadBackgroundWork } from "../../orchestration/Services/ThreadBackgroundWork.ts";
 import {
   ProviderSessionDirectory,
   type ProviderRuntimeBindingWithMetadata,
@@ -11,7 +12,7 @@ import {
 } from "../Services/ProviderSessionReaper.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 
-const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
+export const DEFAULT_INACTIVITY_THRESHOLD_MS = 30 * 60 * 1000;
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_STOP_TIMEOUT_MS = 10 * 1000;
 
@@ -26,6 +27,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
     const providerService = yield* ProviderService;
     const directory = yield* ProviderSessionDirectory;
     const orchestrationEngine = yield* OrchestrationEngineService;
+    const threadBackgroundWork = yield* ThreadBackgroundWork;
 
     const inactivityThresholdMs = Math.max(
       1,
@@ -42,7 +44,7 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
       current.status === initial.status &&
       current.lastSeenAt === initial.lastSeenAt;
 
-    const isStillSafeToStop = (binding: ProviderRuntimeBindingWithMetadata) =>
+    const isStillSafeToStop = (binding: ProviderRuntimeBindingWithMetadata, freshSince: string) =>
       Effect.gen(function* () {
         const currentBinding = yield* directory.getBinding(binding.threadId);
         if (Option.isNone(currentBinding)) {
@@ -73,6 +75,17 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
           return false;
         }
 
+        const hasFreshBackgroundWork = yield* threadBackgroundWork.hasFreshProtectingWork({
+          threadId: binding.threadId,
+          freshSince,
+        });
+        if (hasFreshBackgroundWork) {
+          yield* Effect.logDebug("provider.session.reaper.skipped-background-work-recheck", {
+            threadId: binding.threadId,
+          });
+          return false;
+        }
+
         return true;
       });
 
@@ -82,6 +95,14 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         const threadsById = new Map(readModel.threads.map((thread) => [thread.id, thread]));
         const bindings = yield* directory.listBindings();
         const now = yield* Clock.currentTimeMillis;
+        const freshSince = new Date(now - inactivityThresholdMs).toISOString();
+        yield* threadBackgroundWork.expireStale({
+          freshSince,
+          expiredAt: new Date(now).toISOString(),
+        });
+        const protectedThreadIds = yield* threadBackgroundWork.listProtectedThreadIds({
+          freshSince,
+        });
         let reapedCount = 0;
 
         for (const binding of bindings) {
@@ -114,7 +135,15 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             continue;
           }
 
-          const stillSafeToStop = yield* isStillSafeToStop(binding);
+          if (protectedThreadIds.has(binding.threadId)) {
+            yield* Effect.logDebug("provider.session.reaper.skipped-background-work", {
+              threadId: binding.threadId,
+              idleDurationMs,
+            });
+            continue;
+          }
+
+          const stillSafeToStop = yield* isStillSafeToStop(binding, freshSince);
           if (!stillSafeToStop) {
             continue;
           }

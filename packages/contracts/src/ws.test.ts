@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
 import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./orchestration";
+import { AGENTS_WS_CHANNELS, AGENTS_WS_METHODS } from "./backgroundWork";
 import { ServerValidateHarnessesResult } from "./server";
 import { WebSocketRequest, WsResponse, WS_CHANNELS, WS_METHODS } from "./ws";
 
@@ -18,6 +19,61 @@ it.effect("accepts lightweight server probe requests", () =>
       body: { _tag: WS_METHODS.serverProbe },
     });
     assert.strictEqual(parsed.body._tag, WS_METHODS.serverProbe);
+  }),
+);
+
+it.effect("accepts agents snapshots and validates their update payloads", () =>
+  Effect.gen(function* () {
+    const request = yield* decodeWebSocketRequest({
+      id: "agents-1",
+      body: { _tag: AGENTS_WS_METHODS.getSnapshot },
+    });
+    assert.strictEqual(request.body._tag, AGENTS_WS_METHODS.getSnapshot);
+
+    const push = yield* decodeWsResponse({
+      type: "push",
+      sequence: 1,
+      channel: AGENTS_WS_CHANNELS.snapshotUpdated,
+      data: {
+        generatedAt: "2026-01-01T00:00:00.000Z",
+        entries: [
+          {
+            threadId: "thread-1",
+            workItemId: "task-1",
+            provider: "claudeAgent",
+            providerInstanceId: null,
+            providerSessionIdentity: null,
+            turnId: null,
+            classification: "working",
+            ownership: "direct-subagent",
+            status: "running",
+            active: true,
+            model: null,
+            phase: null,
+            latestOutput: null,
+            outputTruncated: false,
+            startedAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            lastSeenAt: "2026-01-01T00:00:00.000Z",
+            completedAt: null,
+          },
+        ],
+      },
+    });
+    assert.strictEqual("channel" in push ? push.channel : null, AGENTS_WS_CHANNELS.snapshotUpdated);
+
+    const invalid = yield* Effect.exit(
+      decodeWsResponse({
+        type: "push",
+        sequence: 2,
+        channel: AGENTS_WS_CHANNELS.snapshotUpdated,
+        data: {
+          generatedAt: "2026-01-01T00:00:00.000Z",
+          entries: [{ classification: "unknown" }],
+        },
+      }),
+    );
+    assert.strictEqual(invalid._tag, "Failure");
   }),
 );
 

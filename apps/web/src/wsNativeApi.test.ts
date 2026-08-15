@@ -1,4 +1,6 @@
 import {
+  AGENTS_WS_CHANNELS,
+  AGENTS_WS_METHODS,
   CommandId,
   type ContextMenuItem,
   EventId,
@@ -117,6 +119,22 @@ afterEach(() => {
 });
 
 describe("wsNativeApi", () => {
+  it("loads and subscribes to durable agents snapshots", async () => {
+    const snapshot = { entries: [], generatedAt: "2026-01-01T00:00:00.000Z" } as const;
+    requestMock.mockResolvedValue(snapshot);
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+
+    await expect(api.agents.getSnapshot()).resolves.toEqual(snapshot);
+    expect(requestMock).toHaveBeenCalledWith(AGENTS_WS_METHODS.getSnapshot);
+
+    const listener = vi.fn();
+    const unsubscribe = api.agents.onSnapshotUpdated(listener);
+    emitPush(AGENTS_WS_CHANNELS.snapshotUpdated, snapshot);
+    expect(listener).toHaveBeenCalledWith(snapshot);
+    unsubscribe();
+  });
+
   it("delivers and caches valid server.welcome payloads", async () => {
     const { createWsNativeApi, onServerWelcome } = await import("./wsNativeApi");
 
