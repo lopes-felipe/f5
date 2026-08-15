@@ -1648,8 +1648,8 @@
     {
       "upstreamSha": "bfc31507f8483b0ba22cf10f5862947b49b20a53",
       "subject": "feat(web): search threads from the sidebar (#4769)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.4 sidebar thread search; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["140f60b3951176b262425cbac0e88bfd41146299"]
     },
     {
       "upstreamSha": "03adf215ceebedeb9c5e813406154dd8353b36f6",
@@ -1883,8 +1883,9 @@
     {
       "upstreamSha": "4b71a2ae2ffbbb7b6936051552094b71364cefd4",
       "subject": "feat(search): find threads by conversation content (#4959)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.4 global full-text search; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["140f60b3951176b262425cbac0e88bfd41146299"],
+      "reason": "The existing server FTS remains authoritative; this port adds its debounced sidebar entry point while sharing token parsing, query construction, result navigation, and highlighted-text rendering with other search surfaces."
     },
     {
       "upstreamSha": "197d3487116372ca2f16661f57d4e869fc3cb6c0",
