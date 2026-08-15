@@ -2134,8 +2134,9 @@
     {
       "upstreamSha": "f2d2fb2f2444bcabc31bf906b5b334aee0d9d79c",
       "subject": "fix(web): stashed prompts now survive switching providers (#4787)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.4 durable prompt stash; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["989d9d9d33fd51d8499536fc0528556f1f8e0378"],
+      "reason": "The versioned local prompt stash serializes provider instance, model and model options inside each entry, so stashes survive provider switching and restore with a visible fallback when that selection is no longer available."
     },
     {
       "upstreamSha": "8829e2f9b960eb31dc62ddab256d5da82c5077a6",
@@ -2387,8 +2388,9 @@
     {
       "upstreamSha": "200fa826b02cf0503c6f6c2bd7250a58747bff2d",
       "subject": "feat(web): prompt stash — cmd+S saves the composer to a per-provider queue (#4453)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 3.4 prompt stash; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["989d9d9d33fd51d8499536fc0528556f1f8e0378"],
+      "reason": "Added a durable 20-entry prompt stash with a composer-scoped Mod+S binding, full sendable-draft serialization, transactional restore confirmations, workspace file re-authorization, terminal-context filtering, image persistence, and restore/delete UI."
     },
     {
       "upstreamSha": "f4c394323d458224b25898ef784ca0a0cc2969af",
