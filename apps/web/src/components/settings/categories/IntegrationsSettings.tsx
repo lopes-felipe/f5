@@ -7,6 +7,8 @@ import { McpServersSettings } from "../McpServersSettings";
 import { KeybindingEditor } from "../KeybindingEditor";
 import { Button } from "../../ui/button";
 
+export { INTEGRATIONS_SETTINGS_DESCRIPTORS } from "./IntegrationsSettings.descriptors";
+
 export function IntegrationsSettings() {
   const {
     projects,
@@ -23,7 +25,10 @@ export function IntegrationsSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section
+        className="rounded-2xl border border-border bg-card p-5"
+        data-settings-search-target="integrations.keybindings"
+      >
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Keybindings</h2>
           <p className="mt-1 text-xs text-muted-foreground">

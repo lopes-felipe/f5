@@ -42,6 +42,8 @@ import { Checkbox } from "../../ui/checkbox";
 import { Input } from "../../ui/input";
 import { toastManager } from "../../ui/toast";
 
+export { ARCHIVE_SETTINGS_DESCRIPTORS } from "./ArchiveSettings.descriptors";
+
 type ArchiveItem =
   | {
       kind: "thread";
@@ -388,7 +390,10 @@ export function ArchiveSettings() {
   );
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-5">
+    <section
+      className="rounded-2xl border border-border bg-card p-5"
+      data-settings-search-target="archive.items"
+    >
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <h2 className="text-sm font-medium text-foreground">Archive</h2>

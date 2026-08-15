@@ -1,0 +1,48 @@
+import type { SettingsItemDescriptor } from "../settingsSearch";
+
+export const PROJECTS_SETTINGS_DESCRIPTORS = [
+  {
+    id: "projects.active-project",
+    category: "projects",
+    label: "Settings project",
+    description: "Choose which project receives project-scoped settings.",
+    keywords: ["project context", "scope", "workspace"],
+    targetSelector: '[aria-label="Settings project"]',
+    projectScoped: true,
+  },
+  {
+    id: "projects.base-directory",
+    category: "projects",
+    label: "Add-project base directory",
+    description: "Choose the starting directory used when adding a project.",
+    keywords: ["folder", "path", "workspace", "command palette"],
+    targetSelector: "#add-project-base-directory",
+  },
+  {
+    id: "projects.memory",
+    category: "projects",
+    label: "Project memory",
+    description: "Store persistent instructions and context for a project.",
+    keywords: ["feedback", "context", "reference", "instructions"],
+    targetSelector: '[data-settings-search-target="projects.memory"]',
+    projectScoped: true,
+  },
+  {
+    id: "projects.claude-subagents",
+    category: "projects",
+    label: "Enable Claude sub-agents",
+    description: "Allow Claude to spawn project-scoped helper agents.",
+    keywords: ["agents", "exploration", "verification", "helpers"],
+    targetSelector: '[aria-label="Enable Claude sub-agents"]',
+    projectScoped: true,
+  },
+  {
+    id: "projects.claude-subagent-model",
+    category: "projects",
+    label: "Claude sub-agent model",
+    description: "Choose the default model used by Claude helper agents.",
+    keywords: ["agents", "model", "inherit", "helpers"],
+    targetSelector: '[aria-label="Claude sub-agent model"]',
+    projectScoped: true,
+  },
+] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

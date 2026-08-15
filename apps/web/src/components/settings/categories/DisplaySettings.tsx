@@ -18,6 +18,8 @@ import { Button } from "../../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 
+export { DISPLAY_SETTINGS_DESCRIPTORS } from "./DisplaySettings.descriptors";
+
 const RESPONSE_AUXILIARY_KEYS = [
   "enableAssistantStreaming",
   "openFileLinksInPanel",

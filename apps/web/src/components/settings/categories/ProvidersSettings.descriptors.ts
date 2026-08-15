@@ -1,0 +1,68 @@
+import type { SettingsItemDescriptor } from "../settingsSearch";
+
+export const PROVIDERS_SETTINGS_DESCRIPTORS = [
+  {
+    id: "providers.instances",
+    category: "providers",
+    label: "Provider instances",
+    description: "Manage installed provider runtimes and per-instance configuration.",
+    keywords: ["codex", "claude", "cursor", "opencode", "grok", "runtime"],
+    targetSelector: '[data-settings-search-target="providers.instances"]',
+  },
+  {
+    id: "providers.updates",
+    category: "providers",
+    label: "Check for provider updates",
+    description: "Refresh installed provider version and update information.",
+    keywords: ["version", "upgrade", "cli"],
+    targetSelector: '[aria-label="Check for provider updates"]',
+  },
+  {
+    id: "providers.codex-binary",
+    category: "providers",
+    label: "Codex binary path",
+    description: "Use a non-default Codex executable.",
+    keywords: ["app server", "executable", "cli", "path"],
+    targetSelector: "#codex-binary-path",
+  },
+  {
+    id: "providers.codex-home",
+    category: "providers",
+    label: "Codex home path",
+    description: "Choose a custom CODEX_HOME configuration directory.",
+    keywords: ["config", "directory", "home"],
+    targetSelector: "#codex-home-path",
+  },
+  {
+    id: "providers.claude-binary",
+    category: "providers",
+    label: "Claude binary path",
+    description: "Use a custom Claude Code executable.",
+    keywords: ["agent sdk", "executable", "cli", "path"],
+    targetSelector: "#claude-binary-path",
+  },
+  {
+    id: "providers.claude-args",
+    category: "providers",
+    label: "Claude additional CLI arguments",
+    description: "Pass validated flags to new Claude sessions.",
+    keywords: ["launch args", "flags", "command line"],
+    targetSelector: "#claude-launch-args",
+  },
+  {
+    id: "providers.custom-models",
+    category: "providers",
+    label: "Custom models",
+    description: "Add model slugs to the chat model picker.",
+    keywords: ["codex", "claude", "grok", "favorite", "hidden"],
+    targetSelector: "#custom-model-slug-codex",
+  },
+  {
+    id: "providers.git-model",
+    category: "providers",
+    label: "Git text generation model",
+    description: "Choose the model for commit messages, PR titles, and branch names.",
+    keywords: ["commit", "pull request", "branch", "source control"],
+    targetSelector: '[aria-label="Git text generation model"]',
+  },
+] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

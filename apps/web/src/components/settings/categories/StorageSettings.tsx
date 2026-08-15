@@ -27,6 +27,8 @@ import { Button } from "../../ui/button";
 import { Checkbox } from "../../ui/checkbox";
 import { Input } from "../../ui/input";
 import { toastManager } from "../../ui/toast";
+
+export { STORAGE_SETTINGS_DESCRIPTORS } from "./StorageSettings.descriptors";
 import { getServerHttpOrigin } from "../../../lib/serverHttpOrigin";
 import {
   StorageActionConfirmDialog,
@@ -547,7 +549,10 @@ export function StorageSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section
+        className="rounded-2xl border border-border bg-card p-5"
+        data-settings-search-target="storage.backup"
+      >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-medium text-foreground">Backup and restore</h2>
@@ -628,7 +633,10 @@ export function StorageSettings() {
         )}
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section
+        className="rounded-2xl border border-border bg-card p-5"
+        data-settings-search-target="storage.usage"
+      >
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-sm font-medium text-foreground">Storage</h2>

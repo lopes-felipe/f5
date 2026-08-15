@@ -4,6 +4,8 @@ import { Button } from "../../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { Switch } from "../../ui/switch";
 
+export { GENERAL_SETTINGS_DESCRIPTORS } from "./GeneralSettings.descriptors";
+
 const THEME_OPTIONS = [
   {
     value: "system",

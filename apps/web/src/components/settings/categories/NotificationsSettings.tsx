@@ -13,6 +13,8 @@ import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
 import { Switch } from "../../ui/switch";
+
+export { NOTIFICATIONS_SETTINGS_DESCRIPTORS } from "./NotificationsSettings.descriptors";
 import { Textarea } from "../../ui/textarea";
 import { toastManager } from "../../ui/toast";
 

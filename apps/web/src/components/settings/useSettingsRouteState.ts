@@ -104,7 +104,14 @@ export function patchCustomModels(provider: ProviderKind, models: string[]) {
   }
 }
 
-export function useSettingsRouteState() {
+export interface UseSettingsRouteStateOptions {
+  readonly projectSelection?: {
+    readonly projectId: ProjectId | null;
+    readonly onProjectIdChange: (projectId: ProjectId | null) => void;
+  };
+}
+
+export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}) {
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { settings, defaults, updateSettings } = useAppSettings();
   const projects = useStore((state) => state.projects);
@@ -127,7 +134,7 @@ export function useSettingsRouteState() {
   const [customModelErrorByProvider, setCustomModelErrorByProvider] = useState<
     Partial<Record<ProviderKind, string | null>>
   >({});
-  const [selectedProjectId, setSelectedProjectId] = useState<ProjectId | null>(null);
+  const [localSelectedProjectId, setLocalSelectedProjectId] = useState<ProjectId | null>(null);
   const [memoryDraft, setMemoryDraft] = useState<MemoryDraft>(EMPTY_MEMORY_DRAFT);
   const [editingMemoryId, setEditingMemoryId] = useState<string | null>(null);
   const [editingMemoryDraft, setEditingMemoryDraft] = useState<MemoryDraft>(EMPTY_MEMORY_DRAFT);
@@ -152,8 +159,15 @@ export function useSettingsRouteState() {
         : notificationPermission === "default"
           ? "not requested"
           : "unsupported";
-  const selectedProject =
-    projects.find((project) => project.id === selectedProjectId) ?? projects[0] ?? null;
+  const isProjectSelectionControlled = options.projectSelection !== undefined;
+  const selectedProjectId = isProjectSelectionControlled
+    ? (options.projectSelection?.projectId ?? null)
+    : localSelectedProjectId;
+  const selectedProjectMatch = selectedProjectId
+    ? (projects.find((project) => project.id === selectedProjectId) ?? null)
+    : null;
+  const selectedProjectUnavailable = selectedProjectId !== null && selectedProjectMatch === null;
+  const selectedProject = selectedProjectId ? selectedProjectMatch : (projects[0] ?? null);
   const selectedProjectSummaryId = selectedProject?.id ?? null;
   const selectedProjectSummaryName = selectedProject?.name ?? null;
   const selectedProjectMemories = selectedProject?.memories ?? [];
@@ -196,23 +210,35 @@ export function useSettingsRouteState() {
         option.slug === (settings.textGenerationModel ?? DEFAULT_GIT_TEXT_GENERATION_MODEL),
     )?.name ?? settings.textGenerationModel;
 
-  const handleSelectedProjectChange = useCallback((projectId: ProjectId | null) => {
-    setSelectedProjectId(projectId);
-    setEditingMemoryId(null);
-    setEditingMemoryDraft(EMPTY_MEMORY_DRAFT);
-    setCreateMemoryError(null);
-    setExistingMemoryError(null);
-  }, []);
+  const onControlledProjectIdChange = options.projectSelection?.onProjectIdChange;
+  const handleSelectedProjectChange = useCallback(
+    (projectId: ProjectId | null) => {
+      if (isProjectSelectionControlled) {
+        onControlledProjectIdChange?.(projectId);
+      } else {
+        setLocalSelectedProjectId(projectId);
+      }
+      setEditingMemoryId(null);
+      setEditingMemoryDraft(EMPTY_MEMORY_DRAFT);
+      setCreateMemoryError(null);
+      setExistingMemoryError(null);
+    },
+    [isProjectSelectionControlled, onControlledProjectIdChange],
+  );
 
   useEffect(() => {
     if (!selectedProjectId && projects[0]) {
       handleSelectedProjectChange(projects[0].id);
       return;
     }
-    if (selectedProjectId && !projects.some((project) => project.id === selectedProjectId)) {
+    if (
+      !isProjectSelectionControlled &&
+      selectedProjectId &&
+      !projects.some((project) => project.id === selectedProjectId)
+    ) {
       handleSelectedProjectChange(projects[0]?.id ?? null);
     }
-  }, [handleSelectedProjectChange, projects, selectedProjectId]);
+  }, [handleSelectedProjectChange, isProjectSelectionControlled, projects, selectedProjectId]);
 
   const openKeybindingsFile = useCallback(() => {
     if (!keybindingsConfigPath) {
@@ -484,6 +510,7 @@ export function useSettingsRouteState() {
     hasProjects,
     selectedProjectId,
     selectedProject,
+    selectedProjectUnavailable,
     selectedProjectSummary,
     selectedProjectMemories,
     handleSelectedProjectChange,

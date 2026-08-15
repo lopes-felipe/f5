@@ -32,6 +32,8 @@ import { serverConfigQueryOptions, serverQueryKeys } from "../../../lib/serverRe
 import { ensureNativeApi } from "../../../nativeApi";
 import { Button } from "../../ui/button";
 import { Switch } from "../../ui/switch";
+
+export { PROVIDERS_SETTINGS_DESCRIPTORS } from "./ProvidersSettings.descriptors";
 import { Input } from "../../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
@@ -334,7 +336,10 @@ export function ProvidersSettings() {
 
   return (
     <>
-      <section className="rounded-2xl border border-border bg-card">
+      <section
+        className="rounded-2xl border border-border bg-card"
+        data-settings-search-target="providers.instances"
+      >
         <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
           <div>
             <h2 className="text-sm font-medium text-foreground">Provider instances</h2>

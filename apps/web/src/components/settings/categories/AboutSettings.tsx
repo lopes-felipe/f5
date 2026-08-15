@@ -4,6 +4,8 @@ import { APP_VERSION } from "../../../branding";
 import { Button } from "../../ui/button";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 
+export { ABOUT_SETTINGS_DESCRIPTORS } from "./AboutSettings.descriptors";
+
 export function AboutSettings() {
   const navigate = useNavigate();
   const { settings, updateSettings } = useSettingsRouteContext();
@@ -11,7 +13,10 @@ export function AboutSettings() {
     settings.onboardingLiteStatus !== "eligible" && settings.onboardingLiteStatus !== "reopened";
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-5">
+    <section
+      className="rounded-2xl border border-border bg-card p-5"
+      data-settings-search-target="about.version"
+    >
       <div className="mb-4">
         <h2 className="text-sm font-medium text-foreground">About</h2>
         <p className="mt-1 text-xs text-muted-foreground">

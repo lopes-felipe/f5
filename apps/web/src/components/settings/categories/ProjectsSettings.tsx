@@ -13,6 +13,8 @@ import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../
 import { Switch } from "../../ui/switch";
 import { Textarea } from "../../ui/textarea";
 
+export { PROJECTS_SETTINGS_DESCRIPTORS } from "./ProjectsSettings.descriptors";
+
 const ADD_PROJECT_KEYS = ["addProjectBaseDirectory"] as const;
 
 export function ProjectsSettings() {
@@ -23,6 +25,7 @@ export function ProjectsSettings() {
     projects,
     hasProjects,
     selectedProject,
+    selectedProjectUnavailable,
     handleSelectedProjectChange,
     selectedProjectMemories,
     selectedProjectClaudeSettings,
@@ -66,7 +69,11 @@ export function ProjectsSettings() {
               }
             >
               <SelectTrigger aria-label="Settings project">
-                <SelectValue>{selectedProject?.name ?? "Select a project"}</SelectValue>
+                <SelectValue>
+                  {selectedProjectUnavailable
+                    ? "Unavailable project"
+                    : (selectedProject?.name ?? "Select a project")}
+                </SelectValue>
               </SelectTrigger>
               <SelectPopup>
                 {projects.map((project) => (
@@ -76,7 +83,18 @@ export function ProjectsSettings() {
                 ))}
               </SelectPopup>
             </Select>
+            {selectedProjectUnavailable ? (
+              <span className="block rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                This project is unavailable or was deleted. Choose another project before editing
+                project-scoped settings.
+              </span>
+            ) : null}
           </label>
+        ) : selectedProjectUnavailable ? (
+          <p className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            This project is unavailable or was deleted. Open another project before editing
+            project-scoped settings.
+          </p>
         ) : (
           <p className="rounded-lg border border-dashed border-border bg-background px-3 py-2 text-xs text-muted-foreground">
             Create a project first to configure project-scoped settings.
@@ -119,7 +137,10 @@ export function ProjectsSettings() {
         </div>
       </section>
 
-      <section className="rounded-2xl border border-border bg-card p-5">
+      <section
+        className="rounded-2xl border border-border bg-card p-5"
+        data-settings-search-target="projects.memory"
+      >
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Project memory</h2>
           <p className="mt-1 text-xs text-muted-foreground">
@@ -516,7 +537,9 @@ export function ProjectsSettings() {
             </>
           ) : (
             <p className="rounded-lg border border-dashed border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              Create a project first to store persistent memory.
+              {selectedProjectUnavailable
+                ? "The selected project is unavailable. Choose another project to edit memory."
+                : "Create a project first to store persistent memory."}
             </p>
           )}
         </div>

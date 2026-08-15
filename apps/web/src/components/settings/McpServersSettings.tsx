@@ -1392,7 +1392,10 @@ export function McpServersSettings(props: {
   };
 
   return (
-    <section className="rounded-2xl border border-border bg-card p-5">
+    <section
+      className="rounded-2xl border border-border bg-card p-5"
+      data-settings-search-target="integrations.mcp"
+    >
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h2 className="text-sm font-medium text-foreground">MCP servers</h2>

@@ -360,6 +360,7 @@ async function renderSettingsRoute(
 
 describe("settings route", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     nativeApiRef.current = undefined;
     localStorage.clear();
     document.body.innerHTML = "";
@@ -431,6 +432,138 @@ describe("settings route", () => {
         expect(router.state.location.search.category).toBe("general");
         expectCategoryVisible("general");
         expect(getCategoryPanelText("general")).toContain("Appearance");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("opens an item deep link, focuses its control, and respects reduced motion", async () => {
+    const originalMatchMedia = window.matchMedia.bind(window);
+    vi.spyOn(window, "matchMedia").mockImplementation((query) => {
+      if (query !== "(prefers-reduced-motion: reduce)") return originalMatchMedia(query);
+      return {
+        matches: true,
+        media: query,
+        onchange: null,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        dispatchEvent: vi.fn(() => true),
+      };
+    });
+    const scrollIntoView = vi.spyOn(HTMLElement.prototype, "scrollIntoView");
+    const { screen, router } = await renderSettingsRoute(
+      `/settings?category=general&item=providers.claude-args&projectId=${PROJECT_ONE}`,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        const target = document.querySelector<HTMLElement>("#claude-launch-args");
+        expect(router.state.location.search.category).toBe("providers");
+        expect(router.state.location.search.item).toBe("providers.claude-args");
+        expect(document.activeElement).toBe(target);
+        expect(target?.dataset.settingsSearchHighlighted).toBe("true");
+      });
+      expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto", block: "center" });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("searches unmounted categories and restores item deep links with back and forward", async () => {
+    const { screen, router, history } = await renderSettingsRoute(
+      `/settings?category=general&projectId=${PROJECT_ONE}`,
+    );
+
+    try {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "/", bubbles: true }));
+      await vi.waitFor(() => {
+        expect(document.activeElement).toBe(
+          document.querySelector<HTMLInputElement>('[aria-label="Search settings"]'),
+        );
+      });
+
+      await page.getByRole("combobox", { name: "Search settings" }).fill("Claude CLI arguments");
+      await page.getByRole("option", { name: /Claude additional CLI arguments/ }).click();
+
+      await vi.waitFor(() => {
+        expect(router.state.location.search).toMatchObject({
+          category: "providers",
+          item: "providers.claude-args",
+        });
+        expect(document.activeElement).toBe(
+          document.querySelector<HTMLElement>("#claude-launch-args"),
+        );
+      });
+
+      await page.getByRole("combobox", { name: "Search settings" }).fill("theme preference");
+      await page.getByRole("option", { name: /Theme preference/ }).click();
+
+      await vi.waitFor(() => {
+        expect(router.state.location.search).toMatchObject({
+          category: "general",
+          item: "general.theme",
+        });
+      });
+
+      history.back();
+      await vi.waitFor(() => {
+        expect(router.state.location.search).toMatchObject({
+          category: "providers",
+          item: "providers.claude-args",
+        });
+      });
+
+      history.forward();
+      await vi.waitFor(() => {
+        expect(router.state.location.search).toMatchObject({
+          category: "general",
+          item: "general.theme",
+        });
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("keeps an unavailable project deep link explicit instead of falling back", async () => {
+    const { screen, router } = await renderSettingsRoute(
+      "/settings?category=projects&projectId=deleted-project",
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(router.state.location.search.projectId).toBe("deleted-project");
+        expect(getCategoryPanelText("projects")).toContain(
+          "This project is unavailable or was deleted.",
+        );
+        expect(
+          document.querySelector<HTMLElement>('[aria-label="Settings project"]')?.textContent,
+        ).toContain("Unavailable project");
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("loads a valid project deep link and writes picker changes back to the URL", async () => {
+    const { screen, router } = await renderSettingsRoute(
+      `/settings?category=projects&projectId=${PROJECT_TWO}`,
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(router.state.location.search.projectId).toBe(PROJECT_TWO);
+        expect(
+          document.querySelector<HTMLElement>('[aria-label="Settings project"]')?.textContent,
+        ).toContain("Project Two");
+      });
+
+      await selectSettingsProject("Project One");
+      await vi.waitFor(() => {
+        expect(router.state.location.search.projectId).toBe(PROJECT_ONE);
       });
     } finally {
       await screen.unmount();
