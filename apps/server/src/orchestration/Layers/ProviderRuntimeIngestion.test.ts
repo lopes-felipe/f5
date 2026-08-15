@@ -402,7 +402,14 @@ describe("ProviderRuntimeIngestion", () => {
 
   it("persists canonical completion usage before lifecycle metrics are collapsed", async () => {
     const harness = await createHarness();
-    const completedAt = "2026-08-15T10:15:00.000Z";
+    const coverageStartedAt = await Effect.runPromise(
+      harness.usageFactRepository.readCoverageStartedAt,
+    );
+    const completedAtDate = new Date(new Date(coverageStartedAt).getTime() + 1);
+    const completedAt = completedAtDate.toISOString();
+    const rangeStart = new Date(completedAtDate);
+    rangeStart.setUTCMinutes(0, 0, 0);
+    const rangeEnd = new Date(rangeStart.getTime() + 60 * 60 * 1000);
 
     harness.emit({
       type: "turn.completed",
@@ -426,8 +433,8 @@ describe("ProviderRuntimeIngestion", () => {
     await harness.drain();
     const rows = await Effect.runPromise(
       harness.usageFactRepository.summarizeHourly({
-        startedAt: "2026-08-15T10:00:00.000Z",
-        endedAt: "2026-08-15T11:00:00.000Z",
+        startedAt: rangeStart.toISOString(),
+        endedAt: rangeEnd.toISOString(),
       }),
     );
 
