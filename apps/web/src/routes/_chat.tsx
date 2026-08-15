@@ -25,6 +25,7 @@ import {
   resolveAcceptedThreadSidebarWidth,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
   THREAD_SIDEBAR_MIN_WIDTH_PX,
+  THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
 
@@ -102,6 +103,7 @@ function ChatRouteLayout() {
           collapsible="offcanvas"
           className="border-r border-border bg-card text-foreground"
           resizable={{
+            defaultWidth: THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
             storageKey: THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
             minWidth: THREAD_SIDEBAR_MIN_WIDTH_PX,
             maxWidth: THREAD_SIDEBAR_MAX_WIDTH_PX,

@@ -11,7 +11,7 @@ import {
   resolveReasoningEffortForProvider,
 } from "@t3tools/shared/model";
 import { memo, useState } from "react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
 import { recordModelSelection, useModelPreferencesStore } from "../../modelPreferencesStore";
 import { Button } from "../ui/button";
@@ -135,9 +135,7 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: { thread
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const modelOptions = useComposerThreadDraft(props.threadId).modelOptions?.codex;
   const { effort, fastModeEnabled } = getSelectedCodexTraits(modelOptions);
-  const triggerLabel = [CODEX_REASONING_LABELS[effort], ...(fastModeEnabled ? ["Fast"] : [])]
-    .filter(Boolean)
-    .join(" · ");
+  const triggerLabel = CODEX_REASONING_LABELS[effort];
 
   return (
     <Menu
@@ -157,6 +155,9 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: { thread
       >
         <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
           {triggerLabel}
+          {fastModeEnabled ? (
+            <ZapIcon aria-label="Fast mode enabled" className="size-3 shrink-0" />
+          ) : null}
           <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
         </span>
       </MenuTrigger>

@@ -75,6 +75,19 @@ describe("CodexTraitsPicker", () => {
     });
   });
 
+  it("shows fast mode as a bolt without changing the reasoning label", async () => {
+    const mounted = await mountPicker({ effort: "high", fastModeEnabled: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).not.toBeNull();
+        expect(page.getByRole("button").element().textContent?.trim()).toBe("High");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("closes the menu after selecting a reasoning level", async () => {
     const mounted = await mountPicker({ effort: "high" });
 

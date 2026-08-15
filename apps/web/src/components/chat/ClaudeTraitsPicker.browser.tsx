@@ -225,6 +225,7 @@ describe("ClaudeTraitsPicker", () => {
     try {
       await vi.waitFor(() => {
         expect(document.body.textContent ?? "").toContain("High");
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).toBeNull();
       });
       await page.getByRole("button").click();
 
@@ -236,6 +237,19 @@ describe("ClaudeTraitsPicker", () => {
         expect(text).toContain("On");
         expect(text).not.toContain("Context Window");
         expect(text).not.toContain("Thinking");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows fast mode as an icon only when enabled", async () => {
+    const mounted = await mountPicker({ model: "claude-opus-5", fastModeEnabled: true });
+
+    try {
+      await vi.waitFor(() => {
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).not.toBeNull();
+        expect(page.getByRole("button").element().textContent ?? "").not.toContain("Fast");
       });
     } finally {
       await mounted.cleanup();

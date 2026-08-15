@@ -71,6 +71,7 @@ import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
+import { resolveContextMenuPopupPosition } from "./contextMenuPosition";
 
 const shellEnvironmentReady = syncShellEnvironment();
 
@@ -2073,20 +2074,12 @@ function registerIpcHandlers(): void {
         return null;
       }
 
-      const popupPosition =
-        position &&
-        Number.isFinite(position.x) &&
-        Number.isFinite(position.y) &&
-        position.x >= 0 &&
-        position.y >= 0
-          ? {
-              x: Math.floor(position.x),
-              y: Math.floor(position.y),
-            }
-          : null;
-
       const window = BrowserWindow.getFocusedWindow() ?? mainWindow;
       if (!window) return null;
+      const popupPosition = resolveContextMenuPopupPosition(
+        position,
+        window.webContents.getZoomFactor(),
+      );
 
       return new Promise<string | null>((resolve) => {
         const template: MenuItemConstructorOptions[] = [];

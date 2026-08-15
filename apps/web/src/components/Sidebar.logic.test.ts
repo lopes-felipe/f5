@@ -6,6 +6,7 @@ import {
   getVisibleSidebarThreadIds,
   isTrailingDoubleClick,
   reconcileFrozenOrder,
+  resolveSidebarComposerDraftPreview,
   resolveSidebarNewThreadEnvMode,
   resolveSidebarNewThreadIntent,
   resolveThreadRowClassName,
@@ -16,6 +17,35 @@ import {
   toggleWorkflowThreadListExpansion,
   threadBucketExpansionKey,
 } from "./Sidebar.logic";
+
+describe("resolveSidebarComposerDraftPreview", () => {
+  const emptyDraft = {
+    prompt: "",
+    images: [],
+    filePaths: [],
+    terminalContexts: [],
+  };
+
+  it("returns a compact preview for unsent text", () => {
+    expect(
+      resolveSidebarComposerDraftPreview({
+        ...emptyDraft,
+        prompt: "  Draft   details for the sidebar  ",
+      }),
+    ).toBe("Draft details for the sidebar");
+  });
+
+  it("describes non-text sendable content and ignores empty drafts", () => {
+    expect(
+      resolveSidebarComposerDraftPreview({
+        ...emptyDraft,
+        images: [{} as never],
+        filePaths: ["src/index.ts"],
+      }),
+    ).toBe("1 image · 1 file");
+    expect(resolveSidebarComposerDraftPreview(emptyDraft)).toBeNull();
+  });
+});
 
 function makeLatestTurn() {
   return {

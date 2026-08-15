@@ -6,10 +6,21 @@ import {
   resolveThreadStatusPill,
 } from "../threadStatus";
 import { cn } from "../lib/utils";
+import {
+  composerDraftPreview,
+  hasSendableComposerDraftContent,
+  type ComposerDraftPreviewInput,
+} from "../composerDraftStore";
 
 export const THREAD_SELECTION_SAFE_SELECTOR = "[data-thread-item], [data-thread-selection-safe]";
 export type SidebarNewThreadEnvMode = "local" | "worktree";
 export type SidebarThreadBucket = "active" | "archived";
+
+export function resolveSidebarComposerDraftPreview(
+  draft: ComposerDraftPreviewInput | null | undefined,
+): string | null {
+  return draft && hasSendableComposerDraftContent(draft) ? composerDraftPreview(draft) : null;
+}
 
 export function shouldClearThreadSelectionOnMouseDown(target: HTMLElement | null): boolean {
   if (target === null) return true;

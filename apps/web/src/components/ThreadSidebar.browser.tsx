@@ -35,6 +35,7 @@ import {
 } from "../test/workflowFixtures";
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import {
+  THREAD_SIDEBAR_DEFAULT_WIDTH_PX,
   THREAD_SIDEBAR_MAX_WIDTH_PX,
   THREAD_SIDEBAR_WIDTH_STORAGE_KEY,
 } from "../threadSidebarWidth";
@@ -1171,7 +1172,7 @@ describe("Thread sidebar", () => {
     }
   });
 
-  it("resizes immediately on an active thread route and preserves the width across route changes", async () => {
+  it("resizes immediately, preserves the width across routes, and resets on double-click", async () => {
     const mounted = await mountApp({
       width: 1_400,
       initialEntries: [`/${THREAD_ID}`],
@@ -1214,6 +1215,14 @@ describe("Thread sidebar", () => {
       await waitForElement(() => queryMainInset(), "Home route main inset should render.");
 
       expect(readSidebarWidth("left")).toBeCloseTo(duringSidebarWidth, 0);
+
+      rail.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, button: 0 }));
+      await vi.waitFor(() => {
+        expect(readSidebarWidth("left")).toBeCloseTo(THREAD_SIDEBAR_DEFAULT_WIDTH_PX, 0);
+        expect(localStorage.getItem(THREAD_SIDEBAR_WIDTH_STORAGE_KEY)).toBe(
+          String(THREAD_SIDEBAR_DEFAULT_WIDTH_PX),
+        );
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -1313,6 +1322,35 @@ describe("Thread sidebar", () => {
         () => document.querySelector<HTMLInputElement>('[data-testid="command-palette"] input'),
         "Command palette root search input should render.",
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("marks unsent composer content on an existing thread", async () => {
+    const mounted = await mountApp({
+      width: 1_400,
+      initialEntries: ["/"],
+    });
+
+    try {
+      const row = await waitForElement(
+        () => querySidebarThreadRowByTitle(LONG_THREAD_TITLE),
+        "Existing thread row should render.",
+      );
+      expect(row.querySelector('[aria-label="Unsent draft"]')).toBeNull();
+
+      useComposerDraftStore
+        .getState()
+        .setPrompt(THREAD_ID, "Follow up on the failing browser test");
+      await vi.waitFor(() => {
+        expect(row.querySelector('[aria-label="Unsent draft"]')).not.toBeNull();
+      });
+
+      useComposerDraftStore.getState().setPrompt(THREAD_ID, "");
+      await vi.waitFor(() => {
+        expect(row.querySelector('[aria-label="Unsent draft"]')).toBeNull();
+      });
     } finally {
       await mounted.cleanup();
     }

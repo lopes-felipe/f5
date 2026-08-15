@@ -1,10 +1,35 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  TERMINAL_SELECTION_CONTEXT_MENU_ITEMS,
+  resolveTerminalSelectionContextMenuAction,
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalSelectionMouseUp,
   terminalSelectionActionDelayForClickCount,
 } from "./ThreadTerminalDrawer";
+
+describe("terminal selection context menu", () => {
+  it("offers copy, copy-and-add, and add-only actions", () => {
+    expect(TERMINAL_SELECTION_CONTEXT_MENU_ITEMS).toEqual([
+      { id: "copy", label: "Copy" },
+      { id: "copy-and-add-to-chat", label: "Copy and add to chat" },
+      { id: "add-to-chat", label: "Add to chat" },
+    ]);
+    expect(resolveTerminalSelectionContextMenuAction("copy")).toEqual({
+      copy: true,
+      addToChat: false,
+    });
+    expect(resolveTerminalSelectionContextMenuAction("copy-and-add-to-chat")).toEqual({
+      copy: true,
+      addToChat: true,
+    });
+    expect(resolveTerminalSelectionContextMenuAction("add-to-chat")).toEqual({
+      copy: false,
+      addToChat: true,
+    });
+    expect(resolveTerminalSelectionContextMenuAction(null)).toBeNull();
+  });
+});
 
 describe("resolveTerminalSelectionActionPosition", () => {
   it("prefers the selection rect over the last pointer position", () => {

@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { getProviderOptionCurrentLabel, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import { memo, useState } from "react";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import { Menu, MenuPopup, MenuTrigger } from "../ui/menu";
 import { getProviderModelCapabilities } from "../../providerModels";
@@ -34,21 +34,29 @@ function getClaudeOptionDescriptors(
   });
 }
 
-function getClaudeTriggerLabel(input: ClaudeTraitsInput): string {
+function getClaudeTriggerPresentation(input: ClaudeTraitsInput): {
+  label: string;
+  fastModeEnabled: boolean;
+} {
   const descriptors = getClaudeOptionDescriptors(input);
-
-  return descriptors
-    .map((descriptor) => {
-      if (descriptor.type === "boolean") {
-        if (descriptor.id === "fastMode") {
-          return descriptor.currentValue === true ? "Fast" : null;
+  return {
+    label: descriptors
+      .map((descriptor) => {
+        if (descriptor.type === "boolean") {
+          if (descriptor.id === "fastMode") return null;
+          return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
         }
-        return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
-      }
-      return getProviderOptionCurrentLabel(descriptor);
-    })
-    .filter((label): label is string => typeof label === "string" && label.length > 0)
-    .join(" · ");
+        return getProviderOptionCurrentLabel(descriptor);
+      })
+      .filter((label): label is string => typeof label === "string" && label.length > 0)
+      .join(" · "),
+    fastModeEnabled: descriptors.some(
+      (descriptor) =>
+        descriptor.type === "boolean" &&
+        descriptor.id === "fastMode" &&
+        descriptor.currentValue === true,
+    ),
+  };
 }
 
 export function supportsClaudeTraitsControls(input: ClaudeTraitsInput): boolean {
@@ -93,7 +101,7 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
   if (!supportsClaudeTraitsControls(props)) {
     return null;
   }
-  const triggerLabel = getClaudeTriggerLabel(props);
+  const trigger = getClaudeTriggerPresentation(props);
 
   return (
     <Menu
@@ -111,7 +119,10 @@ export const ClaudeTraitsPicker = memo(function ClaudeTraitsPicker(props: {
           />
         }
       >
-        <span>{triggerLabel}</span>
+        <span>{trigger.label}</span>
+        {trigger.fastModeEnabled ? (
+          <ZapIcon aria-label="Fast mode enabled" className="size-3 shrink-0" />
+        ) : null}
         <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
       </MenuTrigger>
       <MenuPopup align="start">

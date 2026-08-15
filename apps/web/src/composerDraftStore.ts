@@ -580,7 +580,12 @@ export function hasSendableComposerDraftContent(
   );
 }
 
-function promptStashPreview(draft: ComposerThreadDraftState): string {
+export type ComposerDraftPreviewInput = Pick<
+  ComposerThreadDraftState,
+  "prompt" | "images" | "filePaths" | "terminalContexts"
+>;
+
+export function composerDraftPreview(draft: ComposerDraftPreviewInput): string {
   const textPreview = draft.prompt
     .replaceAll(INLINE_TERMINAL_CONTEXT_PLACEHOLDER, " ")
     .replace(/\s+/g, " ")
@@ -2335,7 +2340,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           sourceProjectId: projectId,
           sourceWorkspaceRoot: workspaceRoot?.trim() || null,
           createdAt: new Date().toISOString(),
-          preview: promptStashPreview(sourceDraft),
+          preview: composerDraftPreview(sourceDraft),
           draft: {
             prompt: sourceDraft.prompt,
             attachments,

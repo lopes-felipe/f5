@@ -13,7 +13,7 @@ import {
 } from "@t3tools/shared/model";
 import { memo, useCallback, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import {
   Menu,
@@ -278,7 +278,7 @@ export const TraitsPicker = memo(function TraitsPicker({
   ...persistence
 }: TraitsMenuContentProps & TraitsPersistence) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const { descriptors } = getTraitsSectionVisibility({
+  const { descriptors, fastModeEnabled } = getTraitsSectionVisibility({
     provider,
     models,
     model,
@@ -300,7 +300,7 @@ export const TraitsPicker = memo(function TraitsPicker({
       .map((descriptor) => {
         if (descriptor.type === "boolean") {
           if (descriptor.id === "fastMode") {
-            return descriptor.currentValue === true ? "Fast" : "Normal";
+            return null;
           }
           return `${descriptor.label} ${descriptor.currentValue === true ? "On" : "Off"}`;
         }
@@ -335,11 +335,17 @@ export const TraitsPicker = memo(function TraitsPicker({
         {isCodexStyle ? (
           <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
             {triggerLabel}
+            {fastModeEnabled ? (
+              <ZapIcon aria-label="Fast mode enabled" className="size-3 shrink-0" />
+            ) : null}
             <ChevronDownIcon aria-hidden="true" className="size-3 shrink-0 opacity-60" />
           </span>
         ) : (
           <>
             <span>{triggerLabel}</span>
+            {fastModeEnabled ? (
+              <ZapIcon aria-label="Fast mode enabled" className="size-3 shrink-0" />
+            ) : null}
             <ChevronDownIcon aria-hidden="true" className="size-3 opacity-60" />
           </>
         )}

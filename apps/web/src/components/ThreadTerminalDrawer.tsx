@@ -32,10 +32,33 @@ import {
   type ThreadTerminalGroup,
 } from "../types";
 import { readNativeApi } from "~/nativeApi";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
 const MULTI_CLICK_SELECTION_ACTION_DELAY_MS = 260;
+
+export const TERMINAL_SELECTION_CONTEXT_MENU_ITEMS = [
+  { id: "copy", label: "Copy" },
+  { id: "copy-and-add-to-chat", label: "Copy and add to chat" },
+  { id: "add-to-chat", label: "Add to chat" },
+] as const;
+
+export function resolveTerminalSelectionContextMenuAction(actionId: string | null): {
+  readonly copy: boolean;
+  readonly addToChat: boolean;
+} | null {
+  switch (actionId) {
+    case "copy":
+      return { copy: true, addToChat: false };
+    case "copy-and-add-to-chat":
+      return { copy: true, addToChat: true };
+    case "add-to-chat":
+      return { copy: false, addToChat: true };
+    default:
+      return null;
+  }
+}
 
 function maxDrawerHeight(): number {
   if (typeof window === "undefined") return DEFAULT_THREAD_TERMINAL_HEIGHT;
@@ -226,6 +249,14 @@ function TerminalViewport({
   const selectionActionRequestIdRef = useRef(0);
   const selectionActionOpenRef = useRef(false);
   const selectionActionTimerRef = useRef<number | null>(null);
+  const { copyToClipboard } = useCopyToClipboard({
+    onError: (error) => {
+      const activeTerminal = terminalRef.current;
+      if (activeTerminal) {
+        writeSystemMessage(activeTerminal, error.message);
+      }
+    },
+  });
 
   useEffect(() => {
     onSessionExitedRef.current = onSessionExited;
@@ -330,13 +361,19 @@ function TerminalViewport({
       selectionActionOpenRef.current = true;
       try {
         const clicked = await api.contextMenu.show(
-          [{ id: "add-to-chat", label: "Add to chat" }],
+          [...TERMINAL_SELECTION_CONTEXT_MENU_ITEMS],
           nextAction.position,
         );
-        if (requestId !== selectionActionRequestIdRef.current || clicked !== "add-to-chat") {
+        const action = resolveTerminalSelectionContextMenuAction(clicked);
+        if (requestId !== selectionActionRequestIdRef.current || action === null) {
           return;
         }
-        onAddTerminalContextRef.current(nextAction.selection);
+        if (action.copy) {
+          copyToClipboard(nextAction.selection.text, undefined);
+        }
+        if (action.addToChat) {
+          onAddTerminalContextRef.current(nextAction.selection);
+        }
         terminalRef.current?.clearSelection();
         terminalRef.current?.focus();
       } finally {

@@ -2,7 +2,7 @@ export const THREAD_SIDEBAR_WIDTH_STORAGE_KEY = "chat_thread_sidebar_width";
 export const THREAD_SIDEBAR_MIN_WIDTH_PX = 12 * 16;
 export const THREAD_SIDEBAR_MAX_WIDTH_PX = 32 * 16;
 export const THREAD_MAIN_PANEL_MIN_WIDTH_PX = 32 * 16;
-const THREAD_SIDEBAR_DEFAULT_WIDTH_PX = 16 * 16;
+export const THREAD_SIDEBAR_DEFAULT_WIDTH_PX = 16 * 16;
 
 export function clampThreadSidebarWidth(width: number): number {
   return Math.max(THREAD_SIDEBAR_MIN_WIDTH_PX, Math.min(width, THREAD_SIDEBAR_MAX_WIDTH_PX));

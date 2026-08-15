@@ -143,6 +143,7 @@ import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   reconcileFrozenOrder,
   resolveSidebarNewThreadIntent,
+  resolveSidebarComposerDraftPreview,
   resolveThreadRowClassName,
   resolveThreadStatusPill,
   resolveWorkflowThreadListExpanded,
@@ -502,6 +503,7 @@ function ThreadRowTrailingMeta(props: {
   terminalStatus: TerminalStatusIndicator | null;
   isHighlighted: boolean;
   archived?: boolean | undefined;
+  showDraftIndicator?: boolean | undefined;
   action?:
     | {
         label: string;
@@ -511,6 +513,9 @@ function ThreadRowTrailingMeta(props: {
     | undefined;
 }) {
   const action = props.action ?? null;
+  const draft = useComposerDraftStore((store) => store.draftsByThreadId[props.thread.id]);
+  const draftPreview =
+    props.showDraftIndicator === false ? null : resolveSidebarComposerDraftPreview(draft);
   const actionClassName = props.isHighlighted ? "text-foreground/70" : "text-muted-foreground/70";
 
   return (
@@ -520,6 +525,24 @@ function ThreadRowTrailingMeta(props: {
           aria-label="Regenerating thread title"
           className="size-3 animate-spin text-muted-foreground"
         />
+      ) : null}
+      {draftPreview ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                role="img"
+                aria-label="Unsent draft"
+                className="inline-flex items-center justify-center text-muted-foreground/70"
+              >
+                <SquarePenIcon className="size-3" />
+              </span>
+            }
+          />
+          <TooltipPopup side="top" className="max-w-80 whitespace-normal leading-tight">
+            Draft: {draftPreview}
+          </TooltipPopup>
+        </Tooltip>
       ) : null}
       <ThreadWorktreeIndicator thread={props.thread} />
       {props.terminalStatus ? (
@@ -2881,6 +2904,7 @@ export default function Sidebar() {
                                                   lastInteractionAt={thread.lastInteractionAt}
                                                   terminalStatus={terminalStatus}
                                                   isHighlighted={isHighlighted}
+                                                  showDraftIndicator={!isDraftThread}
                                                   action={
                                                     !isDraftThread
                                                       ? {
