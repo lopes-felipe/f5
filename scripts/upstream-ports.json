@@ -1642,8 +1642,8 @@
     {
       "upstreamSha": "e5c75470678e33ca2bd1001d9d93493fe437972a",
       "subject": "feat(web): add settings sidebar search (#4682)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 5.3 settings search and deep links; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["72d2c5dcc1bf0b581cdecd33bc34b801ced0baab"]
     },
     {
       "upstreamSha": "bfc31507f8483b0ba22cf10f5862947b49b20a53",
