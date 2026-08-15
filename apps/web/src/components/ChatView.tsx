@@ -14,8 +14,6 @@ import {
   type ProjectScript,
   type ModelSlug,
   type ModelSelection,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ResolvedKeybindingsConfig,
   type ProviderApprovalDecision,
   type ServerProvider,
@@ -33,6 +31,7 @@ import {
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import { formatByteSize } from "@t3tools/shared/byteSize";
 import {
   createModelSelection,
   getDefaultModel,
@@ -297,7 +296,6 @@ import { WORK_LOG_PAGE_SIZE } from "./chat/workLogConstants";
 import { IMAGE_ONLY_BOOTSTRAP_PROMPT } from "../lib/composerSendText";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
-const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
 const EMPTY_ACTIVITIES: OrchestrationThreadActivity[] = [];
 const EMPTY_COMMAND_EXECUTIONS: OrchestrationCommandExecutionSummary[] = [];
 const EMPTY_TASKS: ThreadTaskItem[] = [];
@@ -691,8 +689,11 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const setComposerDraftInteractionMode = useComposerDraftStore(
     (store) => store.setInteractionMode,
   );
-  const addComposerDraftImage = useComposerDraftStore((store) => store.addImage);
   const addComposerDraftImages = useComposerDraftStore((store) => store.addImages);
+  const importComposerDraftImages = useComposerDraftStore((store) => store.importImages);
+  const pendingComposerImageImportCount = useComposerDraftStore(
+    (store) => store.imageImportsByThreadId[threadId]?.pendingCount ?? 0,
+  );
   const addComposerDraftFilePaths = useComposerDraftStore((store) => store.addFilePaths);
   const removeComposerDraftImage = useComposerDraftStore((store) => store.removeImage);
   const removeComposerDraftFilePath = useComposerDraftStore((store) => store.removeFilePath);
@@ -883,12 +884,6 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       setComposerDraftPrompt(threadId, nextPrompt);
     },
     [setComposerDraftPrompt, threadId],
-  );
-  const addComposerImage = useCallback(
-    (image: ComposerImageAttachment) => {
-      addComposerDraftImage(threadId, image);
-    },
-    [addComposerDraftImage, threadId],
   );
   const addComposerImagesToDraft = useCallback(
     (images: ComposerImageAttachment[]) => {
@@ -1798,6 +1793,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
   const localDispatchStartedAt = pendingTurnDispatch?.localDispatch.startedAt ?? null;
   const isSendBusy =
     pendingTurnDispatch !== null && pendingTurnDispatch.status !== "awaiting-user-action";
+  const isComposerImageImportPending = pendingComposerImageImportCount > 0;
+  const isComposerSendBusy = isSendBusy || isComposerImageImportPending;
+  const composerSendBusyLabel =
+    isComposerImageImportPending && !isSendBusy ? "Preparing image" : "Sending";
   const isWorking = phase === "running" || isSendBusy || isConnecting || isRevertingCheckpoint;
   useEffect(() => {
     if (isPendingTurnDispatchBlocked) {
@@ -3649,7 +3648,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     wsInteractionBlocked,
   ]);
 
-  const addComposerImages = (files: File[]) => {
+  const addComposerImages = async (files: File[]) => {
     if (!activeThreadId || files.length === 0) return;
     if (isPendingTurnDispatchBlocked) return;
 
@@ -3660,43 +3659,22 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       });
       return;
     }
-
-    const nextImages: ComposerImageAttachment[] = [];
-    let nextImageCount = composerImagesRef.current.length;
-    let error: string | null = null;
-    for (const file of files) {
-      if (!file.type.startsWith("image/")) {
-        error = `Unsupported file type for '${file.name}'. Please attach image files only.`;
-        continue;
-      }
-      if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-        error = `'${file.name}' exceeds the ${IMAGE_SIZE_LIMIT_LABEL} attachment limit.`;
-        continue;
-      }
-      if (nextImageCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-        error = `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`;
-        break;
-      }
-
-      const previewUrl = URL.createObjectURL(file);
-      nextImages.push({
-        type: "image",
-        id: randomUUID(),
-        name: file.name || "image",
-        mimeType: file.type,
-        sizeBytes: file.size,
-        previewUrl,
-        file,
+    const destinationThreadId = activeThreadId;
+    const result = await importComposerDraftImages(destinationThreadId, files);
+    if (result.cancelled) return;
+    for (const imported of result.imported) {
+      if (!imported.recompressed) continue;
+      toastManager.add({
+        type: "success",
+        title: `Compressed ${imported.name}`,
+        description: `${formatByteSize(imported.originalSizeBytes)} → ${formatByteSize(imported.finalSizeBytes)}`,
       });
-      nextImageCount += 1;
     }
-
-    if (nextImages.length === 1 && nextImages[0]) {
-      addComposerImage(nextImages[0]);
-    } else if (nextImages.length > 1) {
-      addComposerImagesToDraft(nextImages);
+    for (const failure of result.failures) {
+      toastManager.add({ type: "error", title: failure.message });
     }
-    setThreadError(activeThreadId, error);
+    const latestFailure = result.failures.at(-1);
+    if (latestFailure) setThreadError(destinationThreadId, latestFailure.message);
   };
 
   const addComposerFileAttachments = (files: File[]) => {
@@ -3769,7 +3747,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     const nonImageFiles = files.filter((file) => !file.type.startsWith("image/"));
     if (imageFiles.length > 0) {
       event.preventDefault();
-      addComposerImages(imageFiles);
+      void addComposerImages(imageFiles);
     }
     if (nonImageFiles.length > 0 && isElectron) {
       addComposerFileAttachments(nonImageFiles);
@@ -3821,7 +3799,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
     const nonImageFiles = files.filter((file) => !file.type.startsWith("image/"));
     if (imageFiles.length > 0) {
-      addComposerImages(imageFiles);
+      void addComposerImages(imageFiles);
     }
     if (nonImageFiles.length > 0) {
       addComposerFileAttachments(nonImageFiles);
@@ -3936,6 +3914,14 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
       isConnecting ||
       sendInFlightRef.current
     ) {
+      return;
+    }
+    if (pendingComposerImageImportCount > 0) {
+      toastManager.add({
+        type: "info",
+        title: "Still preparing an image.",
+        description: "Send once its thumbnail appears.",
+      });
       return;
     }
     if (activePendingProgress) {
@@ -5955,6 +5941,12 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                               Preparing worktree...
                             </span>
                           ) : null}
+                          {pendingComposerImageImportCount > 0 ? (
+                            <span className="text-muted-foreground/70 text-xs">
+                              Preparing {pendingComposerImageImportCount === 1 ? "image" : "images"}
+                              ...
+                            </span>
+                          ) : null}
                           {activePendingProgress ? (
                             <div className="flex items-center gap-2">
                               {activePendingProgress.questionIndex > 0 ? (
@@ -5992,7 +5984,8 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                               hasSendableContent={composerSendState.hasSendableContent}
                               dispatchBlocked={isPendingTurnDispatchBlocked}
                               connecting={isConnecting}
-                              busy={isSendBusy}
+                              busy={isComposerSendBusy}
+                              busyLabel={composerSendBusyLabel}
                               paused={nextTurnQueueState.snapshot?.paused ?? false}
                               runnableQueueCount={
                                 nextTurnQueueState.snapshot?.paused
@@ -6014,9 +6007,17 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                   type="submit"
                                   size="sm"
                                   className="h-9 rounded-full px-4 sm:h-8"
-                                  disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                  disabled={
+                                    isPendingTurnDispatchBlocked ||
+                                    isConnecting ||
+                                    isComposerImageImportPending
+                                  }
                                 >
-                                  {isConnecting || isSendBusy ? "Sending..." : "Refine"}
+                                  {isComposerImageImportPending
+                                    ? "Preparing..."
+                                    : isConnecting || isSendBusy
+                                      ? "Sending..."
+                                      : "Refine"}
                                 </Button>
                               ) : (
                                 <>
@@ -6027,6 +6028,7 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                         size="sm"
                                         className="h-9 rounded-full px-4 sm:h-8"
                                         onClick={() => setWorkflowImplementDialogOpen(true)}
+                                        disabled={isComposerImageImportPending}
                                       >
                                         Implement
                                       </Button>
@@ -6037,9 +6039,17 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                         type="submit"
                                         size="sm"
                                         className="h-9 rounded-l-full rounded-r-none px-4 sm:h-8"
-                                        disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                        disabled={
+                                          isPendingTurnDispatchBlocked ||
+                                          isConnecting ||
+                                          isComposerImageImportPending
+                                        }
                                       >
-                                        {isConnecting || isSendBusy ? "Sending..." : "Implement"}
+                                        {isComposerImageImportPending
+                                          ? "Preparing..."
+                                          : isConnecting || isSendBusy
+                                            ? "Sending..."
+                                            : "Implement"}
                                       </Button>
                                       <Menu>
                                         <MenuTrigger
@@ -6050,7 +6060,9 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                               className="h-9 rounded-l-none rounded-r-full border-l-white/12 px-2 sm:h-8"
                                               aria-label="Implementation actions"
                                               disabled={
-                                                isPendingTurnDispatchBlocked || isConnecting
+                                                isPendingTurnDispatchBlocked ||
+                                                isConnecting ||
+                                                isComposerImageImportPending
                                               }
                                             />
                                           }
@@ -6059,7 +6071,11 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                         </MenuTrigger>
                                         <MenuPopup align="end" side="top">
                                           <MenuItem
-                                            disabled={isPendingTurnDispatchBlocked || isConnecting}
+                                            disabled={
+                                              isPendingTurnDispatchBlocked ||
+                                              isConnecting ||
+                                              isComposerImageImportPending
+                                            }
                                             onClick={() => void onImplementPlanInNewThread()}
                                           >
                                             Implement in a new thread
@@ -6076,7 +6092,10 @@ export default function ChatView({ threadId, focusTimelineEntryId }: ChatViewPro
                                 hasSendableContent={composerSendState.hasSendableContent}
                                 dispatchBlocked={isPendingTurnDispatchBlocked}
                                 connecting={isConnecting}
-                                busy={isSendBusy || isPreparingWorktree}
+                                busy={isComposerSendBusy || isPreparingWorktree}
+                                busyLabel={
+                                  isPreparingWorktree ? "Preparing worktree" : composerSendBusyLabel
+                                }
                                 paused={nextTurnQueueState.snapshot?.paused ?? false}
                                 runnableQueueCount={
                                   nextTurnQueueState.snapshot?.paused

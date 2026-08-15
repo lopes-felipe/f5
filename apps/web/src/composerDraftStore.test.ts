@@ -9,6 +9,7 @@ import {
   setComposerDraftBaseStorageForTesting,
   useComposerDraftStore,
 } from "./composerDraftStore";
+import type { ComposerImageProcessor, CompressComposerImageResult } from "./lib/imageCompression";
 import {
   INLINE_TERMINAL_CONTEXT_PLACEHOLDER,
   insertInlineTerminalContextPlaceholder,
@@ -153,6 +154,148 @@ describe("composerDraftStore addImages", () => {
     const draft = useComposerDraftStore.getState().draftsByThreadId[threadId];
     expect(draft?.images.map((image) => image.id)).toEqual(["img-shared"]);
     expect(revokeSpy).not.toHaveBeenCalledWith("blob:shared");
+  });
+});
+
+describe("composerDraftStore image imports", () => {
+  const threadA = ThreadId.makeUnsafe("thread-import-a");
+  const threadB = ThreadId.makeUnsafe("thread-import-b");
+  let originalCreateObjectUrl: typeof URL.createObjectURL;
+  let originalRevokeObjectUrl: typeof URL.revokeObjectURL;
+  let nextObjectUrl = 0;
+
+  beforeEach(() => {
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+      imageImportsByThreadId: {},
+    });
+    originalCreateObjectUrl = URL.createObjectURL;
+    originalRevokeObjectUrl = URL.revokeObjectURL;
+    URL.createObjectURL = vi.fn(() => `blob:import-${++nextObjectUrl}`);
+    URL.revokeObjectURL = vi.fn();
+  });
+
+  afterEach(() => {
+    useComposerDraftStore.getState().clearThreadDraft(threadA);
+    useComposerDraftStore.getState().clearThreadDraft(threadB);
+    URL.createObjectURL = originalCreateObjectUrl;
+    URL.revokeObjectURL = originalRevokeObjectUrl;
+  });
+
+  it("reserves attachment slots before asynchronous processing", async () => {
+    for (let index = 0; index < 7; index += 1) {
+      useComposerDraftStore.getState().addImage(
+        threadA,
+        makeImage({
+          id: `existing-${index}`,
+          previewUrl: `blob:${index}`,
+          name: `existing-${index}.png`,
+        }),
+      );
+    }
+    let resolveFirst!: (result: CompressComposerImageResult) => void;
+    const firstProcessor: ComposerImageProcessor = () =>
+      new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+    const firstFile = new File([new Uint8Array(2)], "first.png", { type: "image/png" });
+    const secondFile = new File([new Uint8Array(2)], "second.png", { type: "image/png" });
+
+    const firstImport = useComposerDraftStore
+      .getState()
+      .importImages(threadA, [firstFile], { processor: firstProcessor });
+    expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]?.pendingCount).toBe(1);
+
+    const secondResult = await useComposerDraftStore
+      .getState()
+      .importImages(threadA, [secondFile], {
+        processor: vi.fn<ComposerImageProcessor>(),
+      });
+    expect(secondResult.failures[0]?.message).toContain("up to 8 images");
+
+    resolveFirst({
+      ok: true,
+      file: firstFile,
+      recompressed: false,
+      originalSizeBytes: firstFile.size,
+      finalSizeBytes: firstFile.size,
+    });
+    await firstImport;
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images).toHaveLength(8);
+    expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
+  });
+
+  it("commits to the destination thread captured when the import starts", async () => {
+    let resolveImport!: (result: CompressComposerImageResult) => void;
+    const processor: ComposerImageProcessor = () =>
+      new Promise((resolve) => {
+        resolveImport = resolve;
+      });
+    const file = new File([new Uint8Array(3)], "bound.png", { type: "image/png" });
+    const importPromise = useComposerDraftStore
+      .getState()
+      .importImages(threadA, [file], { processor });
+
+    useComposerDraftStore.getState().setPrompt(threadB, "Viewing another thread");
+    resolveImport({
+      ok: true,
+      file,
+      recompressed: false,
+      originalSizeBytes: file.size,
+      finalSizeBytes: file.size,
+    });
+    await importPromise;
+
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images[0]?.name).toBe(
+      "bound.png",
+    );
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadB]?.images).toEqual([]);
+  });
+
+  it("cancels pending work when its destination thread is deleted", async () => {
+    const processor: ComposerImageProcessor = (_file, options) =>
+      new Promise((resolve) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => resolve({ ok: false, reason: "cancelled" }),
+          { once: true },
+        );
+      });
+    const file = new File([new Uint8Array(3)], "cancel.png", { type: "image/png" });
+    const importPromise = useComposerDraftStore
+      .getState()
+      .importImages(threadA, [file], { processor });
+
+    useComposerDraftStore.getState().clearThreadDraft(threadA);
+    await expect(importPromise).resolves.toEqual({ imported: [], failures: [], cancelled: true });
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]).toBeUndefined();
+    expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
+  });
+
+  it("commits successful files atomically and releases failed reservations", async () => {
+    const goodFile = new File([new Uint8Array(4)], "good.png", { type: "image/png" });
+    const badFile = new File([new Uint8Array(4)], "animated.gif", { type: "image/gif" });
+    const processor: ComposerImageProcessor = async (file) =>
+      file === goodFile
+        ? {
+            ok: true,
+            file,
+            recompressed: false,
+            originalSizeBytes: file.size,
+            finalSizeBytes: file.size,
+          }
+        : { ok: false, reason: "animated" };
+
+    const result = await useComposerDraftStore
+      .getState()
+      .importImages(threadA, [goodFile, badFile], { processor });
+
+    expect(result.imported).toHaveLength(1);
+    expect(result.failures[0]?.message).toContain("is animated");
+    expect(useComposerDraftStore.getState().draftsByThreadId[threadA]?.images).toHaveLength(1);
+    expect(useComposerDraftStore.getState().imageImportsByThreadId[threadA]).toBeUndefined();
   });
 });
 

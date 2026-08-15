@@ -1,6 +1,4 @@
 import {
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type DesktopPreviewBridge,
   type DesktopPreviewWebviewConfig,
   type DiscoveredLocalServer,
@@ -40,7 +38,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { type ComposerImageAttachment, useComposerDraftStore } from "../composerDraftStore";
+import { useComposerDraftStore } from "../composerDraftStore";
 import { cn, randomUUID } from "../lib/utils";
 import { ensureNativeApi } from "../nativeApi";
 import {
@@ -131,10 +129,10 @@ function summarizeAnnotation(annotation: PreviewAnnotationPayload): string {
   return lines.join("\n");
 }
 
-function appendAnnotationToComposer(
+async function appendAnnotationToComposer(
   threadId: ThreadId,
   annotation: PreviewAnnotationPayload,
-): void {
+): Promise<void> {
   const store = useComposerDraftStore.getState();
   const existingPrompt = store.draftsByThreadId[threadId]?.prompt ?? "";
   const annotationText = summarizeAnnotation(annotation);
@@ -155,36 +153,17 @@ function appendAnnotationToComposer(
     return;
   }
 
-  const existingImages = store.draftsByThreadId[threadId]?.images ?? [];
-  if (existingImages.length >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-    toastManager.add({
-      type: "warning",
-      title: "Preview annotation added without screenshot",
-      description: `The composer already has ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images.`,
-    });
-    return;
-  }
-
   const file = dataUrlToFile(screenshot.dataUrl, `preview-annotation-${Date.now()}.png`);
-  if (file.size > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
+  const result = await store.importImages(threadId, [file]);
+  if (result.cancelled) return;
+  if (result.imported.length === 0) {
     toastManager.add({
       type: "warning",
       title: "Preview annotation added without screenshot",
-      description: "The captured image exceeds the attachment limit.",
+      description: result.failures[0]?.message ?? "The captured image could not be attached.",
     });
     return;
   }
-
-  const image: ComposerImageAttachment = {
-    type: "image",
-    id: randomUUID(),
-    name: file.name,
-    mimeType: file.type,
-    sizeBytes: file.size,
-    previewUrl: URL.createObjectURL(file),
-    file,
-  };
-  store.addImage(threadId, image);
   toastManager.add({
     type: "success",
     title: "Preview annotation attached",
@@ -1269,7 +1248,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
     try {
       const annotation = await desktopPreview.pickElement(activeSession.tabId);
       if (annotation) {
-        appendAnnotationToComposer(threadId, annotation);
+        await appendAnnotationToComposer(threadId, annotation);
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));

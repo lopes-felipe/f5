@@ -2,6 +2,7 @@ import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   isRuntimeMode,
   ProjectId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
   ThreadId,
@@ -32,6 +33,11 @@ import { Debouncer } from "@tanstack/react-pacer";
 import { create } from "zustand";
 import { createJSONStorage, persist, type StateStorage } from "zustand/middleware";
 import { randomUUID } from "./lib/utils";
+import {
+  compressImageForComposer,
+  imageCompressionFailureMessage,
+  type ComposerImageProcessor,
+} from "./lib/imageCompression";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
@@ -160,6 +166,28 @@ export interface PersistedComposerImageAttachment {
 export interface ComposerImageAttachment extends Omit<ChatImageAttachment, "previewUrl"> {
   previewUrl: string;
   file: File;
+}
+
+export interface ComposerImageImportState {
+  readonly pendingCount: number;
+}
+
+export interface ComposerImageImportSuccess {
+  readonly name: string;
+  readonly originalSizeBytes: number;
+  readonly finalSizeBytes: number;
+  readonly recompressed: boolean;
+}
+
+export interface ComposerImageImportFailure {
+  readonly name: string;
+  readonly message: string;
+}
+
+export interface ComposerImageImportResult {
+  readonly imported: ReadonlyArray<ComposerImageImportSuccess>;
+  readonly failures: ReadonlyArray<ComposerImageImportFailure>;
+  readonly cancelled: boolean;
 }
 
 interface PersistedTerminalContextDraft {
@@ -326,6 +354,7 @@ interface ComposerDraftStoreState {
   draftThreadsByThreadId: Record<ThreadId, DraftThreadState>;
   projectDraftThreadIdByProjectId: Record<string, ThreadId>;
   promptStashes: PromptStashEntry[];
+  imageImportsByThreadId: Partial<Record<ThreadId, ComposerImageImportState>>;
   getDraftThreadByProjectId: (
     projectId: ProjectId,
     options?: {
@@ -389,6 +418,11 @@ interface ComposerDraftStoreState {
   setCodexFastMode: (threadId: ThreadId, enabled: boolean | null | undefined) => void;
   addImage: (threadId: ThreadId, image: ComposerImageAttachment) => void;
   addImages: (threadId: ThreadId, images: ComposerImageAttachment[]) => void;
+  importImages: (
+    threadId: ThreadId,
+    files: ReadonlyArray<File>,
+    options?: { readonly processor?: ComposerImageProcessor | undefined },
+  ) => Promise<ComposerImageImportResult>;
   removeImage: (threadId: ThreadId, imageId: string) => void;
   addFilePaths: (threadId: ThreadId, paths: string[]) => void;
   removeFilePath: (threadId: ThreadId, filePath: string) => void;
@@ -742,6 +776,56 @@ function revokeObjectPreviewUrl(previewUrl: string): void {
     return;
   }
   URL.revokeObjectURL(previewUrl);
+}
+
+const imageImportControllersByThreadId = new Map<ThreadId, Map<string, AbortController>>();
+
+function registerImageImportController(
+  threadId: ThreadId,
+  importId: string,
+  controller: AbortController,
+): void {
+  const controllers = imageImportControllersByThreadId.get(threadId) ?? new Map();
+  controllers.set(importId, controller);
+  imageImportControllersByThreadId.set(threadId, controllers);
+}
+
+function unregisterImageImportController(threadId: ThreadId, importId: string): boolean {
+  const controllers = imageImportControllersByThreadId.get(threadId);
+  if (!controllers?.delete(importId)) return false;
+  if (controllers.size === 0) imageImportControllersByThreadId.delete(threadId);
+  return true;
+}
+
+function cancelImageImportsForThread(threadId: ThreadId): void {
+  const controllers = imageImportControllersByThreadId.get(threadId);
+  if (!controllers) return;
+  imageImportControllersByThreadId.delete(threadId);
+  for (const controller of controllers.values()) controller.abort();
+}
+
+function appendComposerImages(
+  existing: ComposerThreadDraftState,
+  images: ReadonlyArray<ComposerImageAttachment>,
+): ComposerThreadDraftState {
+  const existingIds = new Set(existing.images.map((image) => image.id));
+  const existingDedupKeys = new Set(existing.images.map((image) => composerImageDedupKey(image)));
+  const acceptedPreviewUrls = new Set(existing.images.map((image) => image.previewUrl));
+  const dedupedIncoming: ComposerImageAttachment[] = [];
+  for (const image of images) {
+    const dedupKey = composerImageDedupKey(image);
+    if (existingIds.has(image.id) || existingDedupKeys.has(dedupKey)) {
+      if (!acceptedPreviewUrls.has(image.previewUrl)) revokeObjectPreviewUrl(image.previewUrl);
+      continue;
+    }
+    dedupedIncoming.push(image);
+    existingIds.add(image.id);
+    existingDedupKeys.add(dedupKey);
+    acceptedPreviewUrls.add(image.previewUrl);
+  }
+  return dedupedIncoming.length === 0
+    ? existing
+    : { ...existing, images: [...existing.images, ...dedupedIncoming] };
 }
 
 function normalizePersistedAttachment(value: unknown): PersistedComposerImageAttachment | null {
@@ -1267,6 +1351,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
       promptStashes: [],
+      imageImportsByThreadId: {},
       getDraftThreadByProjectId: (projectId, options) => {
         if (projectId.length === 0) {
           return null;
@@ -1907,39 +1992,137 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         }
         set((state) => {
           const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
-          const existingIds = new Set(existing.images.map((image) => image.id));
-          const existingDedupKeys = new Set(
-            existing.images.map((image) => composerImageDedupKey(image)),
-          );
-          const acceptedPreviewUrls = new Set(existing.images.map((image) => image.previewUrl));
-          const dedupedIncoming: ComposerImageAttachment[] = [];
-          for (const image of images) {
-            const dedupKey = composerImageDedupKey(image);
-            if (existingIds.has(image.id) || existingDedupKeys.has(dedupKey)) {
-              // Avoid revoking a blob URL that's still referenced by an accepted image.
-              if (!acceptedPreviewUrls.has(image.previewUrl)) {
-                revokeObjectPreviewUrl(image.previewUrl);
-              }
-              continue;
-            }
-            dedupedIncoming.push(image);
-            existingIds.add(image.id);
-            existingDedupKeys.add(dedupKey);
-            acceptedPreviewUrls.add(image.previewUrl);
-          }
-          if (dedupedIncoming.length === 0) {
-            return state;
-          }
+          const nextDraft = appendComposerImages(existing, images);
+          if (nextDraft === existing) return state;
           return {
             draftsByThreadId: {
               ...state.draftsByThreadId,
-              [threadId]: {
-                ...existing,
-                images: [...existing.images, ...dedupedIncoming],
-              },
+              [threadId]: nextDraft,
             },
           };
         });
+      },
+      importImages: async (threadId, files, options) => {
+        if (threadId.length === 0 || files.length === 0) {
+          return { imported: [], failures: [], cancelled: false };
+        }
+
+        const acceptedFiles: File[] = [];
+        const failures: ComposerImageImportFailure[] = [];
+        set((state) => {
+          const existingImageCount = state.draftsByThreadId[threadId]?.images.length ?? 0;
+          const pendingCount = state.imageImportsByThreadId[threadId]?.pendingCount ?? 0;
+          let reservedCount = existingImageCount + pendingCount;
+          for (const file of files) {
+            if (!file.type.trim().toLowerCase().startsWith("image/")) {
+              failures.push({
+                name: file.name,
+                message: `Unsupported file type for '${file.name || "file"}'. Please attach image files only.`,
+              });
+              continue;
+            }
+            if (reservedCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+              failures.push({
+                name: file.name,
+                message: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`,
+              });
+              continue;
+            }
+            acceptedFiles.push(file);
+            reservedCount += 1;
+          }
+          if (acceptedFiles.length === 0) return state;
+          return {
+            imageImportsByThreadId: {
+              ...state.imageImportsByThreadId,
+              [threadId]: { pendingCount: pendingCount + acceptedFiles.length },
+            },
+          };
+        });
+        if (acceptedFiles.length === 0) {
+          return { imported: [], failures, cancelled: false };
+        }
+
+        const importId = randomUUID();
+        const controller = new AbortController();
+        registerImageImportController(threadId, importId, controller);
+        const processor = options?.processor ?? compressImageForComposer;
+        const processed = await Promise.all(
+          acceptedFiles.map(async (file) => {
+            try {
+              return { file, result: await processor(file, { signal: controller.signal }) };
+            } catch {
+              return { file, result: { ok: false as const, reason: "unreadable" as const } };
+            }
+          }),
+        );
+
+        if (!unregisterImageImportController(threadId, importId)) {
+          return { imported: [], failures: [], cancelled: true };
+        }
+
+        const imported: ComposerImageImportSuccess[] = [];
+        const nextImages: ComposerImageAttachment[] = [];
+        for (const { file, result } of processed) {
+          if (!result.ok) {
+            if (result.reason !== "cancelled") {
+              failures.push({
+                name: file.name,
+                message: imageCompressionFailureMessage(file.name, result.reason),
+              });
+            }
+            continue;
+          }
+          let previewUrl: string;
+          try {
+            previewUrl = URL.createObjectURL(result.file);
+          } catch {
+            failures.push({
+              name: file.name,
+              message: imageCompressionFailureMessage(file.name, "unreadable"),
+            });
+            continue;
+          }
+          nextImages.push({
+            type: "image",
+            id: randomUUID(),
+            name: result.file.name || "image",
+            mimeType: result.file.type,
+            sizeBytes: result.file.size,
+            previewUrl,
+            file: result.file,
+          });
+          imported.push({
+            name: result.file.name || "image",
+            originalSizeBytes: result.originalSizeBytes,
+            finalSizeBytes: result.finalSizeBytes,
+            recompressed: result.recompressed,
+          });
+        }
+
+        set((state) => {
+          const currentPendingCount = state.imageImportsByThreadId[threadId]?.pendingCount ?? 0;
+          const remainingPendingCount = Math.max(0, currentPendingCount - acceptedFiles.length);
+          const imageImportsByThreadId = { ...state.imageImportsByThreadId };
+          if (remainingPendingCount === 0) {
+            delete imageImportsByThreadId[threadId];
+          } else {
+            imageImportsByThreadId[threadId] = { pendingCount: remainingPendingCount };
+          }
+
+          if (nextImages.length === 0) return { imageImportsByThreadId };
+          const existing = state.draftsByThreadId[threadId] ?? createEmptyThreadDraft();
+          const nextDraft = appendComposerImages(existing, nextImages);
+          return {
+            imageImportsByThreadId,
+            draftsByThreadId:
+              nextDraft === existing
+                ? state.draftsByThreadId
+                : { ...state.draftsByThreadId, [threadId]: nextDraft },
+          };
+        });
+
+        return { imported, failures, cancelled: false };
       },
       removeImage: (threadId, imageId) => {
         if (threadId.length === 0) {
@@ -2277,6 +2460,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
         if (threadId.length === 0) {
           return;
         }
+        cancelImageImportsForThread(threadId);
         const existing = get().draftsByThreadId[threadId];
         if (existing) {
           for (const image of existing.images) {
@@ -2289,7 +2473,8 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           const hasProjectMapping = Object.values(state.projectDraftThreadIdByProjectId).includes(
             threadId,
           );
-          if (!hasComposerDraft && !hasDraftThread && !hasProjectMapping) {
+          const hasImageImports = state.imageImportsByThreadId[threadId] !== undefined;
+          if (!hasComposerDraft && !hasDraftThread && !hasProjectMapping && !hasImageImports) {
             return state;
           }
           const { [threadId]: _removedComposerDraft, ...restComposerDraftsByThreadId } =
@@ -2301,10 +2486,13 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               ([, draftThreadId]) => draftThreadId !== threadId,
             ),
           ) as Record<string, ThreadId>;
+          const imageImportsByThreadId = { ...state.imageImportsByThreadId };
+          delete imageImportsByThreadId[threadId];
           return {
             draftsByThreadId: restComposerDraftsByThreadId,
             draftThreadsByThreadId: restDraftThreadsByThreadId,
             projectDraftThreadIdByProjectId: nextProjectDraftThreadIdByProjectId,
+            imageImportsByThreadId,
           };
         });
       },
@@ -2714,21 +2902,26 @@ export function pruneOrphanedDraftThreads(validProjectIds: ReadonlySet<string>):
     }
 
     let nextDraftsByThreadId = state.draftsByThreadId;
+    let nextImageImportsByThreadId = state.imageImportsByThreadId;
     if (removedThreadIds.size > 0) {
       nextDraftsByThreadId = { ...state.draftsByThreadId };
+      nextImageImportsByThreadId = { ...state.imageImportsByThreadId };
       for (const threadId of removedThreadIds) {
         delete nextDraftsByThreadId[threadId];
+        delete nextImageImportsByThreadId[threadId];
       }
     }
 
     return {
       draftsByThreadId: nextDraftsByThreadId,
+      imageImportsByThreadId: nextImageImportsByThreadId,
       draftThreadsByThreadId: nextDraftThreadsByThreadId,
       projectDraftThreadIdByProjectId: nextProjectDraftThreadIdByProjectId,
     };
   });
 
   for (const threadId of removedThreadIds) {
+    cancelImageImportsForThread(threadId);
     const existing = previousDraftsByThreadId[threadId];
     if (!existing) {
       continue;

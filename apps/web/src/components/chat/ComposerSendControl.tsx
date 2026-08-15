@@ -11,6 +11,7 @@ export function ComposerSendControl({
   dispatchBlocked,
   connecting,
   busy,
+  busyLabel = "Sending",
   paused,
   runnableQueueCount,
   itemCount,
@@ -24,6 +25,7 @@ export function ComposerSendControl({
   readonly dispatchBlocked: boolean;
   readonly connecting: boolean;
   readonly busy: boolean;
+  readonly busyLabel?: string;
   readonly paused: boolean;
   readonly runnableQueueCount: number;
   readonly itemCount: number;
@@ -33,12 +35,12 @@ export function ComposerSendControl({
   readonly onInterrupt: () => void;
 }) {
   const full = itemCount >= maxItems;
-  const disabled = !hasSendableContent || dispatchBlocked || connecting || full;
+  const disabled = !hasSendableContent || dispatchBlocked || connecting || busy || full;
   const likelyQueued = running || runnableQueueCount > 0;
   const textLabel = full
     ? "Queue full"
     : connecting || busy
-      ? "Sending..."
+      ? `${connecting ? "Connecting" : busyLabel}...`
       : likelyQueued
         ? "Queue"
         : paused || itemCount > 0
@@ -72,7 +74,7 @@ export function ComposerSendControl({
             type="submit"
             className={`flex h-9 w-9 items-center justify-center bg-primary/90 text-primary-foreground transition-all duration-150 hover:bg-primary hover:scale-105 disabled:opacity-30 disabled:hover:scale-100 sm:h-8 sm:w-8 ${showMenu ? "rounded-l-full rounded-r-none" : "rounded-full"}`}
             disabled={disabled}
-            aria-label={connecting ? "Connecting" : busy ? "Sending" : "Send message"}
+            aria-label={connecting ? "Connecting" : busy ? busyLabel : "Send message"}
           >
             {busy || connecting ? (
               <LoaderCircleIcon className="size-3.5 animate-spin" />
@@ -99,7 +101,7 @@ export function ComposerSendControl({
                   variant={running ? "outline" : "default"}
                   className="rounded-l-none rounded-r-full px-2"
                   aria-label="Queue options"
-                  disabled={!hasSendableContent || dispatchBlocked || connecting}
+                  disabled={!hasSendableContent || dispatchBlocked || connecting || busy}
                 />
               }
             >
