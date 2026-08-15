@@ -2956,8 +2956,8 @@
     {
       "upstreamSha": "8ca4eec9ca46e1dd2f2427ae2405f5f417e8f95d",
       "subject": "feat(web): drag files from the explorer into the chat composer (#4140)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.3 explorer drag into composer; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["329e45e8a1e66e50e349c846760aa19a592f14c8"]
     },
     {
       "upstreamSha": "0936fd271f866f5f58cce067865c8d0262b9ea20",
@@ -3054,6 +3054,17 @@
       "reason": "Added Copy and Copy and add to chat to f5's existing native terminal-selection menu without introducing a conflicting keybinding.",
       "upstreamShas": ["1735e27d9e5106bbb35d5b1dd10363604a54b69e"],
       "f5Shas": ["869c236c297268cf74b00b1d741a2018823132cd"]
+    },
+    {
+      "category": "file-explorer-context-actions",
+      "selection": "Upstream 4cfec8c128084a0abde67853d10e996f5b2aac05 (#4054), which predates the frozen first-parent window",
+      "disposition": "ported",
+      "reason": "Added shared explorer and file-view actions for adding a file mention, copying absolute or relative paths, opening in the preferred editor, and revealing in the platform file manager. The same upstream change's zoom-aware native menu positioning was ported separately.",
+      "upstreamShas": ["4cfec8c128084a0abde67853d10e996f5b2aac05"],
+      "f5Shas": [
+        "329e45e8a1e66e50e349c846760aa19a592f14c8",
+        "869c236c297268cf74b00b1d741a2018823132cd"
+      ]
     },
     {
       "category": "pre-schema-ledger",
