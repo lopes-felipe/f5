@@ -1456,8 +1456,9 @@
     {
       "upstreamSha": "8eca20005b47e197b3610f7996f3fd02355c1891",
       "subject": "feat(web): configurable fonts and sizes under Settings → Appearance (#5103)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.1 configurable fonts; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["120eb36729b35d63dc2bf2a10843ff4a604a4c4a"],
+      "reason": "Reimplemented through f5's client-local AppSettings path with validated interface, chat, code, and terminal font controls; pre-paint and live CSS-variable application across app, chat, diff, and preview surfaces; and explicit xterm updates, refits, and PTY resize synchronization without session restarts."
     },
     {
       "upstreamSha": "2fa1fec8d8f63bc8fa4579e7c0fd280b21de02ef",
@@ -2201,8 +2202,9 @@
     {
       "upstreamSha": "4f584da0f84666bda0cd399721115b0001cc0308",
       "subject": "feat(web): add appearance settings category (#4715)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.1 appearance settings; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["120eb36729b35d63dc2bf2a10843ff4a604a4c4a"],
+      "reason": "Moved theme controls into a dedicated f5 Appearance category, added static settings-search descriptors and legacy general.theme deep-link canonicalization, and kept all appearance persistence device-local."
     },
     {
       "upstreamSha": "362f12792254335bfe2a015787d7cbbaa214654e",
