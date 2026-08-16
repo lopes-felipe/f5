@@ -1,6 +1,7 @@
 import { ProjectId } from "@t3tools/contracts";
 
 import { ABOUT_SETTINGS_DESCRIPTORS } from "./categories/AboutSettings.descriptors";
+import { APPEARANCE_SETTINGS_DESCRIPTORS } from "./categories/AppearanceSettings.descriptors";
 import { ARCHIVE_SETTINGS_DESCRIPTORS } from "./categories/ArchiveSettings.descriptors";
 import { DISPLAY_SETTINGS_DESCRIPTORS } from "./categories/DisplaySettings.descriptors";
 import { GENERAL_SETTINGS_DESCRIPTORS } from "./categories/GeneralSettings.descriptors";
@@ -13,6 +14,7 @@ import { searchSettingsItems, type SettingsItemDescriptor } from "./settingsSear
 
 export const SETTINGS_CATEGORIES = [
   "general",
+  "appearance",
   "display",
   "notifications",
   "providers",
@@ -27,6 +29,7 @@ export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 
 export const SETTINGS_CATEGORY_LABELS = {
   general: "General",
+  appearance: "Appearance",
   display: "Display",
   notifications: "Notifications",
   providers: "Providers & Models",
@@ -39,6 +42,7 @@ export const SETTINGS_CATEGORY_LABELS = {
 
 export const SETTINGS_ITEM_DESCRIPTORS = [
   ...GENERAL_SETTINGS_DESCRIPTORS,
+  ...APPEARANCE_SETTINGS_DESCRIPTORS,
   ...DISPLAY_SETTINGS_DESCRIPTORS,
   ...NOTIFICATIONS_SETTINGS_DESCRIPTORS,
   ...PROVIDERS_SETTINGS_DESCRIPTORS,
@@ -56,6 +60,7 @@ for (const descriptor of SETTINGS_ITEM_DESCRIPTORS) {
   }
   SETTINGS_ITEM_BY_ID.set(descriptor.id, descriptor);
 }
+const SETTINGS_ITEM_ALIASES = new Map<string, string>([["general.theme", "appearance.theme"]]);
 
 export function isSettingsCategory(value: unknown): value is SettingsCategory {
   return typeof value === "string" && (SETTINGS_CATEGORIES as readonly string[]).includes(value);
@@ -63,7 +68,8 @@ export function isSettingsCategory(value: unknown): value is SettingsCategory {
 
 export function getSettingsItemDescriptor(value: unknown): SettingsItemDescriptor | null {
   if (typeof value !== "string") return null;
-  return SETTINGS_ITEM_BY_ID.get(value) ?? null;
+  const canonicalId = SETTINGS_ITEM_ALIASES.get(value) ?? value;
+  return SETTINGS_ITEM_BY_ID.get(canonicalId) ?? null;
 }
 
 export function isSettingsItemId(value: unknown): value is string {

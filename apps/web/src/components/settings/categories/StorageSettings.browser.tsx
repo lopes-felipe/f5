@@ -34,6 +34,9 @@ vi.mock("../../../nativeApi", () => ({
 vi.mock("./GeneralSettings", () => ({
   GeneralSettings: () => <div>General settings mock</div>,
 }));
+vi.mock("./AppearanceSettings", () => ({
+  AppearanceSettings: () => <div>Appearance settings mock</div>,
+}));
 vi.mock("./DisplaySettings", () => ({
   DisplaySettings: () => <div>Display settings mock</div>,
 }));

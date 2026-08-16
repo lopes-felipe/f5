@@ -1,12 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   TERMINAL_SELECTION_CONTEXT_MENU_ITEMS,
+  applyTerminalFontAppearance,
   resolveTerminalSelectionContextMenuAction,
   resolveTerminalSelectionActionPosition,
   shouldHandleTerminalSelectionMouseUp,
   terminalSelectionActionDelayForClickCount,
 } from "./ThreadTerminalDrawer";
+
+describe("terminal font appearance", () => {
+  it("updates xterm options and refits without recreating the terminal", () => {
+    const terminal = { options: { fontFamily: "old", fontSize: 10 } };
+    const fitAddon = { fit: vi.fn() };
+
+    applyTerminalFontAppearance(terminal, fitAddon, {
+      fontFamily: '"JetBrains Mono", monospace',
+      fontSize: 15,
+    });
+
+    expect(terminal.options).toEqual({
+      fontFamily: '"JetBrains Mono", monospace',
+      fontSize: 15,
+    });
+    expect(fitAddon.fit).toHaveBeenCalledOnce();
+  });
+});
 
 describe("terminal selection context menu", () => {
   it("offers copy, copy-and-add, and add-only actions", () => {

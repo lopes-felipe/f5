@@ -152,14 +152,7 @@
 }
 
 body {
-  font-family:
-    "DM Sans Variable",
-    "DM Sans",
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    system-ui,
-    sans-serif;
+  font-family: var(--font-sans);
   margin: 0;
   padding: 0;
   min-height: 100vh;
@@ -192,8 +185,26 @@ pre,
 code,
 textarea,
 input {
-  font-family:
-    "SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
+}
+
+:root {
+  --f5-chat-font-family: var(--font-sans);
+  --f5-chat-font-size: 14px;
+  --diffs-font-family: var(--font-mono);
+  --diffs-header-font-family: var(--font-sans);
+}
+
+.composer-editor-surface,
+.chat-markdown {
+  font-family: var(--f5-chat-font-family);
+  font-size: var(--f5-chat-font-size);
+}
+
+@media (max-width: 39.999rem) and (pointer: coarse) {
+  .composer-editor-surface {
+    font-size: max(var(--f5-chat-font-size), 16px);
+  }
 }
 
 /* Window drag region (frameless titlebar) */

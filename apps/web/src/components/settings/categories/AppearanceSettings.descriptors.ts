@@ -1,0 +1,60 @@
+import type { SettingsItemDescriptor } from "../settingsSearch";
+
+export const APPEARANCE_SETTINGS_DESCRIPTORS = [
+  {
+    id: "appearance.theme",
+    category: "appearance",
+    label: "Theme preference",
+    description: "Use the system, light, or dark appearance.",
+    keywords: ["appearance", "color", "dark mode", "light mode"],
+    targetSelector: '[aria-label="Theme preference"]',
+  },
+  {
+    id: "appearance.ui-font",
+    category: "appearance",
+    label: "Interface font",
+    description: "Choose the font used by F5 controls and navigation.",
+    keywords: ["font", "typeface", "ui", "sidebar"],
+    targetSelector: '[aria-label="Interface font family"]',
+  },
+  {
+    id: "appearance.ui-size",
+    category: "appearance",
+    label: "Interface font size",
+    description: "Scale interface text and rem-based controls.",
+    keywords: ["font", "size", "zoom", "accessibility"],
+    targetSelector: '[aria-label="Interface font size"]',
+  },
+  {
+    id: "appearance.chat-font",
+    category: "appearance",
+    label: "Chat font",
+    description: "Choose the font used by messages and the composer.",
+    keywords: ["font", "typeface", "message", "composer", "prompt"],
+    targetSelector: '[aria-label="Chat font family"]',
+  },
+  {
+    id: "appearance.chat-size",
+    category: "appearance",
+    label: "Chat font size",
+    description: "Set message and composer text size.",
+    keywords: ["font", "size", "message", "composer", "prompt"],
+    targetSelector: '[aria-label="Chat font size"]',
+  },
+  {
+    id: "appearance.mono-font",
+    category: "appearance",
+    label: "Code font",
+    description: "Choose the monospace font used by code, diffs, and terminals.",
+    keywords: ["font", "monospace", "code", "diff", "terminal"],
+    targetSelector: '[aria-label="Code font family"]',
+  },
+  {
+    id: "appearance.terminal-size",
+    category: "appearance",
+    label: "Terminal font size",
+    description: "Set terminal text size and refit the active terminal.",
+    keywords: ["font", "size", "terminal", "shell"],
+    targetSelector: '[aria-label="Terminal font size"]',
+  },
+] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

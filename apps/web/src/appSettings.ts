@@ -15,6 +15,21 @@ import {
   subscribeLocalStorageKey,
   useLocalStorage,
 } from "./hooks/useLocalStorage";
+import {
+  CHAT_FONT_SIZE_DEFAULT,
+  CHAT_FONT_SIZE_MAX,
+  CHAT_FONT_SIZE_MIN,
+  FONT_FAMILY_PREFERENCE_MAX_LENGTH,
+  TERMINAL_FONT_SIZE_DEFAULT,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_MIN,
+  UI_FONT_SIZE_DEFAULT,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_MIN,
+  clampFontSize,
+  normalizeAppearanceSettings,
+  normalizeFontFamilyPreference,
+} from "./appearanceSettings";
 
 export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
@@ -105,6 +120,12 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly gitStatusAutoRefreshIntervalSeconds?: unknown;
   readonly enablePrAttentionNotifications?: unknown;
   readonly workspaceFileTreeEntryLimit?: unknown;
+  readonly uiFontFamily?: unknown;
+  readonly uiFontSize?: unknown;
+  readonly chatFontFamily?: unknown;
+  readonly chatFontSize?: unknown;
+  readonly monoFontFamily?: unknown;
+  readonly terminalFontSize?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -177,6 +198,43 @@ const WorkspaceFileTreeEntryLimitSchema = Schema.Union([Schema.Number, Schema.St
   Schema.withDecodingDefault(() => WORKSPACE_FILE_TREE_ENTRY_LIMIT_DEFAULT),
 );
 
+function appearanceFontSizeSchema(minimum: number, maximum: number, fallback: number) {
+  return Schema.Union([Schema.Number, Schema.String]).pipe(
+    Schema.decodeTo(
+      Schema.Number,
+      SchemaTransformation.transformOrFail({
+        decode: (value) => Effect.succeed(clampFontSize(value, minimum, maximum, fallback)),
+        encode: (value) => Effect.succeed(value),
+      }),
+    ),
+    Schema.withConstructorDefault(() => Option.some(fallback)),
+    Schema.withDecodingDefault(() => fallback),
+  );
+}
+
+const FontFamilyPreferenceSchema = Schema.String.check(
+  Schema.isMaxLength(FONT_FAMILY_PREFERENCE_MAX_LENGTH),
+).pipe(
+  Schema.withConstructorDefault(() => Option.some("")),
+  Schema.withDecodingDefault(() => ""),
+);
+
+const UiFontSizeSchema = appearanceFontSizeSchema(
+  UI_FONT_SIZE_MIN,
+  UI_FONT_SIZE_MAX,
+  UI_FONT_SIZE_DEFAULT,
+);
+const ChatFontSizeSchema = appearanceFontSizeSchema(
+  CHAT_FONT_SIZE_MIN,
+  CHAT_FONT_SIZE_MAX,
+  CHAT_FONT_SIZE_DEFAULT,
+);
+const TerminalFontSizeSchema = appearanceFontSizeSchema(
+  TERMINAL_FONT_SIZE_MIN,
+  TERMINAL_FONT_SIZE_MAX,
+  TERMINAL_FONT_SIZE_DEFAULT,
+);
+
 function normalizeRuntimeWarningVisibility(value: unknown): RuntimeWarningVisibility {
   if (value === "hidden" || value === "summarized" || value === "full") {
     return value;
@@ -239,6 +297,12 @@ export const AppSettingsSchema = Schema.Struct({
   claudeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     Schema.withConstructorDefault(() => Option.some("")),
   ),
+  uiFontFamily: FontFamilyPreferenceSchema,
+  uiFontSize: UiFontSizeSchema,
+  chatFontFamily: FontFamilyPreferenceSchema,
+  chatFontSize: ChatFontSizeSchema,
+  monoFontFamily: FontFamilyPreferenceSchema,
+  terminalFontSize: TerminalFontSizeSchema,
   defaultThreadEnvMode: Schema.Literals(["local", "worktree"]).pipe(
     Schema.withConstructorDefault(() => Option.some("local")),
   ),
@@ -513,8 +577,10 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
   const gitStatusAutoRefreshIntervalSeconds = normalizeGitStatusAutoRefreshIntervalSeconds(
     settings.gitStatusAutoRefreshIntervalSeconds,
   );
+  const appearance = normalizeAppearanceSettings(settings);
   return {
     ...settings,
+    ...appearance,
     gitStatusAutoRefreshIntervalSeconds,
     enableGitStatusAutoRefresh: gitStatusAutoRefreshIntervalSeconds > 0,
     favoriteModels: normalizeFavoriteModels(settings.favoriteModels),
@@ -552,6 +618,9 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
           migrated.runtimeWarningVisibility,
         ),
         favoriteModels: normalizeFavoriteModels(migrated.favoriteModels),
+        uiFontFamily: normalizeFontFamilyPreference(migrated.uiFontFamily),
+        chatFontFamily: normalizeFontFamilyPreference(migrated.chatFontFamily),
+        monoFontFamily: normalizeFontFamilyPreference(migrated.monoFontFamily),
         gitStatusAutoRefreshIntervalSeconds:
           migrated.gitStatusAutoRefreshIntervalSeconds ??
           migrated.enableGitStatusAutoRefresh ??

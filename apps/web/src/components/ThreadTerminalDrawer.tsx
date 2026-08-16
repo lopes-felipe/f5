@@ -33,6 +33,8 @@ import {
 } from "../types";
 import { readNativeApi } from "~/nativeApi";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { useAppearanceSettings } from "~/hooks/useAppearanceSettings";
+import { DEFAULT_MONO_FONT_STACK, fontFamilyStack } from "~/appearanceSettings";
 
 const MIN_DRAWER_HEIGHT = 180;
 const MAX_DRAWER_HEIGHT_RATIO = 0.75;
@@ -208,6 +210,16 @@ export function shouldHandleTerminalSelectionMouseUp(
   return selectionGestureActive && button === 0;
 }
 
+export function applyTerminalFontAppearance(
+  terminal: Pick<Terminal, "options">,
+  fitAddon: Pick<FitAddon, "fit">,
+  appearance: { readonly fontFamily: string; readonly fontSize: number },
+): void {
+  terminal.options.fontFamily = appearance.fontFamily;
+  terminal.options.fontSize = appearance.fontSize;
+  fitAddon.fit();
+}
+
 interface TerminalViewportProps {
   threadId: ThreadId;
   terminalId: string;
@@ -220,6 +232,9 @@ interface TerminalViewportProps {
   autoFocus: boolean;
   resizeEpoch: number;
   drawerHeight: number;
+  resolvedTheme: "light" | "dark";
+  monoFontFamily: string;
+  terminalFontSize: number;
 }
 
 function TerminalViewport({
@@ -234,6 +249,9 @@ function TerminalViewport({
   autoFocus,
   resizeEpoch,
   drawerHeight,
+  resolvedTheme,
+  monoFontFamily,
+  terminalFontSize,
 }: TerminalViewportProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const terminalRef = useRef<Terminal | null>(null);
@@ -249,6 +267,15 @@ function TerminalViewport({
   const selectionActionRequestIdRef = useRef(0);
   const selectionActionOpenRef = useRef(false);
   const selectionActionTimerRef = useRef<number | null>(null);
+  const terminalFontFamily = fontFamilyStack(monoFontFamily, DEFAULT_MONO_FONT_STACK);
+  const terminalFontAppearanceRef = useRef({
+    fontFamily: terminalFontFamily,
+    fontSize: terminalFontSize,
+  });
+  terminalFontAppearanceRef.current = {
+    fontFamily: terminalFontFamily,
+    fontSize: terminalFontSize,
+  };
   const { copyToClipboard } = useCopyToClipboard({
     onError: (error) => {
       const activeTerminal = terminalRef.current;
@@ -281,13 +308,13 @@ function TerminalViewport({
     let disposed = false;
 
     const fitAddon = new FitAddon();
+    const initialFontAppearance = terminalFontAppearanceRef.current;
     const terminal = new Terminal({
       cursorBlink: true,
       lineHeight: 1.2,
-      fontSize: 12,
+      fontSize: initialFontAppearance.fontSize,
       scrollback: 5_000,
-      fontFamily:
-        '"SF Mono", "SFMono-Regular", "JetBrains Mono", Consolas, "Liberation Mono", Menlo, monospace',
+      fontFamily: initialFontAppearance.fontFamily,
       theme: terminalThemeFromApp(),
     });
     terminal.loadAddon(fitAddon);
@@ -521,17 +548,6 @@ function TerminalViewport({
     window.addEventListener("mouseup", handleMouseUp);
     mount.addEventListener("pointerdown", handlePointerDown);
 
-    const themeObserver = new MutationObserver(() => {
-      const activeTerminal = terminalRef.current;
-      if (!activeTerminal) return;
-      activeTerminal.options.theme = terminalThemeFromApp();
-      activeTerminal.refresh(0, activeTerminal.rows - 1);
-    });
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "style"],
-    });
-
     const openTerminal = async () => {
       try {
         const activeTerminal = terminalRef.current;
@@ -655,15 +671,45 @@ function TerminalViewport({
       }
       window.removeEventListener("mouseup", handleMouseUp);
       mount.removeEventListener("pointerdown", handlePointerDown);
-      themeObserver.disconnect();
       terminalRef.current = null;
       fitAddonRef.current = null;
       terminal.dispose();
     };
     // autoFocus is intentionally omitted;
     // it is only read at mount time and must not trigger terminal teardown/recreation.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd, runtimeEnv, terminalId, threadId]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal) return;
+    terminal.options.theme = terminalThemeFromApp();
+    terminal.refresh(0, terminal.rows - 1);
+  }, [resolvedTheme]);
+
+  useEffect(() => {
+    const api = readNativeApi();
+    const terminal = terminalRef.current;
+    const fitAddon = fitAddonRef.current;
+    if (!api || !terminal || !fitAddon) return;
+
+    const wasAtBottom = terminal.buffer.active.viewportY >= terminal.buffer.active.baseY;
+    const frame = window.requestAnimationFrame(() => {
+      applyTerminalFontAppearance(terminal, fitAddon, {
+        fontFamily: terminalFontFamily,
+        fontSize: terminalFontSize,
+      });
+      if (wasAtBottom) terminal.scrollToBottom();
+      void api.terminal
+        .resize({
+          threadId,
+          terminalId,
+          cols: terminal.cols,
+          rows: terminal.rows,
+        })
+        .catch(() => undefined);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [terminalFontFamily, terminalFontSize, terminalId, threadId]);
 
   useEffect(() => {
     if (!autoFocus) return;
@@ -725,6 +771,7 @@ interface ThreadTerminalDrawerProps {
   onCloseTerminal: (terminalId: string) => void;
   onHeightChange: (height: number) => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
+  resolvedTheme: "light" | "dark";
 }
 
 interface TerminalActionButtonProps {
@@ -775,7 +822,9 @@ export default function ThreadTerminalDrawer({
   onCloseTerminal,
   onHeightChange,
   onAddTerminalContext,
+  resolvedTheme,
 }: ThreadTerminalDrawerProps) {
+  const appearance = useAppearanceSettings();
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
   const [resizeEpoch, setResizeEpoch] = useState(0);
   const drawerHeightRef = useRef(drawerHeight);
@@ -1080,6 +1129,9 @@ export default function ThreadTerminalDrawer({
                         autoFocus={terminalId === resolvedActiveTerminalId}
                         resizeEpoch={resizeEpoch}
                         drawerHeight={drawerHeight}
+                        resolvedTheme={resolvedTheme}
+                        monoFontFamily={appearance.monoFontFamily}
+                        terminalFontSize={appearance.terminalFontSize}
                       />
                     </div>
                   </div>
@@ -1100,6 +1152,9 @@ export default function ThreadTerminalDrawer({
                   autoFocus
                   resizeEpoch={resizeEpoch}
                   drawerHeight={drawerHeight}
+                  resolvedTheme={resolvedTheme}
+                  monoFontFamily={appearance.monoFontFamily}
+                  terminalFontSize={appearance.terminalFontSize}
                 />
               </div>
             )}

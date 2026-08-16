@@ -41,6 +41,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - GitHub and GitHub Enterprise pull requests now expose in-app Summary, Timeline, and Files tabs,
   including cached failure-tolerant reads, comment edits, reactions, reviewer changes, and branch
   updates gated by provider capabilities and account permissions.
+- A dedicated Appearance category now provides validated interface, chat, code, and terminal font
+  controls. Changes apply live across app chrome, messages, the composer, diffs, previews, and
+  xterm terminals, which refit without restarting their sessions.
 
 ### Changed
 

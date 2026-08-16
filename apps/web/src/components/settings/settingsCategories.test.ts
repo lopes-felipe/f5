@@ -19,6 +19,7 @@ describe("settings item descriptors", () => {
   });
 
   it("searches controls from categories that are not mounted", () => {
+    expect(filterSettingsItems("terminal font size")[0]?.id).toBe("appearance.terminal-size");
     expect(filterSettingsItems("Claude CLI arguments")[0]?.id).toBe("providers.claude-args");
     expect(filterSettingsItems("model context protocol server")[0]?.id).toBe("integrations.mcp");
     expect(filterSettingsItems("encrypted backup credentials").map(({ id }) => id)).toContain(
@@ -28,6 +29,7 @@ describe("settings item descriptors", () => {
 
   it("resolves only registered item IDs", () => {
     expect(getSettingsItemDescriptor("projects.memory")?.category).toBe("projects");
+    expect(getSettingsItemDescriptor("general.theme")?.id).toBe("appearance.theme");
     expect(getSettingsItemDescriptor("missing.setting")).toBeNull();
   });
 });

@@ -56,6 +56,7 @@ import { invalidateGitQueries } from "../lib/gitReactQuery";
 import { invalidateReviewQueries } from "../lib/reviewReactQuery";
 import { useAppSettings } from "../appSettings";
 import { deriveOnboardingLiteState } from "../lib/onboardingLite";
+import { useAppearanceSettingsSync } from "../hooks/useAppearanceSettings";
 import {
   cancelLiveThreadWarmScheduler,
   getLiveThreadWarmThreadIdForDomainEvent,
@@ -97,6 +98,8 @@ export function applyProviderAdvisoriesToServerConfig(
 }
 
 function RootRouteView() {
+  useAppearanceSettingsSync();
+
   if (!readNativeApi()) {
     return (
       <div className="flex h-screen flex-col bg-background text-foreground">

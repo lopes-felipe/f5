@@ -7,6 +7,7 @@ import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SidebarInset } from "../ui/sidebar";
 import { AboutSettings } from "./categories/AboutSettings";
+import { AppearanceSettings } from "./categories/AppearanceSettings";
 import { ArchiveSettings } from "./categories/ArchiveSettings";
 import { DisplaySettings } from "./categories/DisplaySettings";
 import { GeneralSettings } from "./categories/GeneralSettings";
@@ -40,6 +41,8 @@ function CategoryContent({
   switch (category) {
     case "general":
       return <GeneralSettings />;
+    case "appearance":
+      return <AppearanceSettings />;
     case "display":
       return <DisplaySettings />;
     case "notifications":

@@ -2,14 +2,6 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const GENERAL_SETTINGS_DESCRIPTORS = [
   {
-    id: "general.theme",
-    category: "general",
-    label: "Theme preference",
-    description: "Use the system, light, or dark appearance.",
-    keywords: ["appearance", "color", "dark mode", "light mode"],
-    targetSelector: '[aria-label="Theme preference"]',
-  },
-  {
     id: "general.timestamp-format",
     category: "general",
     label: "Timestamp format",

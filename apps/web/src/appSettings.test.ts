@@ -45,6 +45,37 @@ function toggledProfileValue(
 }
 
 describe("parsePersistedAppSettings", () => {
+  it("defaults and normalizes client-local appearance settings", () => {
+    const defaults = parsePersistedAppSettings(null);
+    expect(defaults).toMatchObject({
+      uiFontFamily: "",
+      uiFontSize: 16,
+      chatFontFamily: "",
+      chatFontSize: 14,
+      monoFontFamily: "",
+      terminalFontSize: 12,
+    });
+
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({
+        uiFontFamily: " Inter ",
+        uiFontSize: "19",
+        chatFontFamily: "Arial; color: red",
+        chatFontSize: 100,
+        monoFontFamily: " JetBrains Mono, Consolas ",
+        terminalFontSize: 2,
+      }),
+    );
+    expect(parsed).toMatchObject({
+      uiFontFamily: "Inter",
+      uiFontSize: 19,
+      chatFontFamily: "",
+      chatFontSize: 20,
+      monoFontFamily: "JetBrains Mono, Consolas",
+      terminalFontSize: 8,
+    });
+  });
+
   it("defaults git status auto-refresh to true", () => {
     const parsed = parsePersistedAppSettings(null);
     expect(parsed.enableGitStatusAutoRefresh).toBe(true);

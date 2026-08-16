@@ -373,6 +373,7 @@ describe("settings route", () => {
     nativeApiRef.current = undefined;
     localStorage.clear();
     document.body.innerHTML = "";
+    document.documentElement.removeAttribute("style");
     useStore.setState({
       projects: [],
       threads: [],
@@ -387,6 +388,7 @@ describe("settings route", () => {
 
     try {
       expect(page.getByRole("button", { name: "General" })).toBeTruthy();
+      expect(page.getByRole("button", { name: "Appearance" })).toBeTruthy();
       expect(page.getByRole("button", { name: "Display" })).toBeTruthy();
       expect(page.getByRole("button", { name: "Notifications" })).toBeTruthy();
       expect(page.getByRole("button", { name: "Providers & Models" })).toBeTruthy();
@@ -395,7 +397,7 @@ describe("settings route", () => {
       expect(page.getByRole("button", { name: "About" })).toBeTruthy();
       expect(router.state.location.search.category).toBe("general");
       expectCategoryVisible("general");
-      expect(getCategoryPanelText("general")).toContain("Appearance");
+      expect(getCategoryPanelText("general")).toContain("Time & locale");
 
       await page.getByRole("button", { name: "Display" }).click();
 
@@ -440,7 +442,7 @@ describe("settings route", () => {
       await vi.waitFor(() => {
         expect(router.state.location.search.category).toBe("general");
         expectCategoryVisible("general");
-        expect(getCategoryPanelText("general")).toContain("Appearance");
+        expect(getCategoryPanelText("general")).toContain("Time & locale");
       });
     } finally {
       await screen.unmount();
@@ -512,8 +514,8 @@ describe("settings route", () => {
 
       await vi.waitFor(() => {
         expect(router.state.location.search).toMatchObject({
-          category: "general",
-          item: "general.theme",
+          category: "appearance",
+          item: "appearance.theme",
         });
       });
 
@@ -528,9 +530,45 @@ describe("settings route", () => {
       history.forward();
       await vi.waitFor(() => {
         expect(router.state.location.search).toMatchObject({
-          category: "general",
-          item: "general.theme",
+          category: "appearance",
+          item: "appearance.theme",
         });
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
+  it("applies validated font choices and sizes live", async () => {
+    const { screen } = await renderSettingsRoute("/settings?category=appearance");
+
+    try {
+      expectCategoryVisible("appearance");
+
+      const interfaceFont = page.getByRole("combobox", { name: "Interface font family" });
+      await interfaceFont.fill("Inter");
+      interfaceFont
+        .element()
+        .dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+
+      const interfaceSize = page.getByRole("slider", { name: "Interface font size" });
+      await interfaceSize.fill("18");
+
+      const chatFont = page.getByRole("combobox", { name: "Chat font family" });
+      await chatFont.fill("Arial; color: red");
+      chatFont.element().blur();
+
+      await vi.waitFor(() => {
+        expect(document.documentElement.style.fontSize).toBe("18px");
+        expect(document.documentElement.style.getPropertyValue("--font-sans")).toContain('"Inter"');
+        expect(
+          parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY)),
+        ).toMatchObject({
+          uiFontFamily: "Inter",
+          uiFontSize: 18,
+          chatFontFamily: "",
+        });
+        expect(chatFont.element().getAttribute("aria-invalid")).toBe("true");
       });
     } finally {
       await screen.unmount();

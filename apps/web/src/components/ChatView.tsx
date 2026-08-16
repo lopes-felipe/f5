@@ -6335,6 +6335,7 @@ export default function ChatView({
                 onCloseTerminal={closeTerminal}
                 onHeightChange={setTerminalHeight}
                 onAddTerminalContext={addTerminalContextToDraft}
+                resolvedTheme={resolvedTheme}
               />
             </Suspense>
           );
