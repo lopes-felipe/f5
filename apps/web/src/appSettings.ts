@@ -30,6 +30,7 @@ import {
   normalizeAppearanceSettings,
   normalizeFontFamilyPreference,
 } from "./appearanceSettings";
+import { DEFAULT_THEME_ID } from "./themePalette";
 
 export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
 const MAX_CUSTOM_MODEL_COUNT = 32;
@@ -126,6 +127,8 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly chatFontSize?: unknown;
   readonly monoFontFamily?: unknown;
   readonly terminalFontSize?: unknown;
+  readonly themeId?: unknown;
+  readonly customThemes?: unknown;
 };
 
 const ClaudeProjectSettingsSchema = Schema.Struct({
@@ -303,6 +306,16 @@ export const AppSettingsSchema = Schema.Struct({
   chatFontSize: ChatFontSizeSchema,
   monoFontFamily: FontFamilyPreferenceSchema,
   terminalFontSize: TerminalFontSizeSchema,
+  themeId: Schema.String.check(Schema.isMaxLength(64)).pipe(
+    Schema.withConstructorDefault(() => Option.some(DEFAULT_THEME_ID)),
+    Schema.withDecodingDefault(() => DEFAULT_THEME_ID),
+  ),
+  // Custom definitions stay opaque here so invalid imported data can fall back
+  // without being deleted. themePalette.ts owns the strict, versioned parser.
+  customThemes: Schema.Array(Schema.Unknown).pipe(
+    Schema.withConstructorDefault(() => Option.some([])),
+    Schema.withDecodingDefault(() => []),
+  ),
   defaultThreadEnvMode: Schema.Literals(["local", "worktree"]).pipe(
     Schema.withConstructorDefault(() => Option.some("local")),
   ),

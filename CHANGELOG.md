@@ -44,6 +44,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - A dedicated Appearance category now provides validated interface, chat, code, and terminal font
   controls. Changes apply live across app chrome, messages, the composer, diffs, previews, and
   xterm terminals, which refit without restarting their sessions.
+- A local theme library now separates light/dark/system mode from color palettes, applies themes
+  before first paint, generates accessible OKLCH palettes, and supports bounded custom-theme
+  editing, export, and file-drop import from F5 JSON, VS Code JSON/JSONC, or VSIX files.
 
 ### Changed
 

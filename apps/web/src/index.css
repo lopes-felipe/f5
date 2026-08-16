@@ -82,6 +82,28 @@
   animation-duration: 0s !important;
 }
 
+@media (forced-colors: active) {
+  :root {
+    --background: Canvas !important;
+    --foreground: CanvasText !important;
+    --card: Canvas !important;
+    --card-foreground: CanvasText !important;
+    --popover: Canvas !important;
+    --popover-foreground: CanvasText !important;
+    --primary: Highlight !important;
+    --primary-foreground: HighlightText !important;
+    --secondary: Canvas !important;
+    --secondary-foreground: CanvasText !important;
+    --muted: Canvas !important;
+    --muted-foreground: GrayText !important;
+    --accent: Highlight !important;
+    --accent-foreground: HighlightText !important;
+    --border: ButtonBorder !important;
+    --input: ButtonBorder !important;
+    --ring: Highlight !important;
+  }
+}
+
 :root {
   color-scheme: light;
   --radius: 0.625rem;

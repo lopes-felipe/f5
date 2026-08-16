@@ -17,6 +17,7 @@ import {
 import { buildAppSettingsPatch } from "../../../appSettings";
 import { Button } from "../../ui/button";
 import { Input } from "../../ui/input";
+import { ThemeSettings } from "../ThemeSettings";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 
 export { APPEARANCE_SETTINGS_DESCRIPTORS } from "./AppearanceSettings.descriptors";
@@ -242,6 +243,16 @@ export function AppearanceSettings() {
           <p className="text-xs text-muted-foreground">
             Active theme: <span className="font-medium text-foreground">{resolvedTheme}</span>
           </p>
+          <div className="border-t border-border pt-4">
+            <div className="mb-3">
+              <p className="text-sm font-medium text-foreground">Color palette</p>
+              <p className="text-xs text-muted-foreground">
+                Choose a built-in palette or create a local theme. Appearance mode stays
+                independent.
+              </p>
+            </div>
+            <ThemeSettings variant={resolvedTheme} />
+          </div>
         </div>
       </section>
 

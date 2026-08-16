@@ -575,6 +575,39 @@ describe("settings route", () => {
     }
   });
 
+  it("applies a color palette live and duplicates it into the local theme library", async () => {
+    const { screen } = await renderSettingsRoute("/settings?category=appearance");
+
+    try {
+      expectCategoryVisible("appearance");
+      const originalPrimary = document.documentElement.style.getPropertyValue("--primary");
+
+      await page.getByRole("button", { name: /Ocean Built in/ }).click();
+
+      await vi.waitFor(() => {
+        expect(
+          parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY)).themeId,
+        ).toBe("f5-ocean");
+        expect(document.documentElement.dataset.themeId).toBe("f5-ocean");
+        expect(document.documentElement.style.getPropertyValue("--primary")).not.toBe(
+          originalPrimary,
+        );
+      });
+
+      await page.getByRole("button", { name: "Duplicate Ocean" }).click();
+
+      await vi.waitFor(() => {
+        const persisted = parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY));
+        expect(persisted.customThemes).toHaveLength(1);
+        expect(persisted.themeId).toMatch(/^custom-ocean-/);
+        expect(document.body.textContent).toContain("Ocean copy");
+        expect(document.querySelector('[aria-label="Edit Ocean copy"]')).not.toBeNull();
+      });
+    } finally {
+      await screen.unmount();
+    }
+  });
+
   it("keeps an unavailable project deep link explicit instead of falling back", async () => {
     const { screen, router } = await renderSettingsRoute(
       "/settings?category=projects&projectId=deleted-project",

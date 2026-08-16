@@ -233,6 +233,7 @@ interface TerminalViewportProps {
   resizeEpoch: number;
   drawerHeight: number;
   resolvedTheme: "light" | "dark";
+  themePaletteRevision: string;
   monoFontFamily: string;
   terminalFontSize: number;
 }
@@ -250,6 +251,7 @@ function TerminalViewport({
   resizeEpoch,
   drawerHeight,
   resolvedTheme,
+  themePaletteRevision,
   monoFontFamily,
   terminalFontSize,
 }: TerminalViewportProps) {
@@ -684,7 +686,7 @@ function TerminalViewport({
     if (!terminal) return;
     terminal.options.theme = terminalThemeFromApp();
     terminal.refresh(0, terminal.rows - 1);
-  }, [resolvedTheme]);
+  }, [resolvedTheme, themePaletteRevision]);
 
   useEffect(() => {
     const api = readNativeApi();
@@ -772,6 +774,7 @@ interface ThreadTerminalDrawerProps {
   onHeightChange: (height: number) => void;
   onAddTerminalContext: (selection: TerminalContextSelection) => void;
   resolvedTheme: "light" | "dark";
+  themePaletteRevision: string;
 }
 
 interface TerminalActionButtonProps {
@@ -823,6 +826,7 @@ export default function ThreadTerminalDrawer({
   onHeightChange,
   onAddTerminalContext,
   resolvedTheme,
+  themePaletteRevision,
 }: ThreadTerminalDrawerProps) {
   const appearance = useAppearanceSettings();
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
@@ -1130,6 +1134,7 @@ export default function ThreadTerminalDrawer({
                         resizeEpoch={resizeEpoch}
                         drawerHeight={drawerHeight}
                         resolvedTheme={resolvedTheme}
+                        themePaletteRevision={themePaletteRevision}
                         monoFontFamily={appearance.monoFontFamily}
                         terminalFontSize={appearance.terminalFontSize}
                       />
@@ -1153,6 +1158,7 @@ export default function ThreadTerminalDrawer({
                   resizeEpoch={resizeEpoch}
                   drawerHeight={drawerHeight}
                   resolvedTheme={resolvedTheme}
+                  themePaletteRevision={themePaletteRevision}
                   monoFontFamily={appearance.monoFontFamily}
                   terminalFontSize={appearance.terminalFontSize}
                 />

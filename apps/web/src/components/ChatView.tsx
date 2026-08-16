@@ -63,6 +63,7 @@ import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { providerQueryKeys } from "~/lib/providerReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
 import { isElectron } from "../env";
+import { useResolvedThemePalette } from "../hooks/useThemePalette";
 import { clearFileViewSearchParams, clearTurnDiffSearchParams } from "../diffRouteSearch";
 import { FileNavigationProvider } from "../fileNavigationContext";
 import {
@@ -677,6 +678,7 @@ export default function ChatView({
   const navigate = useNavigate();
   const threadActionController = useThreadActionController({ activeThreadId: threadId });
   const { resolvedTheme } = useTheme();
+  const { revision: themePaletteRevision } = useResolvedThemePalette(resolvedTheme);
   const queryClient = useQueryClient();
   const { guardBranchDrift, branchDriftDialog } = useChatViewBranchDriftGuard(threadId);
   const composerDraft = useComposerThreadDraft(threadId);
@@ -6336,6 +6338,7 @@ export default function ChatView({
                 onHeightChange={setTerminalHeight}
                 onAddTerminalContext={addTerminalContextToDraft}
                 resolvedTheme={resolvedTheme}
+                themePaletteRevision={themePaletteRevision}
               />
             </Suspense>
           );

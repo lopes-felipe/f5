@@ -45,6 +45,16 @@ function toggledProfileValue(
 }
 
 describe("parsePersistedAppSettings", () => {
+  it("defaults and preserves local palette selections and opaque invalid theme sources", () => {
+    expect(parsePersistedAppSettings(null).themeId).toBe("f5-default");
+    const customThemes = [{ version: 99, raw: "keep me" }];
+    const parsed = parsePersistedAppSettings(
+      JSON.stringify({ themeId: "custom-local", customThemes }),
+    );
+    expect(parsed.themeId).toBe("custom-local");
+    expect(parsed.customThemes).toEqual(customThemes);
+  });
+
   it("defaults and normalizes client-local appearance settings", () => {
     const defaults = parsePersistedAppSettings(null);
     expect(defaults).toMatchObject({

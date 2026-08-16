@@ -10,6 +10,14 @@ export const APPEARANCE_SETTINGS_DESCRIPTORS = [
     targetSelector: '[aria-label="Theme preference"]',
   },
   {
+    id: "appearance.palette",
+    category: "appearance",
+    label: "Color theme library",
+    description: "Choose, create, import, and export color palettes.",
+    keywords: ["palette", "theme", "color", "vscode", "vsix", "contrast"],
+    targetSelector: '[aria-label="Color theme library"]',
+  },
+  {
     id: "appearance.ui-font",
     category: "appearance",
     label: "Interface font",

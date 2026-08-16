@@ -57,6 +57,8 @@ import { invalidateReviewQueries } from "../lib/reviewReactQuery";
 import { useAppSettings } from "../appSettings";
 import { deriveOnboardingLiteState } from "../lib/onboardingLite";
 import { useAppearanceSettingsSync } from "../hooks/useAppearanceSettings";
+import { useTheme } from "../hooks/useTheme";
+import { useThemePaletteSync } from "../hooks/useThemePalette";
 import {
   cancelLiveThreadWarmScheduler,
   getLiveThreadWarmThreadIdForDomainEvent,
@@ -99,6 +101,8 @@ export function applyProviderAdvisoriesToServerConfig(
 
 function RootRouteView() {
   useAppearanceSettingsSync();
+  const { resolvedTheme } = useTheme();
+  useThemePaletteSync(resolvedTheme);
 
   if (!readNativeApi()) {
     return (
