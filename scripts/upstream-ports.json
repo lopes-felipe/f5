@@ -571,8 +571,9 @@
     {
       "upstreamSha": "cad2c93616a7c25110670c151a816d5c68341bd4",
       "subject": "feat: multi-provider pull requests page with in-app reviews (#4849)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 7.4 provider-neutral PR seam; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["969f827932eff5f8ed7168c50b7233f1de811b10"],
+      "reason": "Ported the GitHub and GitHub Enterprise portion into f5's provider-neutral PR Hub with cached Summary, Timeline, and Files reads; capability-gated comment, reaction, reviewer, and branch mutations; stale-data warnings; and browser/server fixtures. Non-GitHub providers remain deferred per the approved plan."
     },
     {
       "upstreamSha": "78f462c4e18c8ea5e5037dc916389a3b72246025",
