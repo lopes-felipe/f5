@@ -75,7 +75,14 @@ export function makeWebSocketSendController(input: {
       const logicalOutstanding = logicalOutstandingByClient.get(client) ?? 0;
       if (
         client.bufferedAmount > maxClientBufferedBytes ||
-        logicalOutstanding + logicalBytes > maxClientBufferedBytes
+        // The high-water mark is a backlog budget, not a maximum frame size.
+        // Startup snapshots can legitimately exceed it for long-lived
+        // workspaces. Refusing the first oversized frame makes progress
+        // impossible: the client reconnects and requests the same snapshot
+        // forever. Permit one frame when nothing else is outstanding, then
+        // reject every subsequent send until its completion callback releases
+        // the logical bytes.
+        (logicalOutstanding > 0 && logicalOutstanding + logicalBytes > maxClientBufferedBytes)
       ) {
         yield* closeSlowClient(client);
         return false;
