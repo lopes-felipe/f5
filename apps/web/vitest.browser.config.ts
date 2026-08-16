@@ -32,6 +32,7 @@ export default mergeConfig(
         "src/components/settings/SettingsRouteState.browser.tsx",
         "src/components/settings/categories/StorageSettings.browser.tsx",
         "src/components/onboarding/HarnessValidationPanel.browser.tsx",
+        "src/components/prHub/PrDetailsTabs.browser.tsx",
         "src/components/prHub/PrInboxView.browser.tsx",
         "src/components/prHub/PrFocusView.browser.tsx",
         "src/components/usage/UsageDashboard.browser.tsx",

@@ -2,6 +2,7 @@ import "../../index.css";
 
 import type { TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { page, userEvent } from "vitest/browser";
 import { render } from "vitest-browser-react";
@@ -70,16 +71,19 @@ afterEach(async () => {
 });
 
 async function renderFocus(focusedPrKey: string | null = null) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   active = await render(
-    <TooltipProvider delay={0}>
-      <PrFocusView
-        prs={PRS}
-        advisoriesByKey={new Map()}
-        analyzingKeys={new Set()}
-        onAnalyzeAdvisory={() => {}}
-        focusedPrKey={focusedPrKey}
-      />
-    </TooltipProvider>,
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delay={0}>
+        <PrFocusView
+          prs={PRS}
+          advisoriesByKey={new Map()}
+          analyzingKeys={new Set()}
+          onAnalyzeAdvisory={() => {}}
+          focusedPrKey={focusedPrKey}
+        />
+      </TooltipProvider>
+    </QueryClientProvider>,
   );
 }
 

@@ -8,6 +8,7 @@ import { Button } from "../ui/button";
 import { PrActionDialogs } from "./PrActionDialogs";
 import { PrAdvisoryInline } from "./PrAdvisoryInline";
 import { PrDetailActions } from "./PrDetailActions";
+import { PrDetailsTabs } from "./PrDetailsTabs";
 import {
   attentionVariant,
   checkIconFor,
@@ -174,102 +175,112 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         onOpenGitHub={handlers.onOpenGitHub}
       />
 
-      <div className="rounded-lg border border-border bg-muted/30 p-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant={attentionVariant(pr)}>{pr.nextAction}</Badge>
-        </div>
-        {pr.primaryReason ? (
-          <p className="mt-1.5 text-sm text-muted-foreground">{pr.primaryReason}</p>
-        ) : null}
-      </div>
+      <PrDetailsTabs
+        pr={pr}
+        summary={
+          <>
+            <div className="rounded-lg border border-border bg-muted/30 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={attentionVariant(pr)}>{pr.nextAction}</Badge>
+              </div>
+              {pr.primaryReason ? (
+                <p className="mt-1.5 text-sm text-muted-foreground">{pr.primaryReason}</p>
+              ) : null}
+            </div>
 
-      <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
-        <Fact label="CI">
-          <span className={`inline-flex items-center gap-1.5 ${checkClassName}`}>
-            <CheckIcon className="size-3.5" />
-            {checkLabel(pr.checkRollup)}
-          </span>
-        </Fact>
-        <Fact label="Review">{reviewDecisionLabel(pr.reviewDecision)}</Fact>
-        <Fact label="Mergeable">
-          {mergeableLabel(pr.mergeable)}
-          {pr.mergeStateStatus && pr.mergeStateStatus !== "CLEAN" ? (
-            <span className="text-muted-foreground"> · {pr.mergeStateStatus.toLowerCase()}</span>
-          ) : null}
-        </Fact>
-        <Fact label="Changes">
-          <span className="tabular-nums">
-            <span className="text-success-foreground">+{pr.additions}</span>{" "}
-            <span className="text-destructive-foreground">−{pr.deletions}</span>
-          </span>
-        </Fact>
-        <Fact label="Files">
-          <span className="tabular-nums">{pr.changedFiles}</span>
-        </Fact>
-        <Fact label="Comments">
-          <span className="tabular-nums">{pr.commentsCount}</span>
-          {pr.unresolvedThreadCount > 0 ? (
-            <span className="text-warning-foreground">
-              {" "}
-              · {pr.unresolvedThreadCount} unresolved
-            </span>
-          ) : null}
-        </Fact>
-        {hasBranches ? (
-          <Fact label="Branch">
-            <span className="font-mono text-xs">
-              {pr.headRefName} → {pr.baseRefName}
-            </span>
-          </Fact>
-        ) : null}
-        <Fact label="Author">{pr.author ?? "unknown"}</Fact>
-        <Fact label="Updated">{formatRelativeTimeLabel(pr.updatedAt)}</Fact>
-        <Fact label="Opened">{formatRelativeTimeLabel(pr.createdAt)}</Fact>
-      </div>
+            <div className="grid grid-cols-2 gap-x-6 gap-y-3 sm:grid-cols-3">
+              <Fact label="CI">
+                <span className={`inline-flex items-center gap-1.5 ${checkClassName}`}>
+                  <CheckIcon className="size-3.5" />
+                  {checkLabel(pr.checkRollup)}
+                </span>
+              </Fact>
+              <Fact label="Review">{reviewDecisionLabel(pr.reviewDecision)}</Fact>
+              <Fact label="Mergeable">
+                {mergeableLabel(pr.mergeable)}
+                {pr.mergeStateStatus && pr.mergeStateStatus !== "CLEAN" ? (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {pr.mergeStateStatus.toLowerCase()}
+                  </span>
+                ) : null}
+              </Fact>
+              <Fact label="Changes">
+                <span className="tabular-nums">
+                  <span className="text-success-foreground">+{pr.additions}</span>{" "}
+                  <span className="text-destructive-foreground">−{pr.deletions}</span>
+                </span>
+              </Fact>
+              <Fact label="Files">
+                <span className="tabular-nums">{pr.changedFiles}</span>
+              </Fact>
+              <Fact label="Comments">
+                <span className="tabular-nums">{pr.commentsCount}</span>
+                {pr.unresolvedThreadCount > 0 ? (
+                  <span className="text-warning-foreground">
+                    {" "}
+                    · {pr.unresolvedThreadCount} unresolved
+                  </span>
+                ) : null}
+              </Fact>
+              {hasBranches ? (
+                <Fact label="Branch">
+                  <span className="font-mono text-xs">
+                    {pr.headRefName} → {pr.baseRefName}
+                  </span>
+                </Fact>
+              ) : null}
+              <Fact label="Author">{pr.author ?? "unknown"}</Fact>
+              <Fact label="Updated">{formatRelativeTimeLabel(pr.updatedAt)}</Fact>
+              <Fact label="Opened">{formatRelativeTimeLabel(pr.createdAt)}</Fact>
+            </div>
 
-      {pr.reviewRequestReviewers.length > 0 ? (
-        <ChipRow label="Reviewers">
-          {pr.reviewRequestReviewers.map((reviewer) => (
-            <Chip key={reviewer}>{reviewer}</Chip>
-          ))}
-        </ChipRow>
-      ) : null}
+            {pr.reviewRequestReviewers.length > 0 ? (
+              <ChipRow label="Reviewers">
+                {pr.reviewRequestReviewers.map((reviewer) => (
+                  <Chip key={reviewer}>{reviewer}</Chip>
+                ))}
+              </ChipRow>
+            ) : null}
 
-      {pr.assignees.length > 0 ? (
-        <ChipRow label="Assignees">
-          {pr.assignees.map((assignee) => (
-            <Chip key={assignee}>{assignee}</Chip>
-          ))}
-        </ChipRow>
-      ) : null}
+            {pr.assignees.length > 0 ? (
+              <ChipRow label="Assignees">
+                {pr.assignees.map((assignee) => (
+                  <Chip key={assignee}>{assignee}</Chip>
+                ))}
+              </ChipRow>
+            ) : null}
 
-      {pr.labels.length > 0 ? (
-        <ChipRow label="Labels">
-          {pr.labels.map((label) => (
-            <Badge key={label} variant="outline" size="sm">
-              {label}
-            </Badge>
-          ))}
-        </ChipRow>
-      ) : null}
+            {pr.labels.length > 0 ? (
+              <ChipRow label="Labels">
+                {pr.labels.map((label) => (
+                  <Badge key={label} variant="outline" size="sm">
+                    {label}
+                  </Badge>
+                ))}
+              </ChipRow>
+            ) : null}
 
-      {advisory ? (
-        <div className="border-t border-border pt-4">
-          <PrAdvisoryInline advisory={advisory} defaultExpanded />
-        </div>
-      ) : showSuggestPrompt ? (
-        <div className="border-t border-border pt-4">
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={isAnalyzingAdvisory}
-            onClick={() => onAnalyzeAdvisory?.()}
-          >
-            <SparklesIcon className={isAnalyzingAdvisory ? "animate-pulse" : ""} />
-            {isAnalyzingAdvisory ? "Analyzing…" : "Get an AI recommendation"}
-          </Button>
-        </div>
-      ) : null}
+            {advisory ? (
+              <div className="border-t border-border pt-4">
+                <PrAdvisoryInline advisory={advisory} defaultExpanded />
+              </div>
+            ) : showSuggestPrompt ? (
+              <div className="border-t border-border pt-4">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={isAnalyzingAdvisory}
+                  onClick={() => onAnalyzeAdvisory?.()}
+                >
+                  <SparklesIcon className={isAnalyzingAdvisory ? "animate-pulse" : ""} />
+                  {isAnalyzingAdvisory ? "Analyzing…" : "Get an AI recommendation"}
+                </Button>
+              </div>
+            ) : null}
+          </>
+        }
+      />
 
       <PrActionDialogs {...dialogProps} />
     </div>

@@ -168,7 +168,13 @@ import type {
   PrHubAdvisorySnapshot,
   PrHubAnalyzeAdvisoriesInput,
   PrHubClearDataInput,
+  PrHubChangeReviewersInput,
   PrHubCommentInput,
+  PrHubDetailInput,
+  PrHubDetailMutationResult,
+  PrHubDetailResult,
+  PrHubFilesInput,
+  PrHubFilesPage,
   PrHubGetAdvisoriesInput,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
@@ -182,8 +188,13 @@ import type {
   PrHubReRequestInput,
   PrHubReviewInput,
   PrHubSnapshot,
+  PrHubSetReactionInput,
   PrHubSnoozeInput,
+  PrHubTimelineInput,
+  PrHubTimelinePage,
   PrHubUnsnoozeInput,
+  PrHubUpdateBranchInput,
+  PrHubUpdateCommentInput,
 } from "./prHub";
 import type {
   OrchestrationArchiveInvestigationWorkflowInput,
@@ -566,6 +577,13 @@ export interface NativeApi {
     listLocalCheckoutCandidates: (
       input: PrHubLocalCandidatesInput,
     ) => Promise<PrHubLocalCheckoutCandidate[]>;
+    getDetail: (input: PrHubDetailInput) => Promise<PrHubDetailResult>;
+    getTimeline: (input: PrHubTimelineInput) => Promise<PrHubTimelinePage>;
+    getFiles: (input: PrHubFilesInput) => Promise<PrHubFilesPage>;
+    updateComment: (input: PrHubUpdateCommentInput) => Promise<PrHubDetailMutationResult>;
+    setReaction: (input: PrHubSetReactionInput) => Promise<PrHubDetailMutationResult>;
+    changeReviewers: (input: PrHubChangeReviewersInput) => Promise<PrHubDetailMutationResult>;
+    updateBranch: (input: PrHubUpdateBranchInput) => Promise<PrHubDetailMutationResult>;
     clearData: (input?: PrHubClearDataInput) => Promise<PrHubSnapshot>;
     onSnapshotUpdated: (callback: (snapshot: PrHubSnapshot) => void) => () => void;
     onAdvisoriesUpdated: (callback: (snapshot: PrHubAdvisorySnapshot) => void) => () => void;

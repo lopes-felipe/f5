@@ -421,7 +421,14 @@ const makeGitHubCli = Effect.sync(() => {
       );
       return execute({
         cwd: input.cwd,
-        args: ["api", "graphql", "-f", `query=${input.query}`, ...variableArgs],
+        args: [
+          "api",
+          "graphql",
+          ...(input.host ? ["--hostname", input.host] : []),
+          "-f",
+          `query=${input.query}`,
+          ...variableArgs,
+        ],
         timeoutMs: 45_000,
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
@@ -505,6 +512,43 @@ const makeGitHubCli = Effect.sync(() => {
           "edit",
           input.url,
           ...input.reviewers.flatMap((reviewer) => ["--add-reviewer", reviewer]),
+        ],
+      }).pipe(Effect.asVoid),
+    changePullRequestReviewers: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "edit",
+          input.url,
+          ...input.add.flatMap((reviewer) => ["--add-reviewer", reviewer]),
+          ...input.remove.flatMap((reviewer) => ["--remove-reviewer", reviewer]),
+        ],
+      }).pipe(Effect.asVoid),
+    updatePullRequestBranch: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "pr",
+          "update-branch",
+          input.url,
+          ...(input.method === "rebase" ? ["--rebase"] : []),
+        ],
+      }).pipe(Effect.asVoid),
+    updatePullRequestComment: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: [
+          "api",
+          `repos/${input.repository}/${
+            input.kind === "issue-comment" ? "issues/comments" : "pulls/comments"
+          }/${input.commentId}`,
+          "--hostname",
+          input.host,
+          "--method",
+          "PATCH",
+          "-f",
+          `body=${input.body}`,
         ],
       }).pipe(Effect.asVoid),
   } satisfies GitHubCliShape;

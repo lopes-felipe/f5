@@ -2,6 +2,12 @@ import { ServiceMap } from "effect";
 import type { Effect, Stream } from "effect";
 import type {
   PrHubCommentInput,
+  PrHubChangeReviewersInput,
+  PrHubDetailInput,
+  PrHubDetailMutationResult,
+  PrHubDetailResult,
+  PrHubFilesInput,
+  PrHubFilesPage,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
   PrHubLocalCheckoutCandidate,
@@ -14,8 +20,13 @@ import type {
   PrHubReRequestInput,
   PrHubReviewInput,
   PrHubSnapshot,
+  PrHubSetReactionInput,
   PrHubSnoozeInput,
+  PrHubTimelineInput,
+  PrHubTimelinePage,
   PrHubUnsnoozeInput,
+  PrHubUpdateBranchInput,
+  PrHubUpdateCommentInput,
 } from "@t3tools/contracts";
 
 import type { SourceControlProviderError } from "../../sourceControl/SourceControlProvider.ts";
@@ -60,6 +71,27 @@ export interface PrHubServiceShape {
   readonly listLocalCheckoutCandidates: (
     input: PrHubLocalCandidatesInput,
   ) => Effect.Effect<ReadonlyArray<PrHubLocalCheckoutCandidate>>;
+  readonly getDetail: (
+    input: PrHubDetailInput,
+  ) => Effect.Effect<PrHubDetailResult, SourceControlProviderError>;
+  readonly getTimeline: (
+    input: PrHubTimelineInput,
+  ) => Effect.Effect<PrHubTimelinePage, SourceControlProviderError>;
+  readonly getFiles: (
+    input: PrHubFilesInput,
+  ) => Effect.Effect<PrHubFilesPage, SourceControlProviderError>;
+  readonly updateComment: (
+    input: PrHubUpdateCommentInput,
+  ) => Effect.Effect<PrHubDetailMutationResult, SourceControlProviderError>;
+  readonly setReaction: (
+    input: PrHubSetReactionInput,
+  ) => Effect.Effect<PrHubDetailMutationResult, SourceControlProviderError>;
+  readonly changeReviewers: (
+    input: PrHubChangeReviewersInput,
+  ) => Effect.Effect<PrHubDetailMutationResult, SourceControlProviderError>;
+  readonly updateBranch: (
+    input: PrHubUpdateBranchInput,
+  ) => Effect.Effect<PrHubDetailMutationResult, SourceControlProviderError>;
   readonly clearData: () => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
 }
 

@@ -115,6 +115,13 @@ function makePrHubStub(snapshot: PrHubSnapshot): PrHubServiceShape {
     markSeen: () => Effect.succeed(snapshot),
     markNotified: () => Effect.succeed(snapshot),
     listLocalCheckoutCandidates: () => Effect.succeed([]),
+    getDetail: () => Effect.die("getDetail must not be called"),
+    getTimeline: () => Effect.die("getTimeline must not be called"),
+    getFiles: () => Effect.die("getFiles must not be called"),
+    updateComment: () => Effect.die("updateComment must not be called"),
+    setReaction: () => Effect.die("setReaction must not be called"),
+    changeReviewers: () => Effect.die("changeReviewers must not be called"),
+    updateBranch: () => Effect.die("updateBranch must not be called"),
     clearData: () => Effect.succeed(snapshot),
   };
 }
@@ -236,6 +243,18 @@ function makeLayer(input: {
         input.calls.mutating += 1;
       }),
     addPullRequestReviewers: () =>
+      Effect.sync(() => {
+        input.calls.mutating += 1;
+      }),
+    changePullRequestReviewers: () =>
+      Effect.sync(() => {
+        input.calls.mutating += 1;
+      }),
+    updatePullRequestBranch: () =>
+      Effect.sync(() => {
+        input.calls.mutating += 1;
+      }),
+    updatePullRequestComment: () =>
       Effect.sync(() => {
         input.calls.mutating += 1;
       }),

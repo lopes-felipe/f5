@@ -127,8 +127,11 @@ import {
   PR_HUB_WS_METHODS,
   PrHubAdvisorySnapshot,
   PrHubAnalyzeAdvisoriesInput,
+  PrHubChangeReviewersInput,
   PrHubClearDataInput,
   PrHubCommentInput,
+  PrHubDetailInput,
+  PrHubFilesInput,
   PrHubGetAdvisoriesInput,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
@@ -141,8 +144,12 @@ import {
   PrHubReRequestInput,
   PrHubReviewInput,
   PrHubSnapshot,
+  PrHubSetReactionInput,
   PrHubSnoozeInput,
+  PrHubTimelineInput,
   PrHubUnsnoozeInput,
+  PrHubUpdateBranchInput,
+  PrHubUpdateCommentInput,
 } from "./prHub";
 import {
   NextTurnQueueCancelInput,
@@ -534,6 +541,13 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(PR_HUB_WS_METHODS.analyzeAdvisories, PrHubAnalyzeAdvisoriesInput),
   tagRequestBody(PR_HUB_WS_METHODS.getAdvisories, PrHubGetAdvisoriesInput),
   tagRequestBody(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, PrHubLocalCandidatesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getDetail, PrHubDetailInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getTimeline, PrHubTimelineInput),
+  tagRequestBody(PR_HUB_WS_METHODS.getFiles, PrHubFilesInput),
+  tagRequestBody(PR_HUB_WS_METHODS.updateComment, PrHubUpdateCommentInput),
+  tagRequestBody(PR_HUB_WS_METHODS.setReaction, PrHubSetReactionInput),
+  tagRequestBody(PR_HUB_WS_METHODS.changeReviewers, PrHubChangeReviewersInput),
+  tagRequestBody(PR_HUB_WS_METHODS.updateBranch, PrHubUpdateBranchInput),
   tagRequestBody(PR_HUB_WS_METHODS.clearData, PrHubClearDataInput),
 ]);
 

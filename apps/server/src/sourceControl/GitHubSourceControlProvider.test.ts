@@ -20,13 +20,7 @@ describe("GitHubSourceControlProvider", () => {
     );
     expect(provider.capability("approve")).toMatchObject({ supported: true });
 
-    const unsupported = await Effect.runPromiseExit(provider.requireCapability("react"));
-    expect(Exit.isFailure(unsupported)).toBe(true);
-    if (Exit.isFailure(unsupported)) {
-      const error = String(unsupported.cause);
-      expect(error).toContain("SourceControlProviderError");
-      expect(error).toContain("react");
-    }
+    expect(provider.capability("react")).toMatchObject({ supported: true });
   });
 
   it("declares every mutation as supported or explicitly unsupported", async () => {

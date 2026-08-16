@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { Schema } from "effect";
 
-import { PrHubSnapshot, TrackedPullRequest } from "./prHub";
+import { PrHubDetailResult, PrHubSnapshot, TrackedPullRequest } from "./prHub";
 import { SourceControlPullRequestRef } from "./sourceControl";
 
 const legacyTrackedPullRequest = {
@@ -78,5 +78,49 @@ describe("source-control contracts", () => {
     });
     expect(snapshot.pullRequests[0]?.provider).toBe("github");
     expect(snapshot.authStates).toBeUndefined();
+  });
+
+  it("keeps provider-native detail fields inside the GitHub variant", () => {
+    const result = Schema.decodeUnknownSync(PrHubDetailResult)({
+      detail: {
+        key: "github:github.com/octo/repo#7",
+        providerDetails: {
+          provider: "github",
+          nodeId: "PR_7",
+          mergeStateStatus: "CLEAN",
+          headRefOid: "head",
+          baseRefOid: "base",
+          viewerCanUpdate: true,
+          viewerDidAuthor: true,
+        },
+        title: "Detail",
+        body: "Body",
+        url: "https://github.com/octo/repo/pull/7",
+        state: "open",
+        isDraft: false,
+        mergeable: "mergeable",
+        additions: 1,
+        deletions: 0,
+        changedFiles: 1,
+        headRefName: "feature",
+        baseRefName: "main",
+        createdAt: "2026-08-15T10:00:00.000Z",
+        updatedAt: "2026-08-15T11:00:00.000Z",
+        mergedAt: null,
+        closedAt: null,
+        author: null,
+        labels: [],
+        reviewers: [],
+        checks: [],
+        reactions: [],
+      },
+      stale: false,
+      refreshedAt: "2026-08-15T11:00:00.000Z",
+    });
+
+    expect(result.detail.providerDetails.provider).toBe("github");
+    if (result.detail.providerDetails.provider === "github") {
+      expect(result.detail.providerDetails.nodeId).toBe("PR_7");
+    }
   });
 });

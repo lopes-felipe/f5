@@ -3,12 +3,15 @@ import { createHash } from "node:crypto";
 
 import {
   PullRequestKey,
+  type PrHubDetailResult,
+  type PrHubFilesPage,
   type PrAttentionBucket,
   type PrAttentionState,
   type PrCheckRollup,
   type PrHubLocalCheckoutCandidate,
   type PrHubRefreshInput,
   type PrHubSnapshot,
+  type PrHubTimelinePage,
   type PrMergeable,
   type PrPullRequestState,
   type PrRepositoryRef,
@@ -21,6 +24,7 @@ import { derivePrAttention } from "@t3tools/shared/prHub";
 import {
   formatSourceControlPullRequestKey,
   parseSourceControlPullRequestKey,
+  sourceControlPullRequestKeysEqual,
 } from "@t3tools/shared/sourceControl";
 import { Cause, Deferred, Effect, Exit, Layer, PubSub, Ref, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -40,6 +44,18 @@ import {
 } from "../../sourceControl/SourceControlProvider.ts";
 import { discoverSourceControlProviderIdentities } from "../../sourceControl/discovery.ts";
 import { PrHubService, type PrHubServiceShape } from "../Services/PrHubService.ts";
+import {
+  decodeGitHubPrDetail,
+  decodeGitHubPrFiles,
+  decodeGitHubPrTimeline,
+  GITHUB_ADD_REACTION_MUTATION,
+  GITHUB_PR_DETAIL_QUERY,
+  GITHUB_PR_FILES_QUERY,
+  GITHUB_PR_TIMELINE_QUERY,
+  GITHUB_REACTION_CONTENT,
+  GITHUB_REMOVE_REACTION_MUTATION,
+  githubTimelineVariables,
+} from "../githubPrDetails.ts";
 
 const DEFAULT_HOST = process.env.GH_HOST?.trim() || "github.com";
 const SEARCH_SORT_QUALIFIER = "sort:updated-desc";
@@ -54,6 +70,8 @@ const RECONCILE_REPO_NUMBER_CHUNK_SIZE = 20;
 const RESOLVED_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 const NO_LONGER_RELEVANT_RETENTION_MS = 48 * 60 * 60 * 1000;
 const NO_MATCH_SEARCH_QUERY = `${SEARCH_OPEN_PREFIX} updated:<1970-01-02`;
+const PR_DETAIL_CACHE_TTL_MS = 30_000;
+const PR_DETAIL_CACHE_CAPACITY = 128;
 
 interface ViewerIdentity {
   readonly login: string;
@@ -179,6 +197,61 @@ interface ReconcileByNumberRequest {
     readonly alias: string;
     readonly key: string;
   }>;
+}
+
+interface CachedPrDetailRead<A> {
+  readonly value: A;
+  readonly storedAt: number;
+}
+
+interface PrDetailReadMetadata {
+  readonly stale: boolean;
+  readonly refreshedAt: string;
+  readonly warning?: string | undefined;
+}
+
+function cacheSet<A>(cache: Map<string, CachedPrDetailRead<A>>, key: string, value: A): void {
+  cache.delete(key);
+  cache.set(key, { value, storedAt: Date.now() });
+  while (cache.size > PR_DETAIL_CACHE_CAPACITY) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
+
+function isRetainableDetailFailure(error: SourceControlProviderError): boolean {
+  return error.kind === "network" || error.kind === "timeout" || error.kind === "rate_limited";
+}
+
+function readPrDetailCache<A extends PrDetailReadMetadata>(input: {
+  readonly cache: Map<string, CachedPrDetailRead<A>>;
+  readonly key: string;
+  readonly mode: "if_stale" | "force";
+  readonly fetch: Effect.Effect<A, SourceControlProviderError>;
+}): Effect.Effect<A, SourceControlProviderError> {
+  const cached = input.cache.get(input.key);
+  if (
+    input.mode === "if_stale" &&
+    cached &&
+    Date.now() - cached.storedAt < PR_DETAIL_CACHE_TTL_MS
+  ) {
+    input.cache.delete(input.key);
+    input.cache.set(input.key, cached);
+    return Effect.succeed(cached.value);
+  }
+  return input.fetch.pipe(
+    Effect.tap((value) => Effect.sync(() => cacheSet(input.cache, input.key, value))),
+    Effect.catch((error) =>
+      cached && isRetainableDetailFailure(error)
+        ? Effect.succeed({
+            ...cached.value,
+            stale: true,
+            warning: error.detail,
+          })
+        : Effect.fail(error),
+    ),
+  );
 }
 
 function accountCwd(fallback: string): string {
@@ -970,6 +1043,9 @@ const makePrHubService = Effect.gen(function* () {
   const actionRefreshPubSub = yield* PubSub.unbounded<void>();
   const inFlightRef = yield* Ref.make<Deferred.Deferred<PrHubSnapshot> | null>(null);
   const viewerRef = yield* Ref.make<ViewerIdentity | null>(null);
+  const detailCache = new Map<string, CachedPrDetailRead<PrHubDetailResult>>();
+  const timelineCache = new Map<string, CachedPrDetailRead<PrHubTimelinePage>>();
+  const filesCache = new Map<string, CachedPrDetailRead<PrHubFilesPage>>();
 
   const publishSnapshot = (snapshot: PrHubSnapshot) =>
     Ref.set(snapshotRef, snapshot).pipe(
@@ -2113,6 +2189,177 @@ const makePrHubService = Effect.gen(function* () {
       }),
     );
 
+  const trackedPrByKey = (
+    key: PullRequestKey,
+  ): Effect.Effect<TrackedPullRequest, SourceControlProviderError> =>
+    getSnapshot.pipe(
+      Effect.flatMap((snapshot) => {
+        const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((candidate) =>
+          sourceControlPullRequestKeysEqual(candidate.key, key),
+        );
+        return pr
+          ? Effect.succeed(pr)
+          : Effect.fail(prHubActionError("Pull request is not tracked by PR Hub."));
+      }),
+    );
+
+  const repositoryParts = (pr: TrackedPullRequest) => {
+    const separator = pr.repository.nameWithOwner.indexOf("/");
+    if (separator <= 0 || separator === pr.repository.nameWithOwner.length - 1) {
+      return Effect.fail(
+        new SourceControlProviderError({
+          provider: pr.provider,
+          operation: "prHub.detail.resolveRepository",
+          detail: `Invalid repository identity '${pr.repository.nameWithOwner}'.`,
+          kind: "invalid_response",
+          host: pr.host,
+        }),
+      );
+    }
+    return Effect.succeed({
+      owner: pr.repository.nameWithOwner.slice(0, separator),
+      repo: pr.repository.nameWithOwner.slice(separator + 1),
+    });
+  };
+
+  const decodeDetailResponse = <A>(
+    pr: TrackedPullRequest,
+    operation: string,
+    decode: () => A,
+  ): Effect.Effect<A, SourceControlProviderError> =>
+    Effect.try({
+      try: decode,
+      catch: (cause) =>
+        new SourceControlProviderError({
+          provider: pr.provider,
+          operation,
+          detail: cause instanceof Error ? cause.message : "GitHub returned invalid PR detail.",
+          kind: "invalid_response",
+          host: pr.host,
+          cause,
+        }),
+    });
+
+  const getDetail: PrHubServiceShape["getDetail"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        Effect.gen(function* () {
+          const provider = yield* sourceControlProviders.get(pr.provider);
+          const { owner, repo } = yield* repositoryParts(pr);
+          const cacheKey = pr.key;
+          return yield* readPrDetailCache({
+            cache: detailCache,
+            key: cacheKey,
+            mode: input.mode ?? "if_stale",
+            fetch: provider
+              .query({
+                cwd,
+                host: pr.host,
+                document: GITHUB_PR_DETAIL_QUERY,
+                variables: { owner, repo, number: pr.number },
+              })
+              .pipe(
+                Effect.flatMap((response) =>
+                  decodeDetailResponse(pr, "prHub.getDetail.decode", () => {
+                    const decoded = decodeGitHubPrDetail(response, pr);
+                    return {
+                      detail: decoded.detail,
+                      stale: false,
+                      refreshedAt: new Date().toISOString(),
+                      ...(decoded.rateLimit ? { rateLimit: decoded.rateLimit } : {}),
+                    } satisfies PrHubDetailResult;
+                  }),
+                ),
+              ),
+          });
+        }),
+      ),
+    );
+
+  const getTimeline: PrHubServiceShape["getTimeline"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        Effect.gen(function* () {
+          const provider = yield* sourceControlProviders.get(pr.provider);
+          const { owner, repo } = yield* repositoryParts(pr);
+          const variables = yield* decodeDetailResponse(pr, "prHub.getTimeline.cursor", () =>
+            githubTimelineVariables({ owner, repo, number: pr.number, cursor: input.cursor }),
+          );
+          return yield* readPrDetailCache({
+            cache: timelineCache,
+            key: `${pr.key}|${input.cursor ?? "first"}`,
+            mode: input.mode ?? "if_stale",
+            fetch: provider
+              .query({
+                cwd,
+                host: pr.host,
+                document: GITHUB_PR_TIMELINE_QUERY,
+                variables,
+              })
+              .pipe(
+                Effect.flatMap((response) =>
+                  decodeDetailResponse(pr, "prHub.getTimeline.decode", () => {
+                    const decoded = decodeGitHubPrTimeline(response, input.cursor);
+                    return {
+                      entries: [...decoded.entries],
+                      pageInfo: decoded.pageInfo,
+                      stale: false,
+                      refreshedAt: new Date().toISOString(),
+                    } satisfies PrHubTimelinePage;
+                  }),
+                ),
+              ),
+          });
+        }),
+      ),
+    );
+
+  const getFiles: PrHubServiceShape["getFiles"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        Effect.gen(function* () {
+          const provider = yield* sourceControlProviders.get(pr.provider);
+          const { owner, repo } = yield* repositoryParts(pr);
+          return yield* readPrDetailCache({
+            cache: filesCache,
+            key: `${pr.key}|${input.cursor ?? "first"}`,
+            mode: input.mode ?? "if_stale",
+            fetch: provider
+              .query({
+                cwd,
+                host: pr.host,
+                document: GITHUB_PR_FILES_QUERY,
+                variables: {
+                  owner,
+                  repo,
+                  number: pr.number,
+                  ...(input.cursor ? { cursor: input.cursor } : {}),
+                },
+              })
+              .pipe(
+                Effect.flatMap((response) =>
+                  decodeDetailResponse(pr, "prHub.getFiles.decode", () => {
+                    const decoded = decodeGitHubPrFiles(response);
+                    return {
+                      files: [...decoded.files],
+                      pageInfo: decoded.pageInfo,
+                      stale: false,
+                      refreshedAt: new Date().toISOString(),
+                    } satisfies PrHubFilesPage;
+                  }),
+                ),
+              ),
+          });
+        }),
+      ),
+    );
+
+  const reconcileDetailMutation = (pr: TrackedPullRequest) =>
+    Effect.all(
+      [getDetail({ key: pr.key, mode: "force" }), getTimeline({ key: pr.key, mode: "force" })],
+      { concurrency: 2 },
+    ).pipe(Effect.map(([detail, timeline]) => ({ detail, timeline })));
+
   const requireTrackedPr = (
     url: string,
     predicate: (pr: TrackedPullRequest) => boolean,
@@ -2295,6 +2542,105 @@ const makePrHubService = Effect.gen(function* () {
       return candidates;
     });
 
+  const updateComment: PrHubServiceShape["updateComment"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        /^\d+$/.test(input.commentId)
+          ? sourceControlProviders.get(pr.provider).pipe(
+              Effect.flatMap((provider) =>
+                provider.updatePullRequestComment({
+                  cwd,
+                  host: pr.host,
+                  repository: pr.repository.nameWithOwner,
+                  commentId: input.commentId,
+                  kind: input.kind,
+                  body: input.body,
+                }),
+              ),
+              Effect.andThen(reconcileDetailMutation(pr)),
+            )
+          : Effect.fail(prHubActionError("The selected comment cannot be edited.")),
+      ),
+    );
+
+  const setReaction: PrHubServiceShape["setReaction"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        sourceControlProviders.get(pr.provider).pipe(
+          Effect.flatMap((provider) =>
+            provider.requireCapability("react").pipe(
+              Effect.andThen(
+                provider.query({
+                  cwd,
+                  host: pr.host,
+                  document: input.reacted
+                    ? GITHUB_ADD_REACTION_MUTATION
+                    : GITHUB_REMOVE_REACTION_MUTATION,
+                  variables: {
+                    subjectId: input.subjectId,
+                    content: GITHUB_REACTION_CONTENT[input.content],
+                  },
+                }),
+              ),
+            ),
+          ),
+          Effect.andThen(reconcileDetailMutation(pr)),
+        ),
+      ),
+    );
+
+  const changeReviewers: PrHubServiceShape["changeReviewers"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        Effect.gen(function* () {
+          const add = [...new Set(normalizeReviewerInputs(input.add))];
+          const remove = [...new Set(normalizeReviewerInputs(input.remove))];
+          if (add.length === 0 && remove.length === 0) {
+            return yield* prHubActionError("Choose at least one reviewer change.");
+          }
+          const invalid = [...add, ...remove].find(
+            (reviewer) => !validReviewerPattern.test(reviewer),
+          );
+          if (invalid) {
+            return yield* prHubActionError(`Invalid reviewer name: ${invalid}`);
+          }
+          const removing = new Set(remove.map((reviewer) => reviewer.toLowerCase()));
+          const overlap = add.find((reviewer) => removing.has(reviewer.toLowerCase()));
+          if (overlap) {
+            return yield* prHubActionError(
+              `Reviewer '${overlap}' cannot be added and removed together.`,
+            );
+          }
+          const provider = yield* sourceControlProviders.get(pr.provider);
+          yield* provider.changePullRequestReviewers({ cwd, url: pr.url, add, remove });
+          yield* PubSub.publish(actionRefreshPubSub, undefined);
+          return yield* reconcileDetailMutation(pr);
+        }),
+      ),
+    );
+
+  const updateBranch: PrHubServiceShape["updateBranch"] = (input) =>
+    trackedPrByKey(input.key).pipe(
+      Effect.flatMap((pr) =>
+        pr.state === "open"
+          ? sourceControlProviders.get(pr.provider).pipe(
+              Effect.flatMap((provider) =>
+                provider.updatePullRequestBranch({ cwd, url: pr.url, method: input.method }),
+              ),
+              Effect.tap(() => PubSub.publish(actionRefreshPubSub, undefined)),
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  for (const cacheKey of filesCache.keys()) {
+                    if (cacheKey.startsWith(`${pr.key}|`)) filesCache.delete(cacheKey);
+                  }
+                }),
+              ),
+              Effect.andThen(reconcileDetailMutation(pr)),
+            )
+          : Effect.fail(prHubActionError("Only open pull-request branches can be updated.")),
+      ),
+    );
+
   const clearData: PrHubServiceShape["clearData"] = () =>
     Effect.gen(function* () {
       yield* sql
@@ -2307,6 +2653,9 @@ const makePrHubService = Effect.gen(function* () {
           }),
         )
         .pipe(persistPrHubState("prHub.clearData"));
+      detailCache.clear();
+      timelineCache.clear();
+      filesCache.clear();
       return yield* publishSnapshot(emptySnapshot({ host }));
     });
 
@@ -2417,6 +2766,13 @@ const makePrHubService = Effect.gen(function* () {
     markSeen,
     markNotified,
     listLocalCheckoutCandidates,
+    getDetail,
+    getTimeline,
+    getFiles,
+    updateComment,
+    setReaction,
+    changeReviewers,
+    updateBranch,
     clearData,
   } satisfies PrHubServiceShape;
 });

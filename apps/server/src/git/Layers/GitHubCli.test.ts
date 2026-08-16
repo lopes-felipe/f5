@@ -186,6 +186,103 @@ layer("GitHubCliLive", (it) => {
       }),
   );
 
+  it.effect(
+    "routes GitHub Enterprise detail reads and mutations through explicit CLI arguments",
+    () =>
+      Effect.gen(function* () {
+        mockedRunProcess
+          .mockResolvedValueOnce({
+            stdout: JSON.stringify({ data: { ok: true } }),
+            stderr: "",
+            code: 0,
+            signal: null,
+            timedOut: false,
+          })
+          .mockResolvedValue({
+            stdout: "",
+            stderr: "",
+            code: 0,
+            signal: null,
+            timedOut: false,
+          });
+
+        const gh = yield* GitHubCli;
+        yield* gh.runGraphql({
+          cwd: "/repo",
+          host: "github.example.com",
+          query: "query { viewer { login } }",
+        });
+        yield* gh.changePullRequestReviewers({
+          cwd: "/repo",
+          url: "https://github.example.com/octo/repo/pull/7",
+          add: ["alice"],
+          remove: ["bob"],
+        });
+        yield* gh.updatePullRequestBranch({
+          cwd: "/repo",
+          url: "https://github.example.com/octo/repo/pull/7",
+          method: "rebase",
+        });
+        yield* gh.updatePullRequestComment({
+          cwd: "/repo",
+          host: "github.example.com",
+          repository: "octo/repo",
+          commentId: "123",
+          kind: "review-comment",
+          body: "Updated",
+        });
+
+        expect(mockedRunProcess).toHaveBeenNthCalledWith(
+          1,
+          "gh",
+          [
+            "api",
+            "graphql",
+            "--hostname",
+            "github.example.com",
+            "-f",
+            "query=query { viewer { login } }",
+          ],
+          expect.objectContaining({ cwd: "/repo" }),
+        );
+        expect(mockedRunProcess).toHaveBeenNthCalledWith(
+          2,
+          "gh",
+          [
+            "pr",
+            "edit",
+            "https://github.example.com/octo/repo/pull/7",
+            "--add-reviewer",
+            "alice",
+            "--remove-reviewer",
+            "bob",
+          ],
+          expect.objectContaining({ cwd: "/repo" }),
+        );
+        expect(mockedRunProcess).toHaveBeenNthCalledWith(
+          3,
+          "gh",
+          ["pr", "update-branch", "https://github.example.com/octo/repo/pull/7", "--rebase"],
+          expect.objectContaining({ cwd: "/repo" }),
+        );
+        expect(mockedRunProcess).toHaveBeenNthCalledWith(
+          4,
+          "gh",
+          [
+            "api",
+            "repos/octo/repo/pulls/comments/123",
+            "--hostname",
+            "github.example.com",
+            "--method",
+            "PATCH",
+            "-f",
+            "body=Updated",
+          ],
+          expect.objectContaining({ cwd: "/repo" }),
+        );
+      }),
+  );
+
   it.effect("normalizes GitHub HTTP failures without leaking the full command", () =>
     Effect.gen(function* () {
       mockedRunProcess.mockRejectedValueOnce(

@@ -588,6 +588,13 @@ export function createWsNativeApi(): NativeApi {
       getAdvisories: (input = {}) => transport.request(PR_HUB_WS_METHODS.getAdvisories, input),
       listLocalCheckoutCandidates: (input) =>
         transport.request(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, input),
+      getDetail: (input) => transport.request(PR_HUB_WS_METHODS.getDetail, input),
+      getTimeline: (input) => transport.request(PR_HUB_WS_METHODS.getTimeline, input),
+      getFiles: (input) => transport.request(PR_HUB_WS_METHODS.getFiles, input),
+      updateComment: (input) => transport.request(PR_HUB_WS_METHODS.updateComment, input),
+      setReaction: (input) => transport.request(PR_HUB_WS_METHODS.setReaction, input),
+      changeReviewers: (input) => transport.request(PR_HUB_WS_METHODS.changeReviewers, input),
+      updateBranch: (input) => transport.request(PR_HUB_WS_METHODS.updateBranch, input),
       clearData: (input = {}) => transport.request(PR_HUB_WS_METHODS.clearData, input),
       onSnapshotUpdated: (callback) => onPrHubUpdated(callback),
       onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),

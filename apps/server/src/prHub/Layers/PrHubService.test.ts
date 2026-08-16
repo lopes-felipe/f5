@@ -42,6 +42,21 @@ interface HarnessCalls {
     readonly url: string;
     readonly reviewers: ReadonlyArray<string>;
   }>;
+  readonly reviewerChanges: Array<{
+    readonly url: string;
+    readonly add: ReadonlyArray<string>;
+    readonly remove: ReadonlyArray<string>;
+  }>;
+  readonly branchUpdates: Array<{
+    readonly url: string;
+    readonly method: "merge" | "rebase";
+  }>;
+  readonly commentUpdates: Array<{
+    readonly repository: string;
+    readonly commentId: string;
+    readonly kind: "issue-comment" | "review-comment";
+    readonly body: string;
+  }>;
   readonly approvals: Array<{ readonly url: string; readonly body?: string | undefined }>;
   readonly changeRequests: Array<{ readonly url: string; readonly body: string }>;
   readonly comments: Array<{ readonly url: string; readonly body: string }>;
@@ -81,6 +96,10 @@ function makeGithubStub(input: {
   readonly teamsError?: GitHubCliError;
   readonly searchResponses?: unknown[];
   readonly detailResponses?: unknown[];
+  readonly prDetailResponses?: unknown[];
+  readonly timelineResponses?: unknown[];
+  readonly fileResponses?: unknown[];
+  readonly mutationResponses?: unknown[];
   readonly reconcileResponses?: unknown[];
   readonly reconcileByNumberResponses?: unknown[];
   readonly stallSearchAfterFirst?: boolean;
@@ -88,6 +107,10 @@ function makeGithubStub(input: {
 }): GitHubCliShape {
   const searchResponses = [...(input.searchResponses ?? [emptySearchResponse()])];
   const detailResponses = [...(input.detailResponses ?? [])];
+  const prDetailResponses = [...(input.prDetailResponses ?? [])];
+  const timelineResponses = [...(input.timelineResponses ?? [])];
+  const fileResponses = [...(input.fileResponses ?? [])];
+  const mutationResponses = [...(input.mutationResponses ?? [])];
   const reconcileResponses = [...(input.reconcileResponses ?? [])];
   const reconcileByNumberResponses = [...(input.reconcileByNumberResponses ?? [])];
   const detailNodesById = new Map<string, Record<string, unknown>>();
@@ -143,13 +166,21 @@ function makeGithubStub(input: {
           return Effect.never;
         }
       }
-      const response = request.query.includes("PrHubReconcileByNumber")
-        ? nextResponse(reconcileByNumberResponses, reconcileByNumberResponse([]))
-        : request.query.includes("PrHubReconcile")
-          ? nextResponse(reconcileResponses, reconcileResponse([]))
-          : request.query.includes("PrHubDetails")
-            ? nextResponse(detailResponses, detailResponseFor(request))
-            : nextResponse(searchResponses, emptySearchResponse());
+      const response = request.query.includes("F5PrDetail(")
+        ? nextResponse(prDetailResponses, emptySearchResponse())
+        : request.query.includes("F5PrTimeline(")
+          ? nextResponse(timelineResponses, emptySearchResponse())
+          : request.query.includes("F5PrFiles(")
+            ? nextResponse(fileResponses, emptySearchResponse())
+            : request.query.includes("mutation F5")
+              ? nextResponse(mutationResponses, { data: {} })
+              : request.query.includes("PrHubReconcileByNumber")
+                ? nextResponse(reconcileByNumberResponses, reconcileByNumberResponse([]))
+                : request.query.includes("PrHubReconcile")
+                  ? nextResponse(reconcileResponses, reconcileResponse([]))
+                  : request.query.includes("PrHubDetails")
+                    ? nextResponse(detailResponses, detailResponseFor(request))
+                    : nextResponse(searchResponses, emptySearchResponse());
       if (!isGitHubCliError(response) && request.query.includes("PrHubSearch")) {
         rememberDetailNodes(response);
       }
@@ -187,6 +218,27 @@ function makeGithubStub(input: {
         input.calls.addReviewers.push({ url: request.url, reviewers: request.reviewers });
       });
     },
+    changePullRequestReviewers: (request) =>
+      Effect.sync(() => {
+        input.calls.reviewerChanges.push({
+          url: request.url,
+          add: request.add,
+          remove: request.remove,
+        });
+      }),
+    updatePullRequestBranch: (request) =>
+      Effect.sync(() => {
+        input.calls.branchUpdates.push({ url: request.url, method: request.method });
+      }),
+    updatePullRequestComment: (request) =>
+      Effect.sync(() => {
+        input.calls.commentUpdates.push({
+          repository: request.repository,
+          commentId: request.commentId,
+          kind: request.kind,
+          body: request.body,
+        });
+      }),
   };
 }
 
@@ -197,6 +249,10 @@ function makeLayer(input: {
   readonly teamsError?: GitHubCliError;
   readonly searchResponses?: unknown[];
   readonly detailResponses?: unknown[];
+  readonly prDetailResponses?: unknown[];
+  readonly timelineResponses?: unknown[];
+  readonly fileResponses?: unknown[];
+  readonly mutationResponses?: unknown[];
   readonly reconcileResponses?: unknown[];
   readonly reconcileByNumberResponses?: unknown[];
   readonly stallSearchAfterFirst?: boolean;
@@ -229,6 +285,9 @@ function makeCalls(): HarnessCalls {
   return {
     graphql: [],
     addReviewers: [],
+    reviewerChanges: [],
+    branchUpdates: [],
+    commentUpdates: [],
     approvals: [],
     changeRequests: [],
     comments: [],
@@ -362,6 +421,76 @@ function makePrNode(input: {
           },
         },
       ],
+    },
+  };
+}
+
+function prDetailResponse(input: { readonly title?: string } = {}) {
+  return {
+    data: {
+      repository: {
+        pullRequest: {
+          id: "PR_detail",
+          title: input.title ?? "Detailed PR",
+          body: "Detailed body",
+          url: "https://github.com/octo/repo/pull/30",
+          state: "OPEN",
+          isDraft: false,
+          mergeable: "MERGEABLE",
+          mergeStateStatus: "CLEAN",
+          additions: 10,
+          deletions: 2,
+          changedFiles: 3,
+          headRefName: "feature-30",
+          baseRefName: "main",
+          headRefOid: "head-30",
+          baseRefOid: "base-30",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          mergedAt: null,
+          closedAt: null,
+          viewerCanUpdate: true,
+          viewerDidAuthor: true,
+          author: { login: "me" },
+          labels: { nodes: [] },
+          reviewRequests: { nodes: [] },
+          latestReviews: { nodes: [] },
+          reactionGroups: [],
+          commits: { nodes: [] },
+        },
+      },
+      rateLimit: { remaining: 100, limit: 5_000, resetAt: null },
+    },
+  };
+}
+
+function prTimelineResponse() {
+  return {
+    data: {
+      repository: {
+        pullRequest: {
+          comments: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+          reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+          commits: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+        },
+      },
+      rateLimit: { remaining: 100, limit: 5_000, resetAt: null },
+    },
+  };
+}
+
+function prFilesResponse() {
+  return {
+    data: {
+      repository: {
+        pullRequest: {
+          files: {
+            nodes: [{ path: "src/a.ts", additions: 2, deletions: 1, changeType: "CHANGED" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+      rateLimit: { remaining: 100, limit: 5_000, resetAt: null },
     },
   };
 }
@@ -1336,6 +1465,118 @@ it.effect("refuses merge when the tracked head oid is missing", () => {
       makeLayer({
         calls,
         searchResponses: [searchResponse("author", [readyPr])],
+      }),
+    ),
+  );
+});
+
+it.effect("loads GitHub detail surfaces and retains cached data on transient failures", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+  const transientFailure = new GitHubCliError({
+    operation: "graphql",
+    detail: "The network is temporarily unavailable.",
+    kind: "network",
+  });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const detail = yield* service.getDetail({ key: tracked.key });
+    const timeline = yield* service.getTimeline({ key: tracked.key });
+    const files = yield* service.getFiles({ key: tracked.key });
+    assert.equal(detail.detail.title, "Fresh detail");
+    assert.deepStrictEqual(timeline.entries, []);
+    assert.equal(files.files[0]?.path, "src/a.ts");
+
+    const stale = yield* service.getDetail({ key: tracked.key, mode: "force" });
+    assert.equal(stale.detail.title, "Fresh detail");
+    assert.equal(stale.stale, true);
+    assert.equal(stale.warning, "The network is temporarily unavailable.");
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        prDetailResponses: [prDetailResponse({ title: "Fresh detail" }), transientFailure],
+        timelineResponses: [prTimelineResponse()],
+        fileResponses: [prFilesResponse()],
+      }),
+    ),
+  );
+});
+
+it.effect("reconciles detail mutations and forwards provider-native arguments", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const commentResult = yield* service.updateComment({
+      key: tracked.key,
+      commentId: "123",
+      kind: "review-comment",
+      body: "Updated body",
+    });
+    assert.equal(commentResult.detail.detail.title, "After comment");
+
+    const reactionResult = yield* service.setReaction({
+      key: tracked.key,
+      subjectId: "IC_1",
+      content: "eyes",
+      reacted: true,
+    });
+    assert.equal(reactionResult.detail.detail.title, "After reaction");
+
+    const reviewerResult = yield* service.changeReviewers({
+      key: tracked.key,
+      add: ["alice"],
+      remove: ["bob"],
+    });
+    assert.equal(reviewerResult.detail.detail.title, "After reviewers");
+
+    const branchResult = yield* service.updateBranch({ key: tracked.key, method: "rebase" });
+    assert.equal(branchResult.detail.detail.title, "After branch");
+
+    assert.deepStrictEqual(calls.commentUpdates, [
+      {
+        repository: "octo/repo",
+        commentId: "123",
+        kind: "review-comment",
+        body: "Updated body",
+      },
+    ]);
+    assert.deepStrictEqual(calls.reviewerChanges, [
+      { url: tracked.url, add: ["alice"], remove: ["bob"] },
+    ]);
+    assert.deepStrictEqual(calls.branchUpdates, [{ url: tracked.url, method: "rebase" }]);
+    assert.ok(calls.graphql.some((call) => call.query.includes("mutation F5AddReaction")));
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        stallSearchAfterFirst: true,
+        prDetailResponses: [
+          prDetailResponse({ title: "After comment" }),
+          prDetailResponse({ title: "After reaction" }),
+          prDetailResponse({ title: "After reviewers" }),
+          prDetailResponse({ title: "After branch" }),
+        ],
+        timelineResponses: [
+          prTimelineResponse(),
+          prTimelineResponse(),
+          prTimelineResponse(),
+          prTimelineResponse(),
+        ],
+        mutationResponses: [{ data: { addReaction: { subject: { id: "IC_1" } } } }],
       }),
     ),
   );

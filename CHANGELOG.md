@@ -38,6 +38,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Pull-request identity, authentication state, capabilities, and provider-native metadata now pass
   through a provider-neutral source-control seam. GitHub behavior is preserved, unsupported
   providers fail closed, and repository discovery considers every configured Git remote.
+- GitHub and GitHub Enterprise pull requests now expose in-app Summary, Timeline, and Files tabs,
+  including cached failure-tolerant reads, comment edits, reactions, reviewer changes, and branch
+  updates gated by provider capabilities and account permissions.
 
 ### Changed
 

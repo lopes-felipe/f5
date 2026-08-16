@@ -3,8 +3,10 @@ import { IsoDateTime, makeEntityId, NonNegativeInt, ProjectId } from "./baseSche
 import {
   SourceControlCapability,
   SourceControlHostAuthState,
+  SourceControlPageInfo,
   SourceControlProviderKind,
   SourceControlPullRequestRef,
+  SourceControlRateLimit,
 } from "./sourceControl";
 
 export const PullRequestKey = makeEntityId("PullRequestKey");
@@ -316,6 +318,249 @@ export const PrHubLocalCheckoutCandidate = Schema.Struct({
 });
 export type PrHubLocalCheckoutCandidate = typeof PrHubLocalCheckoutCandidate.Type;
 
+export const PrHubActor = Schema.Struct({
+  login: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  avatarUrl: Schema.NullOr(Schema.String),
+});
+export type PrHubActor = typeof PrHubActor.Type;
+
+export const PrHubLabel = Schema.Struct({
+  name: Schema.String,
+  color: Schema.NullOr(Schema.String),
+});
+export type PrHubLabel = typeof PrHubLabel.Type;
+
+export const PrHubReactionContent = Schema.Literals([
+  "+1",
+  "-1",
+  "laugh",
+  "hooray",
+  "confused",
+  "heart",
+  "rocket",
+  "eyes",
+]);
+export type PrHubReactionContent = typeof PrHubReactionContent.Type;
+
+export const PrHubReaction = Schema.Struct({
+  content: PrHubReactionContent,
+  count: NonNegativeInt,
+  viewerHasReacted: Schema.Boolean,
+  actors: Schema.Array(Schema.String),
+});
+export type PrHubReaction = typeof PrHubReaction.Type;
+
+export const PrHubCheckStatus = Schema.Literals([
+  "pending",
+  "success",
+  "failure",
+  "neutral",
+  "cancelled",
+  "skipped",
+]);
+export type PrHubCheckStatus = typeof PrHubCheckStatus.Type;
+
+export const PrHubCheck = Schema.Struct({
+  name: Schema.String,
+  status: PrHubCheckStatus,
+  description: Schema.NullOr(Schema.String),
+  url: Schema.NullOr(Schema.String),
+});
+export type PrHubCheck = typeof PrHubCheck.Type;
+
+export const PrHubReviewer = Schema.Struct({
+  ...PrHubActor.fields,
+  kind: Schema.Literals(["user", "team"]),
+  requested: Schema.Boolean,
+});
+export type PrHubReviewer = typeof PrHubReviewer.Type;
+
+const PrHubReadMode = Schema.Literals(["if_stale", "force"]);
+
+export const PrHubDetailInput = Schema.Struct({
+  key: PullRequestKey,
+  mode: Schema.optional(PrHubReadMode),
+});
+export type PrHubDetailInput = typeof PrHubDetailInput.Type;
+
+export const PrHubDetailProviderDetails = Schema.Union([
+  Schema.Struct({
+    provider: Schema.Literal("github"),
+    nodeId: Schema.NullOr(Schema.String),
+    mergeStateStatus: Schema.String,
+    headRefOid: Schema.NullOr(Schema.String),
+    baseRefOid: Schema.NullOr(Schema.String),
+    viewerCanUpdate: Schema.Boolean,
+    viewerDidAuthor: Schema.Boolean,
+  }),
+  Schema.Struct({
+    provider: Schema.Literals(["gitlab", "azure-devops", "bitbucket", "unknown"]),
+    externalId: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+]);
+export type PrHubDetailProviderDetails = typeof PrHubDetailProviderDetails.Type;
+
+export const PrHubDetail = Schema.Struct({
+  key: PullRequestKey,
+  providerDetails: PrHubDetailProviderDetails,
+  title: Schema.String,
+  body: Schema.String,
+  url: Schema.String,
+  state: PrPullRequestState,
+  isDraft: Schema.Boolean,
+  mergeable: PrMergeable,
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+  changedFiles: NonNegativeInt,
+  headRefName: Schema.NullOr(Schema.String),
+  baseRefName: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+  updatedAt: IsoDateTime,
+  mergedAt: Schema.NullOr(IsoDateTime),
+  closedAt: Schema.NullOr(IsoDateTime),
+  author: Schema.NullOr(PrHubActor),
+  labels: Schema.Array(PrHubLabel),
+  reviewers: Schema.Array(PrHubReviewer),
+  checks: Schema.Array(PrHubCheck),
+  reactions: Schema.Array(PrHubReaction),
+});
+export type PrHubDetail = typeof PrHubDetail.Type;
+
+export const PrHubDetailResult = Schema.Struct({
+  detail: PrHubDetail,
+  stale: Schema.Boolean,
+  warning: Schema.optional(Schema.String),
+  refreshedAt: IsoDateTime,
+  rateLimit: Schema.optional(SourceControlRateLimit),
+});
+export type PrHubDetailResult = typeof PrHubDetailResult.Type;
+
+export const PrHubTimelineCommentKind = Schema.Literals([
+  "issue-comment",
+  "review-comment",
+  "review",
+]);
+export type PrHubTimelineCommentKind = typeof PrHubTimelineCommentKind.Type;
+
+export const PrHubTimelineComment = Schema.Struct({
+  type: Schema.Literal("comment"),
+  id: Schema.String,
+  databaseId: Schema.NullOr(Schema.String),
+  kind: PrHubTimelineCommentKind,
+  author: Schema.NullOr(PrHubActor),
+  body: Schema.String,
+  createdAt: IsoDateTime,
+  updatedAt: Schema.NullOr(IsoDateTime),
+  url: Schema.NullOr(Schema.String),
+  path: Schema.NullOr(Schema.String),
+  line: Schema.NullOr(NonNegativeInt),
+  reviewState: Schema.NullOr(Schema.String),
+  viewerCanUpdate: Schema.Boolean,
+  reactions: Schema.Array(PrHubReaction),
+});
+export type PrHubTimelineComment = typeof PrHubTimelineComment.Type;
+
+export const PrHubTimelineCommit = Schema.Struct({
+  type: Schema.Literal("commit"),
+  id: Schema.String,
+  oid: Schema.String,
+  messageHeadline: Schema.String,
+  committedAt: IsoDateTime,
+  authors: Schema.Array(PrHubActor),
+});
+export type PrHubTimelineCommit = typeof PrHubTimelineCommit.Type;
+
+export const PrHubTimelineEntry = Schema.Union([PrHubTimelineComment, PrHubTimelineCommit]);
+export type PrHubTimelineEntry = typeof PrHubTimelineEntry.Type;
+
+export const PrHubTimelineInput = Schema.Struct({
+  key: PullRequestKey,
+  cursor: Schema.optional(Schema.String),
+  mode: Schema.optional(PrHubReadMode),
+});
+export type PrHubTimelineInput = typeof PrHubTimelineInput.Type;
+
+export const PrHubTimelinePage = Schema.Struct({
+  entries: Schema.Array(PrHubTimelineEntry),
+  pageInfo: SourceControlPageInfo,
+  stale: Schema.Boolean,
+  warning: Schema.optional(Schema.String),
+  refreshedAt: IsoDateTime,
+});
+export type PrHubTimelinePage = typeof PrHubTimelinePage.Type;
+
+export const PrHubFileChangeType = Schema.Literals([
+  "added",
+  "changed",
+  "deleted",
+  "renamed",
+  "copied",
+  "unknown",
+]);
+export type PrHubFileChangeType = typeof PrHubFileChangeType.Type;
+
+export const PrHubChangedFile = Schema.Struct({
+  path: Schema.String,
+  additions: NonNegativeInt,
+  deletions: NonNegativeInt,
+  changeType: PrHubFileChangeType,
+});
+export type PrHubChangedFile = typeof PrHubChangedFile.Type;
+
+export const PrHubFilesInput = Schema.Struct({
+  key: PullRequestKey,
+  cursor: Schema.optional(Schema.String),
+  mode: Schema.optional(PrHubReadMode),
+});
+export type PrHubFilesInput = typeof PrHubFilesInput.Type;
+
+export const PrHubFilesPage = Schema.Struct({
+  files: Schema.Array(PrHubChangedFile),
+  pageInfo: SourceControlPageInfo,
+  stale: Schema.Boolean,
+  warning: Schema.optional(Schema.String),
+  refreshedAt: IsoDateTime,
+});
+export type PrHubFilesPage = typeof PrHubFilesPage.Type;
+
+const PrHubMutationBody = Schema.String.check(Schema.isNonEmpty(), Schema.isMaxLength(65_536));
+
+export const PrHubUpdateCommentInput = Schema.Struct({
+  key: PullRequestKey,
+  commentId: Schema.String,
+  kind: Schema.Literals(["issue-comment", "review-comment"]),
+  body: PrHubMutationBody,
+});
+export type PrHubUpdateCommentInput = typeof PrHubUpdateCommentInput.Type;
+
+export const PrHubSetReactionInput = Schema.Struct({
+  key: PullRequestKey,
+  subjectId: Schema.String,
+  content: PrHubReactionContent,
+  reacted: Schema.Boolean,
+});
+export type PrHubSetReactionInput = typeof PrHubSetReactionInput.Type;
+
+export const PrHubChangeReviewersInput = Schema.Struct({
+  key: PullRequestKey,
+  add: Schema.Array(Schema.String).check(Schema.isMaxLength(25)),
+  remove: Schema.Array(Schema.String).check(Schema.isMaxLength(25)),
+});
+export type PrHubChangeReviewersInput = typeof PrHubChangeReviewersInput.Type;
+
+export const PrHubUpdateBranchInput = Schema.Struct({
+  key: PullRequestKey,
+  method: Schema.Literals(["merge", "rebase"]),
+});
+export type PrHubUpdateBranchInput = typeof PrHubUpdateBranchInput.Type;
+
+export const PrHubDetailMutationResult = Schema.Struct({
+  detail: PrHubDetailResult,
+  timeline: PrHubTimelinePage,
+});
+export type PrHubDetailMutationResult = typeof PrHubDetailMutationResult.Type;
+
 export const PR_HUB_WS_METHODS = {
   getSnapshot: "prHub.getSnapshot",
   refresh: "prHub.refresh",
@@ -333,6 +578,13 @@ export const PR_HUB_WS_METHODS = {
   analyzeAdvisories: "prHub.analyzeAdvisories",
   getAdvisories: "prHub.getAdvisories",
   listLocalCheckoutCandidates: "prHub.listLocalCheckoutCandidates",
+  getDetail: "prHub.getDetail",
+  getTimeline: "prHub.getTimeline",
+  getFiles: "prHub.getFiles",
+  updateComment: "prHub.updateComment",
+  setReaction: "prHub.setReaction",
+  changeReviewers: "prHub.changeReviewers",
+  updateBranch: "prHub.updateBranch",
   clearData: "prHub.clearData",
 } as const;
 

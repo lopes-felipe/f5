@@ -2952,6 +2952,41 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* prHub.listLocalCheckoutCandidates(body);
       }
 
+      case PR_HUB_WS_METHODS.getDetail: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.getDetail(body);
+      }
+
+      case PR_HUB_WS_METHODS.getTimeline: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.getTimeline(body);
+      }
+
+      case PR_HUB_WS_METHODS.getFiles: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.getFiles(body);
+      }
+
+      case PR_HUB_WS_METHODS.updateComment: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.updateComment(body);
+      }
+
+      case PR_HUB_WS_METHODS.setReaction: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.setReaction(body);
+      }
+
+      case PR_HUB_WS_METHODS.changeReviewers: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.changeReviewers(body);
+      }
+
+      case PR_HUB_WS_METHODS.updateBranch: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.updateBranch(body);
+      }
+
       case PR_HUB_WS_METHODS.clearData:
         return yield* prHub.clearData();
 

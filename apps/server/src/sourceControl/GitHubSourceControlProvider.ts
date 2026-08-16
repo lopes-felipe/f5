@@ -20,6 +20,10 @@ const SUPPORTED_ACTIONS = new Set<SourceControlPullRequestAction>([
   "merge",
   "mark-ready",
   "request-reviewers",
+  "update-branch",
+  "edit-comment",
+  "react",
+  "change-reviewers",
 ]);
 
 export const GITHUB_SOURCE_CONTROL_CAPABILITIES: ReadonlyArray<SourceControlCapability> =
@@ -104,6 +108,7 @@ export function makeGitHubSourceControlProvider(github: GitHubCliShape): SourceC
       mapGithubError(
         github.runGraphql({
           cwd: input.cwd,
+          ...(input.host === undefined ? {} : { host: input.host }),
           query: input.document,
           ...(input.variables === undefined ? {} : { variables: input.variables }),
         }),
@@ -139,6 +144,18 @@ export function makeGitHubSourceControlProvider(github: GitHubCliShape): SourceC
     addPullRequestReviewers: (input) =>
       requireCapability("request-reviewers").pipe(
         Effect.andThen(mapGithubError(github.addPullRequestReviewers(input))),
+      ),
+    changePullRequestReviewers: (input) =>
+      requireCapability("change-reviewers").pipe(
+        Effect.andThen(mapGithubError(github.changePullRequestReviewers(input))),
+      ),
+    updatePullRequestBranch: (input) =>
+      requireCapability("update-branch").pipe(
+        Effect.andThen(mapGithubError(github.updatePullRequestBranch(input))),
+      ),
+    updatePullRequestComment: (input) =>
+      requireCapability("edit-comment").pipe(
+        Effect.andThen(mapGithubError(github.updatePullRequestComment(input))),
       ),
   };
 }

@@ -284,6 +284,9 @@ export function makeFakeGitHubCli(options: FakeGitHubCliOptions = {}): {
     mergePullRequest: () => Effect.void,
     markPullRequestReady: () => Effect.void,
     addPullRequestReviewers: () => Effect.void,
+    changePullRequestReviewers: () => Effect.void,
+    updatePullRequestBranch: () => Effect.void,
+    updatePullRequestComment: () => Effect.void,
   };
 
   return { service, calls };

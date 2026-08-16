@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { PrHubAdvisory, TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
 
@@ -84,7 +85,14 @@ function makeAdvisory(pr: TrackedPullRequest): PrHubAdvisory {
 }
 
 function render(node: React.ReactElement): string {
-  return renderToStaticMarkup(<TooltipProvider delay={0}>{node}</TooltipProvider>);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return renderToStaticMarkup(
+    <QueryClientProvider client={queryClient}>
+      <TooltipProvider delay={0}>{node}</TooltipProvider>
+    </QueryClientProvider>,
+  );
 }
 
 describe("PrDetailPanel", () => {
@@ -98,6 +106,9 @@ describe("PrDetailPanel", () => {
     expect(markup).toContain("90%");
     expect(markup).toContain("Fix failing CI before requesting more review.");
     expect(markup).toContain("Details");
+    expect(markup).toContain("Summary");
+    expect(markup).toContain("Timeline");
+    expect(markup).toContain("Files (2)");
     // Secondary actions live in a portalled, closed overflow menu; assert the
     // always-rendered trigger instead.
     expect(markup).toContain('aria-label="More actions"');

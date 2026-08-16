@@ -3,6 +3,7 @@ import { Effect, Schema } from "effect";
 
 import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./orchestration";
 import { AGENTS_WS_CHANNELS, AGENTS_WS_METHODS } from "./backgroundWork";
+import { PR_HUB_WS_METHODS } from "./prHub";
 import { ServerValidateHarnessesResult } from "./server";
 import { WebSocketRequest, WsResponse, WS_CHANNELS, WS_METHODS } from "./ws";
 
@@ -115,6 +116,31 @@ it.effect("accepts checked-in project configuration requests", () =>
       },
     });
     assert.strictEqual(request.body._tag, WS_METHODS.projectsGetCheckedInConfig);
+  }),
+);
+
+it.effect("accepts GitHub PR detail reads and mutations", () =>
+  Effect.gen(function* () {
+    const detail = yield* decodeWebSocketRequest({
+      id: "pr-detail",
+      body: {
+        _tag: PR_HUB_WS_METHODS.getDetail,
+        key: "github:github.com/octo/repo#7",
+      },
+    });
+    assert.strictEqual(detail.body._tag, PR_HUB_WS_METHODS.getDetail);
+
+    const edit = yield* decodeWebSocketRequest({
+      id: "pr-edit",
+      body: {
+        _tag: PR_HUB_WS_METHODS.updateComment,
+        key: "github:github.com/octo/repo#7",
+        commentId: "123",
+        kind: "issue-comment",
+        body: "Updated comment",
+      },
+    });
+    assert.strictEqual(edit.body._tag, PR_HUB_WS_METHODS.updateComment);
   }),
 );
 

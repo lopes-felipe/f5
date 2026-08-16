@@ -112,6 +112,7 @@ export interface GitHubCliShape {
 
   readonly runGraphql: (input: {
     readonly cwd: string;
+    readonly host?: string | undefined;
     readonly query: string;
     readonly variables?: Readonly<
       Record<
@@ -163,6 +164,28 @@ export interface GitHubCliShape {
     readonly cwd: string;
     readonly url: string;
     readonly reviewers: ReadonlyArray<string>;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly changePullRequestReviewers: (input: {
+    readonly cwd: string;
+    readonly url: string;
+    readonly add: ReadonlyArray<string>;
+    readonly remove: ReadonlyArray<string>;
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly updatePullRequestBranch: (input: {
+    readonly cwd: string;
+    readonly url: string;
+    readonly method: "merge" | "rebase";
+  }) => Effect.Effect<void, GitHubCliError>;
+
+  readonly updatePullRequestComment: (input: {
+    readonly cwd: string;
+    readonly host: string;
+    readonly repository: string;
+    readonly commentId: string;
+    readonly kind: "issue-comment" | "review-comment";
+    readonly body: string;
   }) => Effect.Effect<void, GitHubCliError>;
 }
 
