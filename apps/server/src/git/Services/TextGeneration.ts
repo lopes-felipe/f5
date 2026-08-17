@@ -8,7 +8,11 @@
  */
 import { ServiceMap } from "effect";
 import type { Effect, Schema } from "effect";
-import type { ChatAttachment, ModelSelection } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  ModelSelection,
+  SourceControlWritingSettings,
+} from "@t3tools/contracts";
 
 import type { TextGenerationError } from "../Errors.ts";
 
@@ -22,6 +26,7 @@ export interface CommitMessageGenerationInput {
   /** Model to use for generation. Defaults to gpt-5.4-mini if not specified. */
   model?: string;
   modelSelection?: ModelSelection;
+  writingPreferences?: SourceControlWritingSettings;
 }
 
 export interface CommitMessageGenerationResult {
@@ -41,6 +46,7 @@ export interface PrContentGenerationInput {
   /** Model to use for generation. Defaults to gpt-5.4-mini if not specified. */
   model?: string;
   modelSelection?: ModelSelection;
+  writingPreferences?: SourceControlWritingSettings;
 }
 
 export interface PrContentGenerationResult {
@@ -55,6 +61,7 @@ export interface BranchNameGenerationInput {
   /** Model to use for generation. Defaults to gpt-5.4-mini if not specified. */
   model?: string;
   modelSelection?: ModelSelection;
+  writingPreferences?: SourceControlWritingSettings;
 }
 
 export interface BranchNameGenerationResult {

@@ -7,10 +7,75 @@
  * @module textGenerationPrompts
  */
 import { Schema } from "effect";
-import type { ChatAttachment } from "@t3tools/contracts";
+import type { ChatAttachment, SourceControlWritingSettings } from "@t3tools/contracts";
 import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import { limitSection } from "./Utils.ts";
+
+export function prefixGeneratedBranchName(
+  branch: string,
+  preferences: SourceControlWritingSettings,
+): string {
+  const prefix = preferences.branchNamePrefix
+    .trim()
+    .replace(/^refs\/heads\//, "")
+    .replace(/^\/+|\/+$/g, "");
+  return prefix.length > 0 ? `${prefix}/${branch}` : branch;
+}
+
+export function buildDeterministicCommitMessage(
+  stagedSummary: string,
+  preferences: SourceControlWritingSettings,
+): { subject: string; body: string } {
+  const subject =
+    preferences.commitMessageStyle === "conventional"
+      ? "chore: update project files"
+      : "Update project files";
+  if (!preferences.commitMessageIncludeBody) return { subject, body: "" };
+
+  const files = stagedSummary
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  return {
+    subject,
+    body: files.length > 0 ? files.map((line) => `- ${line}`).join("\n") : "",
+  };
+}
+
+export function buildDeterministicPrContent(input: {
+  headBranch: string;
+  commitSummary: string;
+  diffSummary: string;
+  writingPreferences: SourceControlWritingSettings;
+}): { title: string; body: string } {
+  const branchDescription = input.headBranch
+    .replace(/^refs\/heads\//, "")
+    .split(/[/_-]+/g)
+    .filter(Boolean)
+    .join(" ");
+  const summarySource = input.commitSummary.trim() || input.diffSummary.trim();
+  const summary = summarySource
+    ? summarySource
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .slice(0, 8)
+        .map((line) => `- ${line}`)
+        .join("\n")
+    : "- Update project files";
+  const template =
+    input.writingPreferences.prBodyTemplate ||
+    "## Summary\n\n{{summary}}\n\n## Testing\n\n{{testing}}";
+  return {
+    title: `Update ${branchDescription || "project files"}`.slice(0, 120),
+    body: template
+      .replaceAll("{{summary}}", summary)
+      .replaceAll("{{testing}}", "- Not run (generated without AI)")
+      .trim(),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Commit message
@@ -21,10 +86,12 @@ export interface CommitMessagePromptInput {
   stagedSummary: string;
   stagedPatch: string;
   includeBranch: boolean;
+  writingPreferences?: SourceControlWritingSettings | undefined;
 }
 
 export function buildCommitMessagePrompt(input: CommitMessagePromptInput) {
   const wantsBranch = input.includeBranch;
+  const preferences = input.writingPreferences;
 
   const prompt = [
     "You write concise git commit messages.",
@@ -33,11 +100,19 @@ export function buildCommitMessagePrompt(input: CommitMessagePromptInput) {
       : "Return a JSON object with keys: subject, body.",
     "Rules:",
     "- subject must be imperative, <= 72 chars, and no trailing period",
-    "- body can be empty string or short bullet points",
+    preferences?.commitMessageStyle === "conventional"
+      ? "- subject must use Conventional Commits syntax (type: description)"
+      : "- subject must be plain language without a required type prefix",
+    preferences?.commitMessageIncludeBody === false
+      ? "- body must be an empty string"
+      : "- body can be empty string or short bullet points",
     ...(wantsBranch
       ? ["- branch must be a short semantic git branch fragment for this change"]
       : []),
     "- capture the primary user-visible or developer-visible change",
+    ...(preferences?.customInstructions
+      ? ["- follow these additional instructions:", preferences.customInstructions]
+      : []),
     "",
     `Branch: ${input.branch ?? "(detached)"}`,
     "",
@@ -78,9 +153,11 @@ export interface PrContentPromptInput {
   commitSummary: string;
   diffSummary: string;
   diffPatch: string;
+  writingPreferences?: SourceControlWritingSettings | undefined;
 }
 
 export function buildPrContentPrompt(input: PrContentPromptInput) {
+  const preferences = input.writingPreferences;
   const prompt = [
     "You write GitHub pull request content.",
     "Return a JSON object with keys: title, body.",
@@ -89,6 +166,12 @@ export function buildPrContentPrompt(input: PrContentPromptInput) {
     "- body must be markdown and include headings '## Summary' and '## Testing'",
     "- under Summary, provide short bullet points",
     "- under Testing, include bullet points with concrete checks or 'Not run' where appropriate",
+    ...(preferences?.prBodyTemplate
+      ? ["- use this pull request body template:", preferences.prBodyTemplate]
+      : []),
+    ...(preferences?.customInstructions
+      ? ["- follow these additional instructions:", preferences.customInstructions]
+      : []),
     "",
     `Base branch: ${input.baseBranch}`,
     `Head branch: ${input.headBranch}`,
@@ -118,6 +201,7 @@ export function buildPrContentPrompt(input: PrContentPromptInput) {
 export interface BranchNamePromptInput {
   message: string;
   attachments?: ReadonlyArray<ChatAttachment> | undefined;
+  writingPreferences?: SourceControlWritingSettings | undefined;
 }
 
 interface PromptFromMessageInput {
@@ -154,6 +238,7 @@ function buildPromptFromMessage(input: PromptFromMessageInput): string {
 }
 
 export function buildBranchNamePrompt(input: BranchNamePromptInput) {
+  const preferences = input.writingPreferences;
   const prompt = buildPromptFromMessage({
     instruction: "You generate concise git branch names.",
     responseShape: "Return a JSON object with key: branch.",
@@ -162,6 +247,9 @@ export function buildBranchNamePrompt(input: BranchNamePromptInput) {
       "Keep it short and specific (2-6 words).",
       "Use plain words only, no issue prefixes and no punctuation-heavy text.",
       "If images are attached, use them as primary context for visual/UI issues.",
+      ...(preferences?.customInstructions
+        ? [`Additional instructions: ${preferences.customInstructions}`]
+        : []),
     ],
     message: input.message,
     attachments: input.attachments,

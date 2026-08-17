@@ -35,6 +35,7 @@ import { Switch } from "../../ui/switch";
 
 export { PROVIDERS_SETTINGS_DESCRIPTORS } from "./ProvidersSettings.descriptors";
 import { Input } from "../../ui/input";
+import { Textarea } from "../../ui/textarea";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "../ProviderInstanceCard";
@@ -128,6 +129,12 @@ export function ProvidersSettings() {
   const [isAddInstanceDialogOpen, setIsAddInstanceDialogOpen] = useState(false);
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const writingPreferences = unifiedSettings.sourceControlWriting;
+  const updateWritingPreferences = (patch: Partial<ServerSettings["sourceControlWriting"]>) => {
+    void updateUnifiedSettings({
+      sourceControlWriting: { ...writingPreferences, ...patch },
+    });
+  };
   const favoriteModelRows = settings.favoriteModels.map((favorite) => {
     const customModels = getCustomModelsForProvider(settings, favorite.providerKind);
     const option = getAppModelOptions(favorite.providerKind, customModels, favorite.modelId).find(
@@ -877,12 +884,114 @@ export function ProvidersSettings() {
           </Select>
         </div>
 
-        {settings.textGenerationModel !== defaults.textGenerationModel ? (
+        <div className="mt-3 space-y-3 rounded-lg border border-border bg-background p-3">
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Commit message style</span>
+              <Select
+                value={writingPreferences.commitMessageStyle}
+                onValueChange={(value) => {
+                  if (value === "plain" || value === "conventional") {
+                    updateWritingPreferences({ commitMessageStyle: value });
+                  }
+                }}
+              >
+                <SelectTrigger aria-label="Commit message style">
+                  <SelectValue>
+                    {writingPreferences.commitMessageStyle === "conventional"
+                      ? "Conventional commits"
+                      : "Plain language"}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup>
+                  <SelectItem value="plain">Plain language</SelectItem>
+                  <SelectItem value="conventional">Conventional commits</SelectItem>
+                </SelectPopup>
+              </Select>
+            </label>
+            <label className="space-y-1.5 text-xs text-muted-foreground">
+              <span className="font-medium text-foreground">Branch prefix</span>
+              <Input
+                key={writingPreferences.branchNamePrefix}
+                aria-label="Generated branch prefix"
+                defaultValue={writingPreferences.branchNamePrefix}
+                placeholder="team or username"
+                onBlur={(event) =>
+                  updateWritingPreferences({ branchNamePrefix: event.target.value })
+                }
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-2">
+            <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+              <span className="text-xs text-foreground">Generate commit messages</span>
+              <Switch
+                checked={writingPreferences.generateCommitMessages}
+                onCheckedChange={(checked) =>
+                  updateWritingPreferences({ generateCommitMessages: checked })
+                }
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+              <span className="text-xs text-foreground">Include commit body</span>
+              <Switch
+                checked={writingPreferences.commitMessageIncludeBody}
+                onCheckedChange={(checked) =>
+                  updateWritingPreferences({ commitMessageIncludeBody: checked })
+                }
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2 sm:col-span-2">
+              <span className="text-xs text-foreground">Generate pull request content</span>
+              <Switch
+                checked={writingPreferences.generatePrContent}
+                onCheckedChange={(checked) =>
+                  updateWritingPreferences({ generatePrContent: checked })
+                }
+              />
+            </label>
+          </div>
+
+          <label className="block space-y-1.5 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Pull request body template</span>
+            <Textarea
+              key={writingPreferences.prBodyTemplate}
+              aria-label="Pull request body template"
+              defaultValue={writingPreferences.prBodyTemplate}
+              onBlur={(event) => updateWritingPreferences({ prBodyTemplate: event.target.value })}
+            />
+            <span>
+              Use {"{{summary}}"} and {"{{testing}}"} where generated content belongs.
+            </span>
+          </label>
+
+          <label className="block space-y-1.5 text-xs text-muted-foreground">
+            <span className="font-medium text-foreground">Additional writing instructions</span>
+            <Textarea
+              key={writingPreferences.customInstructions}
+              aria-label="Source control writing instructions"
+              defaultValue={writingPreferences.customInstructions}
+              placeholder="Tone, terminology, or repository conventions"
+              onBlur={(event) =>
+                updateWritingPreferences({ customInstructions: event.target.value })
+              }
+            />
+          </label>
+        </div>
+
+        {settings.textGenerationModel !== defaults.textGenerationModel ||
+        !Equal.equals(writingPreferences, DEFAULT_UNIFIED_SETTINGS.sourceControlWriting) ? (
           <div className="mt-3 flex justify-end">
             <Button
               size="xs"
               variant="outline"
-              onClick={() => updateSettings(buildAppSettingsPatch(GIT_KEYS, defaults))}
+              onClick={() => {
+                updateSettings(buildAppSettingsPatch(GIT_KEYS, defaults));
+                void updateUnifiedSettings({
+                  sourceControlWriting: DEFAULT_UNIFIED_SETTINGS.sourceControlWriting,
+                });
+              }}
             >
               Restore default
             </Button>

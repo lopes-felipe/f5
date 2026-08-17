@@ -65,4 +65,12 @@ export const PROVIDERS_SETTINGS_DESCRIPTORS = [
     keywords: ["commit", "pull request", "branch", "source control"],
     targetSelector: '[aria-label="Git text generation model"]',
   },
+  {
+    id: "providers.source-control-writing",
+    category: "providers",
+    label: "Source control writing",
+    description: "Configure commit, branch, and pull request writing conventions.",
+    keywords: ["commit style", "conventional", "pull request template", "branch prefix"],
+    targetSelector: '[aria-label="Commit message style"]',
+  },
 ] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

@@ -16,6 +16,7 @@ import { GitService, type GitServiceShape } from "../../../src/git/Services/GitS
 import { TextGeneration } from "../../../src/git/Services/TextGeneration.ts";
 import { makeFakeGitHubCli, makeFakeTextGeneration } from "../../../src/git/testDoubles.ts";
 import { makeLocalPushFriendlyGitServiceLayer } from "../../../src/git/testUtils.ts";
+import { ServerSettingsService } from "../../../src/serverSettings.ts";
 
 const tempDirectories: string[] = [];
 
@@ -253,6 +254,7 @@ describe.concurrent("real Git smoke", () => {
       Layer.succeed(GitHubCli, github.service),
       Layer.succeed(TextGeneration, makeFakeTextGeneration()),
       Layer.succeed(ServerConfig, makeServerConfig(makeTempDirectory("f5-git-smoke-manager-"))),
+      ServerSettingsService.layerTest(),
       NodeServices.layer,
     );
     const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(managerLayer)));

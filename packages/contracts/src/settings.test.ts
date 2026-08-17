@@ -11,6 +11,36 @@ import {
 
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
+
+describe("ServerSettings.sourceControlWriting", () => {
+  it("decodes legacy settings with safe defaults", () => {
+    expect(decodeServerSettings({}).sourceControlWriting).toEqual({
+      commitMessageStyle: "plain",
+      commitMessageIncludeBody: true,
+      prBodyTemplate: "## Summary\n\n{{summary}}\n\n## Testing\n\n{{testing}}",
+      branchNamePrefix: "",
+      customInstructions: "",
+      generateCommitMessages: true,
+      generatePrContent: true,
+    });
+  });
+
+  it("accepts partial writing preference patches", () => {
+    expect(
+      decodeServerSettingsPatch({
+        sourceControlWriting: {
+          commitMessageStyle: "conventional",
+          generatePrContent: false,
+        },
+      }),
+    ).toEqual({
+      sourceControlWriting: {
+        commitMessageStyle: "conventional",
+        generatePrContent: false,
+      },
+    });
+  });
+});
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
 
 describe("ServerSettings.providerInstances (slice-2 invariant)", () => {

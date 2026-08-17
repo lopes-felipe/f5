@@ -21,6 +21,7 @@ import { GitCoreLive } from "./GitCore.ts";
 import { makeGitManager } from "./GitManager.ts";
 import { makeLocalPushFriendlyGitServiceLayer } from "../testUtils.ts";
 import { ServerConfig, type ServerConfigShape } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const GitServiceTestLayer = makeLocalPushFriendlyGitServiceLayer(
   GitServiceLive.pipe(Layer.provide(NodeServices.layer)),
@@ -573,6 +574,7 @@ function makeManager(input?: {
       Layer.succeed(GitHubCli, gitHubCli),
       Layer.succeed(TextGeneration, textGeneration),
       Layer.succeed(ServerConfig, serverConfig),
+      ServerSettingsService.layerTest(),
       gitCoreLayer,
       NodeServices.layer,
     );

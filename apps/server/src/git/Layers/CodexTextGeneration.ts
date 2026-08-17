@@ -24,6 +24,11 @@ import { resolveCodexHome } from "../../os-jank.ts";
 import { sanitizeThreadTitle } from "../../threadTitle.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
+  buildBranchNamePrompt,
+  buildCommitMessagePrompt,
+  buildPrContentPrompt,
+} from "../Prompts.ts";
+import {
   type BranchNameGenerationInput,
   type BranchNameGenerationResult,
   type CommitMessageGenerationResult,
@@ -396,46 +401,19 @@ export const makeCodexTextGeneration = (
       });
 
     const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = (input) => {
-      const wantsBranch = input.includeBranch === true;
-
-      const prompt = [
-        "You write concise git commit messages.",
-        wantsBranch
-          ? "Return a JSON object with keys: subject, body, branch."
-          : "Return a JSON object with keys: subject, body.",
-        "Rules:",
-        "- subject must be imperative, <= 72 chars, and no trailing period",
-        "- body can be empty string or short bullet points",
-        ...(wantsBranch
-          ? ["- branch must be a short semantic git branch fragment for this change"]
-          : []),
-        "- capture the primary user-visible or developer-visible change",
-        "",
-        `Branch: ${input.branch ?? "(detached)"}`,
-        "",
-        "Staged files:",
-        limitSection(input.stagedSummary, 6_000),
-        "",
-        "Staged patch:",
-        limitSection(input.stagedPatch, 40_000),
-      ].join("\n");
-
-      const outputSchemaJson = wantsBranch
-        ? Schema.Struct({
-            subject: Schema.String,
-            body: Schema.String,
-            branch: Schema.String,
-          })
-        : Schema.Struct({
-            subject: Schema.String,
-            body: Schema.String,
-          });
+      const { prompt, outputSchema } = buildCommitMessagePrompt({
+        branch: input.branch,
+        stagedSummary: input.stagedSummary,
+        stagedPatch: input.stagedPatch,
+        includeBranch: input.includeBranch === true,
+        writingPreferences: input.writingPreferences,
+      });
 
       return runCodexJson({
         operation: "generateCommitMessage",
         cwd: input.cwd,
         prompt,
-        outputSchemaJson,
+        outputSchemaJson: outputSchema,
         ...(input.model ? { model: input.model } : {}),
         ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       }).pipe(
@@ -453,36 +431,20 @@ export const makeCodexTextGeneration = (
     };
 
     const generatePrContent: TextGenerationShape["generatePrContent"] = (input) => {
-      const prompt = [
-        "You write GitHub pull request content.",
-        "Return a JSON object with keys: title, body.",
-        "Rules:",
-        "- title should be concise and specific",
-        "- body must be markdown and include headings '## Summary' and '## Testing'",
-        "- under Summary, provide short bullet points",
-        "- under Testing, include bullet points with concrete checks or 'Not run' where appropriate",
-        "",
-        `Base branch: ${input.baseBranch}`,
-        `Head branch: ${input.headBranch}`,
-        "",
-        "Commits:",
-        limitSection(input.commitSummary, 12_000),
-        "",
-        "Diff stat:",
-        limitSection(input.diffSummary, 12_000),
-        "",
-        "Diff patch:",
-        limitSection(input.diffPatch, 40_000),
-      ].join("\n");
+      const { prompt, outputSchema } = buildPrContentPrompt({
+        baseBranch: input.baseBranch,
+        headBranch: input.headBranch,
+        commitSummary: input.commitSummary,
+        diffSummary: input.diffSummary,
+        diffPatch: input.diffPatch,
+        writingPreferences: input.writingPreferences,
+      });
 
       return runCodexJson({
         operation: "generatePrContent",
         cwd: input.cwd,
         prompt,
-        outputSchemaJson: Schema.Struct({
-          title: Schema.String,
-          body: Schema.String,
-        }),
+        outputSchemaJson: outputSchema,
         ...(input.model ? { model: input.model } : {}),
         ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),
       }).pipe(
@@ -502,38 +464,17 @@ export const makeCodexTextGeneration = (
           "generateBranchName",
           input.attachments,
         );
-        const attachmentLines = formatAttachmentMetadata(
-          (input.attachments ?? []).map((attachment) => ({ attachment })),
-        );
-
-        const promptSections = [
-          "You generate concise git branch names.",
-          "Return a JSON object with key: branch.",
-          "Rules:",
-          "- Branch should describe the requested work from the user message.",
-          "- Keep it short and specific (2-6 words).",
-          "- Use plain words only, no issue prefixes and no punctuation-heavy text.",
-          "- If images are attached, use them as primary context for visual/UI issues.",
-          "",
-          "User message:",
-          limitSection(input.message, 8_000),
-        ];
-        if (attachmentLines.length > 0) {
-          promptSections.push(
-            "",
-            "Attachment metadata:",
-            limitSection(attachmentLines.join("\n"), 4_000),
-          );
-        }
-        const prompt = promptSections.join("\n");
+        const { prompt, outputSchema } = buildBranchNamePrompt({
+          message: input.message,
+          attachments: input.attachments,
+          writingPreferences: input.writingPreferences,
+        });
 
         const generated = yield* runCodexJson({
           operation: "generateBranchName",
           cwd: input.cwd,
           prompt,
-          outputSchemaJson: Schema.Struct({
-            branch: Schema.String,
-          }),
+          outputSchemaJson: outputSchema,
           imagePaths,
           ...(input.model ? { model: input.model } : {}),
           ...(input.modelSelection ? { modelSelection: input.modelSelection } : {}),

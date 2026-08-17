@@ -159,6 +159,21 @@ export const PrHubSettings = Schema.Struct({
 });
 export type PrHubSettings = typeof PrHubSettings.Type;
 
+export const SourceControlWritingSettings = Schema.Struct({
+  commitMessageStyle: Schema.Literals(["conventional", "plain"]).pipe(
+    Schema.withDecodingDefault(() => "plain" as const),
+  ),
+  commitMessageIncludeBody: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  prBodyTemplate: TrimmedString.pipe(
+    Schema.withDecodingDefault(() => "## Summary\n\n{{summary}}\n\n## Testing\n\n{{testing}}"),
+  ),
+  branchNamePrefix: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  customInstructions: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
+  generateCommitMessages: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+  generatePrContent: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
+});
+export type SourceControlWritingSettings = typeof SourceControlWritingSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
@@ -172,6 +187,7 @@ export const ServerSettings = Schema.Struct({
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
   ),
+  sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -273,6 +289,16 @@ const PrHubSettingsPatch = Schema.Struct({
   excludeRepos: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
+const SourceControlWritingSettingsPatch = Schema.Struct({
+  commitMessageStyle: Schema.optionalKey(Schema.Literals(["conventional", "plain"])),
+  commitMessageIncludeBody: Schema.optionalKey(Schema.Boolean),
+  prBodyTemplate: Schema.optionalKey(Schema.String),
+  branchNamePrefix: Schema.optionalKey(Schema.String),
+  customInstructions: Schema.optionalKey(Schema.String),
+  generateCommitMessages: Schema.optionalKey(Schema.Boolean),
+  generatePrContent: Schema.optionalKey(Schema.Boolean),
+});
+
 export const ServerSettingsPatch = Schema.Struct({
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
@@ -280,6 +306,7 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(Schema.String),

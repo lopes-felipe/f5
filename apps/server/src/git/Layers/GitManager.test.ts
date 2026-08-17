@@ -16,6 +16,7 @@ import {
   type FakeGitHubCliOptions,
 } from "../testDoubles.ts";
 import { ServerConfig, type ServerConfigShape } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const cwd = process.cwd();
 
@@ -82,6 +83,7 @@ async function makeManager(options?: {
     Layer.succeed(GitHubCli, github.service),
     Layer.succeed(TextGeneration, makeFakeTextGeneration()),
     Layer.succeed(ServerConfig, makeServerConfig()),
+    ServerSettingsService.layerTest(),
     NodeServices.layer,
   );
   const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));
@@ -157,6 +159,7 @@ describe("GitManager unit", () => {
       Layer.succeed(GitHubCli, failingGithub),
       Layer.succeed(TextGeneration, makeFakeTextGeneration()),
       Layer.succeed(ServerConfig, makeServerConfig()),
+      ServerSettingsService.layerTest(),
       NodeServices.layer,
     );
     const manager = await Effect.runPromise(makeGitManager.pipe(Effect.provide(layer)));

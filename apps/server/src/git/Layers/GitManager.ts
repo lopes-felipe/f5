@@ -7,7 +7,11 @@ import {
   sanitizeBranchFragment,
   sanitizeFeatureBranchName,
 } from "@t3tools/shared/git";
-import type { ChangeRequest, SourceControlProviderIdentity } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  type ChangeRequest,
+  type SourceControlProviderIdentity,
+} from "@t3tools/contracts";
 
 import { GitManagerError } from "../Errors.ts";
 import { extractBranchNameFromRemoteRef } from "../remoteRefs.ts";
@@ -17,6 +21,12 @@ import { GitHubCli } from "../Services/GitHubCli.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
 import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
 import { ServerConfig } from "../../config.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import {
+  buildDeterministicCommitMessage,
+  buildDeterministicPrContent,
+  prefixGeneratedBranchName,
+} from "../Prompts.ts";
 import { makeGitHubSourceControlProvider } from "../../sourceControl/GitHubSourceControlProvider.ts";
 import {
   makeSourceControlProviderRegistry,
@@ -396,6 +406,16 @@ export const makeGitManager = Effect.gen(function* () {
   const githubProvider = yield* sourceControlProviders.get("github");
   const textGeneration = yield* TextGeneration;
   const serverConfig = yield* ServerConfig;
+  const serverSettings = yield* ServerSettingsService;
+
+  const getWritingPreferences = serverSettings.getSettings.pipe(
+    Effect.map((settings) => settings.sourceControlWriting),
+    Effect.catch((error) =>
+      Effect.logWarning("failed to read source-control writing settings; using defaults", {
+        reason: error.message,
+      }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS.sourceControlWriting)),
+    ),
+  );
 
   const configurePullRequestHeadUpstream = (
     cwd: string,
@@ -768,6 +788,22 @@ export const makeGitManager = Effect.gen(function* () {
         };
       }
 
+      const writingPreferences = yield* getWritingPreferences;
+      if (!writingPreferences.generateCommitMessages) {
+        const deterministic = buildDeterministicCommitMessage(
+          context.stagedSummary,
+          writingPreferences,
+        );
+        return {
+          subject: deterministic.subject,
+          body: deterministic.body,
+          ...(input.includeBranch
+            ? { branch: sanitizeFeatureBranchName(deterministic.subject) }
+            : {}),
+          commitMessage: formatCommitMessage(deterministic.subject, deterministic.body),
+        };
+      }
+
       const generated = yield* textGeneration
         .generateCommitMessage({
           cwd: input.cwd,
@@ -776,14 +812,18 @@ export const makeGitManager = Effect.gen(function* () {
           stagedPatch: limitContext(context.stagedPatch, 50_000),
           ...(input.includeBranch ? { includeBranch: true } : {}),
           ...(input.model ? { model: input.model } : {}),
+          writingPreferences,
         })
         .pipe(Effect.map((result) => sanitizeCommitMessage(result)));
 
       return {
         subject: generated.subject,
-        body: generated.body,
+        body: writingPreferences.commitMessageIncludeBody ? generated.body : "",
         ...(generated.branch !== undefined ? { branch: generated.branch } : {}),
-        commitMessage: formatCommitMessage(generated.subject, generated.body),
+        commitMessage: formatCommitMessage(
+          generated.subject,
+          writingPreferences.commitMessageIncludeBody ? generated.body : "",
+        ),
       };
     });
 
@@ -861,16 +901,24 @@ export const makeGitManager = Effect.gen(function* () {
         sourceControlProvider,
       );
       const rangeContext = yield* gitCore.readRangeContext(cwd, baseBranch);
-
-      const generated = yield* textGeneration.generatePrContent({
-        cwd,
-        baseBranch,
-        headBranch: headContext.headBranch,
-        commitSummary: limitContext(rangeContext.commitSummary, 20_000),
-        diffSummary: limitContext(rangeContext.diffSummary, 20_000),
-        diffPatch: limitContext(rangeContext.diffPatch, 60_000),
-        ...(model ? { model } : {}),
-      });
+      const writingPreferences = yield* getWritingPreferences;
+      const generated = writingPreferences.generatePrContent
+        ? yield* textGeneration.generatePrContent({
+            cwd,
+            baseBranch,
+            headBranch: headContext.headBranch,
+            commitSummary: limitContext(rangeContext.commitSummary, 20_000),
+            diffSummary: limitContext(rangeContext.diffSummary, 20_000),
+            diffPatch: limitContext(rangeContext.diffPatch, 60_000),
+            ...(model ? { model } : {}),
+            writingPreferences,
+          })
+        : buildDeterministicPrContent({
+            headBranch: headContext.headBranch,
+            commitSummary: rangeContext.commitSummary,
+            diffSummary: rangeContext.diffSummary,
+            writingPreferences,
+          });
 
       const bodyFile = path.join(tempDir, `t3code-pr-body-${process.pid}-${randomUUID()}.md`);
       yield* fileSystem
@@ -1154,7 +1202,11 @@ export const makeGitManager = Effect.gen(function* () {
         );
       }
 
-      const preferredBranch = suggestion.branch ?? sanitizeFeatureBranchName(suggestion.subject);
+      const writingPreferences = yield* getWritingPreferences;
+      const generatedBranch = suggestion.branch ?? sanitizeFeatureBranchName(suggestion.subject);
+      const preferredBranch = sanitizeFeatureBranchName(
+        prefixGeneratedBranchName(generatedBranch, writingPreferences),
+      );
       const existingBranchNames = yield* gitCore.listLocalBranchNames(cwd);
       const resolvedBranch = resolveAutoFeatureBranchName(existingBranchNames, preferredBranch);
 

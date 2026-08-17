@@ -4,6 +4,7 @@ import {
   DEFAULT_RUNTIME_MODE,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  DEFAULT_SERVER_SETTINGS,
   defaultInstanceIdForDriver,
   EventId,
   type ModelSelection,
@@ -250,7 +251,7 @@ function isTemporaryWorktreeBranch(branch: string): boolean {
   return TEMP_WORKTREE_BRANCH_PATTERN.test(branch.trim().toLowerCase());
 }
 
-function buildGeneratedWorktreeBranchName(raw: string): string {
+function buildGeneratedWorktreeBranchName(raw: string, configuredPrefix: string): string {
   const normalized = raw
     .trim()
     .toLowerCase()
@@ -270,7 +271,14 @@ function buildGeneratedWorktreeBranchName(raw: string): string {
     .replace(/[./_-]+$/g, "");
 
   const safeFragment = branchFragment.length > 0 ? branchFragment : "update";
-  return `${WORKTREE_BRANCH_PREFIX}/${safeFragment}`;
+  const prefix =
+    configuredPrefix
+      .trim()
+      .toLowerCase()
+      .replace(/^refs\/heads\//, "")
+      .replace(/[^a-z0-9/_-]+/g, "-")
+      .replace(/^\/+|\/+$/g, "") || "f5";
+  return `${prefix}/${safeFragment}`;
 }
 
 const make = Effect.gen(function* () {
@@ -1019,12 +1027,21 @@ const make = Effect.gen(function* () {
     const oldBranch = input.branch;
     const cwd = input.worktreePath;
     const attachments = input.attachments ?? [];
+    const writingPreferences = yield* serverSettings.getSettings.pipe(
+      Effect.map((settings) => settings.sourceControlWriting),
+      Effect.catch((error) =>
+        Effect.logWarning("failed to read branch writing settings; using defaults", {
+          reason: error.message,
+        }).pipe(Effect.as(DEFAULT_SERVER_SETTINGS.sourceControlWriting)),
+      ),
+    );
     yield* textGeneration
       .generateBranchName({
         cwd,
         message: input.messageText,
         ...(attachments.length > 0 ? { attachments } : {}),
         model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        writingPreferences,
       })
       .pipe(
         Effect.catch((error) =>
@@ -1036,7 +1053,10 @@ const make = Effect.gen(function* () {
         Effect.flatMap((generated) => {
           if (!generated) return Effect.void;
 
-          const targetBranch = buildGeneratedWorktreeBranchName(generated.branch);
+          const targetBranch = buildGeneratedWorktreeBranchName(
+            generated.branch,
+            writingPreferences.branchNamePrefix,
+          );
           if (targetBranch === oldBranch) return Effect.void;
 
           return Effect.flatMap(
