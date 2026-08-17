@@ -3098,6 +3098,14 @@
       "f5Shas": ["64795d44e797c8b15e4e6ad5a3b8a75d4269a3ac"]
     },
     {
+      "category": "desktop-update-release-notes",
+      "selection": "Upstream 1f2797325ba52b93fddfb5aaaee3b18c86800589 (#3832), which predates the frozen first-parent window",
+      "disposition": "ported",
+      "reason": "Threaded provider release notes through f5's existing desktop update state, normalized remote HTML or versioned payloads to bounded plain text, and exposed the notes without changing the download/install action.",
+      "upstreamShas": ["1f2797325ba52b93fddfb5aaaee3b18c86800589"],
+      "f5Shas": ["6b5727aa915cf432cc9415e5838311f44da0d682"]
+    },
+    {
       "category": "pre-schema-ledger",
       "selection": "Upstream SHAs tracked before the frozen 500-commit window",
       "disposition": "deferred",
