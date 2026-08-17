@@ -1177,8 +1177,9 @@
     {
       "upstreamSha": "6b73b3defe1dfb365de3b7bbb97ca56a26b50a43",
       "subject": "feat: paginate thread loading with user-anchored turn windows (#5493)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 7.2 anchored thread pagination; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["67a36028b52627c66bfd0cef13717de6611746ee"],
+      "reason": "Reimplemented with bounded viewport-driven history pages, server-resolved message anchors, backward and forward cursors, coherent checkpoint/activity/command windows, live-arrival deduplication, viewport-preserving prepends, abortable navigation, and explicit loaded-range minimap semantics."
     },
     {
       "upstreamSha": "7aad7911f66c2fecba1cfd6601ea783a3fe2bf31",
