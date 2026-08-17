@@ -410,8 +410,9 @@
     {
       "upstreamSha": "57b1052679da56229dba45e3505718e5f5991b32",
       "subject": "fix(web): thread error banner dismiss survives reconnect and rerenders (#6123)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): thread error banner dismiss survives reconnect and rerenders (#6123))."
+      "disposition": "ported",
+      "f5Shas": ["bd01822cdbbf93a422df75b88a9a14098df62624"],
+      "reason": "Added stable server-generated error identities and occurrence times through migration 070, projections, snapshots, and live events. The bounded client dismissal set now survives reconnects and rerenders while distinct failures with identical text remain visible."
     },
     {
       "upstreamSha": "1e355a2a3444d4de0c9cf68cbe31ade370afd598",
