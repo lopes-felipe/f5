@@ -13,6 +13,13 @@ export const COMMON_DEV_PORTS: ReadonlyArray<number> = Object.freeze([
 
 const LSOF_TIMEOUT_MS = 5_000;
 const WINDOWS_LISTENER_TIMEOUT_MS = 5_000;
+export const PREVIEW_READINESS_PROBE_TIMEOUT_MS = 750;
+export const PREVIEW_READINESS_PROBE_CONCURRENCY = 8;
+
+type ReadinessFetch = (
+  input: string,
+  init: { readonly signal: AbortSignal; readonly redirect: "manual" },
+) => Promise<{ readonly body?: { cancel: () => Promise<void> } | null }>;
 
 function serverForPort(input: {
   readonly port: number;
@@ -170,11 +177,63 @@ async function scanWithPowerShell(): Promise<ReadonlyArray<DiscoveredLocalServer
   }
 }
 
+async function isReadyLocalServer(
+  server: DiscoveredLocalServer,
+  fetchImplementation: ReadinessFetch,
+  timeoutMs: number,
+): Promise<boolean> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  timer.unref?.();
+  try {
+    const response = await fetchImplementation(server.url, {
+      signal: controller.signal,
+      redirect: "manual",
+    });
+    await response.body?.cancel().catch(() => undefined);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function filterReadyLocalServers(
+  servers: ReadonlyArray<DiscoveredLocalServer>,
+  options: {
+    readonly fetchImplementation?: ReadinessFetch;
+    readonly timeoutMs?: number;
+    readonly concurrency?: number;
+  } = {},
+): Promise<ReadonlyArray<DiscoveredLocalServer>> {
+  if (servers.length === 0) return [];
+  const fetchImplementation = options.fetchImplementation ?? fetch;
+  const timeoutMs = options.timeoutMs ?? PREVIEW_READINESS_PROBE_TIMEOUT_MS;
+  const concurrency = Math.max(
+    1,
+    Math.min(options.concurrency ?? PREVIEW_READINESS_PROBE_CONCURRENCY, servers.length),
+  );
+  const ready = Array.from({ length: servers.length }, () => false);
+  let nextIndex = 0;
+  await Promise.all(
+    Array.from({ length: concurrency }, async () => {
+      while (nextIndex < servers.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        const server = servers[index];
+        if (server) {
+          ready[index] = await isReadyLocalServer(server, fetchImplementation, timeoutMs);
+        }
+      }
+    }),
+  );
+  return servers.filter((_server, index) => ready[index]);
+}
+
 export async function scanLocalServers(): Promise<ReadonlyArray<DiscoveredLocalServer>> {
   const platformResult =
     process.platform === "win32" ? await scanWithPowerShell() : await scanWithLsof();
-  if (platformResult !== null) {
-    return platformResult;
-  }
-  return probeCommonPorts();
+  const candidates = platformResult ?? (await probeCommonPorts());
+  return filterReadyLocalServers(candidates);
 }

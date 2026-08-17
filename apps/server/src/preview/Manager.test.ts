@@ -42,18 +42,72 @@ it.effect("opens, navigates, reports, lists, and closes preview sessions", () =>
       },
       canGoBack: true,
       canGoForward: false,
+      colorScheme: "dark",
+      viewport: { width: 800, height: 600, revision: 2 },
+      viewportLinked: false,
     });
 
     const listed = yield* manager.list({ threadId: "thread-preview" as never });
     assert.equal(listed.sessions.length, 1);
     assert.equal(listed.sessions[0]?.canGoBack, true);
     assert.equal(listed.sessions[0]?.navStatus._tag, "Success");
+    assert.equal(listed.sessions[0]?.colorScheme, "dark");
+    assert.deepEqual(listed.sessions[0]?.viewport, { width: 800, height: 600, revision: 2 });
+    assert.equal(listed.sessions[0]?.viewportLinked, false);
+    const recentLocations = listed.recentLocations ?? [];
+    assert.deepEqual(
+      recentLocations.map((location) => ({ url: location.url, title: location.title })),
+      [{ url: "http://127.0.0.1:3000/", title: "Dev" }],
+    );
 
     yield* manager.close({ threadId: "thread-preview" as never, tabId: opened.tabId });
     const empty = yield* manager.list({ threadId: "thread-preview" as never });
     assert.deepEqual(empty.sessions, []);
     assert.deepEqual(events, ["opened", "navigated", "navigated", "closed"]);
     unsubscribe();
+  }),
+);
+
+it.effect("keeps a bounded, deduplicated preview history across threads", () =>
+  Effect.gen(function* () {
+    const manager = makePreviewManager();
+    const threadId = "thread-preview" as never;
+    const opened = yield* manager.open({ threadId });
+
+    for (let index = 0; index < 22; index += 1) {
+      yield* manager.reportStatus({
+        threadId,
+        tabId: opened.tabId,
+        navStatus: {
+          _tag: "Success",
+          url: `http://localhost:${3000 + index}/`,
+          title: `Server ${index}`,
+        },
+        canGoBack: index > 0,
+        canGoForward: false,
+      });
+    }
+    yield* manager.reportStatus({
+      threadId,
+      tabId: opened.tabId,
+      navStatus: {
+        _tag: "Success",
+        url: "http://localhost:3005/",
+        title: "Server five again",
+      },
+      canGoBack: true,
+      canGoForward: false,
+    });
+
+    const listed = yield* manager.list({ threadId });
+    const recentLocations = listed.recentLocations ?? [];
+    assert.equal(recentLocations.length, 20);
+    assert.equal(recentLocations[0]?.url, "http://localhost:3005/");
+    assert.equal(recentLocations[0]?.title, "Server five again");
+    assert.equal(
+      recentLocations.filter((location) => location.url === "http://localhost:3005/").length,
+      1,
+    );
   }),
 );
 

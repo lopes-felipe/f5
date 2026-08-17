@@ -706,6 +706,7 @@ function ChatThreadRouteView() {
     (mode: RightPanelRenderMode, loadingOnly = false) => (
       <RightPanelHost
         mode={mode}
+        threadId={threadId}
         state={rightPanelState}
         renderSurface={renderRightPanelSurface(mode, loadingOnly)}
         onActivate={activateRightPanelSurface}
@@ -744,6 +745,7 @@ function ChatThreadRouteView() {
       renderRightPanelSurface,
       rightPanelState,
       routeThreadExists,
+      threadId,
       workspaceBrowserRoot,
     ],
   );

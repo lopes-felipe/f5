@@ -20,6 +20,7 @@ import {
 import { isElectron } from "../env";
 import { cn } from "../lib/utils";
 import { readNativeApi } from "../nativeApi";
+import type { PreviewPresentation } from "../previewPresentationStore";
 import type { RightPanelSurface } from "../rightPanelStore";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "./ui/menu";
 import { ScrollArea } from "./ui/scroll-area";
@@ -67,7 +68,10 @@ function SurfaceMenuItem(props: {
   return <DisabledReasonTooltip reason={props.disabledReason} trigger={item} />;
 }
 
-function surfaceTitle(surface: RightPanelSurface): string {
+function surfaceTitle(
+  surface: RightPanelSurface,
+  previewPresentation?: PreviewPresentation,
+): string {
   switch (surface.kind) {
     case "diff":
       return "Diff";
@@ -78,13 +82,19 @@ function surfaceTitle(surface: RightPanelSurface): string {
     case "plan":
       return "Plan";
     case "preview":
-      return "Preview";
+      return previewPresentation?.title || "Preview";
     case "agents":
       return "Agents";
   }
 }
 
-function SurfaceIcon({ surface }: { surface: RightPanelSurface }) {
+function SurfaceIcon({
+  surface,
+  previewPresentation,
+}: {
+  surface: RightPanelSurface;
+  previewPresentation: PreviewPresentation | undefined;
+}) {
   switch (surface.kind) {
     case "diff":
       return <FileDiffIcon className="size-3.5 shrink-0" />;
@@ -95,7 +105,15 @@ function SurfaceIcon({ surface }: { surface: RightPanelSurface }) {
     case "plan":
       return <ClipboardListIcon className="size-3.5 shrink-0" />;
     case "preview":
-      return <Globe2Icon className="size-3.5 shrink-0" />;
+      return previewPresentation?.faviconDataUrl ? (
+        <img
+          src={previewPresentation.faviconDataUrl}
+          alt=""
+          className="size-3.5 shrink-0 rounded-sm object-contain"
+        />
+      ) : (
+        <Globe2Icon className="size-3.5 shrink-0" />
+      );
     case "agents":
       return <BotIcon className="size-3.5 shrink-0" />;
   }
@@ -227,6 +245,7 @@ export function RightPanelTabs(props: {
   planAvailable: boolean;
   agentsAvailable: boolean;
   liveAgentCount: number;
+  previewPresentation?: PreviewPresentation | undefined;
   children: ReactNode;
 }) {
   const tabListRef = useRef<HTMLDivElement>(null);
@@ -319,7 +338,7 @@ export function RightPanelTabs(props: {
             <div className="flex h-full w-max min-w-full items-center gap-1">
               {props.surfaces.map((surface) => {
                 const active = surface.id === props.activeSurfaceId;
-                const title = surfaceTitle(surface);
+                const title = surfaceTitle(surface, props.previewPresentation);
                 return (
                   <div
                     key={surface.id}
@@ -342,7 +361,10 @@ export function RightPanelTabs(props: {
                             className="flex min-w-0 flex-1 items-center gap-1.5"
                             onClick={() => props.onActivate(surface)}
                           >
-                            <SurfaceIcon surface={surface} />
+                            <SurfaceIcon
+                              surface={surface}
+                              previewPresentation={props.previewPresentation}
+                            />
                             <span className="truncate">{title}</span>
                             {surface.kind === "agents" && props.liveAgentCount > 0 ? (
                               <span className="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-sky-500 px-1 text-[9px] font-semibold text-white">

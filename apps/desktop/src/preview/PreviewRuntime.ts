@@ -3,6 +3,7 @@ import path from "node:path";
 import type {
   DesktopPreviewRecordingFrame,
   DesktopPreviewRecordingStartResult,
+  DesktopPreviewColorScheme,
   PreviewArtifact,
   PreviewViewportSize,
 } from "@t3tools/contracts";
@@ -14,6 +15,9 @@ export interface PreviewTabEntry {
   webContentsId: number | null;
   zoomFactor: number;
   viewport: PreviewViewportSize | null;
+  colorScheme: DesktopPreviewColorScheme;
+  faviconDataUrl: string | null;
+  faviconRequestGeneration: number;
   removeListeners: Array<() => void>;
 }
 
@@ -37,7 +41,7 @@ export interface PreviewRuntimeOptions {
   readonly defaultZoomFactor: number;
   readonly getWebContents: (tabId: string) => WebContents | null;
   readonly emitRecordingFrame: (frame: DesktopPreviewRecordingFrame) => void;
-  readonly onViewportChanged?: (tabId: string) => void;
+  readonly onTabStateChanged?: (tabId: string) => void;
 }
 
 const RECORDING_FAILSAFE_TIMEOUT_MS = 5 * 60 * 1000 + 5_000;
@@ -47,7 +51,7 @@ export class PreviewRuntime {
   readonly #defaultZoomFactor: number;
   readonly #getWebContents: (tabId: string) => WebContents | null;
   readonly #emitRecordingFrame: (frame: DesktopPreviewRecordingFrame) => void;
-  readonly #onViewportChanged: (tabId: string) => void;
+  readonly #onTabStateChanged: (tabId: string) => void;
   readonly #artifactStore: PreviewArtifactStore;
   readonly #recordings = new Map<string, ActiveRecording>();
 
@@ -55,7 +59,7 @@ export class PreviewRuntime {
     this.#defaultZoomFactor = options.defaultZoomFactor;
     this.#getWebContents = options.getWebContents;
     this.#emitRecordingFrame = options.emitRecordingFrame;
-    this.#onViewportChanged = options.onViewportChanged ?? (() => undefined);
+    this.#onTabStateChanged = options.onTabStateChanged ?? (() => undefined);
     this.#artifactStore = new PreviewArtifactStore({
       directory: path.join(options.stateDirectory, "preview-artifacts"),
     });
@@ -73,6 +77,9 @@ export class PreviewRuntime {
         webContentsId: null,
         zoomFactor: this.#defaultZoomFactor,
         viewport: null,
+        colorScheme: "system",
+        faviconDataUrl: null,
+        faviconRequestGeneration: 0,
         removeListeners: [],
       };
       this.tabs.set(tabId, entry);
@@ -85,17 +92,47 @@ export class PreviewRuntime {
     return this.tabs.get(tabId) ?? null;
   }
 
-  setViewport(tabId: string, viewport: PreviewViewportSize): boolean {
+  setViewport(tabId: string, viewport: PreviewViewportSize | null): boolean {
     const entry = this.ensureTab(tabId);
-    if (!entry || viewport.width < 320 || viewport.height < 320) return false;
+    if (!entry) return false;
+    if (viewport === null) {
+      entry.viewport = null;
+      this.#onTabStateChanged(tabId);
+      return true;
+    }
+    if (viewport.width < 320 || viewport.height < 320) return false;
     if (entry.viewport && viewport.revision <= entry.viewport.revision) return false;
     entry.viewport = {
       width: Math.floor(viewport.width),
       height: Math.floor(viewport.height),
       revision: Math.floor(viewport.revision),
     };
-    this.#onViewportChanged(tabId);
+    this.#onTabStateChanged(tabId);
     return true;
+  }
+
+  async setColorScheme(tabId: string, colorScheme: DesktopPreviewColorScheme): Promise<boolean> {
+    const entry = this.ensureTab(tabId);
+    if (!entry) return false;
+    const guest = this.#getWebContents(tabId);
+    if (!guest || guest.isDestroyed()) return false;
+    const detachDebugger = !guest.debugger.isAttached();
+    try {
+      if (detachDebugger) guest.debugger.attach("1.3");
+      await guest.debugger.sendCommand("Emulation.setEmulatedMedia", {
+        features: [
+          {
+            name: "prefers-color-scheme",
+            value: colorScheme === "system" ? "" : colorScheme,
+          },
+        ],
+      });
+      entry.colorScheme = colorScheme;
+      this.#onTabStateChanged(tabId);
+      return true;
+    } finally {
+      if (detachDebugger && guest.debugger.isAttached()) guest.debugger.detach();
+    }
   }
 
   async captureScreenshot(tabId: string): Promise<PreviewArtifact> {

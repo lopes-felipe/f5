@@ -47,6 +47,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - A local theme library now separates light/dark/system mode from color palettes, applies themes
   before first paint, generates accessible OKLCH palettes, and supports bounded custom-theme
   editing, export, and file-drop import from F5 JSON, VS Code JSON/JSONC, or VSIX files.
+- Desktop previews now retain a bounded recent-site history, show validated same-origin page
+  favicons and titles in panel tabs, persist color-scheme and viewport/aspect preferences, and list
+  only local development servers that answer a bounded readiness probe.
 
 ### Changed
 

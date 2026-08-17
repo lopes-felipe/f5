@@ -1,10 +1,13 @@
+import type { ThreadId } from "@t3tools/contracts";
 import type { ReactNode } from "react";
 
+import { usePreviewPresentationStore } from "../previewPresentationStore";
 import type { RightPanelSurface, ThreadRightPanelState } from "../rightPanelStore";
 import { RightPanelTabs } from "./RightPanelTabs";
 
 export function RightPanelHost(props: {
   mode: "sidebar" | "sheet";
+  threadId: ThreadId;
   state: ThreadRightPanelState;
   renderSurface: (surface: RightPanelSurface) => ReactNode;
   onActivate: (surface: RightPanelSurface) => void;
@@ -25,6 +28,9 @@ export function RightPanelHost(props: {
   agentsAvailable: boolean;
   liveAgentCount: number;
 }) {
+  const previewPresentation = usePreviewPresentationStore(
+    (state) => state.byThreadId[String(props.threadId)],
+  );
   const activeSurface =
     props.state.surfaces.find((surface) => surface.id === props.state.activeSurfaceId) ?? null;
   const previewSurface = props.state.surfaces.find((surface) => surface.kind === "preview") ?? null;
@@ -53,6 +59,7 @@ export function RightPanelHost(props: {
       planAvailable={props.planAvailable}
       agentsAvailable={props.agentsAvailable}
       liveAgentCount={props.liveAgentCount}
+      previewPresentation={previewPresentation}
     >
       {activeSurface || inactivePreviewSurface ? (
         <div className="relative flex min-h-0 flex-1 flex-col">

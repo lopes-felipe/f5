@@ -13,6 +13,7 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  net as electronNet,
   protocol,
   shell,
   session as electronSession,
@@ -68,6 +69,7 @@ import {
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
 import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
+import { fetchPreviewFaviconDataUrl } from "./preview/previewFavicon";
 import { registerPreviewIpc } from "./preview/registerPreviewIpc";
 import { MainRendererCrashRecovery, mainRendererCrashScreenUrl } from "./rendererCrashRecovery";
 import { normalizeThreadIdForDesktopWindow, rendererUrlForThread } from "./rendererWindowUrl";
@@ -176,7 +178,7 @@ const previewRuntime = new PreviewRuntime({
   emitRecordingFrame: (frame) => {
     mainWindow?.webContents.send(PREVIEW_RECORDING_FRAME_CHANNEL, frame);
   },
-  onViewportChanged: (tabId) => emitPreviewState(tabId),
+  onTabStateChanged: (tabId) => emitPreviewState(tabId),
 });
 const previewTabs = previewRuntime.tabs;
 
@@ -292,6 +294,8 @@ function previewStateFromWebContents(
     canGoBack: guest && !guest.isDestroyed() ? guest.canGoBack() : false,
     canGoForward: guest && !guest.isDestroyed() ? guest.canGoForward() : false,
     zoomFactor: entry?.zoomFactor ?? PREVIEW_DEFAULT_ZOOM_FACTOR,
+    colorScheme: entry?.colorScheme ?? "system",
+    faviconDataUrl: entry?.faviconDataUrl ?? null,
     ...(entry?.viewport ? { viewport: entry.viewport } : {}),
     updatedAt: new Date().toISOString(),
   };
@@ -342,6 +346,41 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   });
 
   const onState = () => emitPreviewState(tabId);
+  const onNavigationStart = () => {
+    const currentEntry = lookupPreviewTabEntry(tabId);
+    if (currentEntry?.webContentsId === webContentsId) {
+      currentEntry.faviconDataUrl = null;
+      currentEntry.faviconRequestGeneration += 1;
+    }
+    emitPreviewState(tabId);
+  };
+  const onFaviconUpdated = (_event: Electron.Event, faviconUrls: string[]) => {
+    const currentEntry = lookupPreviewTabEntry(tabId);
+    if (!currentEntry || currentEntry.webContentsId !== webContentsId) return;
+    const pageUrl = guest.getURL();
+    const generation = currentEntry.faviconRequestGeneration + 1;
+    currentEntry.faviconRequestGeneration = generation;
+    void fetchPreviewFaviconDataUrl({
+      pageUrl,
+      candidateUrls: faviconUrls,
+      fetchImplementation: (url, init) => electronNet.fetch(url, init),
+    })
+      .then((faviconDataUrl) => {
+        const latestEntry = lookupPreviewTabEntry(tabId);
+        if (
+          !latestEntry ||
+          latestEntry.webContentsId !== webContentsId ||
+          latestEntry.faviconRequestGeneration !== generation ||
+          guest.isDestroyed() ||
+          guest.getURL() !== pageUrl
+        ) {
+          return;
+        }
+        latestEntry.faviconDataUrl = faviconDataUrl;
+        emitPreviewState(tabId);
+      })
+      .catch(() => undefined);
+  };
   const onWillNavigate = (event: Electron.Event, url: string) => {
     const previewUrl = getSafePreviewUrl(url);
     if (previewUrl) {
@@ -362,19 +401,21 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     }
   };
 
-  guest.on("did-start-loading", onState);
+  guest.on("did-start-loading", onNavigationStart);
   guest.on("did-stop-loading", onState);
   guest.on("did-navigate", onState);
   guest.on("did-navigate-in-page", onState);
   guest.on("page-title-updated", onState);
+  guest.on("page-favicon-updated", onFaviconUpdated);
   guest.on("will-navigate", onWillNavigate);
   guest.on("destroyed", onDestroyed);
   entry.removeListeners.push(
-    () => guest.off("did-start-loading", onState),
+    () => guest.off("did-start-loading", onNavigationStart),
     () => guest.off("did-stop-loading", onState),
     () => guest.off("did-navigate", onState),
     () => guest.off("did-navigate-in-page", onState),
     () => guest.off("page-title-updated", onState),
+    () => guest.off("page-favicon-updated", onFaviconUpdated),
     () => guest.off("will-navigate", onWillNavigate),
     () => guest.off("destroyed", onDestroyed),
   );
@@ -2239,6 +2280,7 @@ function registerIpcHandlers(): void {
     automationEvaluate: previewAutomationEvaluate,
     automationWaitFor: previewAutomationWaitFor,
     setViewport: (tabId, viewport) => previewRuntime.setViewport(tabId, viewport),
+    setColorScheme: (tabId, colorScheme) => previewRuntime.setColorScheme(tabId, colorScheme),
     captureScreenshot: (tabId) => previewRuntime.captureScreenshot(tabId),
     recordingStart: (tabId) => previewRuntime.startRecording(tabId),
     recordingAppend: (recordingId, chunk) =>

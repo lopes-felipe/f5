@@ -1,4 +1,5 @@
 import type {
+  DesktopPreviewColorScheme,
   PreviewAutomationClickInput,
   PreviewAutomationEvaluateInput,
   PreviewAutomationPressInput,
@@ -31,6 +32,7 @@ export const PREVIEW_IPC_CHANNELS = {
   automationEvaluate: "desktop-preview:automation-evaluate",
   automationWaitFor: "desktop-preview:automation-wait-for",
   setViewport: "desktop-preview:set-viewport",
+  setColorScheme: "desktop-preview:set-color-scheme",
   captureScreenshot: "desktop-preview:capture-screenshot",
   recordingStart: "desktop-preview:recording-start",
   recordingAppend: "desktop-preview:recording-append",
@@ -59,7 +61,8 @@ export interface PreviewIpcOperations {
   readonly automationScroll: (tabId: string, input: PreviewAutomationScrollInput) => unknown;
   readonly automationEvaluate: (tabId: string, input: PreviewAutomationEvaluateInput) => unknown;
   readonly automationWaitFor: (tabId: string, input: PreviewAutomationWaitForInput) => unknown;
-  readonly setViewport: (tabId: string, viewport: PreviewViewportSize) => unknown;
+  readonly setViewport: (tabId: string, viewport: PreviewViewportSize | null) => unknown;
+  readonly setColorScheme: (tabId: string, colorScheme: DesktopPreviewColorScheme) => unknown;
   readonly captureScreenshot: (tabId: string) => unknown;
   readonly recordingStart: (tabId: string) => unknown;
   readonly recordingAppend: (recordingId: string, chunk: Uint8Array) => unknown;
@@ -160,6 +163,9 @@ export function registerPreviewIpc(ipcMain: IpcMain, operations: PreviewIpcOpera
     ),
   );
   replaceHandler(ipcMain, channels.setViewport, (tabId, viewport) => {
+    if (viewport === null) {
+      return operations.setViewport(nonEmptyString(tabId, "Preview tab id"), null);
+    }
     if (!viewport || typeof viewport !== "object") return false;
     const candidate = viewport as Partial<PreviewViewportSize>;
     if (
@@ -174,6 +180,15 @@ export function registerPreviewIpc(ipcMain: IpcMain, operations: PreviewIpcOpera
       height: candidate.height,
       revision: candidate.revision,
     });
+  });
+  replaceHandler(ipcMain, channels.setColorScheme, (tabId, colorScheme) => {
+    if (colorScheme !== "system" && colorScheme !== "light" && colorScheme !== "dark") {
+      return false;
+    }
+    return operations.setColorScheme(
+      nonEmptyString(tabId, "Preview tab id"),
+      colorScheme as DesktopPreviewColorScheme,
+    );
   });
   replaceHandler(ipcMain, channels.recordingAppend, (recordingId, chunk) => {
     const bytes: Uint8Array | null =

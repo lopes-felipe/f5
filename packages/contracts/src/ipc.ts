@@ -261,6 +261,7 @@ export type DesktopUpdateStatus =
 
 export type DesktopRuntimeArch = "arm64" | "x64" | "other";
 export type DesktopTheme = "light" | "dark" | "system";
+export type DesktopPreviewColorScheme = "system" | "light" | "dark";
 
 export type DesktopPreviewNavStatus =
   | { kind: "Idle" }
@@ -281,6 +282,8 @@ export interface DesktopPreviewTabState {
   canGoBack: boolean;
   canGoForward: boolean;
   zoomFactor: number;
+  colorScheme: DesktopPreviewColorScheme;
+  faviconDataUrl?: string | null;
   viewport?: PreviewViewportSize;
   updatedAt: string;
 }
@@ -372,7 +375,8 @@ export interface DesktopPreviewBridge {
   openDevTools: (tabId: string) => Promise<void>;
   pickElement: (tabId: string) => Promise<PreviewAnnotationPayload | null>;
   cancelPickElement: (tabId: string) => Promise<void>;
-  setViewport: (tabId: string, viewport: PreviewViewportSize) => Promise<boolean>;
+  setViewport: (tabId: string, viewport: PreviewViewportSize | null) => Promise<boolean>;
+  setColorScheme: (tabId: string, colorScheme: DesktopPreviewColorScheme) => Promise<boolean>;
   captureScreenshot: (tabId: string) => Promise<PreviewArtifact>;
   recording?: {
     start: (tabId: string) => Promise<DesktopPreviewRecordingStartResult>;

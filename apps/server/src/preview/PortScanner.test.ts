@@ -1,6 +1,11 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { parseLsofOutput, parsePortFromLsofName, parseWindowsListenerOutput } from "./PortScanner";
+import {
+  filterReadyLocalServers,
+  parseLsofOutput,
+  parsePortFromLsofName,
+  parseWindowsListenerOutput,
+} from "./PortScanner";
 
 describe("preview port scanner parsers", () => {
   it("parses local lsof listener names", () => {
@@ -38,5 +43,48 @@ describe("preview port scanner parsers", () => {
         { port: 5173, processName: "Vite", pid: 123 },
       ],
     );
+  });
+
+  it("keeps only endpoints that answer the bounded readiness probe", async () => {
+    const servers = parseLsofOutput(
+      "p1\ncOne\nn127.0.0.1:3000\np2\ncTwo\nn127.0.0.1:3001\np3\ncThree\nn127.0.0.1:3002\n",
+    );
+    const requested: string[] = [];
+    const ready = await filterReadyLocalServers(servers, {
+      concurrency: 2,
+      fetchImplementation: async (url) => {
+        requested.push(url);
+        if (url.includes(":3001")) throw new Error("not ready");
+        return {};
+      },
+    });
+    assert.deepEqual(
+      ready.map((server) => server.port),
+      [3000, 3002],
+    );
+    assert.equal(requested.length, 3);
+  });
+
+  it("never exceeds the configured readiness-probe concurrency", async () => {
+    const servers = Array.from({ length: 12 }, (_, index) => ({
+      host: "localhost",
+      port: 4000 + index,
+      url: `http://localhost:${4000 + index}`,
+      processName: null,
+      pid: null,
+    }));
+    let active = 0;
+    let maximumActive = 0;
+    await filterReadyLocalServers(servers, {
+      concurrency: 3,
+      fetchImplementation: async () => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        active -= 1;
+        return {};
+      },
+    });
+    assert.equal(maximumActive, 3);
   });
 });

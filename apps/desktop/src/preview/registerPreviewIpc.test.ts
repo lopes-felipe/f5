@@ -37,6 +37,7 @@ function makeHarness() {
     automationEvaluate: vi.fn(),
     automationWaitFor: vi.fn(),
     setViewport: vi.fn(() => true),
+    setColorScheme: vi.fn(() => true),
     captureScreenshot: vi.fn(),
     recordingStart: vi.fn(),
     recordingAppend: vi.fn(),
@@ -58,6 +59,8 @@ describe("registerPreviewIpc", () => {
 
     expect(operations.registerWebview).toHaveBeenCalledWith("tab-1", 42);
     expect(operations.automationClick).toHaveBeenCalledWith("tab-1", { selector: "#save" });
+    invoke(PREVIEW_IPC_CHANNELS.setColorScheme, "tab-1", "dark");
+    expect(operations.setColorScheme).toHaveBeenCalledWith("tab-1", "dark");
   });
 
   it("rejects stale viewport revisions in the runtime-facing operation", () => {
@@ -72,5 +75,11 @@ describe("registerPreviewIpc", () => {
       height: 812,
       revision: 7,
     });
+  });
+
+  it("rejects unknown preview color schemes before they reach the runtime", () => {
+    const { invoke, operations } = makeHarness();
+    expect(invoke(PREVIEW_IPC_CHANNELS.setColorScheme, "tab-1", "sepia")).toBe(false);
+    expect(operations.setColorScheme).not.toHaveBeenCalled();
   });
 });

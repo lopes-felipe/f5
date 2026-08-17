@@ -8,6 +8,7 @@ import {
   type PreviewNavigateInput,
   type PreviewOpenInput,
   type PreviewRefreshInput,
+  type PreviewRecentLocation,
   type PreviewReportStatusInput,
   PreviewSessionLookupError,
   type PreviewSessionSnapshot,
@@ -36,6 +37,8 @@ interface PreviewSessionState {
   readonly tabId: string;
   readonly snapshot: PreviewSessionSnapshot;
 }
+
+export const MAX_PREVIEW_RECENT_LOCATIONS = 20;
 
 const compositeKey = (threadId: string, tabId: string): string => `${threadId}\u0000${tabId}`;
 
@@ -66,6 +69,9 @@ const buildIdleSnapshot = (input: {
   navStatus: { _tag: "Idle" },
   canGoBack: false,
   canGoForward: false,
+  colorScheme: "system",
+  viewport: null,
+  viewportLinked: true,
   updatedAt: input.updatedAt,
 });
 
@@ -76,6 +82,9 @@ const buildLoadingSnapshot = (input: {
   readonly title: string;
   readonly canGoBack?: boolean;
   readonly canGoForward?: boolean;
+  readonly colorScheme?: PreviewSessionSnapshot["colorScheme"];
+  readonly viewport?: PreviewSessionSnapshot["viewport"];
+  readonly viewportLinked?: PreviewSessionSnapshot["viewportLinked"];
   readonly updatedAt: string;
 }): PreviewSessionSnapshot => ({
   threadId: input.threadId as PreviewSessionSnapshot["threadId"],
@@ -83,12 +92,23 @@ const buildLoadingSnapshot = (input: {
   navStatus: { _tag: "Loading", url: input.url, title: input.title },
   canGoBack: input.canGoBack ?? false,
   canGoForward: input.canGoForward ?? false,
+  colorScheme: input.colorScheme ?? "system",
+  viewport: input.viewport ?? null,
+  viewportLinked: input.viewportLinked ?? true,
   updatedAt: input.updatedAt,
 });
 
 export function makePreviewManager(): PreviewManager {
   const sessions = new Map<string, PreviewSessionState>();
+  let recentLocations: PreviewRecentLocation[] = [];
   const listeners = new Set<(event: PreviewEvent) => void>();
+
+  const rememberLocation = (location: PreviewRecentLocation): void => {
+    recentLocations = [
+      location,
+      ...recentLocations.filter((candidate) => candidate.url !== location.url),
+    ].slice(0, MAX_PREVIEW_RECENT_LOCATIONS);
+  };
 
   const emit = (event: PreviewEvent): void => {
     for (const listener of listeners) {
@@ -157,6 +177,9 @@ export function makePreviewManager(): PreviewManager {
           title: input.resolvedTitle ?? previousTitle,
           canGoBack: session.snapshot.canGoBack,
           canGoForward: session.snapshot.canGoForward,
+          colorScheme: session.snapshot.colorScheme,
+          viewport: session.snapshot.viewport,
+          viewportLinked: session.snapshot.viewportLinked,
           updatedAt,
         });
         const next = { ...session, snapshot };
@@ -181,8 +204,18 @@ export function makePreviewManager(): PreviewManager {
           navStatus: input.navStatus,
           canGoBack: input.canGoBack,
           canGoForward: input.canGoForward,
+          colorScheme: input.colorScheme ?? session.snapshot.colorScheme,
+          viewport: input.viewport === undefined ? session.snapshot.viewport : input.viewport,
+          viewportLinked: input.viewportLinked ?? session.snapshot.viewportLinked,
           updatedAt,
         };
+        if (input.navStatus._tag === "Success") {
+          rememberLocation({
+            url: input.navStatus.url,
+            title: input.navStatus.title,
+            visitedAt: updatedAt,
+          });
+        }
         setSession({ ...session, snapshot });
         if (input.navStatus._tag === "LoadFailed") {
           emit({
@@ -234,6 +267,7 @@ export function makePreviewManager(): PreviewManager {
             .filter((session) => session.threadId === input.threadId)
             .map((session) => session.snapshot)
             .toSorted((left, right) => left.updatedAt.localeCompare(right.updatedAt)),
+          recentLocations,
         }),
       ),
 

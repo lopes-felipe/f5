@@ -1,6 +1,8 @@
 import { Schema } from "effect";
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
-import { PreviewTabId } from "./preview";
+import { PreviewTabId, PreviewViewportSize } from "./preview";
+
+export { PreviewViewportSize };
 
 const BoundedUrl = TrimmedNonEmptyString.check(Schema.isMaxLength(2048));
 const OptionalTimeoutMs = Schema.optional(
@@ -32,13 +34,6 @@ export const PreviewHostCapability = Schema.Literals([
   "recording",
 ]);
 export type PreviewHostCapability = typeof PreviewHostCapability.Type;
-
-export const PreviewViewportSize = Schema.Struct({
-  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
-  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-});
-export type PreviewViewportSize = typeof PreviewViewportSize.Type;
 
 export const PreviewAutomationViewportInput = Schema.Struct({
   width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),

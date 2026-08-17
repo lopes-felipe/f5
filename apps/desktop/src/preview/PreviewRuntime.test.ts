@@ -50,15 +50,15 @@ function makeRuntime(options?: { attachFailures?: number }) {
   directories.push(stateDirectory);
   const mock = makeGuest(options);
   const frames: unknown[] = [];
-  const viewportChanges: string[] = [];
+  const tabStateChanges: string[] = [];
   const runtime = new PreviewRuntime({
     stateDirectory,
     defaultZoomFactor: 1,
     getWebContents: () => mock.guest,
     emitRecordingFrame: (frame) => frames.push(frame),
-    onViewportChanged: (tabId) => viewportChanges.push(tabId),
+    onTabStateChanged: (tabId) => tabStateChanges.push(tabId),
   });
-  return { runtime, mock, frames, viewportChanges, stateDirectory };
+  return { runtime, mock, frames, tabStateChanges, stateDirectory };
 }
 
 afterEach(() => {
@@ -70,13 +70,15 @@ afterEach(() => {
 
 describe("PreviewRuntime", () => {
   it("rejects stale viewport revisions", async () => {
-    const { runtime, viewportChanges } = makeRuntime();
+    const { runtime, tabStateChanges } = makeRuntime();
     await runtime.initialize();
 
     expect(runtime.setViewport("tab-1", { width: 375, height: 812, revision: 2 })).toBe(true);
     expect(runtime.setViewport("tab-1", { width: 800, height: 600, revision: 1 })).toBe(false);
     expect(runtime.lookupTab("tab-1")?.viewport).toEqual({ width: 375, height: 812, revision: 2 });
-    expect(viewportChanges).toEqual(["tab-1"]);
+    expect(runtime.setViewport("tab-1", null)).toBe(true);
+    expect(runtime.lookupTab("tab-1")?.viewport).toBeNull();
+    expect(tabStateChanges).toEqual(["tab-1", "tab-1"]);
   });
 
   it("captures opaque screenshot artifacts", async () => {
@@ -92,6 +94,22 @@ describe("PreviewRuntime", () => {
       height: 480,
     });
     expect(artifact).not.toHaveProperty("path");
+  });
+
+  it("emulates and retains a per-tab color scheme without keeping the debugger attached", async () => {
+    const { runtime, mock } = makeRuntime();
+    await runtime.initialize();
+
+    await expect(runtime.setColorScheme("tab-1", "dark")).resolves.toBe(true);
+
+    expect(runtime.lookupTab("tab-1")?.colorScheme).toBe("dark");
+    expect(mock.commands).toContainEqual({
+      method: "Emulation.setEmulatedMedia",
+      params: {
+        features: [{ name: "prefers-color-scheme", value: "dark" }],
+      },
+    });
+    expect(mock.debuggerApi.isAttached()).toBe(false);
   });
 
   it("acks every screencast frame and finalizes streamed recordings", async () => {

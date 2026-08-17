@@ -4,6 +4,7 @@ import {
   clampPreviewViewport,
   orientPreviewViewport,
   PREVIEW_VIEWPORT_PRESETS,
+  resizePreviewViewport,
 } from "./PreviewViewport.logic";
 
 describe("preview viewport layout", () => {
@@ -34,5 +35,24 @@ describe("preview viewport layout", () => {
         bounds: { width: 900, height: 700 },
       }),
     ).toEqual({ width: 320, height: 700 });
+  });
+
+  it("preserves aspect ratio only while viewport linking is enabled", () => {
+    expect(
+      resizePreviewViewport({
+        initial: { width: 800, height: 400 },
+        delta: { width: 200, height: 300 },
+        linked: true,
+        bounds: { width: 1_200, height: 900 },
+      }),
+    ).toEqual({ width: 1_000, height: 500 });
+    expect(
+      resizePreviewViewport({
+        initial: { width: 800, height: 400 },
+        delta: { width: 200, height: 300 },
+        linked: false,
+        bounds: { width: 1_200, height: 900 },
+      }),
+    ).toEqual({ width: 1_000, height: 700 });
   });
 });

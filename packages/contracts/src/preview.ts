@@ -7,6 +7,16 @@ const Title = Schema.String.check(Schema.isMaxLength(512));
 export const PreviewTabId = TrimmedNonEmptyString.check(Schema.isMaxLength(128));
 export type PreviewTabId = typeof PreviewTabId.Type;
 
+export const PreviewColorScheme = Schema.Literals(["system", "light", "dark"]);
+export type PreviewColorScheme = typeof PreviewColorScheme.Type;
+
+export const PreviewViewportSize = Schema.Struct({
+  width: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
+  height: Schema.Int.check(Schema.isGreaterThanOrEqualTo(320)),
+  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type PreviewViewportSize = typeof PreviewViewportSize.Type;
+
 export const PreviewNavStatus = Schema.Union([
   Schema.TaggedStruct("Idle", {}),
   Schema.TaggedStruct("Loading", {
@@ -32,6 +42,13 @@ export const PreviewSessionSnapshot = Schema.Struct({
   navStatus: PreviewNavStatus,
   canGoBack: Schema.Boolean,
   canGoForward: Schema.Boolean,
+  colorScheme: Schema.optional(PreviewColorScheme).pipe(
+    Schema.withDecodingDefault(() => "system" as const),
+  ),
+  viewport: Schema.optional(Schema.NullOr(PreviewViewportSize)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  viewportLinked: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => true)),
   updatedAt: Schema.String,
 });
 export type PreviewSessionSnapshot = typeof PreviewSessionSnapshot.Type;
@@ -56,6 +73,9 @@ export const PreviewReportStatusInput = Schema.Struct({
   navStatus: PreviewNavStatus,
   canGoBack: Schema.Boolean,
   canGoForward: Schema.Boolean,
+  colorScheme: Schema.optional(PreviewColorScheme),
+  viewport: Schema.optional(Schema.NullOr(PreviewViewportSize)),
+  viewportLinked: Schema.optional(Schema.Boolean),
 });
 export type PreviewReportStatusInput = typeof PreviewReportStatusInput.Type;
 
@@ -84,8 +104,18 @@ export const PreviewListInput = Schema.Struct({
 });
 export type PreviewListInput = typeof PreviewListInput.Type;
 
+export const PreviewRecentLocation = Schema.Struct({
+  url: Url,
+  title: Title,
+  visitedAt: Schema.String,
+});
+export type PreviewRecentLocation = typeof PreviewRecentLocation.Type;
+
 export const PreviewListResult = Schema.Struct({
   sessions: Schema.Array(PreviewSessionSnapshot),
+  recentLocations: Schema.optional(Schema.Array(PreviewRecentLocation)).pipe(
+    Schema.withDecodingDefault(() => []),
+  ),
 });
 export type PreviewListResult = typeof PreviewListResult.Type;
 

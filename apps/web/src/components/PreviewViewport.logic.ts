@@ -39,6 +39,25 @@ export function clampPreviewViewport(input: {
   };
 }
 
+export function resizePreviewViewport(input: {
+  readonly initial: PreviewViewportDimensions;
+  readonly delta: PreviewViewportDimensions;
+  readonly linked: boolean;
+  readonly bounds: PreviewViewportDimensions;
+}): PreviewViewportDimensions {
+  const requestedWidth = input.initial.width + input.delta.width;
+  const aspectRatio = input.initial.width / input.initial.height;
+  return clampPreviewViewport({
+    requested: {
+      width: requestedWidth,
+      height: input.linked
+        ? requestedWidth / aspectRatio
+        : input.initial.height + input.delta.height,
+    },
+    bounds: input.bounds,
+  });
+}
+
 export function nearestPreviewViewportPreset(
   dimensions: PreviewViewportDimensions,
 ): PreviewViewportPresetId | null {

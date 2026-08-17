@@ -1,5 +1,6 @@
 import {
   type DesktopPreviewBridge,
+  type DesktopPreviewTabState,
   type DesktopPreviewWebviewConfig,
   type DiscoveredLocalServer,
   type PreviewAutomationClickInput,
@@ -18,6 +19,7 @@ import {
   type PreviewAnnotationPayload,
   type PreviewEvent,
   type PreviewNavStatus,
+  type PreviewRecentLocation,
   type PreviewSessionSnapshot,
   type ThreadId,
 } from "@t3tools/contracts";
@@ -29,10 +31,12 @@ import {
   CircleStopIcon,
   ExternalLinkIcon,
   Globe2Icon,
+  LinkIcon,
   MousePointer2Icon,
   RefreshCcwIcon,
   RotateCcwIcon,
   ScalingIcon,
+  UnlinkIcon,
   VideoIcon,
   XIcon,
 } from "lucide-react";
@@ -41,6 +45,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useComposerDraftStore } from "../composerDraftStore";
 import { cn, randomUUID } from "../lib/utils";
 import { ensureNativeApi } from "../nativeApi";
+import { usePreviewPresentationStore } from "../previewPresentationStore";
 import {
   readReadyWebContentsId,
   readReadyWebviewValue,
@@ -58,6 +63,7 @@ import {
   nearestPreviewViewportPreset,
   orientPreviewViewport,
   PREVIEW_VIEWPORT_PRESETS,
+  resizePreviewViewport,
   type PreviewViewportDimensions,
   type PreviewViewportPresetId,
 } from "./PreviewViewport.logic";
@@ -81,6 +87,7 @@ const PREVIEW_AUTOMATION_ATTACHMENT_POLL_INTERVAL_MS = 100;
 const PREVIEW_RECORDING_MAX_PENDING_CHUNKS = 2;
 const PREVIEW_RECORDING_MAX_CHUNK_BYTES = 4 * 1024 * 1024;
 const PREVIEW_RECORDING_MAX_DURATION_MS = 5 * 60 * 1000;
+const MAX_PREVIEW_RECENT_LOCATIONS = 20;
 
 interface ActivePreviewRecording {
   readonly recordingId: string;
@@ -102,6 +109,15 @@ function navStatusUrl(navStatus: PreviewNavStatus): string {
 
 function navStatusTitle(navStatus: PreviewNavStatus): string {
   return navStatus._tag === "Idle" ? "" : navStatus.title;
+}
+
+function previewPresentationTitle(title: string, url: string): string {
+  if (title.trim().length > 0) return title.trim();
+  try {
+    return new URL(url).host || "Preview";
+  } catch {
+    return "Preview";
+  }
 }
 
 function dataUrlToFile(dataUrl: string, name: string): File {
@@ -205,6 +221,16 @@ function applyPreviewEvent(
 
 function localServerLabel(server: DiscoveredLocalServer): string {
   return server.processName ? `${server.processName} :${server.port}` : `localhost:${server.port}`;
+}
+
+function rememberPreviewLocation(
+  current: ReadonlyArray<PreviewRecentLocation>,
+  location: PreviewRecentLocation,
+): PreviewRecentLocation[] {
+  return [location, ...current.filter((candidate) => candidate.url !== location.url)].slice(
+    0,
+    MAX_PREVIEW_RECENT_LOCATIONS,
+  );
 }
 
 function previewAutomationStatusUnavailable(): PreviewAutomationStatus {
@@ -329,12 +355,26 @@ function PreviewBrowserWebview(props: {
   }, [props.desktopPreview, props.session.tabId]);
 
   useEffect(() => {
+    void props.desktopPreview
+      .setColorScheme(props.session.tabId, props.session.colorScheme ?? "system")
+      .catch(() => undefined);
+  }, [props.desktopPreview, props.session.colorScheme, props.session.tabId]);
+
+  useEffect(() => {
     const webview = webviewRef.current;
     if (!webview) return;
     const register = () => {
       const webContentsId = readReadyWebContentsId(webview);
       if (webContentsId !== null) {
-        void props.desktopPreview.registerWebview(props.session.tabId, webContentsId);
+        void props.desktopPreview
+          .registerWebview(props.session.tabId, webContentsId)
+          .then(() =>
+            props.desktopPreview.setColorScheme(
+              props.session.tabId,
+              sessionRef.current.colorScheme ?? "system",
+            ),
+          )
+          .catch(() => undefined);
       }
     };
     const currentUrl = () =>
@@ -482,11 +522,14 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
     startY: number;
     width: number;
     height: number;
+    linked: boolean;
   } | null>(null);
   const lastViewportPersistAtRef = useRef(0);
   const activeRecordingRef = useRef<ActivePreviewRecording | null>(null);
   const automationResponseCacheRef = useRef(new PreviewAutomationResponseCache());
   const [sessions, setSessions] = useState<PreviewSessionSnapshot[]>([]);
+  const sessionsRef = useRef<PreviewSessionSnapshot[]>([]);
+  sessionsRef.current = sessions;
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [webviewConfig, setWebviewConfig] = useState<{
     partition: string;
@@ -494,6 +537,10 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   } | null>(null);
   const [urlInput, setUrlInput] = useState("");
   const [localServers, setLocalServers] = useState<ReadonlyArray<DiscoveredLocalServer>>([]);
+  const [recentLocations, setRecentLocations] = useState<ReadonlyArray<PreviewRecentLocation>>([]);
+  const [desktopStateByTabId, setDesktopStateByTabId] = useState<
+    Record<string, DesktopPreviewTabState | undefined>
+  >({});
   const [localServersLoading, setLocalServersLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
@@ -507,11 +554,13 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const [viewportPresetByTabId, setViewportPresetByTabId] = useState<
     Record<string, PreviewViewportPresetId | "custom">
   >({});
+  const [viewportLinkedByTabId, setViewportLinkedByTabId] = useState<Record<string, boolean>>({});
   const [recordingTabId, setRecordingTabId] = useState<string | null>(null);
 
   const activeSession =
     sessions.find((session) => session.tabId === activeTabId) ?? sessions.at(-1) ?? null;
   const activeUrl = activeSession ? navStatusUrl(activeSession.navStatus) : "";
+  const activeDesktopState = activeSession ? desktopStateByTabId[activeSession.tabId] : undefined;
   const loading = activeSession?.navStatus._tag === "Loading";
   const canGoBack = activeSession?.canGoBack ?? false;
   const canGoForward = activeSession?.canGoForward ?? false;
@@ -531,6 +580,9 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const requestedViewport = activeSession
     ? (requestedViewportByTabId[activeSession.tabId] ?? null)
     : null;
+  const viewportLinked = activeSession
+    ? (viewportLinkedByTabId[activeSession.tabId] ?? activeSession.viewportLinked ?? true)
+    : true;
   const activeViewport = useMemo(
     () =>
       requestedViewport
@@ -540,14 +592,31 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   );
 
   const commitViewport = useCallback(
-    (tabId: string, dimensions: PreviewViewportDimensions) => {
+    (tabId: string, dimensions: PreviewViewportDimensions | null) => {
       if (!desktopPreview) return;
       const revision = (viewportRevisionRef.current.get(tabId) ?? 0) + 1;
       viewportRevisionRef.current.set(tabId, revision);
       lastViewportPersistAtRef.current = Date.now();
-      void desktopPreview.setViewport(tabId, { ...dimensions, revision }).catch(() => undefined);
+      const viewport = dimensions ? { ...dimensions, revision } : null;
+      setSessions((current) =>
+        current.map((session) => (session.tabId === tabId ? { ...session, viewport } : session)),
+      );
+      void desktopPreview.setViewport(tabId, viewport).catch(() => undefined);
+      const session = sessionsRef.current.find((candidate) => candidate.tabId === tabId);
+      if (session) {
+        void api.preview.reportStatus({
+          threadId,
+          tabId: session.tabId,
+          navStatus: session.navStatus,
+          canGoBack: session.canGoBack,
+          canGoForward: session.canGoForward,
+          colorScheme: session.colorScheme,
+          viewport,
+          viewportLinked: viewportLinkedByTabId[tabId] ?? session.viewportLinked ?? true,
+        });
+      }
     },
-    [desktopPreview],
+    [api, desktopPreview, threadId, viewportLinkedByTabId],
   );
 
   const persistViewport = useCallback(
@@ -690,6 +759,20 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         ]);
         if (cancelled) return;
         setWebviewConfig(config);
+        setRecentLocations(list.recentLocations ?? []);
+        const requested: Record<string, PreviewViewportDimensions | null> = {};
+        const linked: Record<string, boolean> = {};
+        for (const session of list.sessions) {
+          requested[session.tabId] = session.viewport
+            ? { width: session.viewport.width, height: session.viewport.height }
+            : null;
+          linked[session.tabId] = session.viewportLinked ?? true;
+          if (session.viewport) {
+            viewportRevisionRef.current.set(session.tabId, session.viewport.revision);
+          }
+        }
+        setRequestedViewportByTabId(requested);
+        setViewportLinkedByTabId(linked);
         if (list.sessions.length > 0) {
           setSessions([...list.sessions]);
           setActiveTabId((current) => current ?? list.sessions.at(-1)?.tabId ?? null);
@@ -719,6 +802,27 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   }, [api, desktopPreview, refreshLocalServers]);
 
   useEffect(() => {
+    if (!desktopPreview) return;
+    return desktopPreview.onStateChange((tabId, state) => {
+      setDesktopStateByTabId((current) => ({ ...current, [tabId]: state }));
+    });
+  }, [desktopPreview]);
+
+  useEffect(() => {
+    if (!activeSession) return;
+    const desktopStatus = activeDesktopState?.navStatus;
+    const desktopUrl = desktopStatus?.kind === "Idle" ? "" : (desktopStatus?.url ?? "");
+    const desktopTitle = desktopStatus?.kind === "Idle" ? "" : (desktopStatus?.title ?? "");
+    const url = desktopUrl || activeUrl;
+    const title = desktopTitle || navStatusTitle(activeSession.navStatus);
+    usePreviewPresentationStore.getState().set(threadId, {
+      title: previewPresentationTitle(title, url),
+      url,
+      faviconDataUrl: activeDesktopState?.faviconDataUrl ?? null,
+    });
+  }, [activeDesktopState, activeSession, activeUrl, threadId]);
+
+  useEffect(() => {
     return api.preview.onEvent((event) => {
       if (event.threadId !== threadId) return;
       setSessions((current) => applyPreviewEvent(current, event));
@@ -744,10 +848,22 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         navStatus,
         canGoBack: readReadyWebviewValue(() => webview.canGoBack?.(), false),
         canGoForward: readReadyWebviewValue(() => webview.canGoForward?.(), false),
+        colorScheme: session.colorScheme,
+        viewport: session.viewport,
+        viewportLinked: session.viewportLinked,
       };
       const reportKey = JSON.stringify(report);
       if (lastStatusReportKeyRef.current.get(session.tabId) === reportKey) return;
       lastStatusReportKeyRef.current.set(session.tabId, reportKey);
+      if (navStatus._tag === "Success") {
+        setRecentLocations((current) =>
+          rememberPreviewLocation(current, {
+            url: navStatus.url,
+            title: navStatus.title,
+            visitedAt: new Date().toISOString(),
+          }),
+        );
+      }
       void api.preview.reportStatus(report);
     },
     [api, threadId],
@@ -1238,6 +1354,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
       await api.preview.close({ threadId, tabId: activeSession.tabId }).catch(() => undefined);
       await desktopPreview?.closeTab(activeSession.tabId).catch(() => undefined);
     }
+    usePreviewPresentationStore.getState().remove(threadId);
     onClose();
   }, [activeSession, api, desktopPreview, onClose, stopPreviewRecording, threadId]);
 
@@ -1393,6 +1510,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                 clampPreviewViewport({ requested: dimensions, bounds: viewportBounds }),
                 true,
               );
+            } else {
+              commitViewport(activeSession.tabId, null);
             }
           }}
         >
@@ -1433,9 +1552,80 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         >
           <ScalingIcon />
         </Button>
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          disabled={!activeSession || !requestedViewport}
+          aria-label={
+            viewportLinked ? "Unlock viewport aspect ratio" : "Lock viewport aspect ratio"
+          }
+          onClick={() => {
+            if (!activeSession) return;
+            const linked = !viewportLinked;
+            setViewportLinkedByTabId((current) => ({
+              ...current,
+              [activeSession.tabId]: linked,
+            }));
+            setSessions((current) =>
+              current.map((session) =>
+                session.tabId === activeSession.tabId
+                  ? { ...session, viewportLinked: linked }
+                  : session,
+              ),
+            );
+            void api.preview.reportStatus({
+              threadId,
+              tabId: activeSession.tabId,
+              navStatus: activeSession.navStatus,
+              canGoBack: activeSession.canGoBack,
+              canGoForward: activeSession.canGoForward,
+              colorScheme: activeSession.colorScheme,
+              viewport: activeSession.viewport,
+              viewportLinked: linked,
+            });
+          }}
+        >
+          {viewportLinked ? <LinkIcon /> : <UnlinkIcon />}
+        </Button>
         <span className="min-w-20 text-[11px] tabular-nums text-muted-foreground">
           {activeViewport ? `${activeViewport.width} × ${activeViewport.height}` : "Fit panel"}
         </span>
+        <Select
+          value={activeSession?.colorScheme ?? "system"}
+          disabled={recordingTabId === activeSession?.tabId}
+          onValueChange={(value) => {
+            if (!activeSession || (value !== "system" && value !== "light" && value !== "dark")) {
+              return;
+            }
+            setSessions((current) =>
+              current.map((session) =>
+                session.tabId === activeSession.tabId
+                  ? { ...session, colorScheme: value }
+                  : session,
+              ),
+            );
+            void desktopPreview
+              .setColorScheme(activeSession.tabId, value)
+              .catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
+            void api.preview.reportStatus({
+              threadId,
+              tabId: activeSession.tabId,
+              navStatus: activeSession.navStatus,
+              canGoBack: activeSession.canGoBack,
+              canGoForward: activeSession.canGoForward,
+              colorScheme: value,
+            });
+          }}
+        >
+          <SelectTrigger size="xs" className="w-24" aria-label="Preview color scheme">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectPopup>
+            <SelectItem value="system">System</SelectItem>
+            <SelectItem value="light">Light</SelectItem>
+            <SelectItem value="dark">Dark</SelectItem>
+          </SelectPopup>
+        </Select>
         <div className="flex-1" />
         <Button
           size="icon-xs"
@@ -1516,17 +1706,20 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                     startY: event.clientY,
                     width: activeViewport.width,
                     height: activeViewport.height,
+                    linked: viewportLinked,
                   };
                   event.currentTarget.setPointerCapture(event.pointerId);
                 }}
                 onPointerMove={(event) => {
                   const drag = viewportDragRef.current;
                   if (!drag || drag.pointerId !== event.pointerId) return;
-                  const next = clampPreviewViewport({
-                    requested: {
-                      width: drag.width + event.clientX - drag.startX,
-                      height: drag.height + event.clientY - drag.startY,
+                  const next = resizePreviewViewport({
+                    initial: { width: drag.width, height: drag.height },
+                    delta: {
+                      width: event.clientX - drag.startX,
+                      height: event.clientY - drag.startY,
                     },
+                    linked: drag.linked,
                     bounds: viewportBounds,
                   });
                   setRequestedViewportByTabId((current) => ({ ...current, [drag.tabId]: next }));
@@ -1555,7 +1748,33 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         {!activeUrl && (
           <div className="absolute inset-0 overflow-y-auto bg-background p-4">
             <div className="mx-auto max-w-md space-y-3">
-              <div className="flex items-center justify-between">
+              {recentLocations.length > 0 ? (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-foreground">Recent</p>
+                  {recentLocations.map((location) => (
+                    <button
+                      key={location.url}
+                      type="button"
+                      className={cn(
+                        "flex w-full items-center justify-between gap-3 rounded-md border border-border/80 bg-card/55 px-3 py-2 text-left",
+                        "transition hover:border-border hover:bg-accent/50",
+                      )}
+                      onClick={() => void navigateTo(location.url)}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">
+                          {location.title || new URL(location.url).host}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {location.url}
+                        </span>
+                      </span>
+                      <Globe2Icon className="size-4 shrink-0 text-muted-foreground" />
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between pt-1">
                 <p className="text-sm font-medium text-foreground">Local servers</p>
                 <Button
                   size="sm"

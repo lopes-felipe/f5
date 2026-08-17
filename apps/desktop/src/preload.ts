@@ -35,6 +35,7 @@ const PREVIEW_AUTOMATION_SCROLL_CHANNEL = "desktop-preview:automation-scroll";
 const PREVIEW_AUTOMATION_EVALUATE_CHANNEL = "desktop-preview:automation-evaluate";
 const PREVIEW_AUTOMATION_WAIT_FOR_CHANNEL = "desktop-preview:automation-wait-for";
 const PREVIEW_SET_VIEWPORT_CHANNEL = "desktop-preview:set-viewport";
+const PREVIEW_SET_COLOR_SCHEME_CHANNEL = "desktop-preview:set-color-scheme";
 const PREVIEW_CAPTURE_SCREENSHOT_CHANNEL = "desktop-preview:capture-screenshot";
 const PREVIEW_RECORDING_START_CHANNEL = "desktop-preview:recording-start";
 const PREVIEW_RECORDING_APPEND_CHANNEL = "desktop-preview:recording-append";
@@ -100,6 +101,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     cancelPickElement: (tabId) => ipcRenderer.invoke(PREVIEW_CANCEL_PICK_ELEMENT_CHANNEL, tabId),
     setViewport: (tabId, viewport) =>
       ipcRenderer.invoke(PREVIEW_SET_VIEWPORT_CHANNEL, tabId, viewport),
+    setColorScheme: (tabId, colorScheme) =>
+      ipcRenderer.invoke(PREVIEW_SET_COLOR_SCHEME_CHANNEL, tabId, colorScheme),
     captureScreenshot: (tabId) => ipcRenderer.invoke(PREVIEW_CAPTURE_SCREENSHOT_CHANNEL, tabId),
     recording: {
       start: (tabId) => ipcRenderer.invoke(PREVIEW_RECORDING_START_CHANNEL, tabId),
