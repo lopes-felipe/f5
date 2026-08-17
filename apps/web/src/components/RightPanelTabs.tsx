@@ -136,6 +136,7 @@ function RightPanelEmptyState(props: {
     {
       kind: "agents",
       label: "Agents",
+      description: "Follow subagents and background workflows.",
       icon: BotIcon,
       available: props.agentsAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.agents,
@@ -144,6 +145,7 @@ function RightPanelEmptyState(props: {
     {
       kind: "diff",
       label: "Diff",
+      description: "Review the files changed by this thread.",
       icon: FileDiffIcon,
       available: props.diffAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.diff,
@@ -152,6 +154,7 @@ function RightPanelEmptyState(props: {
     {
       kind: "plan",
       label: "Plan",
+      description: "Keep the current implementation plan visible.",
       icon: ClipboardListIcon,
       available: props.planAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.plan,
@@ -160,6 +163,7 @@ function RightPanelEmptyState(props: {
     {
       kind: "files",
       label: "Files",
+      description: "Browse and read files in this workspace.",
       icon: FilesIcon,
       available: props.filesAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.files,
@@ -168,6 +172,7 @@ function RightPanelEmptyState(props: {
     {
       kind: "preview",
       label: "Preview",
+      description: "Open a local app or web page.",
       icon: Globe2Icon,
       available: props.previewAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.preview,
@@ -176,49 +181,62 @@ function RightPanelEmptyState(props: {
   ] as const;
 
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-      <div className="grid w-full max-w-md grid-cols-2 gap-2">
-        {actions.map((action) => {
-          const Icon = action.icon;
-          const content = (
-            <>
-              <Icon className="size-4" />
-              <span className="text-sm font-medium">{action.label}</span>
-              {action.kind === "agents" && props.liveAgentCount > 0 ? (
-                <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
-                  {props.liveAgentCount} working
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
+      <div className="w-full max-w-lg">
+        <div className="mb-5 text-center">
+          <h3 className="text-sm font-medium text-foreground">Open a panel</h3>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Choose what to keep alongside this conversation.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          {actions.map((action) => {
+            const Icon = action.icon;
+            const content = (
+              <>
+                <span className="flex items-center gap-2">
+                  <Icon className="size-4" />
+                  <span className="text-sm font-medium">{action.label}</span>
+                  {action.kind === "agents" && props.liveAgentCount > 0 ? (
+                    <span className="rounded-full bg-sky-500 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+                      {props.liveAgentCount} working
+                    </span>
+                  ) : null}
                 </span>
-              ) : null}
-            </>
-          );
-          if (action.available) {
-            return (
-              <button
-                key={action.kind}
-                type="button"
-                onClick={action.onClick}
-                className="flex h-20 flex-col items-start justify-center gap-2 rounded-md border border-border/80 bg-card/40 px-4 text-left transition hover:border-border hover:bg-accent/60"
-              >
-                {content}
-              </button>
+                <span className="text-xs leading-relaxed text-muted-foreground">
+                  {action.available ? action.description : action.disabledReason}
+                </span>
+              </>
             );
-          }
-          return (
-            <DisabledReasonTooltip
-              key={action.kind}
-              reason={action.disabledReason}
-              trigger={
+            if (action.available) {
+              return (
                 <button
+                  key={action.kind}
                   type="button"
-                  aria-disabled="true"
-                  className="flex h-20 cursor-not-allowed flex-col items-start justify-center gap-2 rounded-md border border-border/80 bg-card/40 px-4 text-left opacity-45"
+                  onClick={action.onClick}
+                  className="flex min-h-24 flex-col items-start justify-center gap-2 rounded-lg border border-border/80 bg-card/40 px-4 text-left transition hover:border-border hover:bg-accent/60"
                 >
                   {content}
                 </button>
-              }
-            />
-          );
-        })}
+              );
+            }
+            return (
+              <DisabledReasonTooltip
+                key={action.kind}
+                reason={action.disabledReason}
+                trigger={
+                  <button
+                    type="button"
+                    aria-disabled="true"
+                    className="flex min-h-24 cursor-not-allowed flex-col items-start justify-center gap-2 rounded-lg border border-border/80 bg-card/40 px-4 text-left opacity-45"
+                  >
+                    {content}
+                  </button>
+                }
+              />
+            );
+          })}
+        </div>
       </div>
     </div>
   );
