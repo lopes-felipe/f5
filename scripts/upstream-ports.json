@@ -337,8 +337,8 @@
     {
       "upstreamSha": "b54bfc9312b030bad9d89771fbf561ccbfb2d315",
       "subject": "feat(web): a better right panel empty state (#6258)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 4.9 right-panel empty states; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["07517b8f46fd6b9fac52021d5227224399b383af"]
     },
     {
       "upstreamSha": "e1378a1f4d6a78d51c2d583997121f6adc0ad6cc",
