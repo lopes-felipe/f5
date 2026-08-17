@@ -2311,8 +2311,8 @@
     {
       "upstreamSha": "10bca3f44e1be6a874438fe80badbad45cd00279",
       "subject": "feat: add configurable source control writing settings (#4204)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 5.7 source-control writing preferences; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["9bba158bcc50d73a6d501854385f2aee6f6ed869"]
     },
     {
       "upstreamSha": "e77f42c111dc40e0b208393957ebb23863330e2e",
