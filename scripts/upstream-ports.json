@@ -89,14 +89,16 @@
     {
       "upstreamSha": "9fd788b5a92254a2afa72c2a53513ed2cb730f0d",
       "subject": "fix(preview): only show browser-ready local servers (#6021)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(preview): only show browser-ready local servers (#6021))."
+      "disposition": "ported",
+      "f5Shas": ["dadf8bc8fc21ebf1a6883013447bf904e8d42156"],
+      "reason": "Preview discovery now probes candidates with an eight-request concurrency cap and a 750 ms timeout, excluding listeners that do not answer HTTP before presenting them as local servers."
     },
     {
       "upstreamSha": "710fd0eeb3b4c4146c28fa0fc558ac4c236a8067",
       "subject": "feat(desktop): add favicons to the Browser panel (#5644)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.3 preview favicons; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["dadf8bc8fc21ebf1a6883013447bf904e8d42156"],
+      "reason": "Desktop preview tabs now show live page titles and signature-validated same-origin favicons fetched through the registered guest identity with redirect, timeout, and byte limits."
     },
     {
       "upstreamSha": "e15f655ba423e4b0e50a5692cc06eb9421bff7df",
@@ -961,8 +963,9 @@
     {
       "upstreamSha": "72d673a855c730536f0cf3bb964ba523e0af9e2e",
       "subject": "feat(desktop): remember recently used sites in the Browser panel (#5270)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.3 preview recents; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["dadf8bc8fc21ebf1a6883013447bf904e8d42156"],
+      "reason": "The preview manager maintains a deduplicated 20-location MRU and the empty preview surface presents those locations alongside readiness-checked local servers."
     },
     {
       "upstreamSha": "e2cd2383cec150ea674030d408f2a99a411c94fc",
@@ -2587,8 +2590,9 @@
     {
       "upstreamSha": "79fe11bc1c586029dfe052df25f4b2d6227b3b33",
       "subject": "Add preview color scheme controls and simplify project grouping (#4385)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.3 preview color scheme; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["dadf8bc8fc21ebf1a6883013447bf904e8d42156"],
+      "reason": "Ported the color-scheme half only: each preview session persists System, Light, or Dark emulation through CDP together with viewport and aspect-link state. Upstream project grouping remains intentionally out of scope."
     },
     {
       "upstreamSha": "b3e51317e404109ebc41fe1c9e487d5d73367e76",
