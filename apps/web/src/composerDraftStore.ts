@@ -40,6 +40,7 @@ import {
 } from "./lib/imageCompression";
 
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
+export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
@@ -52,9 +53,24 @@ interface DebouncedStorage extends StateStorage {
 }
 
 export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStorage {
+  const reportWriteFailure = (error: unknown) => {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(
+      new CustomEvent(COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT, {
+        detail: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  };
   const debouncedSetItem = new Debouncer(
     (name: string, value: string) => {
-      baseStorage.setItem(name, value);
+      try {
+        const result = baseStorage.setItem(name, value);
+        if (result instanceof Promise) {
+          void result.catch(reportWriteFailure);
+        }
+      } catch (error) {
+        reportWriteFailure(error);
+      }
     },
     { wait: COMPOSER_PERSIST_DEBOUNCE_MS },
   );
@@ -2825,6 +2841,22 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
     },
   ),
 );
+
+// The desktop app can open multiple windows that share one localStorage
+// partition. Rehydrate external writes before this window can persist a stale
+// whole-store snapshot over them.
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (event) => {
+    if (event.key !== COMPOSER_DRAFT_STORAGE_KEY) return;
+    composerDebouncedStorage.cancelPending();
+    const previousDrafts = useComposerDraftStore.getState().draftsByThreadId;
+    void Promise.resolve(useComposerDraftStore.persist.rehydrate()).then(() => {
+      for (const draft of Object.values(previousDrafts)) {
+        for (const image of draft.images) revokeObjectPreviewUrl(image.previewUrl);
+      }
+    });
+  });
+}
 
 export function useComposerThreadDraft(threadId: ThreadId): ComposerThreadDraftState {
   return useComposerDraftStore((state) => state.draftsByThreadId[threadId] ?? EMPTY_THREAD_DRAFT);

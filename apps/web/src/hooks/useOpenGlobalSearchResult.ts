@@ -36,7 +36,14 @@ export function useOpenGlobalSearchResult(): (result: GlobalSearchResult) => Pro
       await navigate({
         to: "/$threadId",
         params: { threadId: result.threadId },
-        ...(timelineEntryId ? { search: { timelineEntryId } } : {}),
+        ...(timelineEntryId
+          ? {
+              search: {
+                timelineEntryId,
+                timelineEntryKind: result.kind === "activity" ? "activity" : "message",
+              },
+            }
+          : {}),
       });
     },
     [navigate],

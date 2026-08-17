@@ -559,7 +559,7 @@ describe("settings route", () => {
       chatFont.element().blur();
 
       await vi.waitFor(() => {
-        expect(document.documentElement.style.fontSize).toBe("18px");
+        expect(document.documentElement.style.fontSize).toBe("1.125em");
         expect(document.documentElement.style.getPropertyValue("--font-sans")).toContain('"Inter"');
         expect(
           parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY)),

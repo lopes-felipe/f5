@@ -20,4 +20,13 @@ describe("settings routing", () => {
       );
     }
   });
+
+  it("routes legacy overlapping keys only to the authoritative app-settings store", () => {
+    const patch = {
+      addProjectBaseDirectory: "/workspace",
+      defaultThreadEnvMode: "worktree" as const,
+      enableAssistantStreaming: true,
+    };
+    expect(splitSettingsPatch(patch)).toEqual({ serverPatch: {}, appPatch: patch });
+  });
 });

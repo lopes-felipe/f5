@@ -30,6 +30,7 @@ const DEFAULT_PUSH_QUEUE_CAPACITY = 2_048;
 const DEFAULT_MAX_CLIENT_BUFFERED_BYTES = 4 * 1024 * 1024;
 const SLOW_CLIENT_CLOSE_CODE = 1013;
 const SLOW_CLIENT_CLOSE_REASON = "Client fell behind; reconnecting to resynchronize.";
+const OVERSIZED_FRAME_DRAIN_TIMEOUT_MS = 10_000;
 
 export interface WebSocketSendController {
   readonly send: (client: WebSocket, message: string) => Effect.Effect<boolean>;
@@ -45,6 +46,35 @@ export function makeWebSocketSendController(input: {
     input.maxClientBufferedBytes ?? DEFAULT_MAX_CLIENT_BUFFERED_BYTES,
   );
   const logicalOutstandingByClient = new WeakMap<WebSocket, number>();
+  const drainWaitersByClient = new WeakMap<WebSocket, Set<() => void>>();
+
+  const notifyDrainWaiters = (client: WebSocket) => {
+    const waiters = drainWaitersByClient.get(client);
+    if (!waiters) return;
+    drainWaitersByClient.delete(client);
+    for (const waiter of waiters) waiter();
+  };
+
+  const waitForOversizedFrameDrain = (client: WebSocket) =>
+    Effect.promise(
+      () =>
+        new Promise<boolean>((resolve) => {
+          const waiters = drainWaitersByClient.get(client) ?? new Set<() => void>();
+          let settled = false;
+          const finish = (drained: boolean) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            waiters.delete(onDrain);
+            resolve(drained);
+          };
+          const onDrain = () => finish(true);
+          waiters.add(onDrain);
+          drainWaitersByClient.set(client, waiters);
+          const timeout = setTimeout(() => finish(false), OVERSIZED_FRAME_DRAIN_TIMEOUT_MS);
+          timeout.unref();
+        }),
+    );
 
   const removeClient = (client: WebSocket) =>
     Ref.update(input.clients, (current) => {
@@ -73,17 +103,22 @@ export function makeWebSocketSendController(input: {
 
       const logicalBytes = Buffer.byteLength(message);
       const logicalOutstanding = logicalOutstandingByClient.get(client) ?? 0;
-      if (
-        client.bufferedAmount > maxClientBufferedBytes ||
-        // The high-water mark is a backlog budget, not a maximum frame size.
-        // Startup snapshots can legitimately exceed it for long-lived
-        // workspaces. Refusing the first oversized frame makes progress
-        // impossible: the client reconnects and requests the same snapshot
-        // forever. Permit one frame when nothing else is outstanding, then
-        // reject every subsequent send until its completion callback releases
-        // the logical bytes.
-        (logicalOutstanding > 0 && logicalOutstanding + logicalBytes > maxClientBufferedBytes)
-      ) {
+      if (client.bufferedAmount > maxClientBufferedBytes) {
+        yield* closeSlowClient(client);
+        return false;
+      }
+      if (logicalOutstanding > 0 && logicalOutstanding + logicalBytes > maxClientBufferedBytes) {
+        // A single startup snapshot may exceed the normal backlog budget. Hold
+        // the next frame until that snapshot's send callback runs instead of
+        // closing and forcing the client to request the same snapshot forever.
+        if (logicalOutstanding > maxClientBufferedBytes) {
+          const drained = yield* waitForOversizedFrameDrain(client);
+          if (!drained || client.readyState !== client.OPEN) {
+            yield* closeSlowClient(client);
+            return false;
+          }
+          return yield* send(client, message);
+        }
         yield* closeSlowClient(client);
         return false;
       }
@@ -94,6 +129,7 @@ export function makeWebSocketSendController(input: {
           client.send(message, (error) => {
             const currentOutstanding = logicalOutstandingByClient.get(client) ?? 0;
             logicalOutstandingByClient.set(client, Math.max(0, currentOutstanding - logicalBytes));
+            notifyDrainWaiters(client);
             if (error) {
               Effect.runFork(closeSlowClient(client));
             }

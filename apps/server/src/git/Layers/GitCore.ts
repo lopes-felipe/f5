@@ -64,19 +64,28 @@ function parseNumstatEntries(
   stdout: string,
 ): Array<{ path: string; insertions: number; deletions: number }> {
   const entries: Array<{ path: string; insertions: number; deletions: number }> = [];
-  for (const line of stdout.split(/\r?\n/g)) {
-    if (line.trim().length === 0) continue;
-    const [addedRaw, deletedRaw, ...pathParts] = line.split("\t");
-    const rawPath =
-      pathParts.length > 1 ? (pathParts.at(-1) ?? "").trim() : pathParts.join("\t").trim();
+  const records = stdout.split("\0");
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    if (record.length === 0) continue;
+    const firstTab = record.indexOf("\t");
+    const secondTab = firstTab === -1 ? -1 : record.indexOf("\t", firstTab + 1);
+    if (firstTab === -1 || secondTab === -1) continue;
+    const addedRaw = record.slice(0, firstTab);
+    const deletedRaw = record.slice(firstTab + 1, secondTab);
+    let rawPath = record.slice(secondTab + 1);
+    if (rawPath.length === 0) {
+      const oldPath = records[index + 1];
+      const newPath = records[index + 2];
+      if (oldPath === undefined || newPath === undefined) continue;
+      rawPath = newPath;
+      index += 2;
+    }
     if (rawPath.length === 0) continue;
     const added = Number.parseInt(addedRaw ?? "0", 10);
     const deleted = Number.parseInt(deletedRaw ?? "0", 10);
-    const renameArrowIndex = rawPath.indexOf(" => ");
-    const normalizedPath =
-      renameArrowIndex >= 0 ? rawPath.slice(renameArrowIndex + " => ".length).trim() : rawPath;
     entries.push({
-      path: normalizedPath.length > 0 ? normalizedPath : rawPath,
+      path: rawPath,
       insertions: Number.isFinite(added) ? added : 0,
       deletions: Number.isFinite(deleted) ? deleted : 0,
     });
@@ -84,26 +93,26 @@ function parseNumstatEntries(
   return entries;
 }
 
-function parsePorcelainPath(line: string): string | null {
-  if (line.startsWith("? ") || line.startsWith("! ")) {
-    const simple = line.slice(2).trim();
+function fieldAfterSpaces(record: string, count: number): string | null {
+  let offset = 0;
+  for (let index = 0; index < count; index += 1) {
+    offset = record.indexOf(" ", offset);
+    if (offset === -1) return null;
+    offset += 1;
+  }
+  const value = record.slice(offset);
+  return value.length > 0 ? value : null;
+}
+
+function parsePorcelainPath(record: string): string | null {
+  if (record.startsWith("? ") || record.startsWith("! ")) {
+    const simple = record.slice(2);
     return simple.length > 0 ? simple : null;
   }
-
-  if (!(line.startsWith("1 ") || line.startsWith("2 ") || line.startsWith("u "))) {
-    return null;
-  }
-
-  const tabIndex = line.indexOf("\t");
-  if (tabIndex >= 0) {
-    const fromTab = line.slice(tabIndex + 1);
-    const [filePath] = fromTab.split("\t");
-    return filePath?.trim().length ? filePath.trim() : null;
-  }
-
-  const parts = line.trim().split(/\s+/g);
-  const filePath = parts.at(-1) ?? "";
-  return filePath.length > 0 ? filePath : null;
+  if (record.startsWith("1 ")) return fieldAfterSpaces(record, 8);
+  if (record.startsWith("2 ")) return fieldAfterSpaces(record, 9);
+  if (record.startsWith("u ")) return fieldAfterSpaces(record, 10);
+  return null;
 }
 
 function parseBranchLine(line: string): { name: string; current: boolean } | null {
@@ -837,20 +846,25 @@ const makeGitCore = Effect.gen(function* () {
       const [statusStdout, unstagedNumstatStdout, stagedNumstatStdout, headNumstatResult] =
         yield* Effect.all(
           [
-            runGitStdout("GitCore.statusDetails.status", cwd, [
-              "status",
-              "--porcelain=2",
-              "--branch",
-            ]),
-            runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, ["diff", "--numstat"]),
+            executeGit(
+              "GitCore.statusDetails.status",
+              cwd,
+              ["status", "--porcelain=2", "--branch", "-z"],
+              { env: { GIT_OPTIONAL_LOCKS: "0" } },
+            ).pipe(Effect.map((result) => result.stdout)),
+            runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, ["diff", "--numstat", "-z"]),
             runGitStdout("GitCore.statusDetails.stagedNumstat", cwd, [
               "diff",
               "--cached",
               "--numstat",
+              "-z",
             ]),
-            executeGit("GitCore.statusDetails.headNumstat", cwd, ["diff", "HEAD", "--numstat"], {
-              allowNonZeroExit: true,
-            }),
+            executeGit(
+              "GitCore.statusDetails.headNumstat",
+              cwd,
+              ["diff", "HEAD", "--numstat", "-z"],
+              { allowNonZeroExit: true },
+            ),
           ],
           { concurrency: "unbounded" },
         );
@@ -863,7 +877,9 @@ const makeGitCore = Effect.gen(function* () {
       let hasUnbornHead = false;
       const changedFilesWithoutNumstat = new Set<string>();
 
-      for (const line of statusStdout.split(/\r?\n/g)) {
+      const statusRecords = statusStdout.split("\0");
+      for (let index = 0; index < statusRecords.length; index += 1) {
+        const line = statusRecords[index]!;
         if (line.startsWith("# branch.head ")) {
           const value = line.slice("# branch.head ".length).trim();
           branch = value.startsWith("(") ? null : value;
@@ -889,6 +905,7 @@ const makeGitCore = Effect.gen(function* () {
           hasWorkingTreeChanges = true;
           const pathValue = parsePorcelainPath(line);
           if (pathValue) changedFilesWithoutNumstat.add(pathValue);
+          if (line.startsWith("2 ")) index += 1;
         }
       }
 
@@ -983,9 +1000,6 @@ const makeGitCore = Effect.gen(function* () {
   const prepareCommitContext: GitCoreShape["prepareCommitContext"] = (cwd, filePaths) =>
     Effect.gen(function* () {
       if (filePaths && filePaths.length > 0) {
-        yield* runGit("GitCore.prepareCommitContext.reset", cwd, ["reset"]).pipe(
-          Effect.catch(() => Effect.void),
-        );
         yield* runGit("GitCore.prepareCommitContext.addSelected", cwd, [
           "add",
           "-A",
@@ -1018,12 +1032,15 @@ const makeGitCore = Effect.gen(function* () {
       };
     });
 
-  const commit: GitCoreShape["commit"] = (cwd, subject, body) =>
+  const commit: GitCoreShape["commit"] = (cwd, subject, body, filePaths) =>
     Effect.gen(function* () {
       const args = ["commit", "-m", subject];
       const trimmedBody = body.trim();
       if (trimmedBody.length > 0) {
         args.push("-m", trimmedBody);
+      }
+      if (filePaths && filePaths.length > 0) {
+        args.push("--only", "--", ...filePaths);
       }
       yield* runGit("GitCore.commit.commit", cwd, args);
       const commitSha = yield* runGitStdout("GitCore.commit.revParseHead", cwd, [
@@ -1693,14 +1710,9 @@ const makeGitCore = Effect.gen(function* () {
     );
 
   const listRemotes: GitCoreShape["listRemotes"] = (cwd) =>
-    listRemoteNames(cwd).pipe(
-      Effect.flatMap((remoteNames) =>
-        Effect.forEach(
-          remoteNames,
-          (name) =>
-            readConfigValue(cwd, `remote.${name}.url`).pipe(Effect.map((url) => ({ name, url }))),
-          { concurrency: "unbounded" },
-        ),
+    runGitStdout("GitCore.listRemotes", cwd, ["remote", "-v"]).pipe(
+      Effect.map((stdout) =>
+        [...parseRemoteFetchUrls(stdout)].map(([name, url]) => ({ name, url })),
       ),
     );
 

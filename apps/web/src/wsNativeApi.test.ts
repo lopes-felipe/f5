@@ -487,10 +487,18 @@ describe("wsNativeApi", () => {
     const { createWsNativeApi } = await import("./wsNativeApi");
 
     const api = createWsNativeApi();
-    await api.shell.revealInFileManager("/tmp/project/plan.md");
+    await api.shell.revealInFileManager({
+      projectId: "00000000-0000-4000-8000-000000000001" as never,
+      threadId: "00000000-0000-4000-8000-000000000002" as never,
+      relativePath: "plan.md",
+      kind: "file",
+    });
 
     expect(requestMock).toHaveBeenCalledWith(WS_METHODS.shellRevealInFileManager, {
-      path: "/tmp/project/plan.md",
+      projectId: "00000000-0000-4000-8000-000000000001",
+      threadId: "00000000-0000-4000-8000-000000000002",
+      relativePath: "plan.md",
+      kind: "file",
     });
   });
 

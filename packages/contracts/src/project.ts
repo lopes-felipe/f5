@@ -114,7 +114,7 @@ export type ProjectContentMatchRange = typeof ProjectContentMatchRange.Type;
 export const ProjectContentMatch = Schema.Struct({
   path: TrimmedNonEmptyString,
   lineNumber: PositiveInt,
-  lineContent: Schema.String,
+  lineContent: Schema.String.check(Schema.isMaxLength(8 * 1024)),
   matchRanges: Schema.Array(ProjectContentMatchRange).check(Schema.isMaxLength(256)),
 });
 export type ProjectContentMatch = typeof ProjectContentMatch.Type;

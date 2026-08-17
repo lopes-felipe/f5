@@ -4529,8 +4529,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               return assertNever(runtimeMode, "Claude permission mode");
           }
         })();
-        const permissionMode =
-          toPermissionMode(providerOptions?.permissionMode) ?? runtimePermissionMode;
+        // Runtime mode is the user-visible enforcement boundary. Persisted
+        // provider options may tune one-off prompts, but must never override a
+        // session into a more permissive SDK mode.
+        const permissionMode = runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
         const settings = {
           ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),

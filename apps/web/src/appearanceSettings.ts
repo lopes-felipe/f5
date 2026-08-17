@@ -186,7 +186,9 @@ export function applyAppearanceSettings(root: HTMLElement, input: AppearanceSett
   const monoStack = fontFamilyStack(settings.monoFontFamily, DEFAULT_MONO_FONT_STACK);
   const chatStack = fontFamilyStack(settings.chatFontFamily, "var(--font-sans)");
 
-  root.style.fontSize = `${settings.uiFontSize}px`;
+  // Scale from the browser's configured root size instead of replacing it
+  // with an absolute pixel value. The default setting remains 1em.
+  root.style.fontSize = `${settings.uiFontSize / UI_FONT_SIZE_DEFAULT}em`;
   root.style.setProperty("--font-sans", uiStack);
   root.style.setProperty("--font-mono", monoStack);
   root.style.setProperty("--f5-chat-font-family", chatStack);

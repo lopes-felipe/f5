@@ -177,6 +177,11 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
           printf('benchmark-event-%06d', value)
         FROM facts
       `;
+        yield* sql`
+          UPDATE projection_usage_metadata
+          SET coverage_started_at = '2026-05-17T00:00:00.000Z'
+          WHERE singleton_id = 1
+        `;
 
         const repository = yield* UsageFactRepository;
         const rows = yield* repository.summarizeHourly({

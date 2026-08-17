@@ -7,7 +7,13 @@ export const WEB_SOCKET_PER_MESSAGE_DEFLATE = {
     level: 3,
     memLevel: 7,
   },
+  zlibInflateOptions: {
+    chunkSize: 16 * 1024,
+  },
+  serverMaxWindowBits: 14,
 } as const;
+
+export const WEB_SOCKET_MAX_PAYLOAD_BYTES = 20 * 1024 * 1024;
 
 export function resolveServerPerMessageDeflate(
   versions: Readonly<Record<string, string | undefined>> = process.versions,

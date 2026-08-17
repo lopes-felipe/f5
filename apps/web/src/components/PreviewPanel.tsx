@@ -594,6 +594,17 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   const commitViewport = useCallback(
     (tabId: string, dimensions: PreviewViewportDimensions | null) => {
       if (!desktopPreview) return;
+      const currentSession = sessionsRef.current.find((session) => session.tabId === tabId);
+      const currentViewport = currentSession?.viewport ?? null;
+      if (
+        (dimensions === null && currentViewport === null) ||
+        (dimensions !== null &&
+          currentViewport !== null &&
+          dimensions.width === currentViewport.width &&
+          dimensions.height === currentViewport.height)
+      ) {
+        return;
+      }
       const revision = (viewportRevisionRef.current.get(tabId) ?? 0) + 1;
       viewportRevisionRef.current.set(tabId, revision);
       lastViewportPersistAtRef.current = Date.now();
@@ -664,7 +675,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   useEffect(() => {
     if (!activeSession || !activeViewport) return;
     persistViewport(activeSession.tabId, activeViewport, false);
-  }, [activeSession, activeViewport, persistViewport]);
+  }, [activeSession?.tabId, activeViewport, persistViewport]);
 
   useEffect(
     () => () => {
@@ -1763,7 +1774,7 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                     >
                       <span className="min-w-0">
                         <span className="block truncate text-sm font-medium">
-                          {location.title || new URL(location.url).host}
+                          {previewPresentationTitle(location.title, location.url)}
                         </span>
                         <span className="block truncate text-xs text-muted-foreground">
                           {location.url}

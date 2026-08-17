@@ -109,6 +109,8 @@ const make = Effect.gen(function* () {
   const summarizeHourly: UsageFactRepositoryShape["summarizeHourly"] = (input) =>
     Effect.gen(function* () {
       const coverageStartedAt = yield* readCoverageStartedAt;
+      const factStartedAt =
+        coverageStartedAt > input.startedAt ? coverageStartedAt : input.startedAt;
       const factRows = yield* sql<HourlyUsageDbRow>`
         SELECT
           strftime('%Y-%m-%dT%H:00:00.000Z', completed_at) AS "hourStartedAt",
@@ -131,7 +133,7 @@ const make = Effect.gen(function* () {
           SUM(CASE WHEN provider_cost_usd IS NULL THEN 1 ELSE 0 END) AS "unpricedTurnCount",
           0 AS "historicalCostTurnCount"
         FROM projection_turn_usage_facts
-        WHERE completed_at >= ${input.startedAt} AND completed_at < ${input.endedAt}
+        WHERE completed_at >= ${factStartedAt} AND completed_at < ${input.endedAt}
         GROUP BY hourStartedAt, provider_name, model
         ORDER BY hourStartedAt ASC, provider_name ASC, model ASC
       `;

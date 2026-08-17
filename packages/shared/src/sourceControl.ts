@@ -184,7 +184,7 @@ export function parseSourceControlRemoteUrl(
 
   const azureSshMatch = /^ssh:\/\/[^@]+@([^/]+)\/(?:v3\/)?(.+)$/.exec(raw);
   if (azureSshMatch) {
-    const host = azureSshMatch[1]!.trim();
+    const host = azureSshMatch[1]!.trim().replace(/:\d+$/, "");
     const parsed = parseRemoteParts({ host, pathname: azureSshMatch[2] ?? "" });
     return {
       kind: parsed.kind,

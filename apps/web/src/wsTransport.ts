@@ -454,6 +454,9 @@ export class WsTransport {
 
     const generation = this.authoritativeSocketGeneration;
     const now = Date.now();
+    // An in-flight RPC already proves the socket is active. Avoid racing a
+    // short foreground probe against a large snapshot response.
+    if (this.pending.size > 0) return;
     if (this.foregroundProbeGeneration === generation) return;
     if (
       this.lastForegroundProbe?.generation === generation &&

@@ -78,10 +78,10 @@ export const InlineFileChangeDiff = memo(function InlineFileChangeDiff(
     if (!checkpointDiffData?.diff) {
       return null;
     }
-    // Reuse the same parse-cache scope as DiffPanel so inline cards and the
-    // side panel share the parsed representation for the same patch + theme.
-    return getRenderablePatch(checkpointDiffData.diff, `diff-panel:${resolvedTheme}`);
-  }, [checkpointDiffData?.diff, resolvedTheme]);
+    // Patch parsing is theme-independent. Theme changes re-render FileDiff
+    // without invalidating the parsed patch cache or remounting file wrappers.
+    return getRenderablePatch(checkpointDiffData.diff, "diff-panel");
+  }, [checkpointDiffData?.diff]);
 
   const normalizedEntryFiles = useMemo(
     () =>

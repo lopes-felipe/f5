@@ -158,15 +158,11 @@ describe("GitCore unit", () => {
   it("lists every configured remote with its fetch URL", async () => {
     const scripted = makeScriptedGitService((input) => {
       if (argsEqual(input, ["rev-parse", "--git-common-dir"])) return { stdout: ".git\n" };
-      if (argsEqual(input, ["remote"])) return { stdout: "origin\nupstream\n" };
-      if (argsEqual(input, ["symbolic-ref", "refs/remotes/origin/HEAD"])) {
-        return { code: 1 };
-      }
-      if (argsEqual(input, ["config", "--get", "remote.origin.url"])) {
-        return { stdout: "https://github.com/octo/repo.git\n" };
-      }
-      if (argsEqual(input, ["config", "--get", "remote.upstream.url"])) {
-        return { stdout: "git@gitlab.com:octo/repo.git\n" };
+      if (argsEqual(input, ["remote", "-v"])) {
+        return {
+          stdout:
+            "origin\thttps://github.com/octo/repo.git (fetch)\norigin\thttps://github.com/octo/repo.git (push)\nupstream\tgit@gitlab.com:octo/repo.git (fetch)\nupstream\tgit@gitlab.com:octo/repo.git (push)\n",
+        };
       }
       return {};
     });
@@ -183,20 +179,20 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"])) {
         return { stdout: "\n" };
       }
-      if (argsEqual(input, ["status", "--porcelain=2", "--branch"])) {
+      if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
         return {
           stdout:
-            "# branch.head feature/parser\n# branch.upstream origin/feature/parser\n# branch.ab +2 -3\n1 .M N... 100644 100644 100644 a b src/a.ts\n? notes.txt\n",
+            "# branch.head feature/parser\x00# branch.upstream origin/feature/parser\x00# branch.ab +2 -3\x001 .M N... 100644 100644 100644 a b src/a.ts\x00? notes.txt\x00",
         };
       }
-      if (argsEqual(input, ["diff", "--numstat"])) {
-        return { stdout: "4\t1\tsrc/a.ts\n2\t0\tnotes.txt\n" };
+      if (argsEqual(input, ["diff", "--numstat", "-z"])) {
+        return { stdout: "4\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
-      if (argsEqual(input, ["diff", "--cached", "--numstat"])) {
-        return { stdout: "3\t2\tsrc/a.ts\n" };
+      if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
+        return { stdout: "3\t2\tsrc/a.ts\x00" };
       }
-      if (argsEqual(input, ["diff", "HEAD", "--numstat"])) {
-        return { stdout: "3\t1\tsrc/a.ts\n2\t0\tnotes.txt\n" };
+      if (argsEqual(input, ["diff", "HEAD", "--numstat", "-z"])) {
+        return { stdout: "3\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
       return {};
     });
@@ -233,10 +229,10 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["rev-parse", "--git-common-dir"])) {
         return { stdout: ".git\n" };
       }
-      if (argsEqual(input, ["status", "--porcelain=2", "--branch"])) {
+      if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
         return {
           stdout:
-            "# branch.head feature/cache\n# branch.upstream origin/feature/cache\n# branch.ab +0 -0\n",
+            "# branch.head feature/cache\x00# branch.upstream origin/feature/cache\x00# branch.ab +0 -0\x00",
         };
       }
       return {};
@@ -268,12 +264,12 @@ describe("GitCore unit", () => {
 
   it("reports aggregate counts as unavailable for an unborn HEAD", async () => {
     const scripted = makeScriptedGitService((input) => {
-      if (argsEqual(input, ["status", "--porcelain=2", "--branch"])) {
+      if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
         return {
-          stdout: "# branch.oid (initial)\n# branch.head main\n? README.md\n",
+          stdout: "# branch.oid (initial)\x00# branch.head main\x00? README.md\x00",
         };
       }
-      if (argsEqual(input, ["diff", "HEAD", "--numstat"])) {
+      if (argsEqual(input, ["diff", "HEAD", "--numstat", "-z"])) {
         return { code: 128, stderr: "fatal: ambiguous argument 'HEAD'" };
       }
       return {};
@@ -288,6 +284,37 @@ describe("GitCore unit", () => {
       countUnavailableReason: "unborn_head",
     });
     expect(status.workingTree.files).toEqual([{ path: "README.md", insertions: 0, deletions: 0 }]);
+  });
+
+  it("preserves spaces, unicode, and the destination path for renames", async () => {
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["status", "--porcelain=2", "--branch", "-z"])) {
+        return {
+          stdout:
+            "# branch.head main\x002 R. N... 100644 100644 100644 a b R100 dir/new name.txt\x00dir/old name.txt\x001 .M N... 100644 100644 100644 a b café.txt\x00",
+        };
+      }
+      if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
+        return { stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x00" };
+      }
+      if (argsEqual(input, ["diff", "--numstat", "-z"])) {
+        return { stdout: "1\t0\tcafé.txt\x00" };
+      }
+      if (argsEqual(input, ["diff", "HEAD", "--numstat", "-z"])) {
+        return {
+          stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x001\t0\tcafé.txt\x00",
+        };
+      }
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    const status = await Effect.runPromise(core.statusDetails(process.cwd()));
+
+    expect(status.workingTree.files).toEqual([
+      { path: "café.txt", insertions: 1, deletions: 0 },
+      { path: "dir/new name.txt", insertions: 0, deletions: 0 },
+    ]);
   });
 
   it("parses local and slash-containing remote names without pseudo refs", async () => {

@@ -2190,6 +2190,9 @@ describe("WebSocket Server", () => {
   });
 
   it("routes shell.revealInFileManager through the injected open service", async () => {
+    const workspaceRoot = makeTempDir("t3code-reveal-workspace-");
+    fs.mkdirSync(path.join(workspaceRoot, "src"));
+    fs.writeFileSync(path.join(workspaceRoot, "src", "app.ts"), "export {};\n", "utf8");
     const revealCalls: string[] = [];
     const openService: OpenShape = {
       openBrowser: () => Effect.void,
@@ -2199,17 +2202,53 @@ describe("WebSocket Server", () => {
         return Effect.void;
       },
     };
-    server = await createTestServer({ cwd: "/my/workspace", open: openService });
+    server = await createTestServer({ cwd: workspaceRoot, open: openService });
     const addr = server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
     const [ws] = await connectAndAwaitWelcome(port);
     connections.push(ws);
+    const createdAt = new Date().toISOString();
+    const projectId = "project-reveal";
+    const threadId = "thread-reveal";
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "cmd-project-reveal",
+          projectId,
+          title: "Reveal project",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "thread.create",
+          commandId: "cmd-thread-reveal",
+          threadId,
+          projectId,
+          title: "Reveal thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
 
     const response = await sendRequest(ws, WS_METHODS.shellRevealInFileManager, {
-      path: "/my/workspace/src/app.ts",
+      projectId,
+      threadId,
+      relativePath: "src/app.ts",
+      kind: "file",
     });
     expect(response.error).toBeUndefined();
-    expect(revealCalls).toEqual(["/my/workspace/src/app.ts"]);
+    expect(revealCalls).toEqual([path.join(fs.realpathSync(workspaceRoot), "src", "app.ts")]);
   });
 
   it("reads keybindings from the configured state directory", async () => {

@@ -1,4 +1,4 @@
-import { parse, wcagContrast } from "culori";
+import { formatHex, formatHex8, parse, wcagContrast } from "culori";
 
 export const THEME_DEFINITION_VERSION = 1 as const;
 export const DEFAULT_THEME_ID = "f5-default";
@@ -131,7 +131,7 @@ export function generateThemeTokens(
       accent: oklch(0.94, subtleChroma * 1.15, hue),
       "accent-foreground": oklch(foregroundLightness, foregroundChroma, hue),
       destructive: oklch(0.59, semanticChroma, 27),
-      "destructive-foreground": oklch(0.45, semanticChroma, 27),
+      "destructive-foreground": oklch(0.12, semanticChroma * 0.15, 27),
       border: oklch(0.885, subtleChroma * 0.65, hue),
       input: oklch(0.84, subtleChroma * 0.8, hue),
       ring: oklch(0.52, chroma, hue),
@@ -162,7 +162,7 @@ export function generateThemeTokens(
     accent: oklch(0.27, subtleChroma * 1.2, hue),
     "accent-foreground": oklch(foregroundLightness, foregroundChroma, hue),
     destructive: oklch(0.68, semanticChroma, 27),
-    "destructive-foreground": oklch(0.78, semanticChroma * 0.75, 27),
+    "destructive-foreground": oklch(0.16, semanticChroma * 0.2, 27),
     border: oklch(0.305, subtleChroma * 0.8, hue),
     input: oklch(0.35, subtleChroma, hue),
     ring: oklch(0.7, chroma * 0.88, hue),
@@ -195,10 +195,11 @@ export function parseSafeThemeColor(value: unknown): string {
     throw new Error("Theme colors must be strings.");
   }
   const color = value.trim();
-  if (!color || color.length > SAFE_COLOR_MAX_LENGTH || !parse(color)) {
+  const parsed = color ? parse(color) : undefined;
+  if (!color || color.length > SAFE_COLOR_MAX_LENGTH || !parsed) {
     throw new Error(`Invalid theme color: ${color || "(empty)"}.`);
   }
-  return color;
+  return parsed.alpha !== undefined && parsed.alpha < 1 ? formatHex8(parsed) : formatHex(parsed);
 }
 
 function parseThemeOverrides(value: unknown): ThemeDefinitionV1["overrides"] | undefined {
@@ -382,13 +383,19 @@ export function bodyTextContrast(palette: ThemePalette, variant: ThemeVariant): 
 export function getThemeContrastWarnings(palette: ThemePalette): readonly string[] {
   const warnings: string[] = [];
   for (const variant of ["light", "dark"] as const) {
-    const contrast = bodyTextContrast(palette, variant);
-    if (!Number.isFinite(contrast) || contrast < MIN_BODY_TEXT_CONTRAST) {
-      warnings.push(
-        `${variant === "light" ? "Light" : "Dark"} body text contrast is ${contrast.toFixed(
-          2,
-        )}:1; WCAG AA requires ${MIN_BODY_TEXT_CONTRAST}:1.`,
-      );
+    for (const [label, foreground, background] of [
+      ["body text", "foreground", "background"],
+      ["primary button", "primary-foreground", "primary"],
+      ["destructive button", "destructive-foreground", "destructive"],
+    ] as const) {
+      const contrast = wcagContrast(palette[variant][foreground], palette[variant][background]);
+      if (!Number.isFinite(contrast) || contrast < MIN_BODY_TEXT_CONTRAST) {
+        warnings.push(
+          `${variant === "light" ? "Light" : "Dark"} ${label} contrast is ${contrast.toFixed(
+            2,
+          )}:1; WCAG AA requires ${MIN_BODY_TEXT_CONTRAST}:1.`,
+        );
+      }
     }
   }
   return warnings;

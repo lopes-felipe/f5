@@ -1,4 +1,10 @@
-import type { ContextMenuItem, NativeApi, ProjectEntry } from "@t3tools/contracts";
+import type {
+  ContextMenuItem,
+  NativeApi,
+  ProjectEntry,
+  ProjectId,
+  ThreadId,
+} from "@t3tools/contracts";
 
 import { openInPreferredEditor } from "../editorPreferences";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
@@ -29,6 +35,8 @@ function itemsForEntry(kind: ProjectEntry["kind"]): readonly ContextMenuItem<Fil
 export async function showFileEntryContextMenu(input: {
   api: NativeApi;
   cwd: string;
+  projectId: ProjectId;
+  threadId: ThreadId;
   entry: Pick<ProjectEntry, "kind" | "path">;
   position: { x: number; y: number };
   onAddToChat: (relativePath: string) => boolean;
@@ -56,7 +64,12 @@ export async function showFileEntryContextMenu(input: {
         await openInPreferredEditor(input.api, absolutePath);
         return;
       case "reveal-in-file-manager":
-        await input.api.shell.revealInFileManager(absolutePath);
+        await input.api.shell.revealInFileManager({
+          projectId: input.projectId,
+          threadId: input.threadId,
+          relativePath: input.entry.path,
+          kind: input.entry.kind,
+        });
         return;
     }
   } catch (error) {

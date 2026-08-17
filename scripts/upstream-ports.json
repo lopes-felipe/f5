@@ -1,6 +1,7 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "manifest": "scripts/upstream-ports.manifest.json",
+  "manifestSha256": "667c0acbfb4d05a62d919429edf76e76e3f00863b4993f9d5897b6c844d1b917",
   "entries": [
     {
       "upstreamSha": "196c8ea0d642acd1db66bd57f5d98abe81d8da6e",

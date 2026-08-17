@@ -127,4 +127,38 @@ describe("thread snooze reactor", () => {
     expect(dispatched).toEqual([]);
     await Effect.runPromise(Scope.close(scope, Exit.void));
   });
+
+  it("retries a failed wake while the same snooze is still current", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-15T10:00:00.000Z"));
+    let readModel = await makeSnoozedReadModel("2026-08-15T09:30:00.000Z");
+    let attempts = 0;
+    const engine: OrchestrationEngineShape = {
+      getReadModel: () => Effect.succeed(readModel),
+      readEvents: () => Stream.empty,
+      dispatch: () => {
+        attempts += 1;
+        if (attempts === 1) return Effect.die(new Error("temporary dispatch failure"));
+        readModel = {
+          ...readModel,
+          threads: readModel.threads.map((thread) =>
+            thread.id === THREAD_ID ? { ...thread, snoozedUntil: null, snoozedAt: null } : thread,
+          ),
+        };
+        return Effect.succeed({ sequence: 3 });
+      },
+      acquireMaintenanceLock: () => Effect.die("unsupported"),
+      streamDomainEvents: Stream.empty,
+    };
+    const scope = await Effect.runPromise(Scope.make("sequential"));
+    await Effect.runPromise(startThreadSnoozeReactor(engine).pipe(Scope.provide(scope)));
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(attempts).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(attempts).toBe(2);
+    expect(readModel.threads.find((thread) => thread.id === THREAD_ID)?.snoozedUntil).toBeNull();
+
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+  });
 });

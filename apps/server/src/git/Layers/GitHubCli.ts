@@ -257,6 +257,7 @@ const makeGitHubCli = Effect.sync(() => {
         runProcess("gh", input.args, {
           cwd: input.cwd,
           timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          allowNonZeroExit: input.allowNonZeroExit ?? false,
         }),
       catch: (error) => normalizeGitHubCliError("execute", error),
     });
@@ -413,7 +414,7 @@ const makeGitHubCli = Effect.sync(() => {
           ? []
           : Array.isArray(value)
             ? value.flatMap((item) =>
-                item === undefined || item === null ? [] : ["-F", `${key}[]=${String(item)}`],
+                item === undefined || item === null ? [] : ["-f", `${key}[]=${String(item)}`],
               )
             : typeof value === "string"
               ? ["-f", `${key}=${value}`]
@@ -430,6 +431,10 @@ const makeGitHubCli = Effect.sync(() => {
           ...variableArgs,
         ],
         timeoutMs: 45_000,
+        // `gh api graphql` exits 1 when a response contains both partial data
+        // and GraphQL errors. Decode the body so callers can retain the data
+        // and surface the partial failure accurately.
+        allowNonZeroExit: true,
       }).pipe(
         Effect.map((result) => result.stdout.trim()),
         Effect.flatMap((raw) =>

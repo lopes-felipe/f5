@@ -36,7 +36,8 @@ interface CachedAdminClient {
 }
 
 interface OauthLease {
-  client: CodexControlClient;
+  promise: Promise<CodexControlClient>;
+  client: CodexControlClient | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -130,7 +131,14 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
     }
     oauthClients.delete(leaseKey);
     clearTimer(lease.timer);
-    lease.client.close();
+    if (lease.client) {
+      lease.client.close();
+    } else {
+      void lease.promise.then(
+        (client) => client.close(),
+        () => undefined,
+      );
+    }
   };
 
   yield* Effect.addFinalizer(() =>
@@ -213,14 +221,32 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
             });
           }
 
-          const client = await createClient(input);
           const lease: OauthLease = {
-            client,
-            timer: setTimeout(() => {
-              releaseOauthLease(leaseKey);
-            }, CODEX_MCP_OAUTH_CLIENT_TTL_MS),
+            promise: createClient(input),
+            client: null,
+            timer: null,
           };
           oauthClients.set(leaseKey, lease);
+
+          let client: CodexControlClient;
+          try {
+            client = await lease.promise;
+          } catch (error) {
+            if (oauthClients.get(leaseKey) === lease) {
+              oauthClients.delete(leaseKey);
+            }
+            throw error;
+          }
+          if (oauthClients.get(leaseKey) !== lease) {
+            client.close();
+            throw new CodexControlClientRegistryError({
+              message: `OAuth login for MCP server '${input.serverName}' was cancelled.`,
+            });
+          }
+          lease.client = client;
+          lease.timer = setTimeout(() => {
+            releaseOauthLease(leaseKey);
+          }, CODEX_MCP_OAUTH_CLIENT_TTL_MS);
 
           return {
             client,

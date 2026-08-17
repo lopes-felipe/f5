@@ -10,6 +10,8 @@ import {
 } from "./imageCompression.core";
 import { randomUUID } from "./utils";
 
+export const IMAGE_COMPRESSION_TIMEOUT_MS = 30_000;
+
 export type CompressComposerImageResult =
   | {
       readonly ok: true;
@@ -44,6 +46,8 @@ export function imageCompressionFailureMessage(
       return `'${displayName}' is animated. Animated GIF and WebP images cannot be attached.`;
     case "cancelled":
       return `'${displayName}' was not attached because the destination thread was removed.`;
+    case "timed-out":
+      return `'${displayName}' took too long to prepare and was not attached.`;
     case "too-large":
       return `'${displayName}' is too large to attach, even after compression.`;
     case "unreadable":
@@ -72,11 +76,16 @@ export const compressImageForComposer: ComposerImageProcessor = async (file, opt
     const finish = (result: CompressComposerImageResult) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timeout);
       options?.signal?.removeEventListener("abort", onAbort);
       worker.terminate();
       resolve(result);
     };
     const onAbort = () => finish({ ok: false, reason: "cancelled" });
+    const timeout = setTimeout(
+      () => finish({ ok: false, reason: "timed-out" }),
+      IMAGE_COMPRESSION_TIMEOUT_MS,
+    );
 
     options?.signal?.addEventListener("abort", onAbort, { once: true });
     worker.addEventListener("error", () => finish({ ok: false, reason: "unreadable" }), {

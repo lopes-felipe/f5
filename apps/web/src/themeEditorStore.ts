@@ -6,6 +6,7 @@ import {
   type ThemeDefinitionV1,
   type ThemePalette,
 } from "./themePalette";
+import { randomUUID } from "./lib/utils";
 
 function rawThemeId(value: unknown): string | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -58,7 +59,7 @@ export function removeCustomTheme(rawThemes: readonly unknown[], id: string): re
 }
 
 export function duplicateThemeDefinition(palette: ThemePalette): ThemeDefinitionV1 {
-  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
   return parseThemeDefinitionV1({
     version: 1,
     id: `custom-${palette.id.replace(/^f5-/, "").slice(0, 38)}-${suffix}`,

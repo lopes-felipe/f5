@@ -44,12 +44,4 @@ export default Effect.gen(function* () {
     CREATE INDEX IF NOT EXISTS projection_turn_usage_facts_completed_idx
     ON projection_turn_usage_facts(completed_at, turn_id)
   `;
-  yield* sql`
-    CREATE INDEX IF NOT EXISTS projection_turn_usage_facts_provider_completed_idx
-    ON projection_turn_usage_facts(provider_name, completed_at)
-  `;
-  yield* sql`
-    CREATE INDEX IF NOT EXISTS projection_turn_usage_facts_project_completed_idx
-    ON projection_turn_usage_facts(project_id, completed_at)
-  `;
 });

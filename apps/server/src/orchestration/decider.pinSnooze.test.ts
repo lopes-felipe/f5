@@ -321,5 +321,109 @@ describe("thread pins and snoozes", () => {
       }),
     );
     expect(Array.isArray(foregroundTurn) ? foregroundTurn[0]?.type : null).toBe("thread.unsnoozed");
+
+    const queuedTurn = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: snoozed,
+        command: {
+          type: "thread.turn.start",
+          commandId: CommandId.makeUnsafe("command-queued-turn"),
+          threadId: THREAD_1,
+          message: {
+            messageId: MessageId.makeUnsafe("message-queued-turn"),
+            role: "user",
+            text: "Background follow-up",
+            attachments: [],
+          },
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          dispatchSource: "next-turn-queue",
+          createdAt: NOW,
+        },
+      }),
+    );
+    expect(Array.isArray(queuedTurn) ? queuedTurn.map((event) => event.type) : []).not.toContain(
+      "thread.unsnoozed",
+    );
+  });
+
+  it("does not wake for continuation events on an existing assistant message", async () => {
+    const readModel = await makeReadModel();
+    const withStreamingMessage = await Effect.runPromise(
+      projectEvent(readModel, {
+        sequence: readModel.snapshotSequence + 1,
+        eventId: EventId.makeUnsafe("event-existing-assistant-message"),
+        aggregateKind: "thread",
+        aggregateId: THREAD_1,
+        type: "thread.message-sent",
+        occurredAt: NOW,
+        commandId: CommandId.makeUnsafe("command-existing-assistant-message"),
+        causationEventId: null,
+        correlationId: CommandId.makeUnsafe("command-existing-assistant-message"),
+        metadata: {},
+        payload: {
+          threadId: THREAD_1,
+          messageId: MessageId.makeUnsafe("message-existing-assistant"),
+          role: "assistant",
+          text: "Started",
+          turnId: null,
+          streaming: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      }),
+    );
+    const snoozeDecision = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: withStreamingMessage,
+        command: {
+          type: "thread.snooze",
+          commandId: CommandId.makeUnsafe("command-snooze-existing-assistant"),
+          threadId: THREAD_1,
+          until: LATER,
+          createdAt: NOW,
+        },
+      }),
+    );
+    const snoozed = await applyDecision(withStreamingMessage, snoozeDecision);
+
+    for (const command of [
+      {
+        type: "thread.message.assistant.delta" as const,
+        commandId: CommandId.makeUnsafe("command-existing-assistant-delta"),
+        threadId: THREAD_1,
+        messageId: MessageId.makeUnsafe("message-existing-assistant"),
+        delta: " more",
+        createdAt: NOW,
+      },
+      {
+        type: "thread.message.assistant.complete" as const,
+        commandId: CommandId.makeUnsafe("command-existing-assistant-complete"),
+        threadId: THREAD_1,
+        messageId: MessageId.makeUnsafe("message-existing-assistant"),
+        createdAt: NOW,
+      },
+    ]) {
+      const decision = await Effect.runPromise(
+        decideOrchestrationCommand({ readModel: snoozed, command }),
+      );
+      expect(Array.isArray(decision)).toBe(false);
+    }
+  });
+
+  it("rejects malformed snooze timestamps", async () => {
+    const exit = await Effect.runPromiseExit(
+      decideOrchestrationCommand({
+        readModel: await makeReadModel(),
+        command: {
+          type: "thread.snooze",
+          commandId: CommandId.makeUnsafe("command-invalid-snooze"),
+          threadId: THREAD_1,
+          until: "not-a-date",
+          createdAt: NOW,
+        },
+      }),
+    );
+    expect(Exit.isFailure(exit)).toBe(true);
   });
 });

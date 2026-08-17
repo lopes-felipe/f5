@@ -632,23 +632,23 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("keeps explicit claude permission mode over runtime-derived defaults", () => {
+  it.effect("keeps runtime policy authoritative over legacy provider permission options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
       yield* adapter.startSession({
         threadId: THREAD_ID,
         provider: "claudeAgent",
-        runtimeMode: "full-access",
+        runtimeMode: "approval-required",
         providerOptions: {
           claudeAgent: {
-            permissionMode: "plan",
+            permissionMode: "bypassPermissions",
           },
         },
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.permissionMode, "plan");
+      assert.equal(createInput?.options.permissionMode, "default");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

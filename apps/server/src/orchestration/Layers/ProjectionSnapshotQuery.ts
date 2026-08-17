@@ -608,16 +608,19 @@ function toProjectionThreadCommandExecutionSummaryRecord(
 }
 
 function resolveThreadHistoryMessageLimit(messageLimit?: number): number {
-  return Math.min(
-    messageLimit ?? DEFAULT_THREAD_TAIL_MESSAGE_LIMIT,
-    MAX_THREAD_HISTORY_MESSAGE_LIMIT,
+  return Math.max(
+    1,
+    Math.min(messageLimit ?? DEFAULT_THREAD_TAIL_MESSAGE_LIMIT, MAX_THREAD_HISTORY_MESSAGE_LIMIT),
   );
 }
 
 function resolveThreadHistoryCheckpointLimit(checkpointLimit?: number): number {
-  return Math.min(
-    checkpointLimit ?? DEFAULT_THREAD_TAIL_CHECKPOINT_LIMIT,
-    MAX_THREAD_HISTORY_CHECKPOINT_LIMIT,
+  return Math.max(
+    1,
+    Math.min(
+      checkpointLimit ?? DEFAULT_THREAD_TAIL_CHECKPOINT_LIMIT,
+      MAX_THREAD_HISTORY_CHECKPOINT_LIMIT,
+    ),
   );
 }
 
@@ -632,9 +635,12 @@ function resolveThreadHistoryActivityLimit(activityLimit?: number): number {
 }
 
 function resolveThreadHistoryCommandExecutionLimit(commandExecutionLimit?: number): number {
-  return Math.min(
-    commandExecutionLimit ?? DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT,
-    MAX_THREAD_HISTORY_COMMAND_EXECUTION_LIMIT,
+  return Math.max(
+    1,
+    Math.min(
+      commandExecutionLimit ?? DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT,
+      MAX_THREAD_HISTORY_COMMAND_EXECUTION_LIMIT,
+    ),
   );
 }
 
@@ -789,6 +795,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens"
         FROM projection_threads
+        WHERE deleted_at IS NULL
         ORDER BY last_interaction_at DESC, created_at DESC, thread_id DESC
       `,
   });
@@ -824,6 +831,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens"
         FROM projection_threads
+        WHERE deleted_at IS NULL
         ORDER BY last_interaction_at DESC, created_at DESC, thread_id DESC
       `,
   });
@@ -1016,7 +1024,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         FROM projection_thread_activities
         ORDER BY
           thread_id ASC,
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
           sequence ASC,
           created_at ASC,
           activity_id ASC
@@ -1042,7 +1049,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ROW_NUMBER() OVER (
               PARTITION BY thread_id
               ORDER BY
-                CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
                 sequence DESC,
                 created_at DESC,
                 activity_id DESC
@@ -1063,7 +1069,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
         WHERE row_number <= ${MAX_THREAD_ACTIVITIES}
         ORDER BY
           "threadId" ASC,
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
           sequence ASC,
           "createdAt" ASC,
           "activityId" ASC
@@ -1215,6 +1220,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({
       threadId,
       anchorMessageId,
+      anchorActivityId,
       beforeMessageCursor,
       afterMessageCursor,
       messageLimit,
@@ -1235,21 +1241,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           updated_at AS "updatedAt"
         FROM projection_thread_messages
       `;
-      if (anchorMessageId != null) {
+      if (anchorMessageId != null || anchorActivityId != null) {
+        const anchorCreatedAt =
+          anchorMessageId != null
+            ? sql`(SELECT created_at FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId})`
+            : sql`(SELECT created_at FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId!})`;
         return sql`
           ${select}
           WHERE thread_id = ${threadId}
             AND (
-              created_at < (
-                SELECT created_at FROM projection_thread_messages
-                WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
-              )
+              created_at < ${anchorCreatedAt}
               OR (
-                created_at = (
-                  SELECT created_at FROM projection_thread_messages
-                  WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
-                )
-                AND message_id <= ${anchorMessageId}
+                created_at = ${anchorCreatedAt}
+                ${anchorMessageId != null ? sql`AND message_id <= ${anchorMessageId}` : sql``}
               )
             )
           ORDER BY created_at DESC, message_id DESC
@@ -1296,10 +1300,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listThreadMessagesAfterAnchor = SqlSchema.findAll({
     Request: OrchestrationGetThreadHistoryPageInput,
     Result: Schema.Struct({ messageId: MessageId }),
-    execute: ({ threadId, anchorMessageId }) =>
-      anchorMessageId == null
+    execute: ({ threadId, anchorMessageId, anchorActivityId }) =>
+      anchorMessageId == null && anchorActivityId == null
         ? sql`SELECT message_id AS "messageId" FROM projection_thread_messages WHERE 1 = 0`
-        : sql`
+        : anchorMessageId != null
+          ? sql`
             SELECT message_id AS "messageId"
             FROM projection_thread_messages
             WHERE thread_id = ${threadId}
@@ -1317,14 +1322,24 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 )
               )
             LIMIT 1
+          `
+          : sql`
+            SELECT message_id AS "messageId"
+            FROM projection_thread_messages
+            WHERE thread_id = ${threadId}
+              AND created_at > (
+                SELECT created_at FROM projection_thread_activities
+                WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId!}
+              )
+            LIMIT 1
           `,
   });
 
   const listThreadActivitiesAtAnchor = SqlSchema.findAll({
     Request: OrchestrationGetThreadHistoryPageInput,
     Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, anchorMessageId, activityLimit }) =>
-      anchorMessageId == null
+    execute: ({ threadId, anchorMessageId, anchorActivityId, activityLimit }) =>
+      anchorMessageId == null && anchorActivityId == null
         ? sql`
             SELECT
               activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
@@ -1345,17 +1360,16 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             FROM projection_thread_activities
             WHERE thread_id = ${threadId}
               AND (
-                turn_id = (
-                  SELECT turn_id FROM projection_thread_messages
-                  WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+                turn_id = COALESCE(
+                  (SELECT turn_id FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
+                  (SELECT turn_id FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
                 )
-                OR created_at <= (
-                  SELECT created_at FROM projection_thread_messages
-                  WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+                OR created_at <= COALESCE(
+                  (SELECT created_at FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
+                  (SELECT created_at FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
                 )
               )
             ORDER BY
-              CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
               sequence DESC,
               created_at DESC,
               activity_id DESC
@@ -1416,8 +1430,14 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listThreadHistoryCheckpointRows = SqlSchema.findAll({
     Request: OrchestrationGetThreadHistoryPageInput,
     Result: ProjectionCheckpointDbRowSchema,
-    execute: ({ threadId, anchorMessageId, beforeCheckpointTurnCount, checkpointLimit }) =>
-      anchorMessageId != null
+    execute: ({
+      threadId,
+      anchorMessageId,
+      anchorActivityId,
+      beforeCheckpointTurnCount,
+      checkpointLimit,
+    }) =>
+      anchorMessageId != null || anchorActivityId != null
         ? sql`
             SELECT
               thread_id AS "threadId",
@@ -1432,13 +1452,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             WHERE thread_id = ${threadId}
               AND checkpoint_turn_count IS NOT NULL
               AND (
-                turn_id = (
-                  SELECT turn_id FROM projection_thread_messages
-                  WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+                turn_id = COALESCE(
+                  (SELECT turn_id FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
+                  (SELECT turn_id FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
                 )
-                OR completed_at <= (
-                  SELECT created_at FROM projection_thread_messages
-                  WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+                OR completed_at <= COALESCE(
+                  (SELECT created_at FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
+                  (SELECT created_at FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
                 )
               )
             ORDER BY checkpoint_turn_count DESC
@@ -1484,10 +1504,11 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     execute: ({
       threadId,
       anchorMessageId,
+      anchorActivityId,
       beforeCommandExecutionCursor,
       commandExecutionLimit,
     }) => {
-      if (anchorMessageId != null) {
+      if (anchorMessageId != null || anchorActivityId != null) {
         return sql`
           SELECT
             command_execution_id AS id,
@@ -1508,13 +1529,13 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           FROM projection_thread_command_executions
           WHERE thread_id = ${threadId}
             AND (
-              turn_id = (
-                SELECT turn_id FROM projection_thread_messages
-                WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+              turn_id = COALESCE(
+                (SELECT turn_id FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
+                (SELECT turn_id FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
               )
-              OR started_at <= (
-                SELECT created_at FROM projection_thread_messages
-                WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+              OR started_at <= COALESCE(
+                (SELECT created_at FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
+                (SELECT created_at FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
               )
             )
           ORDER BY started_at DESC, started_sequence DESC, command_execution_id DESC
@@ -1578,7 +1599,8 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const readThreadHistoryMessages = (input: OrchestrationGetThreadHistoryPageInput) =>
     input.beforeMessageCursor === null &&
     input.afterMessageCursor == null &&
-    input.anchorMessageId == null
+    input.anchorMessageId == null &&
+    input.anchorActivityId == null
       ? Effect.succeed({
           messages: [] as ReadonlyArray<ProjectionThreadMessage>,
           hasOlderMessages: false,
@@ -1627,7 +1649,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
     );
 
   const readThreadHistoryCheckpoints = (input: OrchestrationGetThreadHistoryPageInput) =>
-    input.beforeCheckpointTurnCount === null && input.anchorMessageId == null
+    input.beforeCheckpointTurnCount === null &&
+    input.anchorMessageId == null &&
+    input.anchorActivityId == null
       ? Effect.succeed({
           checkpoints: [] as ReadonlyArray<ProjectionCheckpoint>,
           hasOlderCheckpoints: false,
@@ -1697,7 +1721,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   };
 
   const readThreadHistoryActivities = (input: OrchestrationGetThreadHistoryPageInput) => {
-    if (input.anchorMessageId != null) {
+    if (input.anchorMessageId != null || input.anchorActivityId != null) {
       const limit = resolveThreadHistoryActivityLimit(input.activityLimit);
       return listThreadActivitiesAtAnchor(input).pipe(
         Effect.mapError(
@@ -1751,7 +1775,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   };
 
   const readThreadHistoryCommandExecutions = (input: OrchestrationGetThreadHistoryPageInput) =>
-    input.beforeCommandExecutionCursor === null && input.anchorMessageId == null
+    input.beforeCommandExecutionCursor === null &&
+    input.anchorMessageId == null &&
+    input.anchorActivityId == null
       ? Effect.succeed({
           commandExecutions: [] as ReadonlyArray<OrchestrationCommandExecutionSummary>,
           hasOlderCommandExecutions: false,

@@ -24,6 +24,7 @@ const MONITOR_TASK_TYPES = new Set(["monitor", "monitor_mcp", "local_bash", "she
 const INERT_TASK_TYPES = new Set(["plan", "dream"]);
 const OUTPUT_TRUNCATION_MARKER = "\n\n[... background output truncated ...]\n\n";
 const PROGRESS_EVENTS_PER_PRUNE = 100;
+const MIN_PRUNE_INTERVAL_MS = 30_000;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -230,6 +231,7 @@ const make = Effect.gen(function* () {
     }
   >();
   let transitionsSincePrune = 0;
+  let lastPrunedAt = 0;
 
   const publish = (threadId: ThreadId | null) =>
     PubSub.publish(changesPubSub, threadId).pipe(Effect.asVoid);
@@ -283,13 +285,14 @@ const make = Effect.gen(function* () {
         ...boundedOutput(transition.latestOutput),
       });
       transitionsSincePrune += 1;
-      if (
-        transition.classification !== undefined ||
-        !transition.active ||
-        transitionsSincePrune >= PROGRESS_EVENTS_PER_PRUNE
-      ) {
+      const pruneNow = Date.now();
+      const lifecyclePruneDue =
+        (transition.classification !== undefined || !transition.active) &&
+        pruneNow - lastPrunedAt >= MIN_PRUNE_INTERVAL_MS;
+      if (lifecyclePruneDue || transitionsSincePrune >= PROGRESS_EVENTS_PER_PRUNE) {
         yield* repository.prune();
         transitionsSincePrune = 0;
+        lastPrunedAt = pruneNow;
       }
       yield* publish(event.threadId);
     });

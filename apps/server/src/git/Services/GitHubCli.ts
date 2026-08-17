@@ -48,6 +48,7 @@ export interface GitHubCliShape {
     readonly cwd: string;
     readonly args: ReadonlyArray<string>;
     readonly timeoutMs?: number;
+    readonly allowNonZeroExit?: boolean;
   }) => Effect.Effect<ProcessRunResult, GitHubCliError>;
 
   /**

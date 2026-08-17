@@ -222,10 +222,8 @@ export function ensureWindowsPathHydrated(
   }
   processWindowsPathHydrationPromise ??= hydrateWindowsPath(process.env, options);
   if (environment === process.env) return processWindowsPathHydrationPromise;
-  return processWindowsPathHydrationPromise.then((hydratedPath) => {
-    if (hydratedPath === undefined) return undefined;
-    const merged = mergeWindowsPathValues([inheritedPath(environment), hydratedPath]);
-    installPath(environment, merged);
-    return merged;
-  });
+  // A caller-supplied environment is an explicit execution boundary. Await
+  // process hydration so startup remains serialized, but never widen or mutate
+  // a deliberately restricted PATH with user-writable global install folders.
+  return processWindowsPathHydrationPromise.then(() => inheritedPath(environment) || undefined);
 }

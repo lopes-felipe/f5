@@ -22,6 +22,7 @@ import {
 import type { MenuItemConstructorOptions } from "electron";
 import * as Effect from "effect/Effect";
 import type {
+  DesktopPreviewRecordingFrame,
   DesktopPreviewTabState,
   DesktopTheme,
   DesktopUpdateActionResult,
@@ -176,9 +177,7 @@ const previewRuntime = new PreviewRuntime({
   stateDirectory: STATE_DIR,
   defaultZoomFactor: PREVIEW_DEFAULT_ZOOM_FACTOR,
   getWebContents: (tabId) => getPreviewWebContents(tabId),
-  emitRecordingFrame: (frame) => {
-    mainWindow?.webContents.send(PREVIEW_RECORDING_FRAME_CHANNEL, frame);
-  },
+  emitRecordingFrame: emitPreviewRecordingFrame,
   onTabStateChanged: (tabId) => emitPreviewState(tabId),
 });
 const previewTabs = previewRuntime.tabs;
@@ -310,13 +309,30 @@ function isPreviewGuestWebContents(guest: Electron.WebContents): boolean {
     return false;
   }
   const hostWebContents = guest.hostWebContents;
-  return Boolean(mainWindow && hostWebContents === mainWindow.webContents);
+  if (!hostWebContents || hostWebContents.isDestroyed()) return false;
+  const owner = BrowserWindow.fromWebContents(hostWebContents);
+  return owner !== null && !owner.isDestroyed();
+}
+
+function previewOwnerWebContents(tabId: string): Electron.WebContents | null {
+  const entry = lookupPreviewTabEntry(tabId);
+  if (entry?.ownerWebContentsId) {
+    const owner = electronWebContents.fromId(entry.ownerWebContentsId);
+    if (owner && !owner.isDestroyed()) return owner;
+  }
+  const guest = getPreviewWebContents(tabId);
+  const host = guest?.hostWebContents ?? null;
+  return host && !host.isDestroyed() ? host : null;
+}
+
+function emitPreviewRecordingFrame(frame: DesktopPreviewRecordingFrame): void {
+  previewOwnerWebContents(frame.tabId)?.send(PREVIEW_RECORDING_FRAME_CHANNEL, frame);
 }
 
 function emitPreviewState(tabId: string): void {
   const guest = getPreviewWebContents(tabId);
   const state = previewStateFromWebContents(tabId, guest);
-  mainWindow?.webContents.send(PREVIEW_STATE_CHANNEL, tabId, state);
+  previewOwnerWebContents(tabId)?.send(PREVIEW_STATE_CHANNEL, tabId, state);
 }
 
 function registerPreviewWebContents(tabId: string, webContentsId: number): boolean {
@@ -336,6 +352,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     removeListener();
   }
   entry.removeListeners = [];
+  entry.ownerWebContentsId = guest.hostWebContents?.id ?? null;
   entry.webContentsId = webContentsId;
   entry.zoomFactor = guest.getZoomFactor();
   guest.setWindowOpenHandler(({ url }) => {
@@ -350,6 +367,8 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   const onNavigationStart = () => {
     const currentEntry = lookupPreviewTabEntry(tabId);
     if (currentEntry?.webContentsId === webContentsId) {
+      currentEntry.faviconAbortController?.abort();
+      currentEntry.faviconAbortController = null;
       currentEntry.faviconDataUrl = null;
       currentEntry.faviconRequestGeneration += 1;
     }
@@ -360,11 +379,15 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     if (!currentEntry || currentEntry.webContentsId !== webContentsId) return;
     const pageUrl = guest.getURL();
     const generation = currentEntry.faviconRequestGeneration + 1;
+    currentEntry.faviconAbortController?.abort();
+    const faviconAbortController = new AbortController();
+    currentEntry.faviconAbortController = faviconAbortController;
     currentEntry.faviconRequestGeneration = generation;
     void fetchPreviewFaviconDataUrl({
       pageUrl,
       candidateUrls: faviconUrls,
       fetchImplementation: (url, init) => electronNet.fetch(url, init),
+      signal: faviconAbortController.signal,
     })
       .then((faviconDataUrl) => {
         const latestEntry = lookupPreviewTabEntry(tabId);
@@ -380,7 +403,13 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
         latestEntry.faviconDataUrl = faviconDataUrl;
         emitPreviewState(tabId);
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        const latestEntry = lookupPreviewTabEntry(tabId);
+        if (latestEntry?.faviconAbortController === faviconAbortController) {
+          latestEntry.faviconAbortController = null;
+        }
+      });
   };
   const onWillNavigate = (event: Electron.Event, url: string) => {
     const previewUrl = getSafePreviewUrl(url);
@@ -396,6 +425,8 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   const onDestroyed = () => {
     const current = previewTabs.get(tabId);
     if (current?.webContentsId === webContentsId) {
+      current.faviconAbortController?.abort();
+      current.faviconAbortController = null;
       current.webContentsId = null;
       void previewRuntime.discardRecordingsForTab(tabId);
       emitPreviewState(tabId);
@@ -432,17 +463,16 @@ function closePreviewTab(tabId: string): void {
   for (const removeListener of entry.removeListeners) {
     removeListener();
   }
+  entry.faviconAbortController?.abort();
+  entry.faviconAbortController = null;
   const guest = getPreviewWebContents(tabId);
   void previewRuntime.discardRecordingsForTab(tabId);
   if (guest && !guest.isDestroyed()) {
     guest.close();
   }
+  const owner = previewOwnerWebContents(tabId);
   previewTabs.delete(tabId);
-  mainWindow?.webContents.send(
-    PREVIEW_STATE_CHANNEL,
-    tabId,
-    previewStateFromWebContents(tabId, null),
-  );
+  owner?.send(PREVIEW_STATE_CHANNEL, tabId, previewStateFromWebContents(tabId, null));
 }
 
 function buildPreviewPickScript(): string {
@@ -2391,8 +2421,10 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
     return { action: "deny" };
   });
 
+  const rendererWebContentsId = window.webContents.id;
   const rendererCrashRecovery = new MainRendererCrashRecovery({
-    cleanupRendererResources: () => previewRuntime.resetRendererOwnedResources(),
+    cleanupRendererResources: () =>
+      previewRuntime.resetRendererOwnedResources(rendererWebContentsId),
     reloadRenderer: async () => {
       if (!window.isDestroyed()) {
         await window.loadURL(rendererUrl);
@@ -2410,11 +2442,15 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
     },
   });
   window.webContents.on("render-process-gone", (_event, details) => {
+    if (details.reason === "clean-exit") return;
     const reason = sanitizeLogValue(details.reason);
     writeDesktopLogHeader(
       `main renderer process gone reason=${reason} exitCode=${details.exitCode}`,
     );
     void rendererCrashRecovery.handleCrash();
+  });
+  window.webContents.on("will-navigate", (_event, url) => {
+    if (url === rendererUrl) rendererCrashRecovery.beginManualRetry();
   });
 
   window.on("page-title-updated", (event) => {
@@ -2436,6 +2472,7 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
 
   window.on("closed", () => {
     rendererCrashRecovery.dispose();
+    void previewRuntime.resetRendererOwnedResources(rendererWebContentsId);
     if (mainWindow === window) {
       mainWindow = null;
     }

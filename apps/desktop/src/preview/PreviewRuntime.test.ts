@@ -96,7 +96,7 @@ describe("PreviewRuntime", () => {
     expect(artifact).not.toHaveProperty("path");
   });
 
-  it("emulates and retains a per-tab color scheme without keeping the debugger attached", async () => {
+  it("emulates and retains a per-tab color scheme for the debugger session", async () => {
     const { runtime, mock } = makeRuntime();
     await runtime.initialize();
 
@@ -109,7 +109,14 @@ describe("PreviewRuntime", () => {
         features: [{ name: "prefers-color-scheme", value: "dark" }],
       },
     });
-    expect(mock.debuggerApi.isAttached()).toBe(false);
+    expect(mock.debuggerApi.isAttached()).toBe(true);
+  });
+
+  it("reports an unavailable debugger without rejecting the IPC call", async () => {
+    const { runtime } = makeRuntime({ attachFailures: 1 });
+    await runtime.initialize();
+    await expect(runtime.setColorScheme("tab-1", "dark")).resolves.toBe(false);
+    expect(runtime.lookupTab("tab-1")?.colorScheme).toBe("system");
   });
 
   it("acks every screencast frame and finalizes streamed recordings", async () => {

@@ -141,7 +141,7 @@ import { basenameOfPath } from "../vscode-icons";
 import { useTheme } from "../hooks/useTheme";
 import { usePromptStashController } from "../hooks/usePromptStashController";
 import { useProjectBreadcrumbActions } from "../hooks/useProjectBreadcrumbActions";
-import { useThreadActionController } from "../hooks/useThreadActionController";
+import { type ThreadActionId, useThreadActionController } from "../hooks/useThreadActionController";
 import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
   fetchThreadFileChangesDelta,
@@ -241,6 +241,7 @@ import { registerComposerFileMentionInserter } from "./composerFileMentionInsert
 import { PullRequestThreadDialog } from "./PullRequestThreadDialog";
 import { type ChatDiffContext, MessagesTimeline } from "./chat/MessagesTimeline";
 import { OlderActivityHistoryControl } from "./chat/OlderActivityHistoryControl";
+import { NewerMessageHistoryControl } from "./chat/NewerMessageHistoryControl";
 import { RuntimeModePicker } from "./chat/RuntimeModePicker";
 import { ChatHeader } from "./chat/ChatHeader";
 import {
@@ -586,6 +587,7 @@ interface ChatViewProps {
   threadId: ThreadId;
   liveAgentCount: number;
   focusTimelineEntryId?: string | undefined;
+  focusTimelineEntryKind?: "message" | "activity" | undefined;
 }
 
 const DIALOG_POPUP_SELECTOR = '[data-slot="dialog-popup"]';
@@ -650,6 +652,7 @@ export default function ChatView({
   threadId,
   liveAgentCount,
   focusTimelineEntryId,
+  focusTimelineEntryKind = "message",
 }: ChatViewProps) {
   const nextTurnQueueState = useNextTurnQueueStore(
     (store) => store.byThreadId[threadId] ?? EMPTY_QUEUE_THREAD_STATE,
@@ -1998,22 +2001,10 @@ export default function ChatView({
       return;
     }
     const controller = new AbortController();
-    const frame = window.requestAnimationFrame(() => {
+    let followUpFrame: number | null = null;
+    const scrollToFocusedEntry = () => {
       const index = timelineEntryRowIndexMapRef.current?.get(focusTimelineEntryId);
-      if (index === undefined) {
-        if (
-          activeThread?.detailsLoaded &&
-          attemptedTimelineAnchorLoadRef.current !== focusTimelineEntryId
-        ) {
-          attemptedTimelineAnchorLoadRef.current = focusTimelineEntryId;
-          void loadThreadHistoryAroundMessage(
-            activeThread.id,
-            focusTimelineEntryId as MessageId,
-            controller.signal,
-          );
-        }
-        return;
-      }
+      if (index === undefined) return false;
       onIsAtEndChange(false);
       void legendListRef.current?.scrollToIndex({
         index,
@@ -2021,17 +2012,47 @@ export default function ChatView({
         viewPosition: 0.3,
       });
       lastFocusedTimelineEntryIdRef.current = focusTimelineEntryId;
+      return true;
+    };
+    const frame = window.requestAnimationFrame(() => {
+      if (scrollToFocusedEntry()) return;
+      if (
+        activeThread?.detailsLoaded &&
+        attemptedTimelineAnchorLoadRef.current !== focusTimelineEntryId
+      ) {
+        attemptedTimelineAnchorLoadRef.current = focusTimelineEntryId;
+        void loadThreadHistoryAroundMessage(
+          activeThread.id,
+          focusTimelineEntryId as MessageId,
+          focusTimelineEntryKind,
+          controller.signal,
+        )
+          .then(() => {
+            if (!controller.signal.aborted) {
+              followUpFrame = window.requestAnimationFrame(() => {
+                scrollToFocusedEntry();
+              });
+            }
+          })
+          .catch((error) => {
+            if (!controller.signal.aborted) {
+              console.warn("Failed to load timeline history around the selected entry.", error);
+              attemptedTimelineAnchorLoadRef.current = null;
+            }
+          });
+      }
     });
     return () => {
       controller.abort();
       window.cancelAnimationFrame(frame);
+      if (followUpFrame !== null) window.cancelAnimationFrame(followUpFrame);
     };
   }, [
     activeThread?.detailsLoaded,
     activeThread?.id,
     focusTimelineEntryId,
+    focusTimelineEntryKind,
     onIsAtEndChange,
-    timelineEntries,
   ]);
   const shouldRenderTimeline = shouldRenderTimelineContent({
     detailsLoaded: activeThread?.detailsLoaded ?? false,
@@ -5455,6 +5476,48 @@ export default function ChatView({
     }
     void onRevertToTurnCount(targetTurnCount);
   };
+  const headerThreadActionItems = useMemo(
+    () => (activeThread ? threadActionController.menuItemsForThread(activeThread) : []),
+    [
+      activeThread?.archivedAt,
+      activeThread?.id,
+      activeThread?.snoozedUntil,
+      activeThread?.titleRegeneration,
+      threadActionController.menuItemsForThread,
+    ],
+  );
+  const handleHeaderThreadAction = useCallback(
+    (actionId: ThreadActionId) => {
+      if (!activeThread) return;
+      void threadActionController.executeAction(activeThread.id, actionId);
+    },
+    [activeThread?.id, threadActionController.executeAction],
+  );
+  const handleHeaderRenameThread = useCallback(
+    (title: string) => {
+      if (!activeThread) return;
+      void threadActionController.renameThread(activeThread.id, title);
+    },
+    [activeThread?.id, threadActionController.renameThread],
+  );
+  const handleHeaderRunProjectScript = useCallback(
+    (script: ProjectScript) => {
+      void runProjectScript(script);
+    },
+    [runProjectScript],
+  );
+  const handleOpenActiveWorkflow = useCallback(() => {
+    if (!activeWorkflow) return;
+    void navigate({
+      to:
+        activeWorkflow.type === "planning"
+          ? "/workflow/$workflowId"
+          : activeWorkflow.type === "codeReview"
+            ? "/code-review/$workflowId"
+            : "/investigation/$workflowId",
+      params: { workflowId: activeWorkflow.workflow.id },
+    });
+  }, [activeWorkflow, navigate]);
 
   // Empty state: no active thread
   if (!activeThread) {
@@ -5505,21 +5568,7 @@ export default function ChatView({
             onNewThreadInProject={projectBreadcrumbActions.createThread}
             onOpenProjectSettings={projectBreadcrumbActions.openSettings}
             workflowTitle={activeWorkflow?.workflow.title}
-            onOpenWorkflow={
-              activeWorkflow
-                ? () => {
-                    void navigate({
-                      to:
-                        activeWorkflow.type === "planning"
-                          ? "/workflow/$workflowId"
-                          : activeWorkflow.type === "codeReview"
-                            ? "/code-review/$workflowId"
-                            : "/investigation/$workflowId",
-                      params: { workflowId: activeWorkflow.workflow.id },
-                    });
-                  }
-                : undefined
-            }
+            onOpenWorkflow={activeWorkflow ? handleOpenActiveWorkflow : undefined}
             isGitRepo={isGitRepo}
             openInCwd={activeThread.worktreePath ?? activeProject?.cwd ?? null}
             activeProjectScripts={activeProject?.scripts}
@@ -5538,16 +5587,10 @@ export default function ChatView({
             diffToggleShortcutLabel={diffPanelShortcutLabel}
             gitCwd={gitCwd}
             diffOpen={diffOpen}
-            threadActionItems={threadActionController.menuItemsForThread(activeThread)}
-            onThreadAction={(actionId) => {
-              void threadActionController.executeAction(activeThread.id, actionId);
-            }}
-            onRenameThread={(title) => {
-              void threadActionController.renameThread(activeThread.id, title);
-            }}
-            onRunProjectScript={(script) => {
-              void runProjectScript(script);
-            }}
+            threadActionItems={headerThreadActionItems}
+            onThreadAction={handleHeaderThreadAction}
+            onRenameThread={handleHeaderRenameThread}
+            onRunProjectScript={handleHeaderRunProjectScript}
             onAddProjectScript={saveProjectScript}
             onUpdateProjectScript={updateProjectScript}
             onDeleteProjectScript={deleteProjectScript}
@@ -5638,6 +5681,7 @@ export default function ChatView({
                   listHeaderContent={
                     <>
                       {historyStatusContent}
+                      <NewerMessageHistoryControl threadId={activeThread.id} />
                       <OlderActivityHistoryControl threadId={activeThread.id} />
                       {
                         // Tasks come only from the detail payload, so keep this

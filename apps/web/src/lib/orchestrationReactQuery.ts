@@ -13,6 +13,7 @@ import type {
   OrchestrationFileChangeSummary,
   OrchestrationFileChangeId,
   MessageId,
+  EventId,
 } from "@t3tools/contracts";
 import { type QueryClient, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect } from "react";
@@ -741,7 +742,8 @@ export async function loadOlderThreadActivitiesPage(
 
 export async function loadThreadHistoryAroundMessage(
   threadId: ThreadId,
-  anchorMessageId: MessageId,
+  anchorId: MessageId | EventId,
+  anchorKind: "message" | "activity" = "message",
   signal?: AbortSignal,
 ): Promise<void> {
   if (signal?.aborted) return;
@@ -752,7 +754,8 @@ export async function loadThreadHistoryAroundMessage(
   const page = await fetchThreadHistoryPageRpc(
     {
       threadId,
-      anchorMessageId,
+      anchorMessageId: anchorKind === "message" ? (anchorId as MessageId) : null,
+      anchorActivityId: anchorKind === "activity" ? (anchorId as EventId) : null,
       beforeMessageCursor: null,
       afterMessageCursor: null,
       beforeCheckpointTurnCount: null,
@@ -762,7 +765,39 @@ export async function loadThreadHistoryAroundMessage(
     signal,
   );
   if (signal?.aborted || page.messages.length === 0) return;
-  useStore.getState().prependOlderThreadHistoryPage(threadId, page, history.generation);
+  useStore.getState().mergeAnchoredThreadHistoryPage(threadId, page, history.generation);
+}
+
+export async function loadNewerThreadHistoryPage(
+  threadId: ThreadId,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return;
+  const thread = useStore.getState().threads.find((entry) => entry.id === threadId);
+  const history = ensureThreadHistoryState(thread?.history);
+  if (
+    !thread?.detailsLoaded ||
+    history.hasNewerMessages !== true ||
+    history.newestLoadedMessageCursor == null
+  ) {
+    return;
+  }
+  const page = await fetchThreadHistoryPageRpc(
+    {
+      threadId,
+      beforeMessageCursor: null,
+      afterMessageCursor: history.newestLoadedMessageCursor,
+      beforeCheckpointTurnCount: null,
+      activityCursor: null,
+      beforeCommandExecutionCursor: null,
+    },
+    signal,
+  );
+  if (signal?.aborted) return;
+  if (page.messages.length === 0 && page.hasNewerMessages) {
+    throw new Error("Newer thread history page made no progress.");
+  }
+  useStore.getState().appendNewerThreadHistoryPage(threadId, page, history.generation);
 }
 
 export function clearInFlightOrchestrationRpcRequests(): void {

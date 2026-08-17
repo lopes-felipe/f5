@@ -88,7 +88,6 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
         FROM projection_thread_activities
         WHERE thread_id = ${threadId}
         ORDER BY
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END ASC,
           sequence ASC,
           created_at ASC,
           activity_id ASC
@@ -147,7 +146,6 @@ const makeProjectionThreadActivityRepository = Effect.gen(function* () {
         ${select}
         ${olderThanCursor}
         ORDER BY
-          CASE WHEN sequence IS NULL THEN 0 ELSE 1 END DESC,
           sequence DESC,
           created_at DESC,
           activity_id DESC

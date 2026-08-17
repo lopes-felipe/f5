@@ -3,10 +3,12 @@ import type { ThreadHistoryState } from "../types";
 export const EMPTY_THREAD_HISTORY_STATE: ThreadHistoryState = Object.freeze({
   stage: "empty",
   hasOlderMessages: false,
+  hasNewerMessages: false,
   hasOlderCheckpoints: false,
   hasOlderActivities: false,
   hasOlderCommandExecutions: false,
   oldestLoadedMessageCursor: null,
+  newestLoadedMessageCursor: null,
   oldestLoadedCheckpointTurnCount: null,
   oldestLoadedActivityCursor: null,
   oldestLoadedCommandExecutionCursor: null,

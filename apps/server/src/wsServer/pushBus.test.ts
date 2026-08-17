@@ -293,9 +293,8 @@ describe("makeServerPushBus", () => {
     }),
   );
 
-  it.effect(
-    "allows one oversized frame to make progress without allowing an oversized backlog",
-    () =>
+  it.live("holds the next frame until an oversized snapshot finishes", () =>
+    Effect.scoped(
       Effect.gen(function* () {
         const client = new MockWebSocket();
         client.autoCompleteSends = false;
@@ -308,16 +307,19 @@ describe("makeServerPushBus", () => {
         expect(yield* controller.send(client as unknown as WebSocket, "12345678901")).toBe(true);
         expect(controller.logicalOutstandingBytes(client as unknown as WebSocket)).toBe(11);
 
-        expect(yield* controller.send(client as unknown as WebSocket, "x")).toBe(false);
+        const nextSend = yield* Effect.forkScoped(
+          controller.send(client as unknown as WebSocket, "x"),
+        );
+        yield* Effect.yieldNow;
         expect(client.sent).toEqual(["12345678901"]);
-        expect(client.closes).toEqual([
-          {
-            code: 1013,
-            reason: "Client fell behind; reconnecting to resynchronize.",
-          },
-        ]);
-        expect((yield* Ref.get(clients)).size).toBe(0);
+
+        client.completeNextSend();
+        expect(yield* Fiber.join(nextSend)).toBe(true);
+        expect(client.sent).toEqual(["12345678901", "x"]);
+        expect(client.closes).toEqual([]);
+        expect((yield* Ref.get(clients)).size).toBe(1);
       }),
+    ),
   );
 
   it.live("removes a failed client after a targeted push", () =>

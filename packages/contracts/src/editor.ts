@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { TrimmedNonEmptyString } from "./baseSchemas";
+import { ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
 export const EDITORS = [
   { id: "cursor", label: "Cursor", command: "cursor", supportsGoto: true },
@@ -30,6 +30,9 @@ export const OpenInEditorInput = Schema.Struct({
 export type OpenInEditorInput = typeof OpenInEditorInput.Type;
 
 export const RevealInFileManagerInput = Schema.Struct({
-  path: TrimmedNonEmptyString,
+  projectId: ProjectId,
+  threadId: ThreadId,
+  relativePath: TrimmedNonEmptyString,
+  kind: Schema.optional(Schema.Literals(["file", "directory"])),
 });
 export type RevealInFileManagerInput = typeof RevealInFileManagerInput.Type;

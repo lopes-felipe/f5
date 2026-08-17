@@ -38,25 +38,39 @@ function mergeRanges(
 
 function rangesForQuery(text: string, query: string): HighlightedTextRange[] {
   const codePoints = Array.from(text);
-  const normalizedText = codePoints.join("").toLocaleLowerCase();
+  const normalizedCodePoints: string[] = [];
+  const originalIndexByNormalizedIndex: number[] = [];
+  for (const [originalIndex, codePoint] of codePoints.entries()) {
+    for (const normalized of Array.from(codePoint.toLowerCase())) {
+      normalizedCodePoints.push(normalized);
+      originalIndexByNormalizedIndex.push(originalIndex);
+    }
+  }
   const tokens = [
     ...new Set(
       query
-        .toLocaleLowerCase()
+        .toLowerCase()
         .match(/[\p{L}\p{N}_]+/gu)
         ?.filter(Boolean) ?? [],
     ),
   ].toSorted((left, right) => right.length - left.length);
   const ranges: HighlightedTextRange[] = [];
   for (const token of tokens) {
+    const tokenCodePoints = Array.from(token);
     let offset = 0;
-    while (offset < normalizedText.length) {
-      const matchIndex = normalizedText.indexOf(token, offset);
-      if (matchIndex === -1) break;
-      const start = Array.from(normalizedText.slice(0, matchIndex)).length;
-      const end = start + Array.from(token).length;
+    while (offset <= normalizedCodePoints.length - tokenCodePoints.length) {
+      const matchIndex = normalizedCodePoints.findIndex(
+        (_value, index) =>
+          index >= offset &&
+          tokenCodePoints.every(
+            (tokenPart, partIndex) => normalizedCodePoints[index + partIndex] === tokenPart,
+          ),
+      );
+      if (matchIndex < offset) break;
+      const start = originalIndexByNormalizedIndex[matchIndex]!;
+      const end = originalIndexByNormalizedIndex[matchIndex + tokenCodePoints.length - 1]! + 1;
       ranges.push({ start, end });
-      offset = matchIndex + Math.max(1, token.length);
+      offset = matchIndex + Math.max(1, tokenCodePoints.length);
     }
   }
   return mergeRanges(ranges, codePoints.length);

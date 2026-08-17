@@ -10,6 +10,7 @@ import {
   type ThemeDefinitionV1,
   type ThemeTokenName,
 } from "./themePalette";
+import { randomUUID } from "./lib/utils";
 
 export const MAX_THEME_IMPORT_BYTES = 10 * 1024 * 1024;
 const MAX_VSCODE_THEME_BYTES = 1024 * 1024;
@@ -44,7 +45,7 @@ function sanitizeThemeId(name: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 40);
-  const suffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 10);
   return `custom-${slug || "theme"}-${suffix}`;
 }
 

@@ -147,6 +147,57 @@ describe("project content search", () => {
     await manager.dispose();
   });
 
+  it("retries another client's queued search after shared-worker cancellation", async () => {
+    const workspaceRoot = makeTempDir();
+    let firstSearchStarted: (() => void) | undefined;
+    const firstStarted = new Promise<void>((resolve) => {
+      firstSearchStarted = resolve;
+    });
+    let rejectFirstSearch: ((cause: Error) => void) | undefined;
+    let workerCount = 0;
+    const manager = makeProjectContentSearchManager({
+      workerFactory: () => {
+        workerCount += 1;
+        if (workerCount > 1) return fakeWorkerFactory();
+        let terminated = false;
+        return {
+          isTerminated: () => terminated,
+          call: async <T>(message: Record<string, unknown>): Promise<T> => {
+            if (message.type !== "search") {
+              return { indexedPathCount: 1, indexTruncated: false } as T;
+            }
+            firstSearchStarted?.();
+            return new Promise<T>((_resolve, reject) => {
+              rejectFirstSearch = reject;
+            });
+          },
+          terminate: async () => {
+            terminated = true;
+            rejectFirstSearch?.(new Error("terminated"));
+          },
+        };
+      },
+    });
+
+    const first = manager.search({
+      requestKey: "client-a",
+      workspaceRoot,
+      request: request("first"),
+    });
+    await firstStarted;
+    const second = manager.search({
+      requestKey: "client-b",
+      workspaceRoot,
+      request: request("second"),
+    });
+    await manager.cancel("client-a");
+
+    await expect(first).rejects.toMatchObject({ failure: "cancelled" });
+    await expect(second).resolves.toMatchObject({ requestId: "second" });
+    expect(workerCount).toBe(2);
+    await manager.dispose();
+  });
+
   it("refreshes an invalidated index before the next search", async () => {
     const workspaceRoot = makeTempDir();
     const calls: string[] = [];

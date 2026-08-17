@@ -1240,9 +1240,8 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
         ${JSON.stringify(advisory)},
         ${now}
       )
-      ON CONFLICT (host, viewer_login, repo, number)
+      ON CONFLICT (provider_kind, host, viewer_login, repo, number)
       DO UPDATE SET
-        provider_kind = excluded.provider_kind,
         key = excluded.key,
         fingerprint = excluded.fingerprint,
         status = excluded.status,

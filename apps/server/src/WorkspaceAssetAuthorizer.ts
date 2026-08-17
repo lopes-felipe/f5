@@ -254,13 +254,22 @@ async function readContainedFile(input: {
       );
     }
 
-    const bytes = await file.readFile();
-    if (bytes.byteLength > input.maxBytes) {
+    const chunks: Uint8Array[] = [];
+    let offset = 0;
+    while (offset <= input.maxBytes) {
+      const chunk = new Uint8Array(Math.min(64 * 1024, input.maxBytes + 1 - offset));
+      const { bytesRead } = await file.read(chunk, 0, chunk.byteLength, offset);
+      if (bytesRead === 0) break;
+      chunks.push(chunk.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    if (offset > input.maxBytes) {
       throw new WorkspaceAssetAuthorizationError(
         "too_large",
         "Workspace asset exceeds its byte cap.",
       );
     }
+    const bytes = Buffer.concat(chunks, offset);
     return { bytes, relativePath: input.relativePath.trim().replaceAll("\\", "/") };
   } finally {
     await file.close();

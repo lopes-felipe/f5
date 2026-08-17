@@ -52,6 +52,16 @@ describe("parseSourceControlRemoteUrl", () => {
     });
   });
 
+  it("classifies SSH URLs independently of an explicit port", () => {
+    expect(parseSourceControlRemoteUrl("ssh://git@github.com:22/pingdotgg/t3code.git")).toEqual({
+      kind: "github",
+      host: "github.com",
+      owner: "pingdotgg",
+      repository: "t3code",
+      webUrl: "https://github.com/pingdotgg/t3code",
+    });
+  });
+
   it("preserves nested GitLab namespaces", () => {
     expect(
       parseSourceControlRemoteUrl("https://gitlab.example.com/platform/agents/f5.git"),

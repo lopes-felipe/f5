@@ -1,5 +1,6 @@
 import {
   MAX_PINNED_THREADS,
+  ProjectId,
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
@@ -21,6 +22,7 @@ import { validateThreadTasks } from "./threadTasks.ts";
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
+const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -699,6 +701,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         });
       }
       const occurredAt = nowIso();
+      const pinRevision = thread.pinnedAt != null ? (readModel.pinRevision ?? 0) + 1 : undefined;
       return {
         ...withEventBase({
           aggregateKind: "thread",
@@ -710,6 +713,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           deletedAt: occurredAt,
+          ...(pinRevision !== undefined ? { pinRevision } : {}),
         },
       };
     }
@@ -795,8 +799,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       return {
         ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
+          aggregateKind: "project",
+          aggregateId: GLOBAL_PIN_AGGREGATE_ID,
           occurredAt: command.createdAt,
           commandId: command.commandId,
         }),
@@ -876,8 +880,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         nextPinnedThreadIds.some((threadId, index) => threadId !== currentPinnedThreadIds[index]);
       return {
         ...withEventBase({
-          aggregateKind: "thread",
-          aggregateId: command.threadId,
+          aggregateKind: "project",
+          aggregateId: GLOBAL_PIN_AGGREGATE_ID,
           occurredAt: command.createdAt,
           commandId: command.commandId,
         }),
@@ -906,7 +910,13 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Deleted thread '${command.threadId}' cannot be snoozed.`,
         });
       }
-      if (Date.parse(command.until) <= Date.parse(command.createdAt)) {
+      const snoozedUntilMs = Date.parse(command.until);
+      const snoozedAtMs = Date.parse(command.createdAt);
+      if (
+        !Number.isFinite(snoozedUntilMs) ||
+        !Number.isFinite(snoozedAtMs) ||
+        snoozedUntilMs <= snoozedAtMs
+      ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
           detail: "A snooze must end after it starts.",
@@ -1258,7 +1268,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         ? command.interactionMode
         : targetThread.interactionMode;
       const settingEvents: Array<Omit<OrchestrationEvent, "sequence">> = [];
-      if (targetThread.snoozedUntil != null) {
+      if (targetThread.snoozedUntil != null && !queueSourced) {
         settingEvents.push(
           makeThreadUnsnoozedEvent({
             commandId: command.commandId,
@@ -1547,6 +1557,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           session: command.session,
+          ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),
         },
       };
     }
@@ -1593,7 +1604,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
-      return targetThread.snoozedUntil != null
+      const wakesSnoozedThread = targetThread.snoozedUntil != null && existingMessage === undefined;
+      return wakesSnoozedThread
         ? [
             makeThreadUnsnoozedEvent({
               commandId: command.commandId,
@@ -1611,6 +1623,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const existingMessage = targetThread.messages.find((entry) => entry.id === command.messageId);
       const messageEvent: Omit<OrchestrationEvent, "sequence"> = {
         ...withEventBase({
           aggregateKind: "thread",
@@ -1630,7 +1643,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           updatedAt: command.createdAt,
         },
       };
-      return targetThread.snoozedUntil != null
+      const wakesSnoozedThread = targetThread.snoozedUntil != null && existingMessage === undefined;
+      return wakesSnoozedThread
         ? [
             makeThreadUnsnoozedEvent({
               commandId: command.commandId,

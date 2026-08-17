@@ -9,6 +9,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { memo, useCallback, useMemo, type ReactNode } from "react";
 
 import { openInPreferredEditor } from "../../editorPreferences";
+import { useAppSettings } from "../../appSettings";
 import { useFileNavigation } from "../../fileNavigationContext";
 import { readNativeApi } from "../../nativeApi";
 import { resolvePathLinkTarget } from "../../terminal-links";
@@ -47,6 +48,7 @@ export const InlineExactFileChangeDiff = memo(function InlineExactFileChangeDiff
     fallback = null,
   } = props;
   const handleFileNavigation = useFileNavigation();
+  const { settings } = useAppSettings();
   const exactFileChangeQuery = useQuery(
     threadFileChangeQueryOptions({
       threadId,
@@ -63,8 +65,8 @@ export const InlineExactFileChangeDiff = memo(function InlineExactFileChangeDiff
     if (!patch) {
       return null;
     }
-    return getRenderablePatch(patch, `file-change:${fileChangeId}:${resolvedTheme}`);
-  }, [exactFileChangeData?.fileChange?.patch, fileChangeId, resolvedTheme]);
+    return getRenderablePatch(patch, `file-change:${fileChangeId}`);
+  }, [exactFileChangeData?.fileChange?.patch, fileChangeId]);
 
   const renderableFiles = useMemo(() => {
     if (!renderablePatch || renderablePatch.kind !== "files") {
@@ -164,6 +166,7 @@ export const InlineExactFileChangeDiff = memo(function InlineExactFileChangeDiff
                     theme: resolveDiffThemeName(resolvedTheme),
                     themeType: resolvedTheme,
                     disableFileHeader: true,
+                    overflow: settings.diffWordWrap ? "wrap" : "scroll",
                     unsafeCSS: DIFF_PANEL_UNSAFE_CSS,
                   }}
                 />

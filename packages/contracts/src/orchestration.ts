@@ -7,6 +7,7 @@ import { ProviderInstanceId } from "./providerInstance";
 import { ProviderStartOptions } from "./providerStartOptions";
 import { ProjectIcon } from "./project";
 import { ThreadEnvMode } from "./threadEnvMode";
+import { UsageTurnFact } from "./usage";
 export { ClaudeProviderStartOptions, ProviderStartOptions } from "./providerStartOptions";
 import {
   isKnownProviderKind as isKnownProviderKindValue,
@@ -1006,8 +1007,13 @@ const ThreadMetaUpdateCommand = Schema.Struct({
 }).check(
   Schema.makeFilter(
     (input) =>
-      !(input.title !== undefined && input.regenerateTitle === true) ||
-      "title and regenerateTitle cannot be specified together",
+      input.regenerateTitle !== true ||
+      (input.title === undefined &&
+        input.model === undefined &&
+        input.modelSelection === undefined &&
+        input.branch === undefined &&
+        input.worktreePath === undefined) ||
+      "regenerateTitle cannot be combined with other metadata changes",
   ),
 );
 
@@ -1231,6 +1237,7 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  usageFact: Schema.optional(UsageTurnFact),
   createdAt: IsoDateTime,
 });
 
@@ -1625,6 +1632,7 @@ export const ThreadCreatedPayload = Schema.Struct({
 export const ThreadDeletedPayload = Schema.Struct({
   threadId: ThreadId,
   deletedAt: IsoDateTime,
+  pinRevision: Schema.optional(NonNegativeInt),
 });
 
 export const ThreadArchivedPayload = Schema.Struct({
@@ -1801,6 +1809,7 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  usageFact: Schema.optional(UsageTurnFact),
 });
 
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
@@ -2328,6 +2337,7 @@ export type OrchestrationThreadTailDetails = typeof OrchestrationThreadTailDetai
 export const OrchestrationGetThreadHistoryPageInput = Schema.Struct({
   threadId: ThreadId,
   anchorMessageId: Schema.optional(Schema.NullOr(MessageId)),
+  anchorActivityId: Schema.optional(Schema.NullOr(EventId)),
   beforeMessageCursor: Schema.NullOr(OrchestrationMessageCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -2349,6 +2359,7 @@ export const OrchestrationGetThreadHistoryPageInput = Schema.Struct({
   Schema.makeFilter((input) => {
     const messageWindowSelectors = [
       input.anchorMessageId,
+      input.anchorActivityId,
       input.beforeMessageCursor,
       input.afterMessageCursor,
     ].filter((value) => value != null).length;

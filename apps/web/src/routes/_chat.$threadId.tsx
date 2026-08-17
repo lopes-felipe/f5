@@ -145,6 +145,7 @@ function buildDeepLinkKey(threadId: ThreadId, search: DiffRouteSearch): string {
   return [
     threadId,
     search.timelineEntryId ?? "",
+    search.timelineEntryKind ?? "",
     search.diff ?? "",
     search.diffTurnId ?? "",
     search.diffFileChangeId ?? "",
@@ -313,7 +314,6 @@ function ChatThreadRouteView() {
   });
   const search = Route.useSearch();
   const { settings } = useAppSettings();
-  const { model: agentsPanelModel, snapshotQuery: agentsSnapshotQuery } = useAgentsPanelModel();
   const thread = useStore((store) => store.threads.find((entry) => entry.id === threadId));
   const threadExists = useStore((store) => store.threads.some((thread) => thread.id === threadId));
   const draftThread = useComposerDraftStore(
@@ -334,6 +334,14 @@ function ChatThreadRouteView() {
   const rightPanelState = useRightPanelStore((store) =>
     selectThreadRightPanelState(store.byThreadId, threadId),
   );
+  const agentsPanelVisible =
+    rightPanelState.isOpen &&
+    rightPanelState.surfaces.some(
+      (surface) => surface.id === rightPanelState.activeSurfaceId && surface.kind === "agents",
+    );
+  const { model: agentsPanelModel, snapshotQuery: agentsSnapshotQuery } = useAgentsPanelModel({
+    includeActivityIndex: agentsPanelVisible,
+  });
   const consumedDeepLinkKeyRef = useRef<string | null>(null);
   const threadActivities = thread?.activities ?? EMPTY_ACTIVITIES;
   const threadTasks = thread?.tasks ?? EMPTY_TASKS;
@@ -811,6 +819,7 @@ function ChatThreadRouteView() {
             threadId={threadId}
             liveAgentCount={agentsPanelModel.liveCount}
             focusTimelineEntryId={search.timelineEntryId}
+            focusTimelineEntryKind={search.timelineEntryKind}
           />
         </SidebarInset>
         <RightPanelInlineSidebar
@@ -832,6 +841,7 @@ function ChatThreadRouteView() {
           threadId={threadId}
           liveAgentCount={agentsPanelModel.liveCount}
           focusTimelineEntryId={search.timelineEntryId}
+          focusTimelineEntryKind={search.timelineEntryKind}
         />
       </SidebarInset>
       <RightPanelSheet open={rightPanelState.isOpen} onClose={closeRightPanelSheet}>
@@ -847,6 +857,7 @@ export const Route = createFileRoute("/_chat/$threadId")({
     middlewares: [
       retainSearchParams<DiffRouteSearch>([
         "timelineEntryId",
+        "timelineEntryKind",
         "diff",
         "diffTurnId",
         "diffFileChangeId",

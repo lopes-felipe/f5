@@ -809,10 +809,6 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         })),
         [
           {
-            id: ThreadId.makeUnsafe("thread-deleted"),
-            lastInteractionAt: "2026-02-24T00:00:08.000Z",
-          },
-          {
             id: ThreadId.makeUnsafe("thread-hot-newer"),
             lastInteractionAt: "2026-02-24T00:00:05.000Z",
           },

@@ -29,6 +29,7 @@ import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
 import { readNativeApi } from "../nativeApi";
 import {
+  COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT,
   clearPromotedDraftThreads,
   pruneOrphanedDraftThreads,
   useComposerDraftStore,
@@ -103,6 +104,19 @@ function RootRouteView() {
   useAppearanceSettingsSync();
   const { resolvedTheme } = useTheme();
   useThemePaletteSync(resolvedTheme);
+
+  useEffect(() => {
+    const showPersistenceError = () => {
+      toastManager.add({
+        type: "error",
+        title: "Drafts could not be saved",
+        description: "Free some browser storage before closing F5 to avoid losing this draft.",
+      });
+    };
+    window.addEventListener(COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT, showPersistenceError);
+    return () =>
+      window.removeEventListener(COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT, showPersistenceError);
+  }, []);
 
   if (!readNativeApi()) {
     return (

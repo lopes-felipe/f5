@@ -39,6 +39,8 @@ function projectContentSearchWorkerMain(): void {
   const MAX_FILE_BYTES = 10 * 1024 * 1024;
   const SCAN_TIMEOUT_MS = 15_000;
   const SEARCH_BUDGET_MS = 250;
+  const MAX_LINE_CONTENT_BYTES = 8 * 1024;
+  const MAX_MATCH_RANGES = 256;
   const WORD_CHARACTER = /[\p{Letter}\p{Mark}\p{Number}_]/u;
 
   let finder: FileFinder | null = null;
@@ -106,22 +108,50 @@ function projectContentSearchWorkerMain(): void {
     await waitForIndexReady();
   }
 
-  function byteOffsetToCodePointOffset(line: string, byteOffset: number): number {
-    const bytes = Buffer.from(line, "utf8");
+  function byteOffsetToCodePointOffset(bytes: Buffer, byteOffset: number): number {
     const boundedOffset = Math.max(0, Math.min(bytes.byteLength, byteOffset));
     return Array.from(bytes.subarray(0, boundedOffset).toString("utf8")).length;
   }
 
   function mapRanges(
-    line: string,
+    bytes: Buffer,
     ranges: ReadonlyArray<readonly [number, number]>,
   ): Array<{ readonly start: number; readonly end: number }> {
     return ranges
+      .slice(0, MAX_MATCH_RANGES)
       .map(([start, end]) => ({
-        start: byteOffsetToCodePointOffset(line, start),
-        end: byteOffsetToCodePointOffset(line, end),
+        start: byteOffsetToCodePointOffset(bytes, start),
+        end: byteOffsetToCodePointOffset(bytes, end),
       }))
       .filter((range) => range.end > range.start);
+  }
+
+  function boundedLineMatch(
+    line: string,
+    ranges: ReadonlyArray<readonly [number, number]>,
+  ): {
+    readonly lineContent: string;
+    readonly matchRanges: Array<{ readonly start: number; readonly end: number }>;
+    readonly truncated: boolean;
+  } | null {
+    const firstRange = ranges[0];
+    if (!firstRange) return null;
+    const lineBytes = Buffer.from(line, "utf8");
+    let windowStart = Math.max(0, firstRange[0] - Math.floor(MAX_LINE_CONTENT_BYTES / 4));
+    while (windowStart > 0 && (lineBytes[windowStart]! & 0xc0) === 0x80) windowStart -= 1;
+    let windowEnd = Math.min(lineBytes.byteLength, windowStart + MAX_LINE_CONTENT_BYTES);
+    while (windowEnd > windowStart && (lineBytes[windowEnd]! & 0xc0) === 0x80) windowEnd -= 1;
+    const snippetBytes = lineBytes.subarray(windowStart, windowEnd);
+    const adjustedRanges = ranges
+      .slice(0, MAX_MATCH_RANGES)
+      .filter(([start, end]) => start >= windowStart && end <= windowEnd)
+      .map(([start, end]) => [start - windowStart, end - windowStart] as const);
+    return {
+      lineContent: snippetBytes.toString("utf8"),
+      matchRanges: mapRanges(snippetBytes, adjustedRanges),
+      truncated:
+        windowStart > 0 || windowEnd < lineBytes.byteLength || ranges.length > MAX_MATCH_RANGES,
+    };
   }
 
   function isWholeWordRange(
@@ -167,6 +197,7 @@ function projectContentSearchWorkerMain(): void {
     const matchesPerPath = new Map<string, number>();
     let cursor: GrepCursor | null = null;
     let regexFallbackError: string | undefined;
+    let processingTruncated = false;
 
     do {
       const remainingTimeBudgetMs = Math.max(1, Math.ceil(deadline - performance.now()));
@@ -182,17 +213,24 @@ function projectContentSearchWorkerMain(): void {
         }),
       );
       for (const match of page.items) {
+        if (performance.now() >= deadline) {
+          processingTruncated = true;
+          break;
+        }
         const normalizedPath = match.relativePath.replaceAll("\\", "/");
         const currentPathCount = matchesPerPath.get(normalizedPath) ?? 0;
         if (currentPathCount >= MAX_MATCHES_PER_FILE) continue;
-        const matchRanges = mapRanges(match.lineContent, match.matchRanges).filter(
-          (range) => !input.wholeWord || isWholeWordRange(match.lineContent, range),
+        const bounded = boundedLineMatch(match.lineContent, match.matchRanges);
+        if (!bounded) continue;
+        processingTruncated ||= bounded.truncated;
+        const matchRanges = bounded.matchRanges.filter(
+          (range) => !input.wholeWord || isWholeWordRange(bounded.lineContent, range),
         );
         if (matchRanges.length === 0) continue;
         matches.push({
           path: normalizedPath,
           lineNumber: match.lineNumber,
-          lineContent: match.lineContent,
+          lineContent: bounded.lineContent,
           matchRanges,
         });
         matchesPerPath.set(normalizedPath, currentPathCount + 1);
@@ -204,7 +242,7 @@ function projectContentSearchWorkerMain(): void {
 
     return {
       matches: matches.slice(0, limit),
-      truncated: matches.length > limit || cursor !== null || indexTruncated,
+      truncated: matches.length > limit || cursor !== null || indexTruncated || processingTruncated,
       indexedPathCount: Math.min(indexedPathCount, MAX_INDEXED_PATHS),
       indexTruncated,
       ...(regexFallbackError !== undefined ? { regexFallbackError } : {}),

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { getRenderablePatch, summarizeFileDiffMetadataStats } from "./diffPatch";
+import {
+  buildFileDiffLogicalIdentity,
+  getRenderablePatch,
+  resolveFileDiffPath,
+  summarizeFileDiffMetadataStats,
+} from "./diffPatch";
 
 describe("summarizeFileDiffMetadataStats", () => {
   it("counts added and deleted lines across parsed files", () => {
@@ -23,5 +28,26 @@ index 3333333..4444444 100644
     expect(patch?.kind).toBe("files");
     if (!patch || patch.kind !== "files") return;
     expect(summarizeFileDiffMetadataStats(patch.files)).toEqual({ additions: 2, deletions: 2 });
+  });
+});
+
+describe("file diff identity", () => {
+  it("keeps repository paths beginning with a or b distinct", () => {
+    const patch = getRenderablePatch(`diff --git a/a/x.ts b/a/x.ts
+--- a/a/x.ts
++++ b/a/x.ts
+@@ -1 +1 @@
+-old
++new
+diff --git a/x.ts b/x.ts
+--- a/x.ts
++++ b/x.ts
+@@ -1 +1 @@
+-old
++new`);
+    expect(patch?.kind).toBe("files");
+    if (!patch || patch.kind !== "files") return;
+    expect(patch.files.map(resolveFileDiffPath)).toEqual(["a/x.ts", "x.ts"]);
+    expect(new Set(patch.files.map(buildFileDiffLogicalIdentity)).size).toBe(2);
   });
 });

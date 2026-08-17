@@ -165,6 +165,12 @@ function FontSizeField({
   maximum,
   onChange,
 }: FontSizeFieldProps) {
+  const [draftValue, setDraftValue] = useState(value);
+  useEffect(() => setDraftValue(value), [value]);
+  const commitDraftValue = () => {
+    if (draftValue !== value) onChange(draftValue);
+  };
+
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-border bg-background px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
       <div>
@@ -179,10 +185,13 @@ function FontSizeField({
           min={minimum}
           max={maximum}
           step={1}
-          value={value}
-          onChange={(event) => onChange(Number(event.target.value))}
+          value={draftValue}
+          onChange={(event) => setDraftValue(Number(event.target.value))}
+          onPointerUp={commitDraftValue}
+          onKeyUp={commitDraftValue}
+          onBlur={commitDraftValue}
         />
-        <output className="w-10 text-right font-mono text-xs tabular-nums">{value}px</output>
+        <output className="w-10 text-right font-mono text-xs tabular-nums">{draftValue}px</output>
       </div>
     </div>
   );

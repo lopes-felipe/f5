@@ -1,4 +1,5 @@
 export const MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES = 50 * 1024 * 1024;
+export const MAX_COMPRESSIBLE_IMAGE_PIXELS = 25_000_000;
 export const IMAGE_COMPRESSION_DIMENSION_STEPS = [2048, 1536, 1024] as const;
 export const IMAGE_COMPRESSION_QUALITY_STEPS = [0.92, 0.86, 0.8, 0.72, 0.64] as const;
 export const COMPOSER_IMAGE_OUTPUT_MIME_TYPE = "image/webp";
@@ -13,6 +14,7 @@ const PROVIDER_SUPPORTED_IMAGE_MIME_TYPES = new Set([
 export type ImageCompressionFailureReason =
   | "animated"
   | "cancelled"
+  | "timed-out"
   | "too-large"
   | "unreadable"
   | "unsupported";
@@ -56,6 +58,82 @@ function asciiAt(bytes: Uint8Array, offset: number, value: string): boolean {
     if (bytes[offset + index] !== value.charCodeAt(index)) return false;
   }
   return true;
+}
+
+function readUint16Be(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset]! << 8) | bytes[offset + 1]!;
+}
+
+function readUint32Be(bytes: Uint8Array, offset: number): number {
+  return (
+    ((bytes[offset]! << 24) |
+      (bytes[offset + 1]! << 16) |
+      (bytes[offset + 2]! << 8) |
+      bytes[offset + 3]!) >>>
+    0
+  );
+}
+
+export function readImagePixelDimensions(
+  bytes: Uint8Array,
+  mimeType: string,
+): { readonly width: number; readonly height: number } | null {
+  switch (normalizedMimeType(mimeType)) {
+    case "image/png":
+      return bytes.length >= 24 && asciiAt(bytes, 1, "PNG\r\n\u001a\n")
+        ? { width: readUint32Be(bytes, 16), height: readUint32Be(bytes, 20) }
+        : null;
+    case "image/gif":
+      return bytes.length >= 10 && (asciiAt(bytes, 0, "GIF87a") || asciiAt(bytes, 0, "GIF89a"))
+        ? { width: bytes[6]! | (bytes[7]! << 8), height: bytes[8]! | (bytes[9]! << 8) }
+        : null;
+    case "image/webp": {
+      if (bytes.length < 30 || !asciiAt(bytes, 0, "RIFF") || !asciiAt(bytes, 8, "WEBP")) {
+        return null;
+      }
+      if (asciiAt(bytes, 12, "VP8X")) {
+        return {
+          width: 1 + bytes[24]! + (bytes[25]! << 8) + (bytes[26]! << 16),
+          height: 1 + bytes[27]! + (bytes[28]! << 8) + (bytes[29]! << 16),
+        };
+      }
+      if (asciiAt(bytes, 12, "VP8 ") && asciiAt(bytes, 23, "\u009d\u0001*")) {
+        return {
+          width: (bytes[26]! | (bytes[27]! << 8)) & 0x3fff,
+          height: (bytes[28]! | (bytes[29]! << 8)) & 0x3fff,
+        };
+      }
+      if (asciiAt(bytes, 12, "VP8L") && bytes[20] === 0x2f) {
+        return {
+          width: 1 + bytes[21]! + ((bytes[22]! & 0x3f) << 8),
+          height: 1 + (bytes[22]! >> 6) + (bytes[23]! << 2) + ((bytes[24]! & 0x0f) << 10),
+        };
+      }
+      return null;
+    }
+    case "image/jpeg": {
+      let offset = 2;
+      while (offset + 9 < bytes.length) {
+        if (bytes[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const marker = bytes[offset + 1]!;
+        if (marker >= 0xc0 && marker <= 0xc3) {
+          return {
+            width: readUint16Be(bytes, offset + 7),
+            height: readUint16Be(bytes, offset + 5),
+          };
+        }
+        const segmentLength = readUint16Be(bytes, offset + 2);
+        if (segmentLength < 2) return null;
+        offset += 2 + segmentLength;
+      }
+      return null;
+    }
+    default:
+      return null;
+  }
 }
 
 function skipGifSubBlocks(bytes: Uint8Array, initialOffset: number): number | null {
@@ -198,6 +276,22 @@ export async function processImageForComposerInWorker(input: {
   const mimeType = normalizedMimeType(input.mimeType);
   if (input.file.size <= 0) return { ok: false, reason: "unreadable" };
   if (input.file.size > MAX_COMPRESSIBLE_IMAGE_SOURCE_BYTES) {
+    return { ok: false, reason: "too-large" };
+  }
+
+  let headerBytes: Uint8Array;
+  try {
+    headerBytes = new Uint8Array(await input.file.slice(0, 64 * 1024).arrayBuffer());
+  } catch {
+    return { ok: false, reason: "unreadable" };
+  }
+  const dimensions = readImagePixelDimensions(headerBytes, mimeType);
+  if (
+    dimensions !== null &&
+    (dimensions.width <= 0 ||
+      dimensions.height <= 0 ||
+      dimensions.width * dimensions.height > MAX_COMPRESSIBLE_IMAGE_PIXELS)
+  ) {
     return { ok: false, reason: "too-large" };
   }
 

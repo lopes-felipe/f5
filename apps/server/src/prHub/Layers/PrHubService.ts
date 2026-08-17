@@ -11,6 +11,7 @@ import {
   type PrHubLocalCheckoutCandidate,
   type PrHubRefreshInput,
   type PrHubSnapshot,
+  type PrHubTimelineComment,
   type PrHubTimelinePage,
   type PrMergeable,
   type PrPullRequestState,
@@ -1670,7 +1671,7 @@ const makePrHubService = Effect.gen(function* () {
         ${input.errorMessage ?? null},
         ${JSON.stringify(input.cappedBuckets ?? [])}
       )
-      ON CONFLICT (host, viewer_login)
+      ON CONFLICT (provider_kind, host, viewer_login)
       DO UPDATE SET
         provider_kind = excluded.provider_kind,
         status = excluded.status,
@@ -1742,7 +1743,7 @@ const makePrHubService = Effect.gen(function* () {
             ${pr.state === "open" ? null : pr.updatedAt},
             ${JSON.stringify(pr)}
           )
-          ON CONFLICT (host, repo, number)
+          ON CONFLICT (provider_kind, host, repo, number)
           DO UPDATE SET
             provider_kind = excluded.provider_kind,
             title = excluded.title,
@@ -1810,7 +1811,7 @@ const makePrHubService = Effect.gen(function* () {
             ${0},
             ${null}
           )
-          ON CONFLICT (host, viewer_login, repo, number)
+          ON CONFLICT (provider_kind, host, viewer_login, repo, number)
           DO UPDATE SET
             provider_kind = excluded.provider_kind,
             roles_json = excluded.roles_json,
@@ -2360,6 +2361,81 @@ const makePrHubService = Effect.gen(function* () {
       { concurrency: 2 },
     ).pipe(Effect.map(([detail, timeline]) => ({ detail, timeline })));
 
+  const findAuthoritativeTimelineComment = (
+    pr: TrackedPullRequest,
+    predicate: (comment: PrHubTimelineComment) => boolean,
+  ): Effect.Effect<PrHubTimelineComment | null, SourceControlProviderError> =>
+    Effect.gen(function* () {
+      let cursor: string | undefined;
+      for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
+        const page = yield* getTimeline({ key: pr.key, cursor, mode: "force" });
+        if (page.stale) {
+          return yield* prHubActionError(
+            "GitHub could not verify the selected pull request object. Refresh and try again.",
+          );
+        }
+        const match = page.entries.find(
+          (entry): entry is PrHubTimelineComment => entry.type === "comment" && predicate(entry),
+        );
+        if (match) return match;
+        if (!page.pageInfo.hasNextPage || !page.pageInfo.endCursor) return null;
+        cursor = page.pageInfo.endCursor;
+      }
+      return yield* prHubActionError(
+        "The selected pull request object is outside the authorized timeline window.",
+      );
+    });
+
+  const authorizeCommentUpdate = (
+    pr: TrackedPullRequest,
+    input: { readonly commentId: string; readonly kind: "issue-comment" | "review-comment" },
+  ) =>
+    findAuthoritativeTimelineComment(
+      pr,
+      (comment) =>
+        comment.databaseId === input.commentId &&
+        comment.kind === input.kind &&
+        comment.viewerCanUpdate,
+    ).pipe(
+      Effect.flatMap((comment) =>
+        comment
+          ? Effect.void
+          : Effect.fail(
+              prHubActionError(
+                "The selected comment does not belong to this pull request or cannot be edited.",
+              ),
+            ),
+      ),
+    );
+
+  const authorizeReactionSubject = (pr: TrackedPullRequest, subjectId: string) =>
+    getDetail({ key: pr.key, mode: "force" }).pipe(
+      Effect.flatMap((result) => {
+        if (result.stale) {
+          return Effect.fail(
+            prHubActionError(
+              "GitHub could not verify the selected pull request object. Refresh and try again.",
+            ),
+          );
+        }
+        const providerDetails = result.detail.providerDetails;
+        if (providerDetails.provider === "github" && providerDetails.nodeId === subjectId) {
+          return Effect.void;
+        }
+        return findAuthoritativeTimelineComment(pr, (comment) => comment.id === subjectId).pipe(
+          Effect.flatMap((comment) =>
+            comment
+              ? Effect.void
+              : Effect.fail(
+                  prHubActionError(
+                    "The selected reaction target does not belong to this pull request.",
+                  ),
+                ),
+          ),
+        );
+      }),
+    );
+
   const requireTrackedPr = (
     url: string,
     predicate: (pr: TrackedPullRequest) => boolean,
@@ -2397,7 +2473,7 @@ const makePrHubService = Effect.gen(function* () {
       Effect.flatMap((snapshot) => {
         if (!snapshot) return getSnapshot;
         const mapPr = (pr: TrackedPullRequest): TrackedPullRequest =>
-          pr.key === key ? { ...pr, ...update(pr) } : pr;
+          sourceControlPullRequestKeysEqual(pr.key, key) ? { ...pr, ...update(pr) } : pr;
         return publishSnapshot({
           ...snapshot,
           pullRequests: snapshot.pullRequests.map(mapPr),
@@ -2508,8 +2584,12 @@ const makePrHubService = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* getSnapshot;
       const pr =
-        snapshot.pullRequests.find((candidate) => candidate.key === input.key) ??
-        snapshot.recentlyResolved.find((candidate) => candidate.key === input.key);
+        snapshot.pullRequests.find((candidate) =>
+          sourceControlPullRequestKeysEqual(candidate.key, input.key),
+        ) ??
+        snapshot.recentlyResolved.find((candidate) =>
+          sourceControlPullRequestKeysEqual(candidate.key, input.key),
+        );
       if (!pr) return [];
       const allProjects = yield* projects.listAll().pipe(Effect.catch(() => Effect.succeed([])));
       const candidates: PrHubLocalCheckoutCandidate[] = [];
@@ -2546,7 +2626,8 @@ const makePrHubService = Effect.gen(function* () {
     trackedPrByKey(input.key).pipe(
       Effect.flatMap((pr) =>
         /^\d+$/.test(input.commentId)
-          ? sourceControlProviders.get(pr.provider).pipe(
+          ? authorizeCommentUpdate(pr, input).pipe(
+              Effect.andThen(sourceControlProviders.get(pr.provider)),
               Effect.flatMap((provider) =>
                 provider.updatePullRequestComment({
                   cwd,
@@ -2566,7 +2647,8 @@ const makePrHubService = Effect.gen(function* () {
   const setReaction: PrHubServiceShape["setReaction"] = (input) =>
     trackedPrByKey(input.key).pipe(
       Effect.flatMap((pr) =>
-        sourceControlProviders.get(pr.provider).pipe(
+        authorizeReactionSubject(pr, input.subjectId).pipe(
+          Effect.andThen(sourceControlProviders.get(pr.provider)),
           Effect.flatMap((provider) =>
             provider.requireCapability("react").pipe(
               Effect.andThen(

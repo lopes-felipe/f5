@@ -8,6 +8,7 @@ import type {
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { ensureNativeApi } from "~/nativeApi";
+import { randomUUID } from "./utils";
 
 export const projectQueryKeys = {
   all: ["projects"] as const,
@@ -138,7 +139,7 @@ export function projectSearchContentsQueryOptions(input: {
     queryFn: async ({ signal }) => {
       if (!input.projectId) throw new Error("Project content search is unavailable.");
       const api = ensureNativeApi();
-      const requestId = globalThis.crypto.randomUUID();
+      const requestId = randomUUID();
       const cancel = () => {
         void api.projects.cancelContentSearch({ requestId }).catch(() => undefined);
       };

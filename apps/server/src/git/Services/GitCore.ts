@@ -129,6 +129,7 @@ export interface GitCoreShape {
     cwd: string,
     subject: string,
     body: string,
+    filePaths?: readonly string[],
   ) => Effect.Effect<{ commitSha: string }, GitCommandError>;
 
   /**

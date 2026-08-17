@@ -607,10 +607,12 @@ function mapThreadHistoryStateFromTail(
         ? "tail"
         : "complete",
     hasOlderMessages,
+    hasNewerMessages: false,
     hasOlderCheckpoints,
     hasOlderActivities,
     hasOlderCommandExecutions,
     oldestLoadedMessageCursor: incoming.oldestLoadedMessageCursor,
+    newestLoadedMessageCursor: null,
     oldestLoadedCheckpointTurnCount: incoming.oldestLoadedCheckpointTurnCount,
     oldestLoadedActivityCursor: incoming.oldestLoadedActivityCursor,
     oldestLoadedCommandExecutionCursor: incoming.oldestLoadedCommandExecutionCursor,
@@ -1410,7 +1412,14 @@ function prependOlderActivities(
   if (nextIncoming.length === 0) {
     return existing;
   }
-  return [...mapActivitiesFromReadModel(nextIncoming, []), ...existing];
+  return [...mapActivitiesFromReadModel(nextIncoming, []), ...existing].toSorted(
+    (left, right) =>
+      (left.sequence !== undefined && right.sequence !== undefined
+        ? left.sequence - right.sequence
+        : 0) ||
+      left.createdAt.localeCompare(right.createdAt) ||
+      left.id.localeCompare(right.id),
+  );
 }
 
 export function prependOlderThreadHistoryPage(
@@ -1418,6 +1427,7 @@ export function prependOlderThreadHistoryPage(
   threadId: ThreadId,
   page: OrchestrationThreadHistoryPage,
   expectedGeneration: number,
+  mode: "older" | "anchored" | "newer" = "older",
 ): AppState {
   const existingThread = state.threads.find((thread) => thread.id === threadId);
   if (!existingThread || !existingThread.detailsLoaded) {
@@ -1438,23 +1448,51 @@ export function prependOlderThreadHistoryPage(
     page.commandExecutions,
   );
   const activities = prependOlderActivities(existingThread.activities, page.activities);
+  const hasOlderMessages =
+    mode === "newer" ? existingHistory.hasOlderMessages : page.hasOlderMessages;
+  const hasOlderCheckpoints =
+    mode === "newer" ? existingHistory.hasOlderCheckpoints : page.hasOlderCheckpoints;
+  const hasOlderActivities =
+    mode === "newer" ? existingHistory.hasOlderActivities : page.hasOlderActivities;
+  const hasOlderCommandExecutions =
+    mode === "newer" ? existingHistory.hasOlderCommandExecutions : page.hasOlderCommandExecutions;
+  const hasNewerMessages =
+    mode === "older"
+      ? (existingHistory.hasNewerMessages ?? false)
+      : (page.hasNewerMessages ?? false);
   const nextHistory: ThreadHistoryState = {
     ...existingHistory,
     stage:
-      page.hasOlderMessages ||
-      page.hasOlderCheckpoints ||
-      page.hasOlderActivities ||
-      page.hasOlderCommandExecutions
+      hasOlderMessages ||
+      hasNewerMessages ||
+      hasOlderCheckpoints ||
+      hasOlderActivities ||
+      hasOlderCommandExecutions
         ? "tail"
         : "complete",
-    hasOlderMessages: page.hasOlderMessages,
-    hasOlderCheckpoints: page.hasOlderCheckpoints,
-    hasOlderActivities: page.hasOlderActivities,
-    hasOlderCommandExecutions: page.hasOlderCommandExecutions,
-    oldestLoadedMessageCursor: page.oldestLoadedMessageCursor,
-    oldestLoadedCheckpointTurnCount: page.oldestLoadedCheckpointTurnCount,
-    oldestLoadedActivityCursor: page.oldestLoadedActivityCursor,
-    oldestLoadedCommandExecutionCursor: page.oldestLoadedCommandExecutionCursor,
+    hasOlderMessages,
+    hasNewerMessages,
+    hasOlderCheckpoints,
+    hasOlderActivities,
+    hasOlderCommandExecutions,
+    oldestLoadedMessageCursor:
+      mode === "newer" ? existingHistory.oldestLoadedMessageCursor : page.oldestLoadedMessageCursor,
+    newestLoadedMessageCursor:
+      mode === "older"
+        ? (existingHistory.newestLoadedMessageCursor ?? null)
+        : (page.newestLoadedMessageCursor ?? existingHistory.newestLoadedMessageCursor ?? null),
+    oldestLoadedCheckpointTurnCount:
+      mode === "newer"
+        ? existingHistory.oldestLoadedCheckpointTurnCount
+        : page.oldestLoadedCheckpointTurnCount,
+    oldestLoadedActivityCursor:
+      mode === "newer"
+        ? existingHistory.oldestLoadedActivityCursor
+        : page.oldestLoadedActivityCursor,
+    oldestLoadedCommandExecutionCursor:
+      mode === "newer"
+        ? existingHistory.oldestLoadedCommandExecutionCursor
+        : page.oldestLoadedCommandExecutionCursor,
   };
   if (
     messages === existingThread.messages &&
@@ -1463,10 +1501,15 @@ export function prependOlderThreadHistoryPage(
     turnDiffSummaries === existingThread.turnDiffSummaries &&
     existingHistory.stage === nextHistory.stage &&
     existingHistory.hasOlderMessages === nextHistory.hasOlderMessages &&
+    existingHistory.hasNewerMessages === nextHistory.hasNewerMessages &&
     existingHistory.hasOlderCheckpoints === nextHistory.hasOlderCheckpoints &&
     existingHistory.hasOlderActivities === nextHistory.hasOlderActivities &&
     existingHistory.hasOlderCommandExecutions === nextHistory.hasOlderCommandExecutions &&
     existingHistory.oldestLoadedMessageCursor === nextHistory.oldestLoadedMessageCursor &&
+    areUnknownEqual(
+      existingHistory.newestLoadedMessageCursor,
+      nextHistory.newestLoadedMessageCursor,
+    ) &&
     existingHistory.oldestLoadedCheckpointTurnCount ===
       nextHistory.oldestLoadedCheckpointTurnCount &&
     areUnknownEqual(
@@ -1905,6 +1948,16 @@ interface AppStore extends AppState {
     page: OrchestrationThreadHistoryPage,
     expectedGeneration: number,
   ) => void;
+  mergeAnchoredThreadHistoryPage: (
+    threadId: ThreadId,
+    page: OrchestrationThreadHistoryPage,
+    expectedGeneration: number,
+  ) => void;
+  appendNewerThreadHistoryPage: (
+    threadId: ThreadId,
+    page: OrchestrationThreadHistoryPage,
+    expectedGeneration: number,
+  ) => void;
   prependOlderThreadActivitiesPage: (
     threadId: ThreadId,
     page: OrchestrationThreadHistoryPage,
@@ -1939,6 +1992,14 @@ export const useStore = create<AppStore>((set) => ({
     set((state) => syncThreadTailDetails(state, threadId, details, options)),
   prependOlderThreadHistoryPage: (threadId, page, expectedGeneration) =>
     set((state) => prependOlderThreadHistoryPage(state, threadId, page, expectedGeneration)),
+  mergeAnchoredThreadHistoryPage: (threadId, page, expectedGeneration) =>
+    set((state) =>
+      prependOlderThreadHistoryPage(state, threadId, page, expectedGeneration, "anchored"),
+    ),
+  appendNewerThreadHistoryPage: (threadId, page, expectedGeneration) =>
+    set((state) =>
+      prependOlderThreadHistoryPage(state, threadId, page, expectedGeneration, "newer"),
+    ),
   prependOlderThreadActivitiesPage: (threadId, page, expectedGeneration) =>
     set((state) => prependOlderThreadActivitiesPage(state, threadId, page, expectedGeneration)),
   markThreadHistoryBackfilling: (threadId) =>

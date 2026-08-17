@@ -62,10 +62,12 @@ export type ThreadHistoryStage = "empty" | "tail" | "backfilling" | "complete" |
 export interface ThreadHistoryState {
   stage: ThreadHistoryStage;
   hasOlderMessages: boolean;
+  hasNewerMessages?: boolean;
   hasOlderCheckpoints: boolean;
   hasOlderActivities: boolean;
   hasOlderCommandExecutions: boolean;
   oldestLoadedMessageCursor: ThreadHistoryMessageCursor | null;
+  newestLoadedMessageCursor?: ThreadHistoryMessageCursor | null;
   oldestLoadedCheckpointTurnCount: number | null;
   oldestLoadedActivityCursor: ThreadHistoryActivityCursor | null;
   oldestLoadedCommandExecutionCursor: ThreadHistoryCommandExecutionCursor | null;

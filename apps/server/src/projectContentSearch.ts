@@ -354,6 +354,7 @@ export function makeProjectContentSearchManager(options?: {
     state: ActiveSearch,
     workspaceRoot: string,
     request: ProjectSearchContentsInput,
+    sharedCancellationRetries = 0,
   ): Promise<ProjectSearchContentsResult> => {
     if (state.abortController.signal.aborted) throw cancellationError();
     const entry = await acquireEntry(workspaceRoot, state.abortController.signal);
@@ -364,7 +365,7 @@ export function makeProjectContentSearchManager(options?: {
         enqueueOperation(entry, async () => {
           if (state.abortController.signal.aborted) throw cancellationError();
           if (entry.worker.isTerminated()) {
-            throw new Error("Project content index was replaced.");
+            throw cancellationError();
           }
           state.executing = true;
           try {
@@ -417,6 +418,15 @@ export function makeProjectContentSearchManager(options?: {
       };
     } catch (cause) {
       if (state.abortController.signal.aborted) throw cancellationError();
+      if (
+        cause instanceof ProjectContentSearchError &&
+        cause.failure === "cancelled" &&
+        sharedCancellationRetries < 2
+      ) {
+        state.entry = null;
+        state.executing = false;
+        return runSearch(state, workspaceRoot, request, sharedCancellationRetries + 1);
+      }
       await destroyEntry(entry, new Error("Project content index failed and was replaced."));
       throw new ProjectContentSearchError(
         stage === "scan" ? "scan_failed" : "search_failed",

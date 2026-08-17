@@ -68,7 +68,7 @@ it.effect("opens, navigates, reports, lists, and closes preview sessions", () =>
   }),
 );
 
-it.effect("keeps a bounded, deduplicated preview history across threads", () =>
+it.effect("keeps a bounded, deduplicated preview history scoped to one thread", () =>
   Effect.gen(function* () {
     const manager = makePreviewManager();
     const threadId = "thread-preview" as never;
@@ -108,6 +108,8 @@ it.effect("keeps a bounded, deduplicated preview history across threads", () =>
       recentLocations.filter((location) => location.url === "http://localhost:3005/").length,
       1,
     );
+    const otherThread = yield* manager.list({ threadId: "thread-other" as never });
+    assert.deepEqual(otherThread.recentLocations, []);
   }),
 );
 

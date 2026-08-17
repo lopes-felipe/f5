@@ -1,4 +1,4 @@
-import type { SourceControlProviderIdentity } from "@t3tools/contracts";
+import type { SourceControlProviderIdentity, SourceControlProviderKind } from "@t3tools/contracts";
 import { parseSourceControlRemoteUrl } from "@t3tools/shared/sourceControl";
 
 import type { GitRemote } from "../git/Services/GitCore.ts";
@@ -34,13 +34,20 @@ export function discoverSourceControlProviderIdentities(
 
 export function selectPrimarySourceControlProviderIdentity(
   identities: ReadonlyArray<SourceControlProviderIdentity>,
+  options: {
+    readonly availableProviderKinds?: ReadonlyArray<SourceControlProviderKind>;
+  } = {},
 ): SourceControlProviderIdentity {
+  const availableKinds = options.availableProviderKinds
+    ? new Set(options.availableProviderKinds)
+    : null;
+  const isAvailable = (identity: SourceControlProviderIdentity) =>
+    identity.kind !== "unknown" && (availableKinds === null || availableKinds.has(identity.kind));
   return (
-    identities.find(
-      (identity) => identity.remoteName === "origin" && identity.kind !== "unknown",
-    ) ??
-    identities.find((identity) => identity.kind !== "unknown") ??
+    identities.find((identity) => identity.remoteName === "origin" && isAvailable(identity)) ??
+    identities.find(isAvailable) ??
     identities.find((identity) => identity.remoteName === "origin") ??
+    identities.find((identity) => identity.kind !== "unknown") ??
     identities[0] ?? { kind: "unknown" }
   );
 }

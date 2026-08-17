@@ -18,12 +18,12 @@ export function buildSidebarThreadSearchItems(input: {
   limit?: number;
 }): CommandPaletteActionItem[] {
   const parsed = parseGlobalSearchQuery(input.query);
-  const normalizedProjectFilter = parsed.project?.toLocaleLowerCase() ?? null;
+  const normalizedProjectFilter = parsed.project?.toLowerCase() ?? null;
   const project = normalizedProjectFilter
     ? input.projects.find(
         (candidate) =>
-          candidate.id.toLocaleLowerCase() === normalizedProjectFilter ||
-          candidate.name.toLocaleLowerCase() === normalizedProjectFilter,
+          candidate.id.toLowerCase() === normalizedProjectFilter ||
+          candidate.name.toLowerCase() === normalizedProjectFilter,
       )
     : null;
   if (normalizedProjectFilter && !project) {

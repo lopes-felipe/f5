@@ -21,6 +21,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -47,8 +49,14 @@ jobs:
       - name: Audit Codex protocol
         run: bun run protocol:audit:baseline
 
+      - name: Validate upstream port ledger
+        run: bun run upstream-ports:check
+
       - name: Run full test suite
         run: bun run test:full
+
+      - name: Run browser tests
+        run: bun --cwd apps/web run test:browser
 
   windows:
     name: Windows build and integration suite

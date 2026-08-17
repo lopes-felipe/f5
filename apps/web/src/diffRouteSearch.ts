@@ -2,6 +2,7 @@ import { OrchestrationFileChangeId, TurnId } from "@t3tools/contracts";
 
 export interface DiffRouteSearch {
   timelineEntryId?: string | undefined;
+  timelineEntryKind?: "message" | "activity" | undefined;
   diff?: "1" | undefined;
   diffTurnId?: TurnId | undefined;
   diffFileChangeId?: OrchestrationFileChangeId | undefined;
@@ -168,6 +169,11 @@ export function clearFileViewSearchParams<T extends Record<string, unknown>>(
 
 export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRouteSearch {
   const timelineEntryId = normalizeSearchString(search.timelineEntryId);
+  const timelineEntryKind =
+    timelineEntryId &&
+    (search.timelineEntryKind === "message" || search.timelineEntryKind === "activity")
+      ? search.timelineEntryKind
+      : undefined;
   const diff = isDiffOpenValue(search.diff) ? "1" : undefined;
   const diffTurnIdRaw = diff ? normalizeSearchString(search.diffTurnId) : undefined;
   const diffTurnId = diffTurnIdRaw ? TurnId.makeUnsafe(diffTurnIdRaw) : undefined;
@@ -195,6 +201,7 @@ export function parseDiffRouteSearch(search: Record<string, unknown>): DiffRoute
 
   return {
     ...(timelineEntryId ? { timelineEntryId } : {}),
+    ...(timelineEntryKind ? { timelineEntryKind } : {}),
     ...(diff ? { diff } : {}),
     ...(diffTurnId ? { diffTurnId } : {}),
     ...(diffFileChangeId ? { diffFileChangeId } : {}),

@@ -424,6 +424,9 @@ export const PrHubDetail = Schema.Struct({
   reviewers: Schema.Array(PrHubReviewer),
   checks: Schema.Array(PrHubCheck),
   reactions: Schema.Array(PrHubReaction),
+  truncatedSections: Schema.optional(
+    Schema.Array(Schema.Literals(["labels", "reviewers", "checks"])),
+  ),
 });
 export type PrHubDetail = typeof PrHubDetail.Type;
 

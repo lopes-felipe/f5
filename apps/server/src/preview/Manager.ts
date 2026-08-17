@@ -39,6 +39,7 @@ interface PreviewSessionState {
 }
 
 export const MAX_PREVIEW_RECENT_LOCATIONS = 20;
+const MAX_PREVIEW_RECENT_THREAD_BUCKETS = 100;
 
 const compositeKey = (threadId: string, tabId: string): string => `${threadId}\u0000${tabId}`;
 
@@ -100,14 +101,22 @@ const buildLoadingSnapshot = (input: {
 
 export function makePreviewManager(): PreviewManager {
   const sessions = new Map<string, PreviewSessionState>();
-  let recentLocations: PreviewRecentLocation[] = [];
+  const recentLocationsByThreadId = new Map<string, PreviewRecentLocation[]>();
   const listeners = new Set<(event: PreviewEvent) => void>();
 
-  const rememberLocation = (location: PreviewRecentLocation): void => {
-    recentLocations = [
+  const rememberLocation = (threadId: string, location: PreviewRecentLocation): void => {
+    const recentLocations = recentLocationsByThreadId.get(threadId) ?? [];
+    const next = [
       location,
       ...recentLocations.filter((candidate) => candidate.url !== location.url),
     ].slice(0, MAX_PREVIEW_RECENT_LOCATIONS);
+    recentLocationsByThreadId.delete(threadId);
+    recentLocationsByThreadId.set(threadId, next);
+    while (recentLocationsByThreadId.size > MAX_PREVIEW_RECENT_THREAD_BUCKETS) {
+      const oldestThreadId = recentLocationsByThreadId.keys().next().value;
+      if (oldestThreadId === undefined) break;
+      recentLocationsByThreadId.delete(oldestThreadId);
+    }
   };
 
   const emit = (event: PreviewEvent): void => {
@@ -210,7 +219,7 @@ export function makePreviewManager(): PreviewManager {
           updatedAt,
         };
         if (input.navStatus._tag === "Success") {
-          rememberLocation({
+          rememberLocation(session.threadId, {
             url: input.navStatus.url,
             title: input.navStatus.title,
             visitedAt: updatedAt,
@@ -267,7 +276,7 @@ export function makePreviewManager(): PreviewManager {
             .filter((session) => session.threadId === input.threadId)
             .map((session) => session.snapshot)
             .toSorted((left, right) => left.updatedAt.localeCompare(right.updatedAt)),
-          recentLocations,
+          recentLocations: recentLocationsByThreadId.get(input.threadId) ?? [],
         }),
       ),
 

@@ -742,18 +742,30 @@ function checkGenericCliProviderStatus(input: {
   return runProviderCliCommand(input.binaryPath, ["--version"], {
     binaryPath: input.binaryPath,
   }).pipe(
+    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
     Effect.map((result) => {
-      const version = parseSimpleCommandVersion(result.stdout, result.stderr);
+      if (Option.isNone(result)) {
+        return {
+          provider: input.provider,
+          status: "error",
+          available: false,
+          authStatus: "unknown",
+          checkedAt,
+          message: `Timed out probing ${input.binaryPath}.`,
+        } satisfies ServerProviderStatus;
+      }
+      const processResult = result.value;
+      const version = parseSimpleCommandVersion(processResult.stdout, processResult.stderr);
       return {
         provider: input.provider,
-        status: result.code === 0 ? "ready" : "error",
-        available: result.code === 0,
+        status: processResult.code === 0 ? "ready" : "error",
+        available: processResult.code === 0,
         authStatus: "unknown",
         checkedAt,
         ...(version ? { version } : {}),
-        ...(result.code === 0
+        ...(processResult.code === 0
           ? {}
-          : { message: `${input.binaryPath} --version exited ${result.code}.` }),
+          : { message: `${input.binaryPath} --version exited ${processResult.code}.` }),
       } satisfies ServerProviderStatus;
     }),
     Effect.catch((cause) =>

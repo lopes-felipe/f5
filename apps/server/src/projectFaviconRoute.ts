@@ -47,16 +47,53 @@ const ICON_SOURCE_FILES = [
 const ICON_SOURCE_FILE_MAX_BYTES = 256 * 1024;
 const WORKSPACE_ASSET_ROUTE_PREFIX = "/api/workspace-assets/";
 
-const LINK_ICON_HTML_RE =
-  /<link\b(?=[^>]*\brel=["'](?:icon|shortcut icon)["'])(?=[^>]*\bhref=["']([^"'?]+))[^>]*>/i;
-const LINK_ICON_OBJ_RE =
-  /(?=[^}]*\brel\s*:\s*["'](?:icon|shortcut icon)["'])(?=[^}]*\bhref\s*:\s*["']([^"'?]+))[^}]*/i;
+const MAX_ICON_DECLARATION_CHARS = 4_096;
+const MAX_ICON_DECLARATION_CANDIDATES = 128;
+const HTML_REL_RE = /\brel\s*=\s*["']([^"']*)["']/i;
+const HTML_HREF_RE = /\bhref\s*=\s*["']([^"'?]+)["']/i;
+const OBJECT_REL_RE = /\brel\s*:\s*["']([^"']*)["']/i;
+const OBJECT_HREF_RE = /\bhref\s*:\s*["']([^"'?]+)["']/i;
+
+function isIconRel(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "icon" || normalized === "shortcut icon";
+}
 
 function extractIconHref(source: string): string | null {
-  const htmlMatch = source.match(LINK_ICON_HTML_RE);
-  if (htmlMatch?.[1]) return htmlMatch[1];
-  const objMatch = source.match(LINK_ICON_OBJ_RE);
-  if (objMatch?.[1]) return objMatch[1];
+  const lowerSource = source.toLowerCase();
+  let cursor = 0;
+  for (let count = 0; count < MAX_ICON_DECLARATION_CANDIDATES; count += 1) {
+    const start = lowerSource.indexOf("<link", cursor);
+    if (start < 0) break;
+    const end = lowerSource.indexOf(">", start + 5);
+    cursor = start + 5;
+    if (end < 0 || end - start > MAX_ICON_DECLARATION_CHARS) continue;
+    const declaration = source.slice(start, end + 1);
+    if (!isIconRel(declaration.match(HTML_REL_RE)?.[1])) continue;
+    const href = declaration.match(HTML_HREF_RE)?.[1];
+    if (href) return href;
+  }
+
+  cursor = 0;
+  for (let count = 0; count < MAX_ICON_DECLARATION_CANDIDATES; count += 1) {
+    const hrefOffset = lowerSource.indexOf("href", cursor);
+    if (hrefOffset < 0) break;
+    cursor = hrefOffset + 4;
+    const start = lowerSource.lastIndexOf("{", hrefOffset);
+    const end = lowerSource.indexOf("}", hrefOffset + 4);
+    if (
+      start < 0 ||
+      end < 0 ||
+      hrefOffset - start > MAX_ICON_DECLARATION_CHARS ||
+      end - start > MAX_ICON_DECLARATION_CHARS
+    ) {
+      continue;
+    }
+    const declaration = source.slice(start, end + 1);
+    if (!isIconRel(declaration.match(OBJECT_REL_RE)?.[1])) continue;
+    const href = declaration.match(OBJECT_HREF_RE)?.[1];
+    if (href) return href;
+  }
   return null;
 }
 

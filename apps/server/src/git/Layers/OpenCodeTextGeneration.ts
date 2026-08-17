@@ -1,4 +1,4 @@
-import { Effect, Exit, Fiber, Schema, Scope } from "effect";
+import { Effect, Exit, Fiber, Option, Schema, Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
 
 import {
@@ -37,6 +37,7 @@ import {
 } from "../../provider/opencodeRuntime.ts";
 
 const OPENCODE_TEXT_GENERATION_IDLE_TTL = "30 seconds";
+const OPENCODE_TIMEOUT_MS = 180_000;
 const DEFAULT_OPENCODE_MODEL_SELECTION = createModelSelection(
   ProviderInstanceId.make("opencode"),
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.opencode,
@@ -351,7 +352,21 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             detail: openCodeRuntimeErrorDetail(cause),
             cause,
           }),
-      });
+      }).pipe(
+        Effect.timeoutOption(OPENCODE_TIMEOUT_MS),
+        Effect.flatMap(
+          Option.match({
+            onNone: () =>
+              Effect.fail(
+                new TextGenerationError({
+                  operation: input.operation,
+                  detail: "OpenCode request timed out.",
+                }),
+              ),
+            onSome: Effect.succeed,
+          }),
+        ),
+      );
 
     const rawOutput =
       openCodeSettings.serverUrl.length > 0

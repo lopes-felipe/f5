@@ -64,4 +64,22 @@ describe("preview favicon authorization", () => {
     expect(dataUrl).toBeNull();
     expect(cancelled).toBe(true);
   });
+
+  it("cancels an obsolete fetch when its caller aborts", async () => {
+    const controller = new AbortController();
+    const result = fetchPreviewFaviconDataUrl({
+      pageUrl: "http://localhost:5173/",
+      candidateUrls: ["/slow.png"],
+      signal: controller.signal,
+      fetchImplementation: async (_url, init) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        }),
+    });
+
+    controller.abort();
+    await expect(result).resolves.toBeNull();
+  });
 });

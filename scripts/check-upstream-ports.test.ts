@@ -13,6 +13,7 @@ const sourceManifest = JSON.parse(
 const sourceLedger = JSON.parse(
   readFileSync(path.join(ROOT, "scripts", "upstream-ports.json"), "utf8"),
 ) as {
+  manifestSha256: string;
   entries: Array<Record<string, unknown>>;
 };
 
@@ -31,6 +32,25 @@ function runWith(ledger: unknown): ReturnType<typeof spawnSync> {
   const ledgerPath = path.join(directory, "ledger.json");
   writeFileSync(manifestPath, JSON.stringify(sourceManifest));
   writeFileSync(ledgerPath, JSON.stringify(ledger));
+  return spawnSync(process.execPath, [SCRIPT], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      CI: "1",
+      F5_UPSTREAM_PORTS_MANIFEST_PATH: manifestPath,
+      F5_UPSTREAM_PORTS_LEDGER_PATH: ledgerPath,
+    },
+  });
+}
+
+function runRaw(manifest: string, ledger: string): ReturnType<typeof spawnSync> {
+  const directory = mkdtempSync(path.join(tmpdir(), "f5-upstream-ports-test-"));
+  temporaryDirectories.push(directory);
+  const manifestPath = path.join(directory, "manifest.json");
+  const ledgerPath = path.join(directory, "ledger.json");
+  writeFileSync(manifestPath, manifest);
+  writeFileSync(ledgerPath, ledger);
   return spawnSync(process.execPath, [SCRIPT], {
     cwd: ROOT,
     encoding: "utf8",
@@ -64,5 +84,25 @@ describe("check-upstream-ports", () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("references non-resolving f5 SHA");
+  }, 15_000);
+
+  it("reports malformed JSON without an uncaught type error", () => {
+    const result = runRaw(JSON.stringify(sourceManifest), '{"schemaVersion":3,"entries":');
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("could not parse");
+    expect(result.stderr).not.toContain("is not iterable");
+  }, 15_000);
+
+  it("rejects a manifest changed without updating its integrity digest", () => {
+    const manifest = structuredClone(sourceManifest);
+    manifest.selection = {
+      ...(manifest.selection as Record<string, unknown>),
+      boundarySha: "0000000000000000000000000000000000000000",
+    };
+    const result = runRaw(JSON.stringify(manifest), JSON.stringify(sourceLedger));
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("integrity digest");
   }, 15_000);
 });

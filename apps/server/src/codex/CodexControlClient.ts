@@ -253,6 +253,7 @@ export class CodexControlClient extends EventEmitter<{
       env: childEnvironment,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    child.stderr.resume();
     const output = readline.createInterface({ input: child.stdout });
     const writer = createJsonRpcStdinWriter({
       stdin: child.stdin,
@@ -264,12 +265,17 @@ export class CodexControlClient extends EventEmitter<{
       listMcpServerStatus: false,
     });
 
-    await client.sendRequest("initialize", buildCodexInitializeParams());
-    await client.writeMessage({
-      method: "initialized",
-    });
-    client.capabilities = await client.probeCapabilities();
-    return client;
+    try {
+      await client.sendRequest("initialize", buildCodexInitializeParams());
+      await client.writeMessage({
+        method: "initialized",
+      });
+      client.capabilities = await client.probeCapabilities();
+      return client;
+    } catch (error) {
+      client.close();
+      throw error;
+    }
   }
 
   private async probeCapabilities(): Promise<CodexControlCapabilities> {

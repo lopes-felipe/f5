@@ -936,6 +936,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             ...(input.model ? { "provider.model": input.model } : {}),
           });
+          const missingAttachmentIds: string[] = [];
           const resolvedAttachments = input.attachments.flatMap((attachment) => {
             switch (attachment.type) {
               case "image": {
@@ -943,9 +944,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                   attachmentsDir: serverConfig.attachmentsDir,
                   attachment,
                 });
-                return localPath === null || !existsSync(localPath)
-                  ? []
-                  : [{ ...attachment, localPath }];
+                if (localPath === null || !existsSync(localPath)) {
+                  missingAttachmentIds.push(attachment.id);
+                  return [];
+                }
+                return [{ ...attachment, localPath }];
               }
               default:
                 throw new Error(
@@ -953,6 +956,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 );
             }
           });
+          if (missingAttachmentIds.length > 0) {
+            yield* Effect.logWarning("provider turn omitted unavailable attachments", {
+              threadId: input.threadId,
+              attachmentIds: missingAttachmentIds,
+            });
+          }
           const turn = yield* routed.adapter.sendTurn({
             ...input,
             resolvedAttachments,

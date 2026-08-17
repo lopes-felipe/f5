@@ -150,6 +150,45 @@ describe("GitHub PR detail decoding", () => {
     expect(result.rateLimit?.remaining).toBe(42);
   });
 
+  it("reports truncated summary connections and keeps users and teams distinct", () => {
+    const result = decodeGitHubPrDetail(
+      responseWithPullRequest({
+        ...trackedPr(),
+        id: "PR_graphql",
+        labels: { totalCount: 51, pageInfo: { hasNextPage: true }, nodes: [] },
+        reviewRequests: {
+          totalCount: 1,
+          pageInfo: { hasNextPage: false },
+          nodes: [{ requestedReviewer: { __typename: "Team", slug: "platform" } }],
+        },
+        latestReviews: {
+          totalCount: 1,
+          pageInfo: { hasNextPage: false },
+          nodes: [{ author: { login: "platform" } }],
+        },
+        commits: {
+          nodes: [
+            {
+              commit: {
+                statusCheckRollup: {
+                  contexts: {
+                    totalCount: 101,
+                    pageInfo: { hasNextPage: true },
+                    nodes: [],
+                  },
+                },
+              },
+            },
+          ],
+        },
+      }),
+      trackedPr(),
+    );
+
+    expect(result.detail.truncatedSections).toEqual(["labels", "checks"]);
+    expect(result.detail.reviewers.map((reviewer) => reviewer.kind)).toEqual(["user", "team"]);
+  });
+
   it("builds a stable multi-stream cursor and reports nested truncation", () => {
     const page = decodeGitHubPrTimeline(
       responseWithPullRequest({

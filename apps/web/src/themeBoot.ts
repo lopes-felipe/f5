@@ -3,13 +3,19 @@ import { applyAppearanceSettings, normalizeAppearanceSettings } from "./appearan
 import { applyThemeMode, readStoredThemeMode, resolveThemeMode } from "./themeMode";
 import { applyThemePalette, resolveThemePalette } from "./themePalette";
 
-const settings = parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY));
-const themeMode = readStoredThemeMode();
+try {
+  const settings = parsePersistedAppSettings(localStorage.getItem(APP_SETTINGS_STORAGE_KEY));
+  const themeMode = readStoredThemeMode();
 
-applyThemeMode(themeMode);
-applyThemePalette(
-  document.documentElement,
-  resolveThemePalette(settings.themeId, settings.customThemes),
-  resolveThemeMode(themeMode),
-);
-applyAppearanceSettings(document.documentElement, normalizeAppearanceSettings(settings));
+  applyThemeMode(themeMode);
+  applyThemePalette(
+    document.documentElement,
+    resolveThemePalette(settings.themeId, settings.customThemes),
+    resolveThemeMode(themeMode),
+  );
+  applyAppearanceSettings(document.documentElement, normalizeAppearanceSettings(settings));
+} catch {
+  // Storage can be unavailable in hardened browser contexts. The mounted app
+  // reapplies normalized defaults, so boot should never block rendering.
+  applyThemeMode("system");
+}

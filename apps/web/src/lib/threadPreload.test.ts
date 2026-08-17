@@ -975,6 +975,7 @@ describe("preloadRecentThreadDetails", () => {
     expect(getThreadHistoryPage).toHaveBeenCalledWith({
       threadId,
       anchorMessageId,
+      anchorActivityId: null,
       beforeMessageCursor: null,
       afterMessageCursor: null,
       beforeCheckpointTurnCount: null,

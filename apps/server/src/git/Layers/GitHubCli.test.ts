@@ -170,9 +170,9 @@ layer("GitHubCliLive", (it) => {
             "query=query($q:String!,$ids:[ID!]!,$number:Int!,$flag:Boolean!,$empty:String){viewer{login}}",
             "-f",
             "q=is:pr is:open author:me",
-            "-F",
+            "-f",
             "ids[]=PR_kw1",
-            "-F",
+            "-f",
             "ids[]=PR_kw2",
             "-F",
             "number=123",
@@ -181,7 +181,11 @@ layer("GitHubCliLive", (it) => {
             "-F",
             "empty=null",
           ],
-          expect.objectContaining({ cwd: "/home/me", timeoutMs: 45_000 }),
+          expect.objectContaining({
+            cwd: "/home/me",
+            timeoutMs: 45_000,
+            allowNonZeroExit: true,
+          }),
         );
       }),
   );

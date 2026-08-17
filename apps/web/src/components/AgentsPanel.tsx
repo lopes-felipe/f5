@@ -235,6 +235,7 @@ export function AgentsPanel(props: {
       search: (previous) => ({
         ...previous,
         timelineEntryId: entry.focusActivityId ?? undefined,
+        timelineEntryKind: entry.focusActivityId ? "activity" : undefined,
       }),
     });
   };

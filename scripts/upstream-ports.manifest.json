@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "upstream": {
     "authoritativeRepository": "https://github.com/pingdotgg/t3code.git",
-    "localMirror": "/Users/felipelopes/dev/wolt/t3code-fork",
+    "localMirror": "developer-local convenience checkout (not authoritative)",
     "localMirrorAuthoritative": false
   },
   "selection": {

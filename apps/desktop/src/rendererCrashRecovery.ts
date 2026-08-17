@@ -80,6 +80,17 @@ export class MainRendererCrashRecovery {
     return { kind: "reload-scheduled", attempt, delayMs };
   }
 
+  beginManualRetry(): void {
+    if (this.#disposed) return;
+    if (this.#reloadTimer !== null) {
+      clearTimeout(this.#reloadTimer);
+      this.#reloadTimer = null;
+    }
+    this.#reloadAttempts = [];
+    this.#handlingCrash = false;
+    this.#halted = false;
+  }
+
   dispose(): void {
     this.#disposed = true;
     if (this.#reloadTimer !== null) {

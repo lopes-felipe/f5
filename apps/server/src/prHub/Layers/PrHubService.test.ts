@@ -464,12 +464,17 @@ function prDetailResponse(input: { readonly title?: string } = {}) {
   };
 }
 
-function prTimelineResponse() {
+function prTimelineResponse(input?: {
+  readonly issueComments?: ReadonlyArray<Record<string, unknown>>;
+}) {
   return {
     data: {
       repository: {
         pullRequest: {
-          comments: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
+          comments: {
+            nodes: input?.issueComments ?? [],
+            pageInfo: { hasPreviousPage: false, startCursor: null },
+          },
           reviews: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
           commits: { nodes: [], pageInfo: { hasPreviousPage: false, startCursor: null } },
         },
@@ -1522,14 +1527,14 @@ it.effect("reconciles detail mutations and forwards provider-native arguments", 
     const commentResult = yield* service.updateComment({
       key: tracked.key,
       commentId: "123",
-      kind: "review-comment",
+      kind: "issue-comment",
       body: "Updated body",
     });
     assert.equal(commentResult.detail.detail.title, "After comment");
 
     const reactionResult = yield* service.setReaction({
       key: tracked.key,
-      subjectId: "IC_1",
+      subjectId: "PR_detail",
       content: "eyes",
       reacted: true,
     });
@@ -1549,7 +1554,7 @@ it.effect("reconciles detail mutations and forwards provider-native arguments", 
       {
         repository: "octo/repo",
         commentId: "123",
-        kind: "review-comment",
+        kind: "issue-comment",
         body: "Updated body",
       },
     ]);
@@ -1566,17 +1571,80 @@ it.effect("reconciles detail mutations and forwards provider-native arguments", 
         stallSearchAfterFirst: true,
         prDetailResponses: [
           prDetailResponse({ title: "After comment" }),
+          prDetailResponse({ title: "Before reaction" }),
           prDetailResponse({ title: "After reaction" }),
           prDetailResponse({ title: "After reviewers" }),
           prDetailResponse({ title: "After branch" }),
         ],
         timelineResponses: [
+          prTimelineResponse({
+            issueComments: [
+              {
+                id: "IC_1",
+                databaseId: 123,
+                body: "Original body",
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: null,
+                url: "https://github.com/octo/repo/pull/30#issuecomment-123",
+                viewerDidAuthor: true,
+                author: { login: "me" },
+                reactionGroups: [],
+              },
+            ],
+          }),
           prTimelineResponse(),
           prTimelineResponse(),
           prTimelineResponse(),
           prTimelineResponse(),
         ],
         mutationResponses: [{ data: { addReaction: { subject: { id: "IC_1" } } } }],
+      }),
+    ),
+  );
+});
+
+it.effect("rejects comment and reaction object ids that are not bound to the tracked PR", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const commentExit = yield* Effect.exit(
+      service.updateComment({
+        key: tracked.key,
+        commentId: "999",
+        kind: "issue-comment",
+        body: "Unauthorized update",
+      }),
+    );
+    const reactionExit = yield* Effect.exit(
+      service.setReaction({
+        key: tracked.key,
+        subjectId: "IC_unrelated",
+        content: "eyes",
+        reacted: true,
+      }),
+    );
+
+    assert.equal(Exit.isFailure(commentExit), true);
+    assert.equal(Exit.isFailure(reactionExit), true);
+    assert.deepStrictEqual(calls.commentUpdates, []);
+    assert.equal(
+      calls.graphql.some((call) => call.query.includes("mutation F5")),
+      false,
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        stallSearchAfterFirst: true,
+        prDetailResponses: [prDetailResponse()],
+        timelineResponses: [prTimelineResponse(), prTimelineResponse()],
       }),
     ),
   );

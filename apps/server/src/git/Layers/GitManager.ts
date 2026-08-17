@@ -537,6 +537,9 @@ export const makeGitManager = Effect.gen(function* () {
         discoverSourceControlProviderIdentities(remotes, {
           githubHosts: process.env.GH_HOST ? [process.env.GH_HOST] : [],
         }),
+        {
+          availableProviderKinds: sourceControlProviders.providers.map((provider) => provider.kind),
+        },
       );
     });
 
@@ -849,7 +852,12 @@ export const makeGitManager = Effect.gen(function* () {
         return { status: "skipped_no_changes" as const };
       }
 
-      const { commitSha } = yield* gitCore.commit(cwd, suggestion.subject, suggestion.body);
+      const { commitSha } = yield* gitCore.commit(
+        cwd,
+        suggestion.subject,
+        suggestion.body,
+        filePaths,
+      );
       return {
         status: "created" as const,
         commitSha,

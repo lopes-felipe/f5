@@ -128,22 +128,19 @@ function addLocalCalendarDays(key: string, days: number): string {
 function localMidnightToUtc(key: string, formatter: Intl.DateTimeFormat): Date {
   const [year, month, day] = key.split("-").map(Number);
   const desiredAsUtc = Date.UTC(year!, month! - 1, day!, 0, 0, 0);
-  let candidate = desiredAsUtc;
-  for (let iteration = 0; iteration < 4; iteration += 1) {
-    const parts = dateParts(new Date(candidate), formatter);
-    const representedAsUtc = Date.UTC(
-      parts.year,
-      parts.month - 1,
-      parts.day,
-      parts.hour,
-      parts.minute,
-      parts.second,
-    );
-    const adjustment = desiredAsUtc - representedAsUtc;
-    candidate += adjustment;
-    if (adjustment === 0) break;
+  let lower = desiredAsUtc - 36 * 3_600_000;
+  let upper = desiredAsUtc + 36 * 3_600_000;
+  // Find the first UTC instant represented by the requested local date. This
+  // also handles zones that skip local midnight during a DST transition.
+  while (lower < upper) {
+    const midpoint = Math.floor((lower + upper) / 2);
+    if (localDateKey(new Date(midpoint), formatter) < key) {
+      lower = midpoint + 1;
+    } else {
+      upper = midpoint;
+    }
   }
-  return new Date(candidate);
+  return new Date(lower);
 }
 
 function assertTimeZone(timeZone: string): Intl.DateTimeFormat {
@@ -252,7 +249,8 @@ export function buildUsageSummary(input: {
 
   for (const row of input.rows) {
     const bucket = bucketMetrics.get(bucketKeyForRow(row, input.request.range, formatter));
-    if (bucket) addMetrics(bucket, row);
+    if (!bucket) continue;
+    addMetrics(bucket, row);
     addMetrics(totalMetrics, row);
     historicalCostTurnCount += row.historicalCostTurnCount;
 

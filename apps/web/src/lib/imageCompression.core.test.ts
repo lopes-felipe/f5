@@ -6,6 +6,7 @@ import {
   isAnimatedGif,
   isAnimatedWebP,
   processImageForComposerInWorker,
+  readImagePixelDimensions,
 } from "./imageCompression.core";
 
 function gifWithFrames(frameCount: number): Uint8Array {
@@ -53,9 +54,35 @@ describe("image compression format guards", () => {
   it("detects the WebP animation feature bit", () => {
     expect(isAnimatedWebP(animatedWebP())).toBe(true);
   });
+
+  it("reads PNG dimensions without decoding pixels", () => {
+    const bytes = new Uint8Array(24);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    bytes.set([0, 0, 0x75, 0x30, 0, 0, 0x75, 0x30], 16);
+    expect(readImagePixelDimensions(bytes, "image/png")).toEqual({
+      width: 30_000,
+      height: 30_000,
+    });
+  });
 });
 
 describe("processImageForComposerInWorker", () => {
+  it("rejects excessive pixel counts before bitmap decoding", async () => {
+    const bytes = new Uint8Array(24);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], 0);
+    bytes.set([0, 0, 0x75, 0x30, 0, 0, 0x75, 0x30], 16);
+    const createImageBitmapMock = vi.fn();
+    vi.stubGlobal("createImageBitmap", createImageBitmapMock);
+    await expect(
+      processImageForComposerInWorker({
+        file: new Blob([bytes], { type: "image/png" }),
+        mimeType: "image/png",
+        maxBytes: 1024,
+        maxDataUrlChars: 2048,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "too-large" });
+    expect(createImageBitmapMock).not.toHaveBeenCalled();
+  });
   it("preserves a supported static image that fits both transport caps", async () => {
     const file = new Blob([bytesAsArrayBuffer(gifWithFrames(1))], { type: "image/gif" });
     await expect(

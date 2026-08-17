@@ -34,6 +34,22 @@ describe("source-control discovery", () => {
     });
   });
 
+  it("keeps an unknown origin fallback ahead of an unavailable provider", () => {
+    const identities = discoverSourceControlProviderIdentities([
+      { name: "origin", url: "/Users/me/local-mirror.git" },
+      { name: "backup", url: "git@gitlab.com:octo/repo.git" },
+    ]);
+
+    expect(
+      selectPrimarySourceControlProviderIdentity(identities, {
+        availableProviderKinds: ["github"],
+      }),
+    ).toMatchObject({
+      kind: "unknown",
+      remoteName: "origin",
+    });
+  });
+
   it("keeps every remote identity so origin preference is not lost to a duplicate URL", () => {
     const identities = discoverSourceControlProviderIdentities([
       { name: "backup", url: "https://github.com/octo/repo.git" },

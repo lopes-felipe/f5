@@ -188,7 +188,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     }),
   );
 
-  it.effect("bounds persisted history to 200 entries per thread", () =>
+  it.effect("bounds snapshots and periodically prunes persisted history", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
@@ -197,7 +197,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
       yield* sql`DELETE FROM projection_thread_background_work`;
 
       const work = yield* ThreadBackgroundWork;
-      for (let index = 0; index < 205; index += 1) {
+      for (let index = 0; index < 300; index += 1) {
         yield* work.recordProviderEvent({
           ...eventBase(index),
           type: "task.started",
@@ -210,7 +210,7 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
         FROM projection_thread_background_work
         WHERE thread_id = ${threadId}
       `;
-      assert.deepStrictEqual(rows, [{ count: 200 }]);
+      assert.ok((rows[0]?.count ?? Number.POSITIVE_INFINITY) <= 299);
       assert.equal((yield* work.getSnapshot).entries.length, 200);
     }),
   );

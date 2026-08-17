@@ -45,8 +45,6 @@ import {
 } from "../../provider/modelContextWindowMetadata.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
-import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
-import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -2048,7 +2046,6 @@ const make = Effect.gen(function* () {
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
-  const usageFactRepository = yield* UsageFactRepository;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -3073,36 +3070,6 @@ const make = Effect.gen(function* () {
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
 
-      if (event.type === "turn.completed" && eventTurnId !== undefined) {
-        const usage = normalizeTurnUsage(event);
-        yield* usageFactRepository
-          .record({
-            turnId: eventTurnId,
-            threadId: thread.id,
-            projectId: thread.projectId,
-            provider: event.provider,
-            providerInstanceId:
-              event.providerInstanceId ??
-              thread.session?.providerInstanceId ??
-              thread.modelSelection?.instanceId ??
-              null,
-            model: thread.model || null,
-            ...usage,
-            completedAt: event.createdAt,
-            sourceEventId: event.eventId,
-          })
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("provider runtime ingestion failed to persist turn usage", {
-                eventId: event.eventId,
-                threadId: event.threadId,
-                turnId: eventTurnId,
-                cause: Cause.pretty(cause),
-              }),
-            ),
-          );
-      }
-
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
       const missingTurnForActiveTurn = activeTurnId !== null && eventTurnId === undefined;
@@ -3203,6 +3170,24 @@ const make = Effect.gen(function* () {
           }
           const turnCostUsd =
             event.type === "turn.completed" ? event.payload?.totalCostUsd : undefined;
+          const usageFact =
+            event.type === "turn.completed" && eventTurnId !== undefined
+              ? {
+                  turnId: eventTurnId,
+                  threadId: thread.id,
+                  projectId: thread.projectId,
+                  provider: event.provider,
+                  providerInstanceId:
+                    event.providerInstanceId ??
+                    thread.session?.providerInstanceId ??
+                    thread.modelSelection?.instanceId ??
+                    null,
+                  model: thread.model || null,
+                  ...normalizeTurnUsage(event),
+                  completedAt: event.createdAt,
+                  sourceEventId: event.eventId,
+                }
+              : undefined;
           const providerReportedContextTokens =
             event.type === "turn.completed" ? extractTurnCompletedContextTokens(event) : undefined;
           const estimatedContextTokens = mergeProviderReportedContextTokens({
@@ -3257,6 +3242,7 @@ const make = Effect.gen(function* () {
               ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
               updatedAt: now,
             },
+            ...(usageFact !== undefined ? { usageFact } : {}),
             createdAt: now,
           });
         }
@@ -4121,4 +4107,4 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive), Layer.provide(UsageFactRepositoryLive));
+).pipe(Layer.provide(ProjectionTurnRepositoryLive));

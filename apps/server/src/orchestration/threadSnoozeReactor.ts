@@ -4,6 +4,8 @@ import { Effect, Stream, type Scope } from "effect";
 import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts";
 
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
+const MAX_RETRY_DELAY_MS = 60_000;
+const INITIAL_RETRY_DELAY_MS = 1_000;
 
 function affectsSnoozeSchedule(event: OrchestrationEvent): ThreadId | null {
   switch (event.type) {
@@ -31,12 +33,16 @@ export function startThreadSnoozeReactor(
       timers.delete(threadId);
     };
 
-    const schedule = (threadId: ThreadId, snoozedUntil: string | null): void => {
+    const schedule = (threadId: ThreadId, snoozedUntil: string | null, retryAttempt = 0): void => {
       clearTimer(threadId);
       if (snoozedUntil === null) return;
       const deadline = Date.parse(snoozedUntil);
       if (!Number.isFinite(deadline)) return;
-      const delay = Math.min(MAX_TIMER_DELAY_MS, Math.max(0, deadline - Date.now()));
+      const retryDelay =
+        retryAttempt === 0
+          ? null
+          : Math.min(MAX_RETRY_DELAY_MS, INITIAL_RETRY_DELAY_MS * 2 ** (retryAttempt - 1));
+      const delay = retryDelay ?? Math.min(MAX_TIMER_DELAY_MS, Math.max(0, deadline - Date.now()));
       const timer = setTimeout(() => {
         timers.delete(threadId);
         Effect.runFork(
@@ -59,11 +65,27 @@ export function startThreadSnoozeReactor(
                 .pipe(Effect.asVoid);
             }),
             Effect.catchCause((cause) =>
-              Effect.logWarning("failed to wake snoozed thread", {
+              Effect.logWarning("failed to wake snoozed thread; scheduling a retry", {
                 threadId,
                 snoozedUntil,
+                retryAttempt: retryAttempt + 1,
                 cause,
-              }),
+              }).pipe(
+                Effect.andThen(orchestrationEngine.getReadModel()),
+                Effect.flatMap((readModel) => {
+                  const thread = readModel.threads.find((entry) => entry.id === threadId);
+                  return thread?.snoozedUntil === snoozedUntil
+                    ? Effect.sync(() => schedule(threadId, snoozedUntil, retryAttempt + 1))
+                    : Effect.void;
+                }),
+                Effect.catchCause((retryCause) =>
+                  Effect.logWarning("failed to schedule snooze wake retry", {
+                    threadId,
+                    snoozedUntil,
+                    retryCause,
+                  }),
+                ),
+              ),
             ),
           ),
         );

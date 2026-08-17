@@ -387,16 +387,18 @@ export default function FileBrowserPanel({
       event.preventDefault();
       event.stopPropagation();
       const api = readNativeApi();
-      if (!api || !cwd) return;
+      if (!api || !cwd || !projectId) return;
       void showFileEntryContextMenu({
         api,
         cwd,
+        projectId,
+        threadId,
         entry,
         position: { x: event.clientX, y: event.clientY },
         onAddToChat: (relativePath) => insertFileMentionIntoComposer(threadId, relativePath),
       });
     },
-    [cwd, threadId],
+    [cwd, projectId, threadId],
   );
 
   return (

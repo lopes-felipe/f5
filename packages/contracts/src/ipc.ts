@@ -241,7 +241,7 @@ import type {
   OrchestrationUnarchiveCodeReviewWorkflowInput,
   OrchestrationUnarchiveWorkflowInput,
 } from "./orchestration";
-import { EditorId } from "./editor";
+import { EditorId, type RevealInFileManagerInput } from "./editor";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -449,7 +449,7 @@ export interface NativeApi {
   };
   shell: {
     openInEditor: (cwd: string, editor: EditorId) => Promise<void>;
-    revealInFileManager: (path: string) => Promise<void>;
+    revealInFileManager: (input: RevealInFileManagerInput) => Promise<void>;
     openExternal: (url: string) => Promise<void>;
   };
   git: {

@@ -32,6 +32,7 @@ import { clearTurnDiffSearchParams, parseDiffRouteSearch } from "../diffRouteSea
 import { useTheme } from "../hooks/useTheme";
 import { resolveDiffThemeName } from "../lib/diffRendering";
 import {
+  buildFileDiffLogicalIdentity,
   DIFF_PANEL_UNSAFE_CSS,
   getRenderablePatch,
   resolveFileDiffPath,
@@ -286,7 +287,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
     isNewest: !selectedTurn || selectedTurn.turnId === orderedTurnDiffSummaries[0]?.turnId,
   });
   const logicalFileKey = useCallback(
-    (filePath: string) => `${activeThreadId ?? "unknown"}:${diffLogicalScope}:${filePath}`,
+    (fileIdentity: string) => `${activeThreadId ?? "unknown"}:${diffLogicalScope}:${fileIdentity}`,
     [activeThreadId, diffLogicalScope],
   );
 
@@ -320,7 +321,10 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
       setCollapsedFileOverrides((previous) => ({
         ...previous,
         ...Object.fromEntries(
-          renderableFiles.map((file) => [logicalFileKey(resolveFileDiffPath(file)), collapsed]),
+          renderableFiles.map((file) => [
+            logicalFileKey(buildFileDiffLogicalIdentity(file)),
+            collapsed,
+          ]),
         ),
       }));
     },
@@ -738,7 +742,7 @@ export default function DiffPanel({ mode = "inline" }: DiffPanelProps) {
               >
                 {renderableFiles.map((fileDiff, fileIndex) => {
                   const filePath = resolveFileDiffPath(fileDiff);
-                  const fileKey = logicalFileKey(filePath);
+                  const fileKey = logicalFileKey(buildFileDiffLogicalIdentity(fileDiff));
                   const isCollapsed =
                     collapsedFileOverrides[fileKey] ??
                     !isChangedFileExpandedByDefault({

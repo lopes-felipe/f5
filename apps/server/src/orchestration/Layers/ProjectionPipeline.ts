@@ -58,6 +58,8 @@ import { ProjectionThreadProposedPlanRepositoryLive } from "../../persistence/La
 import { ProjectionThreadSessionRepositoryLive } from "../../persistence/Layers/ProjectionThreadSessions.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { ProjectionThreadRepositoryLive } from "../../persistence/Layers/ProjectionThreads.ts";
+import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
+import { UsageFactRepository } from "../../persistence/Services/UsageFacts.ts";
 import { ServerConfig } from "../../config.ts";
 import {
   OrchestrationProjectionPipeline,
@@ -82,6 +84,7 @@ export const ORCHESTRATION_PROJECTOR_NAMES = {
   planningWorkflows: "projection.planning-workflows",
   codeReviewWorkflows: "projection.code-review-workflows",
   investigationWorkflows: "projection.investigation-workflows",
+  usageFacts: "projection.usage-facts",
 } as const;
 
 type ProjectorName =
@@ -409,6 +412,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
   const projectionCodeReviewWorkflowRepository = yield* ProjectionCodeReviewWorkflowRepository;
   const projectionInvestigationWorkflowRepository =
     yield* ProjectionInvestigationWorkflowRepository;
+  const usageFactRepository = yield* UsageFactRepository;
 
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -960,9 +964,26 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            titleRegenerationRequestId: null,
+            titleRegenerationStartedAt: null,
             deletedAt: event.payload.deletedAt,
             updatedAt: event.payload.deletedAt,
           });
+          if (event.payload.pinRevision !== undefined) {
+            yield* sql`
+              UPDATE projection_thread_pin_state
+              SET revision = ${event.payload.pinRevision}
+              WHERE singleton_id = 1
+            `.pipe(
+              Effect.mapError(
+                toPersistenceSqlError("ProjectionPipeline.threadDeleted:updatePinRevision"),
+              ),
+            );
+          }
           return;
         }
 
@@ -1679,6 +1700,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       }
     });
 
+  const applyUsageFactsProjection: ProjectorDefinition["apply"] = (event, _attachmentSideEffects) =>
+    event.type === "thread.session-set" && event.payload.usageFact !== undefined
+      ? usageFactRepository.record(event.payload.usageFact)
+      : Effect.void;
+
   const applyThreadTurnsProjection: ProjectorDefinition["apply"] = (
     event,
     _attachmentSideEffects,
@@ -2115,6 +2141,10 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
       apply: applyThreadSessionsProjection,
     },
     {
+      name: ORCHESTRATION_PROJECTOR_NAMES.usageFacts,
+      apply: applyUsageFactsProjection,
+    },
+    {
       name: ORCHESTRATION_PROJECTOR_NAMES.threadTurns,
       apply: applyThreadTurnsProjection,
     },
@@ -2238,4 +2268,5 @@ export const OrchestrationProjectionPipelineLive = Layer.effect(
   Layer.provideMerge(ProjectionTurnRepositoryLive),
   Layer.provideMerge(ProjectionPendingApprovalRepositoryLive),
   Layer.provideMerge(ProjectionStateRepositoryLive),
+  Layer.provideMerge(UsageFactRepositoryLive),
 );

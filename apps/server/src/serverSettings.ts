@@ -280,6 +280,8 @@ const makeServerSettings = Effect.gen(function* () {
   const writeSemaphore = yield* Semaphore.make(1);
   const cacheKey = "settings" as const;
   const changesPubSub = yield* PubSub.unbounded<ServerSettings>();
+  const decodeFailureRef = yield* Ref.make<string | null>(null);
+  const unknownFieldsRef = yield* Ref.make<Record<string, unknown>>({});
   const startedRef = yield* Ref.make(false);
   const startedDeferred = yield* Deferred.make<void, ServerSettingsError>();
   const watcherScope = yield* Scope.make("sequential");
@@ -312,18 +314,33 @@ const makeServerSettings = Effect.gen(function* () {
 
   const loadSettingsFromDisk = Effect.gen(function* () {
     if (!(yield* readConfigExists)) {
+      yield* Ref.set(decodeFailureRef, null);
+      yield* Ref.set(unknownFieldsRef, {});
       return DEFAULT_SERVER_SETTINGS;
     }
 
     const raw = yield* readRawConfig;
     const decoded = Schema.decodeUnknownExit(ServerSettingsJson)(raw);
     if (decoded._tag === "Failure") {
+      const issues = Cause.pretty(decoded.cause);
+      yield* Ref.set(decodeFailureRef, issues);
       yield* Effect.logWarning("failed to parse settings.json, using defaults", {
         path: settingsPath,
-        issues: Cause.pretty(decoded.cause),
+        issues,
       });
       return DEFAULT_SERVER_SETTINGS;
     }
+    const rawJson = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown))(raw);
+    const knownKeys = new Set(Object.keys(ServerSettings.fields));
+    const unknownFields =
+      rawJson._tag === "Success" &&
+      typeof rawJson.value === "object" &&
+      rawJson.value !== null &&
+      !Array.isArray(rawJson.value)
+        ? Object.fromEntries(Object.entries(rawJson.value).filter(([key]) => !knownKeys.has(key)))
+        : {};
+    yield* Ref.set(decodeFailureRef, null);
+    yield* Ref.set(unknownFieldsRef, unknownFields);
     return decoded.value;
   });
 
@@ -466,25 +483,36 @@ const makeServerSettings = Effect.gen(function* () {
       };
     });
 
-  const writeSettingsAtomically = (settings: ServerSettings) => {
-    const sparseSettings = stripDefaultServerSettings(settings, DEFAULT_SERVER_SETTINGS) ?? {};
+  const writeSettingsAtomically = (settings: ServerSettings) =>
+    Effect.gen(function* () {
+      const decodeFailure = yield* Ref.get(decodeFailureRef);
+      if (decodeFailure !== null) {
+        return yield* new ServerSettingsError({
+          settingsPath,
+          detail:
+            "refusing to overwrite settings.json because the existing file could not be decoded",
+          cause: decodeFailure,
+        });
+      }
+      const unknownFields = yield* Ref.get(unknownFieldsRef);
+      const sparseSettings = stripDefaultServerSettings(settings, DEFAULT_SERVER_SETTINGS) ?? {};
 
-    return writeFileStringAtomically({
-      filePath: settingsPath,
-      contents: `${JSON.stringify(sparseSettings, null, 2)}\n`,
-    }).pipe(
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provideService(Path.Path, pathService),
-      Effect.mapError(
-        (cause) =>
-          new ServerSettingsError({
-            settingsPath,
-            detail: "failed to write settings file",
-            cause,
-          }),
-      ),
-    );
-  };
+      return yield* writeFileStringAtomically({
+        filePath: settingsPath,
+        contents: `${JSON.stringify({ ...unknownFields, ...sparseSettings }, null, 2)}\n`,
+      }).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, pathService),
+        Effect.mapError(
+          (cause) =>
+            new ServerSettingsError({
+              settingsPath,
+              detail: "failed to write settings file",
+              cause,
+            }),
+        ),
+      );
+    });
 
   const revalidateAndEmit = writeSemaphore.withPermits(1)(
     Effect.gen(function* () {

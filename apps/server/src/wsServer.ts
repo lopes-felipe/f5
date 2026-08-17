@@ -172,6 +172,7 @@ import {
 } from "./wsServer/bootstrapTurnStart.ts";
 import { makeServerPushBus, makeWebSocketSendController } from "./wsServer/pushBus.ts";
 import {
+  WEB_SOCKET_MAX_PAYLOAD_BYTES,
   resolveServerPerMessageDeflate,
   webSocketRuntimeName,
 } from "./wsServer/webSocketTransport.ts";
@@ -1524,6 +1525,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   // WebSocket server — upgrades from the HTTP server
   const wss = new WebSocketServer({
     noServer: true,
+    maxPayload: WEB_SOCKET_MAX_PAYLOAD_BYTES,
     perMessageDeflate: resolveServerPerMessageDeflate(),
   });
 
@@ -2572,10 +2574,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }
             }
           },
-          catch: () =>
-            new RouteRequestError({
-              message: "Project content search failed.",
-            }),
+          catch: (cause) => {
+            const detail = cause instanceof Error ? cause.message : String(cause);
+            logger.warn("Project content search request failed", {
+              projectId: body.projectId,
+              threadId: body.threadId ?? null,
+              detail,
+            });
+            return new RouteRequestError({
+              message: `Project content search failed: ${detail}`,
+            });
+          },
         });
       }
 
@@ -2756,7 +2765,44 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.shellRevealInFileManager: {
         const body = stripRequestTag(request.body);
-        return yield* revealInFileManager(body.path);
+        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        const project = snapshot.projects.find(
+          (candidate) => candidate.id === body.projectId && candidate.deletedAt === null,
+        );
+        if (!project) {
+          return yield* new RouteRequestError({ message: "Project not found." });
+        }
+        const thread = snapshot.threads.find(
+          (candidate) => candidate.id === body.threadId && candidate.deletedAt === null,
+        );
+        if (thread && thread.projectId !== project.id) {
+          return yield* new RouteRequestError({
+            message: "Thread does not belong to the selected project.",
+          });
+        }
+        const target = yield* resolveWorkspaceReadPath({
+          workspaceRoot: thread?.worktreePath ?? project.workspaceRoot,
+          relativePath: body.relativePath,
+          path,
+          fileSystem,
+        });
+        const stat = yield* fileSystem
+          .stat(target.absolutePath)
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: `File not found: ${target.relativePath}` }),
+            ),
+          );
+        const kind = stat.type === "Directory" ? ("directory" as const) : ("file" as const);
+        if (
+          (stat.type !== "File" && stat.type !== "Directory") ||
+          (body.kind && body.kind !== kind)
+        ) {
+          return yield* new RouteRequestError({
+            message: `Workspace entry changed: ${target.relativePath}`,
+          });
+        }
+        return yield* revealInFileManager(target.absolutePath);
       }
 
       case WS_METHODS.gitStatus: {

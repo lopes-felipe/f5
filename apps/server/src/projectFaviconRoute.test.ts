@@ -127,6 +127,20 @@ describe("tryHandleProjectFaviconRequest", () => {
     });
   });
 
+  it("bounds parsing work for large source files without icon declarations", async () => {
+    const projectRoot = makeTempDir("f5-favicon-route-pathological-");
+    fs.writeFileSync(
+      path.join(projectRoot, "index.html"),
+      `export default { ${"rel: 'noise', ".repeat(16_000)}`,
+      "utf8",
+    );
+    await withRouteServer(new Map([[PROJECT_ID, projectRoot]]), async (baseUrl) => {
+      const response = await request(baseUrl, `/api/project-favicon?projectId=${PROJECT_ID}`);
+      expect(response.statusCode).toBe(200);
+      expect(response.body).toContain('data-fallback="project-favicon"');
+    });
+  });
+
   it("prefers an authorized f5.json icon over discovered favicon candidates", async () => {
     const projectRoot = makeTempDir("f5-favicon-route-config-");
     fs.mkdirSync(path.join(projectRoot, "assets"), { recursive: true });

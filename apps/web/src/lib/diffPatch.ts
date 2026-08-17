@@ -111,12 +111,23 @@ export function getRenderablePatch(
   }
 }
 
+function normalizeParsedGitPath(path: string, expectedPrefix: "a/" | "b/"): string {
+  return path.startsWith(expectedPrefix) ? path.slice(2) : path;
+}
+
 export function resolveFileDiffPath(fileDiff: FileDiffMetadata): string {
-  const raw = fileDiff.name ?? fileDiff.prevName ?? "";
-  if (raw.startsWith("a/") || raw.startsWith("b/")) {
-    return raw.slice(2);
+  const previous = fileDiff.prevName ?? "";
+  const next = fileDiff.name ?? "";
+  if (next && next !== "/dev/null") {
+    return normalizeParsedGitPath(next, "b/");
   }
-  return raw;
+  return normalizeParsedGitPath(previous, "a/");
+}
+
+export function buildFileDiffLogicalIdentity(fileDiff: FileDiffMetadata): string {
+  const previous = normalizeParsedGitPath(fileDiff.prevName ?? "", "a/");
+  const next = normalizeParsedGitPath(fileDiff.name ?? "", "b/");
+  return `${previous}\u0000${next}`;
 }
 
 export function buildFileDiffRenderKey(fileDiff: FileDiffMetadata): string {

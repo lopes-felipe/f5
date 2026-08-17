@@ -96,6 +96,14 @@ function scopedWorkItemId(threadId: ThreadId, workItemId: string): string {
   return `${threadId}\u0000${workItemId}`;
 }
 
+function compareTimestamps(left: string, right: string): number {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  return Number.isFinite(leftMs) && Number.isFinite(rightMs)
+    ? leftMs - rightMs
+    : left.localeCompare(right);
+}
+
 function compareActivities(
   left: OrchestrationThreadActivity,
   right: OrchestrationThreadActivity,
@@ -109,7 +117,7 @@ function compareActivities(
   }
   if (left.sequence === undefined && right.sequence !== undefined) return -1;
   if (left.sequence !== undefined && right.sequence === undefined) return 1;
-  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+  return compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id);
 }
 
 function newerValue<T>(
@@ -118,7 +126,9 @@ function newerValue<T>(
   value: T | null,
   select: (entry: AgentActivityDetail) => T | null,
 ): T | null {
-  if (value !== null && (!current || updatedAt >= current.updatedAt)) return value;
+  if (value !== null && (!current || compareTimestamps(updatedAt, current.updatedAt) >= 0)) {
+    return value;
+  }
   return current ? select(current) : null;
 }
 
@@ -128,7 +138,9 @@ function mergeActivityDetail(
 ): AgentActivityDetail {
   const workItemIds = [...new Set([...(current?.workItemIds ?? []), ...input.workItemIds])];
   const updatedAt =
-    current && current.updatedAt > input.updatedAt ? current.updatedAt : input.updatedAt;
+    current && compareTimestamps(current.updatedAt, input.updatedAt) > 0
+      ? current.updatedAt
+      : input.updatedAt;
   return {
     key: input.key,
     parentActivityId: current?.parentActivityId ?? input.parentActivityId,
@@ -179,7 +191,7 @@ export function buildAgentActivityIndex(
       readonly result: string | null;
       readonly model: string | null;
     }) => {
-      const key = `${thread.threadId}:${input.parentActivityId}:${input.subagentThreadId ?? 0}`;
+      const key = `${thread.threadId}\u0000${input.parentActivityId}\u0000${input.subagentThreadId ?? 0}`;
       const detail = mergeActivityDetail(detailsByKey.get(key), {
         key,
         parentActivityId: input.parentActivityId,
@@ -294,7 +306,7 @@ function chooseSnapshotEntry(
       ? next.active
         ? next
         : current
-      : next.updatedAt >= current.updatedAt
+      : compareTimestamps(next.updatedAt, current.updatedAt) >= 0
         ? next
         : current;
   const fallback = preferred === next ? current : next;
@@ -377,10 +389,12 @@ export function deriveAgentsPanelModel(input: {
       workItemIds: new Set([...(current?.workItemIds ?? []), entry.workItemId]),
       outputTruncated: (current?.outputTruncated ?? false) || entry.outputTruncated,
       startedAt:
-        current && current.startedAt < entry.startedAt ? current.startedAt : entry.startedAt,
+        current && compareTimestamps(current.startedAt, entry.startedAt) < 0
+          ? current.startedAt
+          : entry.startedAt,
       completedAt:
         current?.completedAt && entry.completedAt
-          ? current.completedAt > entry.completedAt
+          ? compareTimestamps(current.completedAt, entry.completedAt) > 0
             ? current.completedAt
             : entry.completedAt
           : (current?.completedAt ?? entry.completedAt),
@@ -417,7 +431,7 @@ export function deriveAgentsPanelModel(input: {
       const liveOrder = Number(isLiveEntry(right)) - Number(isLiveEntry(left));
       return (
         liveOrder ||
-        right.updatedAt.localeCompare(left.updatedAt) ||
+        compareTimestamps(right.updatedAt, left.updatedAt) ||
         left.id.localeCompare(right.id)
       );
     });

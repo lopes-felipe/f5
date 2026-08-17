@@ -92,6 +92,7 @@ export async function fetchPreviewFaviconDataUrl(input: {
   readonly pageUrl: string;
   readonly candidateUrls: ReadonlyArray<string>;
   readonly fetchImplementation: PreviewFaviconFetch;
+  readonly signal?: AbortSignal;
 }): Promise<string | null> {
   let pageOrigin: string;
   try {
@@ -103,6 +104,7 @@ export async function fetchPreviewFaviconDataUrl(input: {
   }
 
   for (const rawCandidate of input.candidateUrls) {
+    if (input.signal?.aborted) return null;
     let currentUrl: URL;
     try {
       currentUrl = new URL(rawCandidate, input.pageUrl);
@@ -117,6 +119,8 @@ export async function fetchPreviewFaviconDataUrl(input: {
     }
 
     const controller = new AbortController();
+    const abortFromCaller = () => controller.abort();
+    input.signal?.addEventListener("abort", abortFromCaller, { once: true });
     const timer = setTimeout(() => controller.abort(), FAVICON_TIMEOUT_MS);
     timer.unref?.();
     try {
@@ -145,9 +149,11 @@ export async function fetchPreviewFaviconDataUrl(input: {
         return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
       }
     } catch {
+      if (input.signal?.aborted) return null;
       // Try the next same-origin candidate.
     } finally {
       clearTimeout(timer);
+      input.signal?.removeEventListener("abort", abortFromCaller);
     }
   }
   return null;

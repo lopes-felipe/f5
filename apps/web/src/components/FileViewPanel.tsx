@@ -307,7 +307,7 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
 
   const showFileContextMenu = useCallback(
     (event: ReactMouseEvent<HTMLElement>) => {
-      if (!filePath || !workspaceRoot || !activeThreadId) return;
+      if (!filePath || !workspaceRoot || !activeThreadId || !activeProjectId) return;
       event.preventDefault();
       event.stopPropagation();
       const api = readNativeApi();
@@ -315,12 +315,14 @@ export default function FileViewPanel({ mode, surface, onClose }: FileViewPanelP
       void showFileEntryContextMenu({
         api,
         cwd: workspaceRoot,
+        projectId: activeProjectId,
+        threadId: activeThreadId,
         entry: { path: filePath, kind: "file" },
         position: { x: event.clientX, y: event.clientY },
         onAddToChat: (relativePath) => insertFileMentionIntoComposer(activeThreadId, relativePath),
       });
     },
-    [activeThreadId, filePath, workspaceRoot],
+    [activeProjectId, activeThreadId, filePath, workspaceRoot],
   );
 
   const closeFileView = useCallback(() => {

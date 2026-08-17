@@ -187,8 +187,8 @@ describe("agentsModel", () => {
     ]);
 
     expect(index.entries.map((entry) => entry.key)).toEqual([
-      `${THREAD_ID}:pre-id-a:0`,
-      `${THREAD_ID}:pre-id-b:0`,
+      `${THREAD_ID}\u0000pre-id-a\u00000`,
+      `${THREAD_ID}\u0000pre-id-b\u00000`,
     ]);
   });
 });

@@ -48,12 +48,12 @@ export function normalizeDesktopUpdateReleaseNotes(value: unknown): string | nul
   if (!raw) return null;
 
   const normalized = raw
+    .replace(/&([a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);/g, (_, entity: string) => decodeHtmlEntity(entity))
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<li\b[^>]*>/gi, "\n• ")
     .replace(/<\/(?:p|div|li|h[1-6]|ul|ol|blockquote)>/gi, "\n")
     .replace(/<[^>]*>/g, "")
-    .replace(/&([a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);/g, (_, entity: string) => decodeHtmlEntity(entity))
     .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
     .replace(/[*_`#]/g, "")
     .split("\n")

@@ -7,8 +7,10 @@ import { AppSettingsSchema, type AppSettings, useAppSettings } from "../appSetti
 import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
 import { ensureNativeApi } from "../nativeApi";
 
-const SERVER_SETTINGS_KEYS = new Set(Object.keys(ServerSettings.fields));
 const APP_SETTINGS_KEYS = new Set(Object.keys(AppSettingsSchema.fields));
+const SERVER_SETTINGS_KEYS = new Set(
+  Object.keys(ServerSettings.fields).filter((key) => !APP_SETTINGS_KEYS.has(key)),
+);
 export type UnifiedWebSettings = UnifiedSettings & AppSettings;
 
 export function mergeSettings(
@@ -29,11 +31,10 @@ export function splitSettingsPatch(patch: Partial<UnifiedWebSettings>): {
   const serverPatch: Record<string, unknown> = {};
   const appPatch: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(patch)) {
-    if (SERVER_SETTINGS_KEYS.has(key)) {
-      serverPatch[key] = value;
-    }
     if (APP_SETTINGS_KEYS.has(key)) {
       appPatch[key] = value;
+    } else if (SERVER_SETTINGS_KEYS.has(key)) {
+      serverPatch[key] = value;
     }
   }
   return {

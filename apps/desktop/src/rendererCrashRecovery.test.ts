@@ -86,6 +86,25 @@ describe("MainRendererCrashRecovery", () => {
     });
   });
 
+  it("starts a fresh bounded budget after an explicit crash-screen retry", async () => {
+    const harness = makeHarness();
+    for (const attemptedAt of [0, 10_000, 20_000]) {
+      harness.setNow(attemptedAt);
+      await harness.recovery.handleCrash();
+      await vi.runOnlyPendingTimersAsync();
+    }
+    harness.setNow(30_000);
+    await expect(harness.recovery.handleCrash()).resolves.toEqual({ kind: "crash-screen" });
+
+    harness.recovery.beginManualRetry();
+    harness.setNow(31_000);
+    await expect(harness.recovery.handleCrash()).resolves.toEqual({
+      kind: "reload-scheduled",
+      attempt: 1,
+      delayMs: 1_000,
+    });
+  });
+
   it("coalesces duplicate crash notifications while recovery is pending", async () => {
     const harness = makeHarness();
 

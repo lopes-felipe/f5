@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
@@ -12,10 +13,11 @@ const LEDGER_PATH = process.env.F5_UPSTREAM_PORTS_LEDGER_PATH
   ? path.resolve(process.env.F5_UPSTREAM_PORTS_LEDGER_PATH)
   : path.join(ROOT, "scripts", "upstream-ports.json");
 const AUTHORITATIVE_REPOSITORY = "https://github.com/pingdotgg/t3code.git";
-const LOCAL_MIRROR = "/Users/felipelopes/dev/wolt/t3code-fork";
+const LOCAL_MIRROR = "developer-local convenience checkout (not authoritative)";
 const WINDOW_SIZE = 500;
 
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
+const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const DISPOSITIONS = new Set(["ported", "already-present", "not-applicable", "deferred"]);
 
 type Disposition = "ported" | "already-present" | "not-applicable" | "deferred";
@@ -64,8 +66,9 @@ interface OlderBacklogCategory {
 }
 
 interface Ledger {
-  readonly schemaVersion: 2;
+  readonly schemaVersion: 3;
   readonly manifest: "scripts/upstream-ports.manifest.json";
+  readonly manifestSha256: string;
   readonly entries: ReadonlyArray<LedgerEntry>;
   readonly olderBacklog: ReadonlyArray<OlderBacklogCategory>;
 }
@@ -159,8 +162,81 @@ function git(args: ReadonlyArray<string>, options?: { readonly cwd?: string }): 
   }).trim();
 }
 
-function readJson<T>(filePath: string): T {
-  return JSON.parse(readFileSync(filePath, "utf8")) as T;
+function readJson(filePath: string): unknown {
+  try {
+    return JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`could not parse ${path.relative(ROOT, filePath)}: ${String(error)}`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readManifest(filePath: string): Manifest {
+  const value = readJson(filePath);
+  if (
+    !isRecord(value) ||
+    !isRecord(value.upstream) ||
+    !isRecord(value.selection) ||
+    !Array.isArray(value.commits) ||
+    value.commits.some((commit) => !isRecord(commit))
+  ) {
+    throw new Error("manifest must contain upstream, selection, and a commits array");
+  }
+  return value as unknown as Manifest;
+}
+
+function readLedger(filePath: string): Ledger {
+  const value = readJson(filePath);
+  const validStringArray = (candidate: unknown): boolean =>
+    candidate === undefined ||
+    (Array.isArray(candidate) && candidate.every((entry) => typeof entry === "string"));
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.entries) ||
+    value.entries.some(
+      (entry) =>
+        !isRecord(entry) || !validStringArray(entry.f5Shas) || !validStringArray(entry.evidence),
+    ) ||
+    !Array.isArray(value.olderBacklog) ||
+    value.olderBacklog.some(
+      (category) =>
+        !isRecord(category) ||
+        !validStringArray(category.upstreamShas) ||
+        !validStringArray(category.f5Shas) ||
+        !validStringArray(category.evidence),
+    )
+  ) {
+    throw new Error("ledger must contain entries and olderBacklog arrays");
+  }
+  return value as unknown as Ledger;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeRepositoryUrl(value: string): string {
+  return value
+    .trim()
+    .replace(/^git@github\.com:/, "https://github.com/")
+    .replace(/\.git\/?$/, "")
+    .replace(/\/$/, "");
+}
+
+function verifyAuthoritativeRemote(): void {
+  const fetchUrl = git(["remote", "get-url", "upstream"]);
+  if (normalizeRepositoryUrl(fetchUrl) !== normalizeRepositoryUrl(AUTHORITATIVE_REPOSITORY)) {
+    throw new Error(`upstream fetch URL is not authoritative: ${fetchUrl}`);
+  }
+  const pushUrls = git(["remote", "get-url", "--push", "--all", "upstream"])
+    .split("\n")
+    .filter(Boolean);
+  if (pushUrls.length === 0 || pushUrls.some((url) => url !== "DISABLED")) {
+    throw new Error("upstream must have its push URL disabled");
+  }
 }
 
 function fail(errors: string[]): never {
@@ -258,20 +334,52 @@ function frozenCommits(headSha: string): FrozenCommit[] {
 }
 
 function refresh(): void {
+  try {
+    verifyAuthoritativeRemote();
+    git(["fetch", "--no-tags", "upstream", "main"]);
+  } catch (error) {
+    fail([`refusing to refresh from an unverified upstream remote: ${String(error)}`]);
+  }
   const headSha = git(["rev-parse", "upstream/main"]);
   const commits = frozenCommits(headSha);
   if (commits.length !== WINDOW_SIZE) {
     fail([`expected ${WINDOW_SIZE} first-parent commits, received ${commits.length}`]);
   }
 
+  let previousLedger: Ledger | null = null;
   let legacyShas: string[] = [];
   try {
-    const legacy = readJson<Record<string, unknown>>(LEDGER_PATH);
-    if (!("schemaVersion" in legacy))
-      legacyShas = Object.keys(legacy).filter((sha) => SHA_PATTERN.test(sha));
-  } catch {
-    // The checked-in ledger may not exist on the first refresh.
+    const previous = readJson(LEDGER_PATH);
+    if (isRecord(previous) && !("schemaVersion" in previous)) {
+      legacyShas = Object.keys(previous).filter((sha) => SHA_PATTERN.test(sha));
+    } else if (isRecord(previous)) {
+      previousLedger = readLedger(LEDGER_PATH);
+    }
+  } catch (error) {
+    fail([`refusing to overwrite an unreadable ledger: ${String(error)}`]);
   }
+
+  const previousEntries = new Map(
+    (previousLedger?.entries ?? []).map((entry) => [entry.upstreamSha, entry] as const),
+  );
+  const nextManifestShas = new Set(commits.map((commit) => commit.sha));
+  const previousOlderShas = new Set(
+    (previousLedger?.olderBacklog ?? []).flatMap((category) => category.upstreamShas ?? []),
+  );
+  const rolledOutEntries: OlderBacklogCategory[] = (previousLedger?.entries ?? [])
+    .filter(
+      (entry) =>
+        !nextManifestShas.has(entry.upstreamSha) && !previousOlderShas.has(entry.upstreamSha),
+    )
+    .map((entry) => ({
+      category: `historical-${entry.upstreamSha.slice(0, 12)}`,
+      selection: `Exact upstream commit: ${entry.subject}`,
+      disposition: entry.disposition,
+      reason: entry.reason ?? `Port disposition retained when the commit left the frozen window.`,
+      upstreamShas: [entry.upstreamSha],
+      ...(entry.f5Shas ? { f5Shas: entry.f5Shas } : {}),
+      ...(entry.evidence ? { evidence: entry.evidence } : {}),
+    }));
 
   const manifest: Manifest = {
     schemaVersion: 1,
@@ -291,46 +399,73 @@ function refresh(): void {
     },
     commits,
   };
+  const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
+  const defaultOlderBacklog: OlderBacklogCategory[] = [
+    {
+      category: "pre-schema-ledger",
+      selection: "Upstream SHAs tracked before the frozen 500-commit window",
+      disposition: "deferred",
+      reason:
+        "Historical claims are retained for provenance but require f5 commit and file:line evidence before they can be promoted to completed dispositions.",
+      ...(legacyShas.length > 0 ? { upstreamShas: legacyShas.sort() } : {}),
+    },
+    {
+      category: "mobile",
+      selection: "Older feat/fix/mobile commits after 86c94b48 and before the frozen window",
+      disposition: "not-applicable",
+      reason: "f5 has no mobile application product line.",
+    },
+    {
+      category: "connect-relay-hosted",
+      selection: "Older Connect, relay, pairing, and hosted-frontend commits",
+      disposition: "not-applicable",
+      reason: "f5 uses its existing remote-access model and has no managed relay product line.",
+    },
+  ];
+  const previousCategories = new Set(
+    (previousLedger?.olderBacklog ?? []).map((category) => category.category),
+  );
   const ledger: Ledger = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     manifest: "scripts/upstream-ports.manifest.json",
-    entries: commits.map(classifyCommit),
+    manifestSha256: sha256(manifestText),
+    entries: commits.map((commit) => {
+      const previous = previousEntries.get(commit.sha);
+      return previous === undefined
+        ? classifyCommit(commit)
+        : { ...previous, subject: commit.subject };
+    }),
     olderBacklog: [
-      {
-        category: "pre-schema-ledger",
-        selection: "Upstream SHAs tracked before the frozen 500-commit window",
-        disposition: "deferred",
-        reason:
-          "Historical claims are retained for provenance but require f5 commit and file:line evidence before they can be promoted to completed dispositions.",
-        ...(legacyShas.length > 0 ? { upstreamShas: legacyShas.sort() } : {}),
-      },
-      {
-        category: "mobile",
-        selection: "Older feat/fix/mobile commits after 86c94b48 and before the frozen window",
-        disposition: "not-applicable",
-        reason: "f5 has no mobile application product line.",
-      },
-      {
-        category: "connect-relay-hosted",
-        selection: "Older Connect, relay, pairing, and hosted-frontend commits",
-        disposition: "not-applicable",
-        reason: "f5 uses its existing remote-access model and has no managed relay product line.",
-      },
+      ...(previousLedger?.olderBacklog ?? []),
+      ...rolledOutEntries,
+      ...defaultOlderBacklog.filter((category) => !previousCategories.has(category.category)),
     ],
   };
 
-  writeFileSync(MANIFEST_PATH, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(MANIFEST_PATH, manifestText);
   writeFileSync(LEDGER_PATH, `${JSON.stringify(ledger, null, 2)}\n`);
   console.log(`Frozen ${commits.length} commits at ${headSha}.`);
 }
 
 function validate(): void {
   const errors: string[] = [];
-  const manifest = readJson<Manifest>(MANIFEST_PATH);
-  const ledger = readJson<Ledger>(LEDGER_PATH);
+  let manifest: Manifest;
+  let ledger: Ledger;
+  try {
+    manifest = readManifest(MANIFEST_PATH);
+    ledger = readLedger(LEDGER_PATH);
+  } catch (error) {
+    fail([String(error)]);
+  }
 
   if (manifest.schemaVersion !== 1) errors.push("unsupported manifest schemaVersion");
-  if (ledger.schemaVersion !== 2) errors.push("unsupported ledger schemaVersion");
+  if (ledger.schemaVersion !== 3) errors.push("unsupported ledger schemaVersion");
+  const manifestText = readFileSync(MANIFEST_PATH, "utf8");
+  if (!SHA256_PATTERN.test(ledger.manifestSha256)) {
+    errors.push("ledger manifestSha256 is missing or invalid");
+  } else if (ledger.manifestSha256 !== sha256(manifestText)) {
+    errors.push("checked-in manifest does not match the ledger integrity digest");
+  }
   if (manifest.upstream.authoritativeRepository !== AUTHORITATIVE_REPOSITORY) {
     errors.push("manifest authoritative repository does not match pingdotgg/t3code");
   }
@@ -464,6 +599,8 @@ function validate(): void {
 
   if (!process.env.CI) {
     try {
+      verifyAuthoritativeRemote();
+      git(["merge-base", "--is-ancestor", manifest.selection.headSha, "upstream/main"]);
       const actual = frozenCommits(manifest.selection.headSha);
       if (JSON.stringify(actual) !== JSON.stringify(manifest.commits)) {
         errors.push("checked-in manifest differs from the frozen upstream commit set");

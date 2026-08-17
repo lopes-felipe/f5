@@ -66,7 +66,7 @@ describe("appearance settings", () => {
       terminalFontSize: 13,
     });
 
-    expect(style.fontSize).toBe("18px");
+    expect(style.fontSize).toBe("1.125em");
     expect(style.getPropertyValue("--font-sans")).toBe(`"Inter", ${DEFAULT_UI_FONT_STACK}`);
     expect(style.getPropertyValue("--font-mono")).toBe(
       `"JetBrains Mono", ${DEFAULT_MONO_FONT_STACK}`,

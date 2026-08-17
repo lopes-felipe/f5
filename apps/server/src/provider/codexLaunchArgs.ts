@@ -13,12 +13,34 @@ export const LEGACY_CODEX_LAUNCH_ARGS_ENV = "T3CODE_CODEX_LAUNCH_ARGS";
 
 const RESERVED_CODEX_FLAGS = new Set([
   "--cd",
+  "-C",
   "--model",
+  "-m",
   "--sandbox",
+  "-s",
   "--ask-for-approval",
+  "-a",
   "-c",
   "--config",
+  "--profile",
+  "-p",
+  "--dangerously-bypass-approvals-and-sandbox",
+  "--full-auto",
+  "--enable",
+  "--disable",
+  "--code-mode-host",
+  "--listen",
+  "--stdio",
+  "--ws-auth",
+  "--ws-token-file",
+  "--ws-token-sha256",
+  "--ws-shared-secret-file",
+  "--ws-issuer",
+  "--ws-audience",
+  "--ws-max-clock-skew-seconds",
 ]);
+
+const RESERVED_CODEX_SHORT_FLAGS_WITH_ATTACHED_VALUES = ["-C", "-m", "-s", "-a", "-c", "-p"];
 
 export class CodexLaunchArgsError extends Schema.TaggedErrorClass<CodexLaunchArgsError>()(
   "CodexLaunchArgsError",
@@ -28,7 +50,12 @@ export class CodexLaunchArgsError extends Schema.TaggedErrorClass<CodexLaunchArg
 function reservedFlagName(arg: string): string | undefined {
   const equalsIndex = arg.indexOf("=");
   const name = equalsIndex === -1 ? arg : arg.slice(0, equalsIndex);
-  return RESERVED_CODEX_FLAGS.has(name) ? name : undefined;
+  if (RESERVED_CODEX_FLAGS.has(name)) {
+    return name;
+  }
+  return RESERVED_CODEX_SHORT_FLAGS_WITH_ATTACHED_VALUES.find(
+    (shortFlag) => arg.startsWith(shortFlag) && arg.length > shortFlag.length,
+  );
 }
 
 export interface FilteredCodexLaunchArgs {
@@ -66,6 +93,13 @@ export function filterReservedCodexLaunchArgs(
       continue;
     }
     argv.push(arg);
+    if (!arg.includes("=")) {
+      const value = input[index + 1];
+      if (value !== undefined && !value.startsWith("-")) {
+        argv.push(value);
+        index += 1;
+      }
+    }
   }
 
   return { argv, dropped };

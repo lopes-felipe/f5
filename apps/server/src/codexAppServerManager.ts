@@ -418,7 +418,7 @@ export function readCodexAccountSnapshot(response: unknown): CodexAccountSnapsho
   return {
     type: "unknown",
     planType: null,
-    sparkEnabled: true,
+    sparkEnabled: false,
   };
 }
 
@@ -499,6 +499,13 @@ export function resolveCodexModelForAccount(
 
 export function killChildTree(child: ChildProcessWithoutNullStreams): void {
   killProcessTree(child, { isGroupLeader: false, graceful: true });
+  const forceKill = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessTree(child, { isGroupLeader: false, graceful: false });
+    }
+  }, 2_000);
+  forceKill.unref();
+  child.once("exit", () => clearTimeout(forceKill));
 }
 
 export function normalizeCodexModelSlug(
@@ -694,6 +701,7 @@ export interface CodexAppServerManagerEvents {
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
+  private readonly sessionStartLocks = new Map<ThreadId, Promise<void>>();
   private modelContextWindowCatalog = new Map<string, number>();
 
   private runPromise: (effect: Effect.Effect<unknown, never>) => Promise<unknown>;
@@ -703,6 +711,30 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   async startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
+    const previous = this.sessionStartLocks.get(input.threadId) ?? Promise.resolve();
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const current = previous.catch(() => undefined).then(() => barrier);
+    this.sessionStartLocks.set(input.threadId, current);
+    await previous.catch(() => undefined);
+    try {
+      if (this.sessions.has(input.threadId)) {
+        this.stopSession(input.threadId);
+      }
+      return await this.startSessionUnlocked(input);
+    } finally {
+      release();
+      if (this.sessionStartLocks.get(input.threadId) === current) {
+        this.sessionStartLocks.delete(input.threadId);
+      }
+    }
+  }
+
+  private async startSessionUnlocked(
+    input: CodexAppServerStartSessionInput,
+  ): Promise<ProviderSession> {
     const threadId = input.threadId;
     const now = new Date().toISOString();
     let context: CodexSessionContext | undefined;
@@ -779,7 +811,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         account: {
           type: "unknown",
           planType: null,
-          sparkEnabled: true,
+          sparkEnabled: false,
         },
         child,
         output,
@@ -816,7 +848,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           this.modelContextWindowCatalog = new Map(nextCatalog);
         }
       } catch (error) {
-        await Effect.logDebug("codex model/list did not expose context window metadata", {
+        await Effect.logWarning("codex model/list did not expose context window metadata", {
           threadId,
           cause: error instanceof Error ? error.message : String(error),
         }).pipe(this.runPromise);
@@ -825,7 +857,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         const accountReadResponse = await this.sendRequest(context, "account/read", {});
         context.account = readCodexAccountSnapshot(accountReadResponse);
       } catch (error) {
-        await Effect.logDebug("codex account/read failed", {
+        await Effect.logWarning("codex account/read failed", {
           threadId,
           cause: error instanceof Error ? error.message : String(error),
         }).pipe(this.runPromise);
@@ -1507,7 +1539,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         lastError: code === 0 ? context.session.lastError : message,
       });
       this.emitLifecycleEvent(context, "session/exited", message);
-      this.sessions.delete(context.session.threadId);
+      if (this.sessions.get(context.session.threadId) === context) {
+        this.sessions.delete(context.session.threadId);
+      }
     });
   }
 
@@ -1664,7 +1698,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         context.account = {
           type: "unknown",
           planType: null,
-          sparkEnabled: true,
+          sparkEnabled: false,
         };
         return;
       }

@@ -765,6 +765,9 @@ export default function Sidebar() {
   const setProjectExpanded = useStore((store) => store.setProjectExpanded);
   const reorderProjects = useStore((store) => store.reorderProjects);
   const draftThreadsByThreadId = useComposerDraftStore((store) => store.draftThreadsByThreadId);
+  const projectDraftThreadIdByProjectId = useComposerDraftStore(
+    (store) => store.projectDraftThreadIdByProjectId,
+  );
   const getDraftThreadByProjectId = useComposerDraftStore(
     (store) => store.getDraftThreadByProjectId,
   );
@@ -950,6 +953,32 @@ export default function Sidebar() {
     }
     return map;
   }, [threadGitStatusCwds, threadGitStatusQueries, threadGitTargets]);
+  const projectSidebarListsById = useMemo(
+    () =>
+      new Map(
+        projects.map((project) => [
+          project.id,
+          buildProjectSidebarLists({
+            project,
+            threads,
+            planningWorkflows,
+            codeReviewWorkflows,
+            investigationWorkflows,
+            draftThread: getDraftThreadByProjectId(project.id),
+          }),
+        ]),
+      ),
+    [
+      codeReviewWorkflows,
+      draftThreadsByThreadId,
+      getDraftThreadByProjectId,
+      investigationWorkflows,
+      planningWorkflows,
+      projectDraftThreadIdByProjectId,
+      projects,
+      threads,
+    ],
+  );
   const createSidebarHoverFreezeSnapshot = useCallback((): SidebarHoverFreezeSnapshot => {
     const workflowKeysByProjectId: Record<string, readonly string[]> = {};
     const workflowThreadIdsByWorkflowKey: Record<string, readonly ThreadId[]> = {};
@@ -957,14 +986,8 @@ export default function Sidebar() {
     const archivedItemKeysByProjectId: Record<string, readonly string[]> = {};
 
     for (const project of projects) {
-      const lists = buildProjectSidebarLists({
-        project,
-        threads,
-        planningWorkflows,
-        codeReviewWorkflows,
-        investigationWorkflows,
-        draftThread: getDraftThreadByProjectId(project.id),
-      });
+      const lists = projectSidebarListsById.get(project.id);
+      if (!lists) continue;
 
       workflowKeysByProjectId[project.id] = lists.projectWorkflows.map(workflowEntryKey);
       activeThreadIdsByProjectId[project.id] = lists.activeThreads.map((thread) => thread.id);
@@ -981,14 +1004,11 @@ export default function Sidebar() {
       activeThreadIdsByProjectId,
       archivedItemKeysByProjectId,
     };
-  }, [
-    codeReviewWorkflows,
-    investigationWorkflows,
-    getDraftThreadByProjectId,
-    planningWorkflows,
-    projects,
-    threads,
-  ]);
+  }, [projectSidebarListsById, projects]);
+
+  const handleSidebarSearchResultOpened = useCallback(() => {
+    setSidebarSearchQuery("");
+  }, []);
 
   const openPrLink = useCallback((event: React.MouseEvent<HTMLElement>, prUrl: string) => {
     event.preventDefault();
@@ -2134,7 +2154,7 @@ export default function Sidebar() {
             projects={projects}
             threads={threads}
             {...(routeThreadId ? { activeThreadId: routeThreadId } : {})}
-            onResultOpened={() => setSidebarSearchQuery("")}
+            onResultOpened={handleSidebarSearchResultOpened}
           />
         ) : null}
         <SidebarGroup className={cn("px-2 py-2", sidebarSearchQuery.trim().length > 0 && "hidden")}>
@@ -2239,15 +2259,8 @@ export default function Sidebar() {
                 strategy={verticalListSortingStrategy}
               >
                 {projects.map((project) => {
-                  const persistedDraftThread = getDraftThreadByProjectId(project.id);
-                  const sidebarLists = buildProjectSidebarLists({
-                    project,
-                    threads,
-                    planningWorkflows,
-                    codeReviewWorkflows,
-                    investigationWorkflows,
-                    draftThread: persistedDraftThread,
-                  });
+                  const sidebarLists = projectSidebarListsById.get(project.id);
+                  if (!sidebarLists) return null;
                   const projectWorkflows = reconcileFrozenOrder({
                     items: sidebarLists.projectWorkflows,
                     getKey: workflowEntryKey,

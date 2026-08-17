@@ -1,7 +1,7 @@
 import { type ThreadId } from "@t3tools/contracts";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback } from "react";
+import { useCallback, useMemo, useRef } from "react";
 
 import { useAppSettings } from "~/appSettings";
 import { deleteThreadWithCleanup, setThreadArchived } from "~/archiveActions";
@@ -145,14 +145,17 @@ export function useThreadActionController(input: {
     },
   });
 
+  const pinnedThreadIds = useMemo(() => new Set(orderedPinnedThreadIds(threads)), [threads]);
+  const pinnedThreadIdsRef = useRef(pinnedThreadIds);
+  pinnedThreadIdsRef.current = pinnedThreadIds;
   const menuItemsForThread = useCallback(
     (thread: Thread): ThreadActionMenuItem[] =>
       buildThreadActionMenuItems({
         thread,
-        pinned: orderedPinnedThreadIds(threads).includes(thread.id),
+        pinned: pinnedThreadIdsRef.current.has(thread.id),
         snoozed: isSnoozedThread(thread),
       }),
-    [threads],
+    [],
   );
 
   const renameThread = useCallback(

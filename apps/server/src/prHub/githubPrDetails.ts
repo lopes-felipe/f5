@@ -21,11 +21,11 @@ query F5PrDetail($owner:String!,$repo:String!,$number:Int!){
       additions deletions changedFiles headRefName baseRefName headRefOid baseRefOid
       createdAt updatedAt mergedAt closedAt viewerCanUpdate viewerDidAuthor
       author { login avatarUrl ... on User { name } }
-      labels(first:50){ nodes { name color } }
-      reviewRequests(first:50){ nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } } }
-      latestReviews(first:50){ nodes { author { login avatarUrl ... on User { name } } } }
+      labels(first:50){ totalCount pageInfo { hasNextPage } nodes { name color } }
+      reviewRequests(first:50){ totalCount pageInfo { hasNextPage } nodes { requestedReviewer { __typename ... on User { login name avatarUrl } ... on Team { slug name avatarUrl } } } }
+      latestReviews(first:50){ totalCount pageInfo { hasNextPage } nodes { author { login avatarUrl ... on User { name } } } }
       reactionGroups { content viewerHasReacted users(first:20){ totalCount nodes { login } } }
-      commits(last:1){ nodes { commit { statusCheckRollup { contexts(first:100){ nodes {
+      commits(last:1){ nodes { commit { statusCheckRollup { contexts(first:100){ totalCount pageInfo { hasNextPage } nodes {
         __typename
         ... on CheckRun { name status conclusion detailsUrl }
         ... on StatusContext { context state description targetUrl }
@@ -110,6 +110,14 @@ function nodesOf(value: unknown): ReadonlyArray<UnknownRecord> {
   const record = recordOrNull(value);
   const nodes = record?.nodes;
   return Array.isArray(nodes) ? nodes.map(recordOrNull).filter((node) => node !== null) : [];
+}
+
+function connectionIsTruncated(value: unknown): boolean {
+  const connection = recordOrNull(value);
+  if (!connection) return false;
+  const pageInfo = recordOrNull(connection.pageInfo);
+  if (pageInfo?.hasNextPage === true) return true;
+  return nonNegativeInt(connection.totalCount) > nodesOf(connection).length;
 }
 
 function stringOf(value: unknown, fallback = ""): string {
@@ -286,7 +294,7 @@ export function decodeGitHubPrDetail(
   });
   const reviewersByLogin = new Map<string, PrHubReviewer>();
   for (const reviewer of [...completed, ...requested]) {
-    reviewersByLogin.set(reviewer.login.toLowerCase(), reviewer);
+    reviewersByLogin.set(`${reviewer.kind}:${reviewer.login.toLowerCase()}`, reviewer);
   }
 
   const latestCommit = nodesOf(pr.commits)[0];
@@ -296,6 +304,12 @@ export function decodeGitHubPrDetail(
   const checks = nodesOf(contexts)
     .map(checkOf)
     .filter((check) => check !== null);
+  const truncatedSections: Array<"labels" | "reviewers" | "checks"> = [];
+  if (connectionIsTruncated(pr.labels)) truncatedSections.push("labels");
+  if (connectionIsTruncated(pr.reviewRequests) || connectionIsTruncated(pr.latestReviews)) {
+    truncatedSections.push("reviewers");
+  }
+  if (connectionIsTruncated(contexts)) truncatedSections.push("checks");
 
   const detail: PrHubDetail = {
     key: tracked.key,
@@ -331,6 +345,7 @@ export function decodeGitHubPrDetail(
     reviewers: [...reviewersByLogin.values()],
     checks,
     reactions: reactionsOf(pr.reactionGroups),
+    ...(truncatedSections.length > 0 ? { truncatedSections } : {}),
   };
   const rateLimit = rateLimitOf(root);
   return { detail, ...(rateLimit ? { rateLimit } : {}) };

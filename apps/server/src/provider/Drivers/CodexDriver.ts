@@ -23,6 +23,7 @@ import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
+import { fingerprintableProviderEnvironment } from "../sensitiveFingerprint.ts";
 import {
   codexContinuationIdentity,
   materializeCodexShadowHome,
@@ -170,9 +171,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
           JSON.stringify({
             version: 1,
             providerOptions: defaultProviderOptions.codex ?? {},
-            environment: Object.entries(processEnvironment).toSorted(([left], [right]) =>
-              left.localeCompare(right),
-            ),
+            environment: fingerprintableProviderEnvironment(environment),
           }),
         )
         .digest("hex");

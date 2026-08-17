@@ -697,8 +697,14 @@ export function projectEvent(
       return decodeForEvent(ThreadDeletedPayload, event.payload, event.type, "payload").pipe(
         Effect.map((payload) => ({
           ...nextBase,
+          ...(payload.pinRevision !== undefined ? { pinRevision: payload.pinRevision } : {}),
           threads: updateThread(nextBase.threads, payload.threadId, {
             deletedAt: payload.deletedAt,
+            pinnedAt: null,
+            pinOrderKey: null,
+            snoozedUntil: null,
+            snoozedAt: null,
+            titleRegeneration: null,
             updatedAt: payload.deletedAt,
           }),
         })),

@@ -37,6 +37,11 @@ export default Effect.gen(function* () {
   `;
   yield* sql`
     CREATE INDEX IF NOT EXISTS projection_thread_background_work_snapshot_idx
-    ON projection_thread_background_work(updated_at DESC, thread_id, provider_work_item_id)
+    ON projection_thread_background_work(
+      active DESC,
+      updated_at DESC,
+      thread_id,
+      provider_work_item_id
+    )
   `;
 });

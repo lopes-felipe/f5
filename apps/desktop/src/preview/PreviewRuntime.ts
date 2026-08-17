@@ -12,12 +12,14 @@ import type { WebContents } from "electron";
 import { PreviewArtifactStore } from "./PreviewArtifactStore";
 
 export interface PreviewTabEntry {
+  ownerWebContentsId: number | null;
   webContentsId: number | null;
   zoomFactor: number;
   viewport: PreviewViewportSize | null;
   colorScheme: DesktopPreviewColorScheme;
   faviconDataUrl: string | null;
   faviconRequestGeneration: number;
+  faviconAbortController: AbortController | null;
   removeListeners: Array<() => void>;
 }
 
@@ -74,12 +76,14 @@ export class PreviewRuntime {
     let entry = this.tabs.get(tabId) ?? null;
     if (!entry) {
       entry = {
+        ownerWebContentsId: null,
         webContentsId: null,
         zoomFactor: this.#defaultZoomFactor,
         viewport: null,
         colorScheme: "system",
         faviconDataUrl: null,
         faviconRequestGeneration: 0,
+        faviconAbortController: null,
         removeListeners: [],
       };
       this.tabs.set(tabId, entry);
@@ -116,9 +120,8 @@ export class PreviewRuntime {
     if (!entry) return false;
     const guest = this.#getWebContents(tabId);
     if (!guest || guest.isDestroyed()) return false;
-    const detachDebugger = !guest.debugger.isAttached();
     try {
-      if (detachDebugger) guest.debugger.attach("1.3");
+      if (!guest.debugger.isAttached()) guest.debugger.attach("1.3");
       await guest.debugger.sendCommand("Emulation.setEmulatedMedia", {
         features: [
           {
@@ -130,8 +133,8 @@ export class PreviewRuntime {
       entry.colorScheme = colorScheme;
       this.#onTabStateChanged(tabId);
       return true;
-    } finally {
-      if (detachDebugger && guest.debugger.isAttached()) guest.debugger.detach();
+    } catch {
+      return false;
     }
   }
 
@@ -267,9 +270,25 @@ export class PreviewRuntime {
     );
   }
 
-  async resetRendererOwnedResources(): Promise<void> {
-    await Promise.all([...this.#recordings.keys()].map((id) => this.discardRecording(id)));
-    for (const [tabId, entry] of this.tabs) {
+  async resetRendererOwnedResources(ownerWebContentsId?: number): Promise<void> {
+    const ownedTabIds = new Set(
+      [...this.tabs.entries()]
+        .filter(
+          ([, entry]) =>
+            ownerWebContentsId === undefined || entry.ownerWebContentsId === ownerWebContentsId,
+        )
+        .map(([tabId]) => tabId),
+    );
+    await Promise.all(
+      [...this.#recordings.values()]
+        .filter((recording) => ownerWebContentsId === undefined || ownedTabIds.has(recording.tabId))
+        .map((recording) => this.discardRecording(recording.recordingId)),
+    );
+    for (const tabId of ownedTabIds) {
+      const entry = this.tabs.get(tabId);
+      if (!entry) continue;
+      entry.faviconAbortController?.abort();
+      entry.faviconAbortController = null;
       for (const removeListener of entry.removeListeners.splice(0)) {
         removeListener();
       }
@@ -278,8 +297,8 @@ export class PreviewRuntime {
       if (guest && !guest.isDestroyed()) {
         guest.close();
       }
+      this.tabs.delete(tabId);
     }
-    this.tabs.clear();
   }
 
   async dispose(): Promise<void> {

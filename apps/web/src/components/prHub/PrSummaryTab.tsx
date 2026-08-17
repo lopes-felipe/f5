@@ -86,6 +86,17 @@ export function PrSummaryTab({
             </Alert>
           ) : null}
 
+          {detail.truncatedSections && detail.truncatedSections.length > 0 ? (
+            <Alert variant="warning">
+              <AlertTriangleIcon />
+              <AlertTitle>Some GitHub details are incomplete</AlertTitle>
+              <AlertDescription>
+                GitHub returned only the first page of: {detail.truncatedSections.join(", ")}. Do
+                not treat the visible checks or reviewers as exhaustive.
+              </AlertDescription>
+            </Alert>
+          ) : null}
+
           <section className="space-y-2" aria-labelledby="pr-description-heading">
             <h3 id="pr-description-heading" className="text-sm font-semibold">
               Description
