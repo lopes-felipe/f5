@@ -66,6 +66,7 @@ import {
   reduceDesktopUpdateStateOnNoUpdate,
   reduceDesktopUpdateStateOnUpdateAvailable,
 } from "./updateMachine";
+import { normalizeDesktopUpdateReleaseNotes } from "./updateReleaseNotes";
 import { isArm64HostRunningIntelBuild, resolveDesktopRuntimeInfo } from "./runtimeArch";
 import { formatErrorMessage, isPreviewNavigationAbortError } from "./previewNavigationErrors";
 import { PreviewRuntime, type PreviewTabEntry } from "./preview/PreviewRuntime";
@@ -1824,6 +1825,7 @@ function configureAutoUpdater(): void {
   autoUpdater.channel = DESKTOP_UPDATE_CHANNEL;
   autoUpdater.allowPrerelease = DESKTOP_UPDATE_ALLOW_PRERELEASE;
   autoUpdater.allowDowngrade = false;
+  autoUpdater.fullChangelog = true;
   autoUpdater.disableDifferentialDownload = isArm64HostRunningIntelBuild(desktopRuntimeInfo);
   let lastLoggedDownloadMilestone = -1;
 
@@ -1842,6 +1844,7 @@ function configureAutoUpdater(): void {
         updateState,
         info.version,
         new Date().toISOString(),
+        normalizeDesktopUpdateReleaseNotes(info.releaseNotes),
       ),
     );
     lastLoggedDownloadMilestone = -1;
@@ -1881,7 +1884,13 @@ function configureAutoUpdater(): void {
     }
   });
   autoUpdater.on("update-downloaded", (info) => {
-    setUpdateState(reduceDesktopUpdateStateOnDownloadComplete(updateState, info.version));
+    setUpdateState(
+      reduceDesktopUpdateStateOnDownloadComplete(
+        updateState,
+        info.version,
+        normalizeDesktopUpdateReleaseNotes(info.releaseNotes) ?? updateState.releaseNotes ?? null,
+      ),
+    );
     console.info(`[desktop-updater] Update downloaded: ${info.version}`);
   });
 

@@ -11,6 +11,7 @@ import {
   MoonIcon,
   PinIcon,
   RocketIcon,
+  ScrollTextIcon,
   SearchIcon,
   SettingsIcon,
   SquarePenIcon,
@@ -108,6 +109,7 @@ import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
+  getDesktopUpdateReleaseNotes,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   shouldShowArm64IntelBuildWarning,
@@ -120,6 +122,7 @@ import { Button } from "./ui/button";
 import { ThreadWorktreeIndicator } from "./ThreadWorktreeIndicator";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
+import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "./ui/popover";
 import {
   SidebarContent,
   SidebarFooter,
@@ -1787,6 +1790,7 @@ export default function Sidebar() {
   const desktopUpdateTooltip = desktopUpdateState
     ? getDesktopUpdateButtonTooltip(desktopUpdateState)
     : "Update available";
+  const desktopUpdateReleaseNotes = getDesktopUpdateReleaseNotes(desktopUpdateState);
 
   const desktopUpdateButtonDisabled = isDesktopUpdateButtonDisabled(desktopUpdateState);
   const desktopUpdateButtonAction = desktopUpdateState
@@ -1992,23 +1996,50 @@ export default function Sidebar() {
           <SidebarHeader className="drag-region h-[52px] flex-row items-center gap-2 px-4 py-0 pl-[90px]">
             {wordmark}
             {showDesktopUpdateButton && (
-              <Tooltip>
-                <TooltipTrigger
-                  render={
-                    <button
-                      type="button"
-                      aria-label={desktopUpdateTooltip}
-                      aria-disabled={desktopUpdateButtonDisabled || undefined}
-                      disabled={desktopUpdateButtonDisabled}
-                      className={`inline-flex size-7 ml-auto mt-1.5 items-center justify-center rounded-md text-muted-foreground transition-colors ${desktopUpdateButtonInteractivityClasses} ${desktopUpdateButtonClasses}`}
-                      onClick={handleDesktopUpdateButtonClick}
-                    >
-                      <RocketIcon className="size-3.5" />
-                    </button>
-                  }
-                />
-                <TooltipPopup side="bottom">{desktopUpdateTooltip}</TooltipPopup>
-              </Tooltip>
+              <div className="ml-auto mt-1.5 flex items-center gap-0.5">
+                {desktopUpdateReleaseNotes ? (
+                  <Popover>
+                    <PopoverTrigger
+                      render={
+                        <button
+                          type="button"
+                          aria-label="Show update release notes"
+                          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                        >
+                          <ScrollTextIcon className="size-3.5" />
+                        </button>
+                      }
+                    />
+                    <PopoverPopup align="end" className="w-80 max-w-[calc(100vw-2rem)]">
+                      <div className="space-y-2">
+                        <PopoverTitle className="text-sm">
+                          What’s new in {desktopUpdateState?.availableVersion ?? "this update"}
+                        </PopoverTitle>
+                        <div className="max-h-64 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                          {desktopUpdateReleaseNotes}
+                        </div>
+                      </div>
+                    </PopoverPopup>
+                  </Popover>
+                ) : null}
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <button
+                        type="button"
+                        aria-label={desktopUpdateTooltip}
+                        aria-disabled={desktopUpdateButtonDisabled || undefined}
+                        disabled={desktopUpdateButtonDisabled}
+                        className={`inline-flex size-7 items-center justify-center rounded-md text-muted-foreground transition-colors ${desktopUpdateButtonInteractivityClasses} ${desktopUpdateButtonClasses}`}
+                        onClick={handleDesktopUpdateButtonClick}
+                      >
+                        <RocketIcon className="size-3.5" />
+                      </button>
+                    }
+                  />
+                  <TooltipPopup side="bottom">{desktopUpdateTooltip}</TooltipPopup>
+                </Tooltip>
+              </div>
             )}
           </SidebarHeader>
         </>

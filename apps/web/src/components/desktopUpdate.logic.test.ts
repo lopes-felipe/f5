@@ -5,6 +5,7 @@ import {
   getArm64IntelBuildWarningDescription,
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
+  getDesktopUpdateReleaseNotes,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   shouldHighlightDesktopUpdateError,
@@ -30,6 +31,14 @@ const baseState: DesktopUpdateState = {
 };
 
 describe("desktop update button state", () => {
+  it("returns only non-empty sanitized release notes", () => {
+    expect(getDesktopUpdateReleaseNotes({ ...baseState, releaseNotes: "  Fixed things  " })).toBe(
+      "Fixed things",
+    );
+    expect(getDesktopUpdateReleaseNotes({ ...baseState, releaseNotes: "   " })).toBeNull();
+    expect(getDesktopUpdateReleaseNotes(baseState)).toBeNull();
+  });
+
   it("shows a download action when an update is available", () => {
     const state: DesktopUpdateState = {
       ...baseState,

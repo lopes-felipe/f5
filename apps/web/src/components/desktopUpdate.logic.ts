@@ -79,6 +79,12 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
   return "Update available";
 }
 
+export function getDesktopUpdateReleaseNotes(state: DesktopUpdateState | null): string | null {
+  if (!state || typeof state.releaseNotes !== "string") return null;
+  const notes = state.releaseNotes.trim();
+  return notes.length > 0 ? notes : null;
+}
+
 export function getDesktopUpdateActionError(result: DesktopUpdateActionResult): string | null {
   if (!result.accepted || result.completed) return null;
   if (typeof result.state.message !== "string") return null;

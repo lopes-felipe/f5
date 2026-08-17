@@ -322,6 +322,8 @@ export interface DesktopUpdateState {
   runningUnderArm64Translation: boolean;
   availableVersion: string | null;
   downloadedVersion: string | null;
+  /** Sanitized plain-text notes supplied by the update provider. */
+  releaseNotes?: string | null;
   downloadPercent: number | null;
   checkedAt: string | null;
   message: string | null;

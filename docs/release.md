@@ -26,6 +26,8 @@ This document covers how to run desktop releases from one tag, first without sig
   - No automatic download or install.
   - The desktop UI shows a rocket update button when an update is available; click once to download, click again after download to restart/install.
 - Provider: GitHub Releases (`provider: github`) configured at build time.
+- Release notes are normalized to bounded plain text in the desktop process and shown from the
+  update control. Remote updater content is never rendered as HTML.
 - Repository slug source:
   - `T3CODE_DESKTOP_UPDATE_REPOSITORY` (format `owner/repo`), if set.
   - otherwise `GITHUB_REPOSITORY` from GitHub Actions.
@@ -39,6 +41,15 @@ This document covers how to run desktop releases from one tag, first without sig
 - macOS metadata note:
   - `electron-updater` reads `latest-mac.yml` for both Intel and Apple Silicon.
   - The workflow merges the per-arch mac manifests into one `latest-mac.yml` before publishing the GitHub Release.
+
+### Test auto-updates locally
+
+Development builds read an uncommitted `dev-app-update.yml` from `app.getAppPath()`. Copy the
+fields from a generated `app-update.yml`, point them at a disposable release feed, and start the
+desktop app normally. Do not commit this file because it may contain private feed details. The
+`T3CODE_DISABLE_AUTO_UPDATE=1` environment variable disables the updater while testing unrelated
+desktop work. Reducer and release-note normalization tests cover the state transitions without a
+live release feed.
 
 ## 0) npm OIDC trusted publishing setup (CLI)
 

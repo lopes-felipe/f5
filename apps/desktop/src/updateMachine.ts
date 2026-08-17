@@ -15,6 +15,7 @@ export function createInitialDesktopUpdateState(
     runningUnderArm64Translation: runtimeInfo.runningUnderArm64Translation,
     availableVersion: null,
     downloadedVersion: null,
+    releaseNotes: null,
     downloadPercent: null,
     checkedAt: null,
     message: null,
@@ -58,12 +59,14 @@ export function reduceDesktopUpdateStateOnUpdateAvailable(
   state: DesktopUpdateState,
   version: string,
   checkedAt: string,
+  releaseNotes: string | null = null,
 ): DesktopUpdateState {
   return {
     ...state,
     status: "available",
     availableVersion: version,
     downloadedVersion: null,
+    releaseNotes,
     downloadPercent: null,
     checkedAt,
     message: null,
@@ -81,6 +84,7 @@ export function reduceDesktopUpdateStateOnNoUpdate(
     status: "up-to-date",
     availableVersion: null,
     downloadedVersion: null,
+    releaseNotes: null,
     downloadPercent: null,
     checkedAt,
     message: null,
@@ -133,12 +137,14 @@ export function reduceDesktopUpdateStateOnDownloadProgress(
 export function reduceDesktopUpdateStateOnDownloadComplete(
   state: DesktopUpdateState,
   version: string,
+  releaseNotes: string | null = state.releaseNotes ?? null,
 ): DesktopUpdateState {
   return {
     ...state,
     status: "downloaded",
     availableVersion: version,
     downloadedVersion: version,
+    releaseNotes,
     downloadPercent: 100,
     message: null,
     errorContext: null,
