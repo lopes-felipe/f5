@@ -384,7 +384,7 @@
       "upstreamSha": "f0b57ca2313bd7971cefb366d3b3808152b014fc",
       "subject": "feat(web): add Open VSX theme search (#5654)",
       "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.2 theme import/search; pending its f5-native implementation commit."
+      "reason": "Remote Open VSX marketplace search remains deliberately deferred until the local theme system is stable. F5 now supports bounded local VS Code JSON/JSONC and VSIX file import in 7d48e72a8 without adding renderer network egress."
     },
     {
       "upstreamSha": "2db08457f2f4eaaa713a067b2ea480ca2b583025",
@@ -395,8 +395,9 @@
     {
       "upstreamSha": "083fa4ab24c464ddf01e5b7ab22135d1ebdc120b",
       "subject": "feat(web): use OKLCH for theme palettes (#6036)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.2 OKLCH themes; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["7d48e72a81e07f0f89bda03e8b04b829ea382646"],
+      "reason": "Reimplemented as a parameterized OKLCH palette generator with independent light and dark variants, bounded hue/chroma/contrast controls, WCAG body-text checks, and forced-colors preservation."
     },
     {
       "upstreamSha": "35172010b131510d36d0cef54e174926e38a3013",
@@ -558,8 +559,9 @@
     {
       "upstreamSha": "b91a000a17ddb4937397151a0a39a07990ad6473",
       "subject": "feat(web): add duplicate action to the T3 Code default theme (#6013)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.2 theme duplication; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["7d48e72a81e07f0f89bda03e8b04b829ea382646"],
+      "reason": "Every built-in palette, including F5 Default, can be duplicated into a versioned local custom theme and edited without mutating the built-in source."
     },
     {
       "upstreamSha": "8de0aa24d9b09b3dff9e3378222877cbfff41ae0",
@@ -1080,8 +1082,9 @@
     {
       "upstreamSha": "85b1734d4d4914e743044f0ea8cb38a796de7da5",
       "subject": "feat(web): add modular theme library (#5226)",
-      "disposition": "deferred",
-      "reason": "Scheduled for merged plan item 8.2 theme library; pending its f5-native implementation commit."
+      "disposition": "ported",
+      "f5Shas": ["7d48e72a81e07f0f89bda03e8b04b829ea382646"],
+      "reason": "Reimplemented in f5-native settings as an independent palette registry with pre-paint application, five built-ins, bounded versioned custom themes, live semantic-token updates, local editing/import/export, and strict color-token validation."
     },
     {
       "upstreamSha": "3ffe84f9688e22afea531988807a1c7faeccdc37",

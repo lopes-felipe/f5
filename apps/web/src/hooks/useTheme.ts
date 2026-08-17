@@ -27,6 +27,7 @@ function applyTheme(theme: ThemeMode, suppressTransitions = false) {
 }
 
 function syncDesktopTheme(theme: ThemeMode) {
+  if (typeof window === "undefined") return;
   const bridge = window.desktopBridge;
   if (!bridge || lastDesktopTheme === theme) {
     return;
