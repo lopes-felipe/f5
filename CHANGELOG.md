@@ -29,6 +29,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   non-executable workspace and icon fields (`t3.json` is accepted read-only for interoperability).
 - Thread activity tails are capped at the newest 500 rows, with explicit null-safe cursor pages for
   loading older work-log entries without materializing the full activity history on thread open.
+- Thread history now loads one bounded page when the virtualized timeline reaches its top, keeps
+  the visible viewport anchored across prepends, and can hydrate unloaded message deep links with
+  server-resolved anchor and forward cursors across adjacent timeline streams.
 - An Agents right-panel surface groups durable workflow and direct-subagent work, shows live counts,
   and links each entry back to its source timeline activity across threads and restarts.
 - A Usage dashboard reports provider-supplied tokens and API-equivalent cost over 24-hour, 7-day,

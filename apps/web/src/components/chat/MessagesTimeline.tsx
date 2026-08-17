@@ -146,6 +146,9 @@ interface MessagesTimelineProps {
   listRef: React.RefObject<LegendListRef | null>;
   entryRowIndexMapRef?: MutableRefObject<ReadonlyMap<string, number> | null>;
   onIsAtEndChange: (isAtEnd: boolean) => void;
+  hasOlderHistory?: boolean;
+  isLoadingOlderHistory?: boolean;
+  onLoadOlderHistory?: ((signal: AbortSignal) => Promise<void>) | undefined;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
   completionSummary: string | null;
@@ -237,6 +240,9 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   listRef,
   entryRowIndexMapRef,
   onIsAtEndChange,
+  hasOlderHistory = false,
+  isLoadingOlderHistory = false,
+  onLoadOlderHistory,
   timelineEntries,
   completionDividerBeforeEntryId,
   completionSummary,
@@ -416,6 +422,30 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const [activeMinimapRowIndex, setActiveMinimapRowIndex] = useState(0);
   const pendingViewableRowIndexRef = useRef(0);
   const viewabilityFrameRef = useRef(0);
+  const historyLoadControllerRef = useRef<AbortController | null>(null);
+  const requestOlderHistory = useCallback(() => {
+    if (
+      !hasOlderHistory ||
+      isLoadingOlderHistory ||
+      !onLoadOlderHistory ||
+      historyLoadControllerRef.current
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    historyLoadControllerRef.current = controller;
+    void onLoadOlderHistory(controller.signal)
+      .catch((error) => {
+        if (!controller.signal.aborted) {
+          console.warn("Failed to load older thread history.", error);
+        }
+      })
+      .finally(() => {
+        if (historyLoadControllerRef.current === controller) {
+          historyLoadControllerRef.current = null;
+        }
+      });
+  }, [hasOlderHistory, isLoadingOlderHistory, onLoadOlderHistory]);
   const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<TimelineRow>>>(
     ({ viewableItems }) => {
       const firstVisibleIndex = viewableItems.reduce(
@@ -423,6 +453,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         Number.POSITIVE_INFINITY,
       );
       if (!Number.isFinite(firstVisibleIndex)) return;
+      if (firstVisibleIndex <= 3) requestOlderHistory();
       pendingViewableRowIndexRef.current = firstVisibleIndex;
       if (viewabilityFrameRef.current !== 0) return;
       viewabilityFrameRef.current = window.requestAnimationFrame(() => {
@@ -430,13 +461,15 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         setActiveMinimapRowIndex(pendingViewableRowIndexRef.current);
       });
     },
-    [],
+    [requestOlderHistory],
   );
   useEffect(
     () => () => {
       if (viewabilityFrameRef.current !== 0) {
         window.cancelAnimationFrame(viewabilityFrameRef.current);
       }
+      historyLoadControllerRef.current?.abort();
+      historyLoadControllerRef.current = null;
     },
     [],
   );
@@ -1206,6 +1239,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           rows={rows}
           markerRowIndices={minimapRowIndices}
           activeRowIndex={activeMinimapRowIndex}
+          hasUnloadedHistory={hasOlderHistory}
           onNavigate={(rowIndex) => {
             isAtEndRef.current = false;
             onIsAtEndChange(false);
@@ -1225,6 +1259,7 @@ function TimelineMinimap(props: {
   rows: ReadonlyArray<TimelineRow>;
   markerRowIndices: ReadonlyArray<number>;
   activeRowIndex: number;
+  hasUnloadedHistory: boolean;
   onNavigate: (rowIndex: number) => void;
 }) {
   const trackRef = useRef<HTMLDivElement>(null);
@@ -1253,6 +1288,11 @@ function TimelineMinimap(props: {
       role="slider"
       tabIndex={0}
       aria-label="Conversation minimap"
+      title={
+        props.hasUnloadedHistory
+          ? "Loaded conversation range; scroll upward to load earlier history"
+          : "Full conversation"
+      }
       aria-valuemin={0}
       aria-valuemax={Math.max(0, props.rows.length - 1)}
       aria-valuenow={props.activeRowIndex}
@@ -1281,6 +1321,9 @@ function TimelineMinimap(props: {
         if (rowIndex !== undefined) props.onNavigate(rowIndex);
       }}
     >
+      {props.hasUnloadedHistory ? (
+        <span className="pointer-events-none absolute top-0 left-1/2 h-1 w-2 -translate-x-1/2 rounded-full border border-dashed border-muted-foreground/70" />
+      ) : null}
       {props.markerRowIndices.map((rowIndex, markerIndex) => {
         const row = props.rows[rowIndex];
         if (!row) return null;

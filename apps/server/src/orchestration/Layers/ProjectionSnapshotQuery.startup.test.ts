@@ -911,6 +911,50 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
       });
       assert.equal(page.oldestLoadedCommandExecutionCursor, null);
 
+      const anchoredPage = yield* snapshotQuery.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        anchorMessageId: asMessageId("message-0"),
+        beforeMessageCursor: null,
+        afterMessageCursor: null,
+        beforeCheckpointTurnCount: null,
+        activityCursor: null,
+        beforeCommandExecutionCursor: null,
+        messageLimit: 1,
+      });
+      assert.deepEqual(
+        anchoredPage.messages.map((message) => message.id),
+        [asMessageId("message-0")],
+      );
+      assert.deepEqual(
+        anchoredPage.checkpoints.map((checkpoint) => checkpoint.turnId),
+        [asTurnId("turn-0")],
+      );
+      assert.deepEqual(
+        anchoredPage.activities.map((activity) => activity.id),
+        [asEventId("activity-legacy"), asEventId("activity-0")],
+      );
+      assert.equal(anchoredPage.hasOlderMessages, false);
+      assert.equal(anchoredPage.hasNewerMessages, true);
+      assert.deepEqual(anchoredPage.newestLoadedMessageCursor, {
+        createdAt: "2026-04-01T09:00:03.000Z",
+        messageId: asMessageId("message-0"),
+      });
+
+      const forwardPage = yield* snapshotQuery.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        beforeMessageCursor: null,
+        afterMessageCursor: anchoredPage.newestLoadedMessageCursor ?? null,
+        beforeCheckpointTurnCount: null,
+        activityCursor: null,
+        beforeCommandExecutionCursor: null,
+        messageLimit: 1,
+      });
+      assert.deepEqual(
+        forwardPage.messages.map((message) => message.id),
+        [asMessageId("message-1")],
+      );
+      assert.equal(forwardPage.hasNewerMessages, false);
+
       const legacyPage = yield* snapshotQuery.getThreadHistoryPage({
         threadId: asThreadId("thread-1"),
         beforeMessageCursor: null,

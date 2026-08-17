@@ -2327,9 +2327,11 @@ export type OrchestrationThreadTailDetails = typeof OrchestrationThreadTailDetai
 
 export const OrchestrationGetThreadHistoryPageInput = Schema.Struct({
   threadId: ThreadId,
+  anchorMessageId: Schema.optional(Schema.NullOr(MessageId)),
   beforeMessageCursor: Schema.NullOr(OrchestrationMessageCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  afterMessageCursor: Schema.optional(Schema.NullOr(OrchestrationMessageCursor)),
   beforeCheckpointTurnCount: Schema.NullOr(NonNegativeInt).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -2343,7 +2345,16 @@ export const OrchestrationGetThreadHistoryPageInput = Schema.Struct({
   checkpointLimit: Schema.optional(NonNegativeInt),
   activityLimit: Schema.optional(NonNegativeInt),
   commandExecutionLimit: Schema.optional(NonNegativeInt),
-});
+}).check(
+  Schema.makeFilter((input) => {
+    const messageWindowSelectors = [
+      input.anchorMessageId,
+      input.beforeMessageCursor,
+      input.afterMessageCursor,
+    ].filter((value) => value != null).length;
+    return messageWindowSelectors <= 1 || "Select only one message-history cursor or anchor";
+  }),
+);
 export type OrchestrationGetThreadHistoryPageInput =
   typeof OrchestrationGetThreadHistoryPageInput.Type;
 
@@ -2356,12 +2367,14 @@ export const OrchestrationThreadHistoryPage = Schema.Struct({
     Schema.withDecodingDefault(() => []),
   ),
   hasOlderMessages: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  hasNewerMessages: Schema.optional(Schema.Boolean),
   hasOlderCheckpoints: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderActivities: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderCommandExecutions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   oldestLoadedMessageCursor: Schema.NullOr(OrchestrationMessageCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  newestLoadedMessageCursor: Schema.optional(Schema.NullOr(OrchestrationMessageCursor)),
   oldestLoadedCheckpointTurnCount: Schema.NullOr(NonNegativeInt).pipe(
     Schema.withDecodingDefault(() => null),
   ),

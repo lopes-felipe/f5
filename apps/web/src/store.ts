@@ -1362,7 +1362,10 @@ function prependOlderMessages(
   if (nextIncoming.length === 0) {
     return existing;
   }
-  return [...mapMessagesFromReadModel(nextIncoming, []), ...existing];
+  return [...mapMessagesFromReadModel(nextIncoming, []), ...existing].toSorted(
+    (left, right) =>
+      left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id),
+  );
 }
 
 function prependOlderTurnDiffSummaries(
@@ -1434,25 +1437,42 @@ export function prependOlderThreadHistoryPage(
     existingThread.commandExecutions,
     page.commandExecutions,
   );
+  const activities = prependOlderActivities(existingThread.activities, page.activities);
   const nextHistory: ThreadHistoryState = {
     ...existingHistory,
+    stage:
+      page.hasOlderMessages ||
+      page.hasOlderCheckpoints ||
+      page.hasOlderActivities ||
+      page.hasOlderCommandExecutions
+        ? "tail"
+        : "complete",
     hasOlderMessages: page.hasOlderMessages,
     hasOlderCheckpoints: page.hasOlderCheckpoints,
+    hasOlderActivities: page.hasOlderActivities,
     hasOlderCommandExecutions: page.hasOlderCommandExecutions,
     oldestLoadedMessageCursor: page.oldestLoadedMessageCursor,
     oldestLoadedCheckpointTurnCount: page.oldestLoadedCheckpointTurnCount,
+    oldestLoadedActivityCursor: page.oldestLoadedActivityCursor,
     oldestLoadedCommandExecutionCursor: page.oldestLoadedCommandExecutionCursor,
   };
   if (
     messages === existingThread.messages &&
+    activities === existingThread.activities &&
     commandExecutions === existingThread.commandExecutions &&
     turnDiffSummaries === existingThread.turnDiffSummaries &&
+    existingHistory.stage === nextHistory.stage &&
     existingHistory.hasOlderMessages === nextHistory.hasOlderMessages &&
     existingHistory.hasOlderCheckpoints === nextHistory.hasOlderCheckpoints &&
+    existingHistory.hasOlderActivities === nextHistory.hasOlderActivities &&
     existingHistory.hasOlderCommandExecutions === nextHistory.hasOlderCommandExecutions &&
     existingHistory.oldestLoadedMessageCursor === nextHistory.oldestLoadedMessageCursor &&
     existingHistory.oldestLoadedCheckpointTurnCount ===
       nextHistory.oldestLoadedCheckpointTurnCount &&
+    areUnknownEqual(
+      existingHistory.oldestLoadedActivityCursor,
+      nextHistory.oldestLoadedActivityCursor,
+    ) &&
     existingHistory.oldestLoadedCommandExecutionCursor ===
       nextHistory.oldestLoadedCommandExecutionCursor
   ) {
@@ -1467,6 +1487,7 @@ export function prependOlderThreadHistoryPage(
       : {
           ...thread,
           messages,
+          activities,
           commandExecutions,
           turnDiffSummaries,
           history: nextHistory,

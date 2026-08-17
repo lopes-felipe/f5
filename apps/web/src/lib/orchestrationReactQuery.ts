@@ -12,6 +12,7 @@ import type {
   ThreadId,
   OrchestrationFileChangeSummary,
   OrchestrationFileChangeId,
+  MessageId,
 } from "@t3tools/contracts";
 import { type QueryClient, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useLayoutEffect } from "react";
@@ -151,7 +152,9 @@ function getThreadTailRequestKey(threadId: ThreadId): string {
 
 function getThreadHistoryPageRequestKey(input: {
   threadId: ThreadId;
+  anchorMessageId: MessageId | null | undefined;
   beforeMessageCursor: OrchestrationThreadHistoryPage["oldestLoadedMessageCursor"];
+  afterMessageCursor: OrchestrationThreadHistoryPage["newestLoadedMessageCursor"] | undefined;
   beforeCheckpointTurnCount: number | null;
   activityCursor: OrchestrationThreadHistoryPage["oldestLoadedActivityCursor"];
   beforeCommandExecutionCursor: OrchestrationThreadHistoryPage["oldestLoadedCommandExecutionCursor"];
@@ -159,13 +162,16 @@ function getThreadHistoryPageRequestKey(input: {
   const messageCursorKey = input.beforeMessageCursor
     ? `${input.beforeMessageCursor.createdAt}:${input.beforeMessageCursor.messageId}`
     : "null";
+  const afterMessageCursorKey = input.afterMessageCursor
+    ? `${input.afterMessageCursor.createdAt}:${input.afterMessageCursor.messageId}`
+    : "null";
   const commandCursorKey = input.beforeCommandExecutionCursor
     ? `${input.beforeCommandExecutionCursor.startedAt}:${input.beforeCommandExecutionCursor.startedSequence}:${input.beforeCommandExecutionCursor.commandExecutionId}`
     : "null";
   const activityCursorKey = input.activityCursor
     ? `${input.activityCursor.sequenceIsNull ? "null" : input.activityCursor.sequence}:${input.activityCursor.createdAt}:${input.activityCursor.activityId}`
     : "null";
-  return `history:${input.threadId}:${messageCursorKey}:${input.beforeCheckpointTurnCount ?? "null"}:${activityCursorKey}:${commandCursorKey}`;
+  return `history:${input.threadId}:${input.anchorMessageId ?? "null"}:${messageCursorKey}:${afterMessageCursorKey}:${input.beforeCheckpointTurnCount ?? "null"}:${activityCursorKey}:${commandCursorKey}`;
 }
 
 function getThreadHistoryBackfillKey(threadId: ThreadId, generation: number): string {
@@ -220,7 +226,11 @@ async function fetchThreadHistoryPageRpc(
   const api = ensureNativeApi();
   const request = getOrStartInFlightRequest(
     inFlightThreadHistoryPageRequests,
-    getThreadHistoryPageRequestKey(input),
+    getThreadHistoryPageRequestKey({
+      ...input,
+      anchorMessageId: input.anchorMessageId,
+      afterMessageCursor: input.afterMessageCursor,
+    }),
     () => api.orchestration.getThreadHistoryPage(input),
   );
   const page = signal ? await Promise.race([request, waitForAbort(signal)]) : await request;
@@ -572,6 +582,7 @@ export function shouldBackfillThreadHistory(
   return (
     history.hasOlderMessages ||
     history.hasOlderCheckpoints ||
+    history.hasOlderActivities ||
     ((options?.includeCommandExecutionHistory ?? false) && history.hasOlderCommandExecutions)
   );
 }
@@ -591,7 +602,7 @@ export function buildThreadHistoryBackfillInput(
     beforeCheckpointTurnCount: history.hasOlderCheckpoints
       ? history.oldestLoadedCheckpointTurnCount
       : null,
-    activityCursor: null,
+    activityCursor: history.hasOlderActivities ? history.oldestLoadedActivityCursor : null,
     beforeCommandExecutionCursor:
       (options?.includeCommandExecutionHistory ?? false) && history.hasOlderCommandExecutions
         ? history.oldestLoadedCommandExecutionCursor
@@ -606,6 +617,7 @@ function threadHistoryPageHasMore(
   return (
     page.hasOlderMessages ||
     page.hasOlderCheckpoints ||
+    page.hasOlderActivities ||
     ((options?.includeCommandExecutionHistory ?? false) && page.hasOlderCommandExecutions)
   );
 }
@@ -617,6 +629,7 @@ function threadHistoryPageHasProgress(
   return (
     page.messages.length > 0 ||
     page.checkpoints.length > 0 ||
+    page.activities.length > 0 ||
     ((options?.includeCommandExecutionHistory ?? false) && page.commandExecutions.length > 0)
   );
 }
@@ -654,33 +667,19 @@ export async function ensureThreadHistoryBackfill(
     store.markThreadHistoryBackfilling(threadId);
 
     try {
-      while (!options?.signal?.aborted) {
-        const nextThread = useStore.getState().threads.find((entry) => entry.id === threadId);
-        const nextHistory = ensureThreadHistoryState(nextThread?.history);
-        if (
-          !nextThread ||
-          !nextThread.detailsLoaded ||
-          nextHistory.generation !== expectedGeneration
-        ) {
-          return;
-        }
-        const nextInput = buildThreadHistoryBackfillInput(threadId, nextHistory, options);
-        if (nextInput === null) {
-          useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
-          return;
-        }
-
-        const page = await fetchThreadHistoryPageRpc(nextInput, options?.signal);
-        if (options?.signal?.aborted) {
-          return;
-        }
-        if (
-          !threadHistoryPageHasProgress(page, options) &&
-          threadHistoryPageHasMore(page, options)
-        ) {
-          throw new Error("Thread history backfill made no progress.");
-        }
-        useStore.getState().prependOlderThreadHistoryPage(threadId, page, expectedGeneration);
+      const nextInput = buildThreadHistoryBackfillInput(threadId, threadHistory, options);
+      if (nextInput === null) {
+        useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
+        return;
+      }
+      const page = await fetchThreadHistoryPageRpc(nextInput, options?.signal);
+      if (options?.signal?.aborted) return;
+      if (!threadHistoryPageHasProgress(page, options) && threadHistoryPageHasMore(page, options)) {
+        throw new Error("Thread history page made no progress.");
+      }
+      useStore.getState().prependOlderThreadHistoryPage(threadId, page, expectedGeneration);
+      if (!threadHistoryPageHasMore(page, options)) {
+        useStore.getState().markThreadHistoryComplete(threadId, expectedGeneration);
       }
     } catch (error) {
       if (isAbortError(error)) {
@@ -740,6 +739,32 @@ export async function loadOlderThreadActivitiesPage(
   useStore.getState().prependOlderThreadActivitiesPage(threadId, page, expectedGeneration);
 }
 
+export async function loadThreadHistoryAroundMessage(
+  threadId: ThreadId,
+  anchorMessageId: MessageId,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return;
+  const thread = useStore.getState().threads.find((entry) => entry.id === threadId);
+  const history = ensureThreadHistoryState(thread?.history);
+  if (!thread?.detailsLoaded) return;
+
+  const page = await fetchThreadHistoryPageRpc(
+    {
+      threadId,
+      anchorMessageId,
+      beforeMessageCursor: null,
+      afterMessageCursor: null,
+      beforeCheckpointTurnCount: null,
+      activityCursor: null,
+      beforeCommandExecutionCursor: null,
+    },
+    signal,
+  );
+  if (signal?.aborted || page.messages.length === 0) return;
+  useStore.getState().prependOlderThreadHistoryPage(threadId, page, history.generation);
+}
+
 export function clearInFlightOrchestrationRpcRequests(): void {
   inFlightThreadDetailRequests.clear();
   inFlightThreadHistoryPageRequests.clear();
@@ -751,19 +776,16 @@ export function clearInFlightOrchestrationRpcRequests(): void {
 
 export function useThreadDetail(
   threadId: ThreadId | null | undefined,
-  options?: Pick<ThreadHistoryBackfillOptions, "includeCommandExecutionHistory">,
+  _options?: Pick<ThreadHistoryBackfillOptions, "includeCommandExecutionHistory">,
 ) {
   const queryClient = useQueryClient();
   const thread = useStore((store) =>
     threadId ? store.threads.find((entry) => entry.id === threadId) : undefined,
   );
-  const threadHistory = ensureThreadHistoryState(thread?.history);
   const beginThreadDetailLoad = useStore((store) => store.beginThreadDetailLoad);
   const clearThreadDetailBuffer = useStore((store) => store.clearThreadDetailBuffer);
   const syncThreadTailDetails = useStore((store) => store.syncThreadTailDetails);
   const detailsLoaded = thread?.detailsLoaded ?? false;
-  const hasOlderThreadHistory = shouldBackfillThreadHistory(threadHistory, options);
-  const backfillBlockedByError = threadHistory.stage === "error";
 
   useLayoutEffect(() => {
     if (!threadId || detailsLoaded) {
@@ -857,41 +879,6 @@ export function useThreadDetail(
             : null,
     });
   }, [query.error, query.isError, query.isFetching, threadId]);
-
-  useEffect(() => {
-    if (!threadId || !thread?.detailsLoaded) {
-      return;
-    }
-    if (!hasOlderThreadHistory) {
-      return;
-    }
-    if (backfillBlockedByError) {
-      return;
-    }
-    const controller = new AbortController();
-    void ensureThreadHistoryBackfill(queryClient, threadId, {
-      signal: controller.signal,
-      ...(options?.includeCommandExecutionHistory !== undefined
-        ? { includeCommandExecutionHistory: options.includeCommandExecutionHistory }
-        : {}),
-    }).catch((error) => {
-      if (isAbortError(error)) {
-        return;
-      }
-      console.warn("Failed to backfill older thread history.", { threadId, error });
-    });
-    return () => {
-      controller.abort();
-    };
-  }, [
-    backfillBlockedByError,
-    hasOlderThreadHistory,
-    options?.includeCommandExecutionHistory,
-    queryClient,
-    thread?.detailsLoaded,
-    threadHistory.generation,
-    threadId,
-  ]);
 
   return query;
 }

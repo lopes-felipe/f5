@@ -146,9 +146,11 @@ import { useTurnDiffSummaries } from "../hooks/useTurnDiffSummaries";
 import {
   fetchThreadFileChangesDelta,
   fullThreadFileChangesQueryOptions,
+  loadThreadHistoryAroundMessage,
   mergeThreadFileChangesResult,
   orchestrationQueryKeys,
   retryThreadHistoryBackfill,
+  shouldBackfillThreadHistory,
 } from "../lib/orchestrationReactQuery";
 import { buildLocalDraftThread } from "../lib/draftThreads";
 import { ensureThreadHistoryState } from "../lib/threadHistory";
@@ -1990,13 +1992,28 @@ export default function ChatView({
     [activeThread?.proposedPlans, commandExecutions, timelineMessages, workLogEntries],
   );
   const lastFocusedTimelineEntryIdRef = useRef<string | null>(null);
+  const attemptedTimelineAnchorLoadRef = useRef<string | null>(null);
   useEffect(() => {
     if (!focusTimelineEntryId || lastFocusedTimelineEntryIdRef.current === focusTimelineEntryId) {
       return;
     }
+    const controller = new AbortController();
     const frame = window.requestAnimationFrame(() => {
       const index = timelineEntryRowIndexMapRef.current?.get(focusTimelineEntryId);
-      if (index === undefined) return;
+      if (index === undefined) {
+        if (
+          activeThread?.detailsLoaded &&
+          attemptedTimelineAnchorLoadRef.current !== focusTimelineEntryId
+        ) {
+          attemptedTimelineAnchorLoadRef.current = focusTimelineEntryId;
+          void loadThreadHistoryAroundMessage(
+            activeThread.id,
+            focusTimelineEntryId as MessageId,
+            controller.signal,
+          );
+        }
+        return;
+      }
       onIsAtEndChange(false);
       void legendListRef.current?.scrollToIndex({
         index,
@@ -2005,8 +2022,17 @@ export default function ChatView({
       });
       lastFocusedTimelineEntryIdRef.current = focusTimelineEntryId;
     });
-    return () => window.cancelAnimationFrame(frame);
-  }, [focusTimelineEntryId, onIsAtEndChange, timelineEntries]);
+    return () => {
+      controller.abort();
+      window.cancelAnimationFrame(frame);
+    };
+  }, [
+    activeThread?.detailsLoaded,
+    activeThread?.id,
+    focusTimelineEntryId,
+    onIsAtEndChange,
+    timelineEntries,
+  ]);
   const shouldRenderTimeline = shouldRenderTimelineContent({
     detailsLoaded: activeThread?.detailsLoaded ?? false,
     hasRenderableMessage: timelineMessages.length > 0,
@@ -2031,6 +2057,19 @@ export default function ChatView({
   const { turnDiffSummaries, inferredCheckpointTurnCountByTurnId } =
     useTurnDiffSummaries(activeThread);
   const activeThreadHistory = ensureThreadHistoryState(activeThread?.history);
+  const hasOlderTimelineHistory = shouldBackfillThreadHistory(activeThreadHistory, {
+    includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
+  });
+  const loadOlderTimelineHistory = useCallback(
+    async (signal: AbortSignal) => {
+      if (!activeThread) return;
+      await retryThreadHistoryBackfill(queryClient, activeThread.id, {
+        signal,
+        includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
+      });
+    },
+    [activeThread, queryClient, settings.showAgentCommandTranscripts],
+  );
   const historyStatusContent =
     activeThread && activeThreadHistory.stage === "backfilling" ? (
       <div className="mx-auto mb-4 w-full max-w-3xl rounded-2xl border border-border/70 bg-card/70 px-4 py-3 text-sm text-muted-foreground shadow-sm backdrop-blur-sm">
@@ -5569,6 +5608,9 @@ export default function ChatView({
                   listRef={legendListRef}
                   entryRowIndexMapRef={timelineEntryRowIndexMapRef}
                   onIsAtEndChange={onIsAtEndChange}
+                  hasOlderHistory={hasOlderTimelineHistory}
+                  isLoadingOlderHistory={activeThreadHistory.stage === "backfilling"}
+                  onLoadOlderHistory={loadOlderTimelineHistory}
                   timelineEntries={timelineEntries}
                   completionDividerBeforeEntryId={completionDividerBeforeEntryId}
                   completionSummary={completionSummary}

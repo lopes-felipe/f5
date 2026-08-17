@@ -9,6 +9,7 @@ import {
   OrchestrationCreateCodeReviewWorkflowInput,
   OrchestrationCreateWorkflowInput,
   OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetThreadHistoryPageInput,
   OrchestrationThread,
   OrchestrationGetTurnDiffInput,
   OrchestrationProposedPlan,
@@ -877,6 +878,23 @@ it("validates nullable activity cursor sequence identity", () => {
       sequence: 1,
       createdAt: "2026-01-01T00:00:00.000Z",
       activityId: "activity-1",
+    }),
+  );
+});
+
+it("rejects ambiguous message history window selectors", () => {
+  const decode = Schema.decodeUnknownSync(OrchestrationGetThreadHistoryPageInput);
+  assert.throws(() =>
+    decode({
+      threadId: "thread-1",
+      anchorMessageId: "message-1",
+      beforeMessageCursor: {
+        createdAt: "2026-01-01T00:00:00.000Z",
+        messageId: "message-0",
+      },
+      beforeCheckpointTurnCount: null,
+      activityCursor: null,
+      beforeCommandExecutionCursor: null,
     }),
   );
 });
