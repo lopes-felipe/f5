@@ -30,6 +30,8 @@ export const ProjectionThreadSession = Schema.Struct({
   runtimeMode: RuntimeMode,
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(Schema.String),
+  lastErrorId: Schema.NullOr(Schema.String),
+  lastErrorOccurredAt: Schema.NullOr(IsoDateTime),
   estimatedContextTokens: Schema.NullOr(NonNegativeInt),
   modelContextWindowTokens: Schema.NullOr(NonNegativeInt),
   tokenUsageSource: Schema.NullOr(Schema.Literals(["provider", "estimated"])),

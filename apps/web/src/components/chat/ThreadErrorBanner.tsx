@@ -4,9 +4,11 @@ import { CircleAlertIcon, XIcon } from "lucide-react";
 
 export const ThreadErrorBanner = memo(function ThreadErrorBanner({
   error,
+  occurredAt,
   onDismiss,
 }: {
   error: string | null;
+  occurredAt?: string | null;
   onDismiss?: () => void;
 }) {
   if (!error) return null;
@@ -16,6 +18,11 @@ export const ThreadErrorBanner = memo(function ThreadErrorBanner({
         <CircleAlertIcon />
         <AlertDescription className="line-clamp-3" title={error}>
           {error}
+          {occurredAt ? (
+            <time className="mt-1 block text-[10px] opacity-70" dateTime={occurredAt}>
+              {new Date(occurredAt).toLocaleString()}
+            </time>
+          ) : null}
         </AlertDescription>
         {onDismiss && (
           <AlertAction>

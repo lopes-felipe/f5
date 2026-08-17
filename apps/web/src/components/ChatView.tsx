@@ -275,6 +275,7 @@ import { ComposerPlanFollowUpBanner } from "./chat/ComposerPlanFollowUpBanner";
 import { ProviderHealthBanner } from "./chat/ProviderHealthBanner";
 import { ProviderRuntimeInfoBanner } from "./chat/ProviderRuntimeInfoBanner";
 import { ThreadErrorBanner } from "./chat/ThreadErrorBanner";
+import { dismissThreadSessionError } from "../threadErrorDismissals";
 import { PendingSendRecoveryBanner } from "./chat/PendingSendRecoveryBanner";
 import { VscodeEntryIcon } from "./chat/VscodeEntryIcon";
 import {
@@ -5542,7 +5543,15 @@ export default function ChatView({
         />
         <ThreadErrorBanner
           error={activeThread.error}
-          onDismiss={() => setThreadError(activeThread.id, null)}
+          occurredAt={
+            activeThread.session?.lastError === activeThread.error
+              ? (activeThread.session.lastErrorOccurredAt ?? null)
+              : null
+          }
+          onDismiss={() => {
+            dismissThreadSessionError(activeThread.id, activeThread.session?.lastErrorId ?? null);
+            setThreadError(activeThread.id, null);
+          }}
         />
         {/* Main content area with optional plan sidebar */}
         <div className="flex min-h-0 min-w-0 flex-1">

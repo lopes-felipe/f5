@@ -490,6 +490,10 @@ const make = Effect.gen(function* () {
                 runtimeMode: input.desiredRuntimeMode,
                 activeTurnId: null,
                 lastError: input.session.lastError ?? null,
+                lastErrorId: input.session.lastError
+                  ? `provider-session:${input.thread.id}:${input.session.updatedAt}`
+                  : null,
+                lastErrorOccurredAt: input.session.lastError ? input.session.updatedAt : null,
                 ...tokenUsage,
                 updatedAt: input.session.updatedAt,
               },
@@ -1378,6 +1382,8 @@ const make = Effect.gen(function* () {
           runtimeMode: event.payload.runtimeMode,
           activeTurnId: null,
           lastError: detail,
+          lastErrorId: event.eventId,
+          lastErrorOccurredAt: event.payload.createdAt,
           ...(thread.session?.estimatedContextTokens != null
             ? { estimatedContextTokens: thread.session.estimatedContextTokens }
             : {}),
@@ -1532,6 +1538,8 @@ const make = Effect.gen(function* () {
         runtimeMode: thread.session?.runtimeMode ?? DEFAULT_RUNTIME_MODE,
         activeTurnId: null,
         lastError: thread.session?.lastError ?? null,
+        lastErrorId: thread.session?.lastErrorId ?? null,
+        lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
         updatedAt: now,
       },
       createdAt: now,

@@ -28,7 +28,7 @@ import {
   retainThreadMessagesAfterRevert,
   retainThreadProposedPlansAfterRevert,
 } from "./orchestrationState";
-import { sanitizeThreadErrorMessage } from "./transportError";
+import { visibleThreadSessionError } from "./threadErrorDismissals";
 import { compareCommandExecutions } from "./lib/commandExecutions";
 import type { AppState } from "./store";
 import type {
@@ -1312,7 +1312,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
                     : null,
               }
             : thread.latestTurn;
-        const error = sanitizeThreadErrorMessage(event.payload.session.lastError);
+        const error = visibleThreadSessionError(event.payload.threadId, event.payload.session);
         if (
           session === thread.session &&
           latestTurn === thread.latestTurn &&

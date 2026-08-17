@@ -198,6 +198,8 @@ export interface ThreadSession {
   createdAt: string;
   updatedAt: string;
   lastError?: string;
+  lastErrorId?: string | null;
+  lastErrorOccurredAt?: string | null;
   tokenUsageSource?: "provider" | "estimated";
   orchestrationStatus: OrchestrationSessionStatus;
 }

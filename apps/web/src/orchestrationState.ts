@@ -126,6 +126,8 @@ export function mapSessionFromReadModel(
     createdAt: incoming.updatedAt,
     updatedAt: incoming.updatedAt,
     ...(lastError ? { lastError } : {}),
+    ...(incoming.lastErrorId ? { lastErrorId: incoming.lastErrorId } : {}),
+    ...(incoming.lastErrorOccurredAt ? { lastErrorOccurredAt: incoming.lastErrorOccurredAt } : {}),
     ...(incoming.tokenUsageSource
       ? { tokenUsageSource: incoming.tokenUsageSource }
       : previous?.tokenUsageSource
@@ -143,6 +145,8 @@ export function mapSessionFromReadModel(
     previous.createdAt === next.createdAt &&
     previous.updatedAt === next.updatedAt &&
     previous.lastError === next.lastError &&
+    previous.lastErrorId === next.lastErrorId &&
+    previous.lastErrorOccurredAt === next.lastErrorOccurredAt &&
     previous.tokenUsageSource === next.tokenUsageSource
   ) {
     return previous;

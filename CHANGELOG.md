@@ -50,6 +50,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Desktop previews now retain a bounded recent-site history, show validated same-origin page
   favicons and titles in panel tabs, persist color-scheme and viewport/aspect preferences, and list
   only local development servers that answer a bounded readiness probe.
+- Session failures now carry stable server-generated identities and occurrence times, so dismissing
+  an error survives reconnects while a later failure with identical text remains visible.
 
 ### Changed
 

@@ -599,6 +599,8 @@ export default Effect.gen(function* () {
       runtime_mode TEXT NOT NULL DEFAULT 'full-access',
       active_turn_id TEXT,
       last_error TEXT,
+      last_error_id TEXT,
+      last_error_occurred_at TEXT,
       estimated_context_tokens INTEGER,
       model_context_window_tokens INTEGER,
       token_usage_source TEXT,
@@ -668,6 +670,22 @@ export default Effect.gen(function* () {
     yield* sql`
       ALTER TABLE projection_thread_sessions
       ADD COLUMN last_error TEXT
+    `;
+  }
+
+  if (!sessionColumns.has("last_error_id")) {
+    resetProjectors("projection.thread-sessions");
+    yield* sql`
+      ALTER TABLE projection_thread_sessions
+      ADD COLUMN last_error_id TEXT
+    `;
+  }
+
+  if (!sessionColumns.has("last_error_occurred_at")) {
+    resetProjectors("projection.thread-sessions");
+    yield* sql`
+      ALTER TABLE projection_thread_sessions
+      ADD COLUMN last_error_occurred_at TEXT
     `;
   }
 

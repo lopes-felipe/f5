@@ -372,6 +372,8 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         runtimeMode: "full-access",
         activeTurnId: asTurnId("turn-1"),
         lastError: null,
+        lastErrorId: null,
+        lastErrorOccurredAt: null,
         estimatedContextTokens: 1200,
         tokenUsageSource: "estimated",
         updatedAt: "2026-04-01T09:00:07.000Z",

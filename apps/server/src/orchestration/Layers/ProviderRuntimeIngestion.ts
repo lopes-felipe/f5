@@ -3177,6 +3177,21 @@ const make = Effect.gen(function* () {
               : status === "ready"
                 ? null
                 : (thread.session?.lastError ?? null);
+        const isNewFailure =
+          (event.type === "session.state.changed" && event.payload.state === "error") ||
+          (event.type === "turn.completed" && runtimeTurnState(event) === "failed");
+        const lastErrorId =
+          lastError === null
+            ? null
+            : isNewFailure
+              ? event.eventId
+              : (thread.session?.lastErrorId ?? event.eventId);
+        const lastErrorOccurredAt =
+          lastError === null
+            ? null
+            : isNewFailure
+              ? now
+              : (thread.session?.lastErrorOccurredAt ?? now);
 
         if (shouldApplyThreadLifecycle) {
           // Reset the live thinking-token estimate at turn boundaries so each turn
@@ -3233,6 +3248,8 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: nextActiveTurnId,
               lastError,
+              lastErrorId,
+              lastErrorOccurredAt,
               ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
               ...(estimatedContextTokens !== undefined
                 ? { estimatedContextTokens, tokenUsageSource }
@@ -3257,6 +3274,8 @@ const make = Effect.gen(function* () {
             runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
             activeTurnId: null,
             lastError: null,
+            lastErrorId: null,
+            lastErrorOccurredAt: null,
             updatedAt: now,
           },
           createdAt: now,
@@ -3284,6 +3303,8 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
+              lastErrorId: thread.session?.lastErrorId ?? null,
+              lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
               estimatedThinkingTokens,
               updatedAt: now,
             },
@@ -3316,6 +3337,8 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
+              lastErrorId: thread.session?.lastErrorId ?? null,
+              lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
               ...(estimatedContextTokens !== undefined
                 ? {
                     estimatedContextTokens,
@@ -3839,6 +3862,8 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? "full-access",
               activeTurnId: eventTurnId ?? null,
               lastError: runtimeErrorMessage,
+              lastErrorId: event.eventId,
+              lastErrorOccurredAt: now,
               updatedAt: now,
             },
             createdAt: now,
@@ -3918,6 +3943,8 @@ const make = Effect.gen(function* () {
               runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
               activeTurnId: thread.session?.activeTurnId ?? null,
               lastError: thread.session?.lastError ?? null,
+              lastErrorId: thread.session?.lastErrorId ?? null,
+              lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
               ...(thread.session?.estimatedContextTokens !== undefined
                 ? { estimatedContextTokens: thread.session.estimatedContextTokens }
                 : {}),
@@ -3948,6 +3975,8 @@ const make = Effect.gen(function* () {
             runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
             activeTurnId: thread.session?.activeTurnId ?? null,
             lastError: thread.session?.lastError ?? null,
+            lastErrorId: thread.session?.lastErrorId ?? null,
+            lastErrorOccurredAt: thread.session?.lastErrorOccurredAt ?? null,
             ...(thread.session?.estimatedContextTokens !== undefined
               ? { estimatedContextTokens: thread.session.estimatedContextTokens }
               : {}),

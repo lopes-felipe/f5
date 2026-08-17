@@ -31,7 +31,7 @@ import {
   mapSessionFromReadModel,
   resolveThreadModel,
 } from "./orchestrationState";
-import { sanitizeThreadErrorMessage } from "./transportError";
+import { visibleThreadSessionError } from "./threadErrorDismissals";
 import { createEmptyThreadHistoryState, ensureThreadHistoryState } from "./lib/threadHistory";
 
 // ── State ────────────────────────────────────────────────────────────
@@ -1041,7 +1041,7 @@ function buildThreadFromReadModel(
         existing
       ? existing.activities
       : mapActivitiesFromReadModel(thread.activities, existing?.activities ?? []);
-  const error = sanitizeThreadErrorMessage(thread.session?.lastError);
+  const error = visibleThreadSessionError(thread.id, thread.session);
   const lastVisitedAt = existing?.lastVisitedAt ?? thread.lastInteractionAt;
   const estimatedContextTokens = thread.estimatedContextTokens ?? null;
   const estimatedThinkingTokens = thread.estimatedThinkingTokens ?? null;

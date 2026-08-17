@@ -340,6 +340,8 @@ it.effect("decodes orchestration sessions with token usage fields when provided"
     assert.strictEqual(parsed.estimatedContextTokens, 45_000);
     assert.strictEqual(parsed.modelContextWindowTokens, 400_000);
     assert.strictEqual(parsed.tokenUsageSource, "provider");
+    assert.strictEqual(parsed.lastErrorId, null);
+    assert.strictEqual(parsed.lastErrorOccurredAt, null);
   }),
 );
 
@@ -357,6 +359,27 @@ it.effect("keeps orchestration sessions backward-compatible when token usage is 
     assert.strictEqual(parsed.estimatedContextTokens, undefined);
     assert.strictEqual(parsed.modelContextWindowTokens, undefined);
     assert.strictEqual(parsed.tokenUsageSource, undefined);
+    assert.strictEqual(parsed.lastErrorId, null);
+    assert.strictEqual(parsed.lastErrorOccurredAt, null);
+  }),
+);
+
+it.effect("decodes structured session error identity alongside the legacy message", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeOrchestrationSession({
+      threadId: "thread-1",
+      status: "error",
+      providerName: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: "Provider failed",
+      lastErrorId: "error-123",
+      lastErrorOccurredAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    });
+    assert.strictEqual(parsed.lastError, "Provider failed");
+    assert.strictEqual(parsed.lastErrorId, "error-123");
+    assert.strictEqual(parsed.lastErrorOccurredAt, "2026-01-01T00:00:00.000Z");
   }),
 );
 

@@ -1590,6 +1590,8 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             runtimeMode: event.payload.session.runtimeMode,
             activeTurnId: event.payload.session.activeTurnId,
             lastError: event.payload.session.lastError,
+            lastErrorId: event.payload.session.lastErrorId ?? null,
+            lastErrorOccurredAt: event.payload.session.lastErrorOccurredAt ?? null,
             estimatedContextTokens:
               event.payload.session.estimatedContextTokens ??
               (Option.isSome(existingRow) ? existingRow.value.estimatedContextTokens : null),

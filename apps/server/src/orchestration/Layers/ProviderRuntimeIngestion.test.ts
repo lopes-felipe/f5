@@ -363,6 +363,8 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("turn failed");
+    expect(thread.session?.lastErrorId).toBe("evt-turn-completed");
+    expect(thread.session?.lastErrorOccurredAt).toBeTruthy();
     expect(thread.session?.turnCostUsd).toBe(0.42);
   });
 
@@ -902,12 +904,13 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.status).toBe("running");
     expect(thread.session?.lastError).toBeNull();
 
+    const failedAt = new Date().toISOString();
     harness.emit({
       type: "session.state.changed",
       eventId: asEventId("evt-session-state-error"),
       provider: "codex",
       threadId: asThreadId("thread-1"),
-      createdAt: new Date().toISOString(),
+      createdAt: failedAt,
       payload: {
         state: "error",
         reason: "provider crashed",
@@ -923,6 +926,8 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("error");
     expect(thread.session?.lastError).toBe("provider crashed");
+    expect(thread.session?.lastErrorId).toBe("evt-session-state-error");
+    expect(thread.session?.lastErrorOccurredAt).toBe(failedAt);
 
     harness.emit({
       type: "session.state.changed",
@@ -944,6 +949,8 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("stopped");
     expect(thread.session?.lastError).toBe("provider crashed");
+    expect(thread.session?.lastErrorId).toBe("evt-session-state-error");
+    expect(thread.session?.lastErrorOccurredAt).toBe(failedAt);
 
     harness.emit({
       type: "session.state.changed",
@@ -965,6 +972,8 @@ describe("ProviderRuntimeIngestion", () => {
     );
     expect(thread.session?.status).toBe("ready");
     expect(thread.session?.lastError).toBeNull();
+    expect(thread.session?.lastErrorId).toBeNull();
+    expect(thread.session?.lastErrorOccurredAt).toBeNull();
   });
 
   it("keeps transient thread errors non-terminal while closing explicit terminal states", async () => {
