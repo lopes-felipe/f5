@@ -21,6 +21,7 @@ describe("sidebar interactive cursors", () => {
     const html = renderSidebarButton();
 
     expect(html).toContain('data-slot="sidebar-menu-button"');
+    expect(html).toContain('type="button"');
     expect(html).toContain("cursor-pointer");
   });
 

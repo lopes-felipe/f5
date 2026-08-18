@@ -5,6 +5,7 @@ import { useEffect, useMemo } from "react";
 
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
+import type { Project, Thread } from "../types";
 import { onServerWelcome } from "../wsNativeApi";
 import {
   buildAgentActivityIndex,
@@ -18,6 +19,33 @@ export const agentsQueryKeys = {
 
 const EMPTY_STORE_ITEMS: readonly never[] = [];
 const EMPTY_ACTIVITY_THREADS: ReadonlyArray<AgentActivityThreadSource> = [];
+
+export function selectAgentActivityThreads(input: {
+  readonly snapshot: ReturnType<typeof decodeAgentsSnapshot> | null;
+  readonly threads: ReadonlyArray<Thread>;
+  readonly projects: ReadonlyArray<Project>;
+}): ReadonlyArray<AgentActivityThreadSource> {
+  if (!input.snapshot || input.snapshot.entries.length === 0) {
+    return EMPTY_ACTIVITY_THREADS;
+  }
+
+  // The durable snapshot is capped and is authoritative for which work items
+  // the panel can render. Restrict the expensive activity correlation to those
+  // threads instead of cloning and sorting every loaded activity in the app.
+  const relevantThreadIds = new Set(input.snapshot.entries.map((entry) => entry.threadId));
+  const projectNameById = new Map(
+    input.projects.map((project) => [project.id, project.name] as const),
+  );
+  return input.threads
+    .filter((thread) => relevantThreadIds.has(thread.id))
+    .map((thread) => ({
+      threadId: thread.id,
+      threadTitle: thread.title,
+      projectName: projectNameById.get(thread.projectId) ?? null,
+      activities: thread.activities,
+      hasOlderActivities: thread.history?.hasOlderActivities ?? false,
+    }));
+}
 
 export function decodeAgentsSnapshot(value: unknown) {
   return Schema.decodeUnknownSync(AgentsSnapshotSchema)(value);
@@ -67,15 +95,12 @@ export function useAgentsPanelModel(options: { readonly includeActivityIndex?: b
 
   const activityThreads = useMemo<ReadonlyArray<AgentActivityThreadSource>>(() => {
     if (!includeActivityIndex) return EMPTY_ACTIVITY_THREADS;
-    const projectNameById = new Map(projects.map((project) => [project.id, project.name] as const));
-    return threads.map((thread) => ({
-      threadId: thread.id,
-      threadTitle: thread.title,
-      projectName: projectNameById.get(thread.projectId) ?? null,
-      activities: thread.activities,
-      hasOlderActivities: thread.history?.hasOlderActivities ?? false,
-    }));
-  }, [includeActivityIndex, projects, threads]);
+    return selectAgentActivityThreads({
+      snapshot: snapshotQuery.data ?? null,
+      threads,
+      projects,
+    });
+  }, [includeActivityIndex, projects, snapshotQuery.data, threads]);
   const activityIndex = useMemo(() => buildAgentActivityIndex(activityThreads), [activityThreads]);
   const model = useMemo(
     () =>

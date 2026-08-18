@@ -189,7 +189,7 @@ describe("checkClaudeProviderStatus", () => {
 
   it("preserves the Opus 5 upgrade hint when capability probing fails", async () => {
     const snapshot = await Effect.runPromise(
-      checkClaudeProviderStatus(claudeSettings, () => Effect.succeed(undefined)).pipe(
+      checkClaudeProviderStatus(claudeSettings, () => Effect.sync(() => undefined)).pipe(
         Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.219"))),
       ),
     );

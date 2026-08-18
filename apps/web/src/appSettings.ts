@@ -33,6 +33,7 @@ import {
 import { DEFAULT_THEME_ID } from "./themePalette";
 
 export const APP_SETTINGS_STORAGE_KEY = "t3code:app-settings:v1";
+const CURRENT_THEME_PALETTE_VERSION = 2 as const;
 const MAX_CUSTOM_MODEL_COUNT = 32;
 export const MAX_CUSTOM_MODEL_LENGTH = 256;
 export const CLAUDE_SUBAGENT_MODEL_INHERIT = "inherit";
@@ -128,6 +129,7 @@ type PersistedAppSettingsValue = Record<string, unknown> & {
   readonly monoFontFamily?: unknown;
   readonly terminalFontSize?: unknown;
   readonly themeId?: unknown;
+  readonly themePaletteVersion?: unknown;
   readonly customThemes?: unknown;
 };
 
@@ -309,6 +311,10 @@ export const AppSettingsSchema = Schema.Struct({
   themeId: Schema.String.check(Schema.isMaxLength(64)).pipe(
     Schema.withConstructorDefault(() => Option.some(DEFAULT_THEME_ID)),
     Schema.withDecodingDefault(() => DEFAULT_THEME_ID),
+  ),
+  themePaletteVersion: Schema.Literal(CURRENT_THEME_PALETTE_VERSION).pipe(
+    Schema.withConstructorDefault(() => Option.some(CURRENT_THEME_PALETTE_VERSION)),
+    Schema.withDecodingDefault(() => CURRENT_THEME_PALETTE_VERSION),
   ),
   // Custom definitions stay opaque here so invalid imported data can fall back
   // without being deleted. themePalette.ts owns the strict, versioned parser.
@@ -614,7 +620,7 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
 
   try {
     const parsed = JSON.parse(value) as PersistedAppSettingsValue;
-    const migrated =
+    const runtimeMetadataMigrated =
       parsed.showProviderRuntimeMetadata === undefined &&
       typeof parsed.showClaudeRuntimeMetadata === "boolean"
         ? {
@@ -622,6 +628,17 @@ export function parsePersistedAppSettings(value: string | null): AppSettings {
             showProviderRuntimeMetadata: parsed.showClaudeRuntimeMetadata,
           }
         : parsed;
+    const migrated: PersistedAppSettingsValue = {
+      ...runtimeMetadataMigrated,
+      // The first palette release used `f5-default` for the blue palette.
+      // Move that implicit default to the restored black palette exactly once;
+      // after v2 is persisted, explicitly selecting F5 Blue remains stable.
+      themeId:
+        parsed.themePaletteVersion === undefined && parsed.themeId === "f5-default"
+          ? DEFAULT_THEME_ID
+          : runtimeMetadataMigrated.themeId,
+      themePaletteVersion: CURRENT_THEME_PALETTE_VERSION,
+    };
     return normalizeAppSettings(
       Schema.decodeUnknownSync(AppSettingsSchema)({
         ...DEFAULT_APP_SETTINGS,
@@ -935,6 +952,7 @@ export function useAppSettings() {
     APP_SETTINGS_STORAGE_KEY,
     DEFAULT_APP_SETTINGS,
     AppSettingsSchema,
+    parsePersistedAppSettings,
   );
 
   const updateSettings = useCallback(

@@ -1,5 +1,7 @@
 import {
+  type CodexAccountUsage,
   type IsoDateTime,
+  ProjectId,
   type ProviderKind,
   type UsageBucket,
   type UsageGetSummaryInput,
@@ -8,13 +10,18 @@ import {
   type UsageRange,
   type UsageSummary,
 } from "@t3tools/contracts";
+import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
 import { Clock, Effect, Layer, Schema } from "effect";
 
+import { CodexControlClientRegistry } from "../../codex/CodexControlClientRegistry.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import {
   UsageFactRepository,
   type HourlyUsageFactSummary,
 } from "../../persistence/Services/UsageFacts.ts";
+import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { readCodexAccountUsage, unavailableCodexAccountUsage } from "../codexAccountUsage.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 
 interface MutableMetrics {
@@ -44,6 +51,14 @@ const RANGE_DAY_COUNTS: Record<Exclude<UsageRange, "24h">, number> = {
   "30d": 30,
   "90d": 90,
 };
+
+class CodexAccountUsageReadError extends Schema.TaggedErrorClass<CodexAccountUsageReadError>()(
+  "CodexAccountUsageReadError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect),
+  },
+) {}
 
 function emptyMetrics(): MutableMetrics {
   return {
@@ -232,6 +247,7 @@ export function buildUsageSummary(input: {
   readonly coverageStartedAt: IsoDateTime;
   readonly rangeStartedAt: IsoDateTime;
   readonly rows: ReadonlyArray<HourlyUsageFactSummary>;
+  readonly codexAccount?: CodexAccountUsage | null;
 }): UsageSummary {
   const formatter = assertTimeZone(input.request.timeZone);
   const emptyBuckets = makeEmptyBuckets({
@@ -308,11 +324,52 @@ export function buildUsageSummary(input: {
       providersMissingTokens,
       providersMissingCost,
     },
+    codexAccount: input.codexAccount ?? null,
   };
 }
 
 const make = Effect.gen(function* () {
   const repository = yield* UsageFactRepository;
+  const codexControlClients = yield* CodexControlClientRegistry;
+  const serverSettings = yield* ServerSettingsService;
+
+  const getCodexAccountUsage = (fetchedAt: IsoDateTime) =>
+    Effect.gen(function* () {
+      const settings = yield* serverSettings.getSettings;
+      if (!settings.providers.codex.enabled) {
+        return unavailableCodexAccountUsage({
+          fetchedAt,
+          error: new Error("Codex is disabled in provider settings."),
+        });
+      }
+      const parsedLaunchArgs = parseLaunchArgv(settings.providers.codex.launchArgs);
+      if (!parsedLaunchArgs.ok) {
+        return unavailableCodexAccountUsage({
+          fetchedAt,
+          error: new Error(`Invalid Codex launch arguments: ${parsedLaunchArgs.error}`),
+        });
+      }
+      const providerOptions = toCodexProviderStartOptions({
+        binaryPath: settings.providers.codex.binaryPath,
+        homePath: settings.providers.codex.homePath || undefined,
+        launchArgs: parsedLaunchArgs.argv,
+      });
+      const client = yield* codexControlClients.getAdminClient({
+        projectId: ProjectId.makeUnsafe("f5-account-usage"),
+        ...(providerOptions ? { providerOptions } : {}),
+      });
+      return yield* Effect.tryPromise({
+        try: () => readCodexAccountUsage({ client, fetchedAt }),
+        catch: (error) =>
+          new CodexAccountUsageReadError({
+            message: error instanceof Error ? error.message : String(error),
+            cause: error,
+          }),
+      });
+    }).pipe(
+      Effect.timeout("8 seconds"),
+      Effect.catch((error) => Effect.succeed(unavailableCodexAccountUsage({ fetchedAt, error }))),
+    );
 
   const getSummary: UsageServiceShape["getSummary"] = (request) =>
     Effect.gen(function* () {
@@ -325,9 +382,13 @@ const make = Effect.gen(function* () {
             ? error
             : new UsageQueryError({ message: `Unsupported IANA time zone: ${request.timeZone}` }),
       });
-      const [coverageStartedAt, rows] = yield* Effect.all(
-        [repository.readCoverageStartedAt, repository.summarizeHourly(window)],
-        { concurrency: 2 },
+      const [coverageStartedAt, rows, codexAccount] = yield* Effect.all(
+        [
+          repository.readCoverageStartedAt,
+          repository.summarizeHourly(window),
+          getCodexAccountUsage(now.toISOString()),
+        ],
+        { concurrency: 3 },
       );
       return buildUsageSummary({
         request,
@@ -335,6 +396,7 @@ const make = Effect.gen(function* () {
         coverageStartedAt,
         rangeStartedAt: window.startedAt,
         rows,
+        codexAccount,
       });
     });
 

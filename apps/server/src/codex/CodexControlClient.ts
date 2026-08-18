@@ -464,6 +464,14 @@ export class CodexControlClient extends EventEmitter<{
     };
   }
 
+  async readAccountTokenUsage(): Promise<unknown> {
+    return await this.sendRequest("account/usage/read", undefined);
+  }
+
+  async readAccountRateLimits(): Promise<unknown> {
+    return await this.sendRequest("account/rateLimits/read", undefined);
+  }
+
   async batchWriteConfig(
     input: CodexControlConfigBatchWriteInput,
   ): Promise<CodexControlConfigWriteResult> {

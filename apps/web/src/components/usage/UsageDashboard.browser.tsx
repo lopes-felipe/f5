@@ -28,6 +28,32 @@ function summary(): UsageSummary {
     range: "7d",
     timeZone: "UTC",
     generatedAt: "2026-08-15T12:00:00.000Z",
+    codexAccount: {
+      status: "available",
+      fetchedAt: "2026-08-15T12:00:00.000Z",
+      tokenSummary: {
+        lifetimeTokens: "1250000",
+        peakDailyTokens: "92000",
+        longestRunningTurnSec: "480",
+        currentStreakDays: "3",
+        longestStreakDays: "8",
+      },
+      dailyUsageBuckets: [
+        { startDate: "2026-08-14", tokens: "30000" },
+        { startDate: "2026-08-15", tokens: "40000" },
+      ],
+      rateLimits: [
+        {
+          id: "codex",
+          name: "Codex",
+          planType: "plus",
+          primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 1_787_000_000 },
+          secondary: { usedPercent: 18, windowDurationMins: 10_080, resetsAt: 1_787_500_000 },
+          credits: { hasCredits: true, unlimited: false, balance: "12.50" },
+        },
+      ],
+      message: null,
+    },
     metrics: metrics(),
     buckets: [
       {
@@ -95,7 +121,7 @@ describe("UsageDashboardView", () => {
       await expect
         .element(
           page.getByText(
-            "Provider-reported token usage and API-equivalent cost. Subscription or invoice spend may differ.",
+            "Historical provider-reported tokens and API-equivalent cost, plus Codex account usage and limits. Subscription or invoice spend may differ.",
           ),
         )
         .toBeVisible();
@@ -107,6 +133,10 @@ describe("UsageDashboardView", () => {
         .toBeVisible();
       await expect.element(page.getByText("Unreported", { exact: true }).first()).toBeVisible();
       await expect.element(page.getByText(/no price was estimated/i)).toBeVisible();
+      await expect.element(page.getByText("Codex account usage", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("1.3M", { exact: true })).toBeVisible();
+      await expect.element(page.getByText("70K", { exact: true })).toBeVisible();
+      await expect.element(page.getByRole("progressbar", { name: "5-hour limit" })).toBeVisible();
 
       await page.getByRole("button", { name: "30 days" }).click();
       expect(onRangeChange).toHaveBeenCalledWith("30d");

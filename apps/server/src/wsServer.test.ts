@@ -89,6 +89,10 @@ import { GitCommandError, GitManagerError } from "./git/Errors.ts";
 import { MigrationError } from "@effect/sql-sqlite-bun/SqliteMigrator";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
+import {
+  CodexControlClientRegistry,
+  CodexControlClientRegistryError,
+} from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
 import { ProjectMcpConfigService } from "./mcp/ProjectMcpConfigService.ts";
@@ -217,6 +221,14 @@ function makeProviderRuntimeTestLayer(providerLayer: Layer.Layer<ProviderService
     Layer.succeed(CodexMcpEventBus, {
       publishStatusUpdated: () => Effect.void,
       streamStatusUpdates: Stream.empty,
+    }),
+    Layer.succeed(CodexControlClientRegistry, {
+      getAdminClient: () =>
+        Effect.fail(
+          new CodexControlClientRegistryError({ message: "unused Codex account client" }),
+        ),
+      hasOauthLease: () => Effect.succeed(false),
+      acquireOauthClient: () => Effect.die("unused Codex OAuth client"),
     }),
     Layer.succeed(CodexMcpSyncService, {
       getStatus: ({ projectId }) =>

@@ -889,6 +889,7 @@ function SidebarMenuButton({
   const { isMobile, state } = useSidebar();
 
   const defaultProps = {
+    type: "button" as const,
     className: cn(sidebarMenuButtonVariants({ size, variant }), className),
     "data-active": isActive,
     "data-sidebar": "menu-button",

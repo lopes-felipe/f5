@@ -97,6 +97,60 @@ export const UsageCoverage = Schema.Struct({
 });
 export type UsageCoverage = typeof UsageCoverage.Type;
 
+const CodexDecimalCount = TrimmedNonEmptyString.check(Schema.isPattern(/^\d+$/));
+
+export const CodexAccountTokenSummary = Schema.Struct({
+  lifetimeTokens: Schema.NullOr(CodexDecimalCount),
+  peakDailyTokens: Schema.NullOr(CodexDecimalCount),
+  longestRunningTurnSec: Schema.NullOr(CodexDecimalCount),
+  currentStreakDays: Schema.NullOr(CodexDecimalCount),
+  longestStreakDays: Schema.NullOr(CodexDecimalCount),
+});
+export type CodexAccountTokenSummary = typeof CodexAccountTokenSummary.Type;
+
+export const CodexAccountDailyUsageBucket = Schema.Struct({
+  startDate: TrimmedNonEmptyString,
+  tokens: CodexDecimalCount,
+});
+export type CodexAccountDailyUsageBucket = typeof CodexAccountDailyUsageBucket.Type;
+
+export const CodexAccountRateLimitWindow = Schema.Struct({
+  usedPercent: NonNegativeNumber,
+  windowDurationMins: Schema.NullOr(NonNegativeInt),
+  resetsAt: Schema.NullOr(NonNegativeInt),
+});
+export type CodexAccountRateLimitWindow = typeof CodexAccountRateLimitWindow.Type;
+
+export const CodexAccountCredits = Schema.Struct({
+  hasCredits: Schema.Boolean,
+  unlimited: Schema.Boolean,
+  balance: Schema.NullOr(Schema.String),
+});
+export type CodexAccountCredits = typeof CodexAccountCredits.Type;
+
+export const CodexAccountRateLimit = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  name: Schema.NullOr(TrimmedNonEmptyString),
+  planType: Schema.NullOr(TrimmedNonEmptyString),
+  primary: Schema.NullOr(CodexAccountRateLimitWindow),
+  secondary: Schema.NullOr(CodexAccountRateLimitWindow),
+  credits: Schema.NullOr(CodexAccountCredits),
+});
+export type CodexAccountRateLimit = typeof CodexAccountRateLimit.Type;
+
+export const CodexAccountUsageStatus = Schema.Literals(["available", "unsupported", "unavailable"]);
+export type CodexAccountUsageStatus = typeof CodexAccountUsageStatus.Type;
+
+export const CodexAccountUsage = Schema.Struct({
+  status: CodexAccountUsageStatus,
+  fetchedAt: IsoDateTime,
+  tokenSummary: Schema.NullOr(CodexAccountTokenSummary),
+  dailyUsageBuckets: Schema.Array(CodexAccountDailyUsageBucket),
+  rateLimits: Schema.Array(CodexAccountRateLimit),
+  message: Schema.NullOr(Schema.String),
+});
+export type CodexAccountUsage = typeof CodexAccountUsage.Type;
+
 export const UsageSummary = Schema.Struct({
   range: UsageRange,
   timeZone: TrimmedNonEmptyString,
@@ -105,5 +159,8 @@ export const UsageSummary = Schema.Struct({
   buckets: Schema.Array(UsageBucket),
   byProvider: Schema.Array(UsageProviderBreakdown),
   coverage: UsageCoverage,
+  codexAccount: Schema.optional(Schema.NullOr(CodexAccountUsage)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
 });
 export type UsageSummary = typeof UsageSummary.Type;

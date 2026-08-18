@@ -1,7 +1,7 @@
 import { formatHex, formatHex8, parse, wcagContrast } from "culori";
 
 export const THEME_DEFINITION_VERSION = 1 as const;
-export const DEFAULT_THEME_ID = "f5-default";
+export const DEFAULT_THEME_ID = "f5-black";
 export const MAX_CUSTOM_THEMES = 20;
 export const MAX_THEME_DEFINITION_BYTES = 64 * 1024;
 export const MIN_BODY_TEXT_CONTRAST = 4.5;
@@ -316,25 +316,65 @@ function paletteFromDefinition(definition: ThemeDefinitionV1, builtin: boolean):
   };
 }
 
-const BUILTIN_THEME_DEFINITIONS = [
-  { id: DEFAULT_THEME_ID, name: "F5 Default", baseHue: 264, chroma: 0.185, contrast: 1 },
-  { id: "f5-ocean", name: "Ocean", baseHue: 232, chroma: 0.16, contrast: 1.04 },
-  { id: "f5-grove", name: "Grove", baseHue: 150, chroma: 0.145, contrast: 1.02 },
-  { id: "f5-ember", name: "Ember", baseHue: 35, chroma: 0.17, contrast: 1.04 },
-  { id: "f5-iris", name: "Iris", baseHue: 305, chroma: 0.17, contrast: 1.02 },
-] as const;
+const BUILTIN_THEME_DEFINITIONS: readonly ThemeDefinitionV1[] = [
+  {
+    version: THEME_DEFINITION_VERSION,
+    id: DEFAULT_THEME_ID,
+    name: "F5 Black",
+    parameters: normalizeThemeParameters({ baseHue: 264, chroma: 0.185, contrast: 1 }),
+    overrides: {
+      dark: {
+        background: "#161616",
+        foreground: "#f5f5f5",
+        card: "#1b1b1b",
+        "card-foreground": "#f5f5f5",
+        popover: "#1b1b1b",
+        "popover-foreground": "#f5f5f5",
+        secondary: "#202020",
+        "secondary-foreground": "#f5f5f5",
+        muted: "#202020",
+        "muted-foreground": "#7d7d7d",
+        accent: "#202020",
+        "accent-foreground": "#f5f5f5",
+        border: "#252525",
+        input: "#292929",
+      },
+    },
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    id: "f5-default",
+    name: "F5 Blue",
+    parameters: normalizeThemeParameters({ baseHue: 264, chroma: 0.185, contrast: 1 }),
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    id: "f5-ocean",
+    name: "Ocean",
+    parameters: normalizeThemeParameters({ baseHue: 232, chroma: 0.16, contrast: 1.04 }),
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    id: "f5-grove",
+    name: "Grove",
+    parameters: normalizeThemeParameters({ baseHue: 150, chroma: 0.145, contrast: 1.02 }),
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    id: "f5-ember",
+    name: "Ember",
+    parameters: normalizeThemeParameters({ baseHue: 35, chroma: 0.17, contrast: 1.04 }),
+  },
+  {
+    version: THEME_DEFINITION_VERSION,
+    id: "f5-iris",
+    name: "Iris",
+    parameters: normalizeThemeParameters({ baseHue: 305, chroma: 0.17, contrast: 1.02 }),
+  },
+];
 
 export const BUILTIN_THEME_PALETTES: readonly ThemePalette[] = BUILTIN_THEME_DEFINITIONS.map(
-  (theme) =>
-    paletteFromDefinition(
-      {
-        version: THEME_DEFINITION_VERSION,
-        id: theme.id,
-        name: theme.name,
-        parameters: normalizeThemeParameters(theme),
-      },
-      true,
-    ),
+  (theme) => paletteFromDefinition(theme, true),
 );
 
 const BUILTIN_THEME_BY_ID = new Map(BUILTIN_THEME_PALETTES.map((theme) => [theme.id, theme]));

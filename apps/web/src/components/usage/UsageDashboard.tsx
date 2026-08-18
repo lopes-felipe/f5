@@ -1,4 +1,10 @@
-import type { UsageMetrics, UsageRange, UsageSummary } from "@t3tools/contracts";
+import type {
+  CodexAccountRateLimitWindow,
+  CodexAccountUsage,
+  UsageMetrics,
+  UsageRange,
+  UsageSummary,
+} from "@t3tools/contracts";
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangleIcon, CoinsIcon, GaugeIcon, RefreshCwIcon, SigmaIcon } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -21,6 +27,195 @@ function compactNumber(value: number): string {
     notation: value >= 10_000 ? "compact" : "standard",
     maximumFractionDigits: value >= 10_000 ? 1 : 0,
   }).format(value);
+}
+
+function compactDecimalCount(value: string | null): string {
+  if (value === null) return "Unavailable";
+  try {
+    return new Intl.NumberFormat(undefined, {
+      notation: value.length > 4 ? "compact" : "standard",
+      maximumFractionDigits: value.length > 4 ? 1 : 0,
+    }).format(BigInt(value));
+  } catch {
+    return value;
+  }
+}
+
+function rateLimitWindowLabel(window: CodexAccountRateLimitWindow, fallback: string): string {
+  const minutes = window.windowDurationMins;
+  if (minutes === null) return fallback;
+  if (minutes === 300) return "5-hour limit";
+  if (minutes === 10_080) return "Weekly limit";
+  if (minutes % 1_440 === 0) return `${minutes / 1_440}-day limit`;
+  if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
+  return `${minutes}-minute limit`;
+}
+
+function resetLabel(resetsAt: number | null): string {
+  if (resetsAt === null) return "Reset time unavailable";
+  return `Resets ${new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(resetsAt * 1_000))}`;
+}
+
+function CodexRateLimitWindowView(props: {
+  readonly window: CodexAccountRateLimitWindow;
+  readonly fallbackLabel: string;
+}) {
+  const percent = Math.min(100, props.window.usedPercent);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span className="font-medium text-foreground">
+          {rateLimitWindowLabel(props.window, props.fallbackLabel)}
+        </span>
+        <span className="tabular-nums text-muted-foreground">
+          {props.window.usedPercent.toFixed(0)}% used
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={rateLimitWindowLabel(props.window, props.fallbackLabel)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="h-1.5 overflow-hidden rounded-full bg-muted"
+      >
+        <div
+          className={cn(
+            "h-full rounded-full transition-[width]",
+            percent >= 90 ? "bg-warning" : "bg-primary",
+          )}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <p className="text-[11px] text-muted-foreground">{resetLabel(props.window.resetsAt)}</p>
+    </div>
+  );
+}
+
+function codexAccountRangeTokens(input: {
+  readonly usage: CodexAccountUsage;
+  readonly range: UsageRange;
+  readonly generatedAt: string;
+}): string | null {
+  const rangeDays = input.range === "24h" ? 1 : Number.parseInt(input.range, 10);
+  const firstDay = new Date(input.generatedAt);
+  firstDay.setUTCHours(0, 0, 0, 0);
+  firstDay.setUTCDate(firstDay.getUTCDate() - (rangeDays - 1));
+  const firstDate = firstDay.toISOString().slice(0, 10);
+  let total = 0n;
+  let found = false;
+  for (const bucket of input.usage.dailyUsageBuckets) {
+    if (bucket.startDate < firstDate) continue;
+    total += BigInt(bucket.tokens);
+    found = true;
+  }
+  return found ? total.toString() : null;
+}
+
+function CodexAccountUsageCard(props: {
+  readonly usage: CodexAccountUsage;
+  readonly range: UsageRange;
+  readonly generatedAt: string;
+}) {
+  const { usage } = props;
+  const summary = usage.tokenSummary;
+  const rangeTokens = codexAccountRangeTokens(props);
+  if (usage.status !== "available") {
+    return (
+      <Card className="rounded-xl">
+        <CardHeader className="p-4 pb-2">
+          <CardTitle className="text-sm">Codex account usage</CardTitle>
+        </CardHeader>
+        <CardPanel className="p-4 pt-1 text-xs text-muted-foreground">
+          {usage.status === "unsupported"
+            ? "This installed Codex version does not expose account usage and rate limits."
+            : "Codex account usage is temporarily unavailable."}
+          {usage.message ? <p className="mt-1 break-words opacity-80">{usage.message}</p> : null}
+        </CardPanel>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="rounded-xl">
+      <CardHeader className="p-4 pb-2">
+        <CardTitle className="text-sm">Codex account usage</CardTitle>
+        <p className="text-xs text-muted-foreground">
+          Provider-native ChatGPT/Codex account totals and quota windows. These are not dollar
+          costs.
+        </p>
+      </CardHeader>
+      <CardPanel className="space-y-4 p-4 pt-2">
+        {summary ? (
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div>
+              <p className="text-[11px] text-muted-foreground">
+                Account tokens · {props.range === "24h" ? "today" : props.range}
+              </p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                {compactDecimalCount(rangeTokens)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-muted-foreground">Lifetime tokens</p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                {compactDecimalCount(summary.lifetimeTokens)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-muted-foreground">Peak daily tokens</p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                {compactDecimalCount(summary.peakDailyTokens)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-muted-foreground">Current usage streak</p>
+              <p className="mt-0.5 text-lg font-semibold tabular-nums">
+                {summary.currentStreakDays === null
+                  ? "Unavailable"
+                  : `${summary.currentStreakDays} day${summary.currentStreakDays === "1" ? "" : "s"}`}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
+        {usage.rateLimits.length > 0 ? (
+          <div className="grid gap-4 border-t border-border/60 pt-4 md:grid-cols-2">
+            {usage.rateLimits.map((limit) => (
+              <div key={limit.id} className="space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-xs font-medium">{limit.name ?? limit.id}</p>
+                  {limit.planType ? (
+                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {limit.planType}
+                    </span>
+                  ) : null}
+                </div>
+                {limit.primary ? (
+                  <CodexRateLimitWindowView window={limit.primary} fallbackLabel="Primary limit" />
+                ) : null}
+                {limit.secondary ? (
+                  <CodexRateLimitWindowView
+                    window={limit.secondary}
+                    fallbackLabel="Secondary limit"
+                  />
+                ) : null}
+                {limit.credits?.hasCredits ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    Credits:{" "}
+                    {limit.credits.unlimited ? "Unlimited" : (limit.credits.balance ?? "—")}
+                  </p>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </CardPanel>
+    </Card>
+  );
 }
 
 function costLabel(metrics: UsageMetrics): string {
@@ -99,8 +294,8 @@ export function UsageDashboardView(props: {
             ) : null}
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Provider-reported token usage and API-equivalent cost. Subscription or invoice spend may
-            differ.
+            Historical provider-reported tokens and API-equivalent cost, plus Codex account usage
+            and limits. Subscription or invoice spend may differ.
           </p>
         </div>
         <div
@@ -147,6 +342,14 @@ export function UsageDashboardView(props: {
           icon={CoinsIcon}
         />
       </div>
+
+      {summary.codexAccount ? (
+        <CodexAccountUsageCard
+          usage={summary.codexAccount}
+          range={props.range}
+          generatedAt={summary.generatedAt}
+        />
+      ) : null}
 
       <Card className="rounded-xl">
         <CardHeader className="p-4 pb-2">

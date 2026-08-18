@@ -94,11 +94,14 @@ export function useLocalStorage<T, E>(
   key: string,
   initialValue: T,
   schema: Schema.Codec<T, E>,
+  parseRaw?: (value: string | null) => T,
 ): [T, (value: T | ((val: T) => T)) => void] {
   // Get the initial value from localStorage or use the provided initialValue
   const [storedValue, setStoredValue] = useState<T>(() => {
     try {
-      const item = getLocalStorageItem(key, schema);
+      const item = parseRaw
+        ? parseRaw(readLocalStorageRawItem(key))
+        : getLocalStorageItem(key, schema);
       return item ?? initialValue;
     } catch (error) {
       console.error("[LOCALSTORAGE] Error:", error);
@@ -135,19 +138,23 @@ export function useLocalStorage<T, E>(
     if (prevKeyRef.current !== key) {
       prevKeyRef.current = key;
       try {
-        const newValue = getLocalStorageItem(key, schema);
+        const newValue = parseRaw
+          ? parseRaw(readLocalStorageRawItem(key))
+          : getLocalStorageItem(key, schema);
         setStoredValue(newValue ?? initialValue);
       } catch (error) {
         console.error("[LOCALSTORAGE] Error:", error);
       }
     }
-  }, [key, initialValue, schema]);
+  }, [key, initialValue, parseRaw, schema]);
 
   // Listen for storage events from other tabs AND custom events from the same tab
   useEffect(() => {
     const syncFromStorage = () => {
       try {
-        const newValue = getLocalStorageItem(key, schema);
+        const newValue = parseRaw
+          ? parseRaw(readLocalStorageRawItem(key))
+          : getLocalStorageItem(key, schema);
         setStoredValue(newValue ?? initialValue);
       } catch (error) {
         console.error("[LOCALSTORAGE] Error:", error);
@@ -173,7 +180,7 @@ export function useLocalStorage<T, E>(
       window.removeEventListener("storage", handleStorageChange);
       window.removeEventListener(LOCAL_STORAGE_CHANGE_EVENT, handleLocalChange as EventListener);
     };
-  }, [key, initialValue, schema]);
+  }, [key, initialValue, parseRaw, schema]);
 
   return [storedValue, setValue];
 }

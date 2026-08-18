@@ -46,5 +46,55 @@ describe("usage contracts", () => {
 
     expect(decoded.metrics.providerReportedCostUsd).toBeNull();
     expect(decoded.coverage.costUnreportedTurnCount).toBe(1);
+    expect(decoded.codexAccount).toBeNull();
+  });
+
+  it("decodes provider-native Codex account usage without treating it as cost", () => {
+    const decoded = Schema.decodeUnknownSync(UsageSummary)({
+      range: "7d",
+      timeZone: "UTC",
+      generatedAt: "2026-08-18T12:00:00.000Z",
+      metrics: {
+        turnCount: 0,
+        reportedTokenTurnCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        totalTokens: 0,
+        providerReportedCostUsd: null,
+        pricedTurnCount: 0,
+        unpricedTurnCount: 0,
+      },
+      buckets: [],
+      byProvider: [],
+      coverage: {
+        coverageStartedAt: "2026-08-18T00:00:00.000Z",
+        rangeStartedAt: "2026-08-12T00:00:00.000Z",
+        partialHistory: false,
+        historicalCostTurnCount: 0,
+        tokenUnreportedTurnCount: 0,
+        costUnreportedTurnCount: 0,
+        providersMissingTokens: [],
+        providersMissingCost: [],
+      },
+      codexAccount: {
+        status: "available",
+        fetchedAt: "2026-08-18T12:00:00.000Z",
+        tokenSummary: {
+          lifetimeTokens: "123456",
+          peakDailyTokens: null,
+          longestRunningTurnSec: null,
+          currentStreakDays: "2",
+          longestStreakDays: "5",
+        },
+        dailyUsageBuckets: [],
+        rateLimits: [],
+        message: null,
+      },
+    });
+
+    expect(decoded.codexAccount?.tokenSummary?.lifetimeTokens).toBe("123456");
+    expect(decoded.metrics.providerReportedCostUsd).toBeNull();
   });
 });

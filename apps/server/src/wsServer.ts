@@ -185,6 +185,7 @@ import { resolveDefaultWorktreePath } from "./git/worktreePaths.ts";
 import { getReviewPreviewDiff } from "./git/ReviewDiffService.ts";
 import { decodeJsonResult, formatSchemaError } from "@t3tools/shared/schemaJson";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
+import { CodexControlClientRegistry } from "./codex/CodexControlClientRegistry.ts";
 import { CodexMcpEventBus } from "./codex/CodexMcpEventBus.ts";
 import { CodexMcpSyncService } from "./codex/CodexMcpSyncService.ts";
 import { CodexOAuthManager } from "./codex/CodexOAuthManager.ts";
@@ -595,6 +596,7 @@ export type ServerCoreRuntimeServices =
   | ProviderAdvisoryProjection
   | HarnessValidation
   | ServerSettingsService
+  | CodexControlClientRegistry
   | CodexMcpEventBus
   | CodexMcpSyncService
   | CodexOAuthManager

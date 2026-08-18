@@ -46,13 +46,23 @@ function toggledProfileValue(
 
 describe("parsePersistedAppSettings", () => {
   it("defaults and preserves local palette selections and opaque invalid theme sources", () => {
-    expect(parsePersistedAppSettings(null).themeId).toBe("f5-default");
+    expect(parsePersistedAppSettings(null).themeId).toBe("f5-black");
     const customThemes = [{ version: 99, raw: "keep me" }];
     const parsed = parsePersistedAppSettings(
       JSON.stringify({ themeId: "custom-local", customThemes }),
     );
     expect(parsed.themeId).toBe("custom-local");
     expect(parsed.customThemes).toEqual(customThemes);
+  });
+
+  it("migrates the former implicit blue default to black only once", () => {
+    expect(parsePersistedAppSettings(JSON.stringify({ themeId: "f5-default" })).themeId).toBe(
+      "f5-black",
+    );
+    expect(
+      parsePersistedAppSettings(JSON.stringify({ themeId: "f5-default", themePaletteVersion: 2 }))
+        .themeId,
+    ).toBe("f5-default");
   });
 
   it("defaults and normalizes client-local appearance settings", () => {
