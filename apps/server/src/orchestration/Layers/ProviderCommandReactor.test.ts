@@ -1053,6 +1053,85 @@ describe("ProviderCommandReactor", () => {
     expect(harness.stopSession.mock.calls.length).toBe(0);
   });
 
+  it("preserves stable error identity when re-ensuring the same provider failure", async () => {
+    const harness = await createHarness();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const startedAt = "2026-08-18T10:00:00.000Z";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-error-identity-turn-1"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-error-identity-1"),
+          role: "user",
+          text: "first",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: startedAt,
+      }),
+    );
+    await waitFor(() => harness.runtimeSessions.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    const stableErrorId = "provider-error-stable";
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-error-identity-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: "provider disconnected",
+          lastErrorId: stableErrorId,
+          lastErrorOccurredAt: startedAt,
+          updatedAt: startedAt,
+        },
+        createdAt: startedAt,
+      }),
+    );
+    harness.runtimeSessions[0] = {
+      ...harness.runtimeSessions[0]!,
+      lastError: "provider disconnected",
+      updatedAt: "2026-08-18T10:05:00.000Z",
+    };
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-error-identity-turn-2"),
+        threadId,
+        message: {
+          messageId: asMessageId("user-error-identity-2"),
+          role: "user",
+          text: "retry",
+          attachments: [],
+        },
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: "2026-08-18T10:06:00.000Z",
+      }),
+    );
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      return (
+        readModel.threads.find((thread) => thread.id === threadId)?.session?.updatedAt ===
+        "2026-08-18T10:05:00.000Z"
+      );
+    });
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    expect(readModel.threads.find((thread) => thread.id === threadId)?.session?.lastErrorId).toBe(
+      stableErrorId,
+    );
+  });
+
   it("preserves provider-reported token usage when reusing a provider session for a new turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
@@ -1770,15 +1849,28 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.startSession.mock.calls.length === 2);
 
     expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
+    await waitFor(async () => {
+      const readModel = await Effect.runPromise(harness.engine.getReadModel());
+      const thread = readModel.threads.find((entry) => entry.id === threadId);
+      return (
+        thread?.activities.some(
+          (activity) =>
+            activity.summary === "Session context reset" &&
+            (activity.payload as { actionable?: boolean }).actionable === true &&
+            (activity.payload as { detail?: { reason?: string } }).detail?.reason === "cwd-changed",
+        ) === true
+      );
+    });
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
-    const thread = readModel.threads.find((entry) => entry.id === threadId);
     expect(
-      thread?.activities.some(
-        (activity) =>
-          activity.summary === "Session context reset" &&
-          (activity.payload as { actionable?: boolean }).actionable === true &&
-          (activity.payload as { detail?: { reason?: string } }).detail?.reason === "cwd-changed",
-      ),
+      readModel.threads
+        .find((entry) => entry.id === threadId)
+        ?.activities.some(
+          (activity) =>
+            activity.summary === "Session context reset" &&
+            (activity.payload as { actionable?: boolean }).actionable === true &&
+            (activity.payload as { detail?: { reason?: string } }).detail?.reason === "cwd-changed",
+        ),
     ).toBe(true);
   });
 

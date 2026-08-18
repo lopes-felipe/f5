@@ -944,6 +944,7 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
 
     case "thread.unsnooze": {
       const thread = yield* requireThread({ readModel, command, threadId: command.threadId });
+      if (thread.snoozedUntil === null) return [];
       if (
         command.expectedSnoozedUntil !== undefined &&
         thread.snoozedUntil !== command.expectedSnoozedUntil

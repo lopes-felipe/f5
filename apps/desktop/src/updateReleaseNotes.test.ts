@@ -36,4 +36,20 @@ describe("normalizeDesktopUpdateReleaseNotes", () => {
     expect(normalizeDesktopUpdateReleaseNotes({ note: 42 })).toBeNull();
     expect(normalizeDesktopUpdateReleaseNotes("<div> </div>")).toBeNull();
   });
+
+  it("bounds array item reads before joining remote release-note payloads", () => {
+    let noteReads = 0;
+    const entries = Array.from({ length: 1_000 }, (_, index) => ({
+      version: `v${index}`,
+      get note() {
+        noteReads += 1;
+        return "x".repeat(4_000);
+      },
+    }));
+
+    const result = normalizeDesktopUpdateReleaseNotes(entries);
+
+    expect(result?.length).toBe(1_200);
+    expect(noteReads).toBeLessThanOrEqual(64);
+  });
 });

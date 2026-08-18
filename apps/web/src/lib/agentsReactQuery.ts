@@ -5,6 +5,7 @@ import { useEffect, useMemo } from "react";
 
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
 import { useStore } from "../store";
+import { onServerWelcome } from "../wsNativeApi";
 import {
   buildAgentActivityIndex,
   deriveAgentsPanelModel,
@@ -52,6 +53,17 @@ export function useAgentsPanelModel(options: { readonly includeActivityIndex?: b
       }
     });
   }, [queryClient]);
+
+  useEffect(
+    () =>
+      onServerWelcome(() => {
+        void queryClient.invalidateQueries({
+          queryKey: agentsQueryKeys.snapshot,
+          refetchType: "active",
+        });
+      }),
+    [queryClient],
+  );
 
   const activityThreads = useMemo<ReadonlyArray<AgentActivityThreadSource>>(() => {
     if (!includeActivityIndex) return EMPTY_ACTIVITY_THREADS;

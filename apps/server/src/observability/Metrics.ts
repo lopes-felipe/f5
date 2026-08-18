@@ -70,6 +70,13 @@ export const providerRuntimeEventsDroppedTotal = Metric.counter(
   },
 );
 
+export const providerProjectionWriteFailuresTotal = Metric.counter(
+  "f5_provider_projection_write_failures_total",
+  {
+    description: "Provider runtime projection writes that failed and require degraded handling.",
+  },
+);
+
 export const acpResumeTotal = Metric.counter("t3_acp_resume_total", {
   description: "Total ACP resume outcomes while hardening is enabled.",
 });

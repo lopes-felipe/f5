@@ -917,6 +917,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       return { ...input.command, createdAt } satisfies OrchestrationCommand;
     }
 
+    if (
+      input.command.type === "thread.pins.replace" ||
+      input.command.type === "thread.pins.import-legacy" ||
+      input.command.type === "thread.unsnooze"
+    ) {
+      return {
+        ...input.command,
+        createdAt: new Date().toISOString(),
+      } satisfies OrchestrationCommand;
+    }
+
     if (input.command.type !== "thread.turn.start") {
       return input.command as OrchestrationCommand;
     }

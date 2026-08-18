@@ -96,6 +96,14 @@ const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
+const lastPreviewStateEmissionByTabId = new Map<
+  string,
+  {
+    readonly ownerWebContentsId: number;
+    readonly stateKey: string;
+    readonly faviconDataUrl: string | null;
+  }
+>();
 const PREVIEW_TAB_SCOPE_SEPARATOR = ":";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
@@ -365,7 +373,24 @@ function emitPreviewRecordingFrame(frame: DesktopPreviewRecordingFrame): void {
 function emitPreviewState(tabId: string): void {
   const guest = getPreviewWebContents(tabId);
   const state = previewStateFromWebContents(tabId, guest);
-  previewOwnerWebContents(tabId)?.send(PREVIEW_STATE_CHANNEL, clientPreviewTabId(tabId), state);
+  const owner = previewOwnerWebContents(tabId);
+  if (!owner) return;
+  const { faviconDataUrl = null, updatedAt, ...stableState } = state;
+  const stateKey = JSON.stringify(stableState);
+  const previous = lastPreviewStateEmissionByTabId.get(tabId);
+  const ownerChanged = previous?.ownerWebContentsId !== owner.id;
+  const faviconChanged = ownerChanged || previous?.faviconDataUrl !== faviconDataUrl;
+  if (!ownerChanged && previous?.stateKey === stateKey && !faviconChanged) return;
+
+  const emittedState: DesktopPreviewTabState = faviconChanged
+    ? state
+    : { ...stableState, updatedAt };
+  owner.send(PREVIEW_STATE_CHANNEL, clientPreviewTabId(tabId), emittedState);
+  lastPreviewStateEmissionByTabId.set(tabId, {
+    ownerWebContentsId: owner.id,
+    stateKey,
+    faviconDataUrl,
+  });
 }
 
 function registerPreviewWebContents(tabId: string, webContentsId: number): boolean {
@@ -510,6 +535,7 @@ function closePreviewTab(tabId: string): void {
   }
   const owner = previewOwnerWebContents(tabId);
   previewTabs.delete(tabId);
+  lastPreviewStateEmissionByTabId.delete(tabId);
   owner?.send(
     PREVIEW_STATE_CHANNEL,
     clientPreviewTabId(tabId),

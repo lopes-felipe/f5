@@ -7,6 +7,8 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   OrchestrationCreateCodeReviewWorkflowInput,
+  OrchestrationEvent,
+  OrchestrationEventType,
   OrchestrationCreateWorkflowInput,
   OrchestrationGetFullThreadDiffInput,
   OrchestrationGetThreadHistoryPageInput,
@@ -60,6 +62,37 @@ const decodeCreateCodeReviewWorkflowInput = Schema.decodeUnknownEffect(
 );
 const decodeRetryWorkflowInput = Schema.decodeUnknownEffect(OrchestrationRetryWorkflowInput);
 const decodeRetryWorkflowResult = Schema.decodeUnknownEffect(OrchestrationRetryWorkflowResult);
+
+it("keeps every declared orchestration event type in the persisted event union", () => {
+  type TypeAst = {
+    readonly _tag?: string;
+    readonly literal?: unknown;
+    readonly types?: ReadonlyArray<TypeAst>;
+  };
+  const collectLiterals = (ast: TypeAst | undefined): ReadonlyArray<string> => {
+    if (ast?._tag === "Literal" && typeof ast.literal === "string") {
+      return [ast.literal];
+    }
+    return (ast?.types ?? []).flatMap(collectLiterals);
+  };
+  const unionAst = OrchestrationEvent.ast as unknown as {
+    readonly types?: ReadonlyArray<{
+      readonly propertySignatures?: ReadonlyArray<{
+        readonly name?: PropertyKey;
+        readonly type?: TypeAst;
+      }>;
+    }>;
+  };
+  const schemaEventTypes = (unionAst.types ?? []).flatMap((variant) => {
+    const typeProperty = variant.propertySignatures?.find((property) => property.name === "type");
+    return collectLiterals(typeProperty?.type);
+  });
+
+  assert.deepEqual(
+    [...new Set(schemaEventTypes)].sort(),
+    [...OrchestrationEventType.literals].sort(),
+  );
+});
 
 it.effect("defaults planning workflow duplicate-risk confirmation to false", () =>
   Effect.gen(function* () {
@@ -415,10 +448,10 @@ it.effect("decodes threads without persisted token usage and defaults to null", 
     });
     assert.strictEqual(parsed.estimatedContextTokens, null);
     assert.strictEqual(parsed.modelContextWindowTokens, null);
-    assert.strictEqual(parsed.pinnedAt, undefined);
-    assert.strictEqual(parsed.pinOrderKey, undefined);
-    assert.strictEqual(parsed.snoozedUntil, undefined);
-    assert.strictEqual(parsed.snoozedAt, undefined);
+    assert.strictEqual(parsed.pinnedAt, null);
+    assert.strictEqual(parsed.pinOrderKey, null);
+    assert.strictEqual(parsed.snoozedUntil, null);
+    assert.strictEqual(parsed.snoozedAt, null);
     assert.strictEqual(parsed.titleSource, "legacy");
     assert.strictEqual(parsed.titleRevision, 0);
     assert.strictEqual(parsed.titleUpdatedAt, null);
@@ -691,8 +724,8 @@ it.effect("defaults thread archivedAt to null for historical snapshots", () =>
     });
 
     assert.strictEqual(parsed.archivedAt, null);
-    assert.strictEqual(parsed.pinnedAt, undefined);
-    assert.strictEqual(parsed.snoozedUntil, undefined);
+    assert.strictEqual(parsed.pinnedAt, null);
+    assert.strictEqual(parsed.snoozedUntil, null);
     assert.strictEqual(parsed.compaction, null);
     assert.strictEqual(parsed.tasksTurnId, null);
     assert.strictEqual(parsed.tasksUpdatedAt, null);

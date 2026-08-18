@@ -4641,6 +4641,9 @@ export default function ChatView({
           recordedBranch: activeThread.branch,
         });
         if (!proceed) return;
+        // Branch-drift confirmation is asynchronous. Another submit may have
+        // acquired the shared send lock while this one was waiting.
+        if (sendInFlightRef.current) return;
       }
       const messageIdForSend = newMessageId();
       const messageCreatedAt = new Date().toISOString();

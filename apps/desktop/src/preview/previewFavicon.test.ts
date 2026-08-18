@@ -46,14 +46,14 @@ describe("preview favicon authorization", () => {
     expect(calls).toBe(2);
   });
 
-  it("rejects a favicon declared above the one-megabyte cap without reading it", async () => {
+  it("rejects a favicon declared above the 128 KiB cap without reading it", async () => {
     let cancelled = false;
     const dataUrl = await fetchPreviewFaviconDataUrl({
       pageUrl: "http://localhost:5173/",
       candidateUrls: ["/huge.png"],
       fetchImplementation: async () => ({
         status: 200,
-        headers: new Headers({ "content-length": String(1024 * 1024 + 1) }),
+        headers: new Headers({ "content-length": String(128 * 1024 + 1) }),
         body: new ReadableStream({
           cancel: () => {
             cancelled = true;

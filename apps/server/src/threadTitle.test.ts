@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   MessageId,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
   type OrchestrationMessage,
 } from "@t3tools/contracts";
@@ -129,6 +130,25 @@ describe("formatThreadTitleRegenerationContext", () => {
     expect(context.text).toContain("first-");
     expect(context.text).toContain("latest-");
     expect(context.text).toContain("truncated");
+  });
+
+  it("caps and deduplicates title attachments while retaining recent context", () => {
+    const messages = Array.from({ length: 5 }, (_, messageIndex) => ({
+      ...userMessage(messageIndex + 1, `request ${messageIndex + 1}`),
+      attachments: Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, imageIndex) => ({
+        type: "image" as const,
+        id: `image-${messageIndex}-${imageIndex}`,
+        name: `image-${messageIndex}-${imageIndex}.png`,
+        mimeType: "image/png",
+        sizeBytes: 100,
+      })),
+    }));
+
+    const context = formatThreadTitleRegenerationContext(messages);
+
+    expect(context.attachments).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS);
+    expect(context.attachments.some((attachment) => attachment.id === "image-4-0")).toBe(true);
+    expect(context.attachments[0]?.id).toBe("image-0-0");
   });
 });
 

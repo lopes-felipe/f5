@@ -247,6 +247,13 @@ describe("OrchestrationEngine", () => {
         createdAt,
       }),
     );
+    await seededSystem.run(
+      seededSystem.engine.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.makeUnsafe("cmd-thread-snapshot-delete"),
+        threadId: ThreadId.makeUnsafe("thread-snapshot"),
+      }),
+    );
 
     const seededReadModel = await seededSystem.run(seededSystem.engine.getReadModel());
     const latestSequence = seededReadModel.snapshotSequence;
@@ -262,6 +269,9 @@ describe("OrchestrationEngine", () => {
     expect(warmReadModel.snapshotSequence).toBe(latestSequence);
     expect(warmReadModel.projects.map((project) => project.id)).toContain("project-snapshot");
     expect(warmReadModel.threads.map((thread) => thread.id)).toContain("thread-snapshot");
+    expect(
+      warmReadModel.threads.find((thread) => thread.id === "thread-snapshot")?.deletedAt,
+    ).toEqual(seededReadModel.threads.find((thread) => thread.id === "thread-snapshot")?.deletedAt);
     expect(readCursors).toContain(latestSequence);
     expect(readCursors).not.toContain(0);
 

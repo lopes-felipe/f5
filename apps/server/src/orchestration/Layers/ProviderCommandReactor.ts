@@ -466,17 +466,34 @@ const make = Effect.gen(function* () {
             input.thread.session?.tokenUsageSource === "provider" &&
             input.thread.session.providerName === input.session.provider &&
             providerContextTokens !== undefined;
+          const providerLastError = input.session.lastError ?? null;
+          const isSameProjectedFailure =
+            providerLastError !== null && input.thread.session?.lastError === providerLastError;
+          const fallbackErrorId = providerLastError
+            ? `provider-session:${input.thread.id}:${input.session.updatedAt}`
+            : null;
 
           return {
-            estimatedContextTokens: shouldPreserveProviderTokenUsage
-              ? providerContextTokens
-              : estimatedContextTokens,
-            modelContextWindowTokens: shouldPreserveProviderTokenUsage
-              ? (providerWindowTokens ?? modelContextWindowTokens)
-              : modelContextWindowTokens,
-            tokenUsageSource: shouldPreserveProviderTokenUsage
-              ? ("provider" as const)
-              : ("estimated" as const),
+            tokenUsage: {
+              estimatedContextTokens: shouldPreserveProviderTokenUsage
+                ? providerContextTokens
+                : estimatedContextTokens,
+              modelContextWindowTokens: shouldPreserveProviderTokenUsage
+                ? (providerWindowTokens ?? modelContextWindowTokens)
+                : modelContextWindowTokens,
+              tokenUsageSource: shouldPreserveProviderTokenUsage
+                ? ("provider" as const)
+                : ("estimated" as const),
+            },
+            providerLastError,
+            lastErrorId: isSameProjectedFailure
+              ? (input.thread.session?.lastErrorId ?? fallbackErrorId)
+              : fallbackErrorId,
+            lastErrorOccurredAt: isSameProjectedFailure
+              ? (input.thread.session?.lastErrorOccurredAt ?? input.session.updatedAt)
+              : providerLastError
+                ? input.session.updatedAt
+                : null,
           };
         }).pipe(
           Effect.flatMap((tokenUsage) =>
@@ -489,12 +506,10 @@ const make = Effect.gen(function* () {
                 providerInstanceId: input.session.providerInstanceId ?? null,
                 runtimeMode: input.desiredRuntimeMode,
                 activeTurnId: null,
-                lastError: input.session.lastError ?? null,
-                lastErrorId: input.session.lastError
-                  ? `provider-session:${input.thread.id}:${input.session.updatedAt}`
-                  : null,
-                lastErrorOccurredAt: input.session.lastError ? input.session.updatedAt : null,
-                ...tokenUsage,
+                lastError: tokenUsage.providerLastError,
+                lastErrorId: tokenUsage.lastErrorId,
+                lastErrorOccurredAt: tokenUsage.lastErrorOccurredAt,
+                ...tokenUsage.tokenUsage,
                 updatedAt: input.session.updatedAt,
               },
               createdAt: input.createdAt,

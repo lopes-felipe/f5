@@ -5,6 +5,7 @@ import {
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   type ModelSelection,
   type OrchestrationMessage,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
 import { Cause, Effect } from "effect";
 
@@ -12,7 +13,10 @@ import type { TextGenerationShape } from "./git/Services/TextGeneration.ts";
 
 export const THREAD_TITLE_MAX_CHARS = 80;
 export const THREAD_TITLE_REGENERATION_RECENT_USER_MESSAGE_COUNT = 4;
-export const THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS = 12_000;
+// Both title-generation prompt builders cap the message section at 8,000
+// characters. Keep the upstream context budget aligned so the newest selected
+// messages are not subsequently discarded by a second head-only truncation.
+export const THREAD_TITLE_REGENERATION_MAX_CONTEXT_CHARS = 8_000;
 const THREAD_TITLE_CONTEXT_TRUNCATION_MARKER = "\n\n[… earlier thread context truncated …]\n\n";
 
 export function formatThreadTitleRegenerationContext(
@@ -60,9 +64,17 @@ export function formatThreadTitleRegenerationContext(
           return `${firstSection}${THREAD_TITLE_CONTEXT_TRUNCATION_MARKER}${recentSections.join("\n\n")}`;
         })();
   const attachmentsById = new Map<string, ChatAttachment>();
-  for (const message of selected) {
-    for (const attachment of message.attachments ?? []) {
+  const prioritizedAttachments = [
+    ...(first.attachments?.slice(0, 1) ?? []),
+    ...recent.toReversed().flatMap((message) => message.attachments ?? []),
+    ...(first.attachments?.slice(1) ?? []),
+  ];
+  for (const attachment of prioritizedAttachments) {
+    if (!attachmentsById.has(attachment.id)) {
       attachmentsById.set(attachment.id, attachment);
+    }
+    if (attachmentsById.size >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+      break;
     }
   }
   return { text: boundedText, attachments: [...attachmentsById.values()] };

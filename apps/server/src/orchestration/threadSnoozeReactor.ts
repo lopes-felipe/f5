@@ -6,7 +6,7 @@ import type { OrchestrationEngineShape } from "./Services/OrchestrationEngine.ts
 const MAX_TIMER_DELAY_MS = 2_147_000_000;
 const MAX_RETRY_DELAY_MS = 60_000;
 const INITIAL_RETRY_DELAY_MS = 1_000;
-const MAX_RETRY_ATTEMPTS = 10;
+const RETRY_ATTEMPTS_BEFORE_SLOW_RESCAN = 10;
 
 function affectsSnoozeSchedule(event: OrchestrationEvent): ThreadId | null {
   switch (event.type) {
@@ -76,14 +76,9 @@ export function startThreadSnoozeReactor(
                 Effect.andThen(orchestrationEngine.getReadModel()),
                 Effect.flatMap((readModel) => {
                   const thread = readModel.threads.find((entry) => entry.id === threadId);
-                  return thread?.snoozedUntil === snoozedUntil &&
-                    retryAttempt + 1 < MAX_RETRY_ATTEMPTS
-                    ? Effect.sync(() => schedule(threadId, snoozedUntil, retryAttempt + 1))
-                    : Effect.logWarning("stopped retrying snooze wake", {
-                        threadId,
-                        snoozedUntil,
-                        retryAttempts: retryAttempt + 1,
-                      });
+                  if (thread?.snoozedUntil !== snoozedUntil) return Effect.void;
+                  const nextAttempt = Math.min(RETRY_ATTEMPTS_BEFORE_SLOW_RESCAN, retryAttempt + 1);
+                  return Effect.sync(() => schedule(threadId, snoozedUntil, nextAttempt));
                 }),
                 Effect.catchCause((retryCause) =>
                   Effect.logWarning("failed to schedule snooze wake retry", {

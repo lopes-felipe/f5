@@ -9,6 +9,8 @@ import { ServerConfig } from "./config";
 import { OrchestrationCommandReceiptRepositoryLive } from "./persistence/Layers/OrchestrationCommandReceipts";
 import { OrchestrationEventStoreLive } from "./persistence/Layers/OrchestrationEventStore";
 import { ProviderSessionRuntimeRepositoryLive } from "./persistence/Layers/ProviderSessionRuntime";
+import { ProviderTerminalEventRepositoryLive } from "./persistence/Layers/ProviderTerminalEvents";
+import { ProviderTerminalEventRepository } from "./persistence/Services/ProviderTerminalEvents";
 import { ProjectMcpConfigRepositoryLive } from "./persistence/Layers/ProjectMcpConfigs";
 import { ProjectionCheckpointRepositoryLive } from "./persistence/Layers/ProjectionCheckpoints";
 import { ProjectionProjectRepositoryLive } from "./persistence/Layers/ProjectionProjects";
@@ -160,6 +162,7 @@ export function makeServerProviderLayer(): Layer.Layer<
     const canonicalEventLogger = yield* makeEventNdjsonLogger(providerEventLogPath, {
       stream: "canonical",
     });
+    const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
@@ -202,9 +205,10 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
     );
-    const providerServiceLayer = makeProviderServiceLive(
-      canonicalEventLogger ? { canonicalEventLogger } : undefined,
-    ).pipe(
+    const providerServiceLayer = makeProviderServiceLive({
+      ...(canonicalEventLogger ? { canonicalEventLogger } : {}),
+      recordTerminalEvent: providerTerminalEventRepository.record,
+    }).pipe(
       Layer.provide(adapterRegistryLayer),
       Layer.provide(providerSessionDirectoryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
@@ -248,7 +252,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       previewAutomationBrokerLayer,
       previewMcpHttpServerLayer,
     );
-  }).pipe(Layer.unwrap);
+  }).pipe(Effect.provide(ProviderTerminalEventRepositoryLive), Layer.unwrap);
 }
 
 export function makeServerRuntimeServicesLayer() {

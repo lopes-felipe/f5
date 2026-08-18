@@ -815,7 +815,21 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
   useEffect(() => {
     if (!desktopPreview) return;
     return desktopPreview.onStateChange((tabId, state) => {
-      setDesktopStateByTabId((current) => ({ ...current, [tabId]: state }));
+      setDesktopStateByTabId((current) => {
+        const previous = current[tabId];
+        return {
+          ...current,
+          [tabId]: {
+            ...previous,
+            ...state,
+            ...(state.faviconDataUrl !== undefined
+              ? { faviconDataUrl: state.faviconDataUrl }
+              : previous?.faviconDataUrl !== undefined
+                ? { faviconDataUrl: previous.faviconDataUrl }
+                : {}),
+          },
+        };
+      });
     });
   }, [desktopPreview]);
 

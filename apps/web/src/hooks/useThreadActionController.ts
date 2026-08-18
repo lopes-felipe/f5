@@ -293,13 +293,18 @@ export function useThreadActionController(input: {
               ? "next-week"
               : null;
       if (snoozePreset !== null) {
-        await snoozeThread(threadId, resolveSnoozePreset(snoozePreset)).catch((error) => {
+        try {
+          await snoozeThread(threadId, resolveSnoozePreset(snoozePreset));
+          if (input.activeThreadId === threadId) {
+            await navigate({ to: "/", replace: true });
+          }
+        } catch (error) {
           toastManager.add({
             type: "error",
             title: "Failed to snooze thread",
             description: error instanceof Error ? error.message : "An error occurred.",
           });
-        });
+        }
         return;
       }
       if (actionId === "archive" || actionId === "unarchive") {
@@ -348,7 +353,9 @@ export function useThreadActionController(input: {
       copyThreadIdToClipboard,
       deleteThread,
       input.onRenameRequested,
+      input.activeThreadId,
       markThreadUnread,
+      navigate,
       pinRevision,
       projects,
       settings.confirmThreadDelete,

@@ -1,4 +1,4 @@
-import { CommandId, EventId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { CommandId, EventId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Schema, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -62,6 +62,53 @@ layer("OrchestrationEventStore", (it) => {
       assert.equal(replayed.length, 1);
       assert.equal(replayed[0]?.type, "project.created");
       assert.equal(replayed[0]?.metadata.adapterKey, "codex");
+    }),
+  );
+
+  it.effect("round-trips every field of a usage-recorded event", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const completedAt = "2026-08-18T08:00:00.000Z";
+      const eventId = EventId.makeUnsafe("evt-store-usage-recorded");
+      const threadId = ThreadId.makeUnsafe("thread-store-usage-recorded");
+      const turnId = TurnId.makeUnsafe("turn-store-usage-recorded");
+      const appended = yield* eventStore.append({
+        type: "thread.usage-recorded",
+        eventId,
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: completedAt,
+        commandId: CommandId.makeUnsafe("cmd-store-usage-recorded"),
+        causationEventId: null,
+        correlationId: CommandId.makeUnsafe("cmd-store-usage-recorded"),
+        metadata: {},
+        payload: {
+          threadId,
+          usageFact: {
+            turnId,
+            threadId,
+            projectId: ProjectId.makeUnsafe("project-store-usage-recorded"),
+            provider: "codex",
+            providerInstanceId: null,
+            model: "gpt-5.6-sol",
+            inputTokens: 10,
+            outputTokens: 5,
+            cacheReadTokens: 2,
+            cacheWriteTokens: 1,
+            totalTokens: 18,
+            providerReportedCostUsd: 0.1,
+            tokenProvenance: "provider-reported",
+            costProvenance: "provider-reported",
+            completedAt,
+            sourceEventId: "provider-event-usage-recorded",
+          },
+        },
+      });
+
+      const replayed = yield* Stream.runCollect(
+        eventStore.readFromSequence(appended.sequence - 1, 1),
+      ).pipe(Effect.map((chunk) => Array.from(chunk)));
+      assert.deepStrictEqual(replayed, [appended]);
     }),
   );
 

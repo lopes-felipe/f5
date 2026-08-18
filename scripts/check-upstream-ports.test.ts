@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const ROOT = path.resolve(import.meta.dirname, "..");
 const SCRIPT = path.join(ROOT, "scripts", "check-upstream-ports.ts");
-const sourceManifest = JSON.parse(
-  readFileSync(path.join(ROOT, "scripts", "upstream-ports.manifest.json"), "utf8"),
-) as Record<string, unknown>;
+const sourceManifestText = readFileSync(
+  path.join(ROOT, "scripts", "upstream-ports.manifest.json"),
+  "utf8",
+);
+const sourceManifest = JSON.parse(sourceManifestText) as Record<string, unknown>;
 const sourceLedger = JSON.parse(
   readFileSync(path.join(ROOT, "scripts", "upstream-ports.json"), "utf8"),
 ) as {
@@ -30,7 +32,7 @@ function runWith(ledger: unknown): ReturnType<typeof spawnSync> {
   temporaryDirectories.push(directory);
   const manifestPath = path.join(directory, "manifest.json");
   const ledgerPath = path.join(directory, "ledger.json");
-  writeFileSync(manifestPath, JSON.stringify(sourceManifest));
+  writeFileSync(manifestPath, sourceManifestText);
   writeFileSync(ledgerPath, JSON.stringify(ledger));
   return spawnSync(process.execPath, [SCRIPT], {
     cwd: ROOT,
@@ -74,7 +76,7 @@ describe("check-upstream-ports", () => {
     expect(result.stderr).toContain("invalid disposition maybe");
   }, 15_000);
 
-  it("rejects a completed port with a non-resolving f5 SHA", () => {
+  it("allows historical implementation SHAs that a squash merge may no longer resolve", () => {
     const ledger = structuredClone(sourceLedger);
     ledger.entries[0]!.disposition = "ported";
     ledger.entries[0]!.f5Shas = ["0000000000000000000000000000000000000000"];
@@ -82,9 +84,30 @@ describe("check-upstream-ports", () => {
 
     const result = runWith(ledger);
 
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("references non-resolving f5 SHA");
+    expect(result.status, String(result.stderr)).toBe(0);
   }, 15_000);
+
+  it.each([
+    ["malformed", ["apps/server/src/main.ts"]],
+    ["missing", ["apps/server/src/does-not-exist.ts:1"]],
+    ["out of range", ["apps/server/src/main.ts:9999999"]],
+    ["outside the repository", ["../outside.ts:1"]],
+  ])(
+    "rejects %s already-present evidence",
+    (_label, evidence) => {
+      const ledger = structuredClone(sourceLedger);
+      const entry = ledger.entries.find(
+        (candidate) => candidate.disposition === "already-present",
+      )!;
+      entry.evidence = evidence;
+
+      const result = runWith(ledger);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("evidence");
+    },
+    15_000,
+  );
 
   it("reports malformed JSON without an uncaught type error", () => {
     const result = runRaw(JSON.stringify(sourceManifest), '{"schemaVersion":3,"entries":');

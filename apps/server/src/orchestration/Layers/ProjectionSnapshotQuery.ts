@@ -816,7 +816,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens"
         FROM projection_threads
-        WHERE deleted_at IS NULL
         ORDER BY last_interaction_at DESC, created_at DESC, thread_id DESC
       `,
   });
@@ -852,7 +851,6 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens"
         FROM projection_threads
-        WHERE deleted_at IS NULL
         ORDER BY last_interaction_at DESC, created_at DESC, thread_id DESC
       `,
   });
@@ -1506,10 +1504,9 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listThreadActivitiesAfterAnchor = SqlSchema.findAll({
     Request: OrchestrationGetThreadHistoryPageInput,
     Result: Schema.Struct({ activityId: EventId }),
-    execute: ({ threadId, anchorActivityId }) =>
-      anchorActivityId == null
-        ? sql`SELECT activity_id AS "activityId" FROM projection_thread_activities WHERE 1 = 0`
-        : sql`
+    execute: ({ threadId, anchorMessageId, anchorActivityId }) =>
+      anchorActivityId != null
+        ? sql`
             SELECT activity_id AS "activityId"
             FROM projection_thread_activities
             WHERE thread_id = ${threadId}
@@ -1552,7 +1549,27 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 )
               )
             LIMIT 1
-          `,
+          `
+        : anchorMessageId != null
+          ? sql`
+              SELECT activity_id AS "activityId"
+              FROM projection_thread_activities
+              WHERE thread_id = ${threadId}
+                AND created_at > (
+                  SELECT created_at
+                  FROM projection_thread_messages
+                  WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}
+                )
+                AND (
+                  (SELECT turn_id FROM projection_thread_messages
+                    WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId}) IS NULL
+                  OR turn_id IS NULL
+                  OR turn_id <> (SELECT turn_id FROM projection_thread_messages
+                    WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId})
+                )
+              LIMIT 1
+            `
+          : sql`SELECT activity_id AS "activityId" FROM projection_thread_activities WHERE 1 = 0`,
   });
 
   const listThreadTailCheckpointRows = SqlSchema.findAll({

@@ -27,8 +27,9 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   title provenance/revisions, and stale-result protection for manual renames and newer requests.
 - Per-project workspace defaults and manual icons, plus safe checked-in `f5.json` configuration for
   non-executable workspace and icon fields (`t3.json` is accepted read-only for interoperability).
-- Thread activity tails are capped at the newest 500 rows, with explicit null-safe cursor pages for
-  loading older work-log entries without materializing the full activity history on thread open.
+- Thread activity tail reads return at most the newest 500 rows, with explicit null-safe cursor
+  pages for loading older durable work-log entries without materializing the full activity history
+  on thread open.
 - Thread history now loads one bounded page when the virtualized timeline reaches its top, keeps
   the visible viewport anchored across prepends, and can hydrate unloaded message deep links with
   server-resolved anchor and forward cursors across adjacent timeline streams.
@@ -71,8 +72,8 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   bounded startup snapshots, thread tails, and history-page APIs instead of requesting the full
   event log in one response.
 - **Breaking:** pin and snooze lifecycle commands add new orchestration domain-event variants.
-  Clients must be upgraded before using these actions; existing snapshots remain decodable because
-  the new thread fields are optional.
+  Clients must be upgraded before using these actions; existing snapshots remain decodable through
+  optional/defaulted thread fields.
 - **Breaking:** title regeneration adds new orchestration domain-event variants. Existing thread
   snapshots remain decodable through optional/defaulted title-state fields.
 - Correct Claude Fast Mode availability: enabled for Opus 5 and Opus 4.8, and disabled for Opus

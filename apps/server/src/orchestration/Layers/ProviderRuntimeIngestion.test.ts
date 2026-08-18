@@ -54,6 +54,8 @@ import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ProjectionThreadCommandExecutionRepositoryLive } from "../../persistence/Layers/ProjectionThreadCommandExecutions.ts";
 import { ProjectionThreadFileChangeRepositoryLive } from "../../persistence/Layers/ProjectionThreadFileChanges.ts";
+import { ProviderTerminalEventRepository } from "../../persistence/Services/ProviderTerminalEvents.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 const asProjectId = (value: string): ProjectId => ProjectId.makeUnsafe(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.makeUnsafe(value);
@@ -177,7 +179,9 @@ describe("ProviderRuntimeIngestion", () => {
     | ProviderSessionDirectory
     | ThreadCommandExecutionQuery
     | ThreadFileChangeQuery
-    | UsageFactRepository,
+    | UsageFactRepository
+    | ProviderTerminalEventRepository
+    | SqlClient.SqlClient,
     unknown
   > | null = null;
   let scope: Scope.Closeable | null = null;
@@ -203,7 +207,7 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
-  async function createHarness() {
+  async function createHarness(options?: { readonly startIngestion?: boolean }) {
     const workspaceRoot = makeTempDir("t3-provider-project-");
     fs.mkdirSync(path.join(workspaceRoot, ".git"));
     const provider = createProviderServiceHarness();
@@ -251,8 +255,11 @@ describe("ProviderRuntimeIngestion", () => {
     );
     const threadFileChangeQuery = await runtime.runPromise(Effect.service(ThreadFileChangeQuery));
     const usageFactRepository = await runtime.runPromise(Effect.service(UsageFactRepository));
+    const providerTerminalEventRepository = await runtime.runPromise(
+      Effect.service(ProviderTerminalEventRepository),
+    );
+    const sql = await runtime.runPromise(Effect.service(SqlClient.SqlClient));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope)));
     const drain = () => Effect.runPromise(ingestion.drain);
 
     const createdAt = new Date().toISOString();
@@ -307,6 +314,13 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt,
       updatedAt: createdAt,
     });
+    const startIngestion = async () => {
+      await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope!)));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    };
+    if (options?.startIngestion !== false) {
+      await startIngestion();
+    }
 
     return {
       engine,
@@ -317,6 +331,9 @@ describe("ProviderRuntimeIngestion", () => {
       threadCommandExecutionQuery,
       threadFileChangeQuery,
       usageFactRepository,
+      providerTerminalEventRepository,
+      sql,
+      startIngestion,
       drain,
       workspaceRoot,
     };
@@ -366,6 +383,229 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastErrorId).toBe("evt-turn-completed");
     expect(thread.session?.lastErrorOccurredAt).toBeTruthy();
     expect(thread.session?.turnCostUsd).toBe(0.42);
+  });
+
+  it("settles a completed turn but retains its receipt when usage persistence fails", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-usage-persistence-failure");
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-usage-persistence-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: now,
+      turnId,
+      payload: {},
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    await Effect.runPromise(harness.sql`DROP TABLE projection_turn_usage_facts`);
+    const completedEvent = {
+      type: "turn.completed",
+      eventId: asEventId("evt-usage-persistence-completed"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {
+        state: "completed",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    } as const;
+    await Effect.runPromise(harness.providerTerminalEventRepository.record(completedEvent));
+    harness.emit(completedEvent);
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    expect(thread.latestTurn?.state).toBe("completed");
+    expect(thread.latestTurn?.turnId).toBe(turnId);
+    const receipts = await Effect.runPromise(
+      harness.sql<{ readonly appliedAt: string | null; readonly attempt: number }>`
+        SELECT applied_at AS "appliedAt", attempt
+        FROM provider_terminal_events
+        WHERE event_id = ${completedEvent.eventId}
+      `,
+    );
+    expect(receipts).toEqual([{ appliedAt: null, attempt: 1 }]);
+  });
+
+  it("retains a terminal receipt when late assistant finalization fails", async () => {
+    const harness = await createHarness();
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-late-finalization-failure");
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-late-finalization-started"),
+      provider: "codex",
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {},
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    harness.emit({
+      type: "content.delta",
+      eventId: asEventId("evt-late-finalization-delta"),
+      provider: "codex",
+      threadId,
+      createdAt: now,
+      turnId,
+      itemId: asItemId("item-late-finalization"),
+      payload: {
+        streamKind: "assistant_text",
+        delta: "Buffered response",
+      },
+    });
+    await harness.drain();
+
+    // Lifecycle settlement writes projection_threads first; the buffered
+    // assistant is materialized later. Failing that later projection must not
+    // make the durable terminal receipt look fully applied.
+    await Effect.runPromise(harness.sql`DROP TABLE projection_thread_messages`);
+    const completedEvent = {
+      type: "turn.completed",
+      eventId: asEventId("evt-late-finalization-completed"),
+      provider: "codex",
+      threadId,
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: { state: "completed" },
+    } as const;
+    await Effect.runPromise(harness.providerTerminalEventRepository.record(completedEvent));
+    harness.emit(completedEvent);
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) => entry.session?.status === "ready" && entry.session.activeTurnId === null,
+    );
+    expect(thread.latestTurn?.state).toBe("completed");
+    const receipts = await Effect.runPromise(
+      harness.sql<{ readonly appliedAt: string | null; readonly attempt: number }>`
+        SELECT applied_at AS "appliedAt", attempt
+        FROM provider_terminal_events
+        WHERE event_id = ${completedEvent.eventId}
+      `,
+    );
+    expect(receipts).toEqual([{ appliedAt: null, attempt: 1 }]);
+  });
+
+  it("replays a pending terminal receipt idempotently on startup", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-pending-terminal-replay");
+    const now = new Date().toISOString();
+    const event = {
+      type: "turn.completed",
+      eventId: asEventId("evt-pending-terminal-replay"),
+      provider: "codex",
+      threadId,
+      createdAt: now,
+      turnId,
+      payload: {
+        state: "completed",
+        usage: { input_tokens: 10, output_tokens: 5 },
+      },
+    } as const;
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-pending-terminal-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    const messageId = asMessageId("message-pending-terminal-replay");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.delta",
+        commandId: CommandId.makeUnsafe("cmd-pending-terminal-message-delta"),
+        threadId,
+        messageId,
+        delta: "Final response",
+        turnId,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.message.assistant.complete",
+        commandId: CommandId.makeUnsafe("cmd-pending-terminal-message-complete"),
+        threadId,
+        messageId,
+        turnId,
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(harness.providerTerminalEventRepository.record(event));
+
+    await harness.startIngestion();
+    await harness.drain();
+    const settled = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "ready" && thread.session.activeTurnId === null,
+    );
+    expect(settled.latestTurn?.state).toBe("completed");
+    expect(await Effect.runPromise(harness.providerTerminalEventRepository.listPending)).toEqual(
+      [],
+    );
+    const beforeRetry = {
+      messages: settled.messages.length,
+      activities: settled.activities.length,
+      checkpoints: settled.checkpoints.length,
+    };
+
+    harness.emit(event);
+    await harness.drain();
+    const retried = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "ready" && thread.session.activeTurnId === null,
+    );
+    expect({
+      messages: retried.messages.length,
+      activities: retried.activities.length,
+      checkpoints: retried.checkpoints.length,
+    }).toEqual(beforeRetry);
+    const commandCounts = await Effect.runPromise(
+      harness.sql<{ readonly commandId: string; readonly count: number }>`
+        SELECT command_id AS "commandId", count(*) AS count
+        FROM orchestration_events
+        WHERE command_id IN (
+          'provider:evt-pending-terminal-replay:thread-session-set',
+          'provider:evt-pending-terminal-replay:thread-usage-record'
+        )
+        GROUP BY command_id
+        ORDER BY command_id
+      `,
+    );
+    expect(commandCounts).toEqual([
+      {
+        commandId: "provider:evt-pending-terminal-replay:thread-session-set",
+        count: 1,
+      },
+      {
+        commandId: "provider:evt-pending-terminal-replay:thread-usage-record",
+        count: 1,
+      },
+    ]);
   });
 
   it("extracts provider-reported context tokens from non-Claude turn.completed usage", async () => {
@@ -1026,6 +1266,42 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastError).toBeNull();
     expect(thread.session?.lastErrorId).toBeNull();
     expect(thread.session?.lastErrorOccurredAt).toBeNull();
+  });
+
+  it("does not settle an active turn when a provider reports generic ready", async () => {
+    const harness = await createHarness();
+    const turnId = asTurnId("turn-ready-after-resume");
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-ready-after-resume-turn-started"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      turnId,
+      payload: {},
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "running" && thread.session.activeTurnId === turnId,
+    );
+
+    harness.emit({
+      type: "session.state.changed",
+      eventId: asEventId("evt-ready-after-resume-session-ready"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: new Date().toISOString(),
+      payload: { state: "ready" },
+    });
+
+    const thread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.session?.status === "running" &&
+        entry.session.activeTurnId === turnId &&
+        entry.latestTurn?.state === "running",
+    );
+    expect(thread.latestTurn?.turnId).toBe(turnId);
   });
 
   it("keeps transient thread errors non-terminal while closing explicit terminal states", async () => {

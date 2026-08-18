@@ -426,4 +426,20 @@ describe("thread pins and snoozes", () => {
     );
     expect(Exit.isFailure(exit)).toBe(true);
   });
+
+  it("does not emit an event when an already-awake thread is unsnoozed again", async () => {
+    const decision = await Effect.runPromise(
+      decideOrchestrationCommand({
+        readModel: await makeReadModel(),
+        command: {
+          type: "thread.unsnooze",
+          commandId: CommandId.makeUnsafe("command-unsnooze-idempotent"),
+          threadId: THREAD_1,
+          createdAt: LATER,
+        },
+      }),
+    );
+
+    expect(decision).toEqual([]);
+  });
 });

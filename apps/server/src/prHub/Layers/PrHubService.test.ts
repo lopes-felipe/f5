@@ -103,6 +103,7 @@ function makeGithubStub(input: {
   readonly reconcileResponses?: unknown[];
   readonly reconcileByNumberResponses?: unknown[];
   readonly stallSearchAfterFirst?: boolean;
+  readonly searchDelayMs?: number;
   readonly calls: HarnessCalls;
 }): GitHubCliShape {
   const searchResponses = [...(input.searchResponses ?? [emptySearchResponse()])];
@@ -184,7 +185,14 @@ function makeGithubStub(input: {
       if (!isGitHubCliError(response) && request.query.includes("PrHubSearch")) {
         rememberDetailNodes(response);
       }
-      return isGitHubCliError(response) ? Effect.fail(response) : Effect.succeed(response);
+      const responseEffect = isGitHubCliError(response)
+        ? Effect.fail(response)
+        : Effect.succeed(response);
+      return request.query.includes("PrHubSearch") && (input.searchDelayMs ?? 0) > 0
+        ? Effect.promise(
+            () => new Promise<void>((resolve) => setTimeout(resolve, input.searchDelayMs!)),
+          ).pipe(Effect.andThen(responseEffect))
+        : responseEffect;
     },
     searchPullRequests: () => Effect.succeed([]),
     reviewPullRequest: (request) =>
@@ -256,6 +264,7 @@ function makeLayer(input: {
   readonly reconcileResponses?: unknown[];
   readonly reconcileByNumberResponses?: unknown[];
   readonly stallSearchAfterFirst?: boolean;
+  readonly searchDelayMs?: number;
   readonly calls: HarnessCalls;
 }) {
   const github = makeGithubStub(input);
@@ -499,6 +508,31 @@ function prFilesResponse() {
     },
   };
 }
+
+it.effect("coalesces overlapping forced refreshes into one GitHub fetch", () => {
+  const calls = makeCalls();
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    yield* Effect.all(
+      Array.from({ length: 4 }, () => service.refreshNow({ mode: "force" })),
+      {
+        concurrency: "unbounded",
+        discard: true,
+      },
+    );
+
+    const searchCalls = calls.graphql.filter((call) => call.query.includes("PrHubSearch"));
+    assert.equal(searchCalls.length, 1);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchDelayMs: 50,
+        searchResponses: [emptySearchResponse()],
+      }),
+    ),
+  );
+});
 
 it.effect("marks partial GraphQL responses degraded without hiding previously tracked PRs", () => {
   const calls = makeCalls();

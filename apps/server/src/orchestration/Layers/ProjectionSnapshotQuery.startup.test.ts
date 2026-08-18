@@ -935,6 +935,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
       );
       assert.equal(anchoredPage.hasOlderMessages, false);
       assert.equal(anchoredPage.hasNewerMessages, true);
+      assert.equal(anchoredPage.hasNewerActivities, true);
       assert.deepEqual(anchoredPage.newestLoadedMessageCursor, {
         createdAt: "2026-04-01T09:00:03.000Z",
         messageId: asMessageId("message-0"),

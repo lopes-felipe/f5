@@ -36,7 +36,18 @@ import {
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 import { getProviderTurnInputLengthIssue } from "@t3tools/shared/providerInput";
 import { runtimeModeUnsupportedReason } from "@t3tools/shared/runtimeMode";
-import { Effect, Layer, Option, PubSub, Queue, Ref, Schema, SchemaIssue, Stream } from "effect";
+import {
+  Effect,
+  Layer,
+  Option,
+  PubSub,
+  Queue,
+  Ref,
+  Schedule,
+  Schema,
+  SchemaIssue,
+  Stream,
+} from "effect";
 
 import {
   increment,
@@ -80,11 +91,21 @@ import {
 import { computeProviderLaunchFingerprint } from "../providerLaunchFingerprint.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import {
+  isProviderTerminalRuntimeEvent,
+  type ProviderTerminalEventRepositoryError,
+  type ProviderTerminalRuntimeEvent,
+} from "../../persistence/Services/ProviderTerminalEvents.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
   readonly canonicalEventLogger?: EventNdjsonLogger;
+  readonly recordTerminalEvent?: (
+    event: ProviderTerminalRuntimeEvent,
+  ) => Effect.Effect<void, ProviderTerminalEventRepositoryError>;
 }
+
+const PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY = 2_048;
 
 const ProviderRollbackConversationInput = Schema.Struct({
   threadId: ThreadId,
@@ -257,13 +278,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const directory = yield* ProviderSessionDirectory;
     const projectMcpConfigService = yield* ProjectMcpConfigService;
     const serverConfig = yield* ServerConfig;
-    const runtimeEventQueue = yield* Queue.unbounded<{
+    // Terminal receipts are persisted in this single ordered worker. Bound the
+    // queue so a prolonged SQLite outage applies backpressure to provider
+    // streams instead of allowing process memory to grow without limit.
+    const runtimeEventQueue = yield* Queue.bounded<{
       readonly source: {
         readonly instanceId: ProviderInstanceId;
         readonly provider: ProviderKind;
       };
       readonly event: ProviderRuntimeEvent;
-    }>();
+    }>(PROVIDER_RUNTIME_EVENT_QUEUE_CAPACITY);
     const runtimeEventPubSub = yield* PubSub.unbounded<ProviderRuntimeEvent>();
 
     const publishRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
@@ -404,6 +428,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           return;
         }
         yield* persistResumeCursorFromRuntimeEvent(event);
+        if (isProviderTerminalRuntimeEvent(event) && options?.recordTerminalEvent !== undefined) {
+          // Do not fan out a terminal event until its recovery receipt is durable.
+          // Retrying in place preserves provider event order while SQLite is unavailable.
+          yield* options
+            .recordTerminalEvent(event)
+            .pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }), Effect.orDie);
+        }
         yield* publishRuntimeEvent(event);
         yield* increment(providerRuntimeEventsTotal, {
           provider: event.provider,

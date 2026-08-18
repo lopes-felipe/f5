@@ -211,6 +211,16 @@ interface PrDetailReadMetadata {
   readonly warning?: string | undefined;
 }
 
+interface RefreshFlight {
+  readonly deferred: Deferred.Deferred<PrHubSnapshot>;
+  readonly mode: "if_stale" | "force";
+  readonly trailingForce: Deferred.Deferred<PrHubSnapshot> | null;
+}
+
+type RefreshAcquisition =
+  | { readonly started: true; readonly flight: RefreshFlight }
+  | { readonly started: false; readonly deferred: Deferred.Deferred<PrHubSnapshot> };
+
 function cacheSet<A>(cache: Map<string, CachedPrDetailRead<A>>, key: string, value: A): void {
   cache.delete(key);
   cache.set(key, { value, storedAt: Date.now() });
@@ -1042,7 +1052,7 @@ const makePrHubService = Effect.gen(function* () {
   const snapshotRef = yield* Ref.make<PrHubSnapshot | null>(null);
   const snapshotPubSub = yield* PubSub.unbounded<PrHubSnapshot>();
   const actionRefreshPubSub = yield* PubSub.unbounded<void>();
-  const inFlightRef = yield* Ref.make<Deferred.Deferred<PrHubSnapshot> | null>(null);
+  const inFlightRef = yield* Ref.make<RefreshFlight | null>(null);
   const viewerRef = yield* Ref.make<ViewerIdentity | null>(null);
   const detailCache = new Map<string, CachedPrDetailRead<PrHubDetailResult>>();
   const timelineCache = new Map<string, CachedPrDetailRead<PrHubTimelinePage>>();
@@ -2089,40 +2099,61 @@ const makePrHubService = Effect.gen(function* () {
 
   const refreshNow: PrHubServiceShape["refreshNow"] = (input) =>
     Effect.gen(function* () {
+      const deferred = yield* Deferred.make<PrHubSnapshot>();
+      const acquisition = yield* Ref.modify<RefreshFlight | null, RefreshAcquisition>(
+        inFlightRef,
+        (current) => {
+          if (current === null) {
+            const flight: RefreshFlight = {
+              deferred,
+              mode: input.mode,
+              trailingForce: null,
+            };
+            return [{ started: true as const, flight }, flight] as const;
+          }
+          if (input.mode === "force" && current.mode === "if_stale") {
+            if (current.trailingForce !== null) {
+              return [
+                { started: false as const, deferred: current.trailingForce },
+                current,
+              ] as const;
+            }
+            return [
+              { started: false as const, deferred },
+              { ...current, trailingForce: deferred },
+            ] as const;
+          }
+          return [{ started: false as const, deferred: current.deferred }, current] as const;
+        },
+      );
+      if (!acquisition.started) return yield* Deferred.await(acquisition.deferred);
+
+      let flight = acquisition.flight;
       while (true) {
-        const deferred = yield* Deferred.make<PrHubSnapshot>();
-        const state = yield* Ref.modify(
+        const exit = yield* Effect.exit(fetchAndPersist(flight.mode));
+        const result = Exit.isSuccess(exit) ? exit.value : yield* getSnapshot;
+        const promoted = yield* Ref.modify<RefreshFlight | null, RefreshFlight | null>(
           inFlightRef,
-          (
-            current,
-          ): readonly [
-            {
-              readonly started: boolean;
-              readonly deferred: Deferred.Deferred<PrHubSnapshot>;
-            },
-            Deferred.Deferred<PrHubSnapshot> | null,
-          ] => {
-            if (current) return [{ started: false, deferred: current }, current] as const;
-            return [{ started: true, deferred }, deferred] as const;
+          (current) => {
+            if (current === null || current.deferred !== flight.deferred) {
+              return [null, current] as const;
+            }
+            if (current.trailingForce === null) return [null, null] as const;
+            const next: RefreshFlight = {
+              deferred: current.trailingForce,
+              mode: "force",
+              trailingForce: null,
+            };
+            return [next, next] as const;
           },
         );
-        if (!state.started) {
-          const joined = yield* Deferred.await(state.deferred);
-          if (input.mode === "force") {
-            const current = yield* Ref.get(inFlightRef);
-            if (current === null) continue;
-          }
-          return joined;
-        }
-        const exit = yield* Effect.exit(fetchAndPersist(input.mode));
-        yield* Ref.set(inFlightRef, null);
         if (Exit.isSuccess(exit)) {
-          yield* Deferred.succeed(deferred, exit.value).pipe(Effect.orDie);
+          yield* Deferred.succeed(flight.deferred, exit.value).pipe(Effect.orDie);
         } else {
-          const existing = yield* getSnapshot;
-          yield* Deferred.succeed(deferred, existing).pipe(Effect.orDie);
+          yield* Deferred.succeed(flight.deferred, result).pipe(Effect.orDie);
         }
-        return yield* Deferred.await(deferred);
+        if (promoted === null) return result;
+        flight = promoted;
       }
     });
 

@@ -45,6 +45,11 @@ import {
 } from "../../provider/modelContextWindowMetadata.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
+import { ProviderTerminalEventRepositoryLive } from "../../persistence/Layers/ProviderTerminalEvents.ts";
+import {
+  isProviderTerminalRuntimeEvent,
+  ProviderTerminalEventRepository,
+} from "../../persistence/Services/ProviderTerminalEvents.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -56,12 +61,19 @@ import { reconcileCodexThreadSnapshots } from "../codexSnapshotReconciliation.ts
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
 import { validateThreadTasks } from "../threadTasks.ts";
 import { ThreadBackgroundWork } from "../Services/ThreadBackgroundWork.ts";
-import { normalizeTurnUsage } from "../../usage/usageMetrics.ts";
+import { increment, providerProjectionWriteFailuresTotal } from "../../observability/Metrics.ts";
+import {
+  extractContextTokens,
+  extractTurnCompletedContextTokens,
+  makeCompletedTurnUsageFact,
+  makeTurnCompletedSessionSetCommand,
+  mergeProviderReportedContextTokens,
+  providerCommandId,
+  runtimeTurnErrorMessage,
+  runtimeTurnState,
+} from "../providerTerminalLifecycle.ts";
 
 const providerTurnKey = (threadId: ThreadId, turnId: TurnId) => `${threadId}:${turnId}`;
-const providerCommandId = (event: ProviderRuntimeEvent, tag: string): CommandId =>
-  CommandId.makeUnsafe(`provider:${event.eventId}:${tag}:${crypto.randomUUID()}`);
-
 const DEFAULT_ASSISTANT_DELIVERY_MODE: AssistantDeliveryMode = "buffered";
 const TURN_MESSAGE_IDS_BY_TURN_CACHE_CAPACITY = 10_000;
 const TURN_MESSAGE_IDS_BY_TURN_TTL = Duration.minutes(120);
@@ -340,53 +352,6 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function asNonNegativeNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
-}
-
-function extractContextTokens(usage: unknown): number | undefined {
-  const usageRecord = asRecord(usage);
-  const inputTokens = asNonNegativeNumber(usageRecord?.input_tokens);
-  if (inputTokens === undefined) {
-    return undefined;
-  }
-
-  return (
-    inputTokens +
-    (asNonNegativeNumber(usageRecord?.cache_creation_input_tokens) ?? 0) +
-    (asNonNegativeNumber(usageRecord?.cache_read_input_tokens) ?? 0)
-  );
-}
-
-function extractTurnCompletedContextTokens(
-  event: Extract<ProviderRuntimeEvent, { type: "turn.completed" }>,
-): number | undefined {
-  // Claude `result.usage` aggregates the entire agentic turn. Occupancy
-  // snapshots for the badge come from per-message usage stream events instead.
-  if (event.provider === "claudeAgent") {
-    return undefined;
-  }
-
-  return extractContextTokens(event.payload?.usage);
-}
-
-function mergeProviderReportedContextTokens(input: {
-  readonly provider: ProviderRuntimeEvent["provider"];
-  readonly eventType: "turn.completed" | "thread.token-usage.updated";
-  readonly providerReportedContextTokens: number | undefined;
-  readonly previousEstimatedContextTokens: number | null;
-  readonly authoritativeSnapshot?: boolean | undefined;
-}): number | undefined {
-  if (input.providerReportedContextTokens === undefined) {
-    return undefined;
-  }
-
-  if (
-    input.authoritativeSnapshot ||
-    (input.provider === "claudeAgent" && input.eventType === "thread.token-usage.updated")
-  ) {
-    return input.providerReportedContextTokens;
-  }
-
-  return Math.max(input.providerReportedContextTokens, input.previousEstimatedContextTokens ?? 0);
 }
 
 function extractThreadTokenUsageContextTokens(usage: unknown): number | undefined {
@@ -1008,32 +973,6 @@ function mcpStatusRecord(
   event: Extract<ProviderRuntimeEvent, { type: "mcp.status.updated" }>,
 ): Record<string, unknown> | undefined {
   return asRecord(event.payload.status);
-}
-
-function normalizeRuntimeTurnState(
-  value: string | undefined,
-): "completed" | "failed" | "interrupted" | "cancelled" {
-  switch (value) {
-    case "failed":
-    case "interrupted":
-    case "cancelled":
-    case "completed":
-      return value;
-    default:
-      return "completed";
-  }
-}
-
-function runtimeTurnState(
-  event: ProviderRuntimeEvent,
-): "completed" | "failed" | "interrupted" | "cancelled" {
-  const payloadState = asString(runtimePayloadRecord(event)?.state);
-  return normalizeRuntimeTurnState(payloadState);
-}
-
-function runtimeTurnErrorMessage(event: ProviderRuntimeEvent): string | undefined {
-  const payloadErrorMessage = asString(runtimePayloadRecord(event)?.errorMessage);
-  return payloadErrorMessage;
 }
 
 function runtimeErrorMessageFromEvent(event: ProviderRuntimeEvent): string | undefined {
@@ -2045,6 +1984,7 @@ const make = Effect.gen(function* () {
   const providerService = yield* ProviderService;
   const providerSessionDirectory = yield* ProviderSessionDirectory;
   const projectionTurnRepository = yield* ProjectionTurnRepository;
+  const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
@@ -2281,7 +2221,10 @@ const make = Effect.gen(function* () {
       if (text.length > 0) {
         yield* orchestrationEngine.dispatch({
           type: "thread.message.assistant.delta",
-          commandId: providerCommandId(input.event, input.finalDeltaCommandTag),
+          commandId: providerCommandId(
+            input.event,
+            `${input.finalDeltaCommandTag}:${input.messageId}`,
+          ),
           threadId: input.threadId,
           messageId: input.messageId,
           delta: text,
@@ -2295,7 +2238,10 @@ const make = Effect.gen(function* () {
         yield* orchestrationEngine.dispatch({
           // Empty delta is safe here; completion immediately follows and closes the message.
           type: "thread.message.assistant.delta",
-          commandId: providerCommandId(input.event, `${input.finalDeltaCommandTag}-reasoning-only`),
+          commandId: providerCommandId(
+            input.event,
+            `${input.finalDeltaCommandTag}-reasoning-only:${input.messageId}`,
+          ),
           threadId: input.threadId,
           messageId: input.messageId,
           delta: "",
@@ -2307,7 +2253,7 @@ const make = Effect.gen(function* () {
 
       yield* orchestrationEngine.dispatch({
         type: "thread.message.assistant.complete",
-        commandId: providerCommandId(input.event, input.commandTag),
+        commandId: providerCommandId(input.event, `${input.commandTag}:${input.messageId}`),
         threadId: input.threadId,
         messageId: input.messageId,
         ...(input.turnId ? { turnId: input.turnId } : {}),
@@ -2668,6 +2614,7 @@ const make = Effect.gen(function* () {
     });
 
   const finalizePendingFileChanges = Effect.fnUntraced(function* (input: {
+    readonly event: ProviderRuntimeEvent;
     readonly threadId: ThreadId;
     readonly turnId?: TurnId;
     readonly status: Exclude<OrchestrationFileChangeStatus, "completed" | "declined">;
@@ -2687,7 +2634,7 @@ const make = Effect.gen(function* () {
       }
       yield* orchestrationEngine.dispatch({
         type: "thread.file-change.record",
-        commandId: CommandId.makeUnsafe(`provider:${input.commandTag}:${crypto.randomUUID()}`),
+        commandId: providerCommandId(input.event, `${input.commandTag}:${fileChange.id}`),
         threadId: fileChange.threadId,
         fileChange: {
           id: fileChange.id,
@@ -2824,6 +2771,7 @@ const make = Effect.gen(function* () {
   });
 
   const finalizeOpenCommandExecutions = Effect.fnUntraced(function* (input: {
+    readonly event: ProviderRuntimeEvent;
     readonly threadId: ThreadId;
     readonly turnId?: TurnId;
     readonly status: Exclude<
@@ -2847,7 +2795,7 @@ const make = Effect.gen(function* () {
       yield* flushCommandExecutionOutput(commandExecution.id);
       yield* orchestrationEngine.dispatch({
         type: "thread.command-execution.record",
-        commandId: CommandId.makeUnsafe(`provider:${input.commandTag}:${crypto.randomUUID()}`),
+        commandId: providerCommandId(input.event, `${input.commandTag}:${commandExecution.id}`),
         threadId: commandExecution.threadId,
         commandExecution: {
           id: commandExecution.id,
@@ -2972,12 +2920,20 @@ const make = Effect.gen(function* () {
 
       yield* threadBackgroundWork.recordProviderEvent(event).pipe(
         Effect.catchCause((cause) =>
-          Effect.logWarning("provider runtime ingestion failed to persist background work", {
-            eventId: event.eventId,
+          increment(providerProjectionWriteFailuresTotal, {
+            projection: "background_work",
+            provider: event.provider,
             eventType: event.type,
-            threadId: event.threadId,
-            cause: Cause.pretty(cause),
-          }),
+          }).pipe(
+            Effect.andThen(
+              Effect.logWarning("provider runtime ingestion failed to persist background work", {
+                eventId: event.eventId,
+                eventType: event.type,
+                threadId: event.threadId,
+                cause: Cause.pretty(cause),
+              }),
+            ),
+          ),
         ),
       );
 
@@ -3105,33 +3061,7 @@ const make = Effect.gen(function* () {
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
       const completedTurnUsageFact =
-        event.type === "turn.completed" && eventTurnId !== undefined
-          ? {
-              turnId: eventTurnId,
-              threadId: thread.id,
-              projectId: thread.projectId,
-              provider: event.provider,
-              providerInstanceId:
-                event.providerInstanceId ??
-                thread.session?.providerInstanceId ??
-                thread.modelSelection?.instanceId ??
-                null,
-              model: thread.model || null,
-              ...normalizeTurnUsage(event),
-              completedAt: event.createdAt,
-              sourceEventId: event.eventId,
-            }
-          : undefined;
-
-      if (completedTurnUsageFact !== undefined) {
-        yield* orchestrationEngine.dispatch({
-          type: "thread.usage.record",
-          commandId: providerCommandId(event, "thread-usage-record"),
-          threadId: thread.id,
-          usageFact: completedTurnUsageFact,
-          createdAt: now,
-        });
-      }
+        event.type === "turn.completed" ? makeCompletedTurnUsageFact({ event, thread }) : undefined;
 
       if (
         event.type === "session.started" ||
@@ -3141,13 +3071,7 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" ||
         event.type === "turn.completed"
       ) {
-        const nextActiveTurnId =
-          event.type === "turn.started"
-            ? (eventTurnId ?? null)
-            : event.type === "turn.completed" || event.type === "session.exited"
-              ? null
-              : activeTurnId;
-        const status = (() => {
+        const reportedStatus = (() => {
           switch (event.type) {
             case "session.state.changed":
               return orchestrationSessionStatusFromRuntimeState(event.payload.state);
@@ -3164,6 +3088,26 @@ const make = Effect.gen(function* () {
               return activeTurnId !== null ? "running" : "ready";
           }
         })();
+        // Providers can emit generic `ready` transitions for setup milestones
+        // while a turn is still running (Codex does this after Windows sandbox
+        // setup). Only explicit terminal events may settle an active turn.
+        const status =
+          event.type === "session.state.changed" &&
+          activeTurnId !== null &&
+          reportedStatus === "ready"
+            ? "running"
+            : reportedStatus;
+        const nextActiveTurnId =
+          event.type === "turn.started"
+            ? (eventTurnId ?? null)
+            : event.type === "turn.completed" || event.type === "session.exited"
+              ? null
+              : event.type === "session.state.changed" &&
+                  reportedStatus !== "starting" &&
+                  reportedStatus !== "running" &&
+                  reportedStatus !== "ready"
+                ? null
+                : activeTurnId;
         const lastError =
           event.type === "session.state.changed" && event.payload.state === "error"
             ? (event.payload.reason ?? thread.session?.lastError ?? "Provider session error")
@@ -3232,29 +3176,59 @@ const make = Effect.gen(function* () {
             );
           }
 
-          yield* orchestrationEngine.dispatch({
-            type: "thread.session.set",
-            commandId: providerCommandId(event, "thread-session-set"),
-            threadId: thread.id,
-            session: {
+          if (event.type === "turn.completed") {
+            yield* orchestrationEngine.dispatch(
+              makeTurnCompletedSessionSetCommand({ event, thread, createdAt: now }),
+            );
+          } else {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.session.set",
+              commandId: providerCommandId(event, "thread-session-set"),
               threadId: thread.id,
-              status,
-              providerName: event.provider,
-              runtimeMode: thread.session?.runtimeMode ?? "full-access",
-              activeTurnId: nextActiveTurnId,
-              lastError,
-              lastErrorId,
-              lastErrorOccurredAt,
-              ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
-              ...(estimatedContextTokens !== undefined
-                ? { estimatedContextTokens, tokenUsageSource }
-                : {}),
-              ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
-              updatedAt: now,
-            },
-            createdAt: now,
-          });
+              session: {
+                threadId: thread.id,
+                status,
+                providerName: event.provider,
+                runtimeMode: thread.session?.runtimeMode ?? "full-access",
+                activeTurnId: nextActiveTurnId,
+                lastError,
+                lastErrorId,
+                lastErrorOccurredAt,
+                ...(turnCostUsd !== undefined ? { turnCostUsd } : {}),
+                ...(estimatedContextTokens !== undefined
+                  ? { estimatedContextTokens, tokenUsageSource }
+                  : {}),
+                ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
+                updatedAt: now,
+              },
+              createdAt: now,
+            });
+          }
         }
+      }
+
+      // Lifecycle settlement happens first, but the durable receipt remains
+      // pending until every replay-critical projection has succeeded. Command
+      // ids are deterministic, so a replay safely fills in any work that
+      // failed after the session itself was settled.
+      if (completedTurnUsageFact !== undefined) {
+        yield* orchestrationEngine
+          .dispatch({
+            type: "thread.usage.record",
+            commandId: providerCommandId(event, "thread-usage-record"),
+            threadId: thread.id,
+            usageFact: completedTurnUsageFact,
+            createdAt: now,
+          })
+          .pipe(
+            Effect.catchCause((cause) =>
+              increment(providerProjectionWriteFailuresTotal, {
+                projection: "usage",
+                provider: event.provider,
+                eventType: event.type,
+              }).pipe(Effect.andThen(Effect.failCause(cause))),
+            ),
+          );
       }
 
       if (event.type === "thread.state.changed" && event.payload.state === "closed") {
@@ -3707,6 +3681,7 @@ const make = Effect.gen(function* () {
         if (turnId) {
           const openCommandStatus = runtimeTurnState(event) === "failed" ? "failed" : "interrupted";
           yield* finalizeOpenCommandExecutions({
+            event,
             threadId: thread.id,
             turnId,
             status: openCommandStatus,
@@ -3714,6 +3689,7 @@ const make = Effect.gen(function* () {
             commandTag: "command-execution-turn-complete-finalize",
           });
           yield* finalizePendingFileChanges({
+            event,
             threadId: thread.id,
             turnId,
             status: runtimeTurnState(event) === "failed" ? "failed" : "interrupted",
@@ -3779,6 +3755,7 @@ const make = Effect.gen(function* () {
 
       if (event.type === "turn.aborted") {
         yield* finalizeOpenCommandExecutions({
+          event,
           threadId: thread.id,
           ...(eventTurnId ? { turnId: eventTurnId } : {}),
           status: "interrupted",
@@ -3786,6 +3763,7 @@ const make = Effect.gen(function* () {
           commandTag: "command-execution-turn-aborted-finalize",
         });
         yield* finalizePendingFileChanges({
+          event,
           threadId: thread.id,
           ...(eventTurnId ? { turnId: eventTurnId } : {}),
           status: "interrupted",
@@ -3801,12 +3779,14 @@ const make = Effect.gen(function* () {
 
       if (event.type === "session.exited") {
         yield* finalizeOpenCommandExecutions({
+          event,
           threadId: thread.id,
           status: event.payload.exitKind === "error" ? "failed" : "interrupted",
           updatedAt: now,
           commandTag: "command-execution-session-exited-finalize",
         });
         yield* finalizePendingFileChanges({
+          event,
           threadId: thread.id,
           status: event.payload.exitKind === "error" ? "failed" : "interrupted",
           updatedAt: now,
@@ -3821,6 +3801,7 @@ const make = Effect.gen(function* () {
 
       if (event.type === "runtime.error") {
         yield* finalizeOpenCommandExecutions({
+          event,
           threadId: thread.id,
           ...(eventTurnId ? { turnId: eventTurnId } : {}),
           status: "failed",
@@ -3828,6 +3809,7 @@ const make = Effect.gen(function* () {
           commandTag: "command-execution-runtime-error-finalize",
         });
         yield* finalizePendingFileChanges({
+          event,
           threadId: thread.id,
           ...(eventTurnId ? { turnId: eventTurnId } : {}),
           status: "failed",
@@ -3868,12 +3850,14 @@ const make = Effect.gen(function* () {
 
       if (event.type === "session.state.changed" && event.payload.state === "error") {
         yield* finalizeOpenCommandExecutions({
+          event,
           threadId: thread.id,
           status: "failed",
           updatedAt: now,
           commandTag: "command-execution-session-error-finalize",
         });
         yield* finalizePendingFileChanges({
+          event,
           threadId: thread.id,
           status: "failed",
           updatedAt: now,
@@ -4037,12 +4021,16 @@ const make = Effect.gen(function* () {
       yield* Effect.forEach(activities, (activity) =>
         orchestrationEngine.dispatch({
           type: "thread.activity.append",
-          commandId: providerCommandId(event, "thread-activity-append"),
+          commandId: providerCommandId(event, `thread-activity-append:${activity.id}`),
           threadId: thread.id,
           activity,
           createdAt: activity.createdAt,
         }),
       ).pipe(Effect.asVoid);
+
+      if (isProviderTerminalRuntimeEvent(event)) {
+        yield* providerTerminalEventRepository.markApplied(event.eventId);
+      }
     });
 
   const processDomainEvent = (event: TurnStartRequestedDomainEvent) =>
@@ -4066,20 +4054,42 @@ const make = Effect.gen(function* () {
         if (Cause.hasInterruptsOnly(cause)) {
           return Effect.failCause(cause);
         }
-        return Effect.logWarning("provider runtime ingestion failed to process event", {
-          source: input.source,
-          ...(input.source === "runtime" || input.source === "domain"
-            ? {
-                eventId: input.event.eventId,
-                eventType: input.event.type,
-              }
-            : input.source === "command-output-flush"
-              ? {
-                  commandExecutionId: input.commandExecutionId,
-                }
-              : {}),
-          cause: Cause.pretty(cause),
-        });
+        const prettyCause = Cause.pretty(cause);
+        const markTerminalFailure =
+          input.source === "runtime" && isProviderTerminalRuntimeEvent(input.event)
+            ? providerTerminalEventRepository
+                .markFailed({ eventId: input.event.eventId, error: prettyCause })
+                .pipe(
+                  Effect.catchCause((markCause) =>
+                    Effect.logWarning(
+                      "provider runtime ingestion failed to retain terminal event failure",
+                      {
+                        eventId: input.event.eventId,
+                        eventType: input.event.type,
+                        cause: Cause.pretty(markCause),
+                      },
+                    ),
+                  ),
+                )
+            : Effect.void;
+        return markTerminalFailure.pipe(
+          Effect.andThen(
+            Effect.logWarning("provider runtime ingestion failed to process event", {
+              source: input.source,
+              ...(input.source === "runtime" || input.source === "domain"
+                ? {
+                    eventId: input.event.eventId,
+                    eventType: input.event.type,
+                  }
+                : input.source === "command-output-flush"
+                  ? {
+                      commandExecutionId: input.commandExecutionId,
+                    }
+                  : {}),
+              cause: prettyCause,
+            }),
+          ),
+        );
       }),
     );
 
@@ -4093,6 +4103,29 @@ const make = Effect.gen(function* () {
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) =>
         worker.enqueue({ source: "runtime", event }),
+      ),
+    );
+    yield* providerTerminalEventRepository.listPending.pipe(
+      Effect.retry({ times: 3 }),
+      Effect.flatMap((receipts) =>
+        Effect.forEach(
+          receipts,
+          (receipt) => worker.enqueue({ source: "runtime", event: receipt.event }),
+          { concurrency: 1, discard: true },
+        ).pipe(
+          Effect.tap(() =>
+            receipts.length > 0
+              ? Effect.logInfo("queued pending provider terminal events for replay", {
+                  count: receipts.length,
+                })
+              : Effect.void,
+          ),
+        ),
+      ),
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to replay pending provider terminal events", {
+          cause: Cause.pretty(cause),
+        }),
       ),
     );
     yield* Effect.forkScoped(
@@ -4116,4 +4149,7 @@ const make = Effect.gen(function* () {
 export const ProviderRuntimeIngestionLive = Layer.effect(
   ProviderRuntimeIngestionService,
   make,
-).pipe(Layer.provide(ProjectionTurnRepositoryLive));
+).pipe(
+  Layer.provide(ProjectionTurnRepositoryLive),
+  Layer.provideMerge(ProviderTerminalEventRepositoryLive),
+);

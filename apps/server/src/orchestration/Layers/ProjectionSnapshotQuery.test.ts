@@ -806,19 +806,28 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         snapshot.threads.map((thread) => ({
           id: thread.id,
           lastInteractionAt: thread.lastInteractionAt,
+          deletedAt: thread.deletedAt,
         })),
         [
           {
+            id: ThreadId.makeUnsafe("thread-deleted"),
+            lastInteractionAt: "2026-02-24T00:00:08.000Z",
+            deletedAt: "2026-02-24T00:00:08.000Z",
+          },
+          {
             id: ThreadId.makeUnsafe("thread-hot-newer"),
             lastInteractionAt: "2026-02-24T00:00:05.000Z",
+            deletedAt: null,
           },
           {
             id: ThreadId.makeUnsafe("thread-hot-older"),
             lastInteractionAt: "2026-02-24T00:00:05.000Z",
+            deletedAt: null,
           },
           {
             id: ThreadId.makeUnsafe("thread-cold"),
             lastInteractionAt: "2026-02-24T00:00:04.000Z",
+            deletedAt: null,
           },
         ],
       );

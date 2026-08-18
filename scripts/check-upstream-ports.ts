@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const ROOT = process.env.F5_UPSTREAM_PORTS_ROOT
@@ -66,7 +66,7 @@ interface OlderBacklogCategory {
 }
 
 interface Ledger {
-  readonly schemaVersion: 3;
+  readonly schemaVersion: 4;
   readonly manifest: "scripts/upstream-ports.manifest.json";
   readonly manifestSha256: string;
   readonly entries: ReadonlyArray<LedgerEntry>;
@@ -257,39 +257,41 @@ function assertNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-interface F5CommitReference {
-  readonly sha: string;
-  readonly owner: string;
-}
-
-function validateF5CommitReferences(
-  references: ReadonlyArray<F5CommitReference>,
+function validateEvidence(
+  owner: string,
+  evidence: ReadonlyArray<string> | undefined,
   errors: string[],
 ): void {
-  const uniqueShas = [...new Set(references.map((reference) => reference.sha))];
-  if (uniqueShas.length === 0) return;
-
-  let objectLines: string[];
-  let reachableFromHead: ReadonlySet<string>;
-  try {
-    objectLines = git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
-      input: `${uniqueShas.map((sha) => `${sha}^{commit}`).join("\n")}\n`,
-    }).split("\n");
-    reachableFromHead = new Set(git(["rev-list", "HEAD"]).split("\n").filter(Boolean));
-  } catch (error) {
-    errors.push(`could not validate f5 commit references: ${String(error)}`);
-    return;
-  }
-
-  const resolving = new Map<string, boolean>();
-  uniqueShas.forEach((sha, index) => {
-    resolving.set(sha, objectLines[index]?.endsWith(" commit") === true);
-  });
-  for (const reference of references) {
-    if (!resolving.get(reference.sha)) {
-      errors.push(`${reference.owner} references non-resolving f5 SHA ${reference.sha}`);
-    } else if (!reachableFromHead.has(reference.sha)) {
-      errors.push(`${reference.owner} references f5 SHA ${reference.sha} outside HEAD history`);
+  for (const value of evidence ?? []) {
+    const match = /^(.+):([1-9][0-9]*)$/.exec(value);
+    if (!match) {
+      errors.push(`${owner} has malformed file:line evidence ${JSON.stringify(value)}`);
+      continue;
+    }
+    const repositoryPath = match[1]!;
+    const line = Number(match[2]);
+    if (path.isAbsolute(repositoryPath) || repositoryPath.split(/[\\/]/).includes("..")) {
+      errors.push(`${owner} evidence must be a repository-relative path: ${value}`);
+      continue;
+    }
+    const absolutePath = path.resolve(ROOT, repositoryPath);
+    if (!absolutePath.startsWith(`${ROOT}${path.sep}`)) {
+      errors.push(`${owner} evidence escapes the repository: ${value}`);
+      continue;
+    }
+    try {
+      if (!statSync(absolutePath).isFile()) {
+        errors.push(`${owner} evidence is not a file: ${value}`);
+        continue;
+      }
+      const text = readFileSync(absolutePath, "utf8");
+      const lineCount =
+        text.length === 0 ? 0 : text.split(/\r?\n/).length - (/\r?\n$/.test(text) ? 1 : 0);
+      if (line > lineCount) {
+        errors.push(`${owner} evidence line is out of range (${lineCount} lines): ${value}`);
+      }
+    } catch {
+      errors.push(`${owner} evidence file does not exist: ${value}`);
     }
   }
 }
@@ -475,7 +477,7 @@ function refresh(): void {
     (previousLedger?.olderBacklog ?? []).map((category) => category.category),
   );
   const ledger: Ledger = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     manifest: "scripts/upstream-ports.manifest.json",
     manifestSha256: sha256(manifestText),
     entries: commits.map((commit) => {
@@ -500,7 +502,6 @@ function refresh(): void {
 
 function validate(): void {
   const errors: string[] = [];
-  const f5CommitReferences: F5CommitReference[] = [];
   let manifest: Manifest;
   let ledger: Ledger;
   try {
@@ -511,7 +512,7 @@ function validate(): void {
   }
 
   if (manifest.schemaVersion !== 1) errors.push("unsupported manifest schemaVersion");
-  if (ledger.schemaVersion !== 3) errors.push("unsupported ledger schemaVersion");
+  if (ledger.schemaVersion !== 4) errors.push("unsupported ledger schemaVersion");
   const manifestText = readFileSync(MANIFEST_PATH, "utf8");
   if (!SHA256_PATTERN.test(ledger.manifestSha256)) {
     errors.push("ledger manifestSha256 is missing or invalid");
@@ -585,12 +586,11 @@ function validate(): void {
         `ledger SHA ${entry.upstreamSha} has evidence outside already-present disposition`,
       );
     }
+    validateEvidence(`ledger SHA ${entry.upstreamSha}`, entry.evidence, errors);
     for (const f5Sha of entry.f5Shas ?? []) {
       if (!SHA_PATTERN.test(f5Sha)) {
         errors.push(`ledger SHA ${entry.upstreamSha} has invalid f5 SHA ${f5Sha}`);
-        continue;
       }
-      f5CommitReferences.push({ sha: f5Sha, owner: `ledger SHA ${entry.upstreamSha}` });
     }
   }
   for (const sha of manifestShas) {
@@ -623,6 +623,16 @@ function validate(): void {
     ) {
       errors.push(`already-present older-backlog category ${category.category} has no evidence`);
     }
+    if (
+      category.disposition !== "already-present" &&
+      category.evidence &&
+      category.evidence.length > 0
+    ) {
+      errors.push(
+        `older-backlog category ${category.category} has evidence outside already-present disposition`,
+      );
+    }
+    validateEvidence(`older-backlog category ${category.category}`, category.evidence, errors);
     for (const sha of category.upstreamShas ?? []) {
       if (!SHA_PATTERN.test(sha)) errors.push(`older-backlog category has invalid SHA ${sha}`);
       if (manifestShas.has(sha))
@@ -633,16 +643,9 @@ function validate(): void {
     for (const f5Sha of category.f5Shas ?? []) {
       if (!SHA_PATTERN.test(f5Sha)) {
         errors.push(`older-backlog category ${category.category} has invalid f5 SHA ${f5Sha}`);
-        continue;
       }
-      f5CommitReferences.push({
-        sha: f5Sha,
-        owner: `older-backlog category ${category.category}`,
-      });
     }
   }
-
-  validateF5CommitReferences(f5CommitReferences, errors);
 
   const requireUpstream = process.env.F5_REQUIRE_UPSTREAM === "1";
   if (hasUpstreamRemote()) {

@@ -92,6 +92,17 @@ describe("Codex launch arguments", () => {
     });
   });
 
+  it("drops an argument terminator and everything after it", () => {
+    const command = buildCodexAppServerCommand({
+      providerLaunchArgs: ["--strict-config", "--", "-c", "sandbox_mode=danger-full-access"],
+      environment: {},
+    });
+
+    expect(command.argv.slice(0, 2)).toEqual(["app-server", "--strict-config"]);
+    expect(command.argv).not.toContain("--");
+    expect(command.dropped).toEqual(["--", "-c", "sandbox_mode=danger-full-access"]);
+  });
+
   it("rejects malformed environment arguments", () => {
     expect(() =>
       resolveCodexLaunchArgv({ environment: { F5_CODEX_LAUNCH_ARGS: "'unterminated" } }),

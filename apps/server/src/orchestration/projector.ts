@@ -1481,7 +1481,10 @@ export function projectEvent(
 
     default: {
       const exhaustiveEvent: never = event;
-      return exhaustiveEvent;
+      void exhaustiveEvent;
+      // Schema decoding normally makes this unreachable. Keep replay tolerant
+      // if a newer server has written an event this build does not understand.
+      return Effect.succeed(nextBase);
     }
   }
 }

@@ -76,6 +76,12 @@ export function filterReservedCodexLaunchArgs(
 
   for (let index = 0; index < input.length; index += 1) {
     const arg = input[index]!;
+    if (arg === "--") {
+      // A terminator would make every managed argument appended later look
+      // positional to Codex, producing an unstartable app-server invocation.
+      dropped.push(...input.slice(index));
+      break;
+    }
     const reserved = reservedFlagName(arg);
     if (reserved) {
       dropped.push(arg);

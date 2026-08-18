@@ -34,7 +34,7 @@ import type { ProviderAdapterSendTurnInput } from "../Services/ProviderAdapter.t
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
-import { makeProviderServiceLive } from "./ProviderService.ts";
+import { makeProviderServiceLive, type ProviderServiceLiveOptions } from "./ProviderService.ts";
 import {
   makeAdapterRegistryMock,
   type KindAdapterMap,
@@ -331,7 +331,7 @@ function histogramCount(
   return snapshot?.type === "Histogram" ? snapshot.state.count : 0;
 }
 
-function makeProviderServiceLayer() {
+function makeProviderServiceLayer(options?: ProviderServiceLiveOptions) {
   const codex = makeFakeCodexAdapter();
   const registry = makeAdapterRegistryMock({ codex: codex.adapter });
 
@@ -343,7 +343,7 @@ function makeProviderServiceLayer() {
 
   const layer = it.layer(
     Layer.mergeAll(
-      makeProviderServiceLive().pipe(
+      makeProviderServiceLive(options).pipe(
         Layer.provide(providerServiceConfigLayer),
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
@@ -1266,6 +1266,46 @@ routing.layer("ProviderServiceLive routing", (it) => {
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.sendTurn");
         }
       }
+    }),
+  );
+});
+
+let terminalReceiptPersisted = false;
+const durableFanout = makeProviderServiceLayer({
+  recordTerminalEvent: () =>
+    Effect.sync(() => {
+      terminalReceiptPersisted = true;
+    }),
+});
+durableFanout.layer("ProviderServiceLive durable terminal fanout", (it) => {
+  it.effect("persists terminal events before subscribers observe them", () =>
+    Effect.gen(function* () {
+      terminalReceiptPersisted = false;
+      const provider = yield* ProviderService;
+      const session = yield* provider.startSession(asThreadId("thread-durable-terminal"), {
+        provider: "codex",
+        threadId: asThreadId("thread-durable-terminal"),
+        runtimeMode: "full-access",
+      });
+      const observedPersistedState = yield* Ref.make(false);
+      const consumer = yield* Stream.take(provider.streamEvents, 1).pipe(
+        Stream.runForEach(() => Ref.set(observedPersistedState, terminalReceiptPersisted)),
+        Effect.forkChild,
+      );
+      yield* sleep(20);
+
+      durableFanout.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("evt-durable-terminal"),
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        threadId: session.threadId,
+        turnId: asTurnId("turn-durable-terminal"),
+        payload: { state: "completed" },
+      });
+
+      yield* Fiber.join(consumer);
+      assert.equal(yield* Ref.get(observedPersistedState), true);
     }),
   );
 });

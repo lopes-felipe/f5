@@ -109,4 +109,30 @@ describe("resolveNextTurnQueueGate", () => {
       }),
     ).toEqual({ kind: "autoPause", reasonCode: "post_processing_stalled" });
   });
+
+  it("releases queued work after a repaired terminal turn reaches quiescence", () => {
+    const repairedSession = {
+      status: "ready",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: now,
+    };
+    const terminalTurn = {
+      processingQuiescedAt: null,
+      completedAt: "2026-01-01T00:09:59.000Z",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      requestedAt: "2026-01-01T00:00:00.000Z",
+    };
+
+    expect(gate({ session: repairedSession, terminalTurn })).toEqual({
+      kind: "wait",
+      reasonCode: "turn_post_processing",
+    });
+    expect(
+      gate({
+        session: repairedSession,
+        terminalTurn: { ...terminalTurn, processingQuiescedAt: now },
+      }),
+    ).toEqual({ kind: "ready" });
+  });
 });

@@ -685,10 +685,18 @@ export const OrchestrationThread = Schema.Struct({
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   latestTurn: Schema.NullOr(OrchestrationLatestTurn),
   archivedAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
-  pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
-  pinOrderKey: Schema.optional(Schema.NullOr(NonNegativeInt)),
-  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)),
-  snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  pinnedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  pinOrderKey: Schema.optional(Schema.NullOr(NonNegativeInt)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  snoozedUntil: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  snoozedAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   titleSource: Schema.optional(ThreadTitleSource).pipe(
     Schema.withDecodingDefault(() => "legacy" as const),
   ),

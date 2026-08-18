@@ -3,6 +3,7 @@ import { useEffect, useRef } from "react";
 import { clearLegacyPinnedThreads, getPinnedThreadIds } from "../pinnedThreadsStore";
 import { useStore } from "../store";
 import { importLegacyPinnedThreads, orderedPinnedThreadIds } from "../threadPinSnooze";
+import { toastManager } from "./ui/toast";
 
 export function LegacyPinnedThreadsMigrationController() {
   const threads = useStore((state) => state.threads);
@@ -34,8 +35,13 @@ export function LegacyPinnedThreadsMigrationController() {
       expectedRevision: pinRevision,
     })
       .then(() => clearLegacyPinnedThreads())
-      .catch(() => {
+      .catch((error) => {
         // Retain the local pins. A later snapshot or reload retries the import.
+        toastManager.add({
+          type: "error",
+          title: "Could not import pinned threads",
+          description: error instanceof Error ? error.message : "The server rejected the import.",
+        });
       });
   }, [pinRevision, threads, threadsHydrated]);
 
