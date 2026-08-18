@@ -16,6 +16,8 @@ export const PROJECT_CONTENT_SEARCH_ACTIVE_INDEX_LIMIT = 2;
 export const PROJECT_CONTENT_SEARCH_INDEX_PATH_LIMIT = 25_000;
 export const PROJECT_CONTENT_SEARCH_SCAN_TIMEOUT_MS = 15_000;
 export const PROJECT_CONTENT_SEARCH_TIME_BUDGET_MS = 250;
+const PROJECT_CONTENT_SEARCH_SCAN_TRANSPORT_GRACE_MS = 2_000;
+const PROJECT_CONTENT_SEARCH_TRANSPORT_GRACE_MS = 1_000;
 export const PROJECT_CONTENT_SEARCH_IDLE_EVICTION_MS = 15 * 60_000;
 export const PROJECT_CONTENT_SEARCH_RESCAN_AFTER_MS = 15_000;
 
@@ -40,6 +42,13 @@ interface PendingWorkerCall {
   readonly resolve: (value: unknown) => void;
   readonly reject: (error: Error) => void;
   readonly timeout: ReturnType<typeof setTimeout>;
+}
+
+class WorkerCallTimeoutError extends Error {
+  constructor() {
+    super("Project content search worker did not respond before its deadline.");
+    this.name = "WorkerCallTimeoutError";
+  }
 }
 
 interface ContentWorkerClient {
@@ -139,7 +148,7 @@ function makeWorkerClient(worker: Worker): ContentWorkerClient {
       return new Promise<T>((resolve, reject) => {
         const timeout = setTimeout(() => {
           pending.delete(id);
-          reject(new Error("Project content search worker did not respond before its deadline."));
+          reject(new WorkerCallTimeoutError());
         }, timeoutMs);
         pending.set(id, {
           resolve: resolve as (value: unknown) => void,
@@ -372,7 +381,8 @@ export function makeProjectContentSearchManager(options?: {
             if (!entry.initialized) {
               await entry.worker.call(
                 { type: "initialize", rootPath: entry.rootPath },
-                PROJECT_CONTENT_SEARCH_SCAN_TIMEOUT_MS,
+                PROJECT_CONTENT_SEARCH_SCAN_TIMEOUT_MS +
+                  PROJECT_CONTENT_SEARCH_SCAN_TRANSPORT_GRACE_MS,
               );
               entry.initialized = true;
               entry.lastScannedAt = now();
@@ -380,7 +390,11 @@ export function makeProjectContentSearchManager(options?: {
               entry.invalidated ||
               now() - entry.lastScannedAt >= PROJECT_CONTENT_SEARCH_RESCAN_AFTER_MS
             ) {
-              await entry.worker.call({ type: "refresh" }, PROJECT_CONTENT_SEARCH_SCAN_TIMEOUT_MS);
+              await entry.worker.call(
+                { type: "refresh" },
+                PROJECT_CONTENT_SEARCH_SCAN_TIMEOUT_MS +
+                  PROJECT_CONTENT_SEARCH_SCAN_TRANSPORT_GRACE_MS,
+              );
               entry.invalidated = false;
               entry.lastScannedAt = now();
             }
@@ -395,7 +409,7 @@ export function makeProjectContentSearchManager(options?: {
                 wholeWord: request.wholeWord,
                 useRegex: request.useRegex,
               },
-              PROJECT_CONTENT_SEARCH_TIME_BUDGET_MS,
+              PROJECT_CONTENT_SEARCH_TIME_BUDGET_MS + PROJECT_CONTENT_SEARCH_TRANSPORT_GRACE_MS,
             );
           } finally {
             state.executing = false;
@@ -427,7 +441,9 @@ export function makeProjectContentSearchManager(options?: {
         state.executing = false;
         return runSearch(state, workspaceRoot, request, sharedCancellationRetries + 1);
       }
-      await destroyEntry(entry, new Error("Project content index failed and was replaced."));
+      if (!(cause instanceof WorkerCallTimeoutError)) {
+        await destroyEntry(entry, new Error("Project content index failed and was replaced."));
+      }
       throw new ProjectContentSearchError(
         stage === "scan" ? "scan_failed" : "search_failed",
         stage === "scan" ? "Project content indexing failed." : "Project content search failed.",

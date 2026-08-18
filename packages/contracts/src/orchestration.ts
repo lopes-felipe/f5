@@ -1241,6 +1241,14 @@ const ThreadSessionSetCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadUsageRecordCommand = Schema.Struct({
+  type: Schema.Literal("thread.usage.record"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  usageFact: UsageTurnFact,
+  createdAt: IsoDateTime,
+});
+
 const ThreadMessageAssistantDeltaCommand = Schema.Struct({
   type: Schema.Literal("thread.message.assistant.delta"),
   commandId: CommandId,
@@ -1412,6 +1420,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ProjectInvestigationWorkflowUpsertCommand,
   ProjectInvestigationWorkflowDeleteCommand,
   ThreadSessionSetCommand,
+  ThreadUsageRecordCommand,
   ThreadMessageAssistantDeltaCommand,
   ThreadMessageAssistantCompleteCommand,
   ThreadProposedPlanUpsertCommand,
@@ -1492,6 +1501,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.command-execution-recorded",
   "thread.command-execution-output-appended",
   "thread.file-change-recorded",
+  "thread.usage-recorded",
 ]);
 export type OrchestrationEventType = typeof OrchestrationEventType.Type;
 
@@ -1812,6 +1822,11 @@ export const ThreadSessionSetPayload = Schema.Struct({
   usageFact: Schema.optional(UsageTurnFact),
 });
 
+export const ThreadUsageRecordedPayload = Schema.Struct({
+  threadId: ThreadId,
+  usageFact: UsageTurnFact,
+});
+
 export const ThreadProposedPlanUpsertedPayload = Schema.Struct({
   threadId: ThreadId,
   proposedPlan: OrchestrationProposedPlan,
@@ -2117,6 +2132,11 @@ export const OrchestrationEvent = Schema.Union([
   }),
   Schema.Struct({
     ...EventBaseFields,
+    type: Schema.Literal("thread.usage-recorded"),
+    payload: ThreadUsageRecordedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
     type: Schema.Literal("thread.proposed-plan-upserted"),
     payload: ThreadProposedPlanUpsertedPayload,
   }),
@@ -2342,6 +2362,7 @@ export const OrchestrationGetThreadHistoryPageInput = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   afterMessageCursor: Schema.optional(Schema.NullOr(OrchestrationMessageCursor)),
+  afterActivityCursor: Schema.optional(Schema.NullOr(OrchestrationThreadActivityCursor)),
   beforeCheckpointTurnCount: Schema.NullOr(NonNegativeInt).pipe(
     Schema.withDecodingDefault(() => null),
   ),
@@ -2381,6 +2402,7 @@ export const OrchestrationThreadHistoryPage = Schema.Struct({
   hasNewerMessages: Schema.optional(Schema.Boolean),
   hasOlderCheckpoints: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   hasOlderActivities: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+  hasNewerActivities: Schema.optional(Schema.Boolean),
   hasOlderCommandExecutions: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   oldestLoadedMessageCursor: Schema.NullOr(OrchestrationMessageCursor).pipe(
     Schema.withDecodingDefault(() => null),
@@ -2392,6 +2414,7 @@ export const OrchestrationThreadHistoryPage = Schema.Struct({
   oldestLoadedActivityCursor: Schema.NullOr(OrchestrationThreadActivityCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  newestLoadedActivityCursor: Schema.optional(Schema.NullOr(OrchestrationThreadActivityCursor)),
   oldestLoadedCommandExecutionCursor: Schema.NullOr(OrchestrationCommandExecutionCursor).pipe(
     Schema.withDecodingDefault(() => null),
   ),

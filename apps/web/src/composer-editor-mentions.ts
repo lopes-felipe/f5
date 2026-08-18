@@ -19,7 +19,10 @@ export type ComposerPromptSegment =
     };
 
 const MENTION_TOKEN_REGEX = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s@"]+))(?=\s)/g;
-const SIMPLE_MENTION_PATH_REGEX = /^[^\s@"\\]+$/;
+// Unquoted mentions must look like paths so ordinary prose such as "@alice"
+// remains plain text. Extensionless files at the workspace root are quoted by
+// serializeComposerMentionPath, which keeps their intent unambiguous.
+const SIMPLE_MENTION_PATH_REGEX = /^(?=.*[./])[^\s@"\\]+$/;
 
 type MentionTokenMatch = {
   path: string;
@@ -39,7 +42,10 @@ function unescapeQuotedMentionPath(path: string): string {
   return path.replace(/\\(.)/g, "$1");
 }
 
-function collectMentionTokenMatches(text: string): MentionTokenMatch[] {
+function collectMentionTokenMatches(
+  text: string,
+  options: { readonly allowAmbiguousUnquoted?: boolean } = {},
+): MentionTokenMatch[] {
   const matches: MentionTokenMatch[] = [];
 
   for (const match of text.matchAll(MENTION_TOKEN_REGEX)) {
@@ -53,7 +59,12 @@ function collectMentionTokenMatches(text: string): MentionTokenMatch[] {
     const start = matchIndex + prefix.length;
     const end = start + fullMatch.length - prefix.length;
     const raw = text.slice(start, end);
-    if (path.length > 0) {
+    if (
+      path.length > 0 &&
+      (quotedPath !== undefined ||
+        options.allowAmbiguousUnquoted === true ||
+        SIMPLE_MENTION_PATH_REGEX.test(path))
+    ) {
       matches.push({ path, raw, start, end });
     }
   }
@@ -105,7 +116,11 @@ export function doesSelectionTouchInlineToken(
       : [selectionEnd, selectionStart];
   if (start === end) return false;
 
-  for (const match of collectMentionTokenMatches(prompt)) {
+  // Selection wrapping must preserve every token shape the editor may already
+  // contain, including legacy unquoted root-file mentions. Send-time path
+  // collection remains strict so ordinary prose such as `@alice` is not
+  // authorized as a workspace file.
+  for (const match of collectMentionTokenMatches(prompt, { allowAmbiguousUnquoted: true })) {
     if (rangesTouch(start, end, match.start, match.end)) return true;
   }
 

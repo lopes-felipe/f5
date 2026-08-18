@@ -54,7 +54,10 @@ import {
   type ProviderInstanceRegistryMutatorShape,
 } from "../Services/ProviderInstanceRegistryMutator.ts";
 import type { AnyProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
-import { fingerprintableProviderEnvironment } from "../sensitiveFingerprint.ts";
+import {
+  fingerprintableProviderConfig,
+  fingerprintableProviderEnvironment,
+} from "../sensitiveFingerprint.ts";
 
 /**
  * Live registry entry: the materialized `ProviderInstance` + the fresh
@@ -123,7 +126,7 @@ function providerConfigurationFingerprint(input: {
           accentColor: input.entry.accentColor ?? null,
           enabled: input.entry.enabled ?? null,
           environment: fingerprintableProviderEnvironment(input.entry.environment),
-          config: input.decodedConfig,
+          config: fingerprintableProviderConfig(input.entry.driver, input.decodedConfig),
         }),
       ),
     )

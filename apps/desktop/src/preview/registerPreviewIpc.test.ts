@@ -44,14 +44,16 @@ function makeHarness() {
     recordingStop: vi.fn(),
     recordingDiscard: vi.fn(),
   } satisfies PreviewIpcOperations;
-  registerPreviewIpc(ipcMain, operations);
-  const invoke = (channel: string, ...args: unknown[]) => handlers.get(channel)?.({}, ...args);
-  return { handlers, invoke, operations };
+  const operationsForSender = vi.fn(() => operations);
+  registerPreviewIpc(ipcMain, operationsForSender);
+  const invoke = (channel: string, ...args: unknown[]) =>
+    handlers.get(channel)?.({ sender: { id: 17 } }, ...args);
+  return { handlers, invoke, operations, operationsForSender };
 }
 
 describe("registerPreviewIpc", () => {
   it("keeps the established preview channels and payload ordering", () => {
-    const { handlers, invoke, operations } = makeHarness();
+    const { handlers, invoke, operations, operationsForSender } = makeHarness();
     expect(handlers.size).toBe(Object.keys(PREVIEW_IPC_CHANNELS).length);
 
     invoke(PREVIEW_IPC_CHANNELS.registerWebview, "tab-1", 42);
@@ -61,6 +63,7 @@ describe("registerPreviewIpc", () => {
     expect(operations.automationClick).toHaveBeenCalledWith("tab-1", { selector: "#save" });
     invoke(PREVIEW_IPC_CHANNELS.setColorScheme, "tab-1", "dark");
     expect(operations.setColorScheme).toHaveBeenCalledWith("tab-1", "dark");
+    expect(operationsForSender).toHaveBeenCalledWith(17);
   });
 
   it("rejects stale viewport revisions in the runtime-facing operation", () => {

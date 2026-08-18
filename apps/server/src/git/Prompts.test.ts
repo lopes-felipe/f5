@@ -65,5 +65,11 @@ describe("source-control writing prompts", () => {
       prefixGeneratedBranchName("safe-import", { ...defaults, branchNamePrefix: "team/f5" }),
     ).toBe("team/f5/safe-import");
     expect(prefixGeneratedBranchName("safe-import", defaults)).toBe("safe-import");
+    expect(
+      prefixGeneratedBranchName("feature/safe-import", {
+        ...defaults,
+        branchNamePrefix: "team/f5",
+      }),
+    ).toBe("team/f5/safe-import");
   });
 });

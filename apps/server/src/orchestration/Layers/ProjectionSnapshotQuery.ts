@@ -1,6 +1,7 @@
 import {
   ChatAttachment,
   CodeReviewWorkflow,
+  EventId,
   InvestigationWorkflow,
   IsoDateTime,
   MessageId,
@@ -538,6 +539,21 @@ function resolveOldestLoadedActivityCursor(
   };
 }
 
+function resolveNewestLoadedActivityCursor(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): OrchestrationThreadHistoryPage["newestLoadedActivityCursor"] {
+  const newestActivity = activities.at(-1);
+  if (!newestActivity) {
+    return null;
+  }
+  return {
+    sequenceIsNull: newestActivity.sequence === undefined,
+    sequence: newestActivity.sequence ?? null,
+    createdAt: newestActivity.createdAt,
+    activityId: newestActivity.id,
+  };
+}
+
 function resolveOldestLoadedCommandExecutionCursor(
   commandExecutions: ReadonlyArray<OrchestrationCommandExecutionSummary>,
 ): OrchestrationCommandExecutionCursor | null {
@@ -697,6 +713,7 @@ function buildThreadHistoryPageResult(params: {
   readonly hasNewerMessages?: boolean;
   readonly hasOlderCheckpoints: boolean;
   readonly hasOlderActivities: boolean;
+  readonly hasNewerActivities?: boolean;
   readonly hasOlderCommandExecutions: boolean;
   readonly detailSequence: number;
 }): Effect.Effect<OrchestrationThreadHistoryPage, ProjectionRepositoryError> {
@@ -710,11 +727,15 @@ function buildThreadHistoryPageResult(params: {
     ...(params.hasNewerMessages !== undefined ? { hasNewerMessages: params.hasNewerMessages } : {}),
     hasOlderCheckpoints: params.hasOlderCheckpoints,
     hasOlderActivities: params.hasOlderActivities,
+    ...(params.hasNewerActivities !== undefined
+      ? { hasNewerActivities: params.hasNewerActivities }
+      : {}),
     hasOlderCommandExecutions: params.hasOlderCommandExecutions,
     oldestLoadedMessageCursor: resolveOldestLoadedMessageCursor(params.messages),
     newestLoadedMessageCursor: resolveNewestLoadedMessageCursor(params.messages),
     oldestLoadedCheckpointTurnCount: resolveOldestLoadedCheckpointTurnCount(params.checkpoints),
     oldestLoadedActivityCursor: resolveOldestLoadedActivityCursor(params.activities),
+    newestLoadedActivityCursor: resolveNewestLoadedActivityCursor(params.activities),
     oldestLoadedCommandExecutionCursor: resolveOldestLoadedCommandExecutionCursor(
       params.commandExecutions,
     ),
@@ -1338,15 +1359,17 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const listThreadActivitiesAtAnchor = SqlSchema.findAll({
     Request: OrchestrationGetThreadHistoryPageInput,
     Result: ProjectionThreadActivityDbRowSchema,
-    execute: ({ threadId, anchorMessageId, anchorActivityId, activityLimit }) =>
-      anchorMessageId == null && anchorActivityId == null
-        ? sql`
+    execute: ({ threadId, anchorMessageId, anchorActivityId, activityLimit }) => {
+      if (anchorMessageId == null && anchorActivityId == null) {
+        return sql`
             SELECT
               activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
               tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
             FROM projection_thread_activities WHERE 1 = 0
-          `
-        : sql`
+          `;
+      }
+      if (anchorActivityId != null) {
+        return sql`
             SELECT
               activity_id AS "activityId",
               thread_id AS "threadId",
@@ -1360,13 +1383,41 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             FROM projection_thread_activities
             WHERE thread_id = ${threadId}
               AND (
-                turn_id = COALESCE(
-                  (SELECT turn_id FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
-                  (SELECT turn_id FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
+                (
+                  (SELECT sequence FROM projection_thread_activities
+                    WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId}) IS NULL
+                  AND sequence IS NULL
+                  AND (
+                    created_at < (SELECT created_at FROM projection_thread_activities
+                      WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                    OR (
+                      created_at = (SELECT created_at FROM projection_thread_activities
+                        WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                      AND activity_id <= ${anchorActivityId}
+                    )
+                  )
                 )
-                OR created_at <= COALESCE(
-                  (SELECT created_at FROM projection_thread_messages WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId ?? null}),
-                  (SELECT created_at FROM projection_thread_activities WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId ?? null})
+                OR (
+                  (SELECT sequence FROM projection_thread_activities
+                    WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId}) IS NOT NULL
+                  AND (
+                    sequence IS NULL
+                    OR sequence < (SELECT sequence FROM projection_thread_activities
+                      WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                    OR (
+                      sequence = (SELECT sequence FROM projection_thread_activities
+                        WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                      AND (
+                        created_at < (SELECT created_at FROM projection_thread_activities
+                          WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                        OR (
+                          created_at = (SELECT created_at FROM projection_thread_activities
+                            WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                          AND activity_id <= ${anchorActivityId}
+                        )
+                      )
+                    )
+                  )
                 )
               )
             ORDER BY
@@ -1374,6 +1425,133 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
               created_at DESC,
               activity_id DESC
             LIMIT ${resolveThreadHistoryActivityLimit(activityLimit) + 1}
+          `;
+      }
+      return sql`
+        SELECT
+          activity_id AS "activityId",
+          thread_id AS "threadId",
+          turn_id AS "turnId",
+          tone,
+          kind,
+          summary,
+          payload_json AS "payload",
+          sequence,
+          created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+          AND (
+            turn_id = (SELECT turn_id FROM projection_thread_messages
+              WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId!})
+            OR created_at <= (SELECT created_at FROM projection_thread_messages
+              WHERE thread_id = ${threadId} AND message_id = ${anchorMessageId!})
+          )
+        ORDER BY sequence DESC, created_at DESC, activity_id DESC
+        LIMIT ${resolveThreadHistoryActivityLimit(activityLimit) + 1}
+      `;
+    },
+  });
+
+  const listThreadActivitiesAfterCursor = SqlSchema.findAll({
+    Request: OrchestrationGetThreadHistoryPageInput,
+    Result: ProjectionThreadActivityDbRowSchema,
+    execute: ({ threadId, afterActivityCursor, activityLimit }) => {
+      if (afterActivityCursor == null) {
+        return sql`
+          SELECT activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+            tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+          FROM projection_thread_activities WHERE 1 = 0
+        `;
+      }
+      const newerThanCursor = afterActivityCursor.sequenceIsNull
+        ? sql`
+            AND (
+              sequence IS NOT NULL
+              OR created_at > ${afterActivityCursor.createdAt}
+              OR (
+                created_at = ${afterActivityCursor.createdAt}
+                AND activity_id > ${afterActivityCursor.activityId}
+              )
+            )
+          `
+        : sql`
+            AND sequence IS NOT NULL
+            AND (
+              sequence > ${afterActivityCursor.sequence}
+              OR (
+                sequence = ${afterActivityCursor.sequence}
+                AND (
+                  created_at > ${afterActivityCursor.createdAt}
+                  OR (
+                    created_at = ${afterActivityCursor.createdAt}
+                    AND activity_id > ${afterActivityCursor.activityId}
+                  )
+                )
+              )
+            )
+          `;
+      return sql`
+        SELECT
+          activity_id AS "activityId", thread_id AS "threadId", turn_id AS "turnId",
+          tone, kind, summary, payload_json AS "payload", sequence, created_at AS "createdAt"
+        FROM projection_thread_activities
+        WHERE thread_id = ${threadId}
+        ${newerThanCursor}
+        ORDER BY sequence ASC, created_at ASC, activity_id ASC
+        LIMIT ${resolveThreadHistoryActivityLimit(activityLimit) + 1}
+      `;
+    },
+  });
+
+  const listThreadActivitiesAfterAnchor = SqlSchema.findAll({
+    Request: OrchestrationGetThreadHistoryPageInput,
+    Result: Schema.Struct({ activityId: EventId }),
+    execute: ({ threadId, anchorActivityId }) =>
+      anchorActivityId == null
+        ? sql`SELECT activity_id AS "activityId" FROM projection_thread_activities WHERE 1 = 0`
+        : sql`
+            SELECT activity_id AS "activityId"
+            FROM projection_thread_activities
+            WHERE thread_id = ${threadId}
+              AND (
+                (
+                  (SELECT sequence FROM projection_thread_activities
+                    WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId}) IS NULL
+                  AND (
+                    sequence IS NOT NULL
+                    OR created_at > (SELECT created_at FROM projection_thread_activities
+                      WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                    OR (
+                      created_at = (SELECT created_at FROM projection_thread_activities
+                        WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                      AND activity_id > ${anchorActivityId}
+                    )
+                  )
+                )
+                OR (
+                  (SELECT sequence FROM projection_thread_activities
+                    WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId}) IS NOT NULL
+                  AND sequence IS NOT NULL
+                  AND (
+                    sequence > (SELECT sequence FROM projection_thread_activities
+                      WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                    OR (
+                      sequence = (SELECT sequence FROM projection_thread_activities
+                        WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                      AND (
+                        created_at > (SELECT created_at FROM projection_thread_activities
+                          WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                        OR (
+                          created_at = (SELECT created_at FROM projection_thread_activities
+                            WHERE thread_id = ${threadId} AND activity_id = ${anchorActivityId})
+                          AND activity_id > ${anchorActivityId}
+                        )
+                      )
+                    )
+                  )
+                )
+              )
+            LIMIT 1
           `,
   });
 
@@ -1723,19 +1901,39 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
   const readThreadHistoryActivities = (input: OrchestrationGetThreadHistoryPageInput) => {
     if (input.anchorMessageId != null || input.anchorActivityId != null) {
       const limit = resolveThreadHistoryActivityLimit(input.activityLimit);
-      return listThreadActivitiesAtAnchor(input).pipe(
+      return Effect.all({
+        rows: listThreadActivitiesAtAnchor(input),
+        newerRows: listThreadActivitiesAfterAnchor(input),
+      }).pipe(
         Effect.mapError(
           toPersistenceSqlOrDecodeError(
             "ProjectionSnapshotQuery.getThreadHistoryPage:listAnchoredActivities:query",
             "ProjectionSnapshotQuery.getThreadHistoryPage:listAnchoredActivities:decodeRows",
           ),
         ),
-        Effect.map((rows) => ({
+        Effect.map(({ rows, newerRows }) => ({
           activities: rows
             .slice(0, limit)
             .toReversed()
             .map((row) => toReadModelActivity(row)),
           hasOlderActivities: rows.length > limit,
+          hasNewerActivities: newerRows.length > 0,
+        })),
+      );
+    }
+    if (input.afterActivityCursor != null) {
+      const limit = resolveThreadHistoryActivityLimit(input.activityLimit);
+      return listThreadActivitiesAfterCursor(input).pipe(
+        Effect.mapError(
+          toPersistenceSqlOrDecodeError(
+            "ProjectionSnapshotQuery.getThreadHistoryPage:listNewerActivities:query",
+            "ProjectionSnapshotQuery.getThreadHistoryPage:listNewerActivities:decodeRows",
+          ),
+        ),
+        Effect.map((rows) => ({
+          activities: rows.slice(0, limit).map((row) => toReadModelActivity(row)),
+          hasOlderActivities: false,
+          hasNewerActivities: rows.length > limit,
         })),
       );
     }
@@ -1743,6 +1941,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
       return Effect.succeed({
         activities: [] as ReadonlyArray<OrchestrationThreadActivity>,
         hasOlderActivities: false,
+        hasNewerActivities: false,
       });
     }
     const limit = resolveThreadHistoryActivityLimit(input.activityLimit);
@@ -1769,7 +1968,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 sequence: row.sequence ?? null,
               }),
             );
-          return { activities, hasOlderActivities };
+          return { activities, hasOlderActivities, hasNewerActivities: false };
         }),
       );
   };
@@ -2550,6 +2749,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           hasNewerMessages: threadExists && messageResult.hasNewerMessages,
           hasOlderCheckpoints: threadExists && checkpointResult.hasOlderCheckpoints,
           hasOlderActivities: threadExists && activityResult.hasOlderActivities,
+          hasNewerActivities: threadExists && activityResult.hasNewerActivities,
           hasOlderCommandExecutions:
             threadExists && commandExecutionResult.hasOlderCommandExecutions,
           detailSequence: detailSequence ?? 0,

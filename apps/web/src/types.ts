@@ -65,11 +65,13 @@ export interface ThreadHistoryState {
   hasNewerMessages?: boolean;
   hasOlderCheckpoints: boolean;
   hasOlderActivities: boolean;
+  hasNewerActivities?: boolean;
   hasOlderCommandExecutions: boolean;
   oldestLoadedMessageCursor: ThreadHistoryMessageCursor | null;
   newestLoadedMessageCursor?: ThreadHistoryMessageCursor | null;
   oldestLoadedCheckpointTurnCount: number | null;
   oldestLoadedActivityCursor: ThreadHistoryActivityCursor | null;
+  newestLoadedActivityCursor?: ThreadHistoryActivityCursor | null;
   oldestLoadedCommandExecutionCursor: ThreadHistoryCommandExecutionCursor | null;
   generation: number;
 }

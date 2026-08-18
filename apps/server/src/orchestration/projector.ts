@@ -1476,9 +1476,12 @@ export function projectEvent(
       return Effect.succeed(nextBase);
 
     case "thread.file-change-recorded":
+    case "thread.usage-recorded":
       return Effect.succeed(nextBase);
 
-    default:
-      return Effect.succeed(nextBase);
+    default: {
+      const exhaustiveEvent: never = event;
+      return exhaustiveEvent;
+    }
   }
 }

@@ -174,6 +174,7 @@ function seedProjects() {
       },
     ],
     threads: [],
+    threadsHydrated: true,
     planningWorkflows: [],
     codeReviewWorkflows: [],
     investigationWorkflows: [],
@@ -377,6 +378,7 @@ describe("settings route", () => {
     useStore.setState({
       projects: [],
       threads: [],
+      threadsHydrated: false,
       planningWorkflows: [],
       codeReviewWorkflows: [],
       investigationWorkflows: [],

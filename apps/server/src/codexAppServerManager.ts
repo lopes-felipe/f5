@@ -497,15 +497,25 @@ export function resolveCodexModelForAccount(
   return CODEX_SPARK_FALLBACK_MODEL;
 }
 
+const forceKillTimers = new WeakMap<
+  ChildProcessWithoutNullStreams,
+  ReturnType<typeof setTimeout>
+>();
+
 export function killChildTree(child: ChildProcessWithoutNullStreams): void {
   killProcessTree(child, { isGroupLeader: false, graceful: true });
+  if (forceKillTimers.has(child)) return;
   const forceKill = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
       killProcessTree(child, { isGroupLeader: false, graceful: false });
     }
   }, 2_000);
+  forceKillTimers.set(child, forceKill);
   forceKill.unref();
-  child.once("exit", () => clearTimeout(forceKill));
+  child.once("exit", () => {
+    clearTimeout(forceKill);
+    forceKillTimers.delete(child);
+  });
 }
 
 export function normalizeCodexModelSlug(

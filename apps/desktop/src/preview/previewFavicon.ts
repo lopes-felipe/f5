@@ -103,7 +103,7 @@ export async function fetchPreviewFaviconDataUrl(input: {
     return null;
   }
 
-  for (const rawCandidate of input.candidateUrls) {
+  for (const rawCandidate of input.candidateUrls.slice(0, 16)) {
     if (input.signal?.aborted) return null;
     let currentUrl: URL;
     try {

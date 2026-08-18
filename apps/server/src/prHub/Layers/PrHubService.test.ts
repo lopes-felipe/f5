@@ -1603,6 +1603,41 @@ it.effect("reconciles detail mutations and forwards provider-native arguments", 
   );
 });
 
+it.effect("rejects reaction mutations that return GraphQL errors", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const tracked = snapshot.pullRequests[0];
+    assert.ok(tracked);
+
+    const exit = yield* Effect.exit(
+      service.setReaction({
+        key: tracked.key,
+        subjectId: "PR_detail",
+        content: "eyes",
+        reacted: true,
+      }),
+    );
+
+    assert.equal(Exit.isFailure(exit), true);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("author", [pr])],
+        stallSearchAfterFirst: true,
+        prDetailResponses: [prDetailResponse({ title: "Before reaction" })],
+        mutationResponses: [
+          { data: { addReaction: null }, errors: [{ message: "Reaction denied" }] },
+        ],
+      }),
+    ),
+  );
+});
+
 it.effect("rejects comment and reaction object ids that are not bound to the tracked PR", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_detail", number: 30, author: "me" });

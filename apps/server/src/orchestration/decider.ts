@@ -912,14 +912,16 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       }
       const snoozedUntilMs = Date.parse(command.until);
       const snoozedAtMs = Date.parse(command.createdAt);
+      const maxSnoozedUntilMs = snoozedAtMs + 365 * 24 * 60 * 60 * 1_000;
       if (
         !Number.isFinite(snoozedUntilMs) ||
         !Number.isFinite(snoozedAtMs) ||
-        snoozedUntilMs <= snoozedAtMs
+        snoozedUntilMs <= snoozedAtMs ||
+        snoozedUntilMs > maxSnoozedUntilMs
       ) {
         return yield* new OrchestrationCommandInvariantError({
           commandType: command.type,
-          detail: "A snooze must end after it starts.",
+          detail: "A snooze must end after it starts and no more than one year later.",
         });
       }
       const pinRevision = thread.pinnedAt != null ? (readModel.pinRevision ?? 0) + 1 : undefined;
@@ -1558,6 +1560,28 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           threadId: command.threadId,
           session: command.session,
           ...(command.usageFact !== undefined ? { usageFact: command.usageFact } : {}),
+        },
+      };
+    }
+
+    case "thread.usage.record": {
+      yield* requireThread({
+        readModel,
+        command,
+        threadId: command.threadId,
+      });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+          metadata: {},
+        }),
+        type: "thread.usage-recorded",
+        payload: {
+          threadId: command.threadId,
+          usageFact: command.usageFact,
         },
       };
     }

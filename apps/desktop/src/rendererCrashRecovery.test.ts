@@ -137,12 +137,15 @@ describe("MainRendererCrashRecovery", () => {
     expect(harness.reportError).toHaveBeenCalledWith("reload", expect.any(Error));
   });
 
-  it("builds a local plain-HTML recovery page with an escaped reload target", () => {
-    const dataUrl = mainRendererCrashScreenUrl('f5://app/index.html?next="unsafe"&ready=true');
-    const html = decodeURIComponent(dataUrl.slice(dataUrl.indexOf(",") + 1));
+  it("builds a packaged recovery-page URL with an encoded reload target", () => {
+    const crashScreenUrl = mainRendererCrashScreenUrl(
+      'f5://app/index.html?next="unsafe"&ready=true',
+    );
+    const parsed = new URL(crashScreenUrl);
 
-    expect(dataUrl.startsWith("data:text/html;charset=UTF-8,")).toBe(true);
-    expect(html).toContain('href="f5://app/index.html?next=&quot;unsafe&quot;&amp;ready=true"');
-    expect(html).not.toContain("<script");
+    expect(parsed.protocol).toBe("f5:");
+    expect(parsed.host).toBe("app");
+    expect(parsed.pathname).toBe("/recovery.html");
+    expect(parsed.searchParams.get("target")).toBe('f5://app/index.html?next="unsafe"&ready=true');
   });
 });

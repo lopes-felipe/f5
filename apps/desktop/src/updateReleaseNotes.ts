@@ -1,4 +1,5 @@
 const MAX_RELEASE_NOTES_LENGTH = 1_200;
+const MAX_RELEASE_NOTES_INPUT_LENGTH = 8_192;
 
 const HTML_ENTITY_REPLACEMENTS: Readonly<Record<string, string>> = {
   amp: "&",
@@ -48,7 +49,7 @@ export function normalizeDesktopUpdateReleaseNotes(value: unknown): string | nul
   if (!raw) return null;
 
   const normalized = raw
-    .replace(/&([a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);/g, (_, entity: string) => decodeHtmlEntity(entity))
+    .slice(0, MAX_RELEASE_NOTES_INPUT_LENGTH)
     .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<li\b[^>]*>/gi, "\n• ")
@@ -56,6 +57,9 @@ export function normalizeDesktopUpdateReleaseNotes(value: unknown): string | nul
     .replace(/<[^>]*>/g, "")
     .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
     .replace(/[*_`#]/g, "")
+    .replace(/&([a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);/g, (_, entity: string) => decodeHtmlEntity(entity))
+    .replaceAll("<", "‹")
+    .replaceAll(">", "›")
     .split("\n")
     .map((line) => line.trim().replace(/\s+/g, " "))
     .filter(Boolean)

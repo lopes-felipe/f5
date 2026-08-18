@@ -121,6 +121,15 @@ const make = Effect.gen(function* () {
             THEN projection_thread_background_work.completed_at
           ELSE excluded.completed_at
         END
+      WHERE
+        excluded.updated_at > projection_thread_background_work.updated_at
+        OR (
+          excluded.updated_at = projection_thread_background_work.updated_at
+          AND (
+            projection_thread_background_work.active = 1
+            OR excluded.active = 0
+          )
+        )
     `,
   });
 
@@ -134,7 +143,7 @@ const make = Effect.gen(function* () {
         updated_at = ${completedAt},
         last_seen_at = ${completedAt},
         completed_at = ${completedAt}
-      WHERE thread_id = ${threadId} AND active = 1
+      WHERE thread_id = ${threadId} AND active = 1 AND updated_at <= ${completedAt}
     `,
   });
 

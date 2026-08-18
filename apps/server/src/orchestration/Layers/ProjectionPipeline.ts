@@ -1701,9 +1701,11 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
     });
 
   const applyUsageFactsProjection: ProjectorDefinition["apply"] = (event, _attachmentSideEffects) =>
-    event.type === "thread.session-set" && event.payload.usageFact !== undefined
+    event.type === "thread.usage-recorded"
       ? usageFactRepository.record(event.payload.usageFact)
-      : Effect.void;
+      : event.type === "thread.session-set" && event.payload.usageFact !== undefined
+        ? usageFactRepository.record(event.payload.usageFact)
+        : Effect.void;
 
   const applyThreadTurnsProjection: ProjectorDefinition["apply"] = (
     event,

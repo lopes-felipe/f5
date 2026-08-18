@@ -148,6 +148,7 @@ interface MessagesTimelineProps {
   onIsAtEndChange: (isAtEnd: boolean) => void;
   hasOlderHistory?: boolean;
   isLoadingOlderHistory?: boolean;
+  hasHistoryLoadError?: boolean;
   onLoadOlderHistory?: ((signal: AbortSignal) => Promise<void>) | undefined;
   timelineEntries: ReturnType<typeof deriveTimelineEntries>;
   completionDividerBeforeEntryId: string | null;
@@ -242,6 +243,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   onIsAtEndChange,
   hasOlderHistory = false,
   isLoadingOlderHistory = false,
+  hasHistoryLoadError = false,
   onLoadOlderHistory,
   timelineEntries,
   completionDividerBeforeEntryId,
@@ -427,6 +429,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     if (
       !hasOlderHistory ||
       isLoadingOlderHistory ||
+      hasHistoryLoadError ||
       !onLoadOlderHistory ||
       historyLoadControllerRef.current
     ) {
@@ -445,7 +448,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           historyLoadControllerRef.current = null;
         }
       });
-  }, [hasOlderHistory, isLoadingOlderHistory, onLoadOlderHistory]);
+  }, [hasHistoryLoadError, hasOlderHistory, isLoadingOlderHistory, onLoadOlderHistory]);
   const handleViewableItemsChanged = useCallback<NonNullable<OnViewableItemsChanged<TimelineRow>>>(
     ({ viewableItems }) => {
       const firstVisibleIndex = viewableItems.reduce(

@@ -49,6 +49,7 @@ const make = Effect.gen(function* () {
         token_provenance,
         cost_provenance,
         completed_at,
+        recorded_at,
         source_event_id
       ) VALUES (
         ${fact.turnId},
@@ -66,6 +67,7 @@ const make = Effect.gen(function* () {
         ${fact.tokenProvenance},
         ${fact.costProvenance},
         ${fact.completedAt},
+        strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
         ${fact.sourceEventId}
       )
       ON CONFLICT (turn_id) DO UPDATE SET
@@ -91,26 +93,34 @@ const make = Effect.gen(function* () {
   const record: UsageFactRepositoryShape["record"] = (fact) =>
     recordQuery(fact).pipe(Effect.mapError(toPersistenceSqlError("UsageFactRepository.record")));
 
-  const readCoverageStartedAt: UsageFactRepositoryShape["readCoverageStartedAt"] = sql<{
+  const readUsageMetadata = sql<{
     readonly coverageStartedAt: string;
+    readonly factCutoverAt: string;
   }>`
-    SELECT coverage_started_at AS "coverageStartedAt"
+    SELECT
+      coverage_started_at AS "coverageStartedAt",
+      COALESCE(fact_cutover_at, coverage_started_at) AS "factCutoverAt"
     FROM projection_usage_metadata
     WHERE singleton_id = 1
   `.pipe(
-    Effect.mapError(toPersistenceSqlError("UsageFactRepository.readCoverageStartedAt")),
-    Effect.flatMap((rows) =>
-      rows[0]?.coverageStartedAt
-        ? Effect.succeed(rows[0].coverageStartedAt)
-        : Effect.fail(toPersistenceSqlError("UsageFactRepository.readCoverageStartedAt")(null)),
-    ),
+    Effect.mapError(toPersistenceSqlError("UsageFactRepository.readUsageMetadata")),
+    Effect.flatMap((rows) => {
+      const metadata = rows[0];
+      return metadata?.coverageStartedAt && metadata.factCutoverAt
+        ? Effect.succeed(metadata)
+        : Effect.fail(toPersistenceSqlError("UsageFactRepository.readUsageMetadata")(null));
+    }),
   );
+
+  const readCoverageStartedAt: UsageFactRepositoryShape["readCoverageStartedAt"] =
+    readUsageMetadata.pipe(
+      Effect.map((metadata) => metadata.coverageStartedAt),
+      Effect.mapError(toPersistenceSqlError("UsageFactRepository.readCoverageStartedAt")),
+    );
 
   const summarizeHourly: UsageFactRepositoryShape["summarizeHourly"] = (input) =>
     Effect.gen(function* () {
-      const coverageStartedAt = yield* readCoverageStartedAt;
-      const factStartedAt =
-        coverageStartedAt > input.startedAt ? coverageStartedAt : input.startedAt;
+      const { factCutoverAt } = yield* readUsageMetadata;
       const factRows = yield* sql<HourlyUsageDbRow>`
         SELECT
           strftime('%Y-%m-%dT%H:00:00.000Z', completed_at) AS "hourStartedAt",
@@ -133,12 +143,14 @@ const make = Effect.gen(function* () {
           SUM(CASE WHEN provider_cost_usd IS NULL THEN 1 ELSE 0 END) AS "unpricedTurnCount",
           0 AS "historicalCostTurnCount"
         FROM projection_turn_usage_facts
-        WHERE completed_at >= ${factStartedAt} AND completed_at < ${input.endedAt}
+        WHERE completed_at >= ${input.startedAt}
+          AND completed_at < ${input.endedAt}
+          AND COALESCE(recorded_at, completed_at) >= ${factCutoverAt}
         GROUP BY hourStartedAt, provider_name, model
         ORDER BY hourStartedAt ASC, provider_name ASC, model ASC
       `;
 
-      const legacyEndedAt = coverageStartedAt < input.endedAt ? coverageStartedAt : input.endedAt;
+      const legacyEndedAt = factCutoverAt < input.endedAt ? factCutoverAt : input.endedAt;
       const legacyRows =
         input.startedAt < legacyEndedAt
           ? yield* sql<HourlyUsageDbRow>`

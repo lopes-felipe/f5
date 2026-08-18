@@ -978,6 +978,7 @@ describe("preloadRecentThreadDetails", () => {
       anchorActivityId: null,
       beforeMessageCursor: null,
       afterMessageCursor: null,
+      afterActivityCursor: null,
       beforeCheckpointTurnCount: null,
       activityCursor: null,
       beforeCommandExecutionCursor: null,
@@ -986,6 +987,94 @@ describe("preloadRecentThreadDetails", () => {
       anchorMessageId,
       tailMessageId,
     ]);
+  });
+
+  it("hydrates an activity-only anchor page and preserves the loaded tail", async () => {
+    const threadId = ThreadId.makeUnsafe("thread-activity-anchor");
+    const anchorActivityId = EventId.makeUnsafe("activity-anchor");
+    const tailActivityId = EventId.makeUnsafe("activity-tail");
+    seedStore({
+      threads: [
+        makeThread({
+          id: threadId,
+          detailsLoaded: true,
+          activities: [
+            {
+              id: tailActivityId,
+              tone: "info",
+              kind: "runtime.note",
+              summary: "tail",
+              payload: {},
+              turnId: null,
+              sequence: 10,
+              createdAt: "2026-03-01T00:10:00.000Z",
+            },
+          ],
+        }),
+      ],
+    });
+    mockOrchestrationQueries({
+      getThreadHistoryPage: async ({ threadId: requestedThreadId }) => ({
+        threadId: requestedThreadId,
+        messages: [],
+        checkpoints: [],
+        activities: [
+          {
+            id: anchorActivityId,
+            tone: "tool",
+            kind: "tool.completed",
+            summary: "anchor",
+            payload: {},
+            turnId: null,
+            sequence: 2,
+            createdAt: "2026-03-01T00:02:00.000Z",
+          },
+        ],
+        commandExecutions: [],
+        hasOlderMessages: false,
+        hasNewerMessages: false,
+        hasOlderCheckpoints: false,
+        hasOlderActivities: true,
+        hasNewerActivities: true,
+        hasOlderCommandExecutions: false,
+        oldestLoadedMessageCursor: null,
+        newestLoadedMessageCursor: null,
+        oldestLoadedCheckpointTurnCount: null,
+        oldestLoadedActivityCursor: {
+          sequenceIsNull: false,
+          sequence: 2,
+          createdAt: "2026-03-01T00:02:00.000Z",
+          activityId: anchorActivityId,
+        },
+        newestLoadedActivityCursor: {
+          sequenceIsNull: false,
+          sequence: 2,
+          createdAt: "2026-03-01T00:02:00.000Z",
+          activityId: anchorActivityId,
+        },
+        oldestLoadedCommandExecutionCursor: null,
+        detailSequence: 2,
+      }),
+    });
+
+    await loadThreadHistoryAroundMessage(threadId, anchorActivityId, "activity");
+
+    expect(useStore.getState().threads[0]?.activities.map((activity) => activity.id)).toEqual([
+      anchorActivityId,
+      tailActivityId,
+    ]);
+    expect(useStore.getState().threads[0]?.history?.hasNewerActivities).toBe(true);
+  });
+
+  it("rejects an anchored history response when the requested item was deleted", async () => {
+    const threadId = ThreadId.makeUnsafe("thread-missing-anchor");
+    const missingActivityId = EventId.makeUnsafe("activity-missing");
+    seedStore({ threads: [makeThread({ id: threadId, detailsLoaded: true })] });
+    mockOrchestrationQueries();
+
+    await expect(
+      loadThreadHistoryAroundMessage(threadId, missingActivityId, "activity"),
+    ).rejects.toThrow("no longer available");
   });
 
   it("does not warm command execution summaries during recent thread preload", async () => {

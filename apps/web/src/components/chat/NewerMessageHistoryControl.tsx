@@ -7,11 +7,12 @@ import { useStore } from "../../store";
 import { Button } from "../ui/button";
 
 export function NewerMessageHistoryControl({ threadId }: { readonly threadId: ThreadId }) {
-  const hasNewerMessages = useStore(
-    (state) =>
-      ensureThreadHistoryState(state.threads.find((thread) => thread.id === threadId)?.history)
-        .hasNewerMessages === true,
-  );
+  const hasNewerTimeline = useStore((state) => {
+    const history = ensureThreadHistoryState(
+      state.threads.find((thread) => thread.id === threadId)?.history,
+    );
+    return history.hasNewerMessages === true || history.hasNewerActivities === true;
+  });
   const [stage, setStage] = useState<"idle" | "loading" | "error">("idle");
   const requestRef = useRef<AbortController | null>(null);
 
@@ -22,7 +23,7 @@ export function NewerMessageHistoryControl({ threadId }: { readonly threadId: Th
     [],
   );
 
-  if (!hasNewerMessages) return null;
+  if (!hasNewerTimeline) return null;
 
   const loadNewer = () => {
     if (requestRef.current) return;
@@ -47,7 +48,7 @@ export function NewerMessageHistoryControl({ threadId }: { readonly threadId: Th
       <p className="text-sm text-muted-foreground">
         {stage === "error"
           ? "The gap to newer messages could not be loaded."
-          : "More recent messages exist between this result and the current thread tail."}
+          : "More recent timeline entries exist between this result and the current thread tail."}
       </p>
       <Button size="sm" variant="outline" disabled={stage === "loading"} onClick={loadNewer}>
         {stage === "loading" ? "Loading…" : stage === "error" ? "Retry" : "Load newer"}

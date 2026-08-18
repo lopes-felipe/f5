@@ -188,6 +188,40 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     }),
   );
 
+  it.effect("does not let delayed progress reactivate completed work", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+      yield* Migration0066;
+      yield* sql`DELETE FROM projection_thread_background_work`;
+
+      const work = yield* ThreadBackgroundWork;
+      const taskId = RuntimeTaskId.makeUnsafe("out-of-order-task");
+      yield* work.recordProviderEvent({
+        ...eventBase(1),
+        type: "task.started",
+        payload: { taskId, taskType: "agent" },
+      });
+      yield* work.recordProviderEvent({
+        ...eventBase(3),
+        type: "task.completed",
+        payload: { taskId, status: "completed", summary: "Done" },
+      });
+      yield* work.recordProviderEvent({
+        ...eventBase(2),
+        type: "task.progress",
+        payload: { taskId, description: "Delayed progress" },
+      });
+
+      const entry = (yield* work.getSnapshot).entries[0];
+      assert.equal(entry?.status, "completed");
+      assert.equal(entry?.active, false);
+      assert.equal(entry?.latestOutput, "Done");
+      assert.equal(entry?.updatedAt, eventBase(3).createdAt);
+    }),
+  );
+
   it.effect("bounds snapshots and periodically prunes persisted history", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

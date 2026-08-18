@@ -63,6 +63,18 @@ function responseWithPullRequest(pullRequest: Record<string, unknown>) {
 }
 
 describe("GitHub PR detail decoding", () => {
+  it("rejects partial GraphQL responses instead of treating missing fields as authoritative", () => {
+    expect(() =>
+      decodeGitHubPrDetail(
+        {
+          ...responseWithPullRequest({ id: "PR_graphql" }),
+          errors: [{ message: "statusCheckRollup failed" }],
+        },
+        trackedPr(),
+      ),
+    ).toThrow("GraphQL errors");
+  });
+
   it("normalizes detail, reviewer, check, and reaction fields", () => {
     const result = decodeGitHubPrDetail(
       responseWithPullRequest({

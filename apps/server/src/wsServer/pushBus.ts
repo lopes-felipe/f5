@@ -45,36 +45,30 @@ export function makeWebSocketSendController(input: {
     1,
     input.maxClientBufferedBytes ?? DEFAULT_MAX_CLIENT_BUFFERED_BYTES,
   );
-  const logicalOutstandingByClient = new WeakMap<WebSocket, number>();
-  const drainWaitersByClient = new WeakMap<WebSocket, Set<() => void>>();
+  interface PendingFrame {
+    readonly message: string;
+    readonly logicalBytes: number;
+  }
+  interface ClientSendState {
+    inFlightBytes: number;
+    pendingBytes: number;
+    readonly pending: PendingFrame[];
+    oversizedDrainTimer: ReturnType<typeof setTimeout> | null;
+  }
+  const sendStateByClient = new WeakMap<WebSocket, ClientSendState>();
 
-  const notifyDrainWaiters = (client: WebSocket) => {
-    const waiters = drainWaitersByClient.get(client);
-    if (!waiters) return;
-    drainWaitersByClient.delete(client);
-    for (const waiter of waiters) waiter();
+  const getSendState = (client: WebSocket): ClientSendState => {
+    const existing = sendStateByClient.get(client);
+    if (existing) return existing;
+    const created: ClientSendState = {
+      inFlightBytes: 0,
+      pendingBytes: 0,
+      pending: [],
+      oversizedDrainTimer: null,
+    };
+    sendStateByClient.set(client, created);
+    return created;
   };
-
-  const waitForOversizedFrameDrain = (client: WebSocket) =>
-    Effect.promise(
-      () =>
-        new Promise<boolean>((resolve) => {
-          const waiters = drainWaitersByClient.get(client) ?? new Set<() => void>();
-          let settled = false;
-          const finish = (drained: boolean) => {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timeout);
-            waiters.delete(onDrain);
-            resolve(drained);
-          };
-          const onDrain = () => finish(true);
-          waiters.add(onDrain);
-          drainWaitersByClient.set(client, waiters);
-          const timeout = setTimeout(() => finish(false), OVERSIZED_FRAME_DRAIN_TIMEOUT_MS);
-          timeout.unref();
-        }),
-    );
 
   const removeClient = (client: WebSocket) =>
     Ref.update(input.clients, (current) => {
@@ -86,6 +80,9 @@ export function makeWebSocketSendController(input: {
 
   const closeSlowClient = (client: WebSocket) =>
     Effect.sync(() => {
+      const state = sendStateByClient.get(client);
+      if (state?.oversizedDrainTimer) clearTimeout(state.oversizedDrainTimer);
+      sendStateByClient.delete(client);
       try {
         client.close(SLOW_CLIENT_CLOSE_CODE, SLOW_CLIENT_CLOSE_REASON);
       } catch {
@@ -93,6 +90,44 @@ export function makeWebSocketSendController(input: {
         // broadcast set is sufficient; its close handler is idempotent.
       }
     }).pipe(Effect.andThen(removeClient(client)));
+
+  const startFrame = (client: WebSocket, state: ClientSendState, frame: PendingFrame): boolean => {
+    state.inFlightBytes = frame.logicalBytes;
+    if (frame.logicalBytes > maxClientBufferedBytes) {
+      state.oversizedDrainTimer = setTimeout(() => {
+        state.oversizedDrainTimer = null;
+        Effect.runFork(closeSlowClient(client));
+      }, OVERSIZED_FRAME_DRAIN_TIMEOUT_MS);
+      state.oversizedDrainTimer.unref();
+    }
+    try {
+      client.send(frame.message, (error) => {
+        if (state.oversizedDrainTimer) {
+          clearTimeout(state.oversizedDrainTimer);
+          state.oversizedDrainTimer = null;
+        }
+        state.inFlightBytes = 0;
+        if (error || client.readyState !== client.OPEN) {
+          Effect.runFork(closeSlowClient(client));
+          return;
+        }
+        const next = state.pending.shift();
+        if (!next) return;
+        state.pendingBytes = Math.max(0, state.pendingBytes - next.logicalBytes);
+        if (!startFrame(client, state, next)) {
+          Effect.runFork(closeSlowClient(client));
+        }
+      });
+      return true;
+    } catch {
+      if (state.oversizedDrainTimer) {
+        clearTimeout(state.oversizedDrainTimer);
+        state.oversizedDrainTimer = null;
+      }
+      state.inFlightBytes = 0;
+      return false;
+    }
+  };
 
   const send: WebSocketSendController["send"] = (client, message) =>
     Effect.gen(function* () {
@@ -102,45 +137,30 @@ export function makeWebSocketSendController(input: {
       }
 
       const logicalBytes = Buffer.byteLength(message);
-      const logicalOutstanding = logicalOutstandingByClient.get(client) ?? 0;
-      if (client.bufferedAmount > maxClientBufferedBytes) {
+      const state = getSendState(client);
+      const logicalOutstanding = state.inFlightBytes + state.pendingBytes;
+      const oversizedFrameInFlight = state.inFlightBytes > maxClientBufferedBytes;
+      if (!oversizedFrameInFlight && client.bufferedAmount > maxClientBufferedBytes) {
         yield* closeSlowClient(client);
         return false;
       }
-      if (logicalOutstanding > 0 && logicalOutstanding + logicalBytes > maxClientBufferedBytes) {
-        // A single startup snapshot may exceed the normal backlog budget. Hold
-        // the next frame until that snapshot's send callback runs instead of
-        // closing and forcing the client to request the same snapshot forever.
-        if (logicalOutstanding > maxClientBufferedBytes) {
-          const drained = yield* waitForOversizedFrameDrain(client);
-          if (!drained || client.readyState !== client.OPEN) {
-            yield* closeSlowClient(client);
-            return false;
-          }
-          return yield* send(client, message);
+      if (logicalOutstanding > 0) {
+        // A single startup snapshot may exceed the normal backlog budget. Do
+        // not count that one frame against the normal queue behind it, but do
+        // serialize every send so callbacks cannot overwrite byte accounting.
+        const budgetedOutstanding = oversizedFrameInFlight
+          ? state.pendingBytes
+          : logicalOutstanding;
+        if (budgetedOutstanding + logicalBytes > maxClientBufferedBytes) {
+          yield* closeSlowClient(client);
+          return false;
         }
-        yield* closeSlowClient(client);
-        return false;
+        state.pending.push({ message, logicalBytes });
+        state.pendingBytes += logicalBytes;
+        return true;
       }
 
-      logicalOutstandingByClient.set(client, logicalOutstanding + logicalBytes);
-      const didSend = yield* Effect.try({
-        try: () =>
-          client.send(message, (error) => {
-            const currentOutstanding = logicalOutstandingByClient.get(client) ?? 0;
-            logicalOutstandingByClient.set(client, Math.max(0, currentOutstanding - logicalBytes));
-            notifyDrainWaiters(client);
-            if (error) {
-              Effect.runFork(closeSlowClient(client));
-            }
-          }),
-        catch: () => undefined,
-      }).pipe(
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      );
-      if (!didSend) {
-        logicalOutstandingByClient.set(client, logicalOutstanding);
+      if (!startFrame(client, state, { message, logicalBytes })) {
         yield* closeSlowClient(client);
         return false;
       }
@@ -149,7 +169,10 @@ export function makeWebSocketSendController(input: {
 
   return {
     send,
-    logicalOutstandingBytes: (client) => logicalOutstandingByClient.get(client) ?? 0,
+    logicalOutstandingBytes: (client) => {
+      const state = sendStateByClient.get(client);
+      return state ? state.inFlightBytes + state.pendingBytes : 0;
+    },
   };
 }
 

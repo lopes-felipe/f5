@@ -6,11 +6,13 @@ export const EMPTY_THREAD_HISTORY_STATE: ThreadHistoryState = Object.freeze({
   hasNewerMessages: false,
   hasOlderCheckpoints: false,
   hasOlderActivities: false,
+  hasNewerActivities: false,
   hasOlderCommandExecutions: false,
   oldestLoadedMessageCursor: null,
   newestLoadedMessageCursor: null,
   oldestLoadedCheckpointTurnCount: null,
   oldestLoadedActivityCursor: null,
+  newestLoadedActivityCursor: null,
   oldestLoadedCommandExecutionCursor: null,
   generation: 0,
 });

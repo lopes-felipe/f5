@@ -850,7 +850,7 @@ const makeGitCore = Effect.gen(function* () {
               "GitCore.statusDetails.status",
               cwd,
               ["status", "--porcelain=2", "--branch", "-z"],
-              { env: { GIT_OPTIONAL_LOCKS: "0" } },
+              { env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } },
             ).pipe(Effect.map((result) => result.stdout)),
             runGitStdout("GitCore.statusDetails.unstagedNumstat", cwd, ["diff", "--numstat", "-z"]),
             runGitStdout("GitCore.statusDetails.stagedNumstat", cwd, [
@@ -1014,6 +1014,7 @@ const makeGitCore = Effect.gen(function* () {
         "diff",
         "--cached",
         "--name-status",
+        ...(filePaths && filePaths.length > 0 ? ["--", ...filePaths] : []),
       ]).pipe(Effect.map((stdout) => stdout.trim()));
       if (stagedSummary.length === 0) {
         return null;
@@ -1024,6 +1025,7 @@ const makeGitCore = Effect.gen(function* () {
         "--cached",
         "--patch",
         "--minimal",
+        ...(filePaths && filePaths.length > 0 ? ["--", ...filePaths] : []),
       ]);
 
       return {
@@ -1040,7 +1042,17 @@ const makeGitCore = Effect.gen(function* () {
         args.push("-m", trimmedBody);
       }
       if (filePaths && filePaths.length > 0) {
-        args.push("--only", "--", ...filePaths);
+        const mergeHeadPath = yield* runGitStdout("GitCore.commit.mergeHeadPath", cwd, [
+          "rev-parse",
+          "--git-path",
+          "MERGE_HEAD",
+        ]).pipe(Effect.map((stdout) => stdout.trim()));
+        const mergeInProgress = yield* fileSystem
+          .exists(isAbsolutePath(mergeHeadPath) ? mergeHeadPath : resolvePath(cwd, mergeHeadPath))
+          .pipe(Effect.catch(() => Effect.succeed(false)));
+        if (!mergeInProgress) {
+          args.push("--only", "--", ...filePaths);
+        }
       }
       yield* runGit("GitCore.commit.commit", cwd, args);
       const commitSha = yield* runGitStdout("GitCore.commit.revParseHead", cwd, [

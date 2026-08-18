@@ -9,7 +9,7 @@
  *
  * @module ProviderServiceLive
  */
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 
 import {
   DEFAULT_RUNTIME_MODE,
@@ -936,19 +936,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.kind": routed.adapter.provider,
             ...(input.model ? { "provider.model": input.model } : {}),
           });
-          const missingAttachmentIds: string[] = [];
-          const resolvedAttachments = input.attachments.flatMap((attachment) => {
+          const attachmentPaths = input.attachments.map((attachment) => {
             switch (attachment.type) {
               case "image": {
                 const localPath = resolveAttachmentPath({
                   attachmentsDir: serverConfig.attachmentsDir,
                   attachment,
                 });
-                if (localPath === null || !existsSync(localPath)) {
-                  missingAttachmentIds.push(attachment.id);
-                  return [];
-                }
-                return [{ ...attachment, localPath }];
+                return { attachment, localPath };
               }
               default:
                 throw new Error(
@@ -956,12 +951,29 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 );
             }
           });
+          const missingAttachmentIds = (yield* Effect.promise(() =>
+            Promise.all(
+              attachmentPaths.map(async ({ attachment, localPath }) => {
+                if (localPath === null) return attachment.id;
+                try {
+                  await access(localPath);
+                  return null;
+                } catch {
+                  return attachment.id;
+                }
+              }),
+            ),
+          )).filter((id): id is string => id !== null);
           if (missingAttachmentIds.length > 0) {
-            yield* Effect.logWarning("provider turn omitted unavailable attachments", {
-              threadId: input.threadId,
-              attachmentIds: missingAttachmentIds,
-            });
+            return yield* toValidationError(
+              "ProviderService.sendTurn",
+              `The following attachments are no longer available: ${missingAttachmentIds.join(", ")}`,
+            );
           }
+          const resolvedAttachments = attachmentPaths.map(({ attachment, localPath }) => ({
+            ...attachment,
+            localPath: localPath!,
+          }));
           const turn = yield* routed.adapter.sendTurn({
             ...input,
             resolvedAttachments,

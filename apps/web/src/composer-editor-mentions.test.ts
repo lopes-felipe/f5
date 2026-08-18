@@ -83,8 +83,15 @@ describe("serializeComposerMentionPath", () => {
 describe("collectComposerMentionPaths", () => {
   it("returns serialized mention paths without ordinary at-sign text", () => {
     expect(
-      collectComposerMentionPaths('Review @src/app.ts and @"docs/My File.md" please '),
+      collectComposerMentionPaths(
+        'CC @alice and review @src/app.ts and @"docs/My File.md" please ',
+      ),
     ).toEqual(["src/app.ts", "docs/My File.md"]);
+  });
+
+  it("quotes extensionless workspace-root files so they remain unambiguous", () => {
+    expect(serializeComposerMentionPath("Makefile")).toBe('"Makefile"');
+    expect(collectComposerMentionPaths('Review @"Makefile" please ')).toEqual(["Makefile"]);
   });
 });
 

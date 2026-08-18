@@ -1866,6 +1866,7 @@ const makeStorageMaintenance = Effect.gen(function* () {
           }
         }
 
+        const usageCoverageResumesAt = nowIso();
         const transactionExit = yield* Effect.exit(
           sql.withTransaction(
             Effect.gen(function* () {
@@ -1881,6 +1882,15 @@ const makeStorageMaintenance = Effect.gen(function* () {
               yield* sql`DELETE FROM projection_pending_approvals WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_turns WHERE thread_id = ${thread.threadId}`;
               yield* sql`DELETE FROM projection_turn_usage_facts WHERE thread_id = ${thread.threadId}`;
+              yield* sql`
+                UPDATE projection_usage_metadata
+                SET coverage_started_at = CASE
+                  WHEN coverage_started_at < ${usageCoverageResumesAt}
+                    THEN ${usageCoverageResumesAt}
+                  ELSE coverage_started_at
+                END
+                WHERE singleton_id = 1
+              `;
               yield* sql`DELETE FROM provider_session_runtime WHERE thread_id = ${thread.threadId}`;
               for (const commandId of commandIds) {
                 yield* sql`

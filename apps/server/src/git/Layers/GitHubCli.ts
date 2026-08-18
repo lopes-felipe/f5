@@ -436,15 +436,40 @@ const makeGitHubCli = Effect.sync(() => {
         // and surface the partial failure accurately.
         allowNonZeroExit: true,
       }).pipe(
-        Effect.map((result) => result.stdout.trim()),
-        Effect.flatMap((raw) =>
-          decodeGitHubJson(
-            raw,
+        Effect.flatMap((result) => {
+          const processFailed = result.timedOut || (result.code !== null && result.code !== 0);
+          const processError = () => {
+            const detail = result.timedOut
+              ? "GitHub CLI command timed out."
+              : result.stderr.trim() || `GitHub CLI command failed (code=${result.code}).`;
+            return normalizeGitHubCliError("execute", new Error(detail));
+          };
+          return decodeGitHubJson(
+            result.stdout.trim(),
             Schema.Unknown,
             "runGraphql",
             "GitHub CLI returned invalid GraphQL JSON.",
-          ),
-        ),
+          ).pipe(
+            Effect.flatMap((response) => {
+              if (!processFailed) {
+                return Effect.succeed(response);
+              }
+              const root =
+                typeof response === "object" && response !== null
+                  ? (response as Record<string, unknown>)
+                  : null;
+              const hasPartialData =
+                root?.data !== undefined && Array.isArray(root.errors) && root.errors.length > 0;
+              if (hasPartialData && !result.timedOut) {
+                return Effect.succeed(response);
+              }
+              return Effect.fail(processError());
+            }),
+            Effect.catch((error) =>
+              processFailed ? Effect.fail(processError()) : Effect.fail(error),
+            ),
+          );
+        }),
       );
     },
     searchPullRequests: (input) =>

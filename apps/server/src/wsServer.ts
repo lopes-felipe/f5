@@ -901,6 +901,22 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       } satisfies OrchestrationCommand;
     }
 
+    if (input.command.type === "thread.snooze") {
+      const createdAt = new Date().toISOString();
+      const createdAtMs = Date.parse(createdAt);
+      const untilMs = Date.parse(input.command.until);
+      if (
+        !Number.isFinite(untilMs) ||
+        untilMs <= createdAtMs ||
+        untilMs > createdAtMs + 365 * 24 * 60 * 60 * 1_000
+      ) {
+        return yield* new RouteRequestError({
+          message: "Snooze time must be in the future and no more than one year away.",
+        });
+      }
+      return { ...input.command, createdAt } satisfies OrchestrationCommand;
+    }
+
     if (input.command.type !== "thread.turn.start") {
       return input.command as OrchestrationCommand;
     }
@@ -1765,7 +1781,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             cost: () => 1,
             units: 1,
             duration: Duration.millis(100),
-            strategy: "enforce",
+            strategy: "shape",
           }),
         ),
         () =>

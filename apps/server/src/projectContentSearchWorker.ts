@@ -29,6 +29,8 @@ function projectContentSearchWorkerMain(): void {
   const { parentPort } = require("node:worker_threads") as {
     readonly parentPort: ParentPort | null;
   };
+  const fs = require("node:fs") as typeof import("node:fs");
+  const path = require("node:path") as typeof import("node:path");
   if (!parentPort) {
     throw new Error("Project content search worker requires a parent port.");
   }
@@ -44,6 +46,8 @@ function projectContentSearchWorkerMain(): void {
   const WORD_CHARACTER = /[\p{Letter}\p{Mark}\p{Number}_]/u;
 
   let finder: FileFinder | null = null;
+  let workspaceRoot: string | null = null;
+  let workspaceRootRealPath: string | null = null;
   let indexedPathCount = 0;
   let indexTruncated = false;
 
@@ -80,6 +84,8 @@ function projectContentSearchWorkerMain(): void {
 
   async function initialize(rootPath: string): Promise<void> {
     finder?.destroy();
+    workspaceRoot = rootPath;
+    workspaceRootRealPath = fs.realpathSync(rootPath);
     // Avoid bundler-specific dynamic-import helpers leaking into this
     // function's serialized worker source.
     const dynamicImport = new Function("specifier", "return import(specifier)") as (
@@ -180,7 +186,66 @@ function projectContentSearchWorkerMain(): void {
     }
     return input.useRegex
       ? { query: `(?i)${input.query}`, mode: "regex" }
-      : { query: input.query.toLocaleLowerCase(), mode: "plain" };
+      : { query: input.query.toLowerCase(), mode: "plain" };
+  }
+
+  function recoverLongLineMatch(
+    relativePath: string,
+    lineNumber: number,
+    input: Extract<WorkerRequest, { readonly type: "search" }>,
+    fileLines: Map<string, ReadonlyArray<string>>,
+  ): { readonly line: string; readonly ranges: ReadonlyArray<readonly [number, number]> } | null {
+    if (workspaceRoot === null || workspaceRootRealPath === null || input.useRegex) return null;
+    let lines = fileLines.get(relativePath);
+    if (!lines) {
+      const absolutePath = path.resolve(workspaceRoot, relativePath);
+      const relative = path.relative(workspaceRoot, absolutePath);
+      if (relative.startsWith("..") || path.isAbsolute(relative)) return null;
+      const realPath = fs.realpathSync(absolutePath);
+      const realRelative = path.relative(workspaceRootRealPath, realPath);
+      if (
+        realRelative === ".." ||
+        realRelative.startsWith(`..${path.sep}`) ||
+        path.isAbsolute(realRelative)
+      ) {
+        return null;
+      }
+      const stat = fs.statSync(realPath);
+      if (!stat.isFile() || stat.size > MAX_FILE_BYTES) return null;
+      const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+      const descriptor = fs.openSync(realPath, fs.constants.O_RDONLY | noFollow);
+      let bytes: Buffer;
+      try {
+        const openedStat = fs.fstatSync(descriptor);
+        if (!openedStat.isFile() || openedStat.size > MAX_FILE_BYTES) return null;
+        bytes = fs.readFileSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      lines = bytes.toString("utf8").split(/\r?\n/);
+      fileLines.set(relativePath, lines);
+    }
+    const line = lines[lineNumber - 1];
+    if (line === undefined) return null;
+    const haystack = input.caseSensitive ? line : line.toLowerCase();
+    const needle = input.caseSensitive ? input.query : input.query.toLowerCase();
+    if (needle.length === 0) return null;
+    const ranges: Array<readonly [number, number]> = [];
+    let fromIndex = 0;
+    let byteOffsetIndex = 0;
+    let byteOffset = 0;
+    while (ranges.length < MAX_MATCH_RANGES) {
+      const start = haystack.indexOf(needle, fromIndex);
+      if (start < 0) break;
+      const end = start + needle.length;
+      byteOffset += Buffer.byteLength(line.slice(byteOffsetIndex, start), "utf8");
+      const startByteOffset = byteOffset;
+      byteOffset += Buffer.byteLength(line.slice(start, end), "utf8");
+      ranges.push([startByteOffset, byteOffset]);
+      byteOffsetIndex = end;
+      fromIndex = Math.max(end, start + 1);
+    }
+    return ranges.length > 0 ? { line, ranges } : null;
   }
 
   function search(input: Extract<WorkerRequest, { readonly type: "search" }>) {
@@ -198,6 +263,7 @@ function projectContentSearchWorkerMain(): void {
     let cursor: GrepCursor | null = null;
     let regexFallbackError: string | undefined;
     let processingTruncated = false;
+    const recoveredFileLines = new Map<string, ReadonlyArray<string>>();
 
     do {
       const remainingTimeBudgetMs = Math.max(1, Math.ceil(deadline - performance.now()));
@@ -220,7 +286,22 @@ function projectContentSearchWorkerMain(): void {
         const normalizedPath = match.relativePath.replaceAll("\\", "/");
         const currentPathCount = matchesPerPath.get(normalizedPath) ?? 0;
         if (currentPathCount >= MAX_MATCHES_PER_FILE) continue;
-        const bounded = boundedLineMatch(match.lineContent, match.matchRanges);
+        let lineContent = match.lineContent;
+        let rawRanges: ReadonlyArray<readonly [number, number]> = match.matchRanges;
+        let bounded = boundedLineMatch(lineContent, rawRanges);
+        if (!bounded || bounded.matchRanges.length === 0) {
+          const recovered = recoverLongLineMatch(
+            normalizedPath,
+            match.lineNumber,
+            input,
+            recoveredFileLines,
+          );
+          if (recovered) {
+            lineContent = recovered.line;
+            rawRanges = recovered.ranges;
+            bounded = boundedLineMatch(lineContent, rawRanges);
+          }
+        }
         if (!bounded) continue;
         processingTruncated ||= bounded.truncated;
         const matchRanges = bounded.matchRanges.filter(

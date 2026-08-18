@@ -3766,7 +3766,7 @@ export default function ChatView({
       toastManager.add({ type: "error", title: failure.message });
     }
     const latestFailure = result.failures.at(-1);
-    if (latestFailure) setThreadError(destinationThreadId, latestFailure.message);
+    setThreadError(destinationThreadId, latestFailure?.message ?? null);
   };
 
   const addComposerFileAttachments = (files: File[]) => {
@@ -4081,6 +4081,9 @@ export default function ChatView({
       return;
     }
     const promptForSend = promptRef.current;
+    const composerImagesSnapshot = [...composerImages];
+    const composerFilePathsSnapshotBeforePreflight = [...composerFilePaths];
+    const composerTerminalContextsSnapshotBeforePreflight = [...composerTerminalContexts];
     const {
       trimmedPrompt: trimmed,
       sendableTerminalContexts: sendableComposerTerminalContexts,
@@ -4088,9 +4091,9 @@ export default function ChatView({
       hasSendableContent,
     } = deriveComposerSendState({
       prompt: promptForSend,
-      imageCount: composerImages.length,
-      filePathCount: composerFilePaths.length,
-      terminalContexts: composerTerminalContexts,
+      imageCount: composerImagesSnapshot.length,
+      filePathCount: composerFilePathsSnapshotBeforePreflight.length,
+      terminalContexts: composerTerminalContextsSnapshotBeforePreflight,
     });
     if (showPlanFollowUpPrompt && activeProposedPlan) {
       const followUp = resolvePlanFollowUpSubmission({
@@ -4110,8 +4113,8 @@ export default function ChatView({
       return;
     }
     const standaloneSlashCommand =
-      composerImages.length === 0 &&
-      composerFilePaths.length === 0 &&
+      composerImagesSnapshot.length === 0 &&
+      composerFilePathsSnapshotBeforePreflight.length === 0 &&
       sendableComposerTerminalContexts.length === 0
         ? parseStandaloneComposerSlashCommand(trimmed)
         : null;
@@ -4139,6 +4142,7 @@ export default function ChatView({
       return;
     }
     if (!activeProject) return;
+    sendInFlightRef.current = true;
     const mentionedPaths = collectComposerMentionPaths(promptForSend);
     if (mentionedPaths.length > 0) {
       try {
@@ -4153,18 +4157,31 @@ export default function ChatView({
           title: "A mentioned workspace path is no longer available.",
           description: error instanceof Error ? error.message : "Re-add the path and try again.",
         });
+        sendInFlightRef.current = false;
         return;
       }
     }
     const threadIdForSend = activeThread.id;
     const isFirstMessage = !isServerThread || activeThread.messages.length === 0;
     if (isServerThread && !isFirstMessage && activeThread.branch && gitCwd) {
-      const proceed = await guardBranchDrift({
-        cwd: gitCwd,
-        threadId: threadIdForSend,
-        recordedBranch: activeThread.branch,
-      });
-      if (!proceed) return;
+      let proceed = false;
+      try {
+        proceed = await guardBranchDrift({
+          cwd: gitCwd,
+          threadId: threadIdForSend,
+          recordedBranch: activeThread.branch,
+        });
+      } catch (error) {
+        toastManager.add({
+          type: "error",
+          title: "Could not verify the current branch.",
+          description: error instanceof Error ? error.message : "Try sending again.",
+        });
+      }
+      if (!proceed) {
+        sendInFlightRef.current = false;
+        return;
+      }
     }
     // Always request worktree preparation on the first send in worktree mode,
     // even if the client cache shows a non-null `worktreePath`. The client
@@ -4185,19 +4202,18 @@ export default function ChatView({
         threadIdForSend,
         "Select a base branch before sending in New worktree mode.",
       );
+      sendInFlightRef.current = false;
       return;
     }
 
-    sendInFlightRef.current = true;
     const preparingWorktree = Boolean(baseBranchForWorktree);
 
-    const composerImagesSnapshot = [...composerImages];
     const normalizeAbsolutePathForComparison = createCachedAbsolutePathComparisonNormalizer(
       window.desktopBridge?.resolveRealPath ?? identityAbsolutePathNormalizer,
     );
     const { filePaths: composerFilePathsSnapshot, invalidPathCount: invalidComposerFilePathCount } =
       sanitizeAttachedFileReferencePaths({
-        filePaths: composerFilePaths,
+        filePaths: composerFilePathsSnapshotBeforePreflight,
         workspaceRoots: [activeThread.worktreePath, activeProject.cwd],
         normalizeAbsolutePathForComparison,
       });
@@ -4209,7 +4225,12 @@ export default function ChatView({
       sendInFlightRef.current = false;
       return;
     }
-    const composerTerminalContextsSnapshot = [...sendableComposerTerminalContexts];
+    const sendableTerminalContextIds = new Set(
+      sendableComposerTerminalContexts.map((context) => context.id),
+    );
+    const composerTerminalContextsSnapshot = composerTerminalContextsSnapshotBeforePreflight.filter(
+      (context) => sendableTerminalContextIds.has(context.id),
+    );
     const rollback: PendingTurnDispatchRollback = {
       prompt: promptForSend,
       images: composerImagesSnapshot.map(cloneComposerImageForRetry),
@@ -4279,11 +4300,29 @@ export default function ChatView({
         description: toastCopy.description,
       });
     }
-    promptRef.current = "";
-    clearComposerDraftContent(threadIdForSend);
-    setComposerHighlightedItemId(null);
-    setComposerCursor(0);
-    setComposerTrigger(null);
+    const currentImages = composerImagesRef.current;
+    const currentFilePaths = composerFilePathsRef.current;
+    const currentTerminalContexts = composerTerminalContextsRef.current;
+    const composerStillMatchesCapturedDraft =
+      promptRef.current === promptForSend &&
+      currentImages.length === composerImagesSnapshot.length &&
+      currentImages.every((image, index) => image.id === composerImagesSnapshot[index]?.id) &&
+      currentFilePaths.length === composerFilePathsSnapshotBeforePreflight.length &&
+      currentFilePaths.every(
+        (filePath, index) => filePath === composerFilePathsSnapshotBeforePreflight[index],
+      ) &&
+      currentTerminalContexts.length === composerTerminalContextsSnapshotBeforePreflight.length &&
+      currentTerminalContexts.every(
+        (context, index) =>
+          context.id === composerTerminalContextsSnapshotBeforePreflight[index]?.id,
+      );
+    if (composerStillMatchesCapturedDraft) {
+      promptRef.current = "";
+      clearComposerDraftContent(threadIdForSend);
+      setComposerHighlightedItemId(null);
+      setComposerCursor(0);
+      setComposerTrigger(null);
+    }
 
     const restoreDraftAfterFailure = (
       message: string,
@@ -5481,6 +5520,8 @@ export default function ChatView({
     [
       activeThread?.archivedAt,
       activeThread?.id,
+      activeThread?.pinnedAt,
+      activeThread?.pinOrderKey,
       activeThread?.snoozedUntil,
       activeThread?.titleRegeneration,
       threadActionController.menuItemsForThread,
@@ -5653,6 +5694,7 @@ export default function ChatView({
                   onIsAtEndChange={onIsAtEndChange}
                   hasOlderHistory={hasOlderTimelineHistory}
                   isLoadingOlderHistory={activeThreadHistory.stage === "backfilling"}
+                  hasHistoryLoadError={activeThreadHistory.stage === "error"}
                   onLoadOlderHistory={loadOlderTimelineHistory}
                   timelineEntries={timelineEntries}
                   completionDividerBeforeEntryId={completionDividerBeforeEntryId}

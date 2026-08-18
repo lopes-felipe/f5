@@ -42,7 +42,11 @@ export function useAgentsPanelModel(options: { readonly includeActivityIndex?: b
     if (!api?.agents) return;
     return api.agents.onSnapshotUpdated((snapshot) => {
       try {
-        queryClient.setQueryData(agentsQueryKeys.snapshot, decodeAgentsSnapshot(snapshot));
+        const decoded = decodeAgentsSnapshot(snapshot);
+        queryClient.setQueryData<ReturnType<typeof decodeAgentsSnapshot>>(
+          agentsQueryKeys.snapshot,
+          (current) => (current && current.generatedAt > decoded.generatedAt ? current : decoded),
+        );
       } catch (error) {
         console.warn("Ignored an invalid agents snapshot update.", error);
       }

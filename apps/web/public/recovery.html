@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; navigate-to 'self' http://localhost:* http://127.0.0.1:*"
+    />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>F5 renderer recovery</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: system-ui, sans-serif;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background: Canvas;
+        color: CanvasText;
+      }
+      main {
+        width: min(34rem, calc(100vw - 3rem));
+      }
+      h1 {
+        font-size: 1.35rem;
+        margin: 0 0 0.75rem;
+      }
+      p {
+        line-height: 1.5;
+        opacity: 0.8;
+      }
+      button {
+        margin-top: 0.75rem;
+        border: 0;
+        border-radius: 0.5rem;
+        padding: 0.65rem 1rem;
+        background: Highlight;
+        color: HighlightText;
+        font: inherit;
+        font-weight: 600;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>F5 could not recover its interface</h1>
+      <p>The renderer stopped repeatedly. Background server work was left running.</p>
+      <button id="reload" type="button">Reload F5</button>
+    </main>
+    <script>
+      document.getElementById("reload").addEventListener("click", () => {
+        const target = new URL(location.href).searchParams.get("target");
+        if (!target) return;
+        const parsed = new URL(target);
+        if (
+          parsed.origin === location.origin ||
+          parsed.hostname === "localhost" ||
+          parsed.hostname === "127.0.0.1"
+        ) {
+          location.replace(parsed.href);
+        }
+      });
+    </script>
+  </body>
+</html>

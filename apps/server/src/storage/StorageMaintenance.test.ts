@@ -920,6 +920,32 @@ layer("StorageMaintenance", (it) => {
           });
           yield* seedThread({ sql, threadId: activeThreadId, deletedAt: null });
           yield* seedDeletedThreadDetail({ sql, threadId: deletedThreadId });
+          yield* sql`
+            INSERT INTO projection_turn_usage_facts (
+              turn_id, thread_id, project_id, provider_name, total_tokens,
+              token_provenance, cost_provenance, completed_at, recorded_at, source_event_id
+            ) VALUES
+              (
+                'turn-usage-deleted', ${deletedThreadId}, 'project-1', 'codex', 10,
+                'provider-reported', 'unreported',
+                '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:01.000Z', 'usage-event-deleted'
+              ),
+              (
+                'turn-usage-active', ${activeThreadId}, 'project-1', 'codex', 20,
+                'provider-reported', 'unreported',
+                '2026-08-01T00:00:00.000Z', '2026-08-01T00:00:01.000Z', 'usage-event-active'
+              )
+          `;
+          const usageMetadataBefore = yield* sql<{
+            readonly coverageStartedAt: string;
+            readonly factCutoverAt: string;
+          }>`
+            SELECT
+              coverage_started_at AS "coverageStartedAt",
+              fact_cutover_at AS "factCutoverAt"
+            FROM projection_usage_metadata
+            WHERE singleton_id = 1
+          `;
 
           const providerLogPath = NodePath.join(config.providerLogsDir, `${sharedSegment}.log`);
           const attachmentPath = NodePath.join(
@@ -956,6 +982,8 @@ layer("StorageMaintenance", (it) => {
           );
           assert.equal(yield* countRows(sql, "projection_pending_approvals", deletedThreadId), 0);
           assert.equal(yield* countRows(sql, "projection_turns", deletedThreadId), 0);
+          assert.equal(yield* countRows(sql, "projection_turn_usage_facts", deletedThreadId), 0);
+          assert.equal(yield* countRows(sql, "projection_turn_usage_facts", activeThreadId), 1);
           assert.equal(yield* countRows(sql, "provider_session_runtime", deletedThreadId), 0);
           assert.equal(yield* countRows(sql, "checkpoint_diff_blobs", deletedThreadId), 0);
           const receipts = yield* sql<{ readonly count: number }>`
@@ -972,6 +1000,21 @@ layer("StorageMaintenance", (it) => {
           );
           assert.equal(yield* Effect.promise(() => pathExists(attachmentPath)), true);
           assert.equal(yield* Effect.promise(() => pathExists(providerLogPath)), true);
+          const usageMetadataAfter = yield* sql<{
+            readonly coverageStartedAt: string;
+            readonly factCutoverAt: string;
+          }>`
+            SELECT
+              coverage_started_at AS "coverageStartedAt",
+              fact_cutover_at AS "factCutoverAt"
+            FROM projection_usage_metadata
+            WHERE singleton_id = 1
+          `;
+          assert.equal(
+            usageMetadataAfter[0]!.coverageStartedAt >= usageMetadataBefore[0]!.coverageStartedAt,
+            true,
+          );
+          assert.equal(usageMetadataAfter[0]!.factCutoverAt, usageMetadataBefore[0]!.factCutoverAt);
         }),
       ),
   );
@@ -1443,6 +1486,7 @@ type CountedThreadTable =
   | "projection_thread_proposed_plans"
   | "projection_pending_approvals"
   | "projection_turns"
+  | "projection_turn_usage_facts"
   | "provider_session_runtime"
   | "checkpoint_diff_blobs";
 
@@ -1482,6 +1526,10 @@ function countRows(sql: SqlClient.SqlClient, tableName: CountedThreadTable, thre
     case "projection_turns":
       return sql<{ readonly count: number }>`
         SELECT COUNT(*) AS count FROM projection_turns WHERE thread_id = ${threadId}
+      `.pipe(mapCount);
+    case "projection_turn_usage_facts":
+      return sql<{ readonly count: number }>`
+        SELECT COUNT(*) AS count FROM projection_turn_usage_facts WHERE thread_id = ${threadId}
       `.pipe(mapCount);
     case "provider_session_runtime":
       return sql<{ readonly count: number }>`

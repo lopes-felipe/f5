@@ -45,69 +45,6 @@ const seedMigrationTableAt = (migrationId: number, name: string) =>
     `;
   });
 
-const coreRepairTables = [
-  "projection_state",
-  "projection_threads",
-  "projection_thread_messages",
-  "projection_thread_activities",
-  "projection_thread_sessions",
-  "projection_thread_file_changes",
-  "projection_turns",
-  "projection_pending_approvals",
-] as const;
-
-const readCoreRepairSchemaSummary = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-
-  const columnGroups = yield* Effect.forEach(
-    coreRepairTables,
-    (tableName) =>
-      sql<{
-        readonly tableName: string;
-        readonly name: string;
-        readonly type: string;
-        readonly notNull: number;
-        readonly defaultValue: string | null;
-        readonly primaryKey: number;
-      }>`
-        SELECT
-          ${tableName} AS "tableName",
-          name,
-          type,
-          "notnull" AS "notNull",
-          dflt_value AS "defaultValue",
-          pk AS "primaryKey"
-        FROM pragma_table_info(${tableName})
-        ORDER BY name ASC
-      `,
-    { concurrency: 1 },
-  );
-
-  const indexGroups = yield* Effect.forEach(
-    coreRepairTables,
-    (tableName) =>
-      sql<{
-        readonly tableName: string;
-        readonly name: string;
-      }>`
-        SELECT
-          tbl_name AS "tableName",
-          name
-        FROM sqlite_master
-        WHERE type = 'index'
-          AND tbl_name = ${tableName}
-          AND name NOT LIKE 'sqlite_autoindex_%'
-        ORDER BY name ASC
-      `,
-    { concurrency: 1 },
-  );
-
-  return {
-    columns: columnGroups.flat(),
-    indexes: indexGroups.flat(),
-  };
-});
-
 const createProjectionStateTable = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
@@ -733,17 +670,30 @@ const insertRowsInOldCoreProjectionTables = Effect.gen(function* () {
 });
 
 layer("048_ProjectionCoreSchemaRepair", (it) => {
-  it.effect("matches the full migration schema for core repaired tables", () =>
+  it.effect("does not claim columns owned by later migrations", () =>
     Effect.gen(function* () {
-      yield* resetDatabase;
-      yield* runMigrations;
-      const canonicalSchema = yield* readCoreRepairSchemaSummary;
-
+      const sql = yield* SqlClient.SqlClient;
       yield* resetDatabase;
       yield* Migration0048;
-      const repairedSchema = yield* readCoreRepairSchemaSummary;
+      const threadColumns = yield* sql<{ readonly name: string }>`
+        SELECT name FROM pragma_table_info('projection_threads')
+      `;
+      const sessionColumns = yield* sql<{ readonly name: string }>`
+        SELECT name FROM pragma_table_info('projection_thread_sessions')
+      `;
 
-      assert.deepEqual(repairedSchema, canonicalSchema);
+      assert.equal(
+        threadColumns.some(({ name }) => name === "pinned_at"),
+        false,
+      );
+      assert.equal(
+        threadColumns.some(({ name }) => name === "title_revision"),
+        false,
+      );
+      assert.equal(
+        sessionColumns.some(({ name }) => name === "last_error_id"),
+        false,
+      );
     }),
   );
 

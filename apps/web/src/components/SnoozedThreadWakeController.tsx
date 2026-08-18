@@ -1,6 +1,6 @@
 import { useParams } from "@tanstack/react-router";
 import { ThreadId } from "@t3tools/contracts";
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 
 import { isSnoozedThread } from "../lib/threadOrdering";
 import { useStore } from "../store";
@@ -11,8 +11,14 @@ export function SnoozedThreadWakeController() {
     strict: false,
     select: (params) => (params.threadId ? ThreadId.makeUnsafe(params.threadId) : null),
   });
-  const thread = useStore((state) =>
-    routeThreadId ? state.threads.find((entry) => entry.id === routeThreadId) : undefined,
+  const threads = useStore((state) => state.threads);
+  const thread = useMemo(
+    () => (routeThreadId ? threads.find((entry) => entry.id === routeThreadId) : undefined),
+    [routeThreadId, threads],
+  );
+  const snoozedThreads = useMemo(
+    () => threads.filter((entry) => entry.snoozedUntil != null),
+    [threads],
   );
   const attemptedSnooze = useRef<string | null>(null);
 
@@ -25,6 +31,36 @@ export function SnoozedThreadWakeController() {
       attemptedSnooze.current = null;
     });
   }, [thread]);
+
+  useEffect(() => {
+    const deadlines = snoozedThreads.flatMap((entry) => {
+      const deadline = Date.parse(entry.snoozedUntil ?? "");
+      return Number.isFinite(deadline) ? [{ thread: entry, deadline }] : [];
+    });
+    if (deadlines.length === 0) return;
+    const nextDeadline = Math.min(...deadlines.map((entry) => entry.deadline));
+    let timer: number | null = null;
+    const schedule = () => {
+      const remaining = nextDeadline - Date.now();
+      timer = window.setTimeout(
+        () => {
+          if (remaining > 2_147_000_000) {
+            schedule();
+            return;
+          }
+          const now = Date.now();
+          for (const entry of deadlines) {
+            if (entry.deadline <= now) void wakeThread(entry.thread).catch(() => undefined);
+          }
+        },
+        Math.min(2_147_000_000, Math.max(0, remaining)),
+      );
+    };
+    schedule();
+    return () => {
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [snoozedThreads]);
 
   return null;
 }

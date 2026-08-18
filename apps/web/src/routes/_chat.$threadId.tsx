@@ -327,9 +327,7 @@ function ChatThreadRouteView() {
       : null,
   );
   const routeThreadExists = threadExists || draftThread !== null;
-  const threadDetailQuery = useThreadDetail(thread ? threadId : null, {
-    includeCommandExecutionHistory: settings.showAgentCommandTranscripts,
-  });
+  const threadDetailQuery = useThreadDetail(thread ? threadId : null);
   const shouldUseRightPanelSheet = useMediaQuery(RIGHT_PANEL_INLINE_LAYOUT_MEDIA_QUERY);
   const rightPanelState = useRightPanelStore((store) =>
     selectThreadRightPanelState(store.byThreadId, threadId),

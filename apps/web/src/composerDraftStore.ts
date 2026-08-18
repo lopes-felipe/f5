@@ -42,6 +42,7 @@ import {
 export const COMPOSER_DRAFT_STORAGE_KEY = "t3code:composer-drafts:v1";
 export const COMPOSER_DRAFT_PERSISTENCE_ERROR_EVENT = "f5:composer-draft-persistence-error";
 export const MAX_PROMPT_STASH_ENTRIES = 20;
+export const MAX_PROMPT_STASH_IMAGE_DATA_CHARS = 3_000_000;
 export type DraftId = ThreadId;
 export type DraftThreadEnvMode = "local" | "worktree";
 
@@ -50,9 +51,11 @@ const COMPOSER_PERSIST_DEBOUNCE_MS = 300;
 interface DebouncedStorage extends StateStorage {
   cancelPending: () => void;
   flush: () => void;
+  pendingValue: () => string | null;
 }
 
 export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStorage {
+  let pendingValue: string | null = null;
   const reportWriteFailure = (error: unknown) => {
     if (typeof window === "undefined") return;
     window.dispatchEvent(
@@ -63,6 +66,7 @@ export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStor
   };
   const debouncedSetItem = new Debouncer(
     (name: string, value: string) => {
+      pendingValue = null;
       try {
         const result = baseStorage.setItem(name, value);
         if (result instanceof Promise) {
@@ -78,18 +82,22 @@ export function createDebouncedStorage(baseStorage: StateStorage): DebouncedStor
   return {
     getItem: (name) => baseStorage.getItem(name),
     setItem: (name, value) => {
+      pendingValue = value;
       debouncedSetItem.maybeExecute(name, value);
     },
     removeItem: (name) => {
       debouncedSetItem.cancel();
+      pendingValue = null;
       baseStorage.removeItem(name);
     },
     cancelPending: () => {
       debouncedSetItem.cancel();
+      pendingValue = null;
     },
     flush: () => {
       debouncedSetItem.flush();
     },
+    pendingValue: () => pendingValue,
   };
 }
 
@@ -670,6 +678,29 @@ function clearSendableComposerDraftContent(
     filePaths: [],
     terminalContexts: [],
   };
+}
+
+function hasSameStashableDraftContent(
+  left: ComposerThreadDraftState | undefined,
+  right: ComposerThreadDraftState,
+): boolean {
+  if (!left) return false;
+  return (
+    left.prompt === right.prompt &&
+    left.images.length === right.images.length &&
+    left.images.every((image, index) => image === right.images[index]) &&
+    left.filePaths.length === right.filePaths.length &&
+    left.filePaths.every((path, index) => path === right.filePaths[index]) &&
+    JSON.stringify(left.terminalContexts) === JSON.stringify(right.terminalContexts) &&
+    left.provider === right.provider &&
+    left.providerInstanceId === right.providerInstanceId &&
+    left.model === right.model &&
+    areProviderModelOptionsEqual(left.modelOptions, right.modelOptions) &&
+    left.runtimeMode === right.runtimeMode &&
+    left.interactionMode === right.interactionMode &&
+    left.effort === right.effort &&
+    left.codexFastMode === right.codexFastMode
+  );
 }
 
 function readFileAsDataUrl(file: File): Promise<string> {
@@ -2530,7 +2561,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
             message: error instanceof Error ? error.message : "Failed to save prompt images.",
           };
         }
-        if (get().draftsByThreadId[threadId] !== sourceDraft) {
+        if (!hasSameStashableDraftContent(get().draftsByThreadId[threadId], sourceDraft)) {
           return {
             status: "changed",
             message: "The composer changed while the prompt was being saved. Try again.",
@@ -2561,6 +2592,26 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           },
         };
         const previousStashes = get().promptStashes;
+        const nextPromptStashes = [
+          stash,
+          ...previousStashes.filter((entry) => entry.id !== stash.id),
+        ].slice(0, MAX_PROMPT_STASH_ENTRIES);
+        const persistedImageChars = nextPromptStashes.reduce(
+          (total, entry) =>
+            total +
+            entry.draft.attachments.reduce(
+              (attachmentTotal, attachment) => attachmentTotal + attachment.dataUrl.length,
+              0,
+            ),
+          0,
+        );
+        if (persistedImageChars > MAX_PROMPT_STASH_IMAGE_DATA_CHARS) {
+          return {
+            status: "failed",
+            message:
+              "Saved prompt images exceed the local stash storage budget. Remove images or keep them in the composer.",
+          };
+        }
         const clearedDraft = clearSendableComposerDraftContent(sourceDraft);
         set((state) => {
           const nextDraftsByThreadId = { ...state.draftsByThreadId };
@@ -2571,10 +2622,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           }
           return {
             draftsByThreadId: nextDraftsByThreadId,
-            promptStashes: [
-              stash,
-              ...state.promptStashes.filter((entry) => entry.id !== stash.id),
-            ].slice(0, MAX_PROMPT_STASH_ENTRIES),
+            promptStashes: nextPromptStashes,
           };
         });
 
@@ -2845,16 +2893,96 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
 // The desktop app can open multiple windows that share one localStorage
 // partition. Rehydrate external writes before this window can persist a stale
 // whole-store snapshot over them.
+function persistedValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function mergePersistedRecords<T>(
+  base: Readonly<Record<string, T>>,
+  local: Readonly<Record<string, T>>,
+  remote: Readonly<Record<string, T>>,
+): Record<string, T> {
+  const merged: Record<string, T> = {};
+  for (const key of new Set([
+    ...Object.keys(base),
+    ...Object.keys(local),
+    ...Object.keys(remote),
+  ])) {
+    const localChanged = !persistedValuesEqual(local[key], base[key]);
+    const selected = localChanged ? local[key] : remote[key];
+    if (selected !== undefined) merged[key] = selected;
+  }
+  return merged;
+}
+
+function promptStashesById(
+  stashes: ReadonlyArray<PromptStashEntry>,
+): Record<string, PromptStashEntry> {
+  return Object.fromEntries(stashes.map((stash) => [stash.id, stash]));
+}
+
 if (typeof window !== "undefined") {
   window.addEventListener("storage", (event) => {
     if (event.key !== COMPOSER_DRAFT_STORAGE_KEY) return;
+    const pendingRaw = composerDebouncedStorage.pendingValue();
+    const base = parsePersistedDraftStateRaw(event.oldValue);
+    const local = pendingRaw ? parsePersistedDraftStateRaw(pendingRaw) : base;
+    const remote = parsePersistedDraftStateRaw(event.newValue);
     composerDebouncedStorage.cancelPending();
-    const previousDrafts = useComposerDraftStore.getState().draftsByThreadId;
-    void Promise.resolve(useComposerDraftStore.persist.rehydrate()).then(() => {
-      for (const draft of Object.values(previousDrafts)) {
-        for (const image of draft.images) revokeObjectPreviewUrl(image.previewUrl);
+    const current = useComposerDraftStore.getState();
+    const mergedPersistedDrafts = mergePersistedRecords(
+      base.draftsByThreadId,
+      local.draftsByThreadId,
+      remote.draftsByThreadId,
+    );
+    const mergedDrafts = Object.fromEntries(
+      Object.entries(mergedPersistedDrafts).map(([threadId, draft]) => [
+        threadId,
+        toHydratedThreadDraft(draft),
+      ]),
+    ) as Record<ThreadId, ComposerThreadDraftState>;
+    for (const [threadId, draft] of Object.entries(current.draftsByThreadId) as Array<
+      [ThreadId, ComposerThreadDraftState]
+    >) {
+      if (
+        draft.nonPersistedImageIds.length > 0 ||
+        (current.imageImportsByThreadId[threadId]?.pendingCount ?? 0) > 0
+      ) {
+        mergedDrafts[threadId] = draft;
       }
+    }
+    const mergedStashes = Object.values(
+      mergePersistedRecords(
+        promptStashesById(base.promptStashes),
+        promptStashesById(local.promptStashes),
+        promptStashesById(remote.promptStashes),
+      ),
+    )
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .slice(0, MAX_PROMPT_STASH_ENTRIES);
+
+    useComposerDraftStore.setState({
+      draftsByThreadId: mergedDrafts,
+      draftThreadsByThreadId: mergePersistedRecords(
+        base.draftThreadsByThreadId,
+        local.draftThreadsByThreadId,
+        remote.draftThreadsByThreadId,
+      ) as Record<ThreadId, DraftThreadState>,
+      projectDraftThreadIdByProjectId: mergePersistedRecords(
+        base.projectDraftThreadIdByProjectId,
+        local.projectDraftThreadIdByProjectId,
+        remote.projectDraftThreadIdByProjectId,
+      ),
+      promptStashes: mergedStashes,
     });
+    const retainedPreviewUrls = new Set(
+      Object.values(mergedDrafts).flatMap((draft) => draft.images.map((image) => image.previewUrl)),
+    );
+    for (const draft of Object.values(current.draftsByThreadId)) {
+      for (const image of draft.images) {
+        if (!retainedPreviewUrls.has(image.previewUrl)) revokeObjectPreviewUrl(image.previewUrl);
+      }
+    }
   });
 }
 

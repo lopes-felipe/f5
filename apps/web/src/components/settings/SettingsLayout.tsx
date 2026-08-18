@@ -83,7 +83,9 @@ export function SettingsLayout({
 }: SettingsLayoutProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeSearchResultIndex, setActiveSearchResultIndex] = useState(0);
+  const [selectionNonce, setSelectionNonce] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchContainerRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const reducedMotion = useReducedMotion();
   const searchResults = useMemo(() => filterSettingsItems(searchQuery), [searchQuery]);
@@ -97,6 +99,7 @@ export function SettingsLayout({
   const selectSearchResult = useCallback(
     (resultId: string) => {
       clearSearch();
+      setSelectionNonce((value) => value + 1);
       onItemChange?.(resultId);
     },
     [clearSearch, onItemChange],
@@ -135,6 +138,17 @@ export function SettingsLayout({
     window.addEventListener("keydown", focusSearch);
     return () => window.removeEventListener("keydown", focusSearch);
   }, []);
+
+  useEffect(() => {
+    if (!isSearching) return;
+    const dismissOnOutsidePointer = (event: PointerEvent) => {
+      if (event.target instanceof Node && !searchContainerRef.current?.contains(event.target)) {
+        clearSearch();
+      }
+    };
+    document.addEventListener("pointerdown", dismissOnOutsidePointer);
+    return () => document.removeEventListener("pointerdown", dismissOnOutsidePointer);
+  }, [clearSearch, isSearching]);
 
   useEffect(() => {
     const descriptor = getSettingsItemDescriptor(item);
@@ -184,7 +198,7 @@ export function SettingsLayout({
       target?.removeAttribute("data-settings-search-highlighted");
       if (addedTabIndex) target?.removeAttribute("tabindex");
     };
-  }, [category, item, reducedMotion]);
+  }, [category, item, reducedMotion, selectionNonce]);
 
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none bg-background text-foreground isolate">
@@ -212,7 +226,7 @@ export function SettingsLayout({
                 className="lg:sticky lg:top-6 lg:w-60 lg:self-start"
               >
                 <div className="rounded-2xl border border-border bg-card p-3">
-                  <div className="relative mb-3">
+                  <div ref={searchContainerRef} className="relative mb-3">
                     <SearchIcon className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
                       ref={searchInputRef}

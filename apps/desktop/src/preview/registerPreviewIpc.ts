@@ -80,130 +80,188 @@ function nonEmptyString(value: unknown, label: string): string {
 function replaceHandler(
   ipcMain: IpcMain,
   channel: string,
-  handler: (...args: unknown[]) => unknown,
+  operationsForSender: (senderWebContentsId: number) => PreviewIpcOperations,
+  handler: (operations: PreviewIpcOperations, ...args: unknown[]) => unknown,
 ): void {
   ipcMain.removeHandler(channel);
-  ipcMain.handle(channel, (_event, ...args) => handler(...args));
+  ipcMain.handle(channel, (event, ...args) =>
+    handler(operationsForSender(event.sender.id), ...args),
+  );
 }
 
-export function registerPreviewIpc(ipcMain: IpcMain, operations: PreviewIpcOperations): void {
+export function registerPreviewIpc(
+  ipcMain: IpcMain,
+  operationsForSender: (senderWebContentsId: number) => PreviewIpcOperations,
+): void {
   const channels = PREVIEW_IPC_CHANNELS;
-  replaceHandler(ipcMain, channels.getConfig, () => operations.getConfig());
-  replaceHandler(ipcMain, channels.createTab, (tabId) =>
+  replaceHandler(ipcMain, channels.getConfig, operationsForSender, (operations) =>
+    operations.getConfig(),
+  );
+  replaceHandler(ipcMain, channels.createTab, operationsForSender, (operations, tabId) =>
     operations.createTab(nonEmptyString(tabId, "Preview tab id")),
   );
-  replaceHandler(ipcMain, channels.closeTab, (tabId) =>
+  replaceHandler(ipcMain, channels.closeTab, operationsForSender, (operations, tabId) =>
     operations.closeTab(nonEmptyString(tabId, "Preview tab id")),
   );
-  replaceHandler(ipcMain, channels.registerWebview, (tabId, webContentsId) => {
-    if (
-      typeof webContentsId !== "number" ||
-      !Number.isInteger(webContentsId) ||
-      webContentsId <= 0
-    ) {
-      return false;
-    }
-    return operations.registerWebview(nonEmptyString(tabId, "Preview tab id"), webContentsId);
-  });
-  replaceHandler(ipcMain, channels.navigate, (tabId, url) =>
+  replaceHandler(
+    ipcMain,
+    channels.registerWebview,
+    operationsForSender,
+    (operations, tabId, webContentsId) => {
+      if (
+        typeof webContentsId !== "number" ||
+        !Number.isInteger(webContentsId) ||
+        webContentsId <= 0
+      ) {
+        return false;
+      }
+      return operations.registerWebview(nonEmptyString(tabId, "Preview tab id"), webContentsId);
+    },
+  );
+  replaceHandler(ipcMain, channels.navigate, operationsForSender, (operations, tabId, url) =>
     operations.navigate(
       nonEmptyString(tabId, "Preview tab id"),
       nonEmptyString(url, "Preview URL"),
     ),
   );
-  for (const [channel, operation] of [
-    [channels.goBack, operations.goBack],
-    [channels.goForward, operations.goForward],
-    [channels.refresh, operations.refresh],
-    [channels.hardReload, operations.hardReload],
-    [channels.openDevTools, operations.openDevTools],
-    [channels.pickElement, operations.pickElement],
-    [channels.cancelPickElement, operations.cancelPickElement],
-    [channels.automationStatus, operations.automationStatus],
-    [channels.automationSnapshot, operations.automationSnapshot],
-    [channels.captureScreenshot, operations.captureScreenshot],
-    [channels.recordingStart, operations.recordingStart],
+  for (const [channel, operationName] of [
+    [channels.goBack, "goBack"],
+    [channels.goForward, "goForward"],
+    [channels.refresh, "refresh"],
+    [channels.hardReload, "hardReload"],
+    [channels.openDevTools, "openDevTools"],
+    [channels.pickElement, "pickElement"],
+    [channels.cancelPickElement, "cancelPickElement"],
+    [channels.automationStatus, "automationStatus"],
+    [channels.automationSnapshot, "automationSnapshot"],
+    [channels.captureScreenshot, "captureScreenshot"],
+    [channels.recordingStart, "recordingStart"],
   ] as const) {
-    replaceHandler(ipcMain, channel, (tabId) => operation(nonEmptyString(tabId, "Preview tab id")));
-  }
-  replaceHandler(ipcMain, channels.automationClick, (tabId, input) =>
-    operations.automationClick(
-      nonEmptyString(tabId, "Preview tab id"),
-      input as PreviewAutomationClickInput,
-    ),
-  );
-  replaceHandler(ipcMain, channels.automationType, (tabId, input) =>
-    operations.automationType(
-      nonEmptyString(tabId, "Preview tab id"),
-      input as PreviewAutomationTypeInput,
-    ),
-  );
-  replaceHandler(ipcMain, channels.automationPress, (tabId, input) =>
-    operations.automationPress(
-      nonEmptyString(tabId, "Preview tab id"),
-      input as PreviewAutomationPressInput,
-    ),
-  );
-  replaceHandler(ipcMain, channels.automationScroll, (tabId, input) =>
-    operations.automationScroll(
-      nonEmptyString(tabId, "Preview tab id"),
-      input as PreviewAutomationScrollInput,
-    ),
-  );
-  replaceHandler(ipcMain, channels.automationEvaluate, (tabId, input) =>
-    operations.automationEvaluate(
-      nonEmptyString(tabId, "Preview tab id"),
-      input as PreviewAutomationEvaluateInput,
-    ),
-  );
-  replaceHandler(ipcMain, channels.automationWaitFor, (tabId, input) =>
-    operations.automationWaitFor(
-      nonEmptyString(tabId, "Preview tab id"),
-      input as PreviewAutomationWaitForInput,
-    ),
-  );
-  replaceHandler(ipcMain, channels.setViewport, (tabId, viewport) => {
-    if (viewport === null) {
-      return operations.setViewport(nonEmptyString(tabId, "Preview tab id"), null);
-    }
-    if (!viewport || typeof viewport !== "object") return false;
-    const candidate = viewport as Partial<PreviewViewportSize>;
-    if (
-      typeof candidate.width !== "number" ||
-      typeof candidate.height !== "number" ||
-      typeof candidate.revision !== "number"
-    ) {
-      return false;
-    }
-    return operations.setViewport(nonEmptyString(tabId, "Preview tab id"), {
-      width: candidate.width,
-      height: candidate.height,
-      revision: candidate.revision,
-    });
-  });
-  replaceHandler(ipcMain, channels.setColorScheme, (tabId, colorScheme) => {
-    if (colorScheme !== "system" && colorScheme !== "light" && colorScheme !== "dark") {
-      return false;
-    }
-    return operations.setColorScheme(
-      nonEmptyString(tabId, "Preview tab id"),
-      colorScheme as DesktopPreviewColorScheme,
+    replaceHandler(ipcMain, channel, operationsForSender, (operations, tabId) =>
+      operations[operationName](nonEmptyString(tabId, "Preview tab id")),
     );
-  });
-  replaceHandler(ipcMain, channels.recordingAppend, (recordingId, chunk) => {
-    const bytes: Uint8Array | null =
-      chunk instanceof ArrayBuffer
-        ? new Uint8Array(chunk)
-        : ArrayBuffer.isView(chunk)
-          ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength).slice()
-          : null;
-    if (!bytes) throw new Error("Preview recording chunk is invalid.");
-    return operations.recordingAppend(nonEmptyString(recordingId, "Preview recording id"), bytes);
-  });
-  replaceHandler(ipcMain, channels.recordingStop, (recordingId) =>
+  }
+  replaceHandler(
+    ipcMain,
+    channels.automationClick,
+    operationsForSender,
+    (operations, tabId, input) =>
+      operations.automationClick(
+        nonEmptyString(tabId, "Preview tab id"),
+        input as PreviewAutomationClickInput,
+      ),
+  );
+  replaceHandler(
+    ipcMain,
+    channels.automationType,
+    operationsForSender,
+    (operations, tabId, input) =>
+      operations.automationType(
+        nonEmptyString(tabId, "Preview tab id"),
+        input as PreviewAutomationTypeInput,
+      ),
+  );
+  replaceHandler(
+    ipcMain,
+    channels.automationPress,
+    operationsForSender,
+    (operations, tabId, input) =>
+      operations.automationPress(
+        nonEmptyString(tabId, "Preview tab id"),
+        input as PreviewAutomationPressInput,
+      ),
+  );
+  replaceHandler(
+    ipcMain,
+    channels.automationScroll,
+    operationsForSender,
+    (operations, tabId, input) =>
+      operations.automationScroll(
+        nonEmptyString(tabId, "Preview tab id"),
+        input as PreviewAutomationScrollInput,
+      ),
+  );
+  replaceHandler(
+    ipcMain,
+    channels.automationEvaluate,
+    operationsForSender,
+    (operations, tabId, input) =>
+      operations.automationEvaluate(
+        nonEmptyString(tabId, "Preview tab id"),
+        input as PreviewAutomationEvaluateInput,
+      ),
+  );
+  replaceHandler(
+    ipcMain,
+    channels.automationWaitFor,
+    operationsForSender,
+    (operations, tabId, input) =>
+      operations.automationWaitFor(
+        nonEmptyString(tabId, "Preview tab id"),
+        input as PreviewAutomationWaitForInput,
+      ),
+  );
+  replaceHandler(
+    ipcMain,
+    channels.setViewport,
+    operationsForSender,
+    (operations, tabId, viewport) => {
+      if (viewport === null) {
+        return operations.setViewport(nonEmptyString(tabId, "Preview tab id"), null);
+      }
+      if (!viewport || typeof viewport !== "object") return false;
+      const candidate = viewport as Partial<PreviewViewportSize>;
+      if (
+        typeof candidate.width !== "number" ||
+        typeof candidate.height !== "number" ||
+        typeof candidate.revision !== "number"
+      ) {
+        return false;
+      }
+      return operations.setViewport(nonEmptyString(tabId, "Preview tab id"), {
+        width: candidate.width,
+        height: candidate.height,
+        revision: candidate.revision,
+      });
+    },
+  );
+  replaceHandler(
+    ipcMain,
+    channels.setColorScheme,
+    operationsForSender,
+    (operations, tabId, colorScheme) => {
+      if (colorScheme !== "system" && colorScheme !== "light" && colorScheme !== "dark") {
+        return false;
+      }
+      return operations.setColorScheme(
+        nonEmptyString(tabId, "Preview tab id"),
+        colorScheme as DesktopPreviewColorScheme,
+      );
+    },
+  );
+  replaceHandler(
+    ipcMain,
+    channels.recordingAppend,
+    operationsForSender,
+    (operations, recordingId, chunk) => {
+      const bytes: Uint8Array | null =
+        chunk instanceof ArrayBuffer
+          ? new Uint8Array(chunk)
+          : ArrayBuffer.isView(chunk)
+            ? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength).slice()
+            : null;
+      if (!bytes) throw new Error("Preview recording chunk is invalid.");
+      return operations.recordingAppend(nonEmptyString(recordingId, "Preview recording id"), bytes);
+    },
+  );
+  replaceHandler(ipcMain, channels.recordingStop, operationsForSender, (operations, recordingId) =>
     operations.recordingStop(nonEmptyString(recordingId, "Preview recording id")),
   );
-  replaceHandler(ipcMain, channels.recordingDiscard, (recordingId) =>
-    operations.recordingDiscard(nonEmptyString(recordingId, "Preview recording id")),
+  replaceHandler(
+    ipcMain,
+    channels.recordingDiscard,
+    operationsForSender,
+    (operations, recordingId) =>
+      operations.recordingDiscard(nonEmptyString(recordingId, "Preview recording id")),
   );
 }

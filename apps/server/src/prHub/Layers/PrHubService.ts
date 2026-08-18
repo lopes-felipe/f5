@@ -2361,14 +2361,31 @@ const makePrHubService = Effect.gen(function* () {
       { concurrency: 2 },
     ).pipe(Effect.map(([detail, timeline]) => ({ detail, timeline })));
 
+  const cachedAuthoritativeTimelineComment = (
+    pr: TrackedPullRequest,
+    predicate: (comment: PrHubTimelineComment) => boolean,
+  ): PrHubTimelineComment | null => {
+    const prefix = `${pr.key}|`;
+    for (const [key, cached] of timelineCache) {
+      if (!key.startsWith(prefix)) continue;
+      const match = cached.value.entries.find(
+        (entry): entry is PrHubTimelineComment => entry.type === "comment" && predicate(entry),
+      );
+      if (match) return match;
+    }
+    return null;
+  };
+
   const findAuthoritativeTimelineComment = (
     pr: TrackedPullRequest,
     predicate: (comment: PrHubTimelineComment) => boolean,
   ): Effect.Effect<PrHubTimelineComment | null, SourceControlProviderError> =>
     Effect.gen(function* () {
+      const cachedMatch = cachedAuthoritativeTimelineComment(pr, predicate);
+      if (cachedMatch) return cachedMatch;
       let cursor: string | undefined;
       for (let pageNumber = 0; pageNumber < 100; pageNumber += 1) {
-        const page = yield* getTimeline({ key: pr.key, cursor, mode: "force" });
+        const page = yield* getTimeline({ key: pr.key, cursor, mode: "if_stale" });
         if (page.stale) {
           return yield* prHubActionError(
             "GitHub could not verify the selected pull request object. Refresh and try again.",
@@ -2435,6 +2452,24 @@ const makePrHubService = Effect.gen(function* () {
         );
       }),
     );
+
+  const validateReactionMutation = (
+    pr: TrackedPullRequest,
+    response: unknown,
+    reacted: boolean,
+  ): Effect.Effect<void, SourceControlProviderError> =>
+    decodeDetailResponse(pr, "prHub.setReaction.decode", () => {
+      const root = asRecord(response);
+      if (!root || (Array.isArray(root.errors) && root.errors.length > 0)) {
+        throw new Error("GitHub rejected the reaction mutation.");
+      }
+      const data = asRecord(root.data);
+      const payload = asRecord(data?.[reacted ? "addReaction" : "removeReaction"]);
+      const subject = asRecord(payload?.subject);
+      if (!payload || stringValue(subject?.id) === null) {
+        throw new Error("GitHub returned an incomplete reaction mutation response.");
+      }
+    });
 
   const requireTrackedPr = (
     url: string,
@@ -2652,17 +2687,23 @@ const makePrHubService = Effect.gen(function* () {
           Effect.flatMap((provider) =>
             provider.requireCapability("react").pipe(
               Effect.andThen(
-                provider.query({
-                  cwd,
-                  host: pr.host,
-                  document: input.reacted
-                    ? GITHUB_ADD_REACTION_MUTATION
-                    : GITHUB_REMOVE_REACTION_MUTATION,
-                  variables: {
-                    subjectId: input.subjectId,
-                    content: GITHUB_REACTION_CONTENT[input.content],
-                  },
-                }),
+                provider
+                  .query({
+                    cwd,
+                    host: pr.host,
+                    document: input.reacted
+                      ? GITHUB_ADD_REACTION_MUTATION
+                      : GITHUB_REMOVE_REACTION_MUTATION,
+                    variables: {
+                      subjectId: input.subjectId,
+                      content: GITHUB_REACTION_CONTENT[input.content],
+                    },
+                  })
+                  .pipe(
+                    Effect.flatMap((response) =>
+                      validateReactionMutation(pr, response, input.reacted),
+                    ),
+                  ),
               ),
             ),
           ),

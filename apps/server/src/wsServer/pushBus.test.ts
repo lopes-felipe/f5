@@ -20,11 +20,17 @@ class MockWebSocket {
 
   send(message: string, callback?: (error?: Error) => void) {
     this.sent.push(message);
+    const logicalBytes = Buffer.byteLength(message);
+    this.bufferedAmount += logicalBytes;
     if (callback) {
+      const complete = (error?: Error) => {
+        this.bufferedAmount = Math.max(0, this.bufferedAmount - logicalBytes);
+        callback(error);
+      };
       if (this.autoCompleteSends) {
-        callback();
+        complete();
       } else {
-        this.sendCallbacks.push(callback);
+        this.sendCallbacks.push(complete);
       }
     }
     for (const waiter of this.waiters) {
@@ -293,7 +299,28 @@ describe("makeServerPushBus", () => {
     }),
   );
 
-  it.live("holds the next frame until an oversized snapshot finishes", () =>
+  it.effect("serializes normal frames while retaining their combined logical backlog", () =>
+    Effect.gen(function* () {
+      const client = new MockWebSocket();
+      client.autoCompleteSends = false;
+      const clients = yield* Ref.make(new Set([client as unknown as WebSocket]));
+      const controller = makeWebSocketSendController({
+        clients,
+        maxClientBufferedBytes: 10,
+      });
+
+      expect(yield* controller.send(client as unknown as WebSocket, "1234")).toBe(true);
+      expect(yield* controller.send(client as unknown as WebSocket, "5678")).toBe(true);
+      expect(client.sent).toEqual(["1234"]);
+      expect(controller.logicalOutstandingBytes(client as unknown as WebSocket)).toBe(8);
+
+      client.completeNextSend();
+      expect(client.sent).toEqual(["1234", "5678"]);
+      expect(controller.logicalOutstandingBytes(client as unknown as WebSocket)).toBe(4);
+    }),
+  );
+
+  it.live("queues the next frame without closing while an oversized snapshot drains", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const client = new MockWebSocket();
@@ -307,17 +334,49 @@ describe("makeServerPushBus", () => {
         expect(yield* controller.send(client as unknown as WebSocket, "12345678901")).toBe(true);
         expect(controller.logicalOutstandingBytes(client as unknown as WebSocket)).toBe(11);
 
-        const nextSend = yield* Effect.forkScoped(
-          controller.send(client as unknown as WebSocket, "x"),
-        );
-        yield* Effect.yieldNow;
+        expect(yield* controller.send(client as unknown as WebSocket, "x")).toBe(true);
         expect(client.sent).toEqual(["12345678901"]);
 
         client.completeNextSend();
-        expect(yield* Fiber.join(nextSend)).toBe(true);
         expect(client.sent).toEqual(["12345678901", "x"]);
         expect(client.closes).toEqual([]);
         expect((yield* Ref.get(clients)).size).toBe(1);
+      }),
+    ),
+  );
+
+  it.live("does not let one oversized client block pushes to other clients", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const slowClient = new MockWebSocket();
+        slowClient.autoCompleteSends = false;
+        const healthyClient = new MockWebSocket();
+        const clients = yield* Ref.make(
+          new Set([slowClient as unknown as WebSocket, healthyClient as unknown as WebSocket]),
+        );
+        const pushBus = yield* makeServerPushBus({
+          clients,
+          logOutgoingPush: () => {},
+          maxClientBufferedBytes: 100,
+        });
+
+        yield* pushBus.publishAll(WS_CHANNELS.serverWelcome, {
+          cwd: `/${"x".repeat(200)}`,
+          projectName: "project",
+        });
+        yield* Effect.promise(() => healthyClient.waitForSentCount(1));
+        yield* pushBus.publishAll(WS_CHANNELS.serverConfigUpdated, {
+          issues: [],
+          providers: [],
+        });
+        yield* Effect.promise(() => healthyClient.waitForSentCount(2));
+
+        expect(slowClient.sent).toHaveLength(1);
+        expect(slowClient.closes).toEqual([]);
+        expect(healthyClient.sent).toHaveLength(2);
+
+        slowClient.completeNextSend();
+        expect(slowClient.sent).toHaveLength(2);
       }),
     ),
   );

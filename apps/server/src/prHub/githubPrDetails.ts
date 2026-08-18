@@ -265,6 +265,9 @@ function pullRequestOf(response: unknown): {
   readonly pr: UnknownRecord;
 } {
   const root = asRecord(response, "GraphQL response");
+  if (Array.isArray(root.errors) && root.errors.length > 0) {
+    throw new Error("GitHub returned GraphQL errors; pull request details are incomplete.");
+  }
   const data = asRecord(root.data, "GraphQL data");
   const repository = asRecord(data.repository, "repository");
   const pr = asRecord(repository.pullRequest, "pull request");

@@ -597,6 +597,42 @@ routing.layer("ProviderServiceLive routing", (it) => {
     );
   });
 
+  it.effect("fails the turn when a referenced attachment file is missing", () => {
+    const codex = makeFakeCodexAdapter("codex");
+    const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));
+    const attachment: ChatAttachment = {
+      type: "image",
+      id: "thread-missing-context-12345678-1234-1234-1234-123456789abc",
+      name: "missing.png",
+      mimeType: "image/png",
+      sizeBytes: 4,
+    };
+
+    return Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-missing-context");
+      yield* provider.startSession(threadId, {
+        threadId,
+        provider: "codex",
+        runtimeMode: "full-access",
+      });
+      const result = yield* provider
+        .sendTurn({
+          threadId,
+          input: "Inspect this image",
+          attachments: [attachment],
+        })
+        .pipe(Effect.result);
+
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ProviderValidationError");
+        assert.match(result.failure.message, /no longer available/);
+      }
+      assert.equal(codex.sendTurn.mock.calls.length, 0);
+    }).pipe(Effect.provide(layer));
+  });
+
   it.effect("rejects unsupported runtime modes before starting a provider", () => {
     const cursor = makeFakeCodexAdapter("cursor");
     const layer = makeProviderServiceLayerForAdapters(new Map([["cursor", cursor.adapter]]));

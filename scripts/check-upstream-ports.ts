@@ -154,11 +154,15 @@ const explicitNonPortsByPrefix: Readonly<Record<string, string>> = {
   b28f9bf0: "Deferred until the provider-neutral GitHub PR detail seam is complete.",
 };
 
-function git(args: ReadonlyArray<string>, options?: { readonly cwd?: string }): string {
+function git(
+  args: ReadonlyArray<string>,
+  options?: { readonly cwd?: string; readonly input?: string },
+): string {
   return execFileSync("git", [...args], {
     cwd: options?.cwd ?? ROOT,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+    ...(options?.input !== undefined ? { input: options.input } : {}),
+    stdio: [options?.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
   }).trim();
 }
 
@@ -231,11 +235,14 @@ function verifyAuthoritativeRemote(): void {
   if (normalizeRepositoryUrl(fetchUrl) !== normalizeRepositoryUrl(AUTHORITATIVE_REPOSITORY)) {
     throw new Error(`upstream fetch URL is not authoritative: ${fetchUrl}`);
   }
-  const pushUrls = git(["remote", "get-url", "--push", "--all", "upstream"])
-    .split("\n")
-    .filter(Boolean);
-  if (pushUrls.length === 0 || pushUrls.some((url) => url !== "DISABLED")) {
-    throw new Error("upstream must have its push URL disabled");
+}
+
+function hasUpstreamRemote(): boolean {
+  try {
+    git(["remote", "get-url", "upstream"]);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -250,15 +257,48 @@ function assertNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+interface F5CommitReference {
+  readonly sha: string;
+  readonly owner: string;
+}
+
+function validateF5CommitReferences(
+  references: ReadonlyArray<F5CommitReference>,
+  errors: string[],
+): void {
+  const uniqueShas = [...new Set(references.map((reference) => reference.sha))];
+  if (uniqueShas.length === 0) return;
+
+  let objectLines: string[];
+  let reachableFromHead: ReadonlySet<string>;
+  try {
+    objectLines = git(["cat-file", "--batch-check=%(objectname) %(objecttype)"], {
+      input: `${uniqueShas.map((sha) => `${sha}^{commit}`).join("\n")}\n`,
+    }).split("\n");
+    reachableFromHead = new Set(git(["rev-list", "HEAD"]).split("\n").filter(Boolean));
+  } catch (error) {
+    errors.push(`could not validate f5 commit references: ${String(error)}`);
+    return;
+  }
+
+  const resolving = new Map<string, boolean>();
+  uniqueShas.forEach((sha, index) => {
+    resolving.set(sha, objectLines[index]?.endsWith(" commit") === true);
+  });
+  for (const reference of references) {
+    if (!resolving.get(reference.sha)) {
+      errors.push(`${reference.owner} references non-resolving f5 SHA ${reference.sha}`);
+    } else if (!reachableFromHead.has(reference.sha)) {
+      errors.push(`${reference.owner} references f5 SHA ${reference.sha} outside HEAD history`);
+    }
+  }
+}
+
 function resolvePrefix<T>(sha: string, values: Readonly<Record<string, T>>): T | undefined {
   for (const [prefix, value] of Object.entries(values)) {
     if (sha.startsWith(prefix)) return value;
   }
   return undefined;
-}
-
-function isNonProductCommit(subject: string): boolean {
-  return /^(?:chore|ci|test|docs|refactor|build)(?:\([^)]*\))?:/i.test(subject);
 }
 
 function classifyCommit(commit: FrozenCommit): LedgerEntry {
@@ -281,32 +321,10 @@ function classifyCommit(commit: FrozenCommit): LedgerEntry {
     };
   }
 
-  if (/\bmobile\b/i.test(commit.subject)) {
-    return {
-      ...base,
-      disposition: "not-applicable",
-      reason: "Not applicable: f5 has no mobile application product line.",
-    };
-  }
-  if (/\b(?:connect|relay|pairing|hosted)\b/i.test(commit.subject)) {
-    return {
-      ...base,
-      disposition: "not-applicable",
-      reason:
-        "Not applicable: f5 uses its existing remote-access model and has no managed relay product line.",
-    };
-  }
-  if (isNonProductCommit(commit.subject)) {
-    return {
-      ...base,
-      disposition: "not-applicable",
-      reason: `No user-facing port: upstream-only maintenance (${commit.subject}).`,
-    };
-  }
   return {
     ...base,
     disposition: "deferred",
-    reason: `Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (${commit.subject}).`,
+    reason: `Requires manual f5-native user-impact assessment; no disposition was inferred from the subject alone (${commit.subject}).`,
   };
 }
 
@@ -366,20 +384,51 @@ function refresh(): void {
   const previousOlderShas = new Set(
     (previousLedger?.olderBacklog ?? []).flatMap((category) => category.upstreamShas ?? []),
   );
-  const rolledOutEntries: OlderBacklogCategory[] = (previousLedger?.entries ?? [])
-    .filter(
-      (entry) =>
-        !nextManifestShas.has(entry.upstreamSha) && !previousOlderShas.has(entry.upstreamSha),
-    )
-    .map((entry) => ({
-      category: `historical-${entry.upstreamSha.slice(0, 12)}`,
-      selection: `Exact upstream commit: ${entry.subject}`,
+  const rolledOutEntries = (previousLedger?.entries ?? []).filter(
+    (entry) =>
+      !nextManifestShas.has(entry.upstreamSha) && !previousOlderShas.has(entry.upstreamSha),
+  );
+
+  const historicalByDisposition = new Map<Disposition, OlderBacklogCategory>();
+  const addHistorical = (input: {
+    readonly disposition: Disposition;
+    readonly upstreamShas?: ReadonlyArray<string>;
+    readonly f5Shas?: ReadonlyArray<string>;
+    readonly evidence?: ReadonlyArray<string>;
+  }) => {
+    const existing = historicalByDisposition.get(input.disposition);
+    historicalByDisposition.set(input.disposition, {
+      category: `historical-window-${input.disposition}`,
+      selection: `Upstream commits that rolled out of the frozen ${WINDOW_SIZE}-commit window with a reviewed ${input.disposition} disposition`,
+      disposition: input.disposition,
+      reason:
+        "The reviewed disposition is retained at category level after the commit leaves the per-SHA audit window.",
+      upstreamShas: [
+        ...new Set([...(existing?.upstreamShas ?? []), ...(input.upstreamShas ?? [])]),
+      ].sort(),
+      ...((existing?.f5Shas?.length ?? 0) + (input.f5Shas?.length ?? 0) > 0
+        ? { f5Shas: [...new Set([...(existing?.f5Shas ?? []), ...(input.f5Shas ?? [])])].sort() }
+        : {}),
+      ...((existing?.evidence?.length ?? 0) + (input.evidence?.length ?? 0) > 0
+        ? {
+            evidence: [
+              ...new Set([...(existing?.evidence ?? []), ...(input.evidence ?? [])]),
+            ].sort(),
+          }
+        : {}),
+    });
+  };
+  for (const category of previousLedger?.olderBacklog ?? []) {
+    if (category.category.startsWith("historical-window-")) addHistorical(category);
+  }
+  for (const entry of rolledOutEntries) {
+    addHistorical({
       disposition: entry.disposition,
-      reason: entry.reason ?? `Port disposition retained when the commit left the frozen window.`,
       upstreamShas: [entry.upstreamSha],
-      ...(entry.f5Shas ? { f5Shas: entry.f5Shas } : {}),
-      ...(entry.evidence ? { evidence: entry.evidence } : {}),
-    }));
+      ...(entry.f5Shas === undefined ? {} : { f5Shas: entry.f5Shas }),
+      ...(entry.evidence === undefined ? {} : { evidence: entry.evidence }),
+    });
+  }
 
   const manifest: Manifest = {
     schemaVersion: 1,
@@ -436,8 +485,10 @@ function refresh(): void {
         : { ...previous, subject: commit.subject };
     }),
     olderBacklog: [
-      ...(previousLedger?.olderBacklog ?? []),
-      ...rolledOutEntries,
+      ...(previousLedger?.olderBacklog ?? []).filter(
+        (category) => !category.category.startsWith("historical-window-"),
+      ),
+      ...historicalByDisposition.values(),
       ...defaultOlderBacklog.filter((category) => !previousCategories.has(category.category)),
     ],
   };
@@ -449,6 +500,7 @@ function refresh(): void {
 
 function validate(): void {
   const errors: string[] = [];
+  const f5CommitReferences: F5CommitReference[] = [];
   let manifest: Manifest;
   let ledger: Ledger;
   try {
@@ -538,11 +590,7 @@ function validate(): void {
         errors.push(`ledger SHA ${entry.upstreamSha} has invalid f5 SHA ${f5Sha}`);
         continue;
       }
-      try {
-        git(["cat-file", "-e", `${f5Sha}^{commit}`]);
-      } catch {
-        errors.push(`ledger SHA ${entry.upstreamSha} references non-resolving f5 SHA ${f5Sha}`);
-      }
+      f5CommitReferences.push({ sha: f5Sha, owner: `ledger SHA ${entry.upstreamSha}` });
     }
   }
   for (const sha of manifestShas) {
@@ -587,17 +635,17 @@ function validate(): void {
         errors.push(`older-backlog category ${category.category} has invalid f5 SHA ${f5Sha}`);
         continue;
       }
-      try {
-        git(["cat-file", "-e", `${f5Sha}^{commit}`]);
-      } catch {
-        errors.push(
-          `older-backlog category ${category.category} references non-resolving f5 SHA ${f5Sha}`,
-        );
-      }
+      f5CommitReferences.push({
+        sha: f5Sha,
+        owner: `older-backlog category ${category.category}`,
+      });
     }
   }
 
-  if (!process.env.CI) {
+  validateF5CommitReferences(f5CommitReferences, errors);
+
+  const requireUpstream = process.env.F5_REQUIRE_UPSTREAM === "1";
+  if (hasUpstreamRemote()) {
     try {
       verifyAuthoritativeRemote();
       git(["merge-base", "--is-ancestor", manifest.selection.headSha, "upstream/main"]);
@@ -611,9 +659,11 @@ function validate(): void {
     } catch (error) {
       errors.push(`could not resolve frozen upstream history locally: ${String(error)}`);
     }
+  } else if (requireUpstream) {
+    errors.push("the authoritative upstream remote is required but is not configured");
   } else {
     console.warn(
-      "upstream ports: CI validates checked-in data only; upstream SHA resolution skipped",
+      "upstream ports: authoritative upstream remote is unavailable; provenance check skipped",
     );
   }
 

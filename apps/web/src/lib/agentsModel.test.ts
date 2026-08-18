@@ -38,6 +38,16 @@ const source = {
   hasOlderActivities: true,
   activities: [
     activity({
+      id: "parent-started",
+      kind: "tool.started",
+      sequence: 0,
+      payload: {
+        itemType: "collab_agent_tool_call",
+        providerItemId: "provider-parent",
+        subagentReceiverThreadIds: ["agent-thread-1"],
+      },
+    }),
+    activity({
       id: "parent",
       kind: "tool.completed",
       sequence: 1,
@@ -186,7 +196,7 @@ describe("agentsModel", () => {
       },
     ]);
 
-    expect(index.entries.map((entry) => entry.key)).toEqual([
+    expect([...new Set(index.byScopedWorkItemId.values())].map((entry) => entry.key)).toEqual([
       `${THREAD_ID}\u0000pre-id-a\u00000`,
       `${THREAD_ID}\u0000pre-id-b\u00000`,
     ]);

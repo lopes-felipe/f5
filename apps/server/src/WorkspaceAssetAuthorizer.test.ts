@@ -61,6 +61,9 @@ describe("WorkspaceAssetAuthorizer", () => {
     fs.symlinkSync(path.join(outside, "outside.png"), path.join(root, "escape.png"));
     fs.writeFileSync(path.join(root, "spoof.png"), "not a png", "utf8");
     fs.writeFileSync(path.join(root, "oversized.png"), Buffer.alloc(32, 0x89));
+    fs.mkdirSync(path.join(root, "real-icons"));
+    fs.writeFileSync(path.join(root, "real-icons", "inside.png"), pngBytes());
+    fs.symlinkSync(path.join(root, "real-icons"), path.join(root, "linked-icons"));
     const reader = await makeWorkspaceAssetAuthorizer({
       resolveProjectWorkspaceRoot: async () => root,
     }).forProject(PROJECT_ID);
@@ -77,6 +80,9 @@ describe("WorkspaceAssetAuthorizer", () => {
     await expect(
       reader.readImage({ relativePath: "oversized.png", maxBytes: 16 }),
     ).rejects.toMatchObject({ failure: "too_large" });
+    await expect(
+      reader.readImage({ relativePath: "linked-icons/inside.png", rejectSymlink: true }),
+    ).rejects.toMatchObject({ failure: "invalid_path" });
   });
 
   it("expires opaque handles and reauthorizes their project and path on every read", async () => {

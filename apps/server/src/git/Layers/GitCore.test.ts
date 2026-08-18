@@ -200,6 +200,11 @@ describe("GitCore unit", () => {
 
     const status = await Effect.runPromise(core.statusDetails(process.cwd()));
 
+    expect(
+      scripted.calls.find((call) => argsEqual(call, ["status", "--porcelain=2", "--branch", "-z"]))
+        ?.env,
+    ).toMatchObject({ HOME: process.env.HOME, PATH: process.env.PATH, GIT_OPTIONAL_LOCKS: "0" });
+
     expect(status).toEqual({
       branch: "feature/parser",
       upstreamRef: "origin/feature/parser",
@@ -216,6 +221,65 @@ describe("GitCore unit", () => {
       aheadCount: 2,
       behindCount: 3,
     });
+  });
+
+  it("limits generated commit context to the selected paths", async () => {
+    const scripted = makeScriptedGitService((input) => {
+      if (input.args.includes("--name-status")) return { stdout: "M\tsrc/selected.ts\n" };
+      if (input.args.includes("--patch")) return { stdout: "+selected\n" };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    await expect(
+      Effect.runPromise(core.prepareCommitContext(process.cwd(), ["src/selected.ts"])),
+    ).resolves.toEqual({
+      stagedSummary: "M\tsrc/selected.ts",
+      stagedPatch: "+selected\n",
+    });
+    expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "diff",
+      "--cached",
+      "--name-status",
+      "--",
+      "src/selected.ts",
+    ]);
+    expect(scripted.calls.map((call) => call.args)).toContainEqual([
+      "diff",
+      "--cached",
+      "--patch",
+      "--minimal",
+      "--",
+      "src/selected.ts",
+    ]);
+  });
+
+  it("commits the full index during a merge even when selected paths were requested", async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-git-core-merge-"));
+    const mergeHeadPath = path.join(cwd, "MERGE_HEAD");
+    fs.writeFileSync(mergeHeadPath, "0123456789abcdef\n");
+    const scripted = makeScriptedGitService((input) => {
+      if (argsEqual(input, ["rev-parse", "--git-path", "MERGE_HEAD"])) {
+        return { stdout: `${mergeHeadPath}\n` };
+      }
+      if (argsEqual(input, ["rev-parse", "HEAD"])) return { stdout: "abc123\n" };
+      return {};
+    });
+    const core = await makeCore(scripted.service);
+
+    try {
+      await expect(
+        Effect.runPromise(core.commit(cwd, "Resolve merge", "", ["src/selected.ts"])),
+      ).resolves.toEqual({ commitSha: "abc123" });
+      expect(scripted.calls.map((call) => call.args)).toContainEqual([
+        "commit",
+        "-m",
+        "Resolve merge",
+      ]);
+      expect(scripted.calls.some((call) => call.args.includes("--only"))).toBe(false);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it("caches successful upstream refreshes across repeated status reads", async () => {
@@ -525,3 +589,6 @@ describe("GitCore unit", () => {
     ]);
   });
 });
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";

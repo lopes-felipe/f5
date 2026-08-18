@@ -1,4 +1,4 @@
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ServerSettings, type ServerSettingsPatch, type UnifiedSettings } from "@t3tools/contracts";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
@@ -58,6 +58,7 @@ export function useSettings<T = UnifiedWebSettings>(
 export function useUpdateSettings() {
   const { updateSettings: updateAppSettings } = useAppSettings();
   const queryClient = useQueryClient();
+  const serverUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const updateSettings = useCallback(
     async (patch: Partial<UnifiedWebSettings>) => {
@@ -66,10 +67,14 @@ export function useUpdateSettings() {
         updateAppSettings(appPatch);
       }
       if (Object.keys(serverPatch).length > 0) {
-        const settings = await ensureNativeApi().server.updateSettings(serverPatch);
-        queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
-          existing ? { ...existing, settings } : existing,
-        );
+        const update = serverUpdateQueueRef.current.then(async () => {
+          const settings = await ensureNativeApi().server.updateSettings(serverPatch);
+          queryClient.setQueryData(serverQueryKeys.config(), (existing) =>
+            existing ? { ...existing, settings } : existing,
+          );
+        });
+        serverUpdateQueueRef.current = update.catch(() => undefined);
+        await update;
       }
     },
     [queryClient, updateAppSettings],

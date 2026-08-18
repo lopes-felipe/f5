@@ -178,17 +178,28 @@ async function readContainedFile(input: {
   rejectSymlink?: boolean;
 }): Promise<{ bytes: Uint8Array; relativePath: string }> {
   const requestedPath = resolveRequestedPath(input.rootRealPath, input.relativePath);
+  let requestedStat: Awaited<ReturnType<typeof lstat>> | null = null;
+  if (input.rejectSymlink === true) {
+    let currentPath = input.rootRealPath;
+    for (const segment of input.relativePath.split(/[\\/]+/u)) {
+      currentPath = path.resolve(currentPath, segment);
+      requestedStat = await lstat(currentPath).catch(() => null);
+      if (!requestedStat) {
+        throw new WorkspaceAssetAuthorizationError("not_found", "Workspace asset was not found.");
+      }
+      if (requestedStat.isSymbolicLink()) {
+        throw new WorkspaceAssetAuthorizationError(
+          "invalid_path",
+          "Workspace asset path may not contain symbolic links.",
+        );
+      }
+    }
+  }
   let targetRealPath: string;
   try {
     targetRealPath = await realpath(requestedPath);
   } catch {
     throw new WorkspaceAssetAuthorizationError("not_found", "Workspace asset was not found.");
-  }
-  if (input.rejectSymlink === true && targetRealPath !== requestedPath) {
-    throw new WorkspaceAssetAuthorizationError(
-      "invalid_path",
-      "Workspace asset path may not contain symbolic links.",
-    );
   }
   if (!isPathInside(input.rootRealPath, targetRealPath)) {
     throw new WorkspaceAssetAuthorizationError(
@@ -203,6 +214,16 @@ async function readContainedFile(input: {
   }
   if (!beforeStat.isFile()) {
     throw new WorkspaceAssetAuthorizationError("not_file", "Workspace asset is not a file.");
+  }
+  if (
+    input.rejectSymlink === true &&
+    requestedStat &&
+    (requestedStat.dev !== beforeStat.dev || requestedStat.ino !== beforeStat.ino)
+  ) {
+    throw new WorkspaceAssetAuthorizationError(
+      "invalid_path",
+      "Workspace asset path may not contain symbolic links.",
+    );
   }
   if (beforeStat.size > input.maxBytes) {
     throw new WorkspaceAssetAuthorizationError(

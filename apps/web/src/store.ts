@@ -592,6 +592,7 @@ function mapThreadHistoryStateFromTail(
     | "oldestLoadedCheckpointTurnCount"
     | "oldestLoadedActivityCursor"
     | "oldestLoadedCommandExecutionCursor"
+    | "activities"
   >,
   existing: Thread | undefined,
 ): ThreadHistoryState {
@@ -610,11 +611,20 @@ function mapThreadHistoryStateFromTail(
     hasNewerMessages: false,
     hasOlderCheckpoints,
     hasOlderActivities,
+    hasNewerActivities: false,
     hasOlderCommandExecutions,
     oldestLoadedMessageCursor: incoming.oldestLoadedMessageCursor,
     newestLoadedMessageCursor: null,
     oldestLoadedCheckpointTurnCount: incoming.oldestLoadedCheckpointTurnCount,
     oldestLoadedActivityCursor: incoming.oldestLoadedActivityCursor,
+    newestLoadedActivityCursor: incoming.activities.at(-1)
+      ? {
+          sequenceIsNull: incoming.activities.at(-1)!.sequence === undefined,
+          sequence: incoming.activities.at(-1)!.sequence ?? null,
+          createdAt: incoming.activities.at(-1)!.createdAt,
+          activityId: incoming.activities.at(-1)!.id,
+        }
+      : null,
     oldestLoadedCommandExecutionCursor: incoming.oldestLoadedCommandExecutionCursor,
     generation,
   };
@@ -997,6 +1007,7 @@ function mapThreadTailFieldsFromReadModel(
             oldestLoadedCheckpointTurnCount,
             oldestLoadedActivityCursor,
             oldestLoadedCommandExecutionCursor,
+            activities,
           },
           existing,
         ),
@@ -1382,7 +1393,10 @@ function prependOlderTurnDiffSummaries(
   if (nextIncoming.length === 0) {
     return existing;
   }
-  return [...mapTurnDiffSummariesFromReadModel(nextIncoming, []), ...existing];
+  return [...mapTurnDiffSummariesFromReadModel(nextIncoming, []), ...existing].toSorted(
+    (left, right) =>
+      left.completedAt.localeCompare(right.completedAt) || left.turnId.localeCompare(right.turnId),
+  );
 }
 
 function prependOlderCommandExecutions(
@@ -1397,7 +1411,25 @@ function prependOlderCommandExecutions(
   if (nextIncoming.length === 0) {
     return existing;
   }
-  return [...mapCommandExecutionsFromReadModel(nextIncoming, []), ...existing];
+  return [...mapCommandExecutionsFromReadModel(nextIncoming, []), ...existing].toSorted(
+    (left, right) =>
+      left.startedAt.localeCompare(right.startedAt) ||
+      left.startedSequence - right.startedSequence ||
+      left.id.localeCompare(right.id),
+  );
+}
+
+function compareActivities(
+  left: Thread["activities"][number],
+  right: Thread["activities"][number],
+): number {
+  if (left.sequence === undefined && right.sequence !== undefined) return -1;
+  if (left.sequence !== undefined && right.sequence === undefined) return 1;
+  if (left.sequence !== undefined && right.sequence !== undefined) {
+    const sequenceOrder = left.sequence - right.sequence;
+    if (sequenceOrder !== 0) return sequenceOrder;
+  }
+  return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
 }
 
 function prependOlderActivities(
@@ -1412,14 +1444,7 @@ function prependOlderActivities(
   if (nextIncoming.length === 0) {
     return existing;
   }
-  return [...mapActivitiesFromReadModel(nextIncoming, []), ...existing].toSorted(
-    (left, right) =>
-      (left.sequence !== undefined && right.sequence !== undefined
-        ? left.sequence - right.sequence
-        : 0) ||
-      left.createdAt.localeCompare(right.createdAt) ||
-      left.id.localeCompare(right.id),
-  );
+  return [...mapActivitiesFromReadModel(nextIncoming, []), ...existing].toSorted(compareActivities);
 }
 
 export function prependOlderThreadHistoryPage(
@@ -1454,6 +1479,10 @@ export function prependOlderThreadHistoryPage(
     mode === "newer" ? existingHistory.hasOlderCheckpoints : page.hasOlderCheckpoints;
   const hasOlderActivities =
     mode === "newer" ? existingHistory.hasOlderActivities : page.hasOlderActivities;
+  const hasNewerActivities =
+    mode === "older"
+      ? (existingHistory.hasNewerActivities ?? false)
+      : (page.hasNewerActivities ?? false);
   const hasOlderCommandExecutions =
     mode === "newer" ? existingHistory.hasOlderCommandExecutions : page.hasOlderCommandExecutions;
   const hasNewerMessages =
@@ -1467,6 +1496,7 @@ export function prependOlderThreadHistoryPage(
       hasNewerMessages ||
       hasOlderCheckpoints ||
       hasOlderActivities ||
+      hasNewerActivities ||
       hasOlderCommandExecutions
         ? "tail"
         : "complete",
@@ -1474,6 +1504,7 @@ export function prependOlderThreadHistoryPage(
     hasNewerMessages,
     hasOlderCheckpoints,
     hasOlderActivities,
+    hasNewerActivities,
     hasOlderCommandExecutions,
     oldestLoadedMessageCursor:
       mode === "newer" ? existingHistory.oldestLoadedMessageCursor : page.oldestLoadedMessageCursor,
@@ -1489,6 +1520,10 @@ export function prependOlderThreadHistoryPage(
       mode === "newer"
         ? existingHistory.oldestLoadedActivityCursor
         : page.oldestLoadedActivityCursor,
+    newestLoadedActivityCursor:
+      mode === "older"
+        ? (existingHistory.newestLoadedActivityCursor ?? null)
+        : (page.newestLoadedActivityCursor ?? existingHistory.newestLoadedActivityCursor ?? null),
     oldestLoadedCommandExecutionCursor:
       mode === "newer"
         ? existingHistory.oldestLoadedCommandExecutionCursor
@@ -1504,6 +1539,7 @@ export function prependOlderThreadHistoryPage(
     existingHistory.hasNewerMessages === nextHistory.hasNewerMessages &&
     existingHistory.hasOlderCheckpoints === nextHistory.hasOlderCheckpoints &&
     existingHistory.hasOlderActivities === nextHistory.hasOlderActivities &&
+    existingHistory.hasNewerActivities === nextHistory.hasNewerActivities &&
     existingHistory.hasOlderCommandExecutions === nextHistory.hasOlderCommandExecutions &&
     existingHistory.oldestLoadedMessageCursor === nextHistory.oldestLoadedMessageCursor &&
     areUnknownEqual(
@@ -1515,6 +1551,10 @@ export function prependOlderThreadHistoryPage(
     areUnknownEqual(
       existingHistory.oldestLoadedActivityCursor,
       nextHistory.oldestLoadedActivityCursor,
+    ) &&
+    areUnknownEqual(
+      existingHistory.newestLoadedActivityCursor,
+      nextHistory.newestLoadedActivityCursor,
     ) &&
     existingHistory.oldestLoadedCommandExecutionCursor ===
       nextHistory.oldestLoadedCommandExecutionCursor

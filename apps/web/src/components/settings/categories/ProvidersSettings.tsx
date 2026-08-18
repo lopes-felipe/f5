@@ -13,7 +13,7 @@ import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { Equal } from "effect";
 import { PlusIcon, RotateCwIcon } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   buildAppSettingsPatch,
@@ -130,9 +130,19 @@ export function ProvidersSettings() {
   const [openInstanceDetails, setOpenInstanceDetails] = useState<Record<string, boolean>>({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const writingPreferences = unifiedSettings.sourceControlWriting;
+  const writingPreferencesRef = useRef(writingPreferences);
+  const writingPreferencesUpdatesRef = useRef(0);
+  useEffect(() => {
+    if (writingPreferencesUpdatesRef.current === 0) {
+      writingPreferencesRef.current = writingPreferences;
+    }
+  }, [writingPreferences]);
   const updateWritingPreferences = (patch: Partial<ServerSettings["sourceControlWriting"]>) => {
-    void updateUnifiedSettings({
-      sourceControlWriting: { ...writingPreferences, ...patch },
+    const next = { ...writingPreferencesRef.current, ...patch };
+    writingPreferencesRef.current = next;
+    writingPreferencesUpdatesRef.current += 1;
+    void updateUnifiedSettings({ sourceControlWriting: next }).finally(() => {
+      writingPreferencesUpdatesRef.current = Math.max(0, writingPreferencesUpdatesRef.current - 1);
     });
   };
   const favoriteModelRows = settings.favoriteModels.map((favorite) => {

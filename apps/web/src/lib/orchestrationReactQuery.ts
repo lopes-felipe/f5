@@ -154,10 +154,12 @@ function getThreadTailRequestKey(threadId: ThreadId): string {
 function getThreadHistoryPageRequestKey(input: {
   threadId: ThreadId;
   anchorMessageId: MessageId | null | undefined;
+  anchorActivityId: EventId | null | undefined;
   beforeMessageCursor: OrchestrationThreadHistoryPage["oldestLoadedMessageCursor"];
   afterMessageCursor: OrchestrationThreadHistoryPage["newestLoadedMessageCursor"] | undefined;
   beforeCheckpointTurnCount: number | null;
   activityCursor: OrchestrationThreadHistoryPage["oldestLoadedActivityCursor"];
+  afterActivityCursor: OrchestrationThreadHistoryPage["newestLoadedActivityCursor"] | undefined;
   beforeCommandExecutionCursor: OrchestrationThreadHistoryPage["oldestLoadedCommandExecutionCursor"];
 }): string {
   const messageCursorKey = input.beforeMessageCursor
@@ -172,7 +174,10 @@ function getThreadHistoryPageRequestKey(input: {
   const activityCursorKey = input.activityCursor
     ? `${input.activityCursor.sequenceIsNull ? "null" : input.activityCursor.sequence}:${input.activityCursor.createdAt}:${input.activityCursor.activityId}`
     : "null";
-  return `history:${input.threadId}:${input.anchorMessageId ?? "null"}:${messageCursorKey}:${afterMessageCursorKey}:${input.beforeCheckpointTurnCount ?? "null"}:${activityCursorKey}:${commandCursorKey}`;
+  const afterActivityCursorKey = input.afterActivityCursor
+    ? `${input.afterActivityCursor.sequenceIsNull ? "null" : input.afterActivityCursor.sequence}:${input.afterActivityCursor.createdAt}:${input.afterActivityCursor.activityId}`
+    : "null";
+  return `history:${input.threadId}:${input.anchorMessageId ?? "null"}:${input.anchorActivityId ?? "null"}:${messageCursorKey}:${afterMessageCursorKey}:${input.beforeCheckpointTurnCount ?? "null"}:${activityCursorKey}:${afterActivityCursorKey}:${commandCursorKey}`;
 }
 
 function getThreadHistoryBackfillKey(threadId: ThreadId, generation: number): string {
@@ -230,7 +235,9 @@ async function fetchThreadHistoryPageRpc(
     getThreadHistoryPageRequestKey({
       ...input,
       anchorMessageId: input.anchorMessageId,
+      anchorActivityId: input.anchorActivityId,
       afterMessageCursor: input.afterMessageCursor,
+      afterActivityCursor: input.afterActivityCursor,
     }),
     () => api.orchestration.getThreadHistoryPage(input),
   );
@@ -242,7 +249,9 @@ async function fetchThreadHistoryPageRpc(
     ...page,
     activities: page.activities ?? [],
     hasOlderActivities: page.hasOlderActivities ?? false,
+    hasNewerActivities: page.hasNewerActivities ?? false,
     oldestLoadedActivityCursor: page.oldestLoadedActivityCursor ?? null,
+    newestLoadedActivityCursor: page.newestLoadedActivityCursor ?? null,
   };
 }
 
@@ -758,13 +767,21 @@ export async function loadThreadHistoryAroundMessage(
       anchorActivityId: anchorKind === "activity" ? (anchorId as EventId) : null,
       beforeMessageCursor: null,
       afterMessageCursor: null,
+      afterActivityCursor: null,
       beforeCheckpointTurnCount: null,
       activityCursor: null,
       beforeCommandExecutionCursor: null,
     },
     signal,
   );
-  if (signal?.aborted || page.messages.length === 0) return;
+  if (signal?.aborted) return;
+  const anchorPresent =
+    anchorKind === "message"
+      ? page.messages.some((message) => message.id === anchorId)
+      : page.activities.some((activity) => activity.id === anchorId);
+  if (!anchorPresent) {
+    throw new Error("The requested timeline item is no longer available.");
+  }
   useStore.getState().mergeAnchoredThreadHistoryPage(threadId, page, history.generation);
 }
 
@@ -777,8 +794,8 @@ export async function loadNewerThreadHistoryPage(
   const history = ensureThreadHistoryState(thread?.history);
   if (
     !thread?.detailsLoaded ||
-    history.hasNewerMessages !== true ||
-    history.newestLoadedMessageCursor == null
+    ((history.hasNewerMessages !== true || history.newestLoadedMessageCursor == null) &&
+      (history.hasNewerActivities !== true || history.newestLoadedActivityCursor == null))
   ) {
     return;
   }
@@ -786,7 +803,10 @@ export async function loadNewerThreadHistoryPage(
     {
       threadId,
       beforeMessageCursor: null,
-      afterMessageCursor: history.newestLoadedMessageCursor,
+      afterMessageCursor:
+        history.hasNewerMessages === true ? history.newestLoadedMessageCursor : null,
+      afterActivityCursor:
+        history.hasNewerActivities === true ? history.newestLoadedActivityCursor : null,
       beforeCheckpointTurnCount: null,
       activityCursor: null,
       beforeCommandExecutionCursor: null,
@@ -794,7 +814,11 @@ export async function loadNewerThreadHistoryPage(
     signal,
   );
   if (signal?.aborted) return;
-  if (page.messages.length === 0 && page.hasNewerMessages) {
+  if (
+    page.messages.length === 0 &&
+    page.activities.length === 0 &&
+    (page.hasNewerMessages || page.hasNewerActivities)
+  ) {
     throw new Error("Newer thread history page made no progress.");
   }
   useStore.getState().appendNewerThreadHistoryPage(threadId, page, history.generation);
@@ -809,10 +833,7 @@ export function clearInFlightOrchestrationRpcRequests(): void {
   inFlightThreadFileChangeRequests.clear();
 }
 
-export function useThreadDetail(
-  threadId: ThreadId | null | undefined,
-  _options?: Pick<ThreadHistoryBackfillOptions, "includeCommandExecutionHistory">,
-) {
+export function useThreadDetail(threadId: ThreadId | null | undefined) {
   const queryClient = useQueryClient();
   const thread = useStore((store) =>
     threadId ? store.threads.find((entry) => entry.id === threadId) : undefined,

@@ -19,7 +19,7 @@ export interface AgentActivityThreadSource {
 
 export interface AgentActivityDetail {
   readonly key: string;
-  readonly parentActivityId: string;
+  readonly parentActivityId: string | null;
   readonly threadId: ThreadId;
   readonly turnId: TurnId | null;
   readonly workItemIds: ReadonlyArray<string>;
@@ -34,7 +34,6 @@ export interface AgentActivityDetail {
 }
 
 export interface AgentActivityIndex {
-  readonly entries: ReadonlyArray<AgentActivityDetail>;
   readonly byScopedWorkItemId: ReadonlyMap<string, AgentActivityDetail>;
   readonly coverageWindowLimited: boolean;
 }
@@ -90,6 +89,17 @@ function asTrimmedString(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function isTimelineFocusableActivity(activity: OrchestrationThreadActivity): boolean {
+  return (
+    activity.kind !== "tool.started" &&
+    activity.kind !== "task.started" &&
+    activity.kind !== "task.completed" &&
+    activity.kind !== "runtime.configured" &&
+    activity.kind !== "account.updated" &&
+    activity.kind !== "account.rate-limits.updated"
+  );
 }
 
 function scopedWorkItemId(threadId: ThreadId, workItemId: string): string {
@@ -181,7 +191,7 @@ export function buildAgentActivityIndex(
 
     const upsert = (input: {
       readonly activity: OrchestrationThreadActivity;
-      readonly parentActivityId: string;
+      readonly parentActivityId: string | null;
       readonly workItemIds: ReadonlyArray<string>;
       readonly subagentThreadId: string | null;
       readonly path: string | null;
@@ -191,7 +201,7 @@ export function buildAgentActivityIndex(
       readonly result: string | null;
       readonly model: string | null;
     }) => {
-      const key = `${thread.threadId}\u0000${input.parentActivityId}\u0000${input.subagentThreadId ?? 0}`;
+      const key = `${thread.threadId}\u0000${input.parentActivityId ?? input.workItemIds[0] ?? input.activity.id}\u0000${input.subagentThreadId ?? 0}`;
       const detail = mergeActivityDetail(detailsByKey.get(key), {
         key,
         parentActivityId: input.parentActivityId,
@@ -221,13 +231,10 @@ export function buildAgentActivityIndex(
       const subagentThreadId = tool?.subagentThreadId ?? null;
       const receiverThreadIds = tool?.subagentReceiverThreadIds ?? [];
 
-      if (activity.kind !== "subagent.activity") {
+      if (activity.kind !== "subagent.activity" && isTimelineFocusableActivity(activity)) {
         const parentWorkItemId = taskId ?? providerItemId;
         if (parentWorkItemId) {
-          parentActivityIdByWorkItemId.set(
-            parentWorkItemId,
-            parentActivityIdByWorkItemId.get(parentWorkItemId) ?? activity.id,
-          );
+          parentActivityIdByWorkItemId.set(parentWorkItemId, activity.id);
         }
         for (const receiverThreadId of receiverThreadIds) {
           parentActivityIdBySubagentThreadId.set(receiverThreadId, activity.id);
@@ -238,11 +245,12 @@ export function buildAgentActivityIndex(
       const isSubagentActivity = activity.kind === "subagent.activity";
       const isCollaborationActivity = tool?.itemType === "collab_agent_tool_call";
       if (!isTaskActivity && !isSubagentActivity && !isCollaborationActivity) continue;
+      if (activity.kind === "tool.started") continue;
 
       if (receiverThreadIds.length > 1 && activity.kind !== "subagent.activity") {
         for (const receiverThreadId of receiverThreadIds) {
           const parentActivityId =
-            parentActivityIdByWorkItemId.get(taskId ?? providerItemId ?? "") ?? activity.id;
+            parentActivityIdByWorkItemId.get(taskId ?? providerItemId ?? "") ?? null;
           upsert({
             activity,
             parentActivityId,
@@ -266,7 +274,7 @@ export function buildAgentActivityIndex(
           ? parentActivityIdBySubagentThreadId.get(resolvedSubagentThreadId)
           : undefined) ??
         (primaryWorkItemId ? parentActivityIdByWorkItemId.get(primaryWorkItemId) : undefined) ??
-        activity.id;
+        (isTimelineFocusableActivity(activity) ? activity.id : null);
       const aliases = [
         ...(taskId ? [taskId] : []),
         ...(providerItemId ? [providerItemId] : []),
@@ -290,7 +298,6 @@ export function buildAgentActivityIndex(
   }
 
   return {
-    entries: [...detailsByKey.values()],
     byScopedWorkItemId,
     coverageWindowLimited: threads.some((thread) => thread.hasOlderActivities),
   };

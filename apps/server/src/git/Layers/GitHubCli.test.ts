@@ -314,6 +314,52 @@ layer("GitHubCliLive", (it) => {
     }),
   );
 
+  it.effect("classifies non-zero GraphQL results returned by the process runner", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: "",
+        stderr: "gh: HTTP 429: rate limit exceeded",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      });
+
+      const exit = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.runGraphql({ cwd: "/repo", query: "query { viewer { login } }" });
+      }).pipe(Effect.exit);
+
+      assert.equal(Exit.isFailure(exit), true);
+      if (Exit.isFailure(exit)) {
+        const error = Cause.squash(exit.cause) as { kind?: string; detail: string };
+        assert.equal(error.kind, "rate_limited");
+        assert.equal(error.detail.includes("query { viewer"), false);
+      }
+    }),
+  );
+
+  it.effect("preserves partial GraphQL data so the domain decoder can reject it", () =>
+    Effect.gen(function* () {
+      const partial = {
+        data: { repository: { pullRequest: null } },
+        errors: [{ message: "field unavailable" }],
+      };
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: JSON.stringify(partial),
+        stderr: "GraphQL returned partial data",
+        code: 1,
+        signal: null,
+        timedOut: false,
+      });
+
+      const gh = yield* GitHubCli;
+      assert.deepStrictEqual(
+        yield* gh.runGraphql({ cwd: "/repo", query: "query { viewer { login } }" }),
+        partial,
+      );
+    }),
+  );
+
   it.effect("surfaces a friendly error when the pull request is not found", () =>
     Effect.gen(function* () {
       mockedRunProcess.mockRejectedValueOnce(

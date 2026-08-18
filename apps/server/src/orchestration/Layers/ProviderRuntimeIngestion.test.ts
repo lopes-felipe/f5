@@ -454,6 +454,58 @@ describe("ProviderRuntimeIngestion", () => {
     });
   });
 
+  it("persists delayed completion usage without applying stale lifecycle state", async () => {
+    const harness = await createHarness();
+    const coverageStartedAt = await Effect.runPromise(
+      harness.usageFactRepository.readCoverageStartedAt,
+    );
+    const completedAtDate = new Date(new Date(coverageStartedAt).getTime() + 1);
+    const rangeStart = new Date(completedAtDate);
+    rangeStart.setUTCMinutes(0, 0, 0);
+    const rangeEnd = new Date(rangeStart.getTime() + 60 * 60 * 1000);
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-started-newer-than-usage"),
+      provider: "codex",
+      createdAt: completedAtDate.toISOString(),
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-newer-than-usage"),
+    });
+    await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.activeTurnId === "turn-newer-than-usage",
+    );
+
+    harness.emit({
+      type: "turn.completed",
+      eventId: asEventId("evt-turn-completed-delayed-usage"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      createdAt: completedAtDate.toISOString(),
+      turnId: asTurnId("turn-delayed-usage"),
+      payload: {
+        state: "completed",
+        usage: { input_tokens: 40, output_tokens: 10, total_tokens: 50 },
+      },
+    });
+
+    await harness.drain();
+    const rows = await Effect.runPromise(
+      harness.usageFactRepository.summarizeHourly({
+        startedAt: rangeStart.toISOString(),
+        endedAt: rangeEnd.toISOString(),
+      }),
+    );
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === asThreadId("thread-1"));
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ provider: "codex", totalTokens: 50, turnCount: 1 });
+    expect(thread?.session?.activeTurnId).toBe("turn-newer-than-usage");
+    expect(thread?.session?.status).toBe("running");
+  });
+
   it("does not treat Claude turn.completed usage totals as context occupancy", async () => {
     const harness = await createHarness();
     const usageAt = new Date().toISOString();

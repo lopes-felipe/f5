@@ -861,36 +861,60 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
       const pinOrderByThreadId = new Map(
         event.payload.pinnedThreadIds.map((threadId, index) => [threadId, index] as const),
       );
+      let changed = false;
       const threads = state.threads.map((thread) => {
         const pinOrderKey = pinOrderByThreadId.get(thread.id);
         if (pinOrderKey === undefined) {
-          return (thread.pinnedAt ?? null) === null && (thread.pinOrderKey ?? null) === null
-            ? thread
-            : { ...thread, pinnedAt: null, pinOrderKey: null };
+          if ((thread.pinnedAt ?? null) === null && (thread.pinOrderKey ?? null) === null) {
+            return thread;
+          }
+          changed = true;
+          return { ...thread, pinnedAt: null, pinOrderKey: null };
         }
+        const pinnedAt = thread.pinnedAt ?? event.payload.updatedAt;
+        if (
+          thread.pinnedAt === pinnedAt &&
+          thread.pinOrderKey === pinOrderKey &&
+          (thread.snoozedUntil ?? null) === null &&
+          (thread.snoozedAt ?? null) === null
+        ) {
+          return thread;
+        }
+        changed = true;
         return {
           ...thread,
-          pinnedAt: thread.pinnedAt ?? event.payload.updatedAt,
+          pinnedAt,
           pinOrderKey,
           snoozedUntil: null,
           snoozedAt: null,
         };
       });
-      return { ...state, threads, pinRevision: event.payload.pinRevision };
+      return !changed && state.pinRevision === event.payload.pinRevision
+        ? state
+        : { ...state, threads, pinRevision: event.payload.pinRevision };
     }
 
     case "thread.snoozed": {
-      const threads = updateThread(state.threads, event.payload.threadId, (thread) => ({
-        ...thread,
-        pinnedAt: null,
-        pinOrderKey: null,
-        snoozedUntil: event.payload.snoozedUntil,
-        snoozedAt: event.payload.snoozedAt,
-      }));
+      const threads = updateThread(state.threads, event.payload.threadId, (thread) =>
+        (thread.pinnedAt ?? null) === null &&
+        (thread.pinOrderKey ?? null) === null &&
+        thread.snoozedUntil === event.payload.snoozedUntil &&
+        thread.snoozedAt === event.payload.snoozedAt
+          ? thread
+          : {
+              ...thread,
+              pinnedAt: null,
+              pinOrderKey: null,
+              snoozedUntil: event.payload.snoozedUntil,
+              snoozedAt: event.payload.snoozedAt,
+            },
+      );
+      const pinRevision = event.payload.pinRevision ?? state.pinRevision ?? 0;
+      if (threads === state.threads && pinRevision === state.pinRevision) return state;
       return {
         ...state,
         threads,
-        pinRevision: event.payload.pinRevision ?? state.pinRevision ?? 0,
+        pinRevision,
       };
     }
 
@@ -1530,6 +1554,7 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
 
     case "thread.command-execution-output-appended":
     case "thread.file-change-recorded":
+    case "thread.usage-recorded":
       return state;
   }
 

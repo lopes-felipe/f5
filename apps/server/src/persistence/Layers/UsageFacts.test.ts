@@ -5,6 +5,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import Migration0001 from "../Migrations/001_OrchestrationEvents.ts";
 import Migration0068 from "../Migrations/068_UsageFacts.ts";
+import Migration0073 from "../Migrations/073_UsageFactRecordedAt.ts";
 import * as SqliteClient from "../NodeSqliteClient.ts";
 import { UsageFactRepository } from "../Services/UsageFacts.ts";
 import { UsageFactRepositoryLive } from "./UsageFacts.ts";
@@ -22,6 +23,7 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
       `;
       yield* Migration0001;
       yield* Migration0068;
+      yield* Migration0073;
       yield* sql`
         UPDATE projection_usage_metadata
         SET coverage_started_at = '2026-08-10T00:00:00.000Z'
@@ -116,6 +118,7 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
       `;
         yield* Migration0001;
         yield* Migration0068;
+        yield* Migration0073;
         yield* sql`DELETE FROM projection_turn_usage_facts`;
         yield* sql`DELETE FROM orchestration_events`;
         yield* sql`
@@ -179,7 +182,8 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
       `;
         yield* sql`
           UPDATE projection_usage_metadata
-          SET coverage_started_at = '2026-05-17T00:00:00.000Z'
+          SET coverage_started_at = '2026-05-17T00:00:00.000Z',
+              fact_cutover_at = '2026-05-17T00:00:00.000Z'
           WHERE singleton_id = 1
         `;
 

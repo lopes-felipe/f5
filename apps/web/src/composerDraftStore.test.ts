@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type ComposerImageAttachment,
   createDebouncedStorage,
+  mergePersistedRecords,
   pruneOrphanedDraftThreads,
   resetComposerDraftBaseStorageForTesting,
   setComposerDraftBaseStorageForTesting,
@@ -547,6 +548,31 @@ describe("composerDraftStore prompt stash", () => {
     expect(result).toMatchObject({ status: "failed" });
     expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.prompt).toBe(
       "Never lose this",
+    );
+    expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
+  });
+
+  it("rejects image-heavy stashes before they can exhaust shared draft storage", async () => {
+    const image = makeImage({ id: "oversized-stash", previewUrl: "blob:oversized-stash" });
+    useComposerDraftStore.getState().addImage(sourceThreadId, image);
+    useComposerDraftStore.getState().syncPersistedAttachments(sourceThreadId, [
+      {
+        id: image.id,
+        name: image.name,
+        mimeType: image.mimeType,
+        sizeBytes: image.sizeBytes,
+        dataUrl: `data:image/png;base64,${"a".repeat(3_000_001)}`,
+      },
+    ]);
+
+    const result = await useComposerDraftStore.getState().stashPromptDraft({
+      threadId: sourceThreadId,
+      projectId,
+    });
+
+    expect(result).toMatchObject({ status: "failed" });
+    expect(useComposerDraftStore.getState().draftsByThreadId[sourceThreadId]?.images).toHaveLength(
+      1,
     );
     expect(useComposerDraftStore.getState().promptStashes).toEqual([]);
   });
@@ -1379,5 +1405,29 @@ describe("createDebouncedStorage", () => {
     vi.advanceTimersByTime(300);
     expect(base.setItem).toHaveBeenCalledTimes(1);
     expect(base.setItem).toHaveBeenCalledWith("key", "v2");
+  });
+});
+
+describe("mergePersistedRecords", () => {
+  it("keeps an unsaved local entry while accepting unrelated remote-window changes", () => {
+    const base = {
+      "thread-a": { prompt: "saved in A" },
+      "thread-b": { prompt: "saved in B" },
+    };
+    const local = {
+      ...base,
+      "thread-a": { prompt: "typing in A" },
+    };
+    const remote = {
+      ...base,
+      "thread-b": { prompt: "saved by window B" },
+      "thread-c": { prompt: "created by window B" },
+    };
+
+    expect(mergePersistedRecords(base, local, remote)).toEqual({
+      "thread-a": { prompt: "typing in A" },
+      "thread-b": { prompt: "saved by window B" },
+      "thread-c": { prompt: "created by window B" },
+    });
   });
 });

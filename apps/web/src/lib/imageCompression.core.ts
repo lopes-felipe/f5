@@ -52,6 +52,10 @@ function readUint32Le(bytes: Uint8Array, offset: number): number {
   );
 }
 
+function readInt32Le(bytes: Uint8Array, offset: number): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getInt32(offset, true);
+}
+
 function asciiAt(bytes: Uint8Array, offset: number, value: string): boolean {
   if (offset + value.length > bytes.length) return false;
   for (let index = 0; index < value.length; index += 1) {
@@ -130,6 +134,14 @@ export function readImagePixelDimensions(
         offset += 2 + segmentLength;
       }
       return null;
+    }
+    case "image/bmp":
+    case "image/x-ms-bmp": {
+      if (bytes.length < 26 || !asciiAt(bytes, 0, "BM")) return null;
+      return {
+        width: Math.abs(readInt32Le(bytes, 18)),
+        height: Math.abs(readInt32Le(bytes, 22)),
+      };
     }
     default:
       return null;
@@ -281,16 +293,18 @@ export async function processImageForComposerInWorker(input: {
 
   let headerBytes: Uint8Array;
   try {
-    headerBytes = new Uint8Array(await input.file.slice(0, 64 * 1024).arrayBuffer());
+    headerBytes = new Uint8Array(await input.file.slice(0, 2 * 1024 * 1024).arrayBuffer());
   } catch {
     return { ok: false, reason: "unreadable" };
   }
   const dimensions = readImagePixelDimensions(headerBytes, mimeType);
+  if (dimensions === null) {
+    return { ok: false, reason: "unsupported" };
+  }
   if (
-    dimensions !== null &&
-    (dimensions.width <= 0 ||
-      dimensions.height <= 0 ||
-      dimensions.width * dimensions.height > MAX_COMPRESSIBLE_IMAGE_PIXELS)
+    dimensions.width <= 0 ||
+    dimensions.height <= 0 ||
+    dimensions.width * dimensions.height > MAX_COMPRESSIBLE_IMAGE_PIXELS
   ) {
     return { ok: false, reason: "too-large" };
   }
@@ -325,8 +339,15 @@ export async function processImageForComposerInWorker(input: {
   }
 
   try {
-    if (bitmap.width <= 0 || bitmap.height <= 0) {
-      return { ok: false, reason: "unreadable" };
+    if (
+      bitmap.width <= 0 ||
+      bitmap.height <= 0 ||
+      bitmap.width * bitmap.height > MAX_COMPRESSIBLE_IMAGE_PIXELS
+    ) {
+      return {
+        ok: false,
+        reason: bitmap.width <= 0 || bitmap.height <= 0 ? "unreadable" : "too-large",
+      };
     }
     for (const dimension of uniqueTargetDimensions(bitmap.width, bitmap.height)) {
       try {

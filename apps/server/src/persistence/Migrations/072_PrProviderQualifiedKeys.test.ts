@@ -43,6 +43,25 @@ it.layer(SqliteClient.layerMemory())("072_PrProviderQualifiedKeys", (it) => {
         primaryKey.map((column) => column.name),
         ["provider_kind", "host", "viewer_login"],
       );
+      const indexes = yield* sql<{ readonly name: string }>`
+        SELECT name FROM sqlite_master
+        WHERE type = 'index' AND name IN (
+          'idx_pr_hub_prs_provider_host',
+          'idx_pr_hub_viewer_provider_host',
+          'idx_pr_hub_refresh_provider_host',
+          'idx_pr_hub_advisories_provider_host'
+        )
+        ORDER BY name
+      `;
+      assert.deepStrictEqual(
+        indexes.map((index) => index.name),
+        [
+          "idx_pr_hub_advisories_provider_host",
+          "idx_pr_hub_prs_provider_host",
+          "idx_pr_hub_refresh_provider_host",
+          "idx_pr_hub_viewer_provider_host",
+        ],
+      );
     }),
   );
 });

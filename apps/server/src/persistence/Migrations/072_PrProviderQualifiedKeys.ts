@@ -135,6 +135,10 @@ export default Effect.gen(function* () {
   }
   if (hasViewerState) {
     yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_pr_hub_viewer_provider_host
+      ON pr_hub_viewer_state(provider_kind, host, viewer_login)
+    `;
+    yield* sql`
       CREATE INDEX IF NOT EXISTS idx_pr_hub_viewer_bucket_sort
       ON pr_hub_viewer_state(
         provider_kind, host, viewer_login, attention_bucket, sort_timestamp DESC
@@ -151,7 +155,17 @@ export default Effect.gen(function* () {
       )
     `;
   }
+  if (hasRefreshState) {
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_pr_hub_refresh_provider_host
+      ON pr_hub_refresh_state(provider_kind, host, viewer_login)
+    `;
+  }
   if (hasAdvisories) {
+    yield* sql`
+      CREATE INDEX IF NOT EXISTS idx_pr_hub_advisories_provider_host
+      ON pr_hub_advisories(provider_kind, host, viewer_login)
+    `;
     yield* sql`
       CREATE INDEX IF NOT EXISTS idx_pr_hub_advisories_viewer_updated
       ON pr_hub_advisories(provider_kind, host, viewer_login, updated_at DESC)

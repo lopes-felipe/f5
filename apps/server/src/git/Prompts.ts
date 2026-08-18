@@ -20,7 +20,7 @@ export function prefixGeneratedBranchName(
     .trim()
     .replace(/^refs\/heads\//, "")
     .replace(/^\/+|\/+$/g, "");
-  return prefix.length > 0 ? `${prefix}/${branch}` : branch;
+  return prefix.length > 0 ? `${prefix}/${branch.replace(/^feature\//, "")}` : branch;
 }
 
 export function buildDeterministicCommitMessage(

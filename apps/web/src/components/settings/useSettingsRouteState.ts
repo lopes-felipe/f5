@@ -116,6 +116,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { settings, defaults, updateSettings } = useAppSettings();
   const projects = useStore((state) => state.projects);
+  const projectsHydrated = useStore((state) => state.threadsHydrated);
   const syncStartupSnapshot = useStore((state) => state.syncStartupSnapshot);
   const notificationPermission = useThreadStatusNotificationPermissionState();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
@@ -169,7 +170,8 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
   const selectedProjectMatch = selectedProjectId
     ? (projects.find((project) => project.id === selectedProjectId) ?? null)
     : null;
-  const selectedProjectUnavailable = selectedProjectId !== null && selectedProjectMatch === null;
+  const selectedProjectUnavailable =
+    projectsHydrated && selectedProjectId !== null && selectedProjectMatch === null;
   const selectedProject = selectedProjectId ? selectedProjectMatch : (projects[0] ?? null);
   const selectedProjectSummaryId = selectedProject?.id ?? null;
   const selectedProjectSummaryName = selectedProject?.name ?? null;
@@ -537,6 +539,7 @@ export function useSettingsRouteState(options: UseSettingsRouteStateOptions = {}
     defaults,
     updateSettings,
     projects,
+    projectsHydrated,
     hasProjects,
     selectedProjectId,
     selectedProject,

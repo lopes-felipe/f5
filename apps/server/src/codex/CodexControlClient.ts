@@ -14,6 +14,9 @@ import { buildCodexAppServerCommand } from "../provider/codexLaunchArgs.ts";
 import { buildProviderChildProcessEnv } from "../providerProcessEnv.ts";
 import { resolveCodexHome } from "../os-jank.ts";
 import { resolveInvocation } from "../spawn/resolveCommand.ts";
+import { createLogger } from "../logger.ts";
+
+const codexControlLogger = createLogger("codexControlClient");
 
 interface PendingRequest {
   readonly method: string;
@@ -242,7 +245,9 @@ export class CodexControlClient extends EventEmitter<{
         : {}),
     });
     if (appServerCommand.dropped.length > 0) {
-      console.warn("Ignored reserved Codex launch arguments", appServerCommand.dropped);
+      codexControlLogger.warn("Ignored reserved Codex launch arguments", {
+        droppedTokenCount: appServerCommand.dropped.length,
+      });
     }
     const invocation = resolveInvocation(binaryPath, appServerCommand.argv, childEnvironment, {
       cwd: environment.cwd,

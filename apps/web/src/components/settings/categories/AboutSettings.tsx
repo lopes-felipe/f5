@@ -33,7 +33,7 @@ export function AboutSettings() {
       </div>
 
       {showResetOnboardingButton ? (
-        <div className="mt-4 flex justify-end">
+        <div className="mt-4 flex justify-end" data-settings-search-target="about.onboarding">
           <Button
             size="xs"
             variant="outline"

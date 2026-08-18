@@ -17,7 +17,7 @@ jobs:
   quality:
     name: Quality and full test suite
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -49,14 +49,24 @@ jobs:
       - name: Audit Codex protocol
         run: bun run protocol:audit:baseline
 
+      - name: Fetch authoritative upstream history
+        run: |
+          git remote add upstream https://github.com/pingdotgg/t3code.git
+          git fetch --no-tags upstream main
+
       - name: Validate upstream port ledger
+        env:
+          F5_REQUIRE_UPSTREAM: "1"
         run: bun run upstream-ports:check
 
       - name: Run full test suite
         run: bun run test:full
 
+      - name: Install Chromium for browser tests
+        run: bun run --cwd apps/web test:browser:install
+
       - name: Run browser tests
-        run: bun --cwd apps/web run test:browser
+        run: bun run --cwd apps/web test:browser
 
   windows:
     name: Windows build and integration suite

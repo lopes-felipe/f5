@@ -3104,6 +3104,34 @@ const make = Effect.gen(function* () {
         event.type === "turn.started" && shouldApplyThreadLifecycle
           ? yield* getSourceProposedPlanReferenceForAcceptedTurnStart(thread.id, eventTurnId)
           : null;
+      const completedTurnUsageFact =
+        event.type === "turn.completed" && eventTurnId !== undefined
+          ? {
+              turnId: eventTurnId,
+              threadId: thread.id,
+              projectId: thread.projectId,
+              provider: event.provider,
+              providerInstanceId:
+                event.providerInstanceId ??
+                thread.session?.providerInstanceId ??
+                thread.modelSelection?.instanceId ??
+                null,
+              model: thread.model || null,
+              ...normalizeTurnUsage(event),
+              completedAt: event.createdAt,
+              sourceEventId: event.eventId,
+            }
+          : undefined;
+
+      if (completedTurnUsageFact !== undefined) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.usage.record",
+          commandId: providerCommandId(event, "thread-usage-record"),
+          threadId: thread.id,
+          usageFact: completedTurnUsageFact,
+          createdAt: now,
+        });
+      }
 
       if (
         event.type === "session.started" ||
@@ -3170,24 +3198,6 @@ const make = Effect.gen(function* () {
           }
           const turnCostUsd =
             event.type === "turn.completed" ? event.payload?.totalCostUsd : undefined;
-          const usageFact =
-            event.type === "turn.completed" && eventTurnId !== undefined
-              ? {
-                  turnId: eventTurnId,
-                  threadId: thread.id,
-                  projectId: thread.projectId,
-                  provider: event.provider,
-                  providerInstanceId:
-                    event.providerInstanceId ??
-                    thread.session?.providerInstanceId ??
-                    thread.modelSelection?.instanceId ??
-                    null,
-                  model: thread.model || null,
-                  ...normalizeTurnUsage(event),
-                  completedAt: event.createdAt,
-                  sourceEventId: event.eventId,
-                }
-              : undefined;
           const providerReportedContextTokens =
             event.type === "turn.completed" ? extractTurnCompletedContextTokens(event) : undefined;
           const estimatedContextTokens = mergeProviderReportedContextTokens({
@@ -3242,7 +3252,6 @@ const make = Effect.gen(function* () {
               ...(resetThinkingTokens ? { estimatedThinkingTokens: 0 } : {}),
               updatedAt: now,
             },
-            ...(usageFact !== undefined ? { usageFact } : {}),
             createdAt: now,
           });
         }

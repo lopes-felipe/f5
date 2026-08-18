@@ -36,6 +36,16 @@ function bytesAsArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return buffer;
 }
 
+function bmpWithDimensions(width: number, height: number, byteLength = 150): Uint8Array {
+  const bytes = new Uint8Array(byteLength);
+  bytes.set(new TextEncoder().encode("BM"), 0);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(14, 40, true);
+  view.setInt32(18, width, true);
+  view.setInt32(22, height, true);
+  return bytes;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -129,7 +139,9 @@ describe("processImageForComposerInWorker", () => {
     vi.stubGlobal("OffscreenCanvas", FakeOffscreenCanvas);
 
     const result = await processImageForComposerInWorker({
-      file: new Blob([new Uint8Array(150)], { type: "image/bmp" }),
+      file: new Blob([bytesAsArrayBuffer(bmpWithDimensions(3000, 2000))], {
+        type: "image/bmp",
+      }),
       mimeType: "image/bmp",
       maxBytes: 120,
       maxDataUrlChars: imageDataUrlCharLength(100, COMPOSER_IMAGE_OUTPUT_MIME_TYPE),
@@ -172,7 +184,9 @@ describe("processImageForComposerInWorker", () => {
 
     await expect(
       processImageForComposerInWorker({
-        file: new Blob([new Uint8Array(150)], { type: "image/bmp" }),
+        file: new Blob([bytesAsArrayBuffer(bmpWithDimensions(3000, 2000))], {
+          type: "image/bmp",
+        }),
         mimeType: "image/bmp",
         maxBytes: 120,
         maxDataUrlChars: imageDataUrlCharLength(100, COMPOSER_IMAGE_OUTPUT_MIME_TYPE) - 1,
@@ -183,6 +197,44 @@ describe("processImageForComposerInWorker", () => {
       [1536, 1024],
       [1024, 683],
     ]);
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a spoofed supported MIME before attempting bitmap decode", async () => {
+    const createImageBitmapMock = vi.fn();
+    vi.stubGlobal("createImageBitmap", createImageBitmapMock);
+
+    await expect(
+      processImageForComposerInWorker({
+        file: new Blob([new Uint8Array(128)], { type: "image/png" }),
+        mimeType: "image/png",
+        maxBytes: 1024,
+        maxDataUrlChars: 2048,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "unsupported" });
+    expect(createImageBitmapMock).not.toHaveBeenCalled();
+  });
+
+  it("re-checks decoded dimensions before allocating an output canvas", async () => {
+    const close = vi.fn();
+    vi.stubGlobal(
+      "createImageBitmap",
+      vi.fn().mockResolvedValue({ width: 100_000, height: 100_000, close }),
+    );
+    const offscreenCanvas = vi.fn();
+    vi.stubGlobal("OffscreenCanvas", offscreenCanvas);
+
+    await expect(
+      processImageForComposerInWorker({
+        file: new Blob([bytesAsArrayBuffer(bmpWithDimensions(100, 100))], {
+          type: "image/bmp",
+        }),
+        mimeType: "image/bmp",
+        maxBytes: 120,
+        maxDataUrlChars: 2048,
+      }),
+    ).resolves.toEqual({ ok: false, reason: "too-large" });
+    expect(offscreenCanvas).not.toHaveBeenCalled();
     expect(close).toHaveBeenCalledOnce();
   });
 });

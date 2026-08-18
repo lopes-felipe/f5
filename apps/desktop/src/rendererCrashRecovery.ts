@@ -121,38 +121,8 @@ export class MainRendererCrashRecovery {
   }
 }
 
-function escapeHtmlAttribute(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
-}
-
 export function mainRendererCrashScreenUrl(rendererUrl: string): string {
-  const safeRendererUrl = escapeHtmlAttribute(rendererUrl);
-  const html = `<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <title>F5 renderer recovery</title>
-    <style>
-      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-      body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: Canvas; color: CanvasText; }
-      main { width: min(34rem, calc(100vw - 3rem)); }
-      h1 { font-size: 1.35rem; margin: 0 0 .75rem; }
-      p { line-height: 1.5; opacity: .8; }
-      a { display: inline-block; margin-top: .75rem; border-radius: .5rem; padding: .65rem 1rem; background: Highlight; color: HighlightText; text-decoration: none; font-weight: 600; }
-    </style>
-  </head>
-  <body>
-    <main>
-      <h1>F5 could not recover its interface</h1>
-      <p>The renderer stopped repeatedly. Background server work was left running.</p>
-      <a href="${safeRendererUrl}">Reload F5</a>
-    </main>
-  </body>
-</html>`;
-  return `data:text/html;charset=UTF-8,${encodeURIComponent(html)}`;
+  const recoveryUrl = new URL("recovery.html", rendererUrl);
+  recoveryUrl.searchParams.set("target", rendererUrl);
+  return recoveryUrl.toString();
 }

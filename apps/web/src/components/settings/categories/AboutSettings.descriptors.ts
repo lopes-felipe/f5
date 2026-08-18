@@ -7,7 +7,7 @@ export const ABOUT_SETTINGS_DESCRIPTORS = [
     label: "Application version",
     description: "View the installed F5 version and environment information.",
     keywords: ["about", "build", "release"],
-    targetSelector: '[data-settings-search-target="about.version"]',
+    targetSelector: '[data-settings-search-target="about.onboarding"]',
   },
   {
     id: "about.onboarding",

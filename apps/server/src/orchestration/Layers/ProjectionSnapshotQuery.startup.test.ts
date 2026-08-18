@@ -974,6 +974,52 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         createdAt: "2026-04-01T09:00:02.000Z",
         activityId: asEventId("activity-legacy"),
       });
+
+      yield* sql`
+        WITH RECURSIVE generated(value) AS (
+          SELECT 1
+          UNION ALL
+          SELECT value + 1 FROM generated WHERE value < 600
+        )
+        INSERT INTO projection_thread_activities (
+          activity_id,
+          thread_id,
+          turn_id,
+          tone,
+          kind,
+          summary,
+          payload_json,
+          sequence,
+          created_at
+        )
+        SELECT
+          printf('activity-later-%03d', value),
+          'thread-1',
+          'turn-0',
+          'info',
+          'runtime.note',
+          'Later activity',
+          '{}',
+          100 + value,
+          '2026-04-01T10:00:00.000Z'
+        FROM generated
+      `;
+      const activityAnchoredPage = yield* snapshotQuery.getThreadHistoryPage({
+        threadId: asThreadId("thread-1"),
+        anchorActivityId: asEventId("activity-0"),
+        beforeMessageCursor: null,
+        afterMessageCursor: null,
+        afterActivityCursor: null,
+        beforeCheckpointTurnCount: null,
+        activityCursor: null,
+        beforeCommandExecutionCursor: null,
+        activityLimit: 10,
+      });
+      assert.equal(
+        activityAnchoredPage.activities.some((activity) => activity.id === asEventId("activity-0")),
+        true,
+      );
+      assert.equal(activityAnchoredPage.hasNewerActivities, true);
     }),
   );
 

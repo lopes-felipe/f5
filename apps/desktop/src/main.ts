@@ -13,7 +13,6 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
-  net as electronNet,
   protocol,
   shell,
   session as electronSession,
@@ -87,6 +86,9 @@ const COPY_IMAGE_CHANNEL = "desktop:copy-image";
 const DOWNLOAD_IMAGE_CHANNEL = "desktop:download-image";
 const OPEN_EXTERNAL_CHANNEL = "desktop:open-external";
 const OPEN_THREAD_WINDOW_CHANNEL = "desktop:open-thread-window";
+const MAX_DESKTOP_WINDOWS = 12;
+const OPEN_THREAD_WINDOW_MIN_INTERVAL_MS = 500;
+const lastOpenThreadWindowAtByRenderer = new Map<number, number>();
 const MENU_ACTION_CHANNEL = "desktop:menu-action";
 const UPDATE_STATE_CHANNEL = "desktop:update-state";
 const UPDATE_GET_STATE_CHANNEL = "desktop:update-get-state";
@@ -94,6 +96,7 @@ const UPDATE_DOWNLOAD_CHANNEL = "desktop:update-download";
 const UPDATE_INSTALL_CHANNEL = "desktop:update-install";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
+const PREVIEW_TAB_SCOPE_SEPARATOR = ":";
 const STATE_DIR_CONFIG = resolveDesktopStateDirConfig(process.env);
 const STATE_DIR = STATE_DIR_CONFIG.stateDir;
 const DESKTOP_SCHEME = "t3";
@@ -181,6 +184,33 @@ const previewRuntime = new PreviewRuntime({
   onTabStateChanged: (tabId) => emitPreviewState(tabId),
 });
 const previewTabs = previewRuntime.tabs;
+interface PreviewRecordingOwnership {
+  readonly ownerWebContentsId: number;
+  readonly scopedTabId: string;
+}
+const previewRecordingOwnerById = new Map<string, PreviewRecordingOwnership>();
+
+function scopedPreviewTabId(ownerWebContentsId: number, tabId: string): string {
+  return `${ownerWebContentsId}${PREVIEW_TAB_SCOPE_SEPARATOR}${tabId}`;
+}
+
+function clientPreviewTabId(scopedTabId: string): string {
+  const separatorIndex = scopedTabId.indexOf(PREVIEW_TAB_SCOPE_SEPARATOR);
+  return separatorIndex === -1 ? scopedTabId : scopedTabId.slice(separatorIndex + 1);
+}
+
+function forgetPreviewRecordingOwners(
+  predicate: (ownership: PreviewRecordingOwnership) => boolean,
+): void {
+  for (const [recordingId, ownership] of previewRecordingOwnerById) {
+    if (predicate(ownership)) previewRecordingOwnerById.delete(recordingId);
+  }
+}
+
+async function resetRendererOwnedPreviewResources(ownerWebContentsId: number): Promise<void> {
+  await previewRuntime.resetRendererOwnedResources(ownerWebContentsId);
+  forgetPreviewRecordingOwners((ownership) => ownership.ownerWebContentsId === ownerWebContentsId);
+}
 
 const desktopRuntimeInfo = resolveDesktopRuntimeInfo({
   platform: process.platform,
@@ -283,7 +313,7 @@ function previewStateFromWebContents(
   const title = guest && !guest.isDestroyed() ? guest.getTitle() : "";
   const isLoading = guest && !guest.isDestroyed() ? guest.isLoadingMainFrame() : false;
   return {
-    tabId,
+    tabId: clientPreviewTabId(tabId),
     webContentsId: guest && !guest.isDestroyed() ? guest.id : null,
     navStatus:
       url.length === 0 || url === "about:blank"
@@ -326,13 +356,16 @@ function previewOwnerWebContents(tabId: string): Electron.WebContents | null {
 }
 
 function emitPreviewRecordingFrame(frame: DesktopPreviewRecordingFrame): void {
-  previewOwnerWebContents(frame.tabId)?.send(PREVIEW_RECORDING_FRAME_CHANNEL, frame);
+  previewOwnerWebContents(frame.tabId)?.send(PREVIEW_RECORDING_FRAME_CHANNEL, {
+    ...frame,
+    tabId: clientPreviewTabId(frame.tabId),
+  });
 }
 
 function emitPreviewState(tabId: string): void {
   const guest = getPreviewWebContents(tabId);
   const state = previewStateFromWebContents(tabId, guest);
-  previewOwnerWebContents(tabId)?.send(PREVIEW_STATE_CHANNEL, tabId, state);
+  previewOwnerWebContents(tabId)?.send(PREVIEW_STATE_CHANNEL, clientPreviewTabId(tabId), state);
 }
 
 function registerPreviewWebContents(tabId: string, webContentsId: number): boolean {
@@ -342,6 +375,9 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
   }
   const entry = ensurePreviewTabEntry(tabId);
   if (!entry) {
+    return false;
+  }
+  if (entry.ownerWebContentsId !== guest.hostWebContents?.id) {
     return false;
   }
   if (entry.webContentsId === webContentsId) {
@@ -386,7 +422,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
     void fetchPreviewFaviconDataUrl({
       pageUrl,
       candidateUrls: faviconUrls,
-      fetchImplementation: (url, init) => electronNet.fetch(url, init),
+      fetchImplementation: (url, init) => guest.session.fetch(url, init),
       signal: faviconAbortController.signal,
     })
       .then((faviconDataUrl) => {
@@ -429,6 +465,7 @@ function registerPreviewWebContents(tabId: string, webContentsId: number): boole
       current.faviconAbortController = null;
       current.webContentsId = null;
       void previewRuntime.discardRecordingsForTab(tabId);
+      forgetPreviewRecordingOwners((ownership) => ownership.scopedTabId === tabId);
       emitPreviewState(tabId);
     }
   };
@@ -467,12 +504,17 @@ function closePreviewTab(tabId: string): void {
   entry.faviconAbortController = null;
   const guest = getPreviewWebContents(tabId);
   void previewRuntime.discardRecordingsForTab(tabId);
+  forgetPreviewRecordingOwners((ownership) => ownership.scopedTabId === tabId);
   if (guest && !guest.isDestroyed()) {
     guest.close();
   }
   const owner = previewOwnerWebContents(tabId);
   previewTabs.delete(tabId);
-  owner?.send(PREVIEW_STATE_CHANNEL, tabId, previewStateFromWebContents(tabId, null));
+  owner?.send(
+    PREVIEW_STATE_CHANNEL,
+    clientPreviewTabId(tabId),
+    previewStateFromWebContents(tabId, null),
+  );
 }
 
 function buildPreviewPickScript(): string {
@@ -2233,9 +2275,18 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.removeHandler(OPEN_THREAD_WINDOW_CHANNEL);
-  ipcMain.handle(OPEN_THREAD_WINDOW_CHANNEL, async (_event, rawThreadId: unknown) => {
+  ipcMain.handle(OPEN_THREAD_WINDOW_CHANNEL, async (event, rawThreadId: unknown) => {
     const threadId = normalizeThreadIdForDesktopWindow(rawThreadId);
     if (!threadId) return false;
+    const now = Date.now();
+    const previous = lastOpenThreadWindowAtByRenderer.get(event.sender.id) ?? 0;
+    if (
+      now - previous < OPEN_THREAD_WINDOW_MIN_INTERVAL_MS ||
+      BrowserWindow.getAllWindows().length >= MAX_DESKTOP_WINDOWS
+    ) {
+      return false;
+    }
+    lastOpenThreadWindowAtByRenderer.set(event.sender.id, now);
     try {
       createWindow(threadId);
       return true;
@@ -2275,57 +2326,102 @@ function registerIpcHandlers(): void {
     } satisfies DesktopUpdateActionResult;
   });
 
-  registerPreviewIpc(ipcMain, {
-    getConfig: () => ({
-      partition: PREVIEW_WEBVIEW_PARTITION,
-      webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
-    }),
-    createTab: (tabId) => ensurePreviewTabEntry(tabId) !== null,
-    closeTab: (tabId) => closePreviewTab(tabId),
-    registerWebview: registerPreviewWebContents,
-    navigate: async (tabId, rawUrl) => {
-      const guest = getPreviewWebContents(tabId);
-      const url = getSafePreviewUrl(rawUrl);
-      if (!guest || !url) throw new Error("Preview navigation target is invalid.");
-      try {
-        await guest.loadURL(url);
-      } catch (error) {
-        if (!isPreviewNavigationAbortError(error)) throw error;
+  registerPreviewIpc(ipcMain, (ownerWebContentsId) => {
+    const scopeTabId = (tabId: string) => scopedPreviewTabId(ownerWebContentsId, tabId);
+    const requireOwnedRecording = (recordingId: string) => {
+      if (previewRecordingOwnerById.get(recordingId)?.ownerWebContentsId !== ownerWebContentsId) {
+        throw new Error("Preview recording is not owned by this window.");
       }
-    },
-    goBack: (tabId) => {
-      const guest = getPreviewWebContents(tabId);
-      if (guest?.canGoBack()) guest.goBack();
-    },
-    goForward: (tabId) => {
-      const guest = getPreviewWebContents(tabId);
-      if (guest?.canGoForward()) guest.goForward();
-    },
-    refresh: (tabId) => getPreviewWebContents(tabId)?.reload(),
-    hardReload: (tabId) => getPreviewWebContents(tabId)?.reloadIgnoringCache(),
-    openDevTools: (tabId) => getPreviewWebContents(tabId)?.openDevTools({ mode: "detach" }),
-    pickElement: (tabId) => pickPreviewElement(tabId),
-    cancelPickElement: async (tabId) => {
-      await getPreviewWebContents(tabId)
-        ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
-        .catch(() => null);
-    },
-    automationStatus: previewAutomationStatus,
-    automationSnapshot: previewAutomationSnapshot,
-    automationClick: previewAutomationClick,
-    automationType: previewAutomationType,
-    automationPress: previewAutomationPress,
-    automationScroll: previewAutomationScroll,
-    automationEvaluate: previewAutomationEvaluate,
-    automationWaitFor: previewAutomationWaitFor,
-    setViewport: (tabId, viewport) => previewRuntime.setViewport(tabId, viewport),
-    setColorScheme: (tabId, colorScheme) => previewRuntime.setColorScheme(tabId, colorScheme),
-    captureScreenshot: (tabId) => previewRuntime.captureScreenshot(tabId),
-    recordingStart: (tabId) => previewRuntime.startRecording(tabId),
-    recordingAppend: (recordingId, chunk) =>
-      previewRuntime.appendRecordingChunk(recordingId, chunk),
-    recordingStop: (recordingId) => previewRuntime.stopRecording(recordingId),
-    recordingDiscard: (recordingId) => previewRuntime.discardRecording(recordingId),
+    };
+    return {
+      getConfig: () => ({
+        partition: PREVIEW_WEBVIEW_PARTITION,
+        webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
+      }),
+      createTab: (tabId) => {
+        const entry = ensurePreviewTabEntry(scopeTabId(tabId));
+        if (!entry) return false;
+        entry.ownerWebContentsId = ownerWebContentsId;
+        return true;
+      },
+      closeTab: (tabId) => closePreviewTab(scopeTabId(tabId)),
+      registerWebview: (tabId, webContentsId) => {
+        const scopedTabId = scopeTabId(tabId);
+        const entry = ensurePreviewTabEntry(scopedTabId);
+        if (!entry) return false;
+        entry.ownerWebContentsId = ownerWebContentsId;
+        return registerPreviewWebContents(scopedTabId, webContentsId);
+      },
+      navigate: async (tabId, rawUrl) => {
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        const url = getSafePreviewUrl(rawUrl);
+        if (!guest || !url) throw new Error("Preview navigation target is invalid.");
+        try {
+          await guest.loadURL(url);
+        } catch (error) {
+          if (!isPreviewNavigationAbortError(error)) throw error;
+        }
+      },
+      goBack: (tabId) => {
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        if (guest?.canGoBack()) guest.goBack();
+      },
+      goForward: (tabId) => {
+        const guest = getPreviewWebContents(scopeTabId(tabId));
+        if (guest?.canGoForward()) guest.goForward();
+      },
+      refresh: (tabId) => getPreviewWebContents(scopeTabId(tabId))?.reload(),
+      hardReload: (tabId) => getPreviewWebContents(scopeTabId(tabId))?.reloadIgnoringCache(),
+      openDevTools: (tabId) =>
+        getPreviewWebContents(scopeTabId(tabId))?.openDevTools({ mode: "detach" }),
+      pickElement: (tabId) => pickPreviewElement(scopeTabId(tabId)),
+      cancelPickElement: async (tabId) => {
+        await getPreviewWebContents(scopeTabId(tabId))
+          ?.executeJavaScript("window.__f5PreviewPickCancel?.()", true)
+          .catch(() => null);
+      },
+      automationStatus: (tabId) => previewAutomationStatus(scopeTabId(tabId)),
+      automationSnapshot: (tabId) => previewAutomationSnapshot(scopeTabId(tabId)),
+      automationClick: (tabId, input) => previewAutomationClick(scopeTabId(tabId), input),
+      automationType: (tabId, input) => previewAutomationType(scopeTabId(tabId), input),
+      automationPress: (tabId, input) => previewAutomationPress(scopeTabId(tabId), input),
+      automationScroll: (tabId, input) => previewAutomationScroll(scopeTabId(tabId), input),
+      automationEvaluate: (tabId, input) => previewAutomationEvaluate(scopeTabId(tabId), input),
+      automationWaitFor: (tabId, input) => previewAutomationWaitFor(scopeTabId(tabId), input),
+      setViewport: (tabId, viewport) => previewRuntime.setViewport(scopeTabId(tabId), viewport),
+      setColorScheme: (tabId, colorScheme) =>
+        previewRuntime.setColorScheme(scopeTabId(tabId), colorScheme),
+      captureScreenshot: (tabId) => previewRuntime.captureScreenshot(scopeTabId(tabId)),
+      recordingStart: async (tabId) => {
+        const scopedTabId = scopeTabId(tabId);
+        const recording = await previewRuntime.startRecording(scopedTabId);
+        previewRecordingOwnerById.set(recording.recordingId, {
+          ownerWebContentsId,
+          scopedTabId,
+        });
+        return recording;
+      },
+      recordingAppend: (recordingId, chunk) => {
+        requireOwnedRecording(recordingId);
+        return previewRuntime.appendRecordingChunk(recordingId, chunk);
+      },
+      recordingStop: async (recordingId) => {
+        requireOwnedRecording(recordingId);
+        try {
+          return await previewRuntime.stopRecording(recordingId);
+        } finally {
+          previewRecordingOwnerById.delete(recordingId);
+        }
+      },
+      recordingDiscard: async (recordingId) => {
+        requireOwnedRecording(recordingId);
+        try {
+          await previewRuntime.discardRecording(recordingId);
+        } finally {
+          previewRecordingOwnerById.delete(recordingId);
+        }
+      },
+    };
   });
 }
 
@@ -2423,8 +2519,7 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
 
   const rendererWebContentsId = window.webContents.id;
   const rendererCrashRecovery = new MainRendererCrashRecovery({
-    cleanupRendererResources: () =>
-      previewRuntime.resetRendererOwnedResources(rendererWebContentsId),
+    cleanupRendererResources: () => resetRendererOwnedPreviewResources(rendererWebContentsId),
     reloadRenderer: async () => {
       if (!window.isDestroyed()) {
         await window.loadURL(rendererUrl);
@@ -2472,7 +2567,8 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
 
   window.on("closed", () => {
     rendererCrashRecovery.dispose();
-    void previewRuntime.resetRendererOwnedResources(rendererWebContentsId);
+    lastOpenThreadWindowAtByRenderer.delete(rendererWebContentsId);
+    void resetRendererOwnedPreviewResources(rendererWebContentsId);
     if (mainWindow === window) {
       mainWindow = null;
     }

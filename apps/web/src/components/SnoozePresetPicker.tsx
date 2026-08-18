@@ -14,6 +14,10 @@ export function SnoozePresetPicker({
     const offset = date.getTimezoneOffset() * 60_000;
     return new Date(date.getTime() - offset).toISOString().slice(0, 16);
   })();
+  const now = new Date();
+  const localMinimum = new Date(now.getTime() - now.getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
 
   return (
     <div className="space-y-2">
@@ -37,7 +41,7 @@ export function SnoozePresetPicker({
           className="h-8 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground"
           type="datetime-local"
           value={localValue}
-          min={new Date().toISOString().slice(0, 16)}
+          min={localMinimum}
           onChange={(event) => {
             const date = new Date(event.currentTarget.value);
             if (Number.isFinite(date.getTime())) onChange(date.toISOString());

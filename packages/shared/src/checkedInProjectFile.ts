@@ -25,7 +25,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function hasSafeRelativePathShape(value: string): boolean {
   const normalized = value.replaceAll("\\", "/");
-  if (normalized.startsWith("/") || /^[a-z]:\//iu.test(normalized) || normalized.includes("\0")) {
+  if (normalized.startsWith("/") || /^[a-z]:/iu.test(normalized) || normalized.includes("\0")) {
     return false;
   }
   return normalized.split("/").every((segment) => segment !== "..");

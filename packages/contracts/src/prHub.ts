@@ -479,7 +479,7 @@ export type PrHubTimelineEntry = typeof PrHubTimelineEntry.Type;
 
 export const PrHubTimelineInput = Schema.Struct({
   key: PullRequestKey,
-  cursor: Schema.optional(Schema.String),
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
   mode: Schema.optional(PrHubReadMode),
 });
 export type PrHubTimelineInput = typeof PrHubTimelineInput.Type;
@@ -513,7 +513,7 @@ export type PrHubChangedFile = typeof PrHubChangedFile.Type;
 
 export const PrHubFilesInput = Schema.Struct({
   key: PullRequestKey,
-  cursor: Schema.optional(Schema.String),
+  cursor: Schema.optional(Schema.String.check(Schema.isMaxLength(4_096))),
   mode: Schema.optional(PrHubReadMode),
 });
 export type PrHubFilesInput = typeof PrHubFilesInput.Type;
