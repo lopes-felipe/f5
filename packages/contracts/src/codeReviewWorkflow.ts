@@ -29,6 +29,7 @@ export const CodeReviewReviewer = Schema.Struct({
   pinnedTurnId: Schema.NullOr(TrimmedNonEmptyString),
   pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString),
   error: Schema.NullOr(Schema.String),
+  retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });
 export type CodeReviewReviewer = typeof CodeReviewReviewer.Type;
@@ -40,6 +41,7 @@ export const CodeReviewConsolidation = Schema.Struct({
   pinnedTurnId: Schema.NullOr(TrimmedNonEmptyString),
   pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString),
   error: Schema.NullOr(Schema.String),
+  retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });
 export type CodeReviewConsolidation = typeof CodeReviewConsolidation.Type;
@@ -49,6 +51,10 @@ export const CodeReviewWorkflow = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
+  templateId: Schema.optional(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => "builtin.code-review.dual"),
+  ),
+  templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   reviewPrompt: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   reviewerA: CodeReviewReviewer,

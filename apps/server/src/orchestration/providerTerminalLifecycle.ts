@@ -148,6 +148,9 @@ export function makeTurnCompletedSessionSetCommand(input: {
     type: "thread.session.set",
     commandId: providerCommandId(event, "thread-session-set"),
     threadId: thread.id,
+    ...(event.turnId !== undefined
+      ? { settledTurnId: TurnId.makeUnsafe(String(event.turnId)) }
+      : {}),
     session: {
       threadId: thread.id,
       status,

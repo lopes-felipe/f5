@@ -26,6 +26,7 @@ import {
   ProviderSandboxMode,
   ProviderStartOptions,
   ProviderUserInputAnswers,
+  WorkflowTurnExecutionProfile,
   RuntimeMode,
   ThreadSessionNotes,
 } from "./orchestration";
@@ -75,6 +76,8 @@ export const ProviderSessionStartInput = Schema.Struct({
   model: Schema.optional(TrimmedNonEmptyStringSchema),
   modelOptions: Schema.optional(ProviderModelOptions),
   modelSelection: Schema.optional(ModelSelection),
+  interactionMode: Schema.optional(ProviderInteractionMode),
+  workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),
@@ -96,6 +99,7 @@ export const ProviderSendTurnInput = Schema.Struct({
   modelOptions: Schema.optional(ProviderModelOptions),
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
+  workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
 });
 export type ProviderSendTurnInput = typeof ProviderSendTurnInput.Type;
 

@@ -618,6 +618,24 @@ export function makeCursorAdapter(
                   params,
                   "acp.cursor.extension",
                 );
+                if (input.workflowExecutionProfile === "unattended-readonly") {
+                  const requestId = RuntimeRequestId.make(crypto.randomUUID());
+                  yield* offerRuntimeEvent({
+                    type: "user-input.requested",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: ctx?.activeTurnId,
+                    requestId,
+                    payload: { questions: extractAskQuestions(params) },
+                    raw: {
+                      source: "acp.cursor.extension",
+                      method: "cursor/ask_question",
+                      payload: params,
+                    },
+                  });
+                  return { answers: {} };
+                }
                 const requestId = ApprovalRequestId.make(crypto.randomUUID());
                 const runtimeRequestId = RuntimeRequestId.make(requestId);
                 const answers = yield* Deferred.make<ProviderUserInputAnswers>();
@@ -704,6 +722,25 @@ export function makeCursorAdapter(
                   params,
                   "acp.jsonrpc",
                 );
+                if (input.workflowExecutionProfile) {
+                  const permissionRequest = parsePermissionRequest(params);
+                  yield* offerRuntimeEvent(
+                    makeAcpRequestOpenedEvent({
+                      stamp: yield* makeEventStamp(),
+                      provider: PROVIDER,
+                      threadId: input.threadId,
+                      turnId: ctx?.activeTurnId,
+                      requestId: RuntimeRequestId.make(crypto.randomUUID()),
+                      permissionRequest,
+                      detail: permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000),
+                      args: params,
+                      source: "acp.jsonrpc",
+                      method: "session/request_permission",
+                      rawPayload: params,
+                    }),
+                  );
+                  return { outcome: { outcome: "cancelled" as const } };
+                }
                 switch (input.runtimeMode) {
                   case "full-access": {
                     const autoApprovedOptionId = selectAutoApprovedPermissionOption(params);
@@ -961,10 +998,25 @@ export function makeCursorAdapter(
         });
         const model = turnModelSelection?.model ?? ctx.session.model;
         const resolvedModel = resolveCursorAcpBaseModelId(model);
+        if (input.workflowExecutionProfile) {
+          const modeState = yield* ctx.acp.getModeState;
+          const planModeId = resolveRequestedModeId({
+            interactionMode: "plan",
+            runtimeMode: ctx.session.runtimeMode,
+            modeState,
+          });
+          if (!planModeId) {
+            return yield* new ProviderAdapterValidationError({
+              provider: PROVIDER,
+              operation: "sendTurn",
+              issue: "Cursor did not advertise a read-only ACP plan mode for this workflow stage.",
+            });
+          }
+        }
         yield* applyRequestedSessionConfiguration({
           runtime: ctx.acp,
           runtimeMode: ctx.session.runtimeMode,
-          interactionMode: input.interactionMode,
+          interactionMode: input.workflowExecutionProfile ? "plan" : input.interactionMode,
           modelSelection:
             model === undefined
               ? undefined

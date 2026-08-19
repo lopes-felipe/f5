@@ -22,6 +22,7 @@ describe("computeProviderLaunchFingerprint", () => {
     [{ instanceLaunchIdentity: "instance-config-b" }],
     [{ providerOptions: { codex: { launchArgs: ["--enable=one"] } } }],
     [{ mcpEffectiveConfigVersion: "mcp-v2" }],
+    [{ workflowExecutionProfile: "unattended-readonly" as const }],
   ])("changes when a launch dimension changes (%o)", (change) => {
     expect(computeProviderLaunchFingerprint({ ...base, ...change })).not.toBe(
       computeProviderLaunchFingerprint(base),

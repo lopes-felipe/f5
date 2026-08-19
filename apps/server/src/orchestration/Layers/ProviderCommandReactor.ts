@@ -23,6 +23,7 @@ import {
   type ProviderSession,
   type RuntimeMode,
   type TurnId,
+  type WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
 import { Cause, Effect, Layer, Option, Schema, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -73,6 +74,7 @@ import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions
 import { resolveEffectiveStartConfig } from "../../provider/effectiveStartConfig.ts";
 import {
   readPersistedCwd,
+  readPersistedInstructionContext,
   readPersistedProviderOptions,
   readPersistedStartConfig,
 } from "../../provider/runtimePayload.ts";
@@ -219,6 +221,7 @@ function buildThreadInstructionContext(input: {
   readonly projectMemories: ReadonlyArray<ProjectMemory>;
   readonly cwd?: string;
   readonly turnCount: number;
+  readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
 }): Partial<SharedInstructionInput> {
   return {
     ...(input.projectTitle ? { projectTitle: input.projectTitle } : {}),
@@ -227,6 +230,9 @@ function buildThreadInstructionContext(input: {
     turnCount: input.turnCount,
     ...(input.cwd ? { cwd: input.cwd } : {}),
     runtimeMode: input.thread.runtimeMode,
+    ...(input.workflowExecutionProfile
+      ? { workflowExecutionProfile: input.workflowExecutionProfile }
+      : {}),
     ...buildThreadResumeContext(input.thread),
   };
 }
@@ -529,11 +535,23 @@ const make = Effect.gen(function* () {
       readonly preferredInstanceId?: ProviderInstanceId;
       readonly modelOptions?: ProviderModelOptions;
       readonly providerOptions?: ProviderStartOptions;
+      readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
     },
   ) {
     return yield* Effect.gen(function* () {
       const sessionContext = yield* resolveThreadSessionStartContext(threadId);
-      const { thread, instructionContext, persistedBinding, desiredRuntimeMode } = sessionContext;
+      const {
+        thread,
+        instructionContext: baseInstructionContext,
+        persistedBinding,
+        desiredRuntimeMode,
+      } = sessionContext;
+      const instructionContext: Partial<SharedInstructionInput> = {
+        ...baseInstructionContext,
+        ...(options?.workflowExecutionProfile
+          ? { workflowExecutionProfile: options.workflowExecutionProfile }
+          : {}),
+      };
       const currentProvider = providerFromSessionName(thread.session?.providerName);
       const currentInstanceId =
         thread.session?.providerInstanceId ??
@@ -757,6 +775,11 @@ const make = Effect.gen(function* () {
           currentSessionCwd !== null &&
           desiredSessionCwd !== null &&
           currentSessionCwd !== desiredSessionCwd;
+        const activeWorkflowExecutionProfile = readPersistedInstructionContext(
+          persistedBinding?.runtimePayload,
+        )?.workflowExecutionProfile;
+        const shouldRestartForWorkflowExecutionProfileChange =
+          activeWorkflowExecutionProfile !== options?.workflowExecutionProfile;
 
         if (
           !runtimeModeChanged &&
@@ -766,7 +789,8 @@ const make = Effect.gen(function* () {
           !shouldRestartForModelOptionsChange &&
           !shouldRestartForProviderOptionsChange &&
           !shouldRestartForProjectMcpChange &&
-          !shouldRestartForCwdChange
+          !shouldRestartForCwdChange &&
+          !shouldRestartForWorkflowExecutionProfileChange
         ) {
           if (activeSession) {
             yield* bindSessionToThread(activeSession);
@@ -784,7 +808,9 @@ const make = Effect.gen(function* () {
             ? "instance-changed"
             : shouldRestartForCwdChange
               ? "cwd-changed"
-              : undefined;
+              : shouldRestartForWorkflowExecutionProfileChange
+                ? "workflow-execution-profile-changed"
+                : undefined;
         const resumeCursor =
           resumeCursorDropReason !== undefined
             ? undefined
@@ -798,6 +824,9 @@ const make = Effect.gen(function* () {
           ...(shouldRestartForProviderOptionsChange ? ["provider-options-changed"] : []),
           ...(shouldRestartForProjectMcpChange ? ["project-mcp-changed"] : []),
           ...(shouldRestartForCwdChange ? ["cwd-changed"] : []),
+          ...(shouldRestartForWorkflowExecutionProfileChange
+            ? ["workflow-execution-profile-changed"]
+            : []),
         ];
         yield* Effect.annotateCurrentSpan({
           "provider.session_decision": "restart",
@@ -822,6 +851,9 @@ const make = Effect.gen(function* () {
           shouldRestartForProviderOptionsChange,
           shouldRestartForProjectMcpChange,
           shouldRestartForCwdChange,
+          shouldRestartForWorkflowExecutionProfileChange,
+          activeWorkflowExecutionProfile: activeWorkflowExecutionProfile ?? null,
+          desiredWorkflowExecutionProfile: options?.workflowExecutionProfile ?? null,
           currentSessionCwd,
           desiredSessionCwd,
           persistedMcpEffectiveConfigVersion: persistedBinding?.mcpEffectiveConfigVersion ?? null,
@@ -870,10 +902,16 @@ const make = Effect.gen(function* () {
       const persistedCwd = readPersistedCwd(persistedBinding?.runtimePayload);
       const persistedCwdMatches =
         persistedBinding !== undefined && persistedCwd === instructionContext.cwd;
+      const persistedWorkflowExecutionProfile = readPersistedInstructionContext(
+        persistedBinding?.runtimePayload,
+      )?.workflowExecutionProfile;
+      const persistedWorkflowExecutionProfileMatches =
+        persistedWorkflowExecutionProfile === options?.workflowExecutionProfile;
       const resumeCursorForStoppedSession =
         persistedProviderMatches &&
         persistedInstanceMatches &&
         persistedCwdMatches &&
+        persistedWorkflowExecutionProfileMatches &&
         persistedBinding?.resumeCursor !== undefined &&
         persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor
@@ -909,7 +947,9 @@ const make = Effect.gen(function* () {
               ? "instance-changed"
               : !persistedCwdMatches
                 ? "cwd-changed"
-                : "missing-resume-cursor",
+                : !persistedWorkflowExecutionProfileMatches
+                  ? "workflow-execution-profile-changed"
+                  : "missing-resume-cursor",
           restartReasons: ["recover-session"],
           createdAt,
         });
@@ -929,6 +969,7 @@ const make = Effect.gen(function* () {
     readonly modelOptions?: ProviderModelOptions;
     readonly providerOptions?: ProviderStartOptions;
     readonly interactionMode?: "default" | "plan";
+    readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
     readonly createdAt: string;
   }) {
     const thread = yield* resolveThread(input.threadId);
@@ -941,6 +982,9 @@ const make = Effect.gen(function* () {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
       ...(input.providerOptions !== undefined ? { providerOptions: input.providerOptions } : {}),
+      ...(input.workflowExecutionProfile !== undefined
+        ? { workflowExecutionProfile: input.workflowExecutionProfile }
+        : {}),
     });
     const normalizedInput = toNonEmptyProviderInput(input.messageText);
     const normalizedAttachments = input.attachments ?? [];
@@ -975,6 +1019,9 @@ const make = Effect.gen(function* () {
       projectMemories: activeProjectMemories,
       ...(effectiveCwd ? { cwd: effectiveCwd } : {}),
       turnCount: deriveThreadTurnCount(thread),
+      ...(input.workflowExecutionProfile
+        ? { workflowExecutionProfile: input.workflowExecutionProfile }
+        : {}),
     });
     const sessionModelSwitch =
       activeSession === undefined
@@ -1015,6 +1062,9 @@ const make = Effect.gen(function* () {
       ...(input.modelSelection !== undefined ? { modelSelection: input.modelSelection } : {}),
       ...(input.modelOptions !== undefined ? { modelOptions: input.modelOptions } : {}),
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+      ...(input.workflowExecutionProfile !== undefined
+        ? { workflowExecutionProfile: input.workflowExecutionProfile }
+        : {}),
     });
   });
 
@@ -1376,6 +1426,9 @@ const make = Effect.gen(function* () {
         ? { providerOptions: event.payload.providerOptions }
         : {}),
       interactionMode: event.payload.interactionMode,
+      ...(event.payload.workflowExecutionProfile !== undefined
+        ? { workflowExecutionProfile: event.payload.workflowExecutionProfile }
+        : {}),
       createdAt: event.payload.createdAt,
     });
   });

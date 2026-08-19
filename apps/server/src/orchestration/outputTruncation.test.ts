@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { truncateMiddleByBytes } from "./outputTruncation.ts";
+import { truncateMiddleByBytes, truncateMiddleByCharacters } from "./outputTruncation.ts";
 
 const MARKER = "\n[...]\n";
 
@@ -76,5 +76,19 @@ describe("truncateMiddleByBytes", () => {
     expect(result.output.startsWith("Z")).toBe(true);
     expect(result.output).toContain(marker);
     expect(Buffer.byteLength(result.output, "utf8")).toBeLessThanOrEqual(30);
+  });
+});
+
+describe("truncateMiddleByCharacters", () => {
+  it("bounds UTF-16 units and preserves astral-code-point boundaries", () => {
+    const result = truncateMiddleByCharacters("😀".repeat(200), {
+      maxCharacters: 80,
+      headCharacters: 30,
+      marker: MARKER,
+    });
+    expect(result.truncated).toBe(true);
+    expect(result.output.length).toBeLessThanOrEqual(80);
+    expect(result.output).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u);
+    expect(result.output).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
   });
 });

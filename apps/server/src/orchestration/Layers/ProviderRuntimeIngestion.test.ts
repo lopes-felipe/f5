@@ -80,6 +80,9 @@ type LegacyProviderRuntimeEvent = {
 function createProviderServiceHarness() {
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
   const runtimeSessions: ProviderSession[] = [];
+  const interruptedTurns: Array<Parameters<ProviderServiceShape["interruptTurn"]>[0]> = [];
+  const requestResponses: Array<Parameters<ProviderServiceShape["respondToRequest"]>[0]> = [];
+  const userInputResponses: Array<Parameters<ProviderServiceShape["respondToUserInput"]>[0]> = [];
   const threadSnapshots = new Map<
     ThreadId,
     {
@@ -95,9 +98,9 @@ function createProviderServiceHarness() {
   const service: ProviderServiceShape = {
     startSession: () => unsupported(),
     sendTurn: () => unsupported(),
-    interruptTurn: () => unsupported(),
-    respondToRequest: () => unsupported(),
-    respondToUserInput: () => unsupported(),
+    interruptTurn: (input) => Effect.sync(() => void interruptedTurns.push(input)),
+    respondToRequest: (input) => Effect.sync(() => void requestResponses.push(input)),
+    respondToUserInput: (input) => Effect.sync(() => void userInputResponses.push(input)),
     stopSession: () => unsupported(),
     listSessions: () => Effect.succeed([...runtimeSessions]),
     getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
@@ -145,6 +148,9 @@ function createProviderServiceHarness() {
     setSession,
     clearSessions,
     setThreadSnapshot,
+    interruptedTurns,
+    requestResponses,
+    userInputResponses,
   };
 }
 
@@ -343,6 +349,9 @@ describe("ProviderRuntimeIngestion", () => {
       setProviderSession: provider.setSession,
       clearProviderSessions: provider.clearSessions,
       setThreadSnapshot: provider.setThreadSnapshot,
+      interruptedTurns: provider.interruptedTurns,
+      requestResponses: provider.requestResponses,
+      userInputResponses: provider.userInputResponses,
       threadCommandExecutionQuery,
       threadFileChangeQuery,
       usageFactRepository,
@@ -3119,6 +3128,121 @@ describe("ProviderRuntimeIngestion", () => {
         : undefined;
     expect(resolvedPayload?.requestKind).toBe("command");
     expect(resolvedPayload?.requestType).toBe("command_execution_approval");
+  });
+
+  it("declines and terminates approval requests from profiled workflow turns", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-profiled-approval");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-profiled-approval-session"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-profiled-approval-started"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.status === "running");
+
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-profiled-approval-opened"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      requestId: ApprovalRequestId.makeUnsafe("req-profiled-approval"),
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "touch forbidden.txt",
+      },
+    });
+
+    const failed = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "error",
+    );
+    expect(failed.session?.lastError).toContain("read-only profile violation");
+    expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
+    expect(harness.requestResponses).toEqual([
+      expect.objectContaining({ requestId: "req-profiled-approval", decision: "decline" }),
+    ]);
+    expect(harness.interruptedTurns).toEqual([
+      expect.objectContaining({ threadId: "thread-1", turnId }),
+    ]);
+  });
+
+  it("settles and terminates unattended workflow user-input requests", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-profiled-user-input");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-profiled-user-input-session"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-profiled-user-input-started"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.status === "running");
+
+    harness.emit({
+      type: "user-input.requested",
+      eventId: asEventId("evt-profiled-user-input-requested"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      requestId: ApprovalRequestId.makeUnsafe("req-profiled-user-input"),
+      payload: { questions: [] },
+    });
+
+    const failed = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "error",
+    );
+    expect(failed.session?.lastError).toContain("unattended read-only profile violation");
+    expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
+    expect(harness.userInputResponses).toEqual([
+      expect.objectContaining({ requestId: "req-profiled-user-input", answers: {} }),
+    ]);
+    expect(harness.interruptedTurns).toHaveLength(1);
   });
 
   it("surfaces unknown approvals with their raw type and byte-bounded detail", async () => {

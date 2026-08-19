@@ -29,6 +29,7 @@ import {
 import { type OpenCodeAdapterShape } from "../Services/OpenCodeAdapter.ts";
 import {
   buildOpenCodePermissionRules,
+  buildOpenCodeWorkflowPermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeError,
   openCodeQuestionId,
@@ -1046,7 +1047,9 @@ export function makeOpenCodeAdapter(
               const openCodeSession = yield* runOpenCodeSdk("session.create", () =>
                 client.session.create({
                   title: `T3 Code ${input.threadId}`,
-                  permission: buildOpenCodePermissionRules(input.runtimeMode),
+                  permission: input.workflowExecutionProfile
+                    ? buildOpenCodeWorkflowPermissionRules(input.workflowExecutionProfile)
+                    : buildOpenCodePermissionRules(input.runtimeMode),
                 }),
               );
               if (!openCodeSession.data) {
@@ -1192,7 +1195,9 @@ export function makeOpenCodeAdapter(
       const variant = getModelSelectionStringOptionValue(modelSelection, "variant");
 
       context.activeTurnId = turnId;
-      context.activeAgent = agent ?? (input.interactionMode === "plan" ? "plan" : undefined);
+      context.activeAgent = input.workflowExecutionProfile
+        ? "plan"
+        : (agent ?? (input.interactionMode === "plan" ? "plan" : undefined));
       context.activeVariant = variant;
       updateProviderSession(
         context,

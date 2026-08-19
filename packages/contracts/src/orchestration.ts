@@ -142,6 +142,11 @@ export const DEFAULT_RUNTIME_MODE: RuntimeMode = "full-access";
 export const ProviderInteractionMode = Schema.Literals(["default", "plan"]);
 export type ProviderInteractionMode = typeof ProviderInteractionMode.Type;
 export const DEFAULT_PROVIDER_INTERACTION_MODE: ProviderInteractionMode = "default";
+export const WorkflowTurnExecutionProfile = Schema.Literals([
+  "attended-readonly",
+  "unattended-readonly",
+]);
+export type WorkflowTurnExecutionProfile = typeof WorkflowTurnExecutionProfile.Type;
 export const ProviderRequestKind = Schema.Literals([
   "command",
   "file-read",
@@ -166,6 +171,16 @@ export const PROVIDER_SEND_TURN_MAX_INPUT_CHARS = 120_000;
 export const PROVIDER_SEND_TURN_MAX_ATTACHMENTS = 8;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 export const PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS = 14_000_000;
+const ProviderTurnInputText = Schema.String.check(
+  Schema.makeFilter(
+    (input) =>
+      input.length <= PROVIDER_SEND_TURN_MAX_INPUT_CHARS ||
+      new SchemaIssue.InvalidValue(Option.some(input.length), {
+        message: `Message exceeds the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")} character provider input limit.`,
+      }),
+    { identifier: "ProviderTurnInputText" },
+  ),
+);
 const CHAT_ATTACHMENT_ID_MAX_CHARS = 128;
 // Correlation id is command id by design in this model.
 export const CorrelationId = CommandId;
@@ -497,6 +512,7 @@ export const OrchestrationSession = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   runtimeMode: RuntimeMode.pipe(Schema.withDecodingDefault(() => DEFAULT_RUNTIME_MODE)),
+  workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
   activeTurnId: Schema.NullOr(TurnId),
   lastError: Schema.NullOr(TrimmedNonEmptyString),
   lastErrorId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
@@ -505,6 +521,9 @@ export const OrchestrationSession = Schema.Struct({
   lastErrorOccurredAt: Schema.optional(Schema.NullOr(IsoDateTime)).pipe(
     Schema.withDecodingDefault(() => null),
   ),
+  lastErrorRetryability: Schema.optional(
+    Schema.NullOr(Schema.Literals(["retryable", "non-retryable"])),
+  ).pipe(Schema.withDecodingDefault(() => null)),
   turnCostUsd: Schema.optional(Schema.Number),
   estimatedContextTokens: Schema.optional(NonNegativeInt),
   estimatedThinkingTokens: Schema.optional(NonNegativeInt),
@@ -659,6 +678,7 @@ export const OrchestrationLatestTurn = Schema.Struct({
   completedAt: Schema.NullOr(IsoDateTime),
   processingQuiescedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   assistantMessageId: Schema.NullOr(MessageId),
+  workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
 });
 export type OrchestrationLatestTurn = typeof OrchestrationLatestTurn.Type;
 
@@ -836,8 +856,12 @@ const ProjectWorkflowCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
-  requirementPrompt: TrimmedNonEmptyString,
+  requirementPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
   plansDirectory: TrimmedNonEmptyString,
+  templateId: Schema.optional(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => "builtin.planning.dual"),
+  ),
+  templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   authorThreadIdA: ThreadId,
   authorThreadIdB: ThreadId,
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
@@ -863,7 +887,11 @@ const ProjectCodeReviewWorkflowCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
-  reviewPrompt: TrimmedNonEmptyString,
+  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  templateId: Schema.optional(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => "builtin.code-review.dual"),
+  ),
+  templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   reviewerA: WorkflowModelSlot,
   reviewerB: WorkflowModelSlot,
@@ -897,7 +925,11 @@ const ProjectInvestigationWorkflowCreateCommand = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
-  problemPrompt: TrimmedNonEmptyString,
+  problemPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  templateId: Schema.optional(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => "builtin.investigation.dual"),
+  ),
+  templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   branch: Schema.NullOr(TrimmedNonEmptyString),
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   investigatorA: WorkflowModelSlot,
@@ -1076,7 +1108,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
-    text: Schema.String,
+    text: ProviderTurnInputText,
     skillCall: Schema.optional(UserMessageSkillCall),
     attachments: Schema.Array(ChatAttachment),
   }),
@@ -1093,6 +1125,7 @@ export const ThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   dispatchSource: Schema.optional(Schema.Literal("next-turn-queue")),
@@ -1107,7 +1140,7 @@ export const ClientThreadTurnStartCommand = Schema.Struct({
   message: Schema.Struct({
     messageId: MessageId,
     role: Schema.Literal("user"),
-    text: Schema.String,
+    text: ProviderTurnInputText,
     skillCall: Schema.optional(UserMessageSkillCall),
     attachments: Schema.Array(UploadChatAttachment),
   }),
@@ -1124,8 +1157,9 @@ export const ClientThreadTurnStartCommand = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   bootstrap: Schema.optional(ThreadTurnStartBootstrap),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
+  dispatchSource: Schema.optional(Schema.Literal("next-turn-queue")),
   createdAt: IsoDateTime,
-});
+}).annotate({ parseOptions: { onExcessProperty: "error" } });
 export type ClientThreadTurnStartCommand = typeof ClientThreadTurnStartCommand.Type;
 
 const ThreadTurnInterruptCommand = Schema.Struct({
@@ -1245,6 +1279,7 @@ const ThreadSessionSetCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   session: OrchestrationSession,
+  settledTurnId: Schema.optional(TurnId),
   usageFact: Schema.optional(UsageTurnFact),
   createdAt: IsoDateTime,
 });
@@ -1784,6 +1819,7 @@ export const ThreadTurnStartRequestedPayload = Schema.Struct({
   interactionMode: ProviderInteractionMode.pipe(
     Schema.withDecodingDefault(() => DEFAULT_PROVIDER_INTERACTION_MODE),
   ),
+  workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
   sourceProposedPlan: Schema.optional(SourceProposedPlanReference),
   createdAt: IsoDateTime,
 });
@@ -1827,6 +1863,7 @@ export const ThreadSessionStopRequestedPayload = Schema.Struct({
 export const ThreadSessionSetPayload = Schema.Struct({
   threadId: ThreadId,
   session: OrchestrationSession,
+  settledTurnId: Schema.optional(TurnId),
   usageFact: Schema.optional(UsageTurnFact),
 });
 
@@ -2526,7 +2563,9 @@ export type OrchestrationGetThreadFileChangeResult =
 export const OrchestrationCreateWorkflowInput = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  requirementPrompt: TrimmedNonEmptyString,
+  requirementPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  templateId: Schema.optional(TrimmedNonEmptyString),
+  templateVersion: Schema.optional(Schema.Int),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
   plansDirectory: Schema.optional(TrimmedNonEmptyString),
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
@@ -2545,7 +2584,9 @@ export type OrchestrationCreateWorkflowResult = typeof OrchestrationCreateWorkfl
 export const OrchestrationCreateCodeReviewWorkflowInput = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  reviewPrompt: TrimmedNonEmptyString,
+  reviewPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  templateId: Schema.optional(TrimmedNonEmptyString),
+  templateVersion: Schema.optional(Schema.Int),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
   branch: Schema.optional(TrimmedNonEmptyString),
   reviewerA: WorkflowModelSlot,
@@ -2565,7 +2606,9 @@ export type OrchestrationCreateCodeReviewWorkflowResult =
 export const OrchestrationCreateInvestigationWorkflowInput = Schema.Struct({
   projectId: ProjectId,
   title: Schema.optional(TrimmedNonEmptyString),
-  problemPrompt: TrimmedNonEmptyString,
+  problemPrompt: TrimmedNonEmptyString.check(Schema.isMaxLength(80_000)),
+  templateId: Schema.optional(TrimmedNonEmptyString),
+  templateVersion: Schema.optional(Schema.Int),
   titleGenerationModel: Schema.optional(TrimmedNonEmptyString),
   branch: Schema.optional(TrimmedNonEmptyString),
   selfReviewEnabled: Schema.optional(Schema.Boolean).pipe(Schema.withDecodingDefault(() => false)),

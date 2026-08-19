@@ -7,10 +7,8 @@ import {
   ThreadId,
   type InvestigationInvestigator,
   type InvestigationWorkflow,
-  type OrchestrationCreateInvestigationWorkflowInput,
   type OrchestrationEvent,
   type OrchestrationReadModel,
-  type WorkflowModelSlot,
 } from "@t3tools/contracts";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
@@ -34,11 +32,14 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import {
   getFinishedConsumableLatestTurn,
+  hasPriorThreadWork,
   isLatestTurnFinishedAndConsumable,
   latestAssistantFeedback,
   nextWorkflowSlug,
-  slotLabel,
+  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
+import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
+import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
@@ -46,6 +47,15 @@ import {
   withWorkflowModelSelectionGuard,
 } from "../workflowModelSelection.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import {
+  assertWorkflowStageProviderSupported,
+  LATEST_WORKFLOW_TEMPLATE_VERSION,
+  resolveWorkflowBehavior,
+  type UnsupportedWorkflowProviderError,
+  UnsupportedWorkflowTemplateError,
+  workflowTurnBehaviorFields,
+} from "../workflowBehavior.ts";
+import { buildInvestigationWorkflowRecord } from "../workflowRecordBuilders.ts";
 
 type InvestigatorKey = "investigatorA" | "investigatorB";
 type InvestigationWorkflowTitleGenerationWorkItem = {
@@ -61,83 +71,10 @@ const CROSS_REVIEW_OUTPUT_NOT_FOUND =
 const SELF_REVIEW_OUTPUT_NOT_FOUND =
   "Investigator output not found for investigation own-model review.";
 const SYNTHESIS_OUTPUT_NOT_FOUND = "Investigation upstream output not found for synthesis.";
+const MAX_PROFILE_TIMEOUT_RETRIES = 1;
 
 function peerKey(key: InvestigatorKey): InvestigatorKey {
   return key === "investigatorA" ? "investigatorB" : "investigatorA";
-}
-
-function buildWorkflowRecord(input: {
-  readonly workflowId: InvestigationWorkflowId;
-  readonly title: InvestigationWorkflow["title"];
-  readonly slug: string;
-  readonly createdAt: string;
-  readonly investigationThreadIdA: ThreadId;
-  readonly investigationThreadIdB: ThreadId;
-  readonly investigatorA: WorkflowModelSlot;
-  readonly investigatorB: WorkflowModelSlot;
-  readonly synthesis: WorkflowModelSlot;
-  readonly request: OrchestrationCreateInvestigationWorkflowInput;
-}): InvestigationWorkflow {
-  return {
-    id: input.workflowId,
-    projectId: input.request.projectId,
-    title: input.title,
-    slug: input.slug,
-    problemPrompt: input.request.problemPrompt,
-    branch: input.request.branch ?? null,
-    selfReviewEnabled: input.request.selfReviewEnabled ?? false,
-    investigatorA: {
-      label: `Investigator A (${slotLabel(input.investigatorA)})`,
-      slot: input.investigatorA,
-      investigationThreadId: input.investigationThreadIdA,
-      investigationStatus: "pending",
-      investigationTurnId: null,
-      investigationMessageId: null,
-      crossReviewThreadId: null,
-      crossReviewStatus: "not_started",
-      crossReviewTurnId: null,
-      crossReviewMessageId: null,
-      selfReviewThreadId: null,
-      selfReviewStatus: "not_started",
-      selfReviewTurnId: null,
-      selfReviewMessageId: null,
-      error: null,
-      updatedAt: input.createdAt,
-    },
-    investigatorB: {
-      label: `Investigator B (${slotLabel(input.investigatorB)})`,
-      slot: input.investigatorB,
-      investigationThreadId: input.investigationThreadIdB,
-      investigationStatus: "pending",
-      investigationTurnId: null,
-      investigationMessageId: null,
-      crossReviewThreadId: null,
-      crossReviewStatus: "not_started",
-      crossReviewTurnId: null,
-      crossReviewMessageId: null,
-      selfReviewThreadId: null,
-      selfReviewStatus: "not_started",
-      selfReviewTurnId: null,
-      selfReviewMessageId: null,
-      error: null,
-      updatedAt: input.createdAt,
-    },
-    synthesis: {
-      slot: input.synthesis,
-      threadId: null,
-      status: "not_started",
-      pinnedTurnId: null,
-      pinnedAssistantMessageId: null,
-      error: null,
-      updatedAt: input.createdAt,
-    },
-    totalCostUsd: 0,
-    maxCostUsd: input.request.maxCostUsd ?? null,
-    createdAt: input.createdAt,
-    updatedAt: input.createdAt,
-    archivedAt: null,
-    deletedAt: null,
-  };
 }
 
 function updateInvestigator(
@@ -780,15 +717,45 @@ function createInvestigationThread(input: {
   });
 }
 
+function investigationPromptInvariant(
+  prompt: string,
+  artifactLabel: string,
+): OrchestrationCommandInvariantError | null {
+  return prompt.length <= WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT
+    ? null
+    : new OrchestrationCommandInvariantError({
+        commandType: "workflow.turn.start",
+        detail: `${artifactLabel} rendered prompt is ${prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`,
+      });
+}
+
 function startInvestigationTurn(input: {
   readonly orchestrationEngine: OrchestrationEngineShape;
   readonly workflow: InvestigationWorkflow;
   readonly investigator: InvestigationInvestigator;
-  readonly isRetry: boolean;
+  readonly lensBranch: "a" | "b";
+  readonly retry: WorkflowRetryContext;
   readonly createdAt: string;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
+  const prompt = buildInvestigationPrompt({
+    workflowId: input.workflow.id,
+    problemPrompt: input.workflow.problemPrompt,
+    investigatorLabel: input.investigator.label,
+    lensBranch: input.lensBranch,
+    branch: input.workflow.branch,
+    attended:
+      resolveWorkflowBehavior({
+        runKind: "investigation",
+        templateId: input.workflow.templateId,
+        templateVersion: input.workflow.templateVersion,
+      }).executionProfileForStage("investigation") === "attended-readonly",
+    targetSlot: input.investigator.slot,
+    retry: input.retry,
+  });
+  const promptError = investigationPromptInvariant(prompt, "Investigation");
+  if (promptError) return Effect.fail(promptError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -796,19 +763,18 @@ function startInvestigationTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: buildInvestigationPrompt({
-        problemPrompt: input.workflow.problemPrompt,
-        investigatorLabel: input.investigator.label,
-        branch: input.workflow.branch,
-        provider: input.investigator.slot.provider,
-        isRetry: input.isRetry,
-      }),
+      text: prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.investigator.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    ...workflowTurnBehaviorFields({
+      runKind: "investigation",
+      templateId: input.workflow.templateId,
+      templateVersion: input.workflow.templateVersion,
+      stage: "investigation",
+    }),
     createdAt: input.createdAt,
   });
 }
@@ -842,11 +808,21 @@ function startCrossReviewTurn(input: {
   readonly investigator: InvestigationInvestigator;
   readonly peerLabel: string;
   readonly peerReport: string;
-  readonly isRetry: boolean;
+  readonly retry: WorkflowRetryContext;
   readonly createdAt: string;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
+  const prompt = buildInvestigationCrossReviewPrompt({
+    workflowId: input.workflow.id,
+    problemPrompt: input.workflow.problemPrompt,
+    peerLabel: input.peerLabel,
+    peerReport: input.peerReport,
+    targetSlot: input.investigator.slot,
+    retry: input.retry,
+  });
+  const promptError = investigationPromptInvariant(prompt, "Investigation cross-review");
+  if (promptError) return Effect.fail(promptError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -854,19 +830,18 @@ function startCrossReviewTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: buildInvestigationCrossReviewPrompt({
-        problemPrompt: input.workflow.problemPrompt,
-        peerLabel: input.peerLabel,
-        peerReport: input.peerReport,
-        provider: input.investigator.slot.provider,
-        isRetry: input.isRetry,
-      }),
+      text: prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.investigator.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    ...workflowTurnBehaviorFields({
+      runKind: "investigation",
+      templateId: input.workflow.templateId,
+      templateVersion: input.workflow.templateVersion,
+      stage: "investigation-review",
+    }),
     createdAt: input.createdAt,
   });
 }
@@ -899,11 +874,23 @@ function startSelfReviewTurn(input: {
   readonly workflow: InvestigationWorkflow;
   readonly investigator: InvestigationInvestigator;
   readonly investigationReport: string;
-  readonly isRetry: boolean;
+  readonly retry: WorkflowRetryContext;
   readonly createdAt: string;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
+  const prompt = buildInvestigationSelfReviewPrompt({
+    workflowId: input.workflow.id,
+    problemPrompt: input.workflow.problemPrompt,
+    investigatorLabel: input.investigator.label,
+    investigationReport: input.investigationReport,
+    investigationTurnId: input.investigator.investigationTurnId ?? undefined,
+    investigationMessageId: input.investigator.investigationMessageId ?? undefined,
+    targetSlot: input.investigator.slot,
+    retry: input.retry,
+  });
+  const promptError = investigationPromptInvariant(prompt, "Investigation self-review");
+  if (promptError) return Effect.fail(promptError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -911,19 +898,18 @@ function startSelfReviewTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: buildInvestigationSelfReviewPrompt({
-        problemPrompt: input.workflow.problemPrompt,
-        investigatorLabel: input.investigator.label,
-        investigationReport: input.investigationReport,
-        provider: input.investigator.slot.provider,
-        isRetry: input.isRetry,
-      }),
+      text: prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.investigator.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    ...workflowTurnBehaviorFields({
+      runKind: "investigation",
+      templateId: input.workflow.templateId,
+      templateVersion: input.workflow.templateVersion,
+      stage: "investigation-review",
+    }),
     createdAt: input.createdAt,
   });
 }
@@ -958,11 +944,20 @@ function startSynthesisTurn(input: {
     readonly crossReviewOfThis: string;
     readonly selfReview?: string | null;
   }>;
-  readonly isRetry: boolean;
+  readonly retry: WorkflowRetryContext;
   readonly createdAt: string;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
+  const prompt = buildInvestigationSynthesisPrompt({
+    workflowId: input.workflow.id,
+    problemPrompt: input.workflow.problemPrompt,
+    targetSlot: input.workflow.synthesis.slot,
+    retry: input.retry,
+    contributions: input.contributions,
+  });
+  const promptError = investigationPromptInvariant(prompt, "Investigation synthesis");
+  if (promptError) return Effect.fail(promptError);
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -970,17 +965,18 @@ function startSynthesisTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: buildInvestigationSynthesisPrompt({
-        problemPrompt: input.workflow.problemPrompt,
-        isRetry: input.isRetry,
-        contributions: input.contributions,
-      }),
+      text: prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.workflow.synthesis.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    ...workflowTurnBehaviorFields({
+      runKind: "investigation",
+      templateId: input.workflow.templateId,
+      templateVersion: input.workflow.templateVersion,
+      stage: "synthesis",
+    }),
     createdAt: input.createdAt,
   });
 }
@@ -1060,10 +1056,6 @@ function liveThreadById(snapshot: OrchestrationReadModel, threadId: ThreadId) {
   return (
     snapshot.threads.find((thread) => thread.id === threadId && thread.deletedAt === null) ?? null
   );
-}
-
-function hasPriorThreadWork(thread: OrchestrationReadModel["threads"][number] | null): boolean {
-  return thread !== null && (thread.latestTurn !== null || thread.messages.length > 0);
 }
 
 export const makeInvestigationWorkflowService = Effect.gen(function* () {
@@ -1179,7 +1171,10 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             orchestrationEngine,
             workflow: nextWorkflow,
             investigator,
-            isRetry: hasPriorThreadWork(investigationThread),
+            lensBranch: investigatorKey === "investigatorA" ? "a" : "b",
+            retry: hasPriorThreadWork(investigationThread)
+              ? { kind: "retry", reusedThread: true }
+              : { kind: "none" },
             createdAt: updatedAt,
           }),
         );
@@ -1379,7 +1374,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             investigator: runningWorkflow[investigatorKey],
             peerLabel: peer.label,
             peerReport,
-            isRetry: hasPriorThreadWork(crossReviewThread),
+            retry: hasPriorThreadWork(crossReviewThread)
+              ? { kind: "retry", reusedThread: true }
+              : { kind: "none" },
             createdAt: updatedAt,
           }),
         );
@@ -1499,7 +1496,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             workflow: runningWorkflow,
             investigator: runningWorkflow[investigatorKey],
             investigationReport: ownReport,
-            isRetry: hasPriorThreadWork(selfReviewThread),
+            retry: hasPriorThreadWork(selfReviewThread)
+              ? { kind: "retry", reusedThread: true }
+              : { kind: "none" },
             createdAt: updatedAt,
           }),
         );
@@ -1614,7 +1613,9 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             crossReviewOfThis: contribution.crossReviewOfThis!,
             selfReview: contribution.selfReview,
           })),
-          isRetry: hasPriorThreadWork(synthesisThread),
+          retry: hasPriorThreadWork(synthesisThread)
+            ? { kind: "retry", reusedThread: true }
+            : { kind: "none" },
           createdAt: updatedAt,
         }),
       );
@@ -2013,6 +2014,29 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
               event.payload.session.status === "error" &&
               investigation.investigator.investigationStatus === "running"
             ) {
+              if (
+                event.payload.session.lastErrorRetryability === "retryable" &&
+                (investigation.investigator.investigationRetryCount ?? 0) <
+                  MAX_PROFILE_TIMEOUT_RETRIES &&
+                workflowBudgetError(workflow) === null
+              ) {
+                const retryWorkflow = updateInvestigator(
+                  workflow,
+                  investigation.investigatorKey,
+                  {
+                    ...investigation.investigator,
+                    investigationStatus: "pending",
+                    error: null,
+                    investigationRetryCount:
+                      (investigation.investigator.investigationRetryCount ?? 0) + 1,
+                    updatedAt: event.occurredAt,
+                  },
+                  event.occurredAt,
+                );
+                yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
+                yield* startPendingInvestigations(retryWorkflow, event.occurredAt);
+                return;
+              }
               yield* upsertWorkflow(
                 orchestrationEngine,
                 withInvestigationError({
@@ -2054,6 +2078,29 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
               event.payload.session.status === "error" &&
               crossReview.investigator.crossReviewStatus === "running"
             ) {
+              if (
+                event.payload.session.lastErrorRetryability === "retryable" &&
+                (crossReview.investigator.crossReviewRetryCount ?? 0) <
+                  MAX_PROFILE_TIMEOUT_RETRIES &&
+                workflowBudgetError(workflow) === null
+              ) {
+                const retryWorkflow = updateInvestigator(
+                  workflow,
+                  crossReview.investigatorKey,
+                  {
+                    ...crossReview.investigator,
+                    crossReviewStatus: "pending_start",
+                    error: null,
+                    crossReviewRetryCount:
+                      (crossReview.investigator.crossReviewRetryCount ?? 0) + 1,
+                    updatedAt: event.occurredAt,
+                  },
+                  event.occurredAt,
+                );
+                yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
+                yield* maybeStartCrossReviews(retryWorkflow, readModel, event.occurredAt);
+                return;
+              }
               yield* upsertWorkflow(
                 orchestrationEngine,
                 withCrossReviewError({
@@ -2090,6 +2137,27 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
               event.payload.session.status === "error" &&
               selfReview.investigator.selfReviewStatus === "running"
             ) {
+              if (
+                event.payload.session.lastErrorRetryability === "retryable" &&
+                (selfReview.investigator.selfReviewRetryCount ?? 0) < MAX_PROFILE_TIMEOUT_RETRIES &&
+                workflowBudgetError(workflow) === null
+              ) {
+                const retryWorkflow = updateInvestigator(
+                  workflow,
+                  selfReview.investigatorKey,
+                  {
+                    ...selfReview.investigator,
+                    selfReviewStatus: "pending_start",
+                    error: null,
+                    selfReviewRetryCount: (selfReview.investigator.selfReviewRetryCount ?? 0) + 1,
+                    updatedAt: event.occurredAt,
+                  },
+                  event.occurredAt,
+                );
+                yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
+                yield* maybeStartSelfReviews(retryWorkflow, readModel, event.occurredAt);
+                return;
+              }
               yield* upsertWorkflow(
                 orchestrationEngine,
                 withSelfReviewError({
@@ -2124,6 +2192,26 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
             return;
           }
           if (event.payload.session.status === "error" && workflow.synthesis.status === "running") {
+            if (
+              event.payload.session.lastErrorRetryability === "retryable" &&
+              (workflow.synthesis.retryCount ?? 0) < MAX_PROFILE_TIMEOUT_RETRIES &&
+              workflowBudgetError(workflow) === null
+            ) {
+              const retryWorkflow: InvestigationWorkflow = {
+                ...workflow,
+                synthesis: {
+                  ...workflow.synthesis,
+                  status: "pending_start",
+                  error: null,
+                  retryCount: (workflow.synthesis.retryCount ?? 0) + 1,
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+              yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
+              yield* maybeStartSynthesis(retryWorkflow, readModel, event.occurredAt);
+              return;
+            }
             yield* upsertWorkflow(
               orchestrationEngine,
               withSynthesisError(
@@ -2194,6 +2282,40 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         investigatorB: resolveAvailableWorkflowModelSlot(rawInput.investigatorB, providers),
         synthesis: resolveAvailableWorkflowModelSlot(rawInput.synthesis, providers),
       };
+      const behavior = yield* Effect.try({
+        try: () =>
+          resolveWorkflowBehavior({
+            runKind: "investigation",
+            templateId: input.templateId,
+            templateVersion: input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+          }),
+        catch: () =>
+          new UnsupportedWorkflowTemplateError(
+            "investigation",
+            input.templateId ?? "builtin.investigation.dual",
+            input.templateVersion ?? 2,
+          ),
+      });
+      yield* Effect.try({
+        try: () => {
+          assertWorkflowStageProviderSupported({
+            behavior,
+            stage: "investigation",
+            provider: input.investigatorA.provider,
+          });
+          assertWorkflowStageProviderSupported({
+            behavior,
+            stage: "investigation",
+            provider: input.investigatorB.provider,
+          });
+          assertWorkflowStageProviderSupported({
+            behavior,
+            stage: "synthesis",
+            provider: input.synthesis.provider,
+          });
+        },
+        catch: (error) => error as UnsupportedWorkflowProviderError,
+      });
       if (
         input.investigatorA.provider === input.investigatorB.provider &&
         input.investigatorA.model === input.investigatorB.model
@@ -2226,17 +2348,23 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
           defaultTitle: "New investigation",
         });
       const slug = nextWorkflowSlug(existingSlugs, initialTitle);
-      const workflow = buildWorkflowRecord({
+      const workflow = buildInvestigationWorkflowRecord({
         workflowId,
+        projectId: input.projectId,
         title: initialTitle,
         slug,
+        templateId: behavior.templateId,
+        templateVersion: behavior.templateVersion,
+        problemPrompt: input.problemPrompt,
+        branch: input.branch ?? null,
+        selfReviewEnabled: input.selfReviewEnabled ?? false,
         createdAt: now,
         investigationThreadIdA,
         investigationThreadIdB,
         investigatorA: input.investigatorA,
         investigatorB: input.investigatorB,
         synthesis: input.synthesis,
-        request: input,
+        maxCostUsd: input.maxCostUsd,
       });
 
       yield* orchestrationEngine.dispatch({
@@ -2246,6 +2374,8 @@ export const makeInvestigationWorkflowService = Effect.gen(function* () {
         projectId: input.projectId,
         title: initialTitle,
         slug,
+        templateId: behavior.templateId,
+        templateVersion: behavior.templateVersion,
         problemPrompt: input.problemPrompt,
         branch: input.branch ?? null,
         selfReviewEnabled: input.selfReviewEnabled ?? false,

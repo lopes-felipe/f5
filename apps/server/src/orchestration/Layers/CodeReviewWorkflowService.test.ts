@@ -427,7 +427,7 @@ describe("CodeReviewWorkflowService", () => {
     harness = null;
   });
 
-  it("starts reviewer threads in default interaction mode", async () => {
+  it("starts v2 reviewers with unattended read-only turns", async () => {
     harness = await createHarness(makeReadModel({}));
 
     await Effect.runPromise(
@@ -451,11 +451,19 @@ describe("CodeReviewWorkflowService", () => {
     );
 
     expect(reviewCommands).not.toHaveLength(0);
-    expect(reviewCommands.every((command) => command.interactionMode === "default")).toBe(true);
+    expect(
+      reviewCommands
+        .filter((command) => command.type === "thread.create")
+        .every((command) => command.interactionMode === "default"),
+    ).toBe(true);
     const reviewerTurns = reviewCommands.filter(
       (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
         command.type === "thread.turn.start",
     );
+    expect(reviewerTurns.every((command) => command.interactionMode === "plan")).toBe(true);
+    expect(
+      reviewerTurns.every((command) => command.workflowExecutionProfile === "unattended-readonly"),
+    ).toBe(true);
     expect(
       reviewerTurns.find((command) => command.provider === "claudeAgent")?.message.text,
     ).toContain("Prefer dedicated tools over shell commands");

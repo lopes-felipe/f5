@@ -43,6 +43,9 @@ export const InvestigationInvestigator = Schema.Struct({
     Schema.withDecodingDefault(() => null),
   ),
   error: Schema.NullOr(Schema.String),
+  investigationRetryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  crossReviewRetryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
+  selfReviewRetryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });
 export type InvestigationInvestigator = typeof InvestigationInvestigator.Type;
@@ -54,6 +57,7 @@ export const InvestigationSynthesis = Schema.Struct({
   pinnedTurnId: Schema.NullOr(TrimmedNonEmptyString),
   pinnedAssistantMessageId: Schema.NullOr(TrimmedNonEmptyString),
   error: Schema.NullOr(Schema.String),
+  retryCount: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });
 export type InvestigationSynthesis = typeof InvestigationSynthesis.Type;
@@ -63,6 +67,10 @@ export const InvestigationWorkflow = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
+  templateId: Schema.optional(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => "builtin.investigation.dual"),
+  ),
+  templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   problemPrompt: TrimmedNonEmptyString,
   branch: Schema.NullOr(TrimmedNonEmptyString),
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),

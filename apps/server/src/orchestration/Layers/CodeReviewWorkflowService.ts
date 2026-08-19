@@ -8,9 +8,7 @@ import {
   ThreadId,
   type CodeReviewReviewer,
   type CodeReviewWorkflow,
-  type OrchestrationCreateCodeReviewWorkflowInput,
   type OrchestrationEvent,
-  type WorkflowModelSlot,
 } from "@t3tools/contracts";
 import { Effect, Layer, Stream } from "effect";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
@@ -32,11 +30,14 @@ import {
 import { isArchivedWorkflow, isDeletedWorkflow } from "@t3tools/shared/workflowArchive";
 import {
   getFinishedConsumableLatestTurn,
+  hasPriorThreadWork,
   isLatestTurnFinishedAndConsumable,
   latestAssistantFeedback,
   nextWorkflowSlug,
-  slotLabel,
+  workflowArtifactFit,
+  WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT,
 } from "../workflowSharedUtils.ts";
+import { OrchestrationCommandInvariantError } from "../Errors.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "../workflowBudget.ts";
 import {
   resolveAvailableWorkflowModelSlot,
@@ -44,6 +45,16 @@ import {
   withWorkflowModelSelectionGuard,
 } from "../workflowModelSelection.ts";
 import { ProviderRegistry } from "../../provider/Services/ProviderRegistry.ts";
+import {
+  assertWorkflowStageProviderSupported,
+  LATEST_WORKFLOW_TEMPLATE_VERSION,
+  resolveWorkflowBehavior,
+  type UnsupportedWorkflowProviderError,
+  UnsupportedWorkflowTemplateError,
+  workflowTurnBehaviorFields,
+} from "../workflowBehavior.ts";
+import { buildCodeReviewWorkflowRecord } from "../workflowRecordBuilders.ts";
+import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
 
 type CodeReviewWorkflowTitleGenerationWorkItem = {
   readonly workflowId: CodeReviewWorkflowId;
@@ -53,62 +64,7 @@ type CodeReviewWorkflowTitleGenerationWorkItem = {
   readonly defaultTitle: string;
 };
 
-function buildWorkflowRecord(input: {
-  workflowId: CodeReviewWorkflowId;
-  title: CodeReviewWorkflow["title"];
-  slug: string;
-  createdAt: string;
-  reviewThreadIdA: ThreadId;
-  reviewThreadIdB: ThreadId;
-  reviewerA: WorkflowModelSlot;
-  reviewerB: WorkflowModelSlot;
-  consolidation: WorkflowModelSlot;
-  request: OrchestrationCreateCodeReviewWorkflowInput;
-}): CodeReviewWorkflow {
-  return {
-    id: input.workflowId,
-    projectId: input.request.projectId,
-    title: input.title,
-    slug: input.slug,
-    reviewPrompt: input.request.reviewPrompt,
-    branch: input.request.branch ?? null,
-    reviewerA: {
-      label: `Reviewer A (${slotLabel(input.reviewerA)})`,
-      slot: input.reviewerA,
-      threadId: input.reviewThreadIdA,
-      status: "pending",
-      pinnedTurnId: null,
-      pinnedAssistantMessageId: null,
-      error: null,
-      updatedAt: input.createdAt,
-    },
-    reviewerB: {
-      label: `Reviewer B (${slotLabel(input.reviewerB)})`,
-      slot: input.reviewerB,
-      threadId: input.reviewThreadIdB,
-      status: "pending",
-      pinnedTurnId: null,
-      pinnedAssistantMessageId: null,
-      error: null,
-      updatedAt: input.createdAt,
-    },
-    consolidation: {
-      slot: input.consolidation,
-      threadId: null,
-      status: "not_started",
-      pinnedTurnId: null,
-      pinnedAssistantMessageId: null,
-      error: null,
-      updatedAt: input.createdAt,
-    },
-    totalCostUsd: 0,
-    maxCostUsd: input.request.maxCostUsd ?? null,
-    createdAt: input.createdAt,
-    updatedAt: input.createdAt,
-    archivedAt: null,
-    deletedAt: null,
-  };
-}
+const MAX_PROFILE_TIMEOUT_RETRIES = 1;
 
 function updateReviewer(
   workflow: CodeReviewWorkflow,
@@ -408,9 +364,27 @@ function startReviewerTurn(input: {
   workflow: CodeReviewWorkflow;
   reviewer: CodeReviewReviewer;
   createdAt: string;
+  retry: WorkflowRetryContext;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
+  const prompt = buildCodeReviewReviewerPrompt({
+    workflowId: input.workflow.id,
+    reviewPrompt: input.workflow.reviewPrompt,
+    reviewerLabel: input.reviewer.label,
+    lensBranch: input.reviewer.threadId === input.workflow.reviewerA.threadId ? "a" : "b",
+    branch: input.workflow.branch,
+    reviewerSlot: input.reviewer.slot,
+    retry: input.retry,
+  });
+  if (prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT) {
+    return Effect.fail(
+      new OrchestrationCommandInvariantError({
+        commandType: "workflow.turn.start",
+        detail: `Reviewer prompt is ${prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`,
+      }),
+    );
+  }
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -418,18 +392,18 @@ function startReviewerTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: buildCodeReviewReviewerPrompt({
-        reviewPrompt: input.workflow.reviewPrompt,
-        reviewerLabel: input.reviewer.label,
-        branch: input.workflow.branch,
-        provider: input.reviewer.slot.provider,
-      }),
+      text: prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.reviewer.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    ...workflowTurnBehaviorFields({
+      runKind: "codeReview",
+      templateId: input.workflow.templateId,
+      templateVersion: input.workflow.templateVersion,
+      stage: "standalone-review",
+    }),
     createdAt: input.createdAt,
   });
 }
@@ -460,9 +434,40 @@ function startConsolidationTurn(input: {
   workflow: CodeReviewWorkflow;
   reviews: ReadonlyArray<{ readonly label: string; readonly text: string }>;
   createdAt: string;
+  retry: WorkflowRetryContext;
 }) {
   const budgetError = workflowBudgetError(input.workflow);
   if (budgetError) return Effect.fail(budgetError);
+  const prompt = buildCodeReviewConsolidationPrompt({
+    workflowId: input.workflow.id,
+    reviewPrompt: input.workflow.reviewPrompt,
+    reviews: input.reviews,
+    consolidationSlot: input.workflow.consolidation.slot,
+    retry: input.retry,
+  });
+  const behavior = resolveWorkflowBehavior({
+    runKind: "codeReview",
+    templateId: input.workflow.templateId,
+    templateVersion: input.workflow.templateVersion,
+  });
+  const fit = workflowArtifactFit({
+    artifacts: input.reviews.map((review) => review.text),
+    targetSlot: input.workflow.consolidation.slot,
+  });
+  if (
+    prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT ||
+    (behavior.loudAuthoritativeArtifactLimit && !fit.fits)
+  ) {
+    return Effect.fail(
+      new OrchestrationCommandInvariantError({
+        commandType: "workflow.turn.start",
+        detail:
+          prompt.length > WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT
+            ? `Consolidation prompt is ${prompt.length} characters; maximum is ${WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT}.`
+            : `Consolidation reviews require an estimated ${fit.estimatedTokens} tokens; only ${fit.availableTokens} are available.`,
+      }),
+    );
+  }
   return input.orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -470,16 +475,18 @@ function startConsolidationTurn(input: {
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: buildCodeReviewConsolidationPrompt({
-        reviewPrompt: input.workflow.reviewPrompt,
-        reviews: input.reviews,
-      }),
+      text: prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(input.workflow.consolidation.slot),
     titleSourceText: input.workflow.title,
     runtimeMode: DEFAULT_RUNTIME_MODE,
-    interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+    ...workflowTurnBehaviorFields({
+      runKind: "codeReview",
+      templateId: input.workflow.templateId,
+      templateVersion: input.workflow.templateVersion,
+      stage: "consolidation",
+    }),
     createdAt: input.createdAt,
   });
 }
@@ -560,6 +567,7 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
     workflow: CodeReviewWorkflow,
     snapshotAtCall: OrchestrationReadModel | null,
     updatedAt: string,
+    retry?: WorkflowRetryContext,
   ) =>
     Effect.gen(function* () {
       if (
@@ -590,6 +598,10 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           return {
             label: reviewer.label,
             text,
+            ...(reviewer.pinnedTurnId ? { turnId: reviewer.pinnedTurnId } : {}),
+            ...(reviewer.pinnedAssistantMessageId
+              ? { messageId: reviewer.pinnedAssistantMessageId }
+              : {}),
           };
         },
       );
@@ -629,8 +641,11 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           reviews: reviewerInputs.map((review) => ({
             label: review.label,
             text: review.text!,
+            ...(review.turnId ? { turnId: review.turnId } : {}),
+            ...(review.messageId ? { messageId: review.messageId } : {}),
           })),
           createdAt: updatedAt,
+          retry: retry ?? { kind: "none" },
         }),
       );
       if (consolidationOutcome._tag === "Failure") {
@@ -650,14 +665,19 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
       if (pendingReviewers.length === 0) {
         return;
       }
+      const snapshot = yield* orchestrationEngine.getReadModel();
       let nextWorkflow = workflow;
       for (const reviewer of pendingReviewers) {
+        const reviewerThread = snapshot.threads.find((thread) => thread.id === reviewer.threadId);
         const outcome = yield* Effect.exit(
           startReviewerTurn({
             orchestrationEngine,
             workflow,
             reviewer,
             createdAt: updatedAt,
+            retry: hasPriorThreadWork(reviewerThread)
+              ? { kind: "retry", reusedThread: true }
+              : { kind: "none" },
           }),
         );
         if (outcome._tag === "Failure") {
@@ -782,7 +802,10 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           updatedAt,
         );
         yield* upsertWorkflow(orchestrationEngine, retriableWorkflow, retriableWorkflow.updatedAt);
-        yield* maybeStartConsolidation(retriableWorkflow, snapshot, retriableWorkflow.updatedAt);
+        yield* maybeStartConsolidation(retriableWorkflow, snapshot, retriableWorkflow.updatedAt, {
+          kind: "retry",
+          reusedThread: false,
+        });
         return;
       }
 
@@ -915,6 +938,27 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             const match = reviewerMatch(workflow, event.payload.threadId)!;
             const thread = readModel.threads.find((entry) => entry.id === event.payload.threadId);
             if (event.payload.session.status === "error") {
+              if (
+                event.payload.session.lastErrorRetryability === "retryable" &&
+                (match.reviewer.retryCount ?? 0) < MAX_PROFILE_TIMEOUT_RETRIES &&
+                workflowBudgetError(workflow) === null
+              ) {
+                const retryWorkflow = updateReviewer(
+                  workflow,
+                  match.reviewerKey,
+                  {
+                    ...match.reviewer,
+                    status: "pending",
+                    error: null,
+                    retryCount: (match.reviewer.retryCount ?? 0) + 1,
+                    updatedAt: event.occurredAt,
+                  },
+                  event.occurredAt,
+                );
+                yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
+                yield* startPendingReviewers(retryWorkflow, event.occurredAt);
+                return;
+              }
               yield* upsertWorkflow(
                 orchestrationEngine,
                 withReviewerError({
@@ -959,6 +1003,33 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
             yield* upsertWorkflow(orchestrationEngine, consolidationWorkflow, event.occurredAt);
           }
           if (event.payload.session.status === "error") {
+            if (
+              event.payload.session.lastErrorRetryability === "retryable" &&
+              (consolidationWorkflow.consolidation.retryCount ?? 0) < MAX_PROFILE_TIMEOUT_RETRIES &&
+              workflowBudgetError(consolidationWorkflow) === null
+            ) {
+              const retryWorkflow: CodeReviewWorkflow = {
+                ...consolidationWorkflow,
+                consolidation: {
+                  ...consolidationWorkflow.consolidation,
+                  threadId: null,
+                  status: "not_started",
+                  pinnedTurnId: null,
+                  pinnedAssistantMessageId: null,
+                  error: null,
+                  retryCount: (consolidationWorkflow.consolidation.retryCount ?? 0) + 1,
+                  updatedAt: event.occurredAt,
+                },
+                updatedAt: event.occurredAt,
+              };
+              yield* upsertWorkflow(orchestrationEngine, retryWorkflow, event.occurredAt);
+              yield* maybeStartConsolidation(retryWorkflow, readModel, event.occurredAt, {
+                kind: "retry",
+                reusedThread: false,
+                priorFailure: event.payload.session.lastError ?? undefined,
+              });
+              return;
+            }
             yield* upsertWorkflow(
               orchestrationEngine,
               withConsolidationError(
@@ -1029,6 +1100,40 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         reviewerB: resolveAvailableWorkflowModelSlot(rawInput.reviewerB, providers),
         consolidation: resolveAvailableWorkflowModelSlot(rawInput.consolidation, providers),
       };
+      const behavior = yield* Effect.try({
+        try: () =>
+          resolveWorkflowBehavior({
+            runKind: "codeReview",
+            templateId: input.templateId,
+            templateVersion: input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+          }),
+        catch: () =>
+          new UnsupportedWorkflowTemplateError(
+            "codeReview",
+            input.templateId ?? "builtin.code-review.dual",
+            input.templateVersion ?? 2,
+          ),
+      });
+      yield* Effect.try({
+        try: () => {
+          assertWorkflowStageProviderSupported({
+            behavior,
+            stage: "standalone-review",
+            provider: input.reviewerA.provider,
+          });
+          assertWorkflowStageProviderSupported({
+            behavior,
+            stage: "standalone-review",
+            provider: input.reviewerB.provider,
+          });
+          assertWorkflowStageProviderSupported({
+            behavior,
+            stage: "consolidation",
+            provider: input.consolidation.provider,
+          });
+        },
+        catch: (error) => error as UnsupportedWorkflowProviderError,
+      });
       const snapshot = yield* orchestrationEngine.getReadModel();
       const existingSlugs = new Set(
         snapshot.codeReviewWorkflows
@@ -1052,17 +1157,22 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
           defaultTitle: "New code review",
         });
       const slug = nextWorkflowSlug(existingSlugs, initialTitle);
-      const workflow = buildWorkflowRecord({
+      const workflow = buildCodeReviewWorkflowRecord({
         workflowId,
+        projectId: input.projectId,
         title: initialTitle,
         slug,
+        templateId: behavior.templateId,
+        templateVersion: behavior.templateVersion,
+        reviewPrompt: input.reviewPrompt,
+        branch: input.branch ?? null,
         createdAt: now,
         reviewThreadIdA,
         reviewThreadIdB,
         reviewerA: input.reviewerA,
         reviewerB: input.reviewerB,
         consolidation: input.consolidation,
-        request: input,
+        maxCostUsd: input.maxCostUsd,
       });
 
       yield* orchestrationEngine.dispatch({
@@ -1072,6 +1182,8 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         projectId: input.projectId,
         title: initialTitle,
         slug,
+        templateId: behavior.templateId,
+        templateVersion: behavior.templateVersion,
         reviewPrompt: input.reviewPrompt,
         branch: input.branch ?? null,
         reviewerA: input.reviewerA,
@@ -1276,7 +1388,11 @@ export const makeCodeReviewWorkflowService = Effect.gen(function* () {
         nextWorkflow.consolidation.status === "not_started"
       ) {
         const snapshot = yield* orchestrationEngine.getReadModel();
-        yield* maybeStartConsolidation(nextWorkflow, snapshot, updatedAt);
+        yield* maybeStartConsolidation(nextWorkflow, snapshot, updatedAt, {
+          kind: "retry",
+          reusedThread: false,
+          priorFailure: workflow.consolidation.error ?? undefined,
+        });
       }
     });
 

@@ -528,6 +528,29 @@ it.effect("decodes client thread.turn.start title generation fields when provide
   }),
 );
 
+it.effect("rejects server-only workflow execution profiles at the client command boundary", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeClientOrchestrationCommand({
+        type: "thread.turn.start",
+        commandId: "cmd-client-profile-injection",
+        threadId: "thread-1",
+        message: {
+          messageId: "msg-client-profile-injection",
+          role: "user",
+          text: "hello",
+          attachments: [],
+        },
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+        createdAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    assert.strictEqual(result._tag, "Failure");
+  }),
+);
+
 it.effect("decodes thread.turn.start bootstrap metadata when provided", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadTurnStartCommand({

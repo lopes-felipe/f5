@@ -74,6 +74,12 @@ export const WorkflowReview = Schema.Struct({
   status: WorkflowStepStatus,
   error: Schema.NullOr(Schema.String),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  pinnedTurnId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  pinnedAssistantMessageId: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
 });
@@ -91,6 +97,26 @@ export const WorkflowCodeReview = Schema.Struct({
 });
 export type WorkflowCodeReview = typeof WorkflowCodeReview.Type;
 
+export const WorkflowImplementationErrorStage = Schema.Literals([
+  "implementation-start",
+  "implementation",
+  "review-setup",
+  "reviewer",
+  "apply-feedback",
+]);
+export type WorkflowImplementationErrorStage = typeof WorkflowImplementationErrorStage.Type;
+
+export const WorkflowImplementationReviewArtifact = Schema.Struct({
+  sourceThreadId: ThreadId,
+  sourceTurnCount: Schema.Number,
+  patchText: Schema.String,
+  fullPatchHash: TrimmedNonEmptyString,
+  truncated: Schema.Boolean,
+  truncationReason: Schema.NullOr(Schema.String),
+  createdAt: IsoDateTime,
+});
+export type WorkflowImplementationReviewArtifact = typeof WorkflowImplementationReviewArtifact.Type;
+
 export const WorkflowBranch = Schema.Struct({
   branchId: WorkflowBranchId,
   authorSlot: WorkflowModelSlot,
@@ -103,6 +129,12 @@ export const WorkflowBranch = Schema.Struct({
   error: Schema.NullOr(Schema.String),
   errorStage: Schema.NullOr(WorkflowBranchErrorStage).pipe(Schema.withDecodingDefault(() => null)),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  authorFormatRepairAttempts: Schema.optional(Schema.Number).pipe(
+    Schema.withDecodingDefault(() => 0),
+  ),
+  revisionFormatRepairAttempts: Schema.optional(Schema.Number).pipe(
+    Schema.withDecodingDefault(() => 0),
+  ),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
 });
@@ -116,6 +148,7 @@ export const WorkflowMerge = Schema.Struct({
   approvedPlanId: Schema.NullOr(TrimmedNonEmptyString).pipe(Schema.withDecodingDefault(() => null)),
   status: WorkflowMergeStatus,
   error: Schema.NullOr(Schema.String),
+  formatRepairAttempts: Schema.optional(Schema.Number).pipe(Schema.withDecodingDefault(() => 0)),
   updatedAt: IsoDateTime,
 });
 export type WorkflowMerge = typeof WorkflowMerge.Type;
@@ -123,12 +156,27 @@ export type WorkflowMerge = typeof WorkflowMerge.Type;
 export const WorkflowImplementation = Schema.Struct({
   implementationSlot: WorkflowModelSlot,
   threadId: Schema.NullOr(ThreadId),
+  branch: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  worktreePath: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  runtimeMode: Schema.optional(
+    Schema.Literals(["approval-required", "auto-accept-edits", "auto", "full-access"]),
+  ).pipe(Schema.withDecodingDefault(() => "full-access")),
   implementationTurnId: Schema.NullOr(TrimmedNonEmptyString),
   revisionTurnId: Schema.NullOr(TrimmedNonEmptyString),
   codeReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   codeReviews: Schema.Array(WorkflowCodeReview),
   status: WorkflowImplementationStatus,
   error: Schema.NullOr(Schema.String),
+  errorStage: Schema.optional(Schema.NullOr(WorkflowImplementationErrorStage)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
+  reviewArtifact: Schema.optional(Schema.NullOr(WorkflowImplementationReviewArtifact)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
   retryCount: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
   lastRetryAt: Schema.NullOr(IsoDateTime).pipe(Schema.withDecodingDefault(() => null)),
   updatedAt: IsoDateTime,
@@ -140,6 +188,10 @@ export const PlanningWorkflow = Schema.Struct({
   projectId: ProjectId,
   title: TrimmedNonEmptyString,
   slug: TrimmedNonEmptyString,
+  templateId: Schema.optional(TrimmedNonEmptyString).pipe(
+    Schema.withDecodingDefault(() => "builtin.planning.dual"),
+  ),
+  templateVersion: Schema.optional(Schema.Int).pipe(Schema.withDecodingDefault(() => 1)),
   requirementPrompt: TrimmedNonEmptyString,
   plansDirectory: TrimmedNonEmptyString,
   selfReviewEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),

@@ -373,6 +373,21 @@ describe("Codex runtime-mode thread configuration", () => {
       expect(params.resume).toMatchObject(expected);
     },
   );
+
+  it("forces read-only, never-approve configuration for workflow profiles", () => {
+    const params = buildCodexThreadOpenRequestParams({
+      runtimeMode: "full-access",
+      workflowExecutionProfile: "unattended-readonly",
+      resumeThreadId: "provider-thread-1",
+    });
+    const expected = {
+      approvalPolicy: "never",
+      sandbox: "read-only",
+      approvalsReviewer: "auto_review",
+    };
+    expect(params.start).toMatchObject(expected);
+    expect(params.resume).toMatchObject(expected);
+  });
 });
 
 describe("readCodexAccountSnapshot", () => {
@@ -1357,6 +1372,76 @@ describe("skills refresh", () => {
 
     expect(context.skillsLoaded).toBe(false);
     expect(emitEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe("Codex collaboration notification routing", () => {
+  it("ignores notifications emitted for auxiliary provider threads", () => {
+    const manager = new CodexAppServerManager();
+    const context = {
+      session: {
+        provider: "codex",
+        status: "running",
+        threadId: asThreadId("thread-parent"),
+        runtimeMode: "full-access",
+        resumeCursor: { threadId: "provider-thread-parent" },
+        activeTurnId: "turn-parent",
+        createdAt: "2026-08-19T20:00:00.000Z",
+        updatedAt: "2026-08-19T20:00:00.000Z",
+      },
+    };
+    const emitEvent = vi
+      .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
+      .mockImplementation(() => {});
+    const updateSession = vi
+      .spyOn(manager as unknown as { updateSession: (...args: unknown[]) => void }, "updateSession")
+      .mockImplementation(() => {});
+    const handleNotification = (
+      manager as unknown as {
+        handleServerNotification: (
+          context: unknown,
+          notification: { method: string; params?: unknown },
+        ) => void;
+      }
+    ).handleServerNotification.bind(manager);
+
+    handleNotification(context, {
+      method: "turn/started",
+      params: {
+        threadId: "provider-thread-child",
+        turn: { id: "turn-child" },
+      },
+    });
+    handleNotification(context, {
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "provider-thread-child",
+        turnId: "turn-child",
+        delta: "child output",
+      },
+    });
+
+    expect(emitEvent).not.toHaveBeenCalled();
+    expect(updateSession).not.toHaveBeenCalled();
+
+    handleNotification(context, {
+      method: "item/agentMessage/delta",
+      params: {
+        threadId: "provider-thread-parent",
+        turnId: "turn-parent",
+        delta: "parent output",
+      },
+    });
+
+    expect(emitEvent).toHaveBeenCalledOnce();
+    expect(emitEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "item/agentMessage/delta",
+        turnId: "turn-parent",
+        textDelta: "parent output",
+      }),
+    );
+    expect(updateSession).not.toHaveBeenCalled();
   });
 });
 

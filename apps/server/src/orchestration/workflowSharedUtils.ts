@@ -1,4 +1,13 @@
 import type { OrchestrationThread, ProviderKind, WorkflowModelSlot } from "@t3tools/contracts";
+import {
+  estimateModelContextWindowTokens,
+  roughTokenEstimateFromCharacters,
+} from "@t3tools/shared/model";
+
+import { truncateMiddleByCharacters } from "./outputTruncation.ts";
+
+export const WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE = 0.5;
+export const WORKFLOW_RENDERED_MESSAGE_CHAR_LIMIT = 116_000;
 
 export {
   isActiveWorkflow,
@@ -303,9 +312,40 @@ export function truncateWorkflowPromptArtifact(text: string, maxChars = 60_000):
   if (text.length <= maxChars) {
     return text;
   }
-  const marker = "\n\n[... upstream report truncated; middle omitted ...]\n\n";
-  const remaining = Math.max(0, maxChars - marker.length);
-  const headLength = Math.ceil(remaining * 0.6);
-  const tailLength = Math.floor(remaining * 0.4);
-  return `${text.slice(0, headLength)}${marker}${text.slice(text.length - tailLength)}`;
+  const originalBytes = Buffer.byteLength(text, "utf8");
+  const omittedUnits = Math.max(0, text.length - maxChars);
+  const marker = `\n\n[... upstream report truncated; original ${text.length} UTF-16 units / ${originalBytes} UTF-8 bytes; at least ${omittedUnits} UTF-16 units omitted from the middle ...]\n\n`;
+  return truncateMiddleByCharacters(text, {
+    maxCharacters: maxChars,
+    headCharacters: Math.floor(Math.max(0, maxChars - marker.length) * 0.6),
+    marker,
+  }).output;
+}
+
+export function workflowArtifactFit(input: {
+  readonly artifacts: ReadonlyArray<string>;
+  readonly targetSlot: WorkflowModelSlot;
+  readonly thread?: Pick<OrchestrationThread, "estimatedContextTokens"> | null;
+}): { fits: boolean; estimatedTokens: number; availableTokens: number } {
+  const contextWindow = estimateModelContextWindowTokens(
+    input.targetSlot.model,
+    input.targetSlot.provider,
+  );
+  const outputReserve = Math.max(8_000, Math.floor(contextWindow * 0.15));
+  const contextTokens = input.thread?.estimatedContextTokens ?? 0;
+  const availableAfterContext = Math.max(0, contextWindow - outputReserve - contextTokens);
+  const availableTokens = Math.floor(
+    availableAfterContext * WORKFLOW_AUTHORITATIVE_ARTIFACT_TOKEN_SHARE,
+  );
+  const estimatedTokens = input.artifacts.reduce(
+    (total, artifact) => total + roughTokenEstimateFromCharacters(artifact.length),
+    0,
+  );
+  return { fits: estimatedTokens <= availableTokens, estimatedTokens, availableTokens };
+}
+
+export function hasPriorThreadWork(
+  thread: Pick<OrchestrationThread, "latestTurn" | "messages"> | null | undefined,
+): boolean {
+  return Boolean(thread && (thread.latestTurn || thread.messages.length > 0));
 }

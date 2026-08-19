@@ -293,6 +293,7 @@ describe("repairConfirmedCompletedTurn", () => {
     expect(commands[0]?.commandId).toBe(
       CommandId.makeUnsafe("provider:event-repair-completed:thread-session-set"),
     );
+    expect(commands[0]).toMatchObject({ settledTurnId: completedEvent.turnId });
   });
 
   it("refuses a completion whose active turn changed", async () => {

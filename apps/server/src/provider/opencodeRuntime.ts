@@ -1,6 +1,11 @@
 import { pathToFileURL } from "node:url";
 
-import type { ChatAttachment, ProviderApprovalDecision, RuntimeMode } from "@t3tools/contracts";
+import type {
+  ChatAttachment,
+  ProviderApprovalDecision,
+  RuntimeMode,
+  WorkflowTurnExecutionProfile,
+} from "@t3tools/contracts";
 import {
   createOpencodeClient,
   type Agent,
@@ -259,6 +264,22 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
     default:
       return assertNever(runtimeMode, "OpenCode runtime mode");
   }
+}
+
+export function buildOpenCodeWorkflowPermissionRules(
+  profile: WorkflowTurnExecutionProfile,
+): PermissionRuleset {
+  return [
+    { permission: "*", pattern: "*", action: "deny" },
+    { permission: "read", pattern: "*", action: "allow" },
+    {
+      permission: "question",
+      pattern: "*",
+      action: profile === "attended-readonly" ? "allow" : "deny",
+    },
+    { permission: "bash", pattern: "*", action: "deny" },
+    { permission: "edit", pattern: "*", action: "deny" },
+  ];
 }
 
 export function toOpenCodePermissionReply(

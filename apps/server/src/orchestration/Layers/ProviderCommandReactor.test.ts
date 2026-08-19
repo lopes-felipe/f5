@@ -359,6 +359,9 @@ describe("ProviderCommandReactor", () => {
                 ...("projectMemories" in input ? { projectMemories: input.projectMemories } : {}),
                 ...("cwd" in input ? { cwd: input.cwd } : {}),
                 ...("runtimeMode" in input ? { runtimeMode: input.runtimeMode } : {}),
+                ...("workflowExecutionProfile" in input
+                  ? { workflowExecutionProfile: input.workflowExecutionProfile }
+                  : {}),
               },
             }
           : null;
@@ -1386,6 +1389,62 @@ describe("ProviderCommandReactor", () => {
       (harness.startSession.mock.calls[1]?.[1] as { resumeCursor?: unknown } | undefined)
         ?.resumeCursor,
     ).toEqual({ opaque: "cursor-1" });
+  });
+
+  it("drops the Claude resume cursor when the workflow execution profile changes", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-profile-attended"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-profile-attended"),
+          role: "user",
+          text: "author the plan",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: "plan",
+        runtimeMode: "approval-required",
+        workflowExecutionProfile: "attended-readonly",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-profile-unattended"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-profile-unattended"),
+          role: "user",
+          text: "revise the plan",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: "plan",
+        runtimeMode: "approval-required",
+        workflowExecutionProfile: "unattended-readonly",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      provider: "claudeAgent",
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
   });
 
   it("restarts claude sessions when claude model options change", async () => {

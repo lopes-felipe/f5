@@ -86,6 +86,8 @@ import Migration0071 from "./Migrations/071_UsageEventTimeIndex.ts";
 import Migration0072 from "./Migrations/072_PrProviderQualifiedKeys.ts";
 import Migration0073 from "./Migrations/073_UsageFactRecordedAt.ts";
 import Migration0074 from "./Migrations/074_ProviderTerminalEvents.ts";
+import Migration0075 from "./Migrations/075_SessionErrorRetryability.ts";
+import Migration0076 from "./Migrations/076_AuxiliaryTurnProjectionRepair.ts";
 import { Effect } from "effect";
 
 /**
@@ -173,6 +175,8 @@ export const MIGRATIONS = {
   "72_PrProviderQualifiedKeys": Migration0072,
   "73_UsageFactRecordedAt": Migration0073,
   "74_ProviderTerminalEvents": Migration0074,
+  "75_SessionErrorRetryability": Migration0075,
+  "76_AuxiliaryTurnProjectionRepair": Migration0076,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

@@ -14,8 +14,8 @@ import type {
 import { Data, Effect } from "effect";
 
 import { runProcess, type ProcessRunResult } from "../processRunner.ts";
+import { REVIEW_PATCH_LIMIT_BYTES, truncatePatchAtFileBoundary } from "./patchTruncation.ts";
 
-const PATCH_LIMIT_BYTES = 120 * 1024;
 const STDERR_LIMIT_BYTES = 32 * 1024;
 const UNTRACKED_LIMIT_PATHS = 512;
 const UNTRACKED_LIMIT_BYTES = 256 * 1024;
@@ -55,7 +55,7 @@ function runGit(
       timeoutMs: execution.commandTimeoutMs ?? COMMAND_TIMEOUT_MS,
       allowNonZeroExit: true,
       outputMode: "truncate",
-      maxStdoutBytes: options?.stdoutLimit ?? PATCH_LIMIT_BYTES * 2,
+      maxStdoutBytes: options?.stdoutLimit ?? REVIEW_PATCH_LIMIT_BYTES * 2,
       maxStderrBytes: STDERR_LIMIT_BYTES,
       signal,
       env: {
@@ -79,31 +79,6 @@ function commandFailure(result: ProcessRunResult): ReviewPreviewDiffFailure | nu
     return failure("git_failed", result.stderr.trim() || "Git diff generation failed.", true);
   }
   return null;
-}
-
-function truncatePatchAtFileBoundary(
-  patch: string,
-  sourceTruncated: boolean,
-): { patch: string; truncated: boolean; reason: string | null } {
-  if (!sourceTruncated && Buffer.byteLength(patch) <= PATCH_LIMIT_BYTES) {
-    return { patch, truncated: false, reason: null };
-  }
-
-  const starts = [...patch.matchAll(/^diff --git /gm)].map((match) => match.index);
-  let output = starts[0] && starts[0] > 0 ? patch.slice(0, starts[0]) : "";
-  const completeSectionCount = sourceTruncated ? Math.max(0, starts.length - 1) : starts.length;
-  for (let index = 0; index < completeSectionCount; index += 1) {
-    const start = starts[index]!;
-    const end = starts[index + 1] ?? patch.length;
-    const section = patch.slice(start, end);
-    if (Buffer.byteLength(output) + Buffer.byteLength(section) > PATCH_LIMIT_BYTES) break;
-    output += section;
-  }
-  return {
-    patch: output,
-    truncated: true,
-    reason: `Patch was truncated at a file boundary (${PATCH_LIMIT_BYTES} byte limit).`,
-  };
 }
 
 async function canonicalRegisteredPath(value: string): Promise<string> {

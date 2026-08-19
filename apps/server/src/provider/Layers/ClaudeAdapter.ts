@@ -619,6 +619,23 @@ function isReadOnlyToolName(toolName: string): boolean {
   );
 }
 
+function isReadOnlyWorkflowTool(toolName: string): boolean {
+  // This is an authorization boundary, so match only SDK-owned capabilities
+  // whose semantics are known. In particular, do not infer safety from words
+  // such as "read" or "search" in an MCP tool name, and do not attempt to
+  // authorize shell source text by parsing prefixes.
+  switch (toolName.trim().toLowerCase()) {
+    case "read":
+    case "glob":
+    case "grep":
+    case "notebookread":
+    case "todoread":
+      return true;
+    default:
+      return false;
+  }
+}
+
 function classifyRequestType(toolName: string): CanonicalRequestType {
   if (isReadOnlyToolName(toolName)) {
     return "file_read_approval";
@@ -4329,6 +4346,61 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               // Handle AskUserQuestion: surface clarifying questions to the
               // user via the user-input runtime event channel, regardless of
               // runtime mode (plan mode relies on this heavily).
+              if (
+                toolName === "AskUserQuestion" &&
+                input.workflowExecutionProfile === "unattended-readonly"
+              ) {
+                const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
+                const rawQuestions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
+                const questions: Array<UserInputQuestion> = rawQuestions.map(
+                  (question: Record<string, unknown>, index: number) => ({
+                    id:
+                      typeof question.question === "string" && question.question.length > 0
+                        ? question.question
+                        : `q-${index}`,
+                    header:
+                      typeof question.header === "string"
+                        ? question.header
+                        : `Question ${index + 1}`,
+                    question: typeof question.question === "string" ? question.question : "",
+                    options: Array.isArray(question.options)
+                      ? question.options.map((option: Record<string, unknown>) => ({
+                          label: typeof option.label === "string" ? option.label : "",
+                          description:
+                            typeof option.description === "string" ? option.description : "",
+                        }))
+                      : [],
+                    multiSelect:
+                      typeof question.multiSelect === "boolean" ? question.multiSelect : false,
+                  }),
+                );
+                const stamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "user-input.requested",
+                  eventId: stamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: stamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: { questions },
+                  providerRefs: nativeProviderRefs(context, {
+                    providerItemId: callbackOptions.toolUseID,
+                  }),
+                  raw: {
+                    source: "claude.sdk.permission",
+                    method: "canUseTool/AskUserQuestion",
+                    payload: { toolName, input: toolInput },
+                  },
+                });
+                return {
+                  behavior: "deny",
+                  message:
+                    "This unattended workflow stage has no user reply path. Choose and document a conservative default, then complete the stage artifact.",
+                } satisfies PermissionResult;
+              }
               if (toolName === "AskUserQuestion") {
                 return yield* handleAskUserQuestion(context, toolInput, callbackOptions);
               }
@@ -4352,6 +4424,44 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   behavior: "deny",
                   message:
                     "The client captured your proposed plan. Stop here and wait for the user's feedback or implementation request in a later turn.",
+                } satisfies PermissionResult;
+              }
+
+              if (input.workflowExecutionProfile) {
+                if (isReadOnlyWorkflowTool(toolName)) {
+                  return { behavior: "allow", updatedInput: toolInput } satisfies PermissionResult;
+                }
+                const requestId = ApprovalRequestId.makeUnsafe(yield* Random.nextUUIDv4);
+                const requestType = classifyRequestType(toolName);
+                const detail = summarizeToolRequest(toolName, toolInput);
+                const stamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "request.opened",
+                  eventId: stamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: stamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: {
+                    requestType,
+                    detail,
+                    args: { toolName, input: toolInput },
+                  },
+                  providerRefs: nativeProviderRefs(context, {
+                    providerItemId: callbackOptions.toolUseID,
+                  }),
+                  raw: {
+                    source: "claude.sdk.permission",
+                    method: "canUseTool/workflow-profile-denial",
+                    payload: { toolName, input: toolInput },
+                  },
+                });
+                return {
+                  behavior: "deny",
+                  message: `Tool '${toolName}' is not permitted in a read-only workflow stage.`,
                 } satisfies PermissionResult;
               }
 
@@ -4532,7 +4642,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // Runtime mode is the user-visible enforcement boundary. Persisted
         // provider options may tune one-off prompts, but must never override a
         // session into a more permissive SDK mode.
-        const permissionMode = runtimePermissionMode;
+        const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
         const settings = {
           ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
@@ -4580,6 +4690,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ...(input.projectMemories ? { projectMemories: input.projectMemories } : {}),
                 ...(input.cwd ? { cwd: input.cwd } : {}),
                 runtimeMode: input.runtimeMode,
+                ...(input.interactionMode ? { interactionMode: input.interactionMode } : {}),
+                ...(input.workflowExecutionProfile
+                  ? { workflowExecutionProfile: input.workflowExecutionProfile }
+                  : {}),
                 currentDate: new Date().toISOString().slice(0, 10),
                 ...(selectedModel ? { model: selectedModel } : {}),
                 ...(effectiveEffort ? { effort: effectiveEffort } : {}),

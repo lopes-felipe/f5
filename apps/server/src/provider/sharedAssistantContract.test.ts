@@ -172,6 +172,23 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("Never infer or substitute a model identity from training knowledge");
   });
 
+  it("renders attended and unattended workflow host contracts", () => {
+    const attended = buildClaudeAssistantInstructions({
+      interactionMode: "plan",
+      workflowExecutionProfile: "attended-readonly",
+    });
+    expect(attended).toContain("# Workflow Read-Only Host Contract");
+    expect(attended).toContain("Clarifying questions are supported");
+    expect(attended).not.toContain("No user reply path exists");
+
+    const unattended = buildCodexAssistantInstructions({
+      interactionMode: "plan",
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    expect(unattended).toContain("No user reply path exists");
+    expect(unattended).toContain("read-only inspection");
+  });
+
   it("delimits restored thread content as untrusted literal data", () => {
     const text = buildClaudeAssistantInstructions({
       model: "claude-sonnet-4-6",
@@ -254,17 +271,17 @@ describe("sharedAssistantContract", () => {
   });
 
   it("exposes stable version metadata", () => {
-    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v2");
-    expect(CODEX_SUPPLEMENT_VERSION).toBe("v2");
-    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v8");
+    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v3");
+    expect(CODEX_SUPPLEMENT_VERSION).toBe("v3");
+    expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v9");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
-      contractVersion: "v2",
-      providerSupplementVersion: "v2",
+      contractVersion: "v3",
+      providerSupplementVersion: "v3",
       strategy: "codex.developer_instructions",
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
-      contractVersion: "v2",
-      providerSupplementVersion: "v8",
+      contractVersion: "v3",
+      providerSupplementVersion: "v9",
       strategy: "claude.append_system_prompt",
     });
   });

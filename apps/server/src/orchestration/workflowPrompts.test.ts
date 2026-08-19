@@ -1,16 +1,30 @@
 import { describe, expect, it } from "vitest";
-import { PlanningWorkflowId, ProjectId, ThreadId, type PlanningWorkflow } from "@t3tools/contracts";
+import {
+  PlanningWorkflowId,
+  ProjectId,
+  ThreadId,
+  type PlanningWorkflow,
+  type WorkflowModelSlot,
+} from "@t3tools/contracts";
 
 import {
   buildAuthorPrompt,
+  buildAuthorPromptSections,
   buildCodeReviewPrompt,
   buildImplementationPrompt,
   buildMergePrompt,
   buildRevisionPrompt,
   buildReviewPrompt,
+  buildReviewPromptSections,
 } from "./workflowPrompts.ts";
 
 const NOW = "2026-03-27T10:00:00.000Z";
+const CODEX_SLOT: WorkflowModelSlot = { provider: "codex", model: "gpt-5.6-sol" };
+const CLAUDE_SLOT: WorkflowModelSlot = {
+  provider: "claudeAgent",
+  model: "claude-sonnet-4-6",
+};
+const SOURCE = { workflowId: "workflow-1", stage: "author-a", turnId: "turn-1" } as const;
 
 function makeWorkflow(): PlanningWorkflow {
   return {
@@ -23,7 +37,7 @@ function makeWorkflow(): PlanningWorkflow {
     selfReviewEnabled: true,
     branchA: {
       branchId: "a",
-      authorSlot: { provider: "codex", model: "gpt-5-codex" },
+      authorSlot: CODEX_SLOT,
       authorThreadId: ThreadId.makeUnsafe("author-a"),
       planFilePath: null,
       planTurnId: null,
@@ -33,12 +47,14 @@ function makeWorkflow(): PlanningWorkflow {
       error: null,
       errorStage: null,
       retryCount: 0,
+      authorFormatRepairAttempts: 0,
+      revisionFormatRepairAttempts: 0,
       lastRetryAt: null,
       updatedAt: NOW,
     },
     branchB: {
       branchId: "b",
-      authorSlot: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+      authorSlot: CLAUDE_SLOT,
       authorThreadId: ThreadId.makeUnsafe("author-b"),
       planFilePath: null,
       planTurnId: null,
@@ -48,17 +64,20 @@ function makeWorkflow(): PlanningWorkflow {
       error: null,
       errorStage: null,
       retryCount: 0,
+      authorFormatRepairAttempts: 0,
+      revisionFormatRepairAttempts: 0,
       lastRetryAt: null,
       updatedAt: NOW,
     },
     merge: {
-      mergeSlot: { provider: "codex", model: "gpt-5-codex" },
+      mergeSlot: CODEX_SLOT,
       threadId: null,
       outputFilePath: null,
       turnId: null,
       approvedPlanId: null,
       status: "not_started",
       error: null,
+      formatRepairAttempts: 0,
       updatedAt: NOW,
     },
     implementation: null,
@@ -70,93 +89,141 @@ function makeWorkflow(): PlanningWorkflow {
   };
 }
 
+function headings(sections: ReadonlyArray<string | null | undefined>): string[] {
+  return sections
+    .filter((section): section is string => Boolean(section))
+    .map((section) => section.split("\n", 1)[0]!);
+}
+
 describe("workflowPrompts", () => {
-  it("keeps authoring prompts chat-first", () => {
+  it("keeps author sections stable and applies provider-aware capture", () => {
     const workflow = makeWorkflow();
-    const text = buildAuthorPrompt({
+    expect(
+      headings(
+        buildAuthorPromptSections({
+          workflow,
+          branch: workflow.branchA,
+          authorSlot: CODEX_SLOT,
+        }),
+      ),
+    ).toEqual([
+      "## Role",
+      "## Scrutiny Lens A",
+      "## Authoritative Requirement",
+      "## Provider-Specific Guidance",
+      "## Requested Detail Level",
+      "## Planning Method",
+      "## Clarifying Questions",
+      "## Read-Only Constraint",
+      "## Plan Output Contract",
+    ]);
+    const codex = buildAuthorPrompt({
       workflow,
       branch: workflow.branchA,
+      authorSlot: CODEX_SLOT,
     });
-
-    expect(text).toContain("Return the full plan in your assistant response.");
-    expect(text).toContain("Do not create or modify files during this planning phase.");
-  });
-
-  it("adds concrete planning guidance and claude-specific tooling notes when requested", () => {
-    const workflow = makeWorkflow();
-    const text = buildAuthorPrompt({
+    const claude = buildAuthorPrompt({
       workflow,
       branch: workflow.branchB,
-      provider: "claudeAgent",
+      authorSlot: CLAUDE_SLOT,
     });
-
-    expect(text).toContain("Explore the relevant codebase before you write the plan.");
-    expect(text).toContain("Make the plan decision complete");
-    expect(text).toContain("file_path:line_number");
-    expect(text).toContain("Prefer dedicated tools over shell commands");
+    expect(codex).toContain("<proposed_plan>");
+    expect(codex).not.toContain("ExitPlanMode");
+    expect(claude).toContain("ExitPlanMode");
+    expect(claude).not.toContain("<proposed_plan>");
+    expect(codex).not.toContain("Please:");
   });
 
-  it("keeps review prompts generic when no provider is specified", () => {
-    const text = buildReviewPrompt({
-      planMarkdown: "# Plan",
-      reviewKind: "cross",
-    });
-
-    expect(text).toContain("code reuse review");
-    expect(text).toContain("code quality review");
-    expect(text).toContain("efficiency review");
-    expect(text).not.toContain("Prefer dedicated tools over shell commands");
-    expect(text).not.toContain("prefer `rg` and `rg --files`");
-  });
-
-  it("adds implementation verification and codex-specific guidance", () => {
-    const text = buildImplementationPrompt({
-      workflow: makeWorkflow(),
-      mergedPlanMarkdown: "# Plan",
-      provider: "codex",
-    });
-
-    expect(text).toContain("Read the relevant existing code before modifying it");
-    expect(text).toContain("Verify before you claim the work is done");
-    expect(text).toContain("prefer `rg` and `rg --files`");
-  });
-
-  it("strengthens code review prompts with blast radius and security guidance", () => {
-    const text = buildCodeReviewPrompt({
-      mergedPlanMarkdown: "# Plan",
+  it("builds unattended evidence-first plan reviews with requirement propagation", () => {
+    const sections = buildReviewPromptSections({
       requirementPrompt: "Implement the feature",
-      reviewerLabel: "Reviewer A",
-      provider: "claudeAgent",
+      planMarkdown: "# Plan\n## Embedded heading",
+      planSource: SOURCE,
+      reviewKind: "cross",
+      lensBranch: "b",
+      reviewerSlot: CLAUDE_SLOT,
     });
-
+    expect(headings(sections)).toEqual([
+      "## Role",
+      "## Scrutiny Lens B",
+      "## Authoritative Requirement",
+      "## Plan Under Review",
+      "## Provider-Specific Guidance",
+      "## Plan Review Rubric",
+      "## Severity Scale",
+      "## Unattended Stage",
+      "## Read-Only Constraint",
+      "## Review Output Contract",
+    ]);
+    const text = buildReviewPrompt({
+      requirementPrompt: "Implement the feature",
+      planMarkdown: "# Plan",
+      planSource: SOURCE,
+      reviewKind: "cross",
+      lensBranch: "b",
+      reviewerSlot: CLAUDE_SLOT,
+    });
     expect(text).toContain("file_path:line_number");
-    expect(text).toContain("Assess blast radius");
-    expect(text).toContain("OWASP Top 10");
-    expect(text).toContain("extra features");
-    expect(text).toContain("Prefer dedicated tools over shell commands");
+    expect(text).toContain("code reuse review");
+    expect(text).not.toContain("## Clarifying Questions");
+    expect(text).not.toContain("Read all reviews carefully");
   });
 
-  it("keeps revision prompts chat-first", () => {
+  it("requires evidence-backed review dispositions in replacement revisions", () => {
     const text = buildRevisionPrompt({
-      reviews: [{ reviewerLabel: "cross review", reviewMarkdown: "Needs more detail." }],
+      requirementPrompt: "Implement the feature",
+      originalPlan: { markdown: "# Plan", source: SOURCE },
+      reviews: [{ reviewerLabel: "Cross review", reviewMarkdown: "Finding", source: SOURCE }],
+      targetSlot: CODEX_SLOT,
     });
-
-    expect(text).toContain("Return the full revised plan in your assistant response.");
-    expect(text).toContain("Do not create or modify files during this planning phase.");
+    expect(text).toContain("## Review Disposition");
+    expect(text).toContain("A blocker may never be deferred");
+    expect(text).toContain("complete replacement");
   });
 
-  it("does not instruct merge to rely on plan files", () => {
+  it("merges without concatenating incompatible approaches", () => {
     const workflow = makeWorkflow();
     const text = buildMergePrompt({
       workflow,
-      planAMarkdown: "# Plan A",
-      planBMarkdown: "# Plan B",
-      modelA: workflow.branchA.authorSlot,
-      modelB: workflow.branchB.authorSlot,
+      planA: { markdown: "# Plan A", source: SOURCE },
+      planB: { markdown: "# Plan B", source: { ...SOURCE, stage: "author-b" } },
+      modelA: CODEX_SLOT,
+      modelB: CLAUDE_SLOT,
+      mergeSlot: CODEX_SLOT,
     });
+    expect(text).toContain("Do not concatenate plans");
+    expect(text).toContain("one resolution for every genuine conflict");
+    expect(text).toContain("<proposed_plan>");
+  });
 
-    expect(text).toContain("Read both plans and produce a merged plan");
-    expect(text).not.toContain("Read both plan files");
-    expect(text).toContain("Return the merged plan in your assistant response.");
+  it("keeps implementation grounded in repository checks", () => {
+    const text = buildImplementationPrompt({
+      workflow: makeWorkflow(),
+      mergedPlanMarkdown: "# Plan\nUse `Array<Foo>`.",
+      implementationSlot: CODEX_SLOT,
+    });
+    expect(text).toContain("Read the relevant existing code before modifying it");
+    expect(text).toContain("actual commands and results");
+    expect(text).toContain("Do not commit or push unless the user asks");
+    expect(text).toContain("Array<Foo>");
+  });
+
+  it("reviews persisted implementation artifacts with a closed output contract", () => {
+    const text = buildCodeReviewPrompt({
+      mergedPlanMarkdown: "# Plan",
+      requirementPrompt: "Implement the feature",
+      reviewArtifact: {
+        patchText: "diff --git a/a.ts b/a.ts",
+        source: { workflowId: "workflow-1", stage: "implementation", turnId: "turn-2" },
+        fullPatchHash: "abc123",
+      },
+      reviewerLabel: "Reviewer A",
+      lensBranch: "a",
+      reviewerSlot: CLAUDE_SLOT,
+    });
+    expect(text).toContain("file_path:line_number");
+    expect(text).toContain("OWASP Top 10");
+    expect(text).toContain("abc123");
+    expect(text).not.toContain("## Clarifying Questions");
   });
 });

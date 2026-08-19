@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildOpenCodePermissionRules,
+  buildOpenCodeWorkflowPermissionRules,
   OpenCodeRuntime,
   OpenCodeRuntimeLive,
   resolveOpenCodeInvocation,
@@ -26,6 +27,28 @@ describe("buildOpenCodePermissionRules", () => {
     expect(() => buildOpenCodePermissionRules("auto")).toThrow(
       "OpenCode does not support AI-reviewed approvals",
     );
+  });
+
+  it("allows only inspection and attended questions in workflow profiles", () => {
+    const attended = buildOpenCodeWorkflowPermissionRules("attended-readonly");
+    expect(attended).toContainEqual({ permission: "read", pattern: "*", action: "allow" });
+    expect(attended).toContainEqual({ permission: "edit", pattern: "*", action: "deny" });
+    expect(attended).toContainEqual({ permission: "question", pattern: "*", action: "allow" });
+    expect(attended).not.toContainEqual({
+      permission: "webfetch",
+      pattern: "*",
+      action: "allow",
+    });
+    expect(attended).not.toContainEqual({
+      permission: "codesearch",
+      pattern: "*",
+      action: "allow",
+    });
+    expect(buildOpenCodeWorkflowPermissionRules("unattended-readonly")).toContainEqual({
+      permission: "question",
+      pattern: "*",
+      action: "deny",
+    });
   });
 });
 

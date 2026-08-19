@@ -319,6 +319,12 @@ export function makeServerOrchestrationRuntimeLayer() {
   );
   const usageServiceLayer = UsageServiceLive;
   const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
+  const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
+    Layer.provideMerge(ProjectionThreadRepositoryLive),
+    Layer.provideMerge(ProjectionProjectRepositoryLive),
+    Layer.provideMerge(ProjectionCheckpointRepositoryLive),
+    Layer.provideMerge(CheckpointStoreLive),
+  );
   const orchestrationLayer = OrchestrationEngineLive.pipe(
     Layer.provide(projectionSnapshotQueryLayer),
     Layer.provide(OrchestrationProjectionPipelineLive),
@@ -350,6 +356,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(projectionSnapshotQueryLayer),
     Layer.provideMerge(textGenerationLayer),
     Layer.provideMerge(gitCoreLayer),
+    Layer.provideMerge(checkpointDiffQueryLayer),
   );
   const codeReviewWorkflowServiceLayer = CodeReviewWorkflowServiceLive.pipe(
     Layer.provideMerge(orchestrationLayer),

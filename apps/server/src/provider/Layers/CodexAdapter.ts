@@ -21,6 +21,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
+import { extractProposedPlanMarkdown } from "@t3tools/shared/proposedPlan";
 import {
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
@@ -601,14 +602,6 @@ function contentStreamKindFromMethod(
     default:
       return "assistant_text";
   }
-}
-
-const PROPOSED_PLAN_BLOCK_REGEX = /<proposed_plan>\s*([\s\S]*?)\s*<\/proposed_plan>/i;
-
-function extractProposedPlanMarkdown(text: string | undefined): string | undefined {
-  const match = text ? PROPOSED_PLAN_BLOCK_REGEX.exec(text) : null;
-  const planMarkdown = match?.[1]?.trim();
-  return planMarkdown && planMarkdown.length > 0 ? planMarkdown : undefined;
 }
 
 function asRuntimeItemId(itemId: ProviderItemId): RuntimeItemId {

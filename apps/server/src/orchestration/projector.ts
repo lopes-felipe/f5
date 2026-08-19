@@ -1185,6 +1185,10 @@ export function projectEvent(
           thread.session?.tokenUsageSource !== undefined
             ? { tokenUsageSource: thread.session.tokenUsageSource }
             : {}),
+          ...(session.workflowExecutionProfile === undefined &&
+          thread.session?.workflowExecutionProfile !== undefined
+            ? { workflowExecutionProfile: thread.session.workflowExecutionProfile }
+            : {}),
         };
         const terminalState = terminalLatestTurnStateForSessionStatus(nextSession.status);
         const latestTurn =
@@ -1206,8 +1210,14 @@ export function projectEvent(
                   thread.latestTurn?.turnId === nextSession.activeTurnId
                     ? thread.latestTurn.assistantMessageId
                     : null,
+                ...(nextSession.workflowExecutionProfile
+                  ? { workflowExecutionProfile: nextSession.workflowExecutionProfile }
+                  : {}),
               }
-            : thread.latestTurn?.state === "running" && terminalState !== null
+            : thread.latestTurn?.state === "running" &&
+                terminalState !== null &&
+                (payload.settledTurnId === undefined ||
+                  thread.latestTurn.turnId === payload.settledTurnId)
               ? {
                   ...thread.latestTurn,
                   state: terminalState,
@@ -1334,6 +1344,14 @@ export function projectEvent(
                   ? thread.latestTurn.processingQuiescedAt
                   : null,
               assistantMessageId: payload.assistantMessageId,
+              ...((thread.latestTurn?.workflowExecutionProfile ??
+              thread.session?.workflowExecutionProfile)
+                ? {
+                    workflowExecutionProfile:
+                      thread.latestTurn?.workflowExecutionProfile ??
+                      thread.session?.workflowExecutionProfile,
+                  }
+                : {}),
             };
 
         return {

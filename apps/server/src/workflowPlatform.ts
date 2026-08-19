@@ -7,12 +7,19 @@ import {
   type PlanningWorkflow,
   type ThreadId,
   type WorkflowModelSlot,
+  type WorkflowBranchStatus,
+  type WorkflowImplementationStatus,
+  type WorkflowMergeStatus,
+  type WorkflowStepStatus,
+  type ConsolidationStatus,
+  type InvestigationPhaseStatus,
   type WorkflowNodeDefinition,
   type WorkflowPlatformCreateRunInput,
   type WorkflowPlatformCreateRunResult,
   type WorkflowPlatformInspectRunInput,
   type WorkflowRunInspection,
   type WorkflowRunNodeInspection,
+  type WorkflowRunNodeStatus,
   type WorkflowTemplate,
 } from "@t3tools/contracts";
 import { Effect } from "effect";
@@ -20,6 +27,11 @@ import { Effect } from "effect";
 import type { WorkflowServiceShape } from "./orchestration/Services/WorkflowService.ts";
 import type { CodeReviewWorkflowServiceShape } from "./orchestration/Services/CodeReviewWorkflowService.ts";
 import type { InvestigationWorkflowServiceShape } from "./orchestration/Services/InvestigationWorkflowService.ts";
+import {
+  LATEST_WORKFLOW_TEMPLATE_VERSION,
+  resolveWorkflowBehavior,
+  UnsupportedWorkflowTemplateError,
+} from "./orchestration/workflowBehavior.ts";
 
 const retry = { maxAttempts: 2, backoffMs: 5_000 } as const;
 const noRetry = { maxAttempts: 0, backoffMs: 0 } as const;
@@ -47,7 +59,7 @@ function node(
   };
 }
 
-export const BUILTIN_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
+const V1_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
   {
     id: "builtin.planning.dual",
     version: 1,
@@ -327,6 +339,127 @@ export const BUILTIN_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
   },
 ];
 
+function v2Template(template: WorkflowTemplate): WorkflowTemplate {
+  if (template.runKind !== "planning") {
+    return { ...template, version: 2 };
+  }
+  return {
+    ...template,
+    version: 2,
+    description:
+      "Parallel plans, evidence-backed review and synthesis, approval, implementation, dual review, and apply-feedback.",
+    nodes: [
+      ...template.nodes.filter(
+        (candidate) => candidate.id !== "quality-gates" && candidate.id !== "code-review",
+      ),
+      node(
+        "implementation-review-a",
+        "Implementation review A",
+        "review",
+        ["implementation"],
+        ["branchA"],
+        "review",
+        true,
+      ),
+      node(
+        "implementation-review-b",
+        "Implementation review B",
+        "review",
+        ["implementation"],
+        ["branchB"],
+        "review",
+        true,
+      ),
+      node(
+        "apply-feedback",
+        "Apply review feedback",
+        "agent",
+        ["implementation-review-a", "implementation-review-b"],
+        ["implementation"],
+        "code-change",
+        true,
+      ),
+    ],
+  };
+}
+
+export const BUILTIN_WORKFLOW_TEMPLATES: ReadonlyArray<WorkflowTemplate> = [
+  ...V1_WORKFLOW_TEMPLATES,
+  ...V1_WORKFLOW_TEMPLATES.map(v2Template),
+];
+
+export class WorkflowTemplateRegistryError extends Error {
+  override readonly name = "WorkflowTemplateRegistryError";
+}
+
+export function validateWorkflowTemplateRegistry(templates: ReadonlyArray<WorkflowTemplate>): void {
+  const keys = new Set<string>();
+  const observedKinds = new Set<WorkflowNodeDefinition["kind"]>();
+  for (const template of templates) {
+    const key = `${template.id}@${template.version}`;
+    if (keys.has(key)) throw new WorkflowTemplateRegistryError(`Duplicate template '${key}'.`);
+    keys.add(key);
+    const nodeIds = new Set<string>();
+    for (const definition of template.nodes) {
+      if (nodeIds.has(definition.id)) {
+        throw new WorkflowTemplateRegistryError(
+          `Template '${key}' has duplicate node '${definition.id}'.`,
+        );
+      }
+      nodeIds.add(definition.id);
+      observedKinds.add(definition.kind);
+    }
+    for (const definition of template.nodes) {
+      for (const dependency of definition.dependsOn) {
+        if (!nodeIds.has(dependency)) {
+          throw new WorkflowTemplateRegistryError(
+            `Template '${key}' node '${definition.id}' depends on missing node '${dependency}'.`,
+          );
+        }
+      }
+    }
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (nodeId: string): void => {
+      if (visiting.has(nodeId)) {
+        throw new WorkflowTemplateRegistryError(`Template '${key}' contains a dependency cycle.`);
+      }
+      if (visited.has(nodeId)) return;
+      visiting.add(nodeId);
+      const definition = template.nodes.find((candidate) => candidate.id === nodeId)!;
+      for (const dependency of definition.dependsOn) visit(dependency);
+      visiting.delete(nodeId);
+      visited.add(nodeId);
+    };
+    for (const nodeId of nodeIds) visit(nodeId);
+    const matchingBehavior = resolveWorkflowBehavior({
+      runKind: template.runKind,
+      templateId: template.id,
+      templateVersion: template.version,
+    });
+    if (
+      matchingBehavior.templateId !== template.id ||
+      matchingBehavior.templateVersion !== template.version
+    ) {
+      throw new WorkflowTemplateRegistryError(`Template '${key}' has no matching behavior.`);
+    }
+  }
+  for (const kind of [
+    "agent",
+    "parallel-agent",
+    "review",
+    "synthesis",
+    "manual-approval",
+    "project-script",
+  ] as const) {
+    if (!observedKinds.has(kind)) {
+      throw new WorkflowTemplateRegistryError(`No registered template uses node kind '${kind}'.`);
+    }
+  }
+}
+
+validateWorkflowTemplateRegistry(BUILTIN_WORKFLOW_TEMPLATES);
+
 export function createWorkflowPlatformRun(
   input: WorkflowPlatformCreateRunInput,
   services: {
@@ -335,34 +468,77 @@ export function createWorkflowPlatformRun(
     readonly investigation: InvestigationWorkflowServiceShape;
   },
 ): Effect.Effect<WorkflowPlatformCreateRunResult, Error> {
-  switch (input.templateId) {
-    case "builtin.planning.dual":
-      return services.planning
-        .createWorkflow({
+  const runKind =
+    input.templateId === "builtin.planning.dual"
+      ? "planning"
+      : input.templateId === "builtin.code-review.dual"
+        ? "codeReview"
+        : "investigation";
+  return Effect.gen(function* () {
+    const resolvedBehavior = yield* Effect.try({
+      try: () =>
+        resolveWorkflowBehavior({
+          runKind,
+          templateId: input.templateId,
+          templateVersion: input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+        }),
+      catch: (cause): UnsupportedWorkflowTemplateError =>
+        cause instanceof UnsupportedWorkflowTemplateError
+          ? cause
+          : new UnsupportedWorkflowTemplateError(
+              runKind,
+              input.templateId,
+              input.templateVersion ?? LATEST_WORKFLOW_TEMPLATE_VERSION,
+            ),
+    });
+
+    switch (input.templateId) {
+      case "builtin.planning.dual": {
+        const workflowId = yield* services.planning.createWorkflow({
           ...input.input,
+          templateId: resolvedBehavior.templateId,
+          templateVersion: resolvedBehavior.templateVersion,
           ...(input.maxCostUsd ? { maxCostUsd: input.maxCostUsd } : {}),
-        })
-        .pipe(Effect.map((workflowId) => ({ runKind: "planning" as const, workflowId })));
-    case "builtin.code-review.dual":
-      return services.codeReview
-        .createWorkflow({
+        });
+        return { runKind: "planning", workflowId } satisfies WorkflowPlatformCreateRunResult;
+      }
+      case "builtin.code-review.dual": {
+        const workflowId = yield* services.codeReview.createWorkflow({
           ...input.input,
+          templateId: resolvedBehavior.templateId,
+          templateVersion: resolvedBehavior.templateVersion,
           ...(input.maxCostUsd ? { maxCostUsd: input.maxCostUsd } : {}),
-        })
-        .pipe(Effect.map((workflowId) => ({ runKind: "codeReview" as const, workflowId })));
-    case "builtin.investigation.dual":
-      return services.investigation
-        .createWorkflow({
+        });
+        return { runKind: "codeReview", workflowId } satisfies WorkflowPlatformCreateRunResult;
+      }
+      case "builtin.investigation.dual": {
+        const workflowId = yield* services.investigation.createWorkflow({
           ...input.input,
+          templateId: resolvedBehavior.templateId,
+          templateVersion: resolvedBehavior.templateVersion,
           ...(input.maxCostUsd ? { maxCostUsd: input.maxCostUsd } : {}),
-        })
-        .pipe(Effect.map((workflowId) => ({ runKind: "investigation" as const, workflowId })));
-  }
+        });
+        return { runKind: "investigation", workflowId } satisfies WorkflowPlatformCreateRunResult;
+      }
+    }
+  });
 }
+
+type WorkflowDomainNodeStatus =
+  | WorkflowBranchStatus
+  | WorkflowImplementationStatus
+  | WorkflowMergeStatus
+  | WorkflowStepStatus
+  | ConsolidationStatus
+  | InvestigationPhaseStatus
+  | "waiting"
+  | "available"
+  | "skipped"
+  | "blocked";
 
 function inspectionNode(input: {
   readonly definition: WorkflowNodeDefinition;
-  readonly status: string;
+  readonly status: WorkflowDomainNodeStatus;
   readonly threadId: ThreadId | null;
   readonly slot: WorkflowModelSlot | null;
   readonly snapshot: OrchestrationReadModel;
@@ -374,7 +550,7 @@ function inspectionNode(input: {
     nodeId: input.definition.id,
     label: input.definition.label,
     kind: input.definition.kind,
-    status: input.status,
+    status: normalizeNodeStatus(input.status),
     threadId: input.threadId,
     slot: input.slot,
     artifactType: input.definition.artifactType,
@@ -390,9 +566,52 @@ function inspectionNode(input: {
   };
 }
 
+function normalizeNodeStatus(status: WorkflowDomainNodeStatus): WorkflowRunNodeStatus {
+  switch (status) {
+    case "not_started":
+      return "not_started";
+    case "pending":
+    case "pending_start":
+      return "pending";
+    case "manual_review":
+    case "waiting":
+      return "manual_review";
+    case "completed":
+    case "plan_saved":
+    case "reviews_saved":
+    case "revised":
+    case "merged":
+    case "implemented":
+    case "code_reviews_saved":
+    case "available":
+      return "completed";
+    case "skipped":
+      return "skipped";
+    case "error":
+      return "error";
+    case "authoring":
+    case "reviews_requested":
+    case "revising":
+    case "in_progress":
+    case "implementing":
+    case "code_reviews_requested":
+    case "applying_reviews":
+    case "running":
+      return "running";
+    case "blocked":
+      return "blocked";
+    default:
+      throw new WorkflowTemplateRegistryError(`Unmapped workflow node status '${status}'.`);
+  }
+}
+
 function definition(template: WorkflowTemplate, id: string): WorkflowNodeDefinition {
   const value = template.nodes.find((candidate) => candidate.id === id);
-  if (!value) throw new Error(`Workflow template '${template.id}' is missing node '${id}'.`);
+  if (!value) {
+    throw new WorkflowTemplateRegistryError(
+      `Workflow template '${template.id}' is missing node '${id}'.`,
+    );
+  }
   return value;
 }
 
@@ -491,24 +710,62 @@ function planningNodes(
       slot: implementation?.implementationSlot ?? null,
       snapshot,
     }),
-    inspectionNode({
-      definition: definition(template, "quality-gates"),
-      status: implementation?.status === "completed" ? "available" : "not_started",
-      threadId: implementation?.threadId ?? null,
-      slot: null,
-      snapshot,
-    }),
-    inspectionNode({
-      definition: definition(template, "code-review"),
-      status: implementation?.codeReviews.some((entry) => entry.status === "error")
-        ? "error"
-        : implementation?.codeReviews.length
-          ? "running"
-          : "not_started",
-      threadId: implementation?.codeReviews[0]?.threadId ?? null,
-      slot: implementation?.codeReviews[0]?.reviewerSlot ?? null,
-      snapshot,
-    }),
+    ...(template.version === 1
+      ? [
+          inspectionNode({
+            definition: definition(template, "quality-gates"),
+            status: implementation?.status === "completed" ? "available" : "not_started",
+            threadId: implementation?.threadId ?? null,
+            slot: null,
+            snapshot,
+          }),
+          inspectionNode({
+            definition: definition(template, "code-review"),
+            status: implementation?.codeReviews.some((entry) => entry.status === "error")
+              ? "error"
+              : implementation?.codeReviews.length
+                ? "running"
+                : "not_started",
+            threadId: implementation?.codeReviews[0]?.threadId ?? null,
+            slot: implementation?.codeReviews[0]?.reviewerSlot ?? null,
+            snapshot,
+          }),
+        ]
+      : [
+          ...([0, 1] as const).map((index) => {
+            const review = implementation?.codeReviews[index] ?? null;
+            return inspectionNode({
+              definition: definition(template, `implementation-review-${index === 0 ? "a" : "b"}`),
+              status:
+                review?.status ??
+                (implementation?.errorStage === "review-setup"
+                  ? "error"
+                  : implementation?.codeReviewEnabled
+                    ? "not_started"
+                    : "skipped"),
+              threadId: review?.threadId ?? null,
+              slot: review?.reviewerSlot ?? null,
+              snapshot,
+            });
+          }),
+          inspectionNode({
+            definition: definition(template, "apply-feedback"),
+            status:
+              implementation?.status === "applying_reviews"
+                ? "running"
+                : implementation?.status === "error" &&
+                    implementation.errorStage === "apply-feedback"
+                  ? "error"
+                  : implementation?.status === "completed"
+                    ? "completed"
+                    : implementation?.codeReviewEnabled
+                      ? "not_started"
+                      : "skipped",
+            threadId: implementation?.threadId ?? null,
+            slot: implementation?.implementationSlot ?? null,
+            snapshot,
+          }),
+        ]),
   ];
 }
 
@@ -602,9 +859,7 @@ export function inspectWorkflowPlatformRun(
   input: WorkflowPlatformInspectRunInput,
   snapshot: OrchestrationReadModel,
 ): WorkflowRunInspection {
-  const template = BUILTIN_WORKFLOW_TEMPLATES.find(
-    (candidate) => candidate.runKind === input.runKind,
-  )!;
+  let template: WorkflowTemplate;
   const projectFor = (projectId: PlanningWorkflow["projectId"]) => {
     const project = snapshot.projects.find((candidate) => candidate.id === projectId);
     if (!project) throw new Error(`Project '${projectId}' was not found.`);
@@ -617,6 +872,7 @@ export function inspectWorkflowPlatformRun(
     const value = snapshot.planningWorkflows.find((candidate) => candidate.id === input.workflowId);
     if (!value) throw new Error(`Planning workflow '${input.workflowId}' was not found.`);
     workflow = value;
+    template = templateForWorkflow(value, "planning");
     status = planningStatus(value);
     nodes = planningNodes(value, snapshot, template);
   } else if (input.runKind === "codeReview") {
@@ -625,6 +881,7 @@ export function inspectWorkflowPlatformRun(
     );
     if (!value) throw new Error(`Code review workflow '${input.workflowId}' was not found.`);
     workflow = value;
+    template = templateForWorkflow(value, "codeReview");
     status = deriveCodeReviewWorkflowStatus(value);
     nodes = codeReviewNodes(value, snapshot, template);
   } else {
@@ -633,6 +890,7 @@ export function inspectWorkflowPlatformRun(
     );
     if (!value) throw new Error(`Investigation workflow '${input.workflowId}' was not found.`);
     workflow = value;
+    template = templateForWorkflow(value, "investigation");
     status = deriveInvestigationWorkflowStatus(value);
     nodes = investigationNodes(value, snapshot, template);
   }
@@ -655,4 +913,25 @@ export function inspectWorkflowPlatformRun(
     projectMemories: project.memories.filter((memory) => memory.deletedAt === null),
     projectSkills: project.skills ?? [],
   };
+}
+
+function templateForWorkflow(
+  workflow: PlanningWorkflow | CodeReviewWorkflow | InvestigationWorkflow,
+  runKind: "planning" | "codeReview" | "investigation",
+): WorkflowTemplate {
+  const behavior = resolveWorkflowBehavior({
+    runKind,
+    templateId: workflow.templateId,
+    templateVersion: workflow.templateVersion,
+  });
+  const template = BUILTIN_WORKFLOW_TEMPLATES.find(
+    (candidate) =>
+      candidate.id === behavior.templateId && candidate.version === behavior.templateVersion,
+  );
+  if (!template) {
+    throw new WorkflowTemplateRegistryError(
+      `Workflow template registry is missing '${behavior.templateId}' version ${behavior.templateVersion}.`,
+    );
+  }
+  return template;
 }

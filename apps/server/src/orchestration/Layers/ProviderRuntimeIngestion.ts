@@ -42,6 +42,7 @@ import {
   readPersistedLastRuntimeEvent,
   readPersistedLastRuntimeEventAt,
 } from "../../provider/orphanedTurnRecovery.ts";
+import { readPersistedInstructionContext } from "../../provider/runtimePayload.ts";
 import {
   INSTRUCTION_PROFILE_CONFIG_KEY,
   readInstructionProfile,
@@ -99,6 +100,7 @@ const LAST_THINKING_TOKENS_BY_THREAD_TTL = Duration.minutes(120);
 // tokens since the last dispatch (or when it drops, signalling a new thinking
 // block within the same turn).
 const THINKING_TOKENS_DISPATCH_THRESHOLD = 500;
+const PROFILED_WORKFLOW_TURN_TIMEOUT_MS = 30 * 60 * 1_000;
 const MAX_BUFFERED_ASSISTANT_CHARS = 24_000;
 const MAX_BUFFERED_REASONING_CHARS = 200_000;
 const COMMAND_OUTPUT_FLUSH_INTERVAL_MS = 100;
@@ -1998,6 +2000,124 @@ const make = Effect.gen(function* () {
   const projectionTurnRepository = yield* ProjectionTurnRepository;
   const providerTerminalEventRepository = yield* ProviderTerminalEventRepository;
   const threadBackgroundWork = yield* ThreadBackgroundWork;
+  const profiledTurnWatchdogs = new Map<
+    ThreadId,
+    { readonly turnId: TurnId; readonly timer: ReturnType<typeof setTimeout> }
+  >();
+
+  const clearProfiledTurnWatchdog = (threadId: ThreadId, turnId?: TurnId) =>
+    Effect.sync(() => {
+      const existing = profiledTurnWatchdogs.get(threadId);
+      if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return;
+      clearTimeout(existing.timer);
+      profiledTurnWatchdogs.delete(threadId);
+    });
+
+  const readWorkflowExecutionProfileForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
+    const binding = Option.getOrUndefined(yield* providerSessionDirectory.getBinding(threadId));
+    return binding
+      ? readPersistedInstructionContext(binding.runtimePayload)?.workflowExecutionProfile
+      : undefined;
+  });
+
+  const recordProfiledTurnFailure = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly error: string;
+    readonly retryable: boolean;
+    readonly createdAt: string;
+  }) {
+    const readModel = yield* orchestrationEngine.getReadModel();
+    const thread = readModel.threads.find((entry) => entry.id === input.threadId);
+    if (!thread) return;
+
+    yield* providerService
+      .interruptTurn({
+        threadId: input.threadId,
+        turnId: input.turnId,
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("failed to interrupt profiled workflow turn", {
+            threadId: input.threadId,
+            turnId: input.turnId,
+            cause: Cause.pretty(cause),
+          }),
+        ),
+      );
+    yield* orchestrationEngine.dispatch({
+      type: "thread.session.set",
+      commandId: CommandId.makeUnsafe(
+        `workflow-profile-failure:${input.threadId}:${input.turnId}:${crypto.randomUUID()}`,
+      ),
+      threadId: input.threadId,
+      session: {
+        threadId: input.threadId,
+        status: "error",
+        providerName: thread.session?.providerName ?? null,
+        runtimeMode: thread.session?.runtimeMode ?? thread.runtimeMode,
+        ...((thread.latestTurn?.workflowExecutionProfile ??
+        thread.session?.workflowExecutionProfile)
+          ? {
+              workflowExecutionProfile:
+                thread.latestTurn?.workflowExecutionProfile ??
+                thread.session?.workflowExecutionProfile,
+            }
+          : {}),
+        activeTurnId: null,
+        lastError: input.error,
+        lastErrorId: `workflow-profile-failure:${input.turnId}`,
+        lastErrorOccurredAt: input.createdAt,
+        lastErrorRetryability: input.retryable ? "retryable" : "non-retryable",
+        updatedAt: input.createdAt,
+      },
+      createdAt: input.createdAt,
+    });
+  });
+
+  const scheduleProfiledTurnWatchdog = Effect.fnUntraced(function* (input: {
+    readonly threadId: ThreadId;
+    readonly turnId: TurnId;
+    readonly startedAt: string;
+  }) {
+    yield* clearProfiledTurnWatchdog(input.threadId);
+    const elapsedMs = Math.max(0, Date.now() - Date.parse(input.startedAt));
+    const remainingMs = Math.max(0, PROFILED_WORKFLOW_TURN_TIMEOUT_MS - elapsedMs);
+    const timer = setTimeout(() => {
+      profiledTurnWatchdogs.delete(input.threadId);
+      Effect.runFork(
+        Effect.gen(function* () {
+          const readModel = yield* orchestrationEngine.getReadModel();
+          const thread = readModel.threads.find((entry) => entry.id === input.threadId);
+          if (
+            thread?.session?.status !== "running" ||
+            thread.session.activeTurnId !== input.turnId ||
+            thread.latestTurn?.state !== "running" ||
+            thread.latestTurn.turnId !== input.turnId
+          ) {
+            return;
+          }
+          yield* recordProfiledTurnFailure({
+            threadId: input.threadId,
+            turnId: input.turnId,
+            error: "Workflow read-only turn timed out after 30 minutes; this failure is retryable.",
+            retryable: true,
+            createdAt: new Date().toISOString(),
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logError("profiled workflow turn watchdog failed", {
+              threadId: input.threadId,
+              turnId: input.turnId,
+              cause: Cause.pretty(cause),
+            }),
+          ),
+        ),
+      );
+    }, remainingMs);
+    timer.unref?.();
+    profiledTurnWatchdogs.set(input.threadId, { turnId: input.turnId, timer });
+  });
 
   const assistantDeliveryModeRef = yield* Ref.make<AssistantDeliveryMode>(
     DEFAULT_ASSISTANT_DELIVERY_MODE,
@@ -3075,6 +3195,93 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      let workflowExecutionProfile =
+        thread.latestTurn?.workflowExecutionProfile ??
+        thread.session?.workflowExecutionProfile ??
+        undefined;
+      if (
+        workflowExecutionProfile === undefined &&
+        (event.type === "turn.started" ||
+          event.type === "request.opened" ||
+          event.type === "user-input.requested")
+      ) {
+        workflowExecutionProfile = yield* readWorkflowExecutionProfileForThread(thread.id);
+      }
+
+      const profiledTurnId = eventTurnId ?? activeTurnId ?? undefined;
+      if (workflowExecutionProfile && event.type === "request.opened" && profiledTurnId) {
+        if (event.requestId !== undefined) {
+          yield* providerService
+            .respondToRequest({
+              threadId: thread.id,
+              requestId: ApprovalRequestId.makeUnsafe(String(event.requestId)),
+              decision: "decline",
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to decline profiled workflow approval request", {
+                  threadId: thread.id,
+                  turnId: profiledTurnId,
+                  requestId: event.requestId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+        }
+        yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+        yield* recordProfiledTurnFailure({
+          threadId: thread.id,
+          turnId: profiledTurnId,
+          error: `Workflow read-only profile violation: provider requested '${event.payload.requestType}'. The attempted operation was declined and the turn was interrupted.`,
+          retryable: false,
+          createdAt: now,
+        });
+        return;
+      }
+      if (
+        workflowExecutionProfile === "unattended-readonly" &&
+        event.type === "user-input.requested" &&
+        profiledTurnId
+      ) {
+        if (event.requestId !== undefined) {
+          yield* providerService
+            .respondToUserInput({
+              threadId: thread.id,
+              requestId: ApprovalRequestId.makeUnsafe(String(event.requestId)),
+              answers: {},
+            })
+            .pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("failed to settle unattended workflow user input", {
+                  threadId: thread.id,
+                  turnId: profiledTurnId,
+                  requestId: event.requestId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
+        }
+        yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+        yield* recordProfiledTurnFailure({
+          threadId: thread.id,
+          turnId: profiledTurnId,
+          error:
+            "Workflow unattended read-only profile violation: the provider requested user input even though no reply path exists. The turn was interrupted.",
+          retryable: false,
+          createdAt: now,
+        });
+        return;
+      }
+      if (
+        workflowExecutionProfile === "attended-readonly" &&
+        event.type === "user-input.requested" &&
+        profiledTurnId
+      ) {
+        // A pending author/investigator question is intentionally unbounded by
+        // the execution watchdog. The persisted request is itself the user
+        // notification and remains visible until answered.
+        yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+      }
 
       const conflictsWithActiveTurn =
         activeTurnId !== null && eventTurnId !== undefined && !sameId(activeTurnId, eventTurnId);
@@ -3235,11 +3442,15 @@ const make = Effect.gen(function* () {
               type: "thread.session.set",
               commandId: providerCommandId(event, "thread-session-set"),
               threadId: thread.id,
+              ...(event.type === "session.exited" && activeTurnId !== null
+                ? { settledTurnId: activeTurnId }
+                : {}),
               session: {
                 threadId: thread.id,
                 status,
                 providerName: event.provider,
                 runtimeMode: thread.session?.runtimeMode ?? "full-access",
+                ...(workflowExecutionProfile ? { workflowExecutionProfile } : {}),
                 activeTurnId: nextActiveTurnId,
                 lastError,
                 lastErrorId,
@@ -3255,6 +3466,28 @@ const make = Effect.gen(function* () {
             });
           }
         }
+      }
+
+      if (
+        event.type === "turn.started" &&
+        shouldApplyThreadLifecycle &&
+        eventTurnId !== undefined &&
+        workflowExecutionProfile !== undefined
+      ) {
+        yield* scheduleProfiledTurnWatchdog({
+          threadId: thread.id,
+          turnId: eventTurnId,
+          startedAt: now,
+        });
+      }
+      if (
+        (event.type === "turn.completed" || event.type === "turn.aborted") &&
+        eventTurnId !== undefined
+      ) {
+        yield* clearProfiledTurnWatchdog(thread.id, eventTurnId);
+      }
+      if (event.type === "session.exited") {
+        yield* clearProfiledTurnWatchdog(thread.id);
       }
 
       if (
@@ -4250,8 +4483,48 @@ const make = Effect.gen(function* () {
       }
     });
 
+  const reconcileProfiledTurnWatchdogsOnStartup = Effect.gen(function* () {
+    const [readModel, bindings] = yield* Effect.all([
+      orchestrationEngine.getReadModel(),
+      providerSessionDirectory.listBindings(),
+    ]);
+    const bindingsByThreadId = new Map(bindings.map((binding) => [binding.threadId, binding]));
+    for (const thread of readModel.threads) {
+      const turnId = thread.session?.activeTurnId ?? null;
+      if (
+        thread.session?.status !== "running" ||
+        turnId === null ||
+        thread.latestTurn?.state !== "running" ||
+        thread.latestTurn.turnId !== turnId
+      ) {
+        continue;
+      }
+      const binding = bindingsByThreadId.get(thread.id);
+      const profile =
+        thread.latestTurn.workflowExecutionProfile ??
+        thread.session.workflowExecutionProfile ??
+        (binding
+          ? readPersistedInstructionContext(binding.runtimePayload)?.workflowExecutionProfile
+          : undefined);
+      if (!profile) continue;
+      yield* scheduleProfiledTurnWatchdog({
+        threadId: thread.id,
+        turnId,
+        startedAt: thread.latestTurn.startedAt ?? thread.latestTurn.requestedAt,
+      });
+    }
+  });
+
   const start: ProviderRuntimeIngestionShape["start"] = Effect.gen(function* () {
     yield* Effect.addFinalizer(() => Effect.sync(clearAllCommandExecutionFlushTimers));
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        for (const watchdog of profiledTurnWatchdogs.values()) {
+          clearTimeout(watchdog.timer);
+        }
+        profiledTurnWatchdogs.clear();
+      }),
+    );
     yield* Effect.forkScoped(
       Stream.runForEach(providerService.streamEvents, (event) =>
         worker.enqueue({ source: "runtime", event }),
@@ -4283,6 +4556,13 @@ const make = Effect.gen(function* () {
     yield* reconcileOrphanedProviderTurnsOnStartup(pendingReceipts).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("failed to reconcile orphaned provider turns on startup", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
+    yield* reconcileProfiledTurnWatchdogsOnStartup.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to reconcile profiled workflow turn watchdogs", {
           cause: Cause.pretty(cause),
         }),
       ),

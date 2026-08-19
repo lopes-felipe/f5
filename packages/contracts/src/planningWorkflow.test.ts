@@ -87,6 +87,20 @@ describe("planningWorkflow contracts", () => {
     });
     expect(workflow.merge.approvedPlanId).toBeNull();
     expect(workflow.implementation).toBeNull();
+    expect(workflow.templateId).toBe("builtin.planning.dual");
+    expect(workflow.templateVersion).toBe(1);
+  });
+
+  it("round-trips explicit v2 workflow metadata", () => {
+    const now = new Date().toISOString();
+    const decoded = Schema.decodeUnknownSync(PlanningWorkflow)({
+      ...makeWorkflowRecord(now),
+      templateId: "builtin.planning.dual",
+      templateVersion: 2,
+    });
+    const encoded = Schema.encodeSync(PlanningWorkflow)(decoded);
+    expect(encoded.templateVersion).toBe(2);
+    expect(Schema.decodeUnknownSync(PlanningWorkflow)(encoded).templateVersion).toBe(2);
   });
 
   it("defaults selfReviewEnabled to true when omitted", () => {
@@ -134,9 +148,14 @@ describe("planningWorkflow contracts", () => {
     expect(workflow.branchA.retryCount).toBe(0);
     expect(workflow.branchA.lastRetryAt).toBeNull();
     expect(workflow.branchA.errorStage).toBeNull();
+    expect(workflow.branchA.authorFormatRepairAttempts).toBe(0);
+    expect(workflow.branchA.revisionFormatRepairAttempts).toBe(0);
     expect(workflow.branchB.retryCount).toBe(0);
     expect(workflow.branchB.lastRetryAt).toBeNull();
     expect(workflow.branchB.errorStage).toBeNull();
+    expect(workflow.branchB.authorFormatRepairAttempts).toBe(0);
+    expect(workflow.branchB.revisionFormatRepairAttempts).toBe(0);
+    expect(workflow.merge.formatRepairAttempts).toBe(0);
     expect(workflow.totalCostUsd).toBe(0);
   });
 
@@ -203,5 +222,34 @@ describe("planningWorkflow contracts", () => {
     });
 
     expect(workflow.merge.approvedPlanId).toBeNull();
+  });
+
+  it("defaults implementation recovery metadata for older records", () => {
+    const now = new Date().toISOString();
+    const record = makeWorkflowRecord(now);
+    const workflow = Schema.decodeUnknownSync(PlanningWorkflow)({
+      ...record,
+      implementation: {
+        implementationSlot: { provider: "codex", model: "gpt-5-codex" },
+        threadId: ThreadId.makeUnsafe("implementation-thread"),
+        implementationTurnId: null,
+        revisionTurnId: null,
+        codeReviewEnabled: true,
+        codeReviews: [],
+        status: "not_started",
+        error: null,
+        retryCount: 0,
+        lastRetryAt: null,
+        updatedAt: now,
+      },
+    });
+
+    expect(workflow.implementation).toMatchObject({
+      branch: null,
+      worktreePath: null,
+      runtimeMode: "full-access",
+      errorStage: null,
+      reviewArtifact: null,
+    });
   });
 });

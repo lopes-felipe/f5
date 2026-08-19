@@ -1238,6 +1238,149 @@ describe("WorkflowService", () => {
     );
   });
 
+  it("resumes implementation setup from persisted intent after thread creation fails", async () => {
+    const workflow = makeWorkflow({ templateId: "builtin.planning.dual", templateVersion: 2 });
+    let failImplementationThreadCreate = true;
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("merge-thread"),
+            proposedPlans: [
+              {
+                id: "approved-plan",
+                turnId: TurnId.makeUnsafe("merge-turn"),
+                planMarkdown: "# Approved plan",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+      {
+        dispatchDefect: (command) => {
+          if (
+            failImplementationThreadCreate &&
+            command.type === "thread.create" &&
+            command.title === "Implementation"
+          ) {
+            failImplementationThreadCreate = false;
+            return new Error("injected implementation thread creation failure");
+          }
+          return null;
+        },
+      },
+    );
+
+    await expect(
+      Effect.runPromise(
+        harness.service.startImplementation({
+          workflowId: workflow.id,
+          provider: "codex",
+          model: "gpt-5-codex",
+          runtimeMode: "auto-accept-edits",
+        }),
+      ),
+    ).rejects.toThrow("injected implementation thread creation failure");
+
+    const failed = harness.getSnapshot().planningWorkflows[0]?.implementation;
+    expect(failed).toMatchObject({
+      status: "error",
+      errorStage: "implementation-start",
+      runtimeMode: "auto-accept-edits",
+      branch: null,
+      worktreePath: null,
+    });
+    const intendedThreadId = failed?.threadId;
+    expect(intendedThreadId).not.toBeNull();
+
+    await expect(
+      Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id })),
+    ).resolves.toEqual({ status: "started" });
+
+    expect(
+      harness.dispatched.filter(
+        (command) => command.type === "thread.create" && command.threadId === intendedThreadId,
+      ),
+    ).toHaveLength(1);
+    expect(turnStartsForThread(harness.dispatched, intendedThreadId!)).toHaveLength(1);
+    expect(harness.getSnapshot().planningWorkflows[0]?.implementation?.status).toBe("implementing");
+  });
+
+  it("does not duplicate implementation delivery when the post-dispatch upsert fails", async () => {
+    const workflow = makeWorkflow({ templateId: "builtin.planning.dual", templateVersion: 2 });
+    let turnWasDispatched = false;
+    let failPostDispatchUpsert = true;
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: ThreadId.makeUnsafe("merge-thread"),
+            proposedPlans: [
+              {
+                id: "approved-plan",
+                turnId: TurnId.makeUnsafe("merge-turn"),
+                planMarkdown: "# Approved plan",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+          }),
+        ],
+      }),
+      {
+        recheckDelivery: (threadId) =>
+          Effect.succeed(
+            turnWasDispatched
+              ? {
+                  ...makeProviderTurnDelivery(threadId, "pending"),
+                  createdAt: "9999-12-31T23:59:59.999Z",
+                }
+              : null,
+          ),
+        dispatchDefect: (command) => {
+          if (command.type === "thread.turn.start") turnWasDispatched = true;
+          if (
+            turnWasDispatched &&
+            failPostDispatchUpsert &&
+            command.type === "project.workflow.upsert" &&
+            command.workflow.implementation?.status === "implementing"
+          ) {
+            failPostDispatchUpsert = false;
+            return new Error("injected post-dispatch workflow upsert failure");
+          }
+          return null;
+        },
+      },
+    );
+
+    await expect(
+      Effect.runPromise(
+        harness.service.startImplementation({
+          workflowId: workflow.id,
+          provider: "codex",
+          model: "gpt-5-codex",
+        }),
+      ),
+    ).rejects.toThrow("post-dispatch workflow upsert failure");
+
+    const implementationThreadId =
+      harness.getSnapshot().planningWorkflows[0]?.implementation?.threadId;
+    expect(implementationThreadId).not.toBeNull();
+    expect(turnStartsForThread(harness.dispatched, implementationThreadId!)).toHaveLength(1);
+
+    await Effect.runPromise(harness.service.retryWorkflow({ workflowId: workflow.id }));
+    expect(turnStartsForThread(harness.dispatched, implementationThreadId!)).toHaveLength(1);
+    expect(harness.getSnapshot().planningWorkflows[0]?.implementation?.status).toBe("implementing");
+  });
+
   it("allows retryWorkflow for archived workflows", async () => {
     const workflow = makeWorkflow({
       archivedAt: NOW,
@@ -4888,7 +5031,8 @@ describe("WorkflowService", () => {
 
     const mergeTurnStart = harness.dispatched.find(
       (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
-        command.type === "thread.turn.start" && command.message.text.includes("Please merge"),
+        command.type === "thread.turn.start" &&
+        command.message.text.includes("Synthesize two independently authored"),
     );
     expect(mergeTurnStart?.message.text).toContain("Revised plan A");
     expect(mergeTurnStart?.message.text).not.toContain("Stale later plan A");

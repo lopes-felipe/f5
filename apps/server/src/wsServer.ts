@@ -4024,9 +4024,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
     const request = decodeWebSocketRequest(messageText);
     if (Result.isFailure(request)) {
+      const formattedFailure = formatSchemaError(request.failure);
+      const boundedFailure =
+        formattedFailure.length > 190
+          ? `${formattedFailure.slice(0, 187).trimEnd()}...`
+          : formattedFailure;
       return yield* sendWsResponse({
         id: "unknown",
-        error: { message: `Invalid request format: ${formatSchemaError(request.failure)}` },
+        error: { message: `Invalid request format: ${boundedFailure}` },
       });
     }
 

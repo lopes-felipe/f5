@@ -1111,6 +1111,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           last_error AS "lastError",
           last_error_id AS "lastErrorId",
           last_error_occurred_at AS "lastErrorOccurredAt",
+          last_error_retryability AS "lastErrorRetryability",
           estimated_context_tokens AS "estimatedContextTokens",
           model_context_window_tokens AS "modelContextWindowTokens",
           token_usage_source AS "tokenUsageSource",
@@ -2419,6 +2420,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           lastError: row.lastError,
           lastErrorId: row.lastErrorId,
           lastErrorOccurredAt: row.lastErrorOccurredAt,
+          lastErrorRetryability: row.lastErrorRetryability,
           ...(row.estimatedContextTokens !== null
             ? { estimatedContextTokens: row.estimatedContextTokens }
             : {}),

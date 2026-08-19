@@ -5,6 +5,7 @@ import {
   getFinishedConsumableLatestTurn,
   latestAssistantFeedback,
   latestAssistantText,
+  workflowArtifactFit,
 } from "./workflowSharedUtils.ts";
 
 type TestMessage = {
@@ -319,5 +320,42 @@ describe("getFinishedConsumableLatestTurn", () => {
     });
 
     expect(getFinishedConsumableLatestTurn(thread)).toBeNull();
+  });
+});
+
+describe("workflowArtifactFit", () => {
+  const targetSlot = { provider: "codex" as const, model: "unknown-codex-model" };
+
+  it("fits a small authoritative artifact in a fresh thread", () => {
+    expect(workflowArtifactFit({ artifacts: ["x".repeat(20_000)], targetSlot })).toEqual({
+      fits: true,
+      estimatedTokens: 5_000,
+      availableTokens: 85_000,
+    });
+  });
+
+  it("rejects an oversized artifact with stable token accounting", () => {
+    expect(workflowArtifactFit({ artifacts: ["x".repeat(400_000)], targetSlot })).toEqual({
+      fits: false,
+      estimatedTokens: 100_000,
+      availableTokens: 85_000,
+    });
+  });
+
+  it("subtracts existing thread context and treats null as a fresh thread", () => {
+    expect(
+      workflowArtifactFit({
+        artifacts: ["x".repeat(20_000)],
+        targetSlot,
+        thread: { estimatedContextTokens: 165_000 },
+      }).fits,
+    ).toBe(false);
+    expect(
+      workflowArtifactFit({
+        artifacts: ["x".repeat(20_000)],
+        targetSlot,
+        thread: { estimatedContextTokens: null },
+      }).fits,
+    ).toBe(true);
   });
 });

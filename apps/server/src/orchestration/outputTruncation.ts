@@ -23,6 +23,51 @@ export interface MiddleTruncationResult {
   readonly truncated: boolean;
 }
 
+export interface MiddleCharacterTruncationOptions {
+  /** Maximum size, in UTF-16 code units, of the returned string. */
+  readonly maxCharacters: number;
+  /** UTF-16 code units to retain from the start before the marker. */
+  readonly headCharacters: number;
+  /** Marker inserted between the retained head and tail. */
+  readonly marker: string;
+}
+
+function sliceWithoutBrokenSurrogate(input: string, start: number, end?: number): string {
+  let safeStart = start;
+  let safeEnd = end ?? input.length;
+  if (
+    safeStart > 0 &&
+    safeStart < input.length &&
+    /[\uDC00-\uDFFF]/.test(input.charAt(safeStart))
+  ) {
+    safeStart += 1;
+  }
+  if (safeEnd > 0 && safeEnd < input.length && /[\uD800-\uDBFF]/.test(input.charAt(safeEnd - 1))) {
+    safeEnd -= 1;
+  }
+  return input.slice(safeStart, safeEnd);
+}
+
+/** UTF-16-unit counterpart to {@link truncateMiddleByBytes}. */
+export function truncateMiddleByCharacters(
+  output: string,
+  options: MiddleCharacterTruncationOptions,
+): MiddleTruncationResult {
+  if (output.length <= options.maxCharacters) {
+    return { output, truncated: false };
+  }
+  const markerCharacters = options.marker.length;
+  const headCharacters = Math.min(
+    options.headCharacters,
+    Math.max(0, options.maxCharacters - markerCharacters),
+  );
+  const tailCharacters = Math.max(0, options.maxCharacters - headCharacters - markerCharacters);
+  const head = sliceWithoutBrokenSurrogate(output, 0, headCharacters);
+  const tail =
+    tailCharacters > 0 ? sliceWithoutBrokenSurrogate(output, output.length - tailCharacters) : "";
+  return { output: `${head}${options.marker}${tail}`, truncated: true };
+}
+
 /**
  * Truncates `output` to at most `maxBytes` UTF-8 bytes by keeping `headBytes`
  * from the start, the marker, and the remaining tail budget from the end.

@@ -374,6 +374,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         lastError: null,
         lastErrorId: null,
         lastErrorOccurredAt: null,
+        lastErrorRetryability: null,
         estimatedContextTokens: 1200,
         tokenUsageSource: "estimated",
         updatedAt: "2026-04-01T09:00:07.000Z",

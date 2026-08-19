@@ -206,6 +206,7 @@ export interface CodexAppServerStartSessionInput {
   readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
   readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly runtimeMode: RuntimeMode;
+  readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
 }
 
 export interface CodexThreadTurnSnapshot {
@@ -262,6 +263,19 @@ function asString(value: unknown): string | undefined {
 
 function asArray(value: unknown): unknown[] | undefined {
   return Array.isArray(value) ? value : undefined;
+}
+
+function readNotificationProviderThreadId(params: unknown): string | undefined {
+  const payload = asObject(params);
+  const thread = asObject(payload?.thread);
+  const message = asObject(payload?.msg);
+  return normalizeProviderThreadId(
+    asString(payload?.threadId) ??
+      asString(payload?.thread_id) ??
+      asString(thread?.id) ??
+      asString(message?.threadId) ??
+      asString(message?.thread_id),
+  );
 }
 
 function readCodexPermissionProfile(value: unknown): Record<string, unknown> | undefined {
@@ -462,13 +476,20 @@ export function buildCodexThreadOpenRequestParams(input: {
   readonly model?: string;
   readonly resumeThreadId?: string;
   readonly runtimeMode: RuntimeMode;
+  readonly workflowExecutionProfile?: ProviderSessionStartInput["workflowExecutionProfile"];
   readonly serviceTier?: string;
 }) {
   const overrides = {
     model: input.model ?? null,
     ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
     cwd: input.cwd ?? null,
-    ...mapCodexRuntimeMode(input.runtimeMode),
+    ...(input.workflowExecutionProfile
+      ? {
+          approvalPolicy: "never" as const,
+          sandbox: "read-only" as const,
+          approvalsReviewer: "auto_review" as const,
+        }
+      : mapCodexRuntimeMode(input.runtimeMode)),
   };
   return {
     start: {
@@ -622,6 +643,9 @@ function buildCodexInstructionContext(
     ...(input.turnCount !== undefined ? { turnCount: input.turnCount } : {}),
     cwd: resolvedCwd,
     runtimeMode: input.runtimeMode,
+    ...(input.workflowExecutionProfile
+      ? { workflowExecutionProfile: input.workflowExecutionProfile }
+      : {}),
     ...(input.projectMemories ? { projectMemories: input.projectMemories } : {}),
     ...(input.priorWorkSummary ? { priorWorkSummary: input.priorWorkSummary } : {}),
     ...(input.preservedTranscriptBefore
@@ -880,6 +904,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(resumeThreadId ? { resumeThreadId } : {}),
         runtimeMode: input.runtimeMode ?? DEFAULT_RUNTIME_MODE,
+        ...(input.workflowExecutionProfile
+          ? { workflowExecutionProfile: input.workflowExecutionProfile }
+          : {}),
       });
       this.emitLifecycleEvent(
         context,
@@ -1661,6 +1688,26 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       void Effect.logDebug("ignoring uncorrelated Codex server request resolution", {
         threadId: context.session.threadId,
         nativeRequestId,
+      }).pipe(this.runPromise);
+      return;
+    }
+
+    const primaryProviderThreadId = readResumeCursorThreadId(context.session.resumeCursor);
+    const notificationProviderThreadId = readNotificationProviderThreadId(notification.params);
+    if (
+      primaryProviderThreadId !== undefined &&
+      notificationProviderThreadId !== undefined &&
+      notificationProviderThreadId !== primaryProviderThreadId
+    ) {
+      // Codex collaboration agents share the parent app-server process, so
+      // their notifications arrive on the same stdout stream. They are not
+      // turns in the parent F5 thread and must not mutate its lifecycle or
+      // conversation projections.
+      void Effect.logDebug("ignoring Codex notification for auxiliary provider thread", {
+        threadId: context.session.threadId,
+        primaryProviderThreadId,
+        notificationProviderThreadId,
+        method: notification.method,
       }).pipe(this.runPromise);
       return;
     }

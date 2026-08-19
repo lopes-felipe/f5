@@ -1186,6 +1186,88 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("passes plan interaction mode into the appended assistant contract", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        interactionMode: "plan",
+        runtimeMode: "full-access",
+      });
+
+      const createQueryInput = harness.getLastCreateQueryInput();
+      assert.ok(createQueryInput);
+      const append = (
+        createQueryInput.options as ClaudeQueryOptions & {
+          readonly appendSystemPrompt?: { readonly append?: string };
+        }
+      ).appendSystemPrompt?.append;
+      assert.equal(append?.includes("# Plan Mode (Conversational)"), true);
+      assert.equal(append?.includes("# Collaboration Mode: Default"), false);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("enforces unattended workflow tools synchronously without approval waits", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.permissionMode, "plan");
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) return;
+      const options = {
+        signal: new AbortController().signal,
+        toolUseID: "workflow-tool",
+        requestId: "workflow-request",
+      };
+      const read = yield* Effect.promise(() =>
+        canUseTool("Read", { file_path: "src/a.ts" }, options),
+      );
+      const shellProbes = yield* Effect.all(
+        [
+          "rg -n workflow src",
+          "cat README.md & touch pwned",
+          "git status & rm -rf ./src",
+          "cat `touch pwned`",
+        ].map((command) => Effect.promise(() => canUseTool("Bash", { command }, options))),
+      );
+      const misleadingMcp = yield* Effect.promise(() =>
+        canUseTool("mcp__example__search_and_delete", { path: "src" }, options),
+      );
+      const webSearch = yield* Effect.promise(() =>
+        canUseTool("WebSearch", { query: "secret" }, options),
+      );
+      const question = yield* Effect.promise(() =>
+        canUseTool("AskUserQuestion", { questions: [] }, options),
+      );
+      assert.equal(read?.behavior, "allow");
+      assert.equal(
+        shellProbes.every((result) => result?.behavior === "deny"),
+        true,
+      );
+      assert.equal(misleadingMcp?.behavior, "deny");
+      assert.equal(webSearch?.behavior, "deny");
+      assert.equal(question?.behavior, "deny");
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("emits instruction profile metadata on the adapter session.configured event", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

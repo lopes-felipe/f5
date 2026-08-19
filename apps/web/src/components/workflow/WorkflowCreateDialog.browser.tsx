@@ -30,6 +30,7 @@ import { useStore } from "../../store";
 import { workspaceIdentityForRoot, writeFileTreeDragMention } from "../fileTreeDragMention";
 
 const nativeApiMocks = vi.hoisted(() => ({
+  createRun: vi.fn<(input: WorkflowPlatformCreateRunInput) => void>(),
   createWorkflow: vi.fn<
     (input: OrchestrationCreateWorkflowInput) => Promise<{ workflowId: string }>
   >(async () => ({ workflowId: "workflow-1" })),
@@ -50,6 +51,7 @@ const nativeApiMocks = vi.hoisted(() => ({
 
 vi.mock("../../nativeApi", () => {
   const createRun = async (input: WorkflowPlatformCreateRunInput) => {
+    nativeApiMocks.createRun(input);
     const request = {
       ...input.input,
       ...(input.maxCostUsd ? { maxCostUsd: input.maxCostUsd } : {}),
@@ -385,6 +387,7 @@ describe("WorkflowCreateDialog", () => {
     document.body.innerHTML = "";
     Reflect.deleteProperty(window, "desktopBridge");
     nativeApiMocks.createWorkflow.mockClear();
+    nativeApiMocks.createRun.mockClear();
     nativeApiMocks.createCodeReviewWorkflow.mockClear();
     nativeApiMocks.createInvestigationWorkflow.mockClear();
     nativeApiMocks.getConfig.mockClear();
@@ -973,6 +976,7 @@ describe("WorkflowCreateDialog", () => {
         titleGenerationModel: "custom/thread-title-model",
       });
       expect("title" in payload).toBe(false);
+      expect(nativeApiMocks.createRun.mock.calls[0]?.[0]).not.toHaveProperty("templateVersion");
       await vi.waitFor(() => {
         expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
       });
@@ -1027,6 +1031,7 @@ describe("WorkflowCreateDialog", () => {
         titleGenerationModel: "custom/thread-title-model",
       });
       expect("title" in payload).toBe(false);
+      expect(nativeApiMocks.createRun.mock.calls[0]?.[0]).not.toHaveProperty("templateVersion");
       await vi.waitFor(() => {
         expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-2");
       });
@@ -1080,6 +1085,7 @@ describe("WorkflowCreateDialog", () => {
         titleGenerationModel: "custom/thread-title-model",
         selfReviewEnabled: true,
       });
+      expect(nativeApiMocks.createRun.mock.calls[0]?.[0]).not.toHaveProperty("templateVersion");
       await vi.waitFor(() => {
         expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-3");
       });

@@ -403,6 +403,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             lastError: "provider disconnected",
             lastErrorId: "error-1",
             lastErrorOccurredAt: "2026-02-24T00:00:06.500Z",
+            lastErrorRetryability: null,
             estimatedContextTokens: 42_000,
             tokenUsageSource: "provider",
             updatedAt: "2026-02-24T00:00:07.000Z",

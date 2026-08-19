@@ -75,19 +75,19 @@ export type WorkflowPlatformListTemplatesResult = typeof WorkflowPlatformListTem
 export const WorkflowPlatformCreateRunInput = Schema.Union([
   Schema.Struct({
     templateId: Schema.Literal("builtin.planning.dual"),
-    templateVersion: Schema.Literal(1),
+    templateVersion: Schema.optional(Schema.Literals([1, 2])),
     maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
     input: OrchestrationCreateWorkflowInput,
   }),
   Schema.Struct({
     templateId: Schema.Literal("builtin.code-review.dual"),
-    templateVersion: Schema.Literal(1),
+    templateVersion: Schema.optional(Schema.Literals([1, 2])),
     maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
     input: OrchestrationCreateCodeReviewWorkflowInput,
   }),
   Schema.Struct({
     templateId: Schema.Literal("builtin.investigation.dual"),
-    templateVersion: Schema.Literal(1),
+    templateVersion: Schema.optional(Schema.Literals([1, 2])),
     maxCostUsd: Schema.optional(Schema.Number.check(Schema.isGreaterThan(0))),
     input: OrchestrationCreateInvestigationWorkflowInput,
   }),
@@ -106,11 +106,23 @@ export const WorkflowPlatformInspectRunInput = Schema.Struct({
 });
 export type WorkflowPlatformInspectRunInput = typeof WorkflowPlatformInspectRunInput.Type;
 
+export const WorkflowRunNodeStatus = Schema.Literals([
+  "not_started",
+  "pending",
+  "running",
+  "blocked",
+  "manual_review",
+  "completed",
+  "skipped",
+  "error",
+]);
+export type WorkflowRunNodeStatus = typeof WorkflowRunNodeStatus.Type;
+
 export const WorkflowRunNodeInspection = Schema.Struct({
   nodeId: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   kind: WorkflowNodeKind,
-  status: TrimmedNonEmptyString,
+  status: WorkflowRunNodeStatus,
   threadId: Schema.NullOr(ThreadId),
   slot: Schema.NullOr(WorkflowModelSlot),
   artifactType: Schema.NullOr(Schema.String),

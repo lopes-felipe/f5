@@ -59,6 +59,9 @@ export interface ProviderTurnDeliveryRepositoryShape {
   readonly getByCommandId: (
     commandId: CommandId,
   ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
+  readonly getLatestByThread: (
+    threadId: ThreadId,
+  ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;
   readonly getUnresolvedByThread: (
     threadId: ThreadId,
   ) => Effect.Effect<ProviderTurnDelivery | null, ProviderTurnDeliveryRepositoryError>;

@@ -894,7 +894,6 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       if (workflowType === "planning") {
         const result = await api.workflowPlatform.createRun({
           templateId: "builtin.planning.dual",
-          templateVersion: 1,
           ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
           input: {
             projectId: props.projectId,
@@ -911,7 +910,6 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
       } else if (workflowType === "codeReview") {
         const result = await api.workflowPlatform.createRun({
           templateId: "builtin.code-review.dual",
-          templateVersion: 1,
           ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
           input: {
             projectId: props.projectId,
@@ -933,7 +931,6 @@ export function WorkflowCreateDialog(props: WorkflowCreateDialogProps) {
         }
         const result = await api.workflowPlatform.createRun({
           templateId: "builtin.investigation.dual",
-          templateVersion: 1,
           ...(parsedMaxCostUsd !== null ? { maxCostUsd: parsedMaxCostUsd } : {}),
           input: {
             projectId: props.projectId,

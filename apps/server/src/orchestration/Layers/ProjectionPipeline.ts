@@ -1613,6 +1613,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             lastError: event.payload.session.lastError,
             lastErrorId: event.payload.session.lastErrorId ?? null,
             lastErrorOccurredAt: event.payload.session.lastErrorOccurredAt ?? null,
+            lastErrorRetryability: event.payload.session.lastErrorRetryability ?? null,
             estimatedContextTokens:
               event.payload.session.estimatedContextTokens ??
               (Option.isSome(existingRow) ? existingRow.value.estimatedContextTokens : null),
@@ -1794,9 +1795,15 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             return;
           }
 
-          const runningTurn = yield* projectionTurnRepository.getLatestRunningByThreadId({
-            threadId: event.payload.threadId,
-          });
+          const runningTurn =
+            event.payload.settledTurnId !== undefined
+              ? yield* projectionTurnRepository.getByTurnId({
+                  threadId: event.payload.threadId,
+                  turnId: event.payload.settledTurnId,
+                })
+              : yield* projectionTurnRepository.getLatestRunningByThreadId({
+                  threadId: event.payload.threadId,
+                });
           if (Option.isNone(runningTurn)) {
             // A provider can report ready while the durable delivery is still pending.
             // Only explicit failure/stop proves that the pending barrier is terminal.
@@ -1805,6 +1812,9 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
                 threadId: event.payload.threadId,
               });
             }
+            return;
+          }
+          if (runningTurn.value.state !== "running") {
             return;
           }
           yield* projectionTurnRepository.deletePendingTurnStartByThreadId({
@@ -1856,6 +1866,20 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
               startedAt: existingTurn.value.startedAt ?? event.payload.createdAt,
               requestedAt: existingTurn.value.requestedAt ?? event.payload.createdAt,
             });
+            return;
+          }
+          const session = yield* projectionThreadSessionRepository.getByThreadId({
+            threadId: event.payload.threadId,
+          });
+          if (
+            Option.isNone(session) ||
+            session.value.activeTurnId === null ||
+            session.value.activeTurnId !== event.payload.turnId
+          ) {
+            // Assistant messages from Codex collaboration agents can share the
+            // parent app-server stream. A message must never create a durable
+            // turn unless that exact turn was accepted as the thread's active
+            // lifecycle turn.
             return;
           }
           yield* projectionTurnRepository.upsertByTurnId({

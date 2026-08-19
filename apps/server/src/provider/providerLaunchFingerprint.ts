@@ -5,6 +5,7 @@ import type {
   ProviderKind,
   ProviderStartOptions,
   RuntimeMode,
+  WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
 import { getProviderEnvironmentKey } from "@t3tools/shared/providerOptions";
 
@@ -16,9 +17,10 @@ export function computeProviderLaunchFingerprint(input: {
   readonly providerOptions?: ProviderStartOptions;
   readonly instanceLaunchIdentity?: string;
   readonly mcpEffectiveConfigVersion?: string | null;
+  readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile;
 }): string {
   const identity = JSON.stringify({
-    version: 1,
+    version: 2,
     provider: input.provider,
     providerInstanceId: input.providerInstanceId,
     runtimeMode: input.runtimeMode,
@@ -26,6 +28,7 @@ export function computeProviderLaunchFingerprint(input: {
     environmentKey: getProviderEnvironmentKey(input.provider, input.providerOptions),
     instanceLaunchIdentity: input.instanceLaunchIdentity ?? "",
     mcpEffectiveConfigVersion: input.mcpEffectiveConfigVersion ?? "",
+    workflowExecutionProfile: input.workflowExecutionProfile ?? "",
   });
   return createHash("sha256").update(identity).digest("hex");
 }

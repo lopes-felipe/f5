@@ -2558,6 +2558,37 @@ it.effect(
         },
       });
 
+      const auxiliaryTurnId = TurnId.makeUnsafe("turn-terminal-session-auxiliary");
+      yield* appendAndProject({
+        type: "thread.message-sent",
+        eventId: EventId.makeUnsafe("evt-terminal-session-auxiliary"),
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        occurredAt: messageAt,
+        commandId: CommandId.makeUnsafe("cmd-terminal-session-auxiliary"),
+        causationEventId: null,
+        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-auxiliary"),
+        metadata: {},
+        payload: {
+          threadId,
+          messageId: MessageId.makeUnsafe("assistant-terminal-session-auxiliary"),
+          role: "assistant",
+          text: "auxiliary output",
+          turnId: auxiliaryTurnId,
+          streaming: false,
+          createdAt: messageAt,
+          updatedAt: messageAt,
+        },
+      });
+
+      const auxiliaryTurnRows = yield* sql<{ readonly count: number }>`
+        SELECT count(*) AS count
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${auxiliaryTurnId}
+      `;
+      assert.deepEqual(auxiliaryTurnRows, [{ count: 0 }]);
+
       yield* appendAndProject({
         type: "thread.message-sent",
         eventId: EventId.makeUnsafe("evt-terminal-session-5"),
@@ -2601,6 +2632,27 @@ it.effect(
         },
       ]);
 
+      // Simulate a legacy projection-only row created by an auxiliary Codex
+      // collaboration message. Exact terminal settlement must not select it
+      // merely because it started after the real parent turn.
+      yield* sql`
+        INSERT INTO projection_turns (
+          thread_id,
+          turn_id,
+          state,
+          requested_at,
+          started_at,
+          checkpoint_files_json
+        ) VALUES (
+          ${threadId},
+          ${auxiliaryTurnId},
+          'running',
+          ${messageAt},
+          ${messageAt},
+          '[]'
+        )
+      `;
+
       yield* appendAndProject({
         type: "thread.session-set",
         eventId: EventId.makeUnsafe("evt-terminal-session-6"),
@@ -2613,6 +2665,7 @@ it.effect(
         metadata: {},
         payload: {
           threadId,
+          settledTurnId: turnId,
           session: {
             threadId,
             status: "ready",
@@ -2645,6 +2698,17 @@ it.effect(
           assistantMessageId: "assistant-terminal-session",
         },
       ]);
+
+      const legacyAuxiliaryRows = yield* sql<{
+        readonly state: string;
+        readonly completedAt: string | null;
+      }>`
+        SELECT state, completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${auxiliaryTurnId}
+      `;
+      assert.deepEqual(legacyAuxiliaryRows, [{ state: "running", completedAt: null }]);
     }).pipe((effect) => runWithProjectionPipelineLayer(process.cwd(), effect)),
 );
 

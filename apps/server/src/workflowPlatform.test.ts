@@ -12,6 +12,7 @@ import type { CodeReviewWorkflowServiceShape } from "./orchestration/Services/Co
 import type { InvestigationWorkflowServiceShape } from "./orchestration/Services/InvestigationWorkflowService.ts";
 import type { WorkflowServiceShape } from "./orchestration/Services/WorkflowService.ts";
 import { applyWorkflowTurnCost, workflowBudgetError } from "./orchestration/workflowBudget.ts";
+import { UnsupportedWorkflowTemplateError } from "./orchestration/workflowBehavior.ts";
 import { BUILTIN_WORKFLOW_TEMPLATES, createWorkflowPlatformRun } from "./workflowPlatform.ts";
 
 const slot = { provider: "codex" as const, model: "gpt-5.1-codex" };
@@ -43,6 +44,9 @@ describe("workflow platform", () => {
       ["builtin.planning.dual", 1],
       ["builtin.code-review.dual", 1],
       ["builtin.investigation.dual", 1],
+      ["builtin.planning.dual", 2],
+      ["builtin.code-review.dual", 2],
+      ["builtin.investigation.dual", 2],
     ]);
     const kinds = new Set(
       BUILTIN_WORKFLOW_TEMPLATES.flatMap((template) => template.nodes.map((node) => node.kind)),
@@ -78,10 +82,42 @@ describe("workflow platform", () => {
     expect(result).toEqual({ runKind: "codeReview", workflowId: "code-review-run" });
     expect(configured.calls.codeReview).toHaveBeenCalledWith({
       ...input.input,
+      templateId: input.templateId,
+      templateVersion: input.templateVersion,
       maxCostUsd: 1.25,
     });
     expect(configured.calls.planning).not.toHaveBeenCalled();
     expect(configured.calls.investigation).not.toHaveBeenCalled();
+  });
+
+  it("resolves omitted versions to latest and fails unsupported versions through Effect", async () => {
+    const configured = services();
+    const input = {
+      templateId: "builtin.code-review.dual",
+      input: {
+        projectId,
+        reviewPrompt: "Review reconnect behavior",
+        reviewerA: slot,
+        reviewerB: { provider: "claudeAgent" as const, model: "claude-sonnet-4-6" },
+        consolidation: slot,
+      },
+    } satisfies WorkflowPlatformCreateRunInput;
+
+    await Effect.runPromise(createWorkflowPlatformRun(input, configured.value));
+    expect(configured.calls.codeReview).toHaveBeenCalledWith({
+      ...input.input,
+      templateId: input.templateId,
+      templateVersion: 2,
+    });
+
+    await expect(
+      Effect.runPromise(
+        createWorkflowPlatformRun(
+          { ...input, templateVersion: 99 } as unknown as WorkflowPlatformCreateRunInput,
+          configured.value,
+        ),
+      ),
+    ).rejects.toBeInstanceOf(UnsupportedWorkflowTemplateError);
   });
 
   it("accumulates cost deterministically and blocks the next node at the limit", () => {

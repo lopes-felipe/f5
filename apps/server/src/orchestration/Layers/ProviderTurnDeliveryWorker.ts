@@ -279,9 +279,11 @@ const make = Effect.gen(function* () {
 
   const recheck: ProviderTurnDeliveryWorkerShape["recheck"] = (threadId) =>
     Effect.gen(function* () {
-      const delivery = yield* repository.getUnresolvedByThread(threadId);
+      const delivery = yield* repository.getLatestByThread(threadId);
       if (!delivery) return null;
       if (
+        delivery.state === "accepted" ||
+        delivery.state === "abandoned" ||
         delivery.state === "pending" ||
         (delivery.state === "rejected" && delivery.certainty === "not_sent")
       ) {

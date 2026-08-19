@@ -264,6 +264,10 @@ function toInstructionContextFromSessionStartInput(
     ...(input.sessionNotes !== undefined ? { sessionNotes: input.sessionNotes } : {}),
     ...(input.projectMemories !== undefined ? { projectMemories: input.projectMemories } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
+    ...(input.workflowExecutionProfile !== undefined
+      ? { workflowExecutionProfile: input.workflowExecutionProfile }
+      : {}),
     runtimeMode: input.runtimeMode,
   };
 }
@@ -574,6 +578,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             ? { instanceLaunchIdentity: instanceInfo.launchIdentity }
             : {}),
           mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+          ...(recoveredInstructionContext?.workflowExecutionProfile
+            ? {
+                workflowExecutionProfile: recoveredInstructionContext.workflowExecutionProfile,
+              }
+            : {}),
         });
         const hasActiveSession = yield* adapter.hasSession(input.binding.threadId);
         if (hasActiveSession && input.binding.launchFingerprint === launchFingerprint) {
@@ -941,6 +950,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               ? { instanceLaunchIdentity: instanceInfo.launchIdentity }
               : {}),
             mcpEffectiveConfigVersion: resolvedProjectMcp?.effectiveVersion ?? null,
+            ...(input.workflowExecutionProfile
+              ? { workflowExecutionProfile: input.workflowExecutionProfile }
+              : {}),
           });
           yield* stopStaleSessionsForThread({
             threadId,

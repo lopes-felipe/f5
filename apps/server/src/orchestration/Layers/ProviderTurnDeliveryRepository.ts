@@ -112,6 +112,28 @@ const make = Effect.gen(function* () {
         Effect.mapError(mapError("ProviderTurnDelivery.getUnresolvedByThread")),
       );
 
+  const getLatestByThread: ProviderTurnDeliveryRepositoryShape["getLatestByThread"] = (threadId) =>
+    sql
+      .unsafe<Record<string, unknown>>(
+        `SELECT delivery_id AS "deliveryId", thread_id AS "threadId",
+             command_id AS "commandId", message_id AS "messageId", state,
+             provider_turn_id AS "providerTurnId", attempt,
+             pre_send_turn_ids_json AS "preSendTurnIds", event_json AS "event",
+             error_code AS "errorCode", error_detail AS "errorDetail", certainty,
+             not_before AS "notBefore", created_at AS "createdAt", updated_at AS "updatedAt",
+             outcome_projected_at AS "outcomeProjectedAt"
+           FROM provider_turn_deliveries
+           WHERE thread_id = ?
+           ORDER BY created_at DESC, rowid DESC
+           LIMIT 1`,
+        [threadId],
+      )
+      .pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(DbRow))),
+        Effect.map((rows) => rows[0] ?? null),
+        Effect.mapError(mapError("ProviderTurnDelivery.getLatestByThread")),
+      );
+
   const claim: ProviderTurnDeliveryRepositoryShape["claim"] = (deliveryId, preSendTurnIds) =>
     Effect.gen(function* () {
       const now = new Date().toISOString();
@@ -206,6 +228,7 @@ const make = Effect.gen(function* () {
     listSending,
     listUnprojectedTerminal,
     getByCommandId,
+    getLatestByThread,
     getUnresolvedByThread,
     claim,
     markAccepted,

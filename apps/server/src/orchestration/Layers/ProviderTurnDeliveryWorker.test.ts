@@ -61,6 +61,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
       : [],
   ),
   getByCommandId: () => Effect.succeed(state),
+  getLatestByThread: () => Effect.succeed(state),
   getUnresolvedByThread: () => Effect.succeed(state),
   claim: (_deliveryId: CommandId, preSendTurnIds: ReadonlyArray<never>) =>
     Effect.sync(() => {
