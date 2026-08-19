@@ -19,7 +19,7 @@ import {
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
-import { Effect, Exit, Layer, ManagedRuntime, PubSub, Scope, Stream } from "effect";
+import { Effect, Exit, Layer, ManagedRuntime, Option, PubSub, Scope, Stream } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
 
@@ -124,6 +124,10 @@ function createProviderServiceHarness() {
     runtimeSessions.push(session);
   };
 
+  const clearSessions = (): void => {
+    runtimeSessions.splice(0, runtimeSessions.length);
+  };
+
   const emit = (event: LegacyProviderRuntimeEvent): void => {
     Effect.runSync(PubSub.publish(runtimeEventPubSub, event as unknown as ProviderRuntimeEvent));
   };
@@ -139,6 +143,7 @@ function createProviderServiceHarness() {
     service,
     emit,
     setSession,
+    clearSessions,
     setThreadSnapshot,
   };
 }
@@ -314,6 +319,15 @@ describe("ProviderRuntimeIngestion", () => {
       createdAt,
       updatedAt: createdAt,
     });
+    await Effect.runPromise(
+      providerSessionDirectory.upsert({
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        provider: "codex",
+        status: "running",
+        runtimeMode: "approval-required",
+        runtimePayload: { activeTurnId: null },
+      }),
+    );
     const startIngestion = async () => {
       await Effect.runPromise(ingestion.start.pipe(Scope.provide(scope!)));
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -327,6 +341,7 @@ describe("ProviderRuntimeIngestion", () => {
       emit: provider.emit,
       providerSessionDirectory,
       setProviderSession: provider.setSession,
+      clearProviderSessions: provider.clearSessions,
       setThreadSnapshot: provider.setThreadSnapshot,
       threadCommandExecutionQuery,
       threadFileChangeQuery,
@@ -383,6 +398,17 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.session?.lastErrorId).toBe("evt-turn-completed");
     expect(thread.session?.lastErrorOccurredAt).toBeTruthy();
     expect(thread.session?.turnCostUsd).toBe(0.42);
+    const binding = await Effect.runPromise(
+      harness.providerSessionDirectory.getBinding(asThreadId("thread-1")),
+    );
+    expect(Option.isSome(binding)).toBe(true);
+    if (Option.isSome(binding)) {
+      expect(binding.value.status).toBe("running");
+      expect(binding.value.runtimePayload).toMatchObject({
+        activeTurnId: null,
+        lastRuntimeEvent: "provider.turn.completed",
+      });
+    }
   });
 
   it("settles a completed turn but retains its receipt when usage persistence fails", async () => {
@@ -606,6 +632,152 @@ describe("ProviderRuntimeIngestion", () => {
         count: 1,
       },
     ]);
+  });
+
+  it("settles an orphaned active turn from a stopped provider generation on startup", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    const turnId = asTurnId("turn-orphaned-at-shutdown");
+    const startedAt = new Date(Date.now() - 1_000).toISOString();
+    const shutdownAt = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-orphaned-turn-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: startedAt,
+        },
+        createdAt: startedAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        status: "stopped",
+        runtimeMode: "approval-required",
+        runtimePayload: {
+          // This mirrors the stale payload written by bundles predating the
+          // shutdown-preservation fix.
+          activeTurnId: null,
+          lastRuntimeEvent: "provider.stopAll",
+          lastRuntimeEventAt: shutdownAt,
+        },
+      }),
+    );
+    harness.clearProviderSessions();
+
+    await harness.startIngestion();
+    await harness.drain();
+
+    const settled = await waitForThread(
+      harness.engine,
+      (thread) => thread.session?.status === "stopped" && thread.session.activeTurnId === null,
+    );
+    expect(settled.latestTurn).toMatchObject({
+      turnId,
+      state: "interrupted",
+    });
+    expect(await Effect.runPromise(harness.providerTerminalEventRepository.listPending)).toEqual(
+      [],
+    );
+    const receipts = await Effect.runPromise(
+      harness.sql<{
+        readonly eventId: string;
+        readonly eventType: string;
+        readonly turnId: string;
+      }>`
+        SELECT
+          event_id AS "eventId",
+          event_type AS "eventType",
+          turn_id AS "turnId"
+        FROM provider_terminal_events
+        WHERE thread_id = ${threadId}
+      `,
+    );
+    expect(receipts).toEqual([
+      {
+        eventId: `provider:orphaned-session-exit:${threadId}:${turnId}`,
+        eventType: "session.exited",
+        turnId,
+      },
+    ]);
+    const binding = await Effect.runPromise(harness.providerSessionDirectory.getBinding(threadId));
+    expect(Option.isSome(binding)).toBe(true);
+    if (Option.isSome(binding)) {
+      expect(binding.value.runtimePayload).toMatchObject({
+        activeTurnId: null,
+        lastRuntimeEvent: "provider.session.exited",
+      });
+    }
+  });
+
+  it("does not settle a projected turn when persisted orphan evidence points to another turn", async () => {
+    const harness = await createHarness({ startIngestion: false });
+    const threadId = asThreadId("thread-1");
+    const projectedTurnId = asTurnId("turn-projected-running");
+    const now = new Date().toISOString();
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-mismatched-orphan-running"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: projectedTurnId,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId,
+        provider: "codex",
+        status: "running",
+        runtimeMode: "approval-required",
+        runtimePayload: {
+          activeTurnId: "turn-different-provider-generation",
+          lastRuntimeEvent: "provider.sendTurn",
+          lastRuntimeEventAt: now,
+        },
+      }),
+    );
+    harness.clearProviderSessions();
+
+    await harness.startIngestion();
+    await harness.drain();
+
+    const thread = await waitForThread(
+      harness.engine,
+      (candidate) => candidate.session?.activeTurnId === projectedTurnId,
+    );
+    expect(thread.session?.status).toBe("running");
+    expect(thread.latestTurn?.state).toBe("running");
+    expect(await Effect.runPromise(harness.providerTerminalEventRepository.listPending)).toEqual(
+      [],
+    );
+    const receipts = await Effect.runPromise(
+      harness.sql<{ readonly count: number }>`
+        SELECT count(*) AS count
+        FROM provider_terminal_events
+        WHERE thread_id = ${threadId}
+      `,
+    );
+    expect(receipts).toEqual([{ count: 0 }]);
   });
 
   it("extracts provider-reported context tokens from non-Claude turn.completed usage", async () => {

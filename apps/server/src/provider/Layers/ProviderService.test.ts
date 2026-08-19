@@ -475,25 +475,39 @@ it.effect(
         Layer.provide(AnalyticsService.layerTest),
       );
 
-      const startedSession = yield* Effect.gen(function* () {
+      const started = yield* Effect.gen(function* () {
         const provider = yield* ProviderService;
         const threadId = asThreadId("thread-1");
-        return yield* provider.startSession(threadId, {
+        const session = yield* provider.startSession(threadId, {
           provider: "codex",
           cwd: "/tmp/project",
           runtimeMode: "full-access",
           threadId,
         });
+        const turn = yield* provider.sendTurn({
+          threadId,
+          input: "work across restart",
+          attachments: [],
+        });
+        return { session, turn };
       }).pipe(Effect.provide(firstProviderLayer));
 
       const persistedAfterStopAll = yield* Effect.gen(function* () {
         const repository = yield* ProviderSessionRuntimeRepository;
-        return yield* repository.getByThreadId({ threadId: startedSession.threadId });
+        return yield* repository.getByThreadId({ threadId: started.session.threadId });
       }).pipe(Effect.provide(runtimeRepositoryLayer));
       assert.equal(Option.isSome(persistedAfterStopAll), true);
       if (Option.isSome(persistedAfterStopAll)) {
         assert.equal(persistedAfterStopAll.value.status, "stopped");
-        assert.deepEqual(persistedAfterStopAll.value.resumeCursor, startedSession.resumeCursor);
+        assert.deepEqual(persistedAfterStopAll.value.resumeCursor, started.session.resumeCursor);
+        const payload = persistedAfterStopAll.value.runtimePayload;
+        assert.equal(payload !== null && typeof payload === "object", true);
+        if (payload !== null && typeof payload === "object" && !Array.isArray(payload)) {
+          const payloadRecord = payload as Record<string, unknown>;
+          assert.equal(payloadRecord.activeTurnId, started.turn.turnId);
+          assert.equal(payloadRecord.lastRuntimeEvent, "provider.stopAll");
+          assert.equal(typeof payloadRecord.lastRuntimeEventAt, "string");
+        }
       }
 
       const secondCodex = makeFakeCodexAdapter();
@@ -515,7 +529,7 @@ it.effect(
       yield* Effect.gen(function* () {
         const provider = yield* ProviderService;
         yield* provider.rollbackConversation({
-          threadId: startedSession.threadId,
+          threadId: started.session.threadId,
           numTurns: 1,
         });
       }).pipe(Effect.provide(secondProviderLayer));
@@ -532,8 +546,8 @@ it.effect(
         };
         assert.equal(startPayload.provider, "codex");
         assert.equal(startPayload.cwd, "/tmp/project");
-        assert.deepEqual(startPayload.resumeCursor, startedSession.resumeCursor);
-        assert.equal(startPayload.threadId, startedSession.threadId);
+        assert.deepEqual(startPayload.resumeCursor, started.session.resumeCursor);
+        assert.equal(startPayload.threadId, started.session.threadId);
       }
       assert.equal(secondCodex.rollbackThread.mock.calls.length, 1);
       const rollbackCall = secondCodex.rollbackThread.mock.calls[0];
@@ -890,7 +904,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
             activeTurnId?: string | null;
             lastRuntimeEvent?: string | null;
           };
-          assert.equal(runtimePayload.activeTurnId, null);
+          assert.equal(runtimePayload.activeTurnId, `turn-${String(session.threadId)}`);
           assert.equal(runtimePayload.lastRuntimeEvent, "provider.stopSession");
         }
       }
@@ -934,6 +948,67 @@ routing.layer("ProviderServiceLive routing", (it) => {
       assert.equal(routing.codex.startSession.mock.calls.length, 1);
       assert.equal(routing.codex.readThread.mock.calls.length, 1);
       assert.deepEqual(routing.codex.readThread.mock.calls[0], [session.threadId]);
+    }),
+  );
+
+  it.effect("settles a persisted active turn before recovering its provider session", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-orphaned-recovery");
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const turn = yield* provider.sendTurn({
+        threadId,
+        input: "keep working",
+        attachments: [],
+      });
+
+      const terminalEventFiber = yield* Stream.runHead(
+        Stream.filter(provider.streamEvents, (event) => event.type === "session.exited"),
+      ).pipe(Effect.forkChild);
+      yield* sleep(20);
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+
+      yield* provider.readThread(threadId);
+      const terminalEvent = Option.getOrUndefined(yield* Fiber.join(terminalEventFiber));
+
+      assert.equal(routing.codex.startSession.mock.calls.length, 1);
+      assert.equal(terminalEvent?.type, "session.exited");
+      assert.equal(terminalEvent?.threadId, threadId);
+      assert.equal(terminalEvent?.turnId, turn.turnId);
+      assert.equal(
+        terminalEvent?.eventId,
+        `provider:orphaned-session-exit:${threadId}:${turn.turnId}`,
+      );
+      assert.equal(session.resumeCursor !== undefined, true);
+    }),
+  );
+
+  it.effect("refuses mismatched recovery evidence and forwards the explicit interrupt", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-orphaned-mismatch");
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* provider.sendTurn({
+        threadId,
+        input: "keep working",
+        attachments: [],
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.interruptTurn.mockClear();
+
+      const projectedTurnId = asTurnId("turn-from-projection");
+      yield* provider.interruptTurn({ threadId, turnId: projectedTurnId });
+
+      assert.deepEqual(routing.codex.interruptTurn.mock.calls, [[threadId, projectedTurnId]]);
     }),
   );
 

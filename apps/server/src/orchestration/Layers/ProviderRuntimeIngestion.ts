@@ -36,6 +36,13 @@ import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { isSyntheticClaudeThreadId, isUuid } from "../../provider/claudeResumeState.ts";
 import { ProviderSessionDirectory } from "../../provider/Services/ProviderSessionDirectory.ts";
 import {
+  makeOrphanedSessionExitedEvent,
+  PROVIDER_SHUTDOWN_RUNTIME_EVENTS,
+  readPersistedActiveTurnId,
+  readPersistedLastRuntimeEvent,
+  readPersistedLastRuntimeEventAt,
+} from "../../provider/orphanedTurnRecovery.ts";
+import {
   INSTRUCTION_PROFILE_CONFIG_KEY,
   readInstructionProfile,
 } from "../../provider/sharedAssistantContract.ts";
@@ -49,6 +56,7 @@ import { ProviderTerminalEventRepositoryLive } from "../../persistence/Layers/Pr
 import {
   isProviderTerminalRuntimeEvent,
   ProviderTerminalEventRepository,
+  type ProviderTerminalEventReceipt,
 } from "../../persistence/Services/ProviderTerminalEvents.ts";
 import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { isGitRepository } from "../../git/isRepo.ts";
@@ -147,6 +155,10 @@ type RuntimeIngestionInput =
   | {
       source: "command-output-flush-all";
     };
+
+function terminalReceiptKey(threadId: ThreadId, turnId: TurnId | null): string {
+  return `${threadId}:${turnId ?? "*"}`;
+}
 
 interface OpenCommandExecutionState {
   readonly id: OrchestrationCommandExecutionId;
@@ -2912,6 +2924,44 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const syncProviderBindingLifecycle = Effect.fnUntraced(function* (
+    event: Extract<
+      ProviderRuntimeEvent,
+      { type: "turn.started" | "turn.completed" | "session.exited" }
+    >,
+  ) {
+    const bindingOption = yield* providerSessionDirectory.getBinding(event.threadId);
+    const binding = Option.getOrUndefined(bindingOption);
+    if (!binding || binding.provider !== event.provider) {
+      return;
+    }
+    if (
+      event.providerInstanceId !== undefined &&
+      binding.providerInstanceId !== undefined &&
+      binding.providerInstanceId !== null &&
+      binding.providerInstanceId !== event.providerInstanceId
+    ) {
+      return;
+    }
+
+    const activeTurnId = event.type === "turn.started" ? toTurnId(event.turnId) : null;
+    if (event.type === "turn.started" && activeTurnId === undefined) {
+      return;
+    }
+
+    yield* providerSessionDirectory.upsert({
+      threadId: event.threadId,
+      provider: binding.provider,
+      providerInstanceId: binding.providerInstanceId ?? event.providerInstanceId ?? null,
+      status: event.type === "session.exited" ? "stopped" : "running",
+      runtimePayload: {
+        activeTurnId,
+        lastRuntimeEvent: `provider.${event.type}`,
+        lastRuntimeEventAt: event.createdAt,
+      },
+    });
+  });
+
   const processRuntimeEvent = (event: ProviderRuntimeEvent) =>
     Effect.gen(function* () {
       const readModel = yield* orchestrationEngine.getReadModel();
@@ -3205,6 +3255,26 @@ const make = Effect.gen(function* () {
             });
           }
         }
+      }
+
+      if (
+        event.type === "turn.started" ||
+        event.type === "turn.completed" ||
+        event.type === "session.exited"
+      ) {
+        const syncBinding = syncProviderBindingLifecycle(event);
+        yield* isProviderTerminalRuntimeEvent(event)
+          ? syncBinding
+          : syncBinding.pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("provider runtime ingestion failed to sync provider binding", {
+                  eventId: event.eventId,
+                  eventType: event.type,
+                  threadId: event.threadId,
+                  cause: Cause.pretty(cause),
+                }),
+              ),
+            );
       }
 
       // Lifecycle settlement happens first, but the durable receipt remains
@@ -4098,6 +4168,88 @@ const make = Effect.gen(function* () {
     void Effect.runPromise(worker.enqueue({ source: "command-output-flush", commandExecutionId }));
   };
 
+  const reconcileOrphanedProviderTurnsOnStartup = (
+    pendingReceipts: ReadonlyArray<ProviderTerminalEventReceipt>,
+  ) =>
+    Effect.gen(function* () {
+      const [readModel, bindings, liveSessions] = yield* Effect.all([
+        orchestrationEngine.getReadModel(),
+        providerSessionDirectory.listBindings(),
+        providerService.listSessions(),
+      ]);
+      const bindingsByThreadId = new Map(bindings.map((binding) => [binding.threadId, binding]));
+      const liveThreadIds = new Set(liveSessions.map((session) => session.threadId));
+      const pendingTerminalKeys = new Set(
+        pendingReceipts.map((receipt) => terminalReceiptKey(receipt.threadId, receipt.turnId)),
+      );
+      let recoveredCount = 0;
+
+      for (const thread of readModel.threads) {
+        const activeTurnId = thread.session?.activeTurnId;
+        if (
+          thread.session?.status !== "running" ||
+          activeTurnId === null ||
+          activeTurnId === undefined ||
+          thread.latestTurn?.state !== "running" ||
+          thread.latestTurn.turnId !== activeTurnId ||
+          liveThreadIds.has(thread.id)
+        ) {
+          continue;
+        }
+
+        const binding = bindingsByThreadId.get(thread.id);
+        if (!binding || binding.provider !== thread.session.providerName) {
+          continue;
+        }
+        if (
+          pendingTerminalKeys.has(terminalReceiptKey(thread.id, activeTurnId)) ||
+          pendingTerminalKeys.has(terminalReceiptKey(thread.id, null))
+        ) {
+          continue;
+        }
+
+        const persistedActiveTurnId = readPersistedActiveTurnId(binding.runtimePayload);
+        const exactPersistedMatch = persistedActiveTurnId === activeTurnId;
+        const lastRuntimeEvent = readPersistedLastRuntimeEvent(binding.runtimePayload);
+        const shutdownAt = readPersistedLastRuntimeEventAt(binding.runtimePayload);
+        const turnBeganAt =
+          thread.latestTurn.startedAt ?? thread.latestTurn.requestedAt ?? thread.updatedAt;
+        const shutdownAfterTurnStarted =
+          shutdownAt !== undefined &&
+          Number.isFinite(Date.parse(shutdownAt)) &&
+          Date.parse(shutdownAt) >= Date.parse(turnBeganAt);
+        // Older bundles cleared activeTurnId during provider.stopAll. Accept
+        // that one narrowly-scoped legacy marker so the deployment of this fix
+        // can repair turns orphaned by the shutdown that installs it.
+        const legacyShutdownMatch =
+          persistedActiveTurnId === undefined &&
+          binding.status === "stopped" &&
+          lastRuntimeEvent !== undefined &&
+          PROVIDER_SHUTDOWN_RUNTIME_EVENTS.has(lastRuntimeEvent) &&
+          shutdownAfterTurnStarted;
+        if (!exactPersistedMatch && !legacyShutdownMatch) {
+          continue;
+        }
+
+        const event = makeOrphanedSessionExitedEvent({
+          threadId: thread.id,
+          turnId: activeTurnId,
+          provider: binding.provider,
+          providerInstanceId: binding.providerInstanceId,
+          createdAt: new Date().toISOString(),
+        });
+        yield* providerTerminalEventRepository.record(event);
+        yield* worker.enqueue({ source: "runtime", event });
+        recoveredCount += 1;
+      }
+
+      if (recoveredCount > 0) {
+        yield* Effect.logInfo("queued orphaned provider turns for startup recovery", {
+          count: recoveredCount,
+        });
+      }
+    });
+
   const start: ProviderRuntimeIngestionShape["start"] = Effect.gen(function* () {
     yield* Effect.addFinalizer(() => Effect.sync(clearAllCommandExecutionFlushTimers));
     yield* Effect.forkScoped(
@@ -4105,9 +4257,9 @@ const make = Effect.gen(function* () {
         worker.enqueue({ source: "runtime", event }),
       ),
     );
-    yield* providerTerminalEventRepository.listPending.pipe(
+    const pendingReceipts = yield* providerTerminalEventRepository.listPending.pipe(
       Effect.retry({ times: 3 }),
-      Effect.flatMap((receipts) =>
+      Effect.tap((receipts) =>
         Effect.forEach(
           receipts,
           (receipt) => worker.enqueue({ source: "runtime", event: receipt.event }),
@@ -4124,6 +4276,13 @@ const make = Effect.gen(function* () {
       ),
       Effect.catchCause((cause) =>
         Effect.logWarning("failed to replay pending provider terminal events", {
+          cause: Cause.pretty(cause),
+        }).pipe(Effect.as<ReadonlyArray<ProviderTerminalEventReceipt>>([])),
+      ),
+    );
+    yield* reconcileOrphanedProviderTurnsOnStartup(pendingReceipts).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("failed to reconcile orphaned provider turns on startup", {
           cause: Cause.pretty(cause),
         }),
       ),

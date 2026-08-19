@@ -13,6 +13,7 @@ import { access } from "node:fs/promises";
 
 import {
   DEFAULT_RUNTIME_MODE,
+  type TurnId,
   NonNegativeInt,
   ProjectId,
   ProviderKind,
@@ -96,6 +97,10 @@ import {
   type ProviderTerminalEventRepositoryError,
   type ProviderTerminalRuntimeEvent,
 } from "../../persistence/Services/ProviderTerminalEvents.ts";
+import {
+  makeOrphanedSessionExitedEvent,
+  readPersistedActiveTurnId,
+} from "../orphanedTurnRecovery.ts";
 
 export interface ProviderServiceLiveOptions {
   readonly canonicalEventLogPath?: string;
@@ -487,6 +492,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     const recoverSessionForThread = (input: {
       readonly binding: ProviderRuntimeBinding;
       readonly operation: string;
+      readonly fallbackActiveTurnId?: TurnId;
     }) =>
       Effect.gen(function* () {
         const bindingInstanceId = resolveBindingInstanceId(input.binding);
@@ -500,6 +506,25 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const instanceInfo = yield* registry.getInstanceInfo(bindingInstanceId);
         const hasResumeCursor =
           input.binding.resumeCursor !== null && input.binding.resumeCursor !== undefined;
+        const persistedActiveTurnId = readPersistedActiveTurnId(input.binding.runtimePayload);
+        const orphanedTurnId =
+          persistedActiveTurnId !== undefined &&
+          input.fallbackActiveTurnId !== undefined &&
+          persistedActiveTurnId !== input.fallbackActiveTurnId
+            ? undefined
+            : (persistedActiveTurnId ?? input.fallbackActiveTurnId);
+        if (
+          persistedActiveTurnId !== undefined &&
+          input.fallbackActiveTurnId !== undefined &&
+          orphanedTurnId === undefined
+        ) {
+          yield* Effect.logWarning("provider recovery active turn evidence mismatch", {
+            operation: input.operation,
+            threadId: input.binding.threadId,
+            persistedActiveTurnId,
+            fallbackActiveTurnId: input.fallbackActiveTurnId,
+          });
+        }
         const persistedCwd = readPersistedCwd(input.binding.runtimePayload);
         const persistedStartConfig = readPersistedStartConfig(input.binding.runtimePayload);
         const persistedProviderOptions = startConfigValueOrUndefined(
@@ -574,7 +599,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               strategy: "adopt-existing",
               hasResumeCursor: existing.resumeCursor !== undefined,
             });
-            return { adapter, session: existing } as const;
+            return { adapter, session: existing, orphanedTurnId: undefined } as const;
           }
         } else if (hasActiveSession) {
           yield* Effect.logWarning("provider launch identity changed; replacing active session", {
@@ -583,6 +608,33 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             provider: input.binding.provider,
           });
           yield* adapter.stopSession(input.binding.threadId);
+        }
+
+        if (!hasActiveSession && orphanedTurnId !== undefined) {
+          const event = makeOrphanedSessionExitedEvent({
+            threadId: input.binding.threadId,
+            turnId: orphanedTurnId,
+            provider: input.binding.provider,
+            providerInstanceId: bindingInstanceId,
+            createdAt: new Date().toISOString(),
+          });
+          // This terminal event enters the same ordered, durable path as native
+          // provider events. Enqueue it before starting the replacement session
+          // so consumers observe the old generation exit before the new session
+          // start notifications.
+          yield* Queue.offer(runtimeEventQueue, {
+            source: {
+              instanceId: bindingInstanceId,
+              provider: input.binding.provider,
+            },
+            event,
+          });
+          yield* Effect.logInfo("provider service queued orphaned turn settlement", {
+            operation: input.operation,
+            threadId: input.binding.threadId,
+            turnId: orphanedTurnId,
+            provider: input.binding.provider,
+          });
         }
 
         if (!hasResumeCursor) {
@@ -638,7 +690,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           strategy: "resume-thread",
           hasResumeCursor: resumed.resumeCursor !== undefined,
         });
-        return { adapter, session: resumed } as const;
+        return { adapter, session: resumed, orphanedTurnId } as const;
       }).pipe(
         withMetrics({
           counter: providerSessionsTotal,
@@ -652,6 +704,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly threadId: ThreadId;
       readonly operation: string;
       readonly allowRecovery: boolean;
+      readonly fallbackActiveTurnId?: TurnId;
     }) =>
       Effect.gen(function* () {
         const bindingOption = yield* directory.getBinding(input.threadId);
@@ -673,7 +726,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             provider: binding.provider,
             bindingStatus: binding.status ?? null,
           });
-          return { adapter, instanceId, threadId: input.threadId, isActive: true } as const;
+          return {
+            adapter,
+            instanceId,
+            threadId: input.threadId,
+            isActive: true,
+            orphanedTurnId: undefined,
+          } as const;
         }
 
         if (!input.allowRecovery) {
@@ -686,7 +745,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               bindingStatus: binding.status ?? null,
             },
           );
-          return { adapter, instanceId, threadId: input.threadId, isActive: false } as const;
+          return {
+            adapter,
+            instanceId,
+            threadId: input.threadId,
+            isActive: false,
+            orphanedTurnId: undefined,
+          } as const;
         }
 
         yield* Effect.logInfo(
@@ -698,12 +763,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             bindingStatus: binding.status ?? null,
           },
         );
-        const recovered = yield* recoverSessionForThread({ binding, operation: input.operation });
+        const recovered = yield* recoverSessionForThread({
+          binding,
+          operation: input.operation,
+          ...(input.fallbackActiveTurnId !== undefined
+            ? { fallbackActiveTurnId: input.fallbackActiveTurnId }
+            : {}),
+        });
         return {
           adapter: recovered.adapter,
           instanceId,
           threadId: input.threadId,
           isActive: true,
+          ...(recovered.orphanedTurnId !== undefined
+            ? { orphanedTurnId: recovered.orphanedTurnId }
+            : {}),
         } as const;
       });
 
@@ -1070,6 +1144,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId: input.threadId,
             operation: "ProviderService.interruptTurn",
             allowRecovery: true,
+            ...(input.turnId !== undefined ? { fallbackActiveTurnId: input.turnId } : {}),
           });
           metricProvider = routed.adapter.provider;
           yield* Effect.annotateCurrentSpan({
@@ -1078,7 +1153,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.thread_id": input.threadId,
             "provider.turn_id": input.turnId,
           });
-          yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+          if (routed.orphanedTurnId === undefined) {
+            yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
+          }
           yield* analytics.record("provider.turn.interrupted", {
             provider: routed.adapter.provider,
           });
@@ -1192,7 +1269,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: routed.instanceId,
             status: "stopped",
             runtimePayload: {
-              activeTurnId: null,
               lastError: null,
               lastRuntimeEvent: "provider.stopSession",
               lastRuntimeEventAt: new Date().toISOString(),
@@ -1484,7 +1560,6 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
                 providerInstanceId: resolveBindingInstanceId(binding),
                 status: "stopped",
                 runtimePayload: {
-                  activeTurnId: null,
                   lastRuntimeEvent: "provider.stopAll",
                   lastRuntimeEventAt: new Date().toISOString(),
                 },

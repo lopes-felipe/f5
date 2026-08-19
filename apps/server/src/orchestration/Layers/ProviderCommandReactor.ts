@@ -1437,8 +1437,15 @@ const make = Effect.gen(function* () {
       });
     }
 
-    // Orchestration turn ids are not provider turn ids, so interrupt by session.
-    yield* providerService.interruptTurn({ threadId: event.payload.threadId });
+    // Once a provider turn has started, the projected active turn id is the
+    // provider's native id. Preserve it across recovery: a replacement provider
+    // session has no in-memory active turn, so a session-only interrupt would be
+    // a silent no-op.
+    const activeTurnId = event.payload.turnId ?? thread.session?.activeTurnId ?? undefined;
+    yield* providerService.interruptTurn({
+      threadId: event.payload.threadId,
+      ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
+    });
   });
 
   const processApprovalResponseRequested = Effect.fnUntraced(function* (

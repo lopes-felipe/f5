@@ -3121,7 +3121,6 @@ describe("ProviderCommandReactor", () => {
         type: "thread.turn.interrupt",
         commandId: CommandId.makeUnsafe("cmd-turn-interrupt"),
         threadId: ThreadId.makeUnsafe("thread-1"),
-        turnId: asTurnId("turn-1"),
         createdAt: now,
       }),
     );
@@ -3129,6 +3128,7 @@ describe("ProviderCommandReactor", () => {
     await waitFor(() => harness.interruptTurn.mock.calls.length === 1);
     expect(harness.interruptTurn.mock.calls[0]?.[0]).toEqual({
       threadId: "thread-1",
+      turnId: "turn-1",
     });
   });
 
