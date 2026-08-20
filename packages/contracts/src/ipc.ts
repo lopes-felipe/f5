@@ -656,7 +656,9 @@ export interface NativeApi {
     retryWorkflow: (
       input: OrchestrationRetryWorkflowInput,
     ) => Promise<OrchestrationRetryWorkflowResult>;
-    retryCodeReviewWorkflow: (input: OrchestrationRetryCodeReviewWorkflowInput) => Promise<void>;
+    retryCodeReviewWorkflow: (
+      input: OrchestrationRetryCodeReviewWorkflowInput,
+    ) => Promise<OrchestrationRetryWorkflowResult>;
     retryInvestigationWorkflow: (
       input: OrchestrationRetryInvestigationWorkflowInput,
     ) => Promise<void>;

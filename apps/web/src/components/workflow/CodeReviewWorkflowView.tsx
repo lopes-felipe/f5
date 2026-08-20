@@ -5,20 +5,43 @@ import { useThreadDetail } from "../../lib/orchestrationReactQuery";
 import { readNativeApi } from "../../nativeApi";
 import { useStore } from "../../store";
 import ChatMarkdown from "../ChatMarkdown";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Skeleton } from "../ui/skeleton";
+import { toastManager } from "../ui/toast";
 import { WorkflowTimelinePhaseList } from "./WorkflowTimelinePhaseList";
 import {
   canRetryConsolidation,
   canRetryFailedReviewers,
+  collectCodeReviewWorkflowErrors,
   statusLabel,
 } from "./codeReviewWorkflowView.logic";
 import { deriveCodeReviewTimelinePhases } from "./codeReviewWorkflowSidebarTimeline";
 import { WorkflowRunInspector } from "./WorkflowRunInspector";
 
+function retryErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Failed to retry code review.";
+}
+
+type RetryScope = "failed" | "consolidation";
+
+interface DuplicateRisk {
+  readonly scope: RetryScope;
+  readonly threadIds: readonly string[];
+}
+
 export function CodeReviewWorkflowView(props: { workflowId: string }) {
   const navigate = useNavigate();
   const [busy, setBusy] = useState<"retry" | "delete" | null>(null);
+  const [duplicateRisk, setDuplicateRisk] = useState<DuplicateRisk | null>(null);
   const workflow = useStore((store) =>
     store.codeReviewWorkflows.find((entry) => entry.id === props.workflowId),
   );
@@ -49,20 +72,34 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
           : null) ?? null);
   const threadById = new Map(threads.map((thread) => [thread.id, thread] as const));
   const timelinePhases = deriveCodeReviewTimelinePhases(workflow);
+  const workflowErrors = collectCodeReviewWorkflowErrors(workflow);
   const showRetryFailed = canRetryFailedReviewers(workflow);
   const showRetryMerge = canRetryConsolidation(workflow);
 
-  const handleRetry = async (scope?: "failed" | "consolidation") => {
+  const handleRetry = async (scope: RetryScope, allowPossibleDuplicate = false) => {
     const api = readNativeApi();
     if (!api) {
+      toastManager.add({
+        type: "error",
+        title: "Code-review retry is unavailable while disconnected.",
+      });
       return;
     }
     setBusy("retry");
     try {
-      await api.orchestration.retryCodeReviewWorkflow({
+      const result = await api.orchestration.retryCodeReviewWorkflow({
         workflowId: workflow.id,
-        ...(scope ? { scope } : {}),
+        scope,
+        allowPossibleDuplicate,
       });
+      setDuplicateRisk(
+        result.status === "confirmation_required" ? { scope, threadIds: result.threadIds } : null,
+      );
+    } catch (error) {
+      if (allowPossibleDuplicate) {
+        setDuplicateRisk(null);
+      }
+      toastManager.add({ type: "error", title: retryErrorMessage(error) });
     } finally {
       setBusy(null);
     }
@@ -131,6 +168,21 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
                 workflowId={workflow.id}
                 updatedAt={workflow.updatedAt}
               />
+              {workflowErrors.length > 0 ? (
+                <section className="rounded-lg border border-destructive/40 bg-destructive/5 p-4">
+                  <h2 className="text-sm font-semibold text-destructive">Failed steps</h2>
+                  <div className="mt-3 space-y-3">
+                    {workflowErrors.map((error) => (
+                      <div key={error.key}>
+                        <p className="text-xs font-medium text-foreground">{error.step}</p>
+                        <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">
+                          {error.message}
+                        </p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
               <section>
                 <h2 className="text-sm font-semibold text-foreground">Review Instructions</h2>
                 <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">
@@ -163,6 +215,38 @@ export function CodeReviewWorkflowView(props: { workflowId: string }) {
           </div>
         </main>
       </div>
+      <AlertDialog
+        open={duplicateRisk !== null}
+        onOpenChange={(open) => {
+          if (!open && busy !== "retry") setDuplicateRisk(null);
+        }}
+      >
+        <AlertDialogPopup>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Retry may duplicate a provider turn</AlertDialogTitle>
+            <AlertDialogDescription>
+              Delivery could not be confirmed for {duplicateRisk?.threadIds.length ?? 0} failed
+              thread{duplicateRisk?.threadIds.length === 1 ? "" : "s"}. Continue only if duplicate
+              work is acceptable.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogClose render={<Button variant="outline" disabled={busy === "retry"} />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              onClick={() => {
+                if (duplicateRisk) {
+                  void handleRetry(duplicateRisk.scope, true);
+                }
+              }}
+              disabled={busy === "retry"}
+            >
+              Retry anyway
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
     </div>
   );
 }

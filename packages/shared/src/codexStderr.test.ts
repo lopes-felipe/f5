@@ -19,6 +19,38 @@ describe("codexStderr", () => {
     ).toBe(true);
   });
 
+  it("ignores the Codex cross-version model-cache TTL error", () => {
+    expect(
+      isIgnorableCodexProcessStderrMessage(
+        "2026-08-20T14:48:43.142211Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_parallel_tool_calls` at line 4921 column 5",
+      ),
+    ).toBe(true);
+  });
+
+  it("ignores the ANSI-decorated Codex cross-version model-cache TTL error", () => {
+    expect(
+      isIgnorableCodexProcessStderrMessage(
+        "2026-08-20T14:48:43.142211Z ERROR codex_models_manager::\u001b[31mmanager\u001b[0m: failed to renew cache \u001b[33mTTL\u001b[0m: missing field `\u001b[36msupports_parallel_tool_calls\u001b[0m` at line 4921 column 5",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps other Codex model-cache TTL failures visible", () => {
+    expect(
+      isIgnorableCodexProcessStderrMessage(
+        "2026-08-20T14:48:43.142211Z ERROR codex_models_manager::manager: failed to renew cache TTL: permission denied",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps unrelated missing model-cache fields visible", () => {
+    expect(
+      isIgnorableCodexProcessStderrMessage(
+        "2026-08-20T14:48:43.142211Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `context_window` at line 4921 column 5",
+      ),
+    ).toBe(false);
+  });
+
   it("keeps unrelated stderr visible", () => {
     expect(isIgnorableCodexProcessStderrMessage("fatal: permission denied")).toBe(false);
   });

@@ -1002,6 +1002,27 @@ describe("deriveWorkLogEntries", () => {
     expect(entries).toEqual([]);
   });
 
+  it("hides cross-version Codex model-cache warnings even when visibility is full", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "runtime-warning",
+        createdAt: "2026-08-20T14:48:43.142Z",
+        kind: "runtime.warning",
+        summary: "Runtime warning",
+        tone: "info",
+        payload: {
+          message:
+            "2026-08-20T14:48:43.142211Z ERROR codex_models_manager::manager: failed to renew cache TTL: missing field `supports_parallel_tool_calls` at line 4921 column 5",
+        },
+      }),
+    ];
+
+    const entries = deriveWorkLogEntries(activities, undefined, {
+      runtimeWarningVisibility: "full",
+    });
+    expect(entries).toEqual([]);
+  });
+
   it("falls back to the summarized label when a full runtime warning lacks a message", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

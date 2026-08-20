@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Data, Effect, Exit, Layer, Option, PlatformError, PubSub, Scope, Stream } from "effect";
@@ -755,6 +756,32 @@ describe("WebSocket Server", () => {
 
   function sha256Hex(input: string | Uint8Array): string {
     return createHash("sha256").update(input).digest("hex");
+  }
+
+  function makeTurnCapturingProviderService(
+    sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]>,
+  ): ProviderServiceShape {
+    return {
+      ...defaultProviderService,
+      startSession: (threadId, input) =>
+        Effect.succeed({
+          provider: "codex",
+          status: "ready",
+          runtimeMode: input.runtimeMode,
+          threadId,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }),
+      sendTurn: (input) =>
+        Effect.sync(() => {
+          sentTurns.push(input);
+          return {
+            threadId: input.threadId,
+            turnId: asTurnId(`provider-${input.threadId}`),
+          };
+        }),
+      getCapabilities: () => Effect.succeed({ sessionModelSwitch: "in-session" }),
+    };
   }
 
   async function createTestServer(
@@ -2577,6 +2604,308 @@ describe("WebSocket Server", () => {
         message: expect.stringContaining("nextTurnQueue.submit"),
       }),
     );
+  });
+
+  it.each([
+    ["text plus image", "Describe this image.", "text-image"],
+    [
+      "image-only fallback",
+      "[User attached one or more images without additional text. Respond using the conversation context and the attached image(s).]",
+      "image-only",
+    ],
+  ])("accepts a bootstrap first turn with %s", async (_caseName, messageText, suffix) => {
+    const stateDir = makeTempDir(`t3code-ws-bootstrap-attachment-${suffix}-`);
+    const workspaceRoot = makeTempDir(`t3code-ws-bootstrap-attachment-workspace-${suffix}-`);
+    const dbPath = path.join(stateDir, "state.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    const sentTurns: Array<Parameters<ProviderServiceShape["sendTurn"]>[0]> = [];
+    server = await createTestServer({
+      cwd: workspaceRoot,
+      persistenceLayer,
+      providerLayer: Layer.succeed(ProviderService, makeTurnCapturingProviderService(sentTurns)),
+      stateDir,
+    });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const createdAt = new Date().toISOString();
+    const projectId = `project-bootstrap-attachment-${suffix}`;
+    const threadId = `thread-bootstrap-attachment-${suffix}`;
+    const messageId = `message-bootstrap-attachment-${suffix}`;
+
+    const projectResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "project.create",
+      commandId: `command-bootstrap-attachment-project-${suffix}`,
+      projectId,
+      title: "Bootstrap Attachment",
+      workspaceRoot,
+      defaultModel: "gpt-5-codex",
+      createdAt,
+    });
+    expect(projectResponse.error).toBeUndefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.turn.start",
+      commandId: `command-bootstrap-attachment-turn-${suffix}`,
+      threadId,
+      message: {
+        messageId,
+        role: "user",
+        text: messageText,
+        attachments: [
+          {
+            type: "image",
+            name: "first-image.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+            dataUrl: "data:image/png;base64,aGVsbG8=",
+          },
+        ],
+      },
+      provider: "codex",
+      assistantDeliveryMode: "streaming",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      bootstrap: {
+        createThread: {
+          projectId,
+          title: "New thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+      },
+      createdAt,
+    });
+    expect(response.error).toBeUndefined();
+
+    const snapshotResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+    const snapshot = snapshotResponse.result as OrchestrationReadModel;
+    const thread = snapshot.threads.find((entry) => entry.id === threadId);
+    const message = thread?.messages.find((entry) => entry.id === messageId);
+    expect(message).toEqual(
+      expect.objectContaining({
+        text: messageText,
+        attachments: [
+          expect.objectContaining({
+            type: "image",
+            name: "first-image.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+          }),
+        ],
+      }),
+    );
+    const attachmentId = message?.attachments?.[0]?.id;
+    expect(attachmentId).toBeTruthy();
+    if (!attachmentId) {
+      throw new Error("Expected the bootstrap message attachment to have an id.");
+    }
+    expect(fs.existsSync(path.join(stateDir, "attachments", `${attachmentId}.png`))).toBe(true);
+
+    const database = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(
+        database
+          .prepare("SELECT lifecycle FROM attachments WHERE attachment_id = ?")
+          .get(attachmentId),
+      ).toEqual({ lifecycle: "ready" });
+      expect(
+        database
+          .prepare(
+            "SELECT owner_kind AS ownerKind, owner_id AS ownerId FROM attachment_owners WHERE attachment_id = ?",
+          )
+          .get(attachmentId),
+      ).toEqual({ ownerKind: "message", ownerId: messageId });
+    } finally {
+      database.close();
+    }
+
+    await vi.waitFor(() => expect(sentTurns).toHaveLength(1));
+    expect(sentTurns[0]).toEqual(
+      expect.objectContaining({
+        threadId,
+        attachments: [expect.objectContaining({ id: attachmentId, name: "first-image.png" })],
+      }),
+    );
+  });
+
+  it("rejects an invalid bootstrap attachment before creating the thread", async () => {
+    const stateDir = makeTempDir("t3code-ws-bootstrap-invalid-attachment-");
+    const workspaceRoot = makeTempDir("t3code-ws-bootstrap-invalid-attachment-workspace-");
+    const dbPath = path.join(stateDir, "state.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    server = await createTestServer({ cwd: workspaceRoot, persistenceLayer, stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const createdAt = new Date().toISOString();
+    const projectId = "project-bootstrap-invalid-attachment";
+    const threadId = "thread-bootstrap-invalid-attachment";
+
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "command-bootstrap-invalid-attachment-project",
+          projectId,
+          title: "Bootstrap Invalid Attachment",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.turn.start",
+      commandId: "command-bootstrap-invalid-attachment-turn",
+      threadId,
+      message: {
+        messageId: "message-bootstrap-invalid-attachment",
+        role: "user",
+        text: "Invalid image",
+        attachments: [
+          {
+            type: "image",
+            name: "invalid.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+            dataUrl: "data:text/plain;base64,aGVsbG8=",
+          },
+        ],
+      },
+      assistantDeliveryMode: "streaming",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      bootstrap: {
+        createThread: {
+          projectId,
+          title: "New thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+      },
+      createdAt,
+    });
+    expect(response.error?.message).toContain("Invalid image attachment payload");
+
+    const snapshotResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+    const snapshot = snapshotResponse.result as OrchestrationReadModel;
+    expect(snapshot.threads.some((entry) => entry.id === threadId)).toBe(false);
+    const database = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(database.prepare("SELECT COUNT(*) AS count FROM attachments").get()).toEqual({
+        count: 0,
+      });
+    } finally {
+      database.close();
+    }
+    const attachmentsDir = path.join(stateDir, "attachments");
+    expect(
+      fs.existsSync(attachmentsDir) ? fs.readdirSync(attachmentsDir, { recursive: true }) : [],
+    ).toEqual([]);
+  });
+
+  it("cleans bootstrap attachments after a definitely rejected final dispatch", async () => {
+    const stateDir = makeTempDir("t3code-ws-bootstrap-rejected-attachment-");
+    const workspaceRoot = makeTempDir("t3code-ws-bootstrap-rejected-attachment-workspace-");
+    const dbPath = path.join(stateDir, "state.sqlite");
+    const persistenceLayer = makeSqlitePersistenceLive(dbPath).pipe(
+      Layer.provide(NodeServices.layer),
+    );
+    server = await createTestServer({ cwd: workspaceRoot, persistenceLayer, stateDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    const createdAt = new Date().toISOString();
+    const projectId = "project-bootstrap-rejected-attachment";
+    const threadId = "thread-bootstrap-rejected-attachment";
+
+    expect(
+      (
+        await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+          type: "project.create",
+          commandId: "command-bootstrap-rejected-attachment-project",
+          projectId,
+          title: "Bootstrap Rejected Attachment",
+          workspaceRoot,
+          defaultModel: "gpt-5-codex",
+          createdAt,
+        })
+      ).error,
+    ).toBeUndefined();
+
+    const response = await sendRequest(ws, ORCHESTRATION_WS_METHODS.dispatchCommand, {
+      type: "thread.turn.start",
+      commandId: "command-bootstrap-rejected-attachment-turn",
+      threadId,
+      message: {
+        messageId: "message-bootstrap-rejected-attachment",
+        role: "user",
+        text: "Reject after attachment persistence",
+        attachments: [
+          {
+            type: "image",
+            name: "rejected.png",
+            mimeType: "image/png",
+            sizeBytes: 5,
+            dataUrl: "data:image/png;base64,aGVsbG8=",
+          },
+        ],
+      },
+      sourceProposedPlan: { threadId, planId: "missing-plan" },
+      assistantDeliveryMode: "streaming",
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      bootstrap: {
+        createThread: {
+          projectId,
+          title: "New thread",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          createdAt,
+        },
+      },
+      createdAt,
+    });
+    expect(response.error?.message).toContain("does not exist");
+
+    const snapshotResponse = await sendRequest(ws, ORCHESTRATION_WS_METHODS.getSnapshot);
+    const snapshot = snapshotResponse.result as OrchestrationReadModel;
+    expect(
+      snapshot.threads.some((entry) => entry.id === threadId && entry.deletedAt === null),
+    ).toBe(false);
+    const database = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      expect(database.prepare("SELECT COUNT(*) AS count FROM attachments").get()).toEqual({
+        count: 0,
+      });
+    } finally {
+      database.close();
+    }
+    const attachmentFiles = fs
+      .readdirSync(path.join(stateDir, "attachments"), { recursive: true })
+      .map(String)
+      .filter((entry) => entry.endsWith(".png"));
+    expect(attachmentFiles).toEqual([]);
   });
 
   it("deduplicates concurrent attachment submissions without leaving losing ingress files", async () => {

@@ -630,6 +630,20 @@ describe("wsNativeApi", () => {
     ).rejects.toThrow();
   });
 
+  it("treats an older server's void code-review retry response as started", async () => {
+    requestMock.mockResolvedValueOnce(undefined);
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+
+    await expect(
+      api.orchestration.retryCodeReviewWorkflow({
+        workflowId: "code-review-workflow-1" as never,
+        scope: "failed",
+        allowPossibleDuplicate: false,
+      }),
+    ).resolves.toEqual({ status: "started" });
+  });
+
   it("forwards context menu metadata to desktop bridge", async () => {
     const showContextMenu = vi.fn().mockResolvedValue("delete");
     Object.defineProperty(getWindowForTest(), "desktopBridge", {

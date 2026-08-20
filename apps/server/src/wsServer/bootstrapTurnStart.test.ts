@@ -16,6 +16,7 @@ import { Effect, Layer, Metric, Tracer } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { GitCommandError } from "../git/Errors.ts";
+import { AttachmentIngressError } from "../attachmentIngress.ts";
 import { makeLocalFileTracer } from "../observability/LocalFileTracer.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
@@ -218,6 +219,157 @@ describe("dispatchBootstrapTurnStart", () => {
       (dispatchedCommands[1] as Extract<OrchestrationCommand, { type: "thread.turn.start" }>)
         .bootstrap,
     ).toBeUndefined();
+  });
+
+  it("persists attachments immediately after thread creation", async () => {
+    const operations: string[] = [];
+    const dependencies = makeDependencies({
+      dispatch: (command) =>
+        Effect.sync(() => {
+          operations.push(command.type);
+          return { sequence: operations.length };
+        }),
+    });
+
+    await Effect.runPromise(
+      dispatchBootstrapTurnStart({
+        ...dependencies,
+        persistAttachments: Effect.sync(() => {
+          operations.push("attachment-persist");
+        }),
+        discardAttachments: Effect.void,
+        command: makeTurnStartCommand({
+          bootstrap: {
+            createThread: {
+              projectId: PROJECT_ID,
+              title: "New thread",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: "main",
+              worktreePath: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            prepareWorktree: {
+              projectCwd: "/repo/project",
+              baseBranch: "main",
+              branch: "t3code/bootstrap-branch",
+            },
+          },
+        }),
+      }),
+    );
+
+    expect(operations).toEqual([
+      "thread.create",
+      "attachment-persist",
+      "thread.meta.update",
+      "thread.turn.start",
+    ]);
+  });
+
+  it("discards persisted attachments when a later bootstrap stage definitely fails", async () => {
+    const operations: string[] = [];
+    const dependencies = makeDependencies({
+      dispatch: (command) =>
+        Effect.sync(() => {
+          operations.push(command.type);
+          return { sequence: operations.length };
+        }),
+      createWorktree: () =>
+        Effect.fail(
+          new GitCommandError({
+            operation: "createWorktree",
+            command: "git worktree add",
+            cwd: "/repo/project",
+            detail: "worktree failed",
+          }),
+        ),
+    });
+
+    await expect(
+      Effect.runPromise(
+        dispatchBootstrapTurnStart({
+          ...dependencies,
+          persistAttachments: Effect.sync(() => {
+            operations.push("attachment-persist");
+          }),
+          discardAttachments: Effect.sync(() => {
+            operations.push("attachment-discard");
+          }),
+          command: makeTurnStartCommand({
+            bootstrap: {
+              createThread: {
+                projectId: PROJECT_ID,
+                title: "New thread",
+                model: "gpt-5-codex",
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+              prepareWorktree: {
+                projectCwd: "/repo/project",
+                baseBranch: "main",
+                branch: "t3code/bootstrap-branch",
+              },
+            },
+          }),
+        }),
+      ),
+    ).rejects.toThrow("worktree failed");
+
+    expect(operations).toEqual([
+      "thread.create",
+      "attachment-persist",
+      "attachment-discard",
+      "thread.delete",
+    ]);
+  });
+
+  it("rolls back a newly created thread when attachment persistence fails", async () => {
+    const dispatchedCommands: OrchestrationCommand[] = [];
+    const dependencies = makeDependencies({
+      dispatch: (command) =>
+        Effect.sync(() => {
+          dispatchedCommands.push(command);
+          return { sequence: dispatchedCommands.length };
+        }),
+    });
+
+    await expect(
+      Effect.runPromise(
+        dispatchBootstrapTurnStart({
+          ...dependencies,
+          persistAttachments: Effect.fail(
+            new AttachmentIngressError({ message: "attachment persistence failed" }),
+          ),
+          discardAttachments: Effect.void,
+          command: makeTurnStartCommand({
+            bootstrap: {
+              createThread: {
+                projectId: PROJECT_ID,
+                title: "New thread",
+                model: "gpt-5-codex",
+                runtimeMode: "full-access",
+                interactionMode: "default",
+                branch: "main",
+                worktreePath: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+              },
+            },
+          }),
+        }),
+      ),
+    ).rejects.toMatchObject({
+      _tag: "AttachmentIngressError",
+      message: "attachment persistence failed",
+    });
+    expect(dispatchedCommands.map((command) => command.type)).toEqual([
+      "thread.create",
+      "thread.delete",
+    ]);
   });
 
   it("prepares a worktree for existing threads before dispatching the final turn start", async () => {
@@ -757,6 +909,7 @@ describe("dispatchBootstrapTurnStart", () => {
   it("skips rollback for ambiguous final turn dispatch failures", async () => {
     const dispatchedCommands: OrchestrationCommand[] = [];
     const removeWorktree = vi.fn(() => Effect.void);
+    const discardAttachments = vi.fn();
     const dependencies = makeDependencies({
       dispatch: (command) =>
         Effect.gen(function* () {
@@ -776,6 +929,8 @@ describe("dispatchBootstrapTurnStart", () => {
       Effect.runPromise(
         dispatchBootstrapTurnStart({
           ...dependencies,
+          persistAttachments: Effect.void,
+          discardAttachments: Effect.sync(discardAttachments),
           command: makeTurnStartCommand({
             bootstrap: {
               createThread: {
@@ -805,6 +960,7 @@ describe("dispatchBootstrapTurnStart", () => {
       "thread.turn.start",
     ]);
     expect(removeWorktree).not.toHaveBeenCalled();
+    expect(discardAttachments).not.toHaveBeenCalled();
   });
 
   it("does not restore stale previous metadata when thread metadata changed concurrently", async () => {

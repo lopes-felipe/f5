@@ -7,6 +7,7 @@ import {
   DEFAULT_PROVIDER_INTERACTION_MODE,
   DEFAULT_RUNTIME_MODE,
   OrchestrationCreateCodeReviewWorkflowInput,
+  OrchestrationRetryCodeReviewWorkflowInput,
   OrchestrationEvent,
   OrchestrationEventType,
   OrchestrationCreateWorkflowInput,
@@ -61,6 +62,9 @@ const decodeCreateCodeReviewWorkflowInput = Schema.decodeUnknownEffect(
   OrchestrationCreateCodeReviewWorkflowInput,
 );
 const decodeRetryWorkflowInput = Schema.decodeUnknownEffect(OrchestrationRetryWorkflowInput);
+const decodeRetryCodeReviewWorkflowInput = Schema.decodeUnknownEffect(
+  OrchestrationRetryCodeReviewWorkflowInput,
+);
 const decodeRetryWorkflowResult = Schema.decodeUnknownEffect(OrchestrationRetryWorkflowResult);
 
 it("keeps every declared orchestration event type in the persisted event union", () => {
@@ -103,14 +107,26 @@ it.effect("defaults planning workflow duplicate-risk confirmation to false", () 
 
 it.effect("decodes planning workflow retry confirmation results", () =>
   Effect.gen(function* () {
+    const started = yield* decodeRetryWorkflowResult({ status: "started" });
     const parsed = yield* decodeRetryWorkflowResult({
       status: "confirmation_required",
       threadIds: ["thread-1"],
     });
+    assert.deepEqual(started, { status: "started" });
     assert.deepEqual(parsed, {
       status: "confirmation_required",
       threadIds: ["thread-1"],
     });
+  }),
+);
+
+it.effect("defaults code-review duplicate-risk confirmation to false", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeRetryCodeReviewWorkflowInput({
+      workflowId: "code-review-workflow-1",
+    });
+    assert.equal(parsed.scope, "failed");
+    assert.equal(parsed.allowPossibleDuplicate, false);
   }),
 );
 

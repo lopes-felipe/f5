@@ -360,7 +360,7 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(gitCoreLayer),
     Layer.provideMerge(checkpointDiffQueryLayer),
   );
-  const codeReviewWorkflowServiceLayer = CodeReviewWorkflowServiceLive.pipe(
+  const codeReviewWorkflowServiceBaseLayer = CodeReviewWorkflowServiceLive.pipe(
     Layer.provideMerge(orchestrationLayer),
     Layer.provideMerge(projectionSnapshotQueryLayer),
     Layer.provideMerge(textGenerationLayer),
@@ -382,6 +382,9 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(providerCommandReactorLayer),
   );
   const workflowServiceLayer = workflowServiceBaseLayer.pipe(
+    Layer.provideMerge(providerTurnDeliveryWorkerLayer),
+  );
+  const codeReviewWorkflowServiceLayer = codeReviewWorkflowServiceBaseLayer.pipe(
     Layer.provideMerge(providerTurnDeliveryWorkerLayer),
   );
   const checkpointReactorLayer = CheckpointReactorLive.pipe(

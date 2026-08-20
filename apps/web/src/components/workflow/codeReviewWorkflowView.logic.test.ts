@@ -9,6 +9,7 @@ import {
 import {
   canRetryConsolidation,
   canRetryFailedReviewers,
+  collectCodeReviewWorkflowErrors,
   statusLabel,
 } from "./codeReviewWorkflowView.logic";
 
@@ -98,5 +99,35 @@ describe("codeReviewWorkflowView.logic", () => {
     });
     expect(canRetryFailedReviewers(workflow)).toBe(false);
     expect(canRetryConsolidation(workflow)).toBe(true);
+  });
+
+  it("returns exact reviewer and merge errors with safe fallback messages", () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A provider disconnected",
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "error",
+        error: null,
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        status: "error",
+        error: "Merge timed out",
+      },
+    });
+
+    expect(collectCodeReviewWorkflowErrors(workflow)).toEqual([
+      {
+        key: "reviewerA",
+        step: "Reviewer A",
+        message: "Reviewer A provider disconnected",
+      },
+      { key: "reviewerB", step: "Reviewer B", message: "Reviewer failed." },
+      { key: "consolidation", step: "Merge", message: "Merge timed out" },
+    ]);
   });
 });

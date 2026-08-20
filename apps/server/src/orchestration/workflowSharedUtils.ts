@@ -73,6 +73,25 @@ export function providerGuidanceSection(provider?: ProviderKind): string | undef
 
 type WorkflowConsumableThread = Pick<OrchestrationThread, "latestTurn" | "messages" | "session">;
 
+export function completedTurnEvidenceAt(
+  thread: Pick<OrchestrationThread, "latestTurn"> | null | undefined,
+): string | null {
+  if (!thread?.latestTurn || thread.latestTurn.state !== "completed") {
+    return null;
+  }
+  return thread.latestTurn.completedAt ?? thread.latestTurn.requestedAt;
+}
+
+export function hasActiveRunningTurn(
+  thread: Pick<OrchestrationThread, "latestTurn" | "session"> | null | undefined,
+): boolean {
+  return (
+    thread?.latestTurn?.state === "running" &&
+    thread.session?.status === "running" &&
+    thread.session.activeTurnId === thread.latestTurn.turnId
+  );
+}
+
 function consumableAssistantContent(
   message: WorkflowConsumableThread["messages"][number] | undefined,
 ): string | null {

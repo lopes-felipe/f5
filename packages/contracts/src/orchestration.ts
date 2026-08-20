@@ -2693,6 +2693,9 @@ export const OrchestrationRetryCodeReviewWorkflowInput = Schema.Struct({
   scope: Schema.optional(Schema.Literals(["failed", "consolidation"])).pipe(
     Schema.withDecodingDefault(() => "failed" as const),
   ),
+  allowPossibleDuplicate: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(() => false),
+  ),
 });
 export type OrchestrationRetryCodeReviewWorkflowInput =
   typeof OrchestrationRetryCodeReviewWorkflowInput.Type;
@@ -2825,7 +2828,7 @@ export const OrchestrationRpcSchemas = {
   },
   retryCodeReviewWorkflow: {
     input: OrchestrationRetryCodeReviewWorkflowInput,
-    output: Schema.Void,
+    output: OrchestrationRetryWorkflowResult,
   },
   retryInvestigationWorkflow: {
     input: OrchestrationRetryInvestigationWorkflowInput,

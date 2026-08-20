@@ -2,6 +2,7 @@ import { CommandId, type OrchestrationCommand } from "@t3tools/contracts";
 import { buildTemporaryWorktreeBranchName } from "@t3tools/shared/worktree";
 import { Effect, Schema } from "effect";
 
+import { AttachmentIngressError } from "../attachmentIngress.ts";
 import { GitCommandError } from "../git/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
 import { resolveDefaultWorktreePath } from "../git/worktreePaths.ts";
@@ -26,12 +27,16 @@ import type { ProjectSetupScriptRunnerShape } from "../project/Services/ProjectS
 
 type ThreadTurnStartCommand = Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
 type DispatchThreadTurnStartCommand = Omit<ThreadTurnStartCommand, "bootstrap">;
-type BootstrapTurnStartError = GitCommandError | OrchestrationDispatchError;
+type BootstrapTurnStartError =
+  | AttachmentIngressError
+  | GitCommandError
+  | OrchestrationDispatchError;
 type BootstrapFailureStage =
   | "read-existing-thread"
   | "thread-create"
   | "worktree-create"
   | "thread-meta-update"
+  | "attachment-persist"
   | "final-turn-dispatch";
 type BootstrapObservedStage =
   | BootstrapFailureStage
@@ -58,7 +63,7 @@ const stripBootstrapFromTurnStart = (
   return finalTurnStartCommand;
 };
 
-export interface BootstrapTurnStartDependencies {
+interface BootstrapTurnStartBaseDependencies {
   readonly orchestrationEngine: Pick<OrchestrationEngineShape, "dispatch" | "getReadModel">;
   readonly git: Pick<
     GitCoreShape,
@@ -67,6 +72,18 @@ export interface BootstrapTurnStartDependencies {
   readonly projectSetupScriptRunner: Pick<ProjectSetupScriptRunnerShape, "runForThread">;
   readonly worktreesDir?: string | undefined;
 }
+
+export type BootstrapTurnStartDependencies = BootstrapTurnStartBaseDependencies &
+  (
+    | {
+        readonly persistAttachments?: undefined;
+        readonly discardAttachments?: undefined;
+      }
+    | {
+        readonly persistAttachments: Effect.Effect<void, AttachmentIngressError>;
+        readonly discardAttachments: Effect.Effect<void>;
+      }
+  );
 
 export function isDefinitelyUncommittedDispatchError(error: OrchestrationDispatchError): boolean {
   return (
@@ -80,6 +97,9 @@ function shouldAttemptRollback(
   stage: BootstrapFailureStage,
   error: BootstrapTurnStartError,
 ): boolean {
+  if (Schema.is(AttachmentIngressError)(error)) {
+    return true;
+  }
   if (Schema.is(GitCommandError)(error)) {
     return true;
   }
@@ -91,6 +111,8 @@ function shouldAttemptRollback(
     case "thread-meta-update":
     case "final-turn-dispatch":
       return isDefinitelyUncommittedDispatchError(error);
+    case "attachment-persist":
+      return true;
     case "read-existing-thread":
       return false;
     default: {
@@ -114,6 +136,11 @@ function withAppendedCleanupDetail(
     return new GitCommandError({
       ...error,
       detail: `${error.detail}${suffix}`,
+    });
+  }
+  if (Schema.is(AttachmentIngressError)(error)) {
+    return new AttachmentIngressError({
+      message: `${error.message}${suffix}`,
     });
   }
   if (Schema.is(PersistenceSqlError)(error)) {
@@ -175,6 +202,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
   let previousThreadMeta: BootstrapPreviousThreadMeta | null = null;
   let appliedBootstrapThreadMeta: BootstrapPreviousThreadMeta | null = null;
   let mutatedExistingThreadMeta = false;
+  let attachmentsPersisted = false;
   let targetProjectId = bootstrap.createThread?.projectId;
   let targetProjectCwd = bootstrap.prepareWorktree?.projectCwd;
   let targetWorktreePath = bootstrap.createThread?.worktreePath ?? null;
@@ -247,6 +275,11 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
             detail: error.message,
           });
           return yield* error;
+        }
+
+        if (attachmentsPersisted && input.discardAttachments) {
+          yield* input.discardAttachments;
+          attachmentsPersisted = false;
         }
 
         if (createdThread) {
@@ -404,6 +437,12 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
         createdThread = true;
       }
 
+      if (input.persistAttachments) {
+        failureStage = "attachment-persist";
+        yield* observeBootstrapStage("attachment-persist", input.persistAttachments);
+        attachmentsPersisted = true;
+      }
+
       // Idempotency guard: if the thread already has a valid worktreePath
       // (e.g., produced by a workflow path that creates the worktree up
       // front, or a stale client cache that re-sends `prepareWorktree`), skip
@@ -412,6 +451,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
       // and leave the earlier worktree orphaned on disk.
       let shouldPrepareWorktree = bootstrap.prepareWorktree !== undefined;
       if (shouldPrepareWorktree && bootstrap.prepareWorktree) {
+        failureStage = "worktree-create";
         const preWorktreeReadModel = yield* input.orchestrationEngine.getReadModel();
         const existingThreadBeforeWorktree = preWorktreeReadModel.threads.find(
           (thread) =>

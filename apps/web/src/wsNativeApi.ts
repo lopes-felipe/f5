@@ -54,6 +54,12 @@ const prHubSnapshotUpdatedListeners = new Set<(payload: PrHubSnapshot) => void>(
 const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisorySnapshot) => void>();
 const agentsSnapshotUpdatedListeners = new Set<(payload: AgentsSnapshot) => void>();
 
+function decodeRetryWorkflowResult(result: unknown) {
+  return result === undefined
+    ? ({ status: "started" } as const)
+    : Schema.decodeUnknownSync(OrchestrationRetryWorkflowResult)(result);
+}
+
 /**
  * Subscribe to the server welcome message. If a welcome was already received
  * before this call, the listener fires synchronously with the cached payload.
@@ -644,11 +650,13 @@ export function createWsNativeApi(): NativeApi {
       deleteInvestigationWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.deleteInvestigationWorkflow, input),
       retryWorkflow: async (input) =>
-        Schema.decodeUnknownSync(OrchestrationRetryWorkflowResult)(
+        decodeRetryWorkflowResult(
           await transport.request(ORCHESTRATION_WS_METHODS.retryWorkflow, input),
         ),
       retryCodeReviewWorkflow: (input) =>
-        transport.request(ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow, input),
+        transport
+          .request(ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow, input)
+          .then(decodeRetryWorkflowResult),
       retryInvestigationWorkflow: (input) =>
         transport.request(ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow, input),
       startImplementation: (input) =>

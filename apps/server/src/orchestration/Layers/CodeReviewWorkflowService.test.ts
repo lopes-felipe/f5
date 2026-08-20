@@ -23,9 +23,16 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { ProjectionSnapshotQuery } from "../Services/ProjectionSnapshotQuery.ts";
+import type { ProviderTurnDelivery } from "../Services/ProviderTurnDeliveryRepository.ts";
+import {
+  ProviderTurnDeliveryWorker,
+  type ProviderTurnDeliveryWorkerShape,
+} from "../Services/ProviderTurnDeliveryWorker.ts";
 import { CodeReviewWorkflowServiceLive } from "./CodeReviewWorkflowService.ts";
 
 const NOW = "2026-04-02T12:00:00.000Z";
+const ERROR_AT = "2026-04-02T12:01:00.000Z";
+const AFTER_ERROR = "2026-04-02T12:02:00.000Z";
 
 function makeThread(
   overrides: Partial<OrchestrationReadModel["threads"][number]>,
@@ -57,6 +64,50 @@ function makeThread(
     compaction: overrides.compaction ?? null,
     session: overrides.session ?? null,
   };
+}
+
+function makeCompletedThread(input: {
+  threadId: ThreadId;
+  suffix: string;
+  requestedAt?: string;
+  completedAt?: string;
+  text?: string;
+}): OrchestrationReadModel["threads"][number] {
+  const requestedAt = input.requestedAt ?? NOW;
+  const completedAt = input.completedAt ?? AFTER_ERROR;
+  const turnId = TurnId.makeUnsafe(`turn-${input.suffix}`);
+  const messageId = MessageId.makeUnsafe(`assistant-${input.suffix}`);
+  return makeThread({
+    id: input.threadId,
+    latestTurn: {
+      turnId,
+      state: "completed",
+      requestedAt,
+      startedAt: requestedAt,
+      completedAt,
+      assistantMessageId: messageId,
+    },
+    session: {
+      threadId: input.threadId,
+      status: "ready",
+      providerName: "codex",
+      runtimeMode: "full-access",
+      activeTurnId: null,
+      lastError: null,
+      updatedAt: completedAt,
+    },
+    messages: [
+      {
+        id: messageId,
+        role: "assistant",
+        text: input.text ?? `${input.suffix} findings`,
+        turnId,
+        streaming: false,
+        createdAt: completedAt,
+        updatedAt: completedAt,
+      },
+    ],
+  });
 }
 
 function makeWorkflow(overrides: Partial<CodeReviewWorkflow> = {}): CodeReviewWorkflow {
@@ -148,6 +199,52 @@ function makeEvent(
     metadata: {},
     payload,
   } as OrchestrationEvent;
+}
+
+function makeProviderTurnDelivery(
+  threadId: ThreadId,
+  state: ProviderTurnDelivery["state"],
+  overrides: Partial<ProviderTurnDelivery> = {},
+): ProviderTurnDelivery {
+  return {
+    deliveryId: CommandId.makeUnsafe(`delivery-${threadId}`),
+    threadId,
+    commandId: CommandId.makeUnsafe(`delivery-command-${threadId}`),
+    messageId: MessageId.makeUnsafe(`delivery-message-${threadId}`),
+    state,
+    providerTurnId: null,
+    attempt: 1,
+    preSendTurnIds: [],
+    event: makeEvent("thread.turn-start-requested", {
+      threadId,
+      turnId: TurnId.makeUnsafe(`pending-${threadId}`),
+      messageId: MessageId.makeUnsafe(`delivery-message-${threadId}`),
+      requestedAt: NOW,
+    } as never),
+    errorCode: "transport_error",
+    errorDetail: "Timed out waiting for thread/start.",
+    certainty: "unknown",
+    notBefore: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+    outcomeProjectedAt: null,
+    ...overrides,
+  };
+}
+
+function makeDeliveryWorker(
+  overrides: Partial<ProviderTurnDeliveryWorkerShape> = {},
+): ProviderTurnDeliveryWorkerShape {
+  return {
+    start: Effect.void,
+    drain: Effect.void,
+    outcomes: Stream.empty,
+    acknowledgeOutcome: () => Effect.void,
+    recheck: () => Effect.succeed(null),
+    retry: ({ threadId }) => Effect.succeed(makeProviderTurnDelivery(threadId, "pending")),
+    discard: (threadId) => Effect.succeed(makeProviderTurnDelivery(threadId, "abandoned")),
+    ...overrides,
+  };
 }
 
 function lastWorkflowUpsert(dispatched: OrchestrationCommand[]) {
@@ -261,6 +358,7 @@ async function createHarness(
   initialSnapshot: OrchestrationReadModel,
   options?: {
     failDispatch?: (command: OrchestrationCommand, count: number) => unknown | undefined;
+    providerTurnDeliveryWorker?: ProviderTurnDeliveryWorkerShape;
   },
 ) {
   let snapshot = initialSnapshot;
@@ -294,88 +392,95 @@ async function createHarness(
     streamDomainEvents: Stream.fromQueue(queue),
   };
 
-  const runtime = ManagedRuntime.make(
-    CodeReviewWorkflowServiceLive.pipe(
-      Layer.provideMerge(Layer.succeed(OrchestrationEngineService, engine)),
-      Layer.provideMerge(
-        Layer.succeed(ProjectionSnapshotQuery, {
-          getSnapshot: () =>
-            Effect.suspend(() => {
-              projectionSnapshotCallCount += 1;
-              return projectionSnapshotsFailing
-                ? Effect.die(
-                    new Error("Projection snapshot disabled by CodeReviewWorkflowService test."),
-                  )
-                : Effect.succeed(snapshot);
-            }),
-          getBootstrapSnapshot: () => Effect.succeed(snapshot),
-          getStartupSnapshot: () =>
-            Effect.succeed({
-              snapshot,
-              threadTailDetails: null,
-            }),
-          getThreadTailDetails: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              activities: [],
-              commandExecutions: [],
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
-              sessionNotes: null,
-              threadReferences: [],
-              hasOlderMessages: false,
-              hasOlderCheckpoints: false,
-              hasOlderActivities: false,
-              hasOlderCommandExecutions: false,
-              oldestLoadedMessageCursor: null,
-              oldestLoadedCheckpointTurnCount: null,
-              oldestLoadedActivityCursor: null,
-              oldestLoadedCommandExecutionCursor: null,
-              detailSequence: snapshot.snapshotSequence,
-            }),
-          getThreadHistoryPage: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              activities: [],
-              commandExecutions: [],
-              hasOlderMessages: false,
-              hasOlderCheckpoints: false,
-              hasOlderActivities: false,
-              hasOlderCommandExecutions: false,
-              oldestLoadedMessageCursor: null,
-              oldestLoadedCheckpointTurnCount: null,
-              oldestLoadedActivityCursor: null,
-              oldestLoadedCommandExecutionCursor: null,
-              detailSequence: snapshot.snapshotSequence,
-            }),
-          getThreadDetails: (input) =>
-            Effect.succeed({
-              threadId: input.threadId,
-              messages: [],
-              checkpoints: [],
-              tasks: [],
-              tasksTurnId: null,
-              tasksUpdatedAt: null,
-              sessionNotes: null,
-              threadReferences: [],
-              detailSequence: snapshot.snapshotSequence,
-            }),
-        }),
-      ),
-      Layer.provideMerge(
-        Layer.succeed(TextGeneration, {
-          generateCommitMessage: () => Effect.die("unsupported"),
-          generatePrContent: () => Effect.die("unsupported"),
-          generateBranchName: () => Effect.die("unsupported"),
-          generateThreadTitle,
-        } as unknown as TextGenerationShape),
-      ),
+  const serviceLayer = CodeReviewWorkflowServiceLive.pipe(
+    Layer.provideMerge(Layer.succeed(OrchestrationEngineService, engine)),
+    Layer.provideMerge(
+      Layer.succeed(ProjectionSnapshotQuery, {
+        getSnapshot: () =>
+          Effect.suspend(() => {
+            projectionSnapshotCallCount += 1;
+            return projectionSnapshotsFailing
+              ? Effect.die(
+                  new Error("Projection snapshot disabled by CodeReviewWorkflowService test."),
+                )
+              : Effect.succeed(snapshot);
+          }),
+        getBootstrapSnapshot: () => Effect.succeed(snapshot),
+        getStartupSnapshot: () =>
+          Effect.succeed({
+            snapshot,
+            threadTailDetails: null,
+          }),
+        getThreadTailDetails: (input) =>
+          Effect.succeed({
+            threadId: input.threadId,
+            messages: [],
+            checkpoints: [],
+            activities: [],
+            commandExecutions: [],
+            tasks: [],
+            tasksTurnId: null,
+            tasksUpdatedAt: null,
+            sessionNotes: null,
+            threadReferences: [],
+            hasOlderMessages: false,
+            hasOlderCheckpoints: false,
+            hasOlderActivities: false,
+            hasOlderCommandExecutions: false,
+            oldestLoadedMessageCursor: null,
+            oldestLoadedCheckpointTurnCount: null,
+            oldestLoadedActivityCursor: null,
+            oldestLoadedCommandExecutionCursor: null,
+            detailSequence: snapshot.snapshotSequence,
+          }),
+        getThreadHistoryPage: (input) =>
+          Effect.succeed({
+            threadId: input.threadId,
+            messages: [],
+            checkpoints: [],
+            activities: [],
+            commandExecutions: [],
+            hasOlderMessages: false,
+            hasOlderCheckpoints: false,
+            hasOlderActivities: false,
+            hasOlderCommandExecutions: false,
+            oldestLoadedMessageCursor: null,
+            oldestLoadedCheckpointTurnCount: null,
+            oldestLoadedActivityCursor: null,
+            oldestLoadedCommandExecutionCursor: null,
+            detailSequence: snapshot.snapshotSequence,
+          }),
+        getThreadDetails: (input) =>
+          Effect.succeed({
+            threadId: input.threadId,
+            messages: [],
+            checkpoints: [],
+            tasks: [],
+            tasksTurnId: null,
+            tasksUpdatedAt: null,
+            sessionNotes: null,
+            threadReferences: [],
+            detailSequence: snapshot.snapshotSequence,
+          }),
+      }),
     ),
+    Layer.provideMerge(
+      Layer.succeed(TextGeneration, {
+        generateCommitMessage: () => Effect.die("unsupported"),
+        generatePrContent: () => Effect.die("unsupported"),
+        generateBranchName: () => Effect.die("unsupported"),
+        generateThreadTitle,
+      } as unknown as TextGenerationShape),
+    ),
+  );
+  const runtime = ManagedRuntime.make(
+    options?.providerTurnDeliveryWorker
+      ? serviceLayer.pipe(
+          Layer.provideMerge(
+            Layer.succeed(ProviderTurnDeliveryWorker, options.providerTurnDeliveryWorker),
+          ),
+        )
+      : serviceLayer,
   );
 
   const service = await runtime.runPromise(Effect.service(CodeReviewWorkflowService));
@@ -1725,16 +1830,962 @@ describe("CodeReviewWorkflowService", () => {
     expect(lastUpsert?.workflow.reviewerB.status).toBe("error");
   });
 
-  it("starts the event stream even when reconciliation hits a workflow failure", async () => {
-    const workflow = makeWorkflow();
-    let failed = false;
+  it("heals newer reviewer completions on startup and starts consolidation exactly once", async () => {
+    const workflow = makeWorkflow({
+      archivedAt: ERROR_AT,
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A disconnected",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "error",
+        error: "Reviewer B disconnected",
+        updatedAt: ERROR_AT,
+      },
+    });
+    const reviewerAThread = makeCompletedThread({
+      threadId: workflow.reviewerA.threadId,
+      suffix: "review-a-late",
+    });
+    const reviewerBThread = makeCompletedThread({
+      threadId: workflow.reviewerB.threadId,
+      suffix: "review-b-late",
+    });
+    harness = await createHarness(
+      makeReadModel({ workflow, threads: [reviewerAThread, reviewerBThread] }),
+    );
+
+    await harness.start();
+    await waitFor(() =>
+      harness!.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    );
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: workflow.reviewerA.threadId,
+        session: reviewerAThread.session!,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const recovered = harness.getSnapshot().codeReviewWorkflows[0]!;
+    expect(recovered.reviewerA).toMatchObject({
+      status: "completed",
+      error: null,
+      pinnedTurnId: TurnId.makeUnsafe("turn-review-a-late"),
+    });
+    expect(recovered.reviewerB).toMatchObject({
+      status: "completed",
+      error: null,
+      pinnedTurnId: TurnId.makeUnsafe("turn-review-b-late"),
+    });
+    expect(recovered.archivedAt).toBe(ERROR_AT);
+    expect(
+      harness.dispatched.filter(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("partially heals newer evidence while preserving an error with only older evidence", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A disconnected",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "error",
+        error: "Original Reviewer B failure",
+        updatedAt: ERROR_AT,
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({
+            threadId: workflow.reviewerA.threadId,
+            suffix: "review-a-newer",
+          }),
+          makeCompletedThread({
+            threadId: workflow.reviewerB.threadId,
+            suffix: "review-b-older",
+            completedAt: NOW,
+          }),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    const recovered = harness.getSnapshot().codeReviewWorkflows[0]!;
+    expect(recovered.reviewerA.status).toBe("completed");
+    expect(recovered.reviewerB).toMatchObject({
+      status: "error",
+      error: "Original Reviewer B failure",
+      pinnedTurnId: null,
+    });
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(false);
+  });
+
+  it("heals a newer consolidation completion without starting another merge", async () => {
+    const workflow = makeWorkflow({
+      archivedAt: ERROR_AT,
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-a"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-a"),
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-b"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-b"),
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: ThreadId.makeUnsafe("review-merge"),
+        status: "error",
+        error: "Merge connection reset",
+        updatedAt: ERROR_AT,
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({
+            threadId: workflow.consolidation.threadId!,
+            suffix: "merge-late",
+            text: "Merged findings",
+          }),
+        ],
+      }),
+    );
+
+    await harness.start();
+
+    const recovered = harness.getSnapshot().codeReviewWorkflows[0]!;
+    expect(recovered.consolidation).toMatchObject({
+      status: "completed",
+      error: null,
+      pinnedTurnId: TurnId.makeUnsafe("turn-merge-late"),
+      pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-merge-late"),
+    });
+    expect(recovered.archivedAt).toBe(ERROR_AT);
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(false);
+  });
+
+  it("resumes a persisted pending consolidation after startup", async () => {
+    const reviewerAThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-a"),
+      suffix: "review-a",
+    });
+    const reviewerBThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-b"),
+      suffix: "review-b",
+    });
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: reviewerAThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerAThread.latestTurn!.assistantMessageId,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: reviewerBThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerBThread.latestTurn!.assistantMessageId,
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        status: "pending_start",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({ workflow, threads: [reviewerAThread, reviewerBThread] }),
+    );
+
+    await harness.start();
+
+    expect(
+      harness.dispatched.filter(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toHaveLength(1);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation.status).toBe("running");
+  });
+
+  it("reuses a persisted consolidation thread when resuming pending start", async () => {
+    const consolidationThreadId = ThreadId.makeUnsafe("persisted-review-merge");
+    const reviewerAThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-a"),
+      suffix: "review-a",
+    });
+    const reviewerBThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-b"),
+      suffix: "review-b",
+    });
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: reviewerAThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerAThread.latestTurn!.assistantMessageId,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: reviewerBThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerBThread.latestTurn!.assistantMessageId,
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: consolidationThreadId,
+        status: "pending_start",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [reviewerAThread, reviewerBThread, makeThread({ id: consolidationThreadId })],
+      }),
+    );
+
+    await harness.start();
+
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(false);
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "thread.turn.start" && command.threadId === consolidationThreadId,
+      ),
+    ).toBe(true);
+  });
+
+  it("marks a crash-window running consolidation retryable when no turn or delivery exists", async () => {
+    const consolidationThreadId = ThreadId.makeUnsafe("review-merge-without-turn");
+    const workflow = makeWorkflow({
+      reviewerA: { ...makeWorkflow().reviewerA, status: "completed" },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: consolidationThreadId,
+        status: "running",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: consolidationThreadId,
+            session: {
+              threadId: consolidationThreadId,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
+        ],
+      }),
+      { providerTurnDeliveryWorker: makeDeliveryWorker() },
+    );
+
+    await harness.start();
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation).toMatchObject({
+      status: "error",
+      error: "Consolidation had no active or recoverable turn during reconciliation.",
+    });
+  });
+
+  it("ignores stale session errors for completed reviewer and consolidation stages", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-a"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-a"),
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-b"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-b"),
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: ThreadId.makeUnsafe("review-merge"),
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-merge"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-merge"),
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow }));
+    await harness.start();
+
+    for (const threadId of [workflow.reviewerA.threadId, workflow.consolidation.threadId!]) {
+      await harness.emit(
+        makeEvent("thread.session-set", {
+          threadId,
+          session: {
+            threadId,
+            status: "error",
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: "Late stale failure",
+            updatedAt: AFTER_ERROR,
+          },
+        }),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const unchanged = harness.getSnapshot().codeReviewWorkflows[0]!;
+    expect(unchanged.reviewerA).toMatchObject({ status: "completed", error: null });
+    expect(unchanged.consolidation).toMatchObject({ status: "completed", error: null });
+  });
+
+  it("does not restart failed consolidation on a completed reviewer ready event", async () => {
+    const reviewerAThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-a"),
+      suffix: "review-a",
+    });
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: reviewerAThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerAThread.latestTurn!.assistantMessageId,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-b"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-b"),
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        status: "error",
+        error: "Merge prompt exceeded the provider limit.",
+        updatedAt: ERROR_AT,
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow, threads: [reviewerAThread] }));
+    await harness.start();
+
+    await harness.emit(
+      makeEvent("thread.session-set", {
+        threadId: workflow.reviewerA.threadId,
+        session: reviewerAThread.session!,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(false);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation).toMatchObject({
+      status: "error",
+      error: "Merge prompt exceeded the provider limit.",
+    });
+  });
+
+  it("consumes completed reviewer output during manual retry instead of dispatching a duplicate", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A disconnected",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-b"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-b"),
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeCompletedThread({
+            threadId: workflow.reviewerA.threadId,
+            suffix: "review-a-manual",
+          }),
+          makeCompletedThread({
+            threadId: workflow.reviewerB.threadId,
+            suffix: "review-b",
+          }),
+        ],
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+
+    expect(result).toEqual({ status: "started" });
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "thread.turn.start" && command.threadId === workflow.reviewerA.threadId,
+      ),
+    ).toBe(false);
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(true);
+  });
+
+  it("adopts a newer active reviewer turn without dispatching or rechecking delivery", async () => {
+    const activeTurnId = TurnId.makeUnsafe("turn-review-a-active");
+    const workflow = makeWorkflow({
+      archivedAt: ERROR_AT,
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A failed",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    const recheck = vi.fn<ProviderTurnDeliveryWorkerShape["recheck"]>(() => Effect.succeed(null));
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: workflow.reviewerA.threadId,
+            latestTurn: {
+              turnId: activeTurnId,
+              state: "running",
+              requestedAt: AFTER_ERROR,
+              startedAt: AFTER_ERROR,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: workflow.reviewerA.threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId,
+              lastError: null,
+              updatedAt: AFTER_ERROR,
+            },
+          }),
+        ],
+      }),
+      { providerTurnDeliveryWorker: makeDeliveryWorker({ recheck }) },
+    );
+
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+
+    expect(recheck).not.toHaveBeenCalled();
+    expect(harness.dispatched.some((command) => command.type === "thread.turn.start")).toBe(false);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("running");
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.archivedAt).toBe(ERROR_AT);
+  });
+
+  it("dispatches a persisted pending reviewer while preserving an active sibling", async () => {
+    const reviewerBActiveTurn = TurnId.makeUnsafe("turn-review-b-active");
+    const workflow = makeWorkflow({
+      reviewerA: { ...makeWorkflow().reviewerA, status: "pending" },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "running" },
+    });
     harness = await createHarness(
       makeReadModel({
         workflow,
         threads: [
           makeThread({ id: workflow.reviewerA.threadId }),
-          makeThread({ id: workflow.reviewerB.threadId }),
+          makeThread({
+            id: workflow.reviewerB.threadId,
+            latestTurn: {
+              turnId: reviewerBActiveTurn,
+              state: "running",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: null,
+              assistantMessageId: null,
+            },
+            session: {
+              threadId: workflow.reviewerB.threadId,
+              status: "running",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: reviewerBActiveTurn,
+              lastError: null,
+              updatedAt: NOW,
+            },
+          }),
         ],
+      }),
+    );
+
+    const result = await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+
+    expect(result).toEqual({ status: "started" });
+    expect(
+      harness.dispatched.filter(
+        (command) =>
+          command.type === "thread.turn.start" && command.threadId === workflow.reviewerA.threadId,
+      ),
+    ).toHaveLength(1);
+    expect(
+      harness.dispatched.filter(
+        (command) =>
+          command.type === "thread.turn.start" && command.threadId === workflow.reviewerB.threadId,
+      ),
+    ).toHaveLength(0);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("running");
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerB.status).toBe("running");
+  });
+
+  it("does not overwrite newer workflow state after a slow delivery recheck", async () => {
+    const workflow = makeWorkflow({
+      totalCostUsd: 1,
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A failed",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    const recheckStarted = Promise.withResolvers<void>();
+    const recheckResult = Promise.withResolvers<ProviderTurnDelivery | null>();
+    const recheck = vi.fn<ProviderTurnDeliveryWorkerShape["recheck"]>(() =>
+      Effect.promise(() => {
+        recheckStarted.resolve();
+        return recheckResult.promise;
+      }),
+    );
+    harness = await createHarness(makeReadModel({ workflow }), {
+      providerTurnDeliveryWorker: makeDeliveryWorker({ recheck }),
+    });
+
+    const retry = Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+    await recheckStarted.promise;
+    const completedWorkflow: CodeReviewWorkflow = {
+      ...workflow,
+      totalCostUsd: 4,
+      reviewerA: {
+        ...workflow.reviewerA,
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-a-newer"),
+        pinnedAssistantMessageId: MessageId.makeUnsafe("assistant-review-a-newer"),
+        error: null,
+        updatedAt: AFTER_ERROR,
+      },
+      updatedAt: AFTER_ERROR,
+    };
+    harness.setSnapshot({
+      ...harness.getSnapshot(),
+      codeReviewWorkflows: [completedWorkflow],
+      updatedAt: AFTER_ERROR,
+    });
+    recheckResult.resolve(makeProviderTurnDelivery(workflow.reviewerA.threadId, "pending"));
+
+    await expect(retry).resolves.toEqual({ status: "started" });
+    expect(harness.getSnapshot().codeReviewWorkflows[0]).toMatchObject({
+      totalCostUsd: 4,
+      reviewerA: {
+        status: "completed",
+        pinnedTurnId: TurnId.makeUnsafe("turn-review-a-newer"),
+      },
+    });
+  });
+
+  for (const deliveryState of ["pending", "sending"] as const) {
+    it(`reuses a ${deliveryState} reviewer delivery without dispatching another turn`, async () => {
+      const workflow = makeWorkflow({
+        reviewerA: {
+          ...makeWorkflow().reviewerA,
+          status: "error",
+          error: "Reviewer A failed",
+          updatedAt: ERROR_AT,
+        },
+        reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+      });
+      const recheck = vi.fn<ProviderTurnDeliveryWorkerShape["recheck"]>(() =>
+        Effect.succeed(makeProviderTurnDelivery(workflow.reviewerA.threadId, deliveryState)),
+      );
+      harness = await createHarness(makeReadModel({ workflow }), {
+        providerTurnDeliveryWorker: makeDeliveryWorker({ recheck }),
+      });
+
+      await Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+      );
+
+      expect(recheck).toHaveBeenCalledWith(workflow.reviewerA.threadId);
+      expect(harness.dispatched.some((command) => command.type === "thread.turn.start")).toBe(
+        false,
+      );
+      expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("running");
+    });
+  }
+
+  it("reuses a correlated accepted delivery that has not reached the projection yet", async () => {
+    const oldTurnId = TurnId.makeUnsafe("turn-review-a-old");
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A failed",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    const accepted = makeProviderTurnDelivery(workflow.reviewerA.threadId, "accepted", {
+      providerTurnId: TurnId.makeUnsafe("turn-review-a-accepted"),
+      preSendTurnIds: [oldTurnId],
+      errorCode: null,
+      errorDetail: null,
+      certainty: null,
+    });
+    const oldThread = makeCompletedThread({
+      threadId: workflow.reviewerA.threadId,
+      suffix: "review-a-old",
+      completedAt: NOW,
+    });
+    harness = await createHarness(makeReadModel({ workflow, threads: [oldThread] }), {
+      providerTurnDeliveryWorker: makeDeliveryWorker({
+        recheck: () => Effect.succeed(accepted),
+      }),
+    });
+
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+
+    expect(harness.dispatched.some((command) => command.type === "thread.turn.start")).toBe(false);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("running");
+  });
+
+  it("dispatches fresh work for an accepted delivery tied to the stale failed turn", async () => {
+    const failedTurnId = TurnId.makeUnsafe("turn-review-a-failed");
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A failed",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    const accepted = makeProviderTurnDelivery(workflow.reviewerA.threadId, "accepted", {
+      providerTurnId: failedTurnId,
+      errorCode: null,
+      errorDetail: null,
+      certainty: null,
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: workflow.reviewerA.threadId,
+            latestTurn: {
+              turnId: failedTurnId,
+              state: "error",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: ERROR_AT,
+              assistantMessageId: null,
+            },
+          }),
+        ],
+      }),
+      {
+        providerTurnDeliveryWorker: makeDeliveryWorker({
+          recheck: () => Effect.succeed(accepted),
+        }),
+      },
+    );
+
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "thread.turn.start" && command.threadId === workflow.reviewerA.threadId,
+      ),
+    ).toBe(true);
+  });
+
+  it("requeues rejected delivery and requires confirmation for ambiguous delivery", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Reviewer A failed",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>(({ threadId }) =>
+      Effect.succeed(makeProviderTurnDelivery(threadId, "pending")),
+    );
+    const ambiguous = makeProviderTurnDelivery(workflow.reviewerA.threadId, "ambiguous");
+    harness = await createHarness(makeReadModel({ workflow }), {
+      providerTurnDeliveryWorker: makeDeliveryWorker({
+        recheck: () => Effect.succeed(ambiguous),
+        retry: retryDelivery,
+      }),
+    });
+
+    const confirmation = await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+    );
+    expect(confirmation).toEqual({
+      status: "confirmation_required",
+      threadIds: [workflow.reviewerA.threadId],
+    });
+    expect(retryDelivery).not.toHaveBeenCalled();
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("error");
+
+    await Effect.runPromise(
+      harness.service.retryWorkflow({
+        workflowId: workflow.id,
+        scope: "failed",
+        allowPossibleDuplicate: true,
+      }),
+    );
+    expect(retryDelivery).toHaveBeenCalledWith({
+      threadId: workflow.reviewerA.threadId,
+      allowPossibleDuplicate: true,
+    });
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("running");
+  });
+
+  it("requeues a rejected consolidation delivery on the existing thread", async () => {
+    const consolidationThreadId = ThreadId.makeUnsafe("review-merge");
+    const workflow = makeWorkflow({
+      reviewerA: { ...makeWorkflow().reviewerA, status: "completed" },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: consolidationThreadId,
+        status: "error",
+        error: "Merge failed",
+        updatedAt: ERROR_AT,
+      },
+    });
+    const retryDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["retry"]>(({ threadId }) =>
+      Effect.succeed(makeProviderTurnDelivery(threadId, "pending")),
+    );
+    harness = await createHarness(makeReadModel({ workflow }), {
+      providerTurnDeliveryWorker: makeDeliveryWorker({
+        recheck: () => Effect.succeed(makeProviderTurnDelivery(consolidationThreadId, "rejected")),
+        retry: retryDelivery,
+      }),
+    });
+
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: workflow.id, scope: "consolidation" }),
+    );
+
+    expect(retryDelivery).toHaveBeenCalledWith({
+      threadId: consolidationThreadId,
+      allowPossibleDuplicate: false,
+    });
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" && command.title === "Review Merge",
+      ),
+    ).toBe(false);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation).toMatchObject({
+      threadId: consolidationThreadId,
+      status: "running",
+    });
+  });
+
+  it("re-marks consolidation as retryable when a fresh merge dispatch fails", async () => {
+    const reviewerAThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-a"),
+      suffix: "review-a",
+    });
+    const reviewerBThread = makeCompletedThread({
+      threadId: ThreadId.makeUnsafe("reviewer-b"),
+      suffix: "review-b",
+    });
+    const workflow = makeWorkflow({
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "completed",
+        pinnedTurnId: reviewerAThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerAThread.latestTurn!.assistantMessageId,
+      },
+      reviewerB: {
+        ...makeWorkflow().reviewerB,
+        status: "completed",
+        pinnedTurnId: reviewerBThread.latestTurn!.turnId,
+        pinnedAssistantMessageId: reviewerBThread.latestTurn!.assistantMessageId,
+      },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        threadId: ThreadId.makeUnsafe("failed-merge"),
+        status: "error",
+        error: "Original merge failure",
+        updatedAt: ERROR_AT,
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({ workflow, threads: [reviewerAThread, reviewerBThread] }),
+      {
+        failDispatch: (command) =>
+          command.type === "thread.turn.start"
+            ? new Error("Merge dispatch unavailable")
+            : undefined,
+      },
+    );
+
+    await expect(
+      Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: workflow.id, scope: "consolidation" }),
+      ),
+    ).rejects.toThrow("Merge dispatch unavailable");
+
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation).toMatchObject({
+      status: "error",
+      error: "Merge dispatch unavailable",
+    });
+  });
+
+  it("checks the budget before starting consolidation without an existing retry target", async () => {
+    const workflow = makeWorkflow({
+      totalCostUsd: 1,
+      maxCostUsd: 1,
+      reviewerA: { ...makeWorkflow().reviewerA, status: "completed" },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+      consolidation: {
+        ...makeWorkflow().consolidation,
+        status: "not_started",
+      },
+    });
+    harness = await createHarness(makeReadModel({ workflow }));
+
+    await expect(
+      Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+      ),
+    ).rejects.toThrow("Workflow cost limit reached");
+
+    expect(
+      harness.dispatched.some(
+        (command) => command.type === "thread.create" || command.type === "thread.turn.start",
+      ),
+    ).toBe(false);
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.consolidation).toMatchObject({
+      status: "not_started",
+      threadId: null,
+      error: null,
+    });
+  });
+
+  it("keeps failed reviewer state when budget, delivery recheck, or dispatch fails", async () => {
+    const workflow = makeWorkflow({
+      totalCostUsd: 1,
+      maxCostUsd: 1,
+      reviewerA: {
+        ...makeWorkflow().reviewerA,
+        status: "error",
+        error: "Original reviewer failure",
+        updatedAt: ERROR_AT,
+      },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    harness = await createHarness(makeReadModel({ workflow }));
+
+    await expect(
+      Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+      ),
+    ).rejects.toThrow("Workflow cost limit reached");
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA).toMatchObject({
+      status: "error",
+      error: "Original reviewer failure",
+    });
+
+    await harness.dispose();
+    harness = await createHarness(makeReadModel({ workflow }), {
+      providerTurnDeliveryWorker: makeDeliveryWorker({
+        recheck: () => Effect.fail(new Error("Provider disconnected")),
+      }),
+    });
+    await expect(
+      Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+      ),
+    ).rejects.toThrow("Could not verify provider delivery");
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA.status).toBe("error");
+
+    await harness.dispose();
+    harness = await createHarness(makeReadModel({ workflow: { ...workflow, maxCostUsd: null } }), {
+      failDispatch: (command) =>
+        command.type === "thread.turn.start" ? new Error("Dispatch unavailable") : undefined,
+    });
+    await expect(
+      Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: workflow.id, scope: "failed" }),
+      ),
+    ).rejects.toThrow("Dispatch unavailable");
+    expect(harness.getSnapshot().codeReviewWorkflows[0]?.reviewerA).toMatchObject({
+      status: "error",
+      error: "Original reviewer failure",
+    });
+  });
+
+  it("starts the event stream even when reconciliation hits a workflow failure", async () => {
+    const workflow = makeWorkflow({
+      reviewerA: { ...makeWorkflow().reviewerA, status: "running" },
+      reviewerB: { ...makeWorkflow().reviewerB, status: "completed" },
+    });
+    let failed = false;
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [],
       }),
       {
         failDispatch: (command) => {

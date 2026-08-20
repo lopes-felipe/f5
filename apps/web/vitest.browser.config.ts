@@ -50,6 +50,7 @@ export default mergeConfig(
         "src/components/chat/ProviderModelPicker.browser.tsx",
         "src/components/ui/toast.browser.tsx",
         "src/components/workflow/WorkflowCreateDialog.browser.tsx",
+        "src/components/workflow/CodeReviewWorkflowView.browser.tsx",
         "src/components/workflow/WorkflowImplementDialog.browser.tsx",
         "src/components/workflow/WorkflowView.browser.tsx",
       ],

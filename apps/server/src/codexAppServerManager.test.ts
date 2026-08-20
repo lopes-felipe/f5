@@ -292,6 +292,18 @@ describe("classifyCodexStderrLine", () => {
     expect(classifyCodexStderrLine(line)).toBeNull();
   });
 
+  it("ignores cross-version model-cache TTL errors", () => {
+    const line =
+      "\u001b[2m2026-08-20T14:48:43.142211Z\u001b[0m \u001b[31mERROR\u001b[0m \u001b[2mcodex_models_manager::manager\u001b[0m: failed to renew cache TTL: missing field `supports_parallel_tool_calls` at line 4921 column 5";
+    expect(classifyCodexStderrLine(line)).toBeNull();
+  });
+
+  it("keeps other model-cache TTL errors visible", () => {
+    const line =
+      "2026-08-20T14:48:43.142211Z ERROR codex_models_manager::manager: failed to renew cache TTL: permission denied";
+    expect(classifyCodexStderrLine(line)).toEqual({ message: line });
+  });
+
   it("keeps unknown structured errors", () => {
     const line = "2026-02-08T04:24:20.085687Z ERROR codex_core::runtime: unrecoverable failure";
     expect(classifyCodexStderrLine(line)).toEqual({

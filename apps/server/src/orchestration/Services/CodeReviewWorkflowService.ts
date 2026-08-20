@@ -3,6 +3,7 @@ import type {
   CodeReviewWorkflowId,
   OrchestrationCreateCodeReviewWorkflowInput,
   OrchestrationRetryCodeReviewWorkflowInput,
+  OrchestrationRetryWorkflowResult,
   ThreadId,
 } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
@@ -19,7 +20,7 @@ export interface CodeReviewWorkflowServiceShape {
   readonly deleteWorkflow: (workflowId: CodeReviewWorkflowId) => Effect.Effect<void, Error>;
   readonly retryWorkflow: (
     input: OrchestrationRetryCodeReviewWorkflowInput,
-  ) => Effect.Effect<void, Error>;
+  ) => Effect.Effect<OrchestrationRetryWorkflowResult, Error>;
   readonly workflowForThread: (threadId: ThreadId) => Effect.Effect<
     {
       workflow: CodeReviewWorkflow;

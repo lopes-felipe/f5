@@ -24,8 +24,6 @@ import {
   type OrchestrationEvent,
   ORCHESTRATION_WS_CHANNELS,
   ORCHESTRATION_WS_METHODS,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
   ProjectId,
@@ -152,13 +150,15 @@ import {
   normalizeAttachmentRelativePath,
   resolveAttachmentRelativePath,
 } from "./attachmentPaths";
-
+import { resolveAttachmentPathById } from "./attachmentStore.ts";
 import {
-  createAttachmentId,
-  resolveAttachmentPath,
-  resolveAttachmentPathById,
-} from "./attachmentStore.ts";
-import { parseBase64DataUrl } from "./imageMime.ts";
+  AttachmentIngressError,
+  discardAttachmentIngress,
+  discardPreparedAttachmentIngress,
+  persistPreparedAttachmentIngress,
+  prepareAttachmentIngress,
+  type PreparedAttachmentIngress,
+} from "./attachmentIngress.ts";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService.ts";
 import { expandHomePath } from "./os-jank.ts";
 import {
@@ -167,10 +167,7 @@ import {
   websocketConnectionsTotal,
 } from "./observability/Metrics.ts";
 import { observeRpcEffect } from "./observability/RpcInstrumentation.ts";
-import {
-  dispatchBootstrapTurnStart,
-  isDefinitelyUncommittedDispatchError,
-} from "./wsServer/bootstrapTurnStart.ts";
+import { dispatchBootstrapTurnStart } from "./wsServer/bootstrapTurnStart.ts";
 import { makeServerPushBus, makeWebSocketSendController } from "./wsServer/pushBus.ts";
 import {
   WEB_SOCKET_MAX_PAYLOAD_BYTES,
@@ -197,7 +194,6 @@ import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReco
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import { makePreviewManager } from "./preview/Manager.ts";
-import { writeFileBytesAtomically } from "./atomicWrite.ts";
 import { scanLocalServers } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
@@ -638,6 +634,9 @@ function mapNextTurnQueueRouteError(error: NextTurnQueueError): RouteRequestErro
 
 function formatRouteFailureMessage(cause: Cause.Cause<unknown>): string {
   const squashed = Cause.squash(cause);
+  if (Schema.is(AttachmentIngressError)(squashed)) {
+    return squashed.message;
+  }
   if (
     squashed &&
     typeof squashed === "object" &&
@@ -656,6 +655,9 @@ function formatRouteFailure(cause: Cause.Cause<unknown>): {
   readonly code?: string;
 } {
   const squashed = Cause.squash(cause);
+  if (Schema.is(AttachmentIngressError)(squashed)) {
+    return { message: squashed.message };
+  }
   if (Schema.is(RouteRequestError)(squashed)) {
     return {
       message: squashed.message,
@@ -870,27 +872,77 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   );
   yield* readiness.markKeybindingsReady;
 
+  const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
+    const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
+    const workspaceStat = yield* fileSystem
+      .stat(normalizedWorkspaceRoot)
+      .pipe(Effect.catch(() => Effect.succeed(null)));
+    if (!workspaceStat) {
+      return yield* new RouteRequestError({
+        message: `Project directory does not exist: ${normalizedWorkspaceRoot}`,
+      });
+    }
+    if (workspaceStat.type !== "Directory") {
+      return yield* new RouteRequestError({
+        message: `Project path is not a directory: ${normalizedWorkspaceRoot}`,
+      });
+    }
+    return normalizedWorkspaceRoot;
+  });
+
+  const prepareTurnStartCommand = Effect.fnUntraced(function* (input: {
+    readonly command: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }>;
+  }) {
+    const { dispatchSource: _dispatchSource, ...turnStartCommand } =
+      input.command as typeof input.command & {
+        readonly dispatchSource?: unknown;
+      };
+    const inputLengthIssue = getProviderTurnInputLengthIssue(turnStartCommand.message.text);
+    if (inputLengthIssue) {
+      return yield* new RouteRequestError({
+        message: inputLengthIssue.message,
+      });
+    }
+    const normalizedBootstrap =
+      turnStartCommand.bootstrap?.prepareWorktree?.projectCwd !== undefined
+        ? {
+            ...turnStartCommand.bootstrap,
+            prepareWorktree: {
+              ...turnStartCommand.bootstrap.prepareWorktree,
+              projectCwd: yield* normalizeProjectWorkspaceRoot(
+                turnStartCommand.bootstrap.prepareWorktree.projectCwd,
+              ),
+            },
+          }
+        : turnStartCommand.bootstrap;
+    const attachmentIngress = yield* prepareAttachmentIngress({
+      attachments: turnStartCommand.message.attachments,
+      attachmentsDir: serverConfig.attachmentsDir,
+      commandId: turnStartCommand.commandId,
+      threadId: turnStartCommand.threadId,
+    });
+    const command = {
+      ...turnStartCommand,
+      message: {
+        ...turnStartCommand.message,
+        attachments: attachmentIngress.attachments,
+      },
+      ...(normalizedBootstrap ? { bootstrap: normalizedBootstrap } : {}),
+    } satisfies Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
+    return { attachmentIngress, command };
+  });
+
+  const persistPreparedTurnStartCommand = Effect.fnUntraced(function* (prepared: {
+    readonly attachmentIngress: PreparedAttachmentIngress;
+    readonly command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>;
+  }) {
+    yield* persistPreparedAttachmentIngress(prepared.attachmentIngress);
+    return prepared.command;
+  });
+
   const normalizeDispatchCommand = Effect.fnUntraced(function* (input: {
     readonly command: ClientOrchestrationCommand;
   }) {
-    const normalizeProjectWorkspaceRoot = Effect.fnUntraced(function* (workspaceRoot: string) {
-      const normalizedWorkspaceRoot = path.resolve(yield* expandHomePath(workspaceRoot.trim()));
-      const workspaceStat = yield* fileSystem
-        .stat(normalizedWorkspaceRoot)
-        .pipe(Effect.catch(() => Effect.succeed(null)));
-      if (!workspaceStat) {
-        return yield* new RouteRequestError({
-          message: `Project directory does not exist: ${normalizedWorkspaceRoot}`,
-        });
-      }
-      if (workspaceStat.type !== "Directory") {
-        return yield* new RouteRequestError({
-          message: `Project path is not a directory: ${normalizedWorkspaceRoot}`,
-        });
-      }
-      return normalizedWorkspaceRoot;
-    });
-
     if (input.command.type === "project.create") {
       return {
         ...input.command,
@@ -935,238 +987,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     if (input.command.type !== "thread.turn.start") {
       return input.command as OrchestrationCommand;
     }
-    const turnInput: Extract<ClientOrchestrationCommand, { type: "thread.turn.start" }> =
-      input.command;
-    const { dispatchSource: _dispatchSource, ...turnStartCommand } =
-      turnInput as typeof turnInput & {
-        readonly dispatchSource?: unknown;
-      };
-    const inputLengthIssue = getProviderTurnInputLengthIssue(turnStartCommand.message.text);
-    if (inputLengthIssue) {
-      return yield* new RouteRequestError({
-        message: inputLengthIssue.message,
-      });
-    }
-    if (turnStartCommand.message.attachments.length > PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
-      return yield* new RouteRequestError({
-        message: `A turn can include at most ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} attachments.`,
-      });
-    }
-    const normalizedBootstrap =
-      turnStartCommand.bootstrap?.prepareWorktree?.projectCwd !== undefined
-        ? {
-            ...turnStartCommand.bootstrap,
-            prepareWorktree: {
-              ...turnStartCommand.bootstrap.prepareWorktree,
-              projectCwd: yield* normalizeProjectWorkspaceRoot(
-                turnStartCommand.bootstrap.prepareWorktree.projectCwd,
-              ),
-            },
-          }
-        : turnStartCommand.bootstrap;
-
-    const preparedAttachments = yield* Effect.forEach(
-      turnStartCommand.message.attachments,
-      (attachment) =>
-        Effect.gen(function* () {
-          const parsed = parseBase64DataUrl(attachment.dataUrl);
-          if (!parsed || !parsed.mimeType.startsWith("image/")) {
-            return yield* new RouteRequestError({
-              message: `Invalid image attachment payload for '${attachment.name}'.`,
-            });
-          }
-
-          const bytes = Buffer.from(parsed.base64, "base64");
-          if (bytes.byteLength === 0 || bytes.byteLength > PROVIDER_SEND_TURN_MAX_IMAGE_BYTES) {
-            return yield* new RouteRequestError({
-              message: `Image attachment '${attachment.name}' is empty or too large.`,
-            });
-          }
-
-          const attachmentId = createAttachmentId(turnStartCommand.threadId);
-          if (!attachmentId) {
-            return yield* new RouteRequestError({
-              message: "Failed to create a safe attachment id.",
-            });
-          }
-
-          const persistedAttachment = {
-            type: "image" as const,
-            id: attachmentId,
-            name: attachment.name,
-            mimeType: parsed.mimeType.toLowerCase(),
-            sizeBytes: bytes.byteLength,
-          };
-
-          const attachmentPath = resolveAttachmentPath({
-            attachmentsDir: serverConfig.attachmentsDir,
-            attachment: persistedAttachment,
-          });
-          if (!attachmentPath) {
-            return yield* new RouteRequestError({
-              message: `Failed to resolve persisted path for '${attachment.name}'.`,
-            });
-          }
-
-          const stagingPath = path.join(
-            serverConfig.attachmentsDir,
-            ".staging",
-            createHash("sha256").update(turnStartCommand.commandId).digest("hex"),
-            path.basename(attachmentPath),
-          );
-          return { attachment, persistedAttachment, attachmentPath, stagingPath, bytes };
-        }),
-      { concurrency: 1 },
-    );
-
-    const writtenAttachments: Array<{
-      readonly id: string;
-      readonly stagingPath: string;
-      readonly finalPath: string;
-    }> = [];
-    const cleanupWrittenAttachments = Effect.forEach(
-      writtenAttachments,
-      (written) =>
-        Effect.all(
-          [
-            fileSystem.remove(written.stagingPath, { force: true }).pipe(Effect.ignore),
-            fileSystem.remove(written.finalPath, { force: true }).pipe(Effect.ignore),
-            sql`DELETE FROM attachments WHERE attachment_id = ${written.id}`.pipe(Effect.ignore),
-          ],
-          { discard: true },
-        ),
-      { concurrency: 1, discard: true },
-    );
-    const normalizedAttachments = yield* Effect.gen(function* () {
-      yield* Effect.forEach(
-        preparedAttachments,
-        ({ attachment, persistedAttachment, attachmentPath, stagingPath, bytes }) =>
-          writeFileBytesAtomically({ filePath: stagingPath, contents: bytes }).pipe(
-            Effect.mapError(
-              () =>
-                new RouteRequestError({
-                  message: `Failed to persist attachment '${attachment.name}'.`,
-                }),
-            ),
-            Effect.tap(() =>
-              Effect.sync(() =>
-                writtenAttachments.push({
-                  id: persistedAttachment.id,
-                  stagingPath,
-                  finalPath: attachmentPath,
-                }),
-              ),
-            ),
-          ),
-        { concurrency: 1, discard: true },
-      );
-
-      yield* sql.withTransaction(
-        Effect.forEach(
-          preparedAttachments,
-          ({ attachment, persistedAttachment, attachmentPath, stagingPath, bytes }) => {
-            const createdAt = new Date().toISOString();
-            return Effect.gen(function* () {
-              yield* sql`
-            INSERT INTO attachments (
-              attachment_id, thread_id, type, name, mime_type, size_bytes, content_hash,
-              staging_path, final_path, lifecycle, created_at, updated_at
-            ) VALUES (
-              ${persistedAttachment.id}, ${turnStartCommand.threadId}, 'image', ${attachment.name},
-              ${persistedAttachment.mimeType}, ${bytes.byteLength},
-                  ${createHash("sha256").update(bytes).digest("hex")}, ${stagingPath}, ${attachmentPath},
-                  'staged', ${createdAt}, ${createdAt}
-            )
-          `.pipe(
-                Effect.mapError(
-                  () =>
-                    new RouteRequestError({
-                      message: `Failed to record attachment '${attachment.name}'.`,
-                    }),
-                ),
-              );
-              yield* sql`
-            INSERT INTO attachment_owners (
-              attachment_id, owner_kind, owner_id, created_at
-            ) VALUES (${persistedAttachment.id}, 'ingress', ${turnStartCommand.commandId}, ${createdAt})
-          `.pipe(
-                Effect.mapError(
-                  () =>
-                    new RouteRequestError({
-                      message: `Failed to record attachment '${attachment.name}'.`,
-                    }),
-                ),
-              );
-            });
-          },
-          { concurrency: 1, discard: true },
-        ),
-      );
-
-      yield* Effect.forEach(
-        preparedAttachments,
-        ({ persistedAttachment, attachmentPath, stagingPath }) =>
-          Effect.gen(function* () {
-            yield* fileSystem.rename(stagingPath, attachmentPath);
-            yield* sql`
-              UPDATE attachments SET lifecycle = 'ready', staging_path = NULL,
-                updated_at = ${new Date().toISOString()}
-              WHERE attachment_id = ${persistedAttachment.id} AND lifecycle = 'staged'
-            `;
-          }),
-        { concurrency: 1, discard: true },
-      );
-      return preparedAttachments.map((entry) => entry.persistedAttachment);
-    }).pipe(Effect.tapError(() => cleanupWrittenAttachments));
-
-    return {
-      ...turnStartCommand,
-      message: {
-        ...turnStartCommand.message,
-        attachments: normalizedAttachments,
-      },
-      ...(normalizedBootstrap ? { bootstrap: normalizedBootstrap } : {}),
-    } satisfies OrchestrationCommand;
+    const prepared = yield* prepareTurnStartCommand({ command: input.command });
+    return yield* persistPreparedTurnStartCommand(prepared);
   });
 
   const removePersistedTurnAttachments = (
     command: Extract<OrchestrationCommand, { type: "thread.turn.start" }>,
   ) =>
-    Effect.forEach(
-      command.message.attachments,
-      (attachment) =>
-        Effect.gen(function* () {
-          yield* sql`
-            DELETE FROM attachment_owners
-            WHERE attachment_id = ${attachment.id}
-              AND owner_kind = 'ingress'
-              AND owner_id = ${command.commandId}
-          `.pipe(Effect.ignore);
-          const owners = yield* sql<{ readonly count: number }>`
-            SELECT COUNT(*) AS count
-            FROM attachment_owners
-            WHERE attachment_id = ${attachment.id}
-          `.pipe(Effect.catch(() => Effect.succeed([{ count: 0 }])));
-          if ((owners[0]?.count ?? 0) > 0) return;
-
-          const attachmentPath = resolveAttachmentPath({
-            attachmentsDir: serverConfig.attachmentsDir,
-            attachment,
-          });
-          if (attachmentPath) {
-            yield* fileSystem.remove(attachmentPath, { force: true }).pipe(Effect.ignore);
-          }
-          yield* sql`
-            DELETE FROM attachments
-            WHERE attachment_id = ${attachment.id}
-              AND NOT EXISTS (
-                SELECT 1 FROM attachment_owners
-                WHERE attachment_id = ${attachment.id}
-              )
-          `.pipe(Effect.ignore);
-        }),
-      { concurrency: 1, discard: true },
-    );
+    discardAttachmentIngress({
+      attachments: command.message.attachments,
+      attachmentsDir: serverConfig.attachmentsDir,
+      commandId: command.commandId,
+    });
 
   // HTTP server — serves static files or redirects to Vite dev server
   const httpServer = http.createServer((req, res) => {
@@ -2185,22 +2017,35 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const { orchestrationEngine, projectSetupScriptRunner } =
           yield* awaitOrchestrationRuntimeForRoute;
         const { command } = request.body;
-        const normalizedCommand = yield* normalizeDispatchCommand({ command });
-        if (normalizedCommand.type === "thread.turn.start" && normalizedCommand.bootstrap) {
+        if (command.type === "thread.turn.start" && command.bootstrap) {
+          const prepared = yield* prepareTurnStartCommand({ command });
           return yield* dispatchBootstrapTurnStart({
-            command: normalizedCommand,
+            command: prepared.command,
             orchestrationEngine,
             git,
+            ...(prepared.attachmentIngress.attachments.length > 0
+              ? {
+                  persistAttachments: persistPreparedAttachmentIngress(
+                    prepared.attachmentIngress,
+                  ).pipe(
+                    Effect.asVoid,
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(Path.Path, path),
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  ),
+                  discardAttachments: discardPreparedAttachmentIngress(
+                    prepared.attachmentIngress,
+                  ).pipe(
+                    Effect.provideService(FileSystem.FileSystem, fileSystem),
+                    Effect.provideService(SqlClient.SqlClient, sql),
+                  ),
+                }
+              : {}),
             projectSetupScriptRunner,
             worktreesDir: serverConfig.worktreesDir,
-          }).pipe(
-            Effect.tapError((error) =>
-              error._tag !== "GitCommandError" && isDefinitelyUncommittedDispatchError(error)
-                ? removePersistedTurnAttachments(normalizedCommand)
-                : Effect.void,
-            ),
-          );
+          });
         }
+        const normalizedCommand = yield* normalizeDispatchCommand({ command });
         if (normalizedCommand.type === "thread.turn.start") {
           yield* removePersistedTurnAttachments(normalizedCommand);
           return yield* new RouteRequestError({
@@ -2464,7 +2309,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case ORCHESTRATION_WS_METHODS.retryCodeReviewWorkflow: {
         const { codeReviewWorkflowService } = yield* awaitOrchestrationRuntimeForRoute;
         const body = stripRequestTag(request.body);
-        yield* codeReviewWorkflowService.retryWorkflow(body).pipe(
+        return yield* codeReviewWorkflowService.retryWorkflow(body).pipe(
           Effect.mapError(
             (cause) =>
               new RouteRequestError({
@@ -2472,7 +2317,6 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
               }),
           ),
         );
-        return undefined;
       }
 
       case ORCHESTRATION_WS_METHODS.retryInvestigationWorkflow: {
