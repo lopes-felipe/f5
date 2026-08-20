@@ -78,6 +78,7 @@ export const ProviderSessionStartInput = Schema.Struct({
   modelSelection: Schema.optional(ModelSelection),
   interactionMode: Schema.optional(ProviderInteractionMode),
   workflowExecutionProfile: Schema.optional(WorkflowTurnExecutionProfile),
+  workflowExecutionProfileChanged: Schema.optional(Schema.Boolean),
   resumeCursor: Schema.optional(Schema.Unknown),
   approvalPolicy: Schema.optional(ProviderApprovalPolicy),
   sandboxMode: Schema.optional(ProviderSandboxMode),

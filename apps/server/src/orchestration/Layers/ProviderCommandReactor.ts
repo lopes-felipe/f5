@@ -645,6 +645,7 @@ const make = Effect.gen(function* () {
       const startProviderSession = (input?: {
         readonly resumeCursor?: unknown;
         readonly provider?: ProviderKind;
+        readonly workflowExecutionProfileChanged?: boolean;
       }) => {
         const providerForStart = input?.provider ?? preferredProvider;
 
@@ -679,6 +680,9 @@ const make = Effect.gen(function* () {
                 ? { providerOptions: effectiveStartConfig.providerOptions }
                 : {}),
             ...(input?.resumeCursor !== undefined ? { resumeCursor: input.resumeCursor } : {}),
+            ...(input?.workflowExecutionProfileChanged
+              ? { workflowExecutionProfileChanged: true }
+              : {}),
             runtimeMode: desiredRuntimeMode,
           });
         }).pipe(Effect.withSpan("provider.start-session"));
@@ -808,9 +812,7 @@ const make = Effect.gen(function* () {
             ? "instance-changed"
             : shouldRestartForCwdChange
               ? "cwd-changed"
-              : shouldRestartForWorkflowExecutionProfileChange
-                ? "workflow-execution-profile-changed"
-                : undefined;
+              : undefined;
         const resumeCursor =
           resumeCursorDropReason !== undefined
             ? undefined
@@ -864,6 +866,9 @@ const make = Effect.gen(function* () {
         const restartedSession = yield* startProviderSession({
           ...(resumeCursor !== undefined ? { resumeCursor } : {}),
           ...(options?.provider !== undefined ? { provider: options.provider } : {}),
+          ...(shouldRestartForWorkflowExecutionProfileChange
+            ? { workflowExecutionProfileChanged: true }
+            : {}),
         });
         yield* Effect.logInfo("provider command reactor restarted provider session", {
           threadId,
@@ -911,7 +916,6 @@ const make = Effect.gen(function* () {
         persistedProviderMatches &&
         persistedInstanceMatches &&
         persistedCwdMatches &&
-        persistedWorkflowExecutionProfileMatches &&
         persistedBinding?.resumeCursor !== undefined &&
         persistedBinding.resumeCursor !== null
           ? persistedBinding.resumeCursor
@@ -930,6 +934,9 @@ const make = Effect.gen(function* () {
         ...(resumeCursorForStoppedSession !== undefined
           ? { resumeCursor: resumeCursorForStoppedSession }
           : {}),
+        ...(!persistedWorkflowExecutionProfileMatches && resumeCursorForStoppedSession !== undefined
+          ? { workflowExecutionProfileChanged: true }
+          : {}),
       });
       yield* bindSessionToThread(startedSession);
       yield* recordEffectiveStartConfig();
@@ -947,9 +954,7 @@ const make = Effect.gen(function* () {
               ? "instance-changed"
               : !persistedCwdMatches
                 ? "cwd-changed"
-                : !persistedWorkflowExecutionProfileMatches
-                  ? "workflow-execution-profile-changed"
-                  : "missing-resume-cursor",
+                : "missing-resume-cursor",
           restartReasons: ["recover-session"],
           createdAt,
         });

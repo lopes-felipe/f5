@@ -100,6 +100,7 @@ import {
 } from "../providerContext.ts";
 import {
   buildClaudeAssistantInstructions,
+  buildClaudeWorkflowExecutionProfileUpdate,
   buildInstructionProfile,
   INSTRUCTION_PROFILE_CONFIG_KEY,
 } from "../sharedAssistantContract.ts";
@@ -4698,7 +4699,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 ...(selectedModel ? { model: selectedModel } : {}),
                 ...(effectiveEffort ? { effort: effectiveEffort } : {}),
               })
-            : undefined;
+            : input.workflowExecutionProfileChanged
+              ? buildClaudeWorkflowExecutionProfileUpdate(input)
+              : undefined;
 
         const appendSystemPrompt: ClaudeAppendSystemPromptConfig | undefined = appendInstructionText
           ? {
@@ -4707,8 +4710,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               append: appendInstructionText,
             }
           : undefined;
-        // Resume flows must not append again, or the shared host prompt would
-        // be duplicated across reconnects for the same Claude session.
+        // Ordinary resume flows must not append again, or the shared host
+        // prompt would be duplicated. A workflow-profile transition is the
+        // exception: the conversation is resumed and receives only the small
+        // replacement contract for the new profile.
 
         const queryEnvironment = buildClaudeQueryEnv(providerOptions);
         const sdkExecutableOptions = yield* Effect.try({

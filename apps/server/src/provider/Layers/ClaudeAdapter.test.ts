@@ -5032,6 +5032,40 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("updates the workflow profile while resuming the same Claude conversation", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const resume = "550e8400-e29b-41d4-a716-446655440000";
+
+      yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        resumeCursor: {
+          threadId: RESUME_THREAD_ID,
+          resume,
+          turnCount: 3,
+        },
+        workflowExecutionProfileChanged: true,
+        runtimeMode: "full-access",
+      });
+
+      const createInput = harness.getLastCreateQueryInput();
+      assert.equal(createInput?.options.resume, resume);
+      const append = (
+        createInput?.options as ClaudeQueryOptionsForTest & {
+          readonly appendSystemPrompt?: { readonly append?: string };
+        }
+      )?.appendSystemPrompt?.append;
+      assert.equal(append?.includes("# Session Execution Context Update"), true);
+      assert.equal(append?.includes("No automated workflow execution profile is active"), true);
+      assert.equal(append?.includes("# Collaboration Mode: Default"), true);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("starts fresh with instructions when the resume preflight reports absence", () => {
     const harness = makeHarness({
       probeResumableClaudeSession: () => Effect.succeed("absent"),

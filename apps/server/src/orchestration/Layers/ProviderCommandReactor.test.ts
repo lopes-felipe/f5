@@ -1391,7 +1391,7 @@ describe("ProviderCommandReactor", () => {
     ).toEqual({ opaque: "cursor-1" });
   });
 
-  it("drops the Claude resume cursor when the workflow execution profile changes", async () => {
+  it("preserves Claude context when a manual turn leaves the workflow profile", async () => {
     const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
     const now = new Date().toISOString();
     const threadId = ThreadId.makeUnsafe("thread-1");
@@ -1399,10 +1399,66 @@ describe("ProviderCommandReactor", () => {
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe("cmd-profile-attended"),
+        commandId: CommandId.makeUnsafe("cmd-profile-unattended"),
         threadId,
         message: {
-          messageId: asMessageId("message-profile-attended"),
+          messageId: asMessageId("message-profile-unattended"),
+          role: "user",
+          text: "author the plan",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: "plan",
+        runtimeMode: "approval-required",
+        workflowExecutionProfile: "unattended-readonly",
+        createdAt: now,
+      }),
+    );
+    await waitFor(() => harness.startSession.mock.calls.length === 1);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-profile-manual-follow-up"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-profile-manual-follow-up"),
+          role: "user",
+          text: "send the last message again",
+          attachments: [],
+        },
+        provider: "claudeAgent",
+        model: "claude-sonnet-4-6",
+        interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+        runtimeMode: "approval-required",
+        createdAt: now,
+      }),
+    );
+
+    await waitFor(() => harness.startSession.mock.calls.length === 2);
+    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
+    expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
+      provider: "claudeAgent",
+      workflowExecutionProfileChanged: true,
+      resumeCursor: { opaque: "cursor-1" },
+    });
+    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("workflowExecutionProfile");
+  });
+
+  it("preserves Claude context when recovering with a different workflow profile", async () => {
+    const harness = await createHarness({ threadModel: "claude-sonnet-4-6" });
+    const now = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.start",
+        commandId: CommandId.makeUnsafe("cmd-profile-before-recovery"),
+        threadId,
+        message: {
+          messageId: asMessageId("message-profile-before-recovery"),
           role: "user",
           text: "author the plan",
           attachments: [],
@@ -1417,14 +1473,15 @@ describe("ProviderCommandReactor", () => {
     );
     await waitFor(() => harness.startSession.mock.calls.length === 1);
     await waitFor(() => harness.sendTurn.mock.calls.length === 1);
+    harness.removeLiveSession(threadId);
 
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.turn.start",
-        commandId: CommandId.makeUnsafe("cmd-profile-unattended"),
+        commandId: CommandId.makeUnsafe("cmd-profile-after-recovery"),
         threadId,
         message: {
-          messageId: asMessageId("message-profile-unattended"),
+          messageId: asMessageId("message-profile-after-recovery"),
           role: "user",
           text: "revise the plan",
           attachments: [],
@@ -1439,12 +1496,12 @@ describe("ProviderCommandReactor", () => {
     );
 
     await waitFor(() => harness.startSession.mock.calls.length === 2);
-    await waitFor(() => harness.sendTurn.mock.calls.length === 2);
     expect(harness.startSession.mock.calls[1]?.[1]).toMatchObject({
       provider: "claudeAgent",
       workflowExecutionProfile: "unattended-readonly",
+      workflowExecutionProfileChanged: true,
+      resumeCursor: { opaque: "cursor-1" },
     });
-    expect(harness.startSession.mock.calls[1]?.[1]).not.toHaveProperty("resumeCursor");
   });
 
   it("restarts claude sessions when claude model options change", async () => {

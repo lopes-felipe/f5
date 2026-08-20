@@ -652,6 +652,27 @@ function buildWorkflowHostContract(
 - ${liveness}`;
 }
 
+export function buildClaudeWorkflowExecutionProfileUpdate(input: {
+  readonly interactionMode?: "default" | "plan" | undefined;
+  readonly workflowExecutionProfile?: WorkflowTurnExecutionProfile | undefined;
+}): string {
+  const workflowContract = input.workflowExecutionProfile
+    ? buildWorkflowHostContract(input.workflowExecutionProfile)
+    : `No automated workflow execution profile is active for subsequent turns. Follow the current collaboration-mode instructions and runtime permissions; any earlier workflow read-only or question-handling rules no longer apply.`;
+  const modeInstructions =
+    input.interactionMode === "plan"
+      ? CLAUDE_PLAN_MODE_INSTRUCTIONS
+      : CLAUDE_DEFAULT_MODE_INSTRUCTIONS;
+
+  return `# Session Execution Context Update
+
+The workflow execution profile changed. This update replaces any earlier \`# Workflow Read-Only Host Contract\` and collaboration-mode instructions in this conversation.
+
+${workflowContract}
+
+${modeInstructions}`;
+}
+
 export function buildCodexAssistantInstructions(input: SharedInstructionInput): string {
   const modeInstructions =
     input.interactionMode === "plan"
