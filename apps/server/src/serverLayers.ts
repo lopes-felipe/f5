@@ -25,6 +25,7 @@ import { ProjectSkillSyncServiceLive } from "./orchestration/Layers/ProjectSkill
 import { ProviderCommandReactorLive } from "./orchestration/Layers/ProviderCommandReactor";
 import { OrchestrationProjectionPipelineLive } from "./orchestration/Layers/ProjectionPipeline";
 import { OrchestrationProjectionSnapshotQueryLive } from "./orchestration/Layers/ProjectionSnapshotQuery";
+import { ProjectionWorkspaceQueryLive } from "./orchestration/Layers/ProjectionWorkspaceQuery";
 import { SessionNotesServiceLive } from "./orchestration/Layers/SessionNotesService";
 import { ThreadBackgroundWorkLive } from "./orchestration/Layers/ThreadBackgroundWork";
 import { ThreadCommandExecutionQueryLive } from "./orchestration/Layers/ThreadCommandExecutionQuery";
@@ -293,6 +294,7 @@ export function makeServerRuntimeServicesLayer() {
 
   return Layer.mergeAll(
     OrchestrationProjectionSnapshotQueryLive,
+    ProjectionWorkspaceQueryLive,
     threadCommandExecutionQueryLayer,
     threadFileChangeQueryLayer,
     CheckpointStoreLive,

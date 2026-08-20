@@ -1,21 +1,6 @@
 import type { PlanningWorkflow, WorkflowBranch, WorkflowModelSlot } from "@t3tools/contracts";
 
-import {
-  WORKFLOW_CODE_REVIEW_RUBRIC_SECTION,
-  WORKFLOW_PLAN_DEPTH_SECTION,
-  WORKFLOW_PLAN_MODE_QUESTIONS_SECTION,
-  WORKFLOW_PLAN_REVIEW_RUBRIC_SECTION,
-  WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-  WORKFLOW_REVIEW_DISPOSITION_SECTION,
-  WORKFLOW_SEVERITY_SCALE_SECTION,
-  WORKFLOW_UNATTENDED_STAGE_SECTION,
-  type WorkflowRetryContext,
-  workflowLensSection,
-  workflowPlanOutputContractSection,
-  workflowRetryContextSection,
-  workflowReviewOutputContractSection,
-  workflowUpstreamArtifactSection,
-} from "./workflowPromptFragments.ts";
+import type { WorkflowRetryContext } from "./workflowPromptFragments.ts";
 import { joinPromptSections, providerGuidanceSection, slotLabel } from "./workflowSharedUtils.ts";
 
 export interface WorkflowPromptArtifactSource {
@@ -38,23 +23,19 @@ export function buildAuthorPromptSections(input: {
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
   return [
-    `## Role
-You are Author ${input.branch.branchId.toUpperCase()} in a dual-model planning workflow. Produce a complete standalone implementation plan. Another author works independently and a later model merges both plans.`,
-    workflowLensSection({ stage: "author", branch: input.branch.branchId }),
-    `## Authoritative Requirement
+    `Please create a detailed implementation plan for the following requirement:
+
 ${input.workflow.requirementPrompt}`,
-    workflowRetryContextSection(input.retry),
+    `You are Author ${input.branch.branchId.toUpperCase()} in a multi-model planning workflow. Your plan will be independently reviewed and later merged with another plan. Focus on producing the strongest standalone plan.`,
     providerGuidanceSection(input.authorSlot.provider),
-    WORKFLOW_PLAN_DEPTH_SECTION,
-    `## Planning Method
-- Explore the relevant codebase before you write the plan. Read the current implementation, trace affected flows, and ground decisions in code you inspected.
-- Keep scope tight and identify existing shared logic before proposing new helpers.
-- Use \`file_path:line_number\` for verified current-code claims.
-- Specify schema changes, precedence, persistence and replay behavior, failure and recovery paths, compatibility, and exact verification commands.
-- Distinguish verified repository facts from assumptions and record rejected alternatives where they materially affect implementation.`,
-    WORKFLOW_PLAN_MODE_QUESTIONS_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowPlanOutputContractSection({ kind: "author", provider: input.authorSlot.provider }),
+    `## Planning Requirements
+- Explore the relevant codebase before you write the plan. Read the current implementation, trace the affected flows, and ground the plan in code you actually inspected.
+- Keep the scope tight. Do not add features, speculative abstractions, or cleanup beyond what the requirement asks for.
+- Make the plan decision complete: the implementer should not need to make judgment calls.
+- Be concrete about affected files, symbols, data flow, edge cases, failure modes, and verification steps.
+- Include specific file references. When you refer to existing code, use \`file_path:line_number\` references.`,
+    `Return the full plan in your assistant response.
+Do not create or modify files during this planning phase.`,
   ];
 }
 
@@ -71,32 +52,30 @@ export function buildReviewPromptSections(input: {
   readonly reviewerSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
-  const framing =
+  const reviewInstructions =
     input.reviewKind === "self"
-      ? "Audit your own earlier plan as a fresh independent reviewer. Do not defend prior decisions."
-      : "Audit another model's plan independently. Do not defer to its confidence or framing.";
+      ? `You are reviewing your own previously authored plan, but this must be treated as a fresh independent audit.
+Do not restate or defend the plan. Critically inspect it for weaknesses, omissions, contradictions, risky assumptions,
+and places where the implementation could fail or become harder to maintain.`
+      : `You are reviewing another model's implementation plan. Provide an independent critique and focus on where the
+plan is incomplete, risky, or technically weaker than it should be.`;
+
   return [
-    `## Role
-${framing}`,
-    workflowLensSection({
-      stage: "plan-review",
-      branch: input.lensBranch,
-    }),
-    `## Authoritative Requirement
-${input.requirementPrompt}`,
-    workflowUpstreamArtifactSection({
-      heading: "Plan Under Review",
-      body: input.planMarkdown,
-      source: input.planSource,
-      escaping: "entity",
-    }),
-    workflowRetryContextSection(input.retry),
+    "Please review the following implementation plan.",
+    `## Plan
+
+${input.planMarkdown}`,
+    reviewInstructions,
     providerGuidanceSection(input.reviewerSlot.provider),
-    WORKFLOW_PLAN_REVIEW_RUBRIC_SECTION,
-    WORKFLOW_SEVERITY_SCALE_SECTION,
-    WORKFLOW_UNATTENDED_STAGE_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowReviewOutputContractSection("plan"),
+    `## Review Requirements
+- Produce findings first. Do not restate, rewrite, or defend the plan.
+- Check correctness, completeness, edge cases, failure modes, and verification gaps.
+- Run a code reuse review: search for existing utilities, shared modules, and adjacent patterns before endorsing new helpers or duplicate logic.
+- Run a code quality review: look for redundant state, parameter sprawl, copy-paste, stringly-typed interfaces, and leaky abstractions.
+- Run an efficiency review: look for unnecessary work, missed concurrency, hot-path bloat, repeated I/O, and memory or cleanup risks.
+- Call out places where the plan adds scope or complexity beyond the user's request.
+- When you reference the current codebase, use \`file_path:line_number\` references.`,
+    "Structure your review as actionable findings that the author can apply. Do not rewrite the plan.",
   ];
 }
 
@@ -114,36 +93,23 @@ export function buildRevisionPromptSections(input: {
   readonly targetSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
+  const reviewSections = input.reviews.map(
+    (review) => `## ${review.reviewerLabel}\n\n${review.reviewMarkdown}`,
+  );
+
   return [
-    `## Role
-Revise the implementation plan after independently validating every review finding. Preserve unaffected decisions, reject unsupported scope growth, and make one coherent replacement plan.`,
-    `## Authoritative Requirement
-${input.requirementPrompt}`,
-    workflowUpstreamArtifactSection({
-      heading: "Original Plan",
-      body: input.originalPlan.markdown,
-      source: input.originalPlan.source,
-      escaping: "envelope-only",
-    }),
-    ...input.reviews.map((review) =>
-      workflowUpstreamArtifactSection({
-        heading: review.reviewerLabel,
-        body: review.reviewMarkdown,
-        source: review.source,
-        escaping: "entity",
-      }),
-    ),
-    workflowRetryContextSection(input.retry),
-    providerGuidanceSection(input.targetSlot.provider),
-    WORKFLOW_PLAN_DEPTH_SECTION,
-    `## Revision Rules
-- Validate findings against the requirement and live repository; do not accept feedback merely because it sounds confident.
-- Fix accepted findings in the plan body. Preserve sound choices and explicitly adjudicate contradictions by evidence strength.
-- Do not introduce features or refactors unrelated to a supported finding or the requirement.`,
-    WORKFLOW_REVIEW_DISPOSITION_SECTION,
-    WORKFLOW_UNATTENDED_STAGE_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowPlanOutputContractSection({ kind: "revision", provider: input.targetSlot.provider }),
+    `Reviewers have provided feedback on your plan. Their reviews are:
+
+${reviewSections.join("\n\n")}`,
+    `Please:
+1. Read all reviews carefully.
+2. Consider each piece of feedback.
+3. Apply the comments you agree with.
+4. Produce an updated plan that incorporates the accepted changes.
+
+The revised plan should be a complete replacement, not a diff.
+Return the full revised plan in your assistant response.
+Do not create or modify files during this planning phase.`,
   ];
 }
 
@@ -164,41 +130,27 @@ export function buildMergePromptSections(input: {
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
   return [
-    `## Role
-Synthesize two independently authored and reviewed plans into one decision-complete implementation plan. Integrate useful coverage from both scrutiny lenses while choosing one resolution for every genuine conflict.`,
-    `## Authoritative Requirement
-${input.workflow.requirementPrompt}`,
-    workflowUpstreamArtifactSection({
-      heading: `Plan A — ${slotLabel(input.modelA)}`,
-      body: input.planA.markdown,
-      source: input.planA.source,
-      escaping: "envelope-only",
-    }),
-    workflowUpstreamArtifactSection({
-      heading: `Plan B — ${slotLabel(input.modelB)}`,
-      body: input.planB.markdown,
-      source: input.planB.source,
-      escaping: "envelope-only",
-    }),
-    ...(input.reviews ?? []).map((review) =>
-      workflowUpstreamArtifactSection({
-        heading: review.reviewerLabel,
-        body: review.reviewMarkdown,
-        source: review.source,
-        escaping: "entity",
-      }),
-    ),
-    workflowRetryContextSection(input.retry),
-    providerGuidanceSection(input.mergeSlot.provider),
-    WORKFLOW_PLAN_DEPTH_SECTION,
-    `## Merge Rules
-- Reinspect disagreements and conflicting factual claims in the repository. Do not redo settled analysis without cause.
-- Resolve conflicts using requirement fit, verified repository evidence, simplicity, reliability, and compatibility, in that order.
-- Do not concatenate plans, average incompatible approaches, or include meta-review prose.
-- Preserve complementary coverage even when one plan supplies the chosen implementation approach.`,
-    WORKFLOW_UNATTENDED_STAGE_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowPlanOutputContractSection({ kind: "merge", provider: input.mergeSlot.provider }),
+    `You have two independently authored and reviewed implementation plans for the same requirement.
+Please merge them into a single comprehensive plan.
+
+## Original Requirement
+
+${input.workflow.requirementPrompt}
+
+## Plan A (by ${slotLabel(input.modelA)})
+${input.planA.markdown}
+
+## Plan B (by ${slotLabel(input.modelB)})
+${input.planB.markdown}
+
+Read both plans and produce a merged plan that:
+- Takes the strongest ideas from each
+- Resolves contradictions by choosing the better approach
+- Maintains a coherent structure
+- Does not simply concatenate; truly synthesize the plans
+
+Return the merged plan in your assistant response.
+Do not create or modify files during this planning phase.`,
   ];
 }
 
@@ -213,28 +165,20 @@ export function buildImplementationPromptSections(input: {
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
   return [
-    `## Role
-Implement the approved merged plan completely in the current workspace.`,
-    `## Authoritative Requirement
+    "Please implement the following plan. The plan was produced by a multi-model planning workflow and has been reviewed, revised, and merged. Implement it thoroughly.",
+    `## Original Requirement
+
 ${input.workflow.requirementPrompt}`,
-    workflowUpstreamArtifactSection({
-      heading: "Approved Merged Plan",
-      body: input.mergedPlanMarkdown,
-      source: {
-        workflowId: input.workflow.id,
-        stage: "merge",
-        ...(input.workflow.merge.turnId ? { turnId: input.workflow.merge.turnId } : {}),
-      },
-      escaping: "envelope-only",
-    }),
-    workflowRetryContextSection(input.retry),
+    `## Merged Plan
+
+${input.mergedPlanMarkdown}`,
     providerGuidanceSection(input.implementationSlot.provider),
     `## Implementation Requirements
 - Read the relevant existing code before modifying it, and follow the established local conventions.
-- Treat the live repository as source of truth and the merged plan as approved intent. If a plan detail is stale, make the smallest compatible adjustment and report the deviation.
-- Preserve unrelated dirty work. Prefer shared abstractions over duplicate local fixes, without unrelated cleanup.
-- Run every repository-required check plus focused tests. Report the actual commands and results; never claim success while a required check fails.
-- Do not commit or push unless the user asks.`,
+- Prefer simple, direct changes over clever abstractions or speculative refactors.
+- Keep the implementation scoped to the approved plan and the requested behavior. Do not add extra features or unrelated cleanup.
+- Verify before you claim the work is done: run the most relevant tests or checks, inspect the output, and report the real result.`,
+    "Implement this plan completely. Follow the plan closely, create any necessary files, and make the described changes directly in the codebase.",
   ];
 }
 
@@ -261,36 +205,35 @@ export function buildCodeReviewPromptSections(input: {
   readonly reviewerSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
-  const truncation = input.reviewArtifact.truncated
-    ? `The persisted patch is truncated (${input.reviewArtifact.truncationReason ?? "size limit"}). Do not infer that omitted files are clean.`
-    : "The persisted patch is the review artifact for this implementation turn.";
+  const truncationNote = input.reviewArtifact.truncated
+    ? `The patch was truncated (${input.reviewArtifact.truncationReason ?? "size limit"}); do not assume omitted files are clean.`
+    : null;
   return [
-    `## Role
-You are ${input.reviewerLabel}. Review the persisted implementation delta; do not modify code.`,
-    workflowLensSection({ stage: "code-review", branch: input.lensBranch }),
-    `## Authoritative Requirement
+    "You are performing a code review of an implementation that was produced from a merged plan.",
+    `## Original Requirement
+
 ${input.requirementPrompt}`,
-    workflowUpstreamArtifactSection({
-      heading: "Approved Plan",
-      body: input.mergedPlanMarkdown,
-      source: { workflowId: input.reviewArtifact.source.workflowId, stage: "merge" },
-      escaping: "entity",
-    }),
-    `## Review Artifact Identity
-Full patch hash: ${input.reviewArtifact.fullPatchHash ?? "unavailable"}. ${truncation}`,
-    workflowUpstreamArtifactSection({
-      heading: "Implementation Patch",
-      body: input.reviewArtifact.patchText,
-      source: input.reviewArtifact.source,
-      escaping: "entity",
-    }),
-    workflowRetryContextSection(input.retry),
+    `## Plan That Was Implemented
+
+${input.mergedPlanMarkdown}`,
+    `## Implementation Patch
+
+Full patch hash: ${input.reviewArtifact.fullPatchHash ?? "unavailable"}.
+${truncationNote ? `${truncationNote}\n\n` : ""}${input.reviewArtifact.patchText}`,
+    "## Your Task\n\nReview the implementation patch and targeted files as needed. Compare the implementation against the plan and the original requirement.",
     providerGuidanceSection(input.reviewerSlot.provider),
-    WORKFLOW_CODE_REVIEW_RUBRIC_SECTION,
-    WORKFLOW_SEVERITY_SCALE_SECTION,
-    WORKFLOW_UNATTENDED_STAGE_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowReviewOutputContractSection("implementation"),
+    `## Review Requirements
+- Structure the report as findings first, ordered by severity.
+- Use \`file_path:line_number\` for every code-specific finding.
+- Check whether the implementation correctly and completely follows the plan and the original requirement.
+- Assess blast radius for material issues: note whether a problem is local and reversible or broad, stateful, or hard to unwind.
+- Review security with OWASP Top 10 awareness, including injection, access control, auth/session handling, unsafe path or file handling, SSRF, XSS, and sensitive-data exposure.
+- Flag extra features, speculative cleanup, or scope expansion that the user did not ask for.
+- Call out missing tests, reliability problems, failure-mode gaps, and concrete maintainability or performance issues.`,
+    `You are reviewer: ${input.reviewerLabel}
+
+Provide clear, constructive feedback that the implementing model can act on.
+Do NOT rewrite the implementation; provide review comments only.`,
   ];
 }
 
@@ -306,28 +249,22 @@ export function buildImplementationRevisionPromptSections(input: {
   readonly targetSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
+  const reviewSections = input.reviews.map(
+    (review) => `## ${review.reviewerLabel}\n\n${review.reviewMarkdown}`,
+  );
+
   return [
-    `## Role
-Apply validated code-review feedback to the implementation. Make code changes directly; do not merely describe them.`,
-    `## Authoritative Requirement
-${input.requirementPrompt}`,
-    ...input.reviews.map((review) =>
-      workflowUpstreamArtifactSection({
-        heading: review.reviewerLabel,
-        body: review.reviewMarkdown,
-        source: review.source,
-        escaping: "entity",
-      }),
-    ),
-    workflowRetryContextSection(input.retry),
-    providerGuidanceSection(input.targetSlot.provider),
-    `## Apply-Feedback Rules
-- Validate each finding against the live repository and original requirement.
-- Apply accepted and partially accepted findings with the smallest compatible change; reject unsupported scope growth.
-- Preserve unrelated dirty work and unaffected implementation decisions.
-- Run focused tests and every repository-required check. Report actual commands and results, including failures.
-- Summarize rejected feedback with concrete evidence. Do not commit or push unless asked.`,
-    WORKFLOW_REVIEW_DISPOSITION_SECTION,
+    `Code reviewers have provided feedback on your implementation. Their reviews are:
+
+${reviewSections.join("\n\n")}
+
+Please:
+1. Read all reviews carefully.
+2. Consider each piece of feedback.
+3. Apply the changes you agree with to the codebase.
+4. For any feedback you disagree with, briefly explain why.
+
+Make the code changes directly: edit the files, do not just describe what you would change.`,
   ];
 }
 

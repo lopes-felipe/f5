@@ -95,6 +95,7 @@ import {
   type OrchestrationEngineShape,
 } from "./orchestration/Services/OrchestrationEngine";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
+import { ProjectionWorkspaceQuery } from "./orchestration/Services/ProjectionWorkspaceQuery";
 import {
   ThreadBackgroundWork,
   type ThreadBackgroundWorkShape,
@@ -586,6 +587,7 @@ const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 
 export type ServerCoreRuntimeServices =
   | ProjectionSnapshotQuery
+  | ProjectionWorkspaceQuery
   | ThreadCommandExecutionQuery
   | ThreadFileChangeQuery
   | CheckpointDiffQuery
@@ -1579,26 +1581,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const listenOptions = host ? { host, port } : { port };
   const projectionReadModelQuery = yield* ProjectionSnapshotQuery;
+  const projectionWorkspaceQuery = yield* ProjectionWorkspaceQuery;
   const workspaceAssetAuthorizer = makeWorkspaceAssetAuthorizer({
     resolveProjectWorkspaceRoot: async (projectId) => {
-      const snapshot = await Effect.runPromise(projectionReadModelQuery.getSnapshot());
-      return (
-        snapshot.projects.find((project) => project.id === projectId && project.deletedAt === null)
-          ?.workspaceRoot ?? null
+      const workspace = await Effect.runPromise(
+        projectionWorkspaceQuery.getProjectWorkspace(ProjectId.makeUnsafe(projectId)),
       );
+      return Option.match(workspace, {
+        onNone: () => null,
+        onSome: (value) => value.workspaceRoot,
+      });
     },
     resolveThreadWorkspaceRoot: async (threadId) => {
-      const snapshot = await Effect.runPromise(projectionReadModelQuery.getSnapshot());
-      const thread = snapshot.threads.find(
-        (candidate) => candidate.id === threadId && candidate.deletedAt === null,
+      const workspace = await Effect.runPromise(
+        projectionWorkspaceQuery.getThreadWorkspace(ThreadId.makeUnsafe(threadId)),
       );
-      if (!thread) return null;
-      if (thread.worktreePath) return thread.worktreePath;
-      return (
-        snapshot.projects.find(
-          (project) => project.id === thread.projectId && project.deletedAt === null,
-        )?.workspaceRoot ?? null
-      );
+      return Option.match(workspace, {
+        onNone: () => null,
+        onSome: (value) => value.workspaceRoot,
+      });
     },
   });
   const checkedInProjectFileService = makeCheckedInProjectFileService(workspaceAssetAuthorizer);
@@ -2101,8 +2102,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
-      case ORCHESTRATION_WS_METHODS.getSnapshot:
-        return yield* projectionReadModelQuery.getSnapshot();
+      case ORCHESTRATION_WS_METHODS.getSnapshot: {
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* orchestrationEngine.getReadModel();
+      }
 
       case ORCHESTRATION_WS_METHODS.getStartupSnapshot: {
         const body = stripRequestTag(request.body);
@@ -2536,12 +2539,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.projectsGetCheckedInConfig: {
         const body = stripRequestTag(request.body);
-        const snapshot = yield* projectionReadModelQuery.getSnapshot();
-        if (
-          !snapshot.projects.some(
-            (project) => project.id === body.projectId && project.deletedAt === null,
-          )
-        ) {
+        const projectWorkspace = yield* projectionWorkspaceQuery.getProjectWorkspace(
+          body.projectId,
+        );
+        if (Option.isNone(projectWorkspace)) {
           return yield* new RouteRequestError({ message: "Project is unavailable." });
         }
         return yield* Effect.tryPromise({
@@ -2555,29 +2556,29 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.projectsSearchContents: {
         const body = stripRequestTag(request.body);
-        const snapshot = yield* projectionReadModelQuery.getSnapshot();
-        const project = snapshot.projects.find(
-          (candidate) => candidate.id === body.projectId && candidate.deletedAt === null,
+        const projectWorkspace = yield* projectionWorkspaceQuery.getProjectWorkspace(
+          body.projectId,
         );
-        if (!project) {
+        if (Option.isNone(projectWorkspace)) {
           return yield* new RouteRequestError({
             message: "Project content search target is unavailable.",
           });
         }
-        const thread = body.threadId
-          ? snapshot.threads.find(
-              (candidate) =>
-                candidate.id === body.threadId &&
-                candidate.projectId === body.projectId &&
-                candidate.deletedAt === null,
-            )
-          : null;
-        if (body.threadId && !thread) {
+        const threadWorkspace = body.threadId
+          ? yield* projectionWorkspaceQuery.getThreadWorkspace(body.threadId)
+          : Option.none();
+        if (
+          body.threadId &&
+          (Option.isNone(threadWorkspace) || threadWorkspace.value.projectId !== body.projectId)
+        ) {
           return yield* new RouteRequestError({
             message: "Project content search target is unavailable.",
           });
         }
-        const workspaceRoot = thread?.worktreePath ?? project.workspaceRoot;
+        const workspaceRoot = Option.match(threadWorkspace, {
+          onNone: () => projectWorkspace.value.workspaceRoot,
+          onSome: (thread) => thread.workspaceRoot,
+        });
         let searches = activeContentSearchesByClient.get(ws);
         if (!searches) {
           searches = new Map();
@@ -2794,23 +2795,24 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.shellRevealInFileManager: {
         const body = stripRequestTag(request.body);
-        const snapshot = yield* projectionReadModelQuery.getSnapshot();
-        const project = snapshot.projects.find(
-          (candidate) => candidate.id === body.projectId && candidate.deletedAt === null,
+        const projectWorkspace = yield* projectionWorkspaceQuery.getProjectWorkspace(
+          body.projectId,
         );
-        if (!project) {
+        if (Option.isNone(projectWorkspace)) {
           return yield* new RouteRequestError({ message: "Project not found." });
         }
-        const thread = snapshot.threads.find(
-          (candidate) => candidate.id === body.threadId && candidate.deletedAt === null,
-        );
-        if (thread && thread.projectId !== project.id) {
+        const threadProjectId = yield* projectionWorkspaceQuery.getThreadProjectId(body.threadId);
+        if (Option.isSome(threadProjectId) && threadProjectId.value !== body.projectId) {
           return yield* new RouteRequestError({
             message: "Thread does not belong to the selected project.",
           });
         }
+        const threadWorkspace = yield* projectionWorkspaceQuery.getThreadWorkspace(body.threadId);
         const target = yield* resolveWorkspaceReadPath({
-          workspaceRoot: thread?.worktreePath ?? project.workspaceRoot,
+          workspaceRoot: Option.match(threadWorkspace, {
+            onNone: () => projectWorkspace.value.workspaceRoot,
+            onSome: (thread) => thread.workspaceRoot,
+          }),
           relativePath: body.relativePath,
           path,
           fileSystem,
@@ -3804,7 +3806,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.workflowPlatformInspectRun: {
         const body = stripRequestTag(request.body);
-        const snapshot = yield* projectionReadModelQuery.getSnapshot();
+        const { orchestrationEngine } = yield* awaitOrchestrationRuntimeForRoute;
+        const snapshot = yield* orchestrationEngine.getReadModel();
         return yield* Effect.try({
           try: () => ({ inspection: inspectWorkflowPlatformRun(body, snapshot) }),
           catch: (cause) =>

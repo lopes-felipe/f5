@@ -53,8 +53,6 @@ export function buildPlanningWorkflowRecord(
     error: null,
     errorStage: null,
     retryCount: 0,
-    authorFormatRepairAttempts: 0,
-    revisionFormatRepairAttempts: 0,
     lastRetryAt: null,
     updatedAt: input.createdAt,
   });
@@ -78,7 +76,6 @@ export function buildPlanningWorkflowRecord(
       approvedPlanId: null,
       status: "not_started",
       error: null,
-      formatRepairAttempts: 0,
       updatedAt: input.createdAt,
     },
     implementation: null,

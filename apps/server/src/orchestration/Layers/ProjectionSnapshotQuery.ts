@@ -74,6 +74,7 @@ import {
   MAX_THREAD_CHECKPOINTS,
   MAX_THREAD_MESSAGES,
   MAX_THREAD_PROPOSED_PLANS,
+  MAX_READ_MODEL_ACTIVITIES,
 } from "../readModelRetention.ts";
 import {
   ProjectionSnapshotQuery,
@@ -181,7 +182,9 @@ const DEFAULT_THREAD_TAIL_ACTIVITY_LIMIT = MAX_THREAD_ACTIVITIES;
 const DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT = 120;
 const MAX_THREAD_HISTORY_MESSAGE_LIMIT = DEFAULT_THREAD_TAIL_MESSAGE_LIMIT;
 const MAX_THREAD_HISTORY_CHECKPOINT_LIMIT = DEFAULT_THREAD_TAIL_CHECKPOINT_LIMIT;
-const MAX_THREAD_HISTORY_ACTIVITY_LIMIT = DEFAULT_THREAD_TAIL_ACTIVITY_LIMIT;
+// Paging remains wider than the in-memory tail so explicitly requested older
+// history is still efficient to traverse after reducing bootstrap retention.
+const MAX_THREAD_HISTORY_ACTIVITY_LIMIT = 500;
 const MAX_THREAD_HISTORY_COMMAND_EXECUTION_LIMIT = DEFAULT_THREAD_TAIL_COMMAND_EXECUTION_LIMIT;
 const ProjectionStateDbRowSchema = ProjectionState;
 const ProjectionPlanningWorkflowDbRowSchema = Schema.Struct({
@@ -1073,6 +1076,20 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
                 activity_id DESC
             ) AS row_number
           FROM projection_thread_activities
+        ),
+        bounded_activities AS (
+          SELECT *
+          FROM ranked_activities
+          WHERE row_number <= ${MAX_THREAD_ACTIVITIES}
+          ORDER BY
+            row_number ASC,
+            (sequence IS NULL) ASC,
+            sequence DESC,
+            "createdAt" DESC,
+            "activityId" DESC
+          -- Fetch one sentinel row so the caller can report when the global
+          -- materialization budget truncated retained history.
+          LIMIT ${MAX_READ_MODEL_ACTIVITIES + 1}
         )
         SELECT
           "activityId",
@@ -1084,8 +1101,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           "payload",
           sequence,
           "createdAt"
-        FROM ranked_activities
-        WHERE row_number <= ${MAX_THREAD_ACTIVITIES}
+        FROM bounded_activities
         ORDER BY
           "threadId" ASC,
           sequence ASC,
@@ -2227,7 +2243,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           ),
         ),
       });
-      const activityRows = params.includeActivities
+      const loadedActivityRows = params.includeActivities
         ? yield* withTimedLog({
             kind: "query",
             scope: params.scope,
@@ -2245,6 +2261,19 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
             ),
           })
         : ([] as ReadonlyArray<Schema.Schema.Type<typeof ProjectionThreadActivityDbRowSchema>>);
+      const activitiesTruncated =
+        params.historyLoadMode === "retained" &&
+        loadedActivityRows.length > MAX_READ_MODEL_ACTIVITIES;
+      if (activitiesTruncated) {
+        yield* Effect.logWarning("projection snapshot activity retention budget was reached", {
+          scope: params.scope,
+          retainedActivityLimit: MAX_READ_MODEL_ACTIVITIES,
+          perThreadActivityLimit: MAX_THREAD_ACTIVITIES,
+        });
+      }
+      const activityRows = activitiesTruncated
+        ? loadedActivityRows.slice(0, MAX_READ_MODEL_ACTIVITIES)
+        : loadedActivityRows;
       const sessionRows = yield* withTimedLog({
         kind: "query",
         scope: params.scope,

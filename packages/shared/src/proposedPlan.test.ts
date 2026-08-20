@@ -65,9 +65,9 @@ describe("validateProposedPlanOutput", () => {
     });
   });
 
-  it("rejects missing, orphaned, unclosed, and sibling wrappers", () => {
+  it("rejects questions, orphaned wrappers, and sibling wrappers", () => {
     for (const text of [
-      "# Plan",
+      "Which approach do you want?",
       "# Plan\n</proposed_plan>",
       "<proposed_plan>\n# Plan",
       "<proposed_plan>\nA\n</proposed_plan>\n<proposed_plan>\nB\n</proposed_plan>",

@@ -520,6 +520,7 @@ async function createHarness(
   let projectionSnapshotsFailing = false;
   let projectionSnapshotCallCount = 0;
   const dispatched: OrchestrationCommand[] = [];
+  const acceptedCommandIds = new Set<string>();
   const queue = await Effect.runPromise(Queue.unbounded<OrchestrationEvent>());
   const generateThreadTitle = vi.fn<TextGenerationShape["generateThreadTitle"]>(() =>
     Effect.fail(
@@ -570,10 +571,14 @@ async function createHarness(
     readEvents: () => Stream.empty,
     dispatch: (command) =>
       Effect.sync(() => {
+        if (acceptedCommandIds.has(command.commandId)) {
+          return { sequence: dispatched.length };
+        }
         const defect = options?.dispatchDefect?.(command) ?? null;
         if (defect) {
           throw defect;
         }
+        acceptedCommandIds.add(command.commandId);
         dispatched.push(command);
         snapshot = applyWorkflowCommandToSnapshot(snapshot, command);
         return { sequence: dispatched.length };
@@ -3235,6 +3240,20 @@ describe("WorkflowService", () => {
       expect(harness.getSnapshot().planningWorkflows[0]?.branchA.status).toBe("revising");
       expect(harness.getSnapshot().planningWorkflows[0]?.branchB.status).toBe("revising");
       expect(harness.getSnapshot().planningWorkflows[0]?.updatedAt).toBe(workflowUpdatedAt);
+      const revisionIntentIndex = harness.dispatched.findIndex(
+        (command) =>
+          command.type === "project.workflow.upsert" &&
+          command.workflow.branchA.status === "revising" &&
+          command.workflow.branchB.status === "revising",
+      );
+      const firstRevisionTurnIndex = harness.dispatched.findIndex(
+        (command) =>
+          command.type === "thread.turn.start" &&
+          (command.threadId === workflow.branchA.authorThreadId ||
+            command.threadId === workflow.branchB.authorThreadId),
+      );
+      expect(revisionIntentIndex).toBeGreaterThanOrEqual(0);
+      expect(firstRevisionTurnIndex).toBeGreaterThan(revisionIntentIndex);
     },
   );
 
@@ -4323,6 +4342,8 @@ describe("WorkflowService", () => {
     const revisionStartedAt = "2026-03-26T12:00:30.000Z";
     const revisionRequestedAt = "2026-03-26T12:01:00.000Z";
     const workflow = makeWorkflow({
+      templateId: "builtin.planning.dual",
+      templateVersion: 2,
       branchA: {
         ...makeWorkflow().branchA,
         planTurnId: planTurnA,
@@ -4369,6 +4390,17 @@ describe("WorkflowService", () => {
               lastError: null,
               updatedAt: revisionRequestedAt,
             },
+            messages: [
+              {
+                id: MessageId.makeUnsafe("assistant-author-a"),
+                role: "assistant",
+                text: "<proposed_plan>\nRevised plan A\n</proposed_plan>",
+                turnId: revisionTurnA,
+                streaming: false,
+                createdAt: revisionRequestedAt,
+                updatedAt: revisionRequestedAt,
+              },
+            ],
             proposedPlans: [
               {
                 id: OrchestrationProposedPlanId.makeUnsafe("plan-a-revision"),
@@ -4411,6 +4443,17 @@ describe("WorkflowService", () => {
                 updatedAt: revisionRequestedAt,
               },
             ],
+            proposedPlans: [
+              {
+                id: OrchestrationProposedPlanId.makeUnsafe("plan-b-revision"),
+                turnId: revisionTurnB,
+                planMarkdown: "Revised plan B",
+                implementedAt: null,
+                implementationThreadId: null,
+                createdAt: revisionRequestedAt,
+                updatedAt: revisionRequestedAt,
+              },
+            ],
           }),
         ],
       }),
@@ -4428,14 +4471,23 @@ describe("WorkflowService", () => {
     expect(finalWorkflow?.branchA.revisionTurnId).toBe(revisionTurnA);
     expect(finalWorkflow?.branchB.revisionTurnId).toBe(revisionTurnB);
     expect(finalWorkflow?.merge.status).toBe("in_progress");
-    expect(
-      harness.dispatched.some(
-        (command) =>
-          command.type === "thread.proposed-plan.upsert" &&
-          command.threadId === ThreadId.makeUnsafe("author-b") &&
-          command.proposedPlan.turnId === revisionTurnB,
-      ),
-    ).toBe(true);
+    const mergeIntentIndex = harness.dispatched.findIndex(
+      (command) =>
+        command.type === "project.workflow.upsert" &&
+        command.workflow.merge.status === "in_progress",
+    );
+    const mergeThreadCreateIndex = harness.dispatched.findIndex(
+      (command) => command.type === "thread.create" && command.title === "Merge",
+    );
+    expect(mergeIntentIndex).toBeGreaterThanOrEqual(0);
+    expect(mergeThreadCreateIndex).toBeGreaterThan(mergeIntentIndex);
+    const synthesizedCapture = harness.dispatched.find(
+      (command) =>
+        command.type === "thread.proposed-plan.upsert" &&
+        command.threadId === ThreadId.makeUnsafe("author-b") &&
+        command.proposedPlan.turnId === revisionTurnB,
+    );
+    expect(synthesizedCapture).toBeUndefined();
   });
 
   it("repins a preliminary revision to the latest completed plan during startup reconciliation", async () => {
@@ -5032,7 +5084,9 @@ describe("WorkflowService", () => {
     const mergeTurnStart = harness.dispatched.find(
       (command): command is Extract<OrchestrationCommand, { type: "thread.turn.start" }> =>
         command.type === "thread.turn.start" &&
-        command.message.text.includes("Synthesize two independently authored"),
+        command.message.text.includes(
+          "You have two independently authored and reviewed implementation plans",
+        ),
     );
     expect(mergeTurnStart?.message.text).toContain("Revised plan A");
     expect(mergeTurnStart?.message.text).not.toContain("Stale later plan A");
@@ -5547,6 +5601,75 @@ describe("WorkflowService", () => {
     ).toBe(true);
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchB.status).toBe("revised");
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.merge.status).toBe("in_progress");
+  });
+
+  it("accepts ordinary assistant text from v2 planning turns without format repair", async () => {
+    const turnId = TurnId.makeUnsafe("natural-plan-turn");
+    const workflow = makeWorkflow({
+      templateId: "builtin.planning.dual",
+      templateVersion: 2,
+      branchA: {
+        ...makeWorkflow().branchA,
+        status: "authoring",
+      },
+    });
+    harness = await createHarness(
+      makeReadModel({
+        workflow,
+        threads: [
+          makeThread({
+            id: workflow.branchA.authorThreadId,
+            latestTurn: {
+              turnId,
+              state: "completed",
+              requestedAt: NOW,
+              startedAt: NOW,
+              completedAt: NOW,
+              assistantMessageId: MessageId.makeUnsafe(`assistant-${turnId}`),
+            },
+            session: {
+              threadId: workflow.branchA.authorThreadId,
+              status: "ready",
+              providerName: "codex",
+              runtimeMode: "full-access",
+              activeTurnId: null,
+              lastError: null,
+              updatedAt: NOW,
+            },
+            messages: [
+              {
+                id: MessageId.makeUnsafe(`assistant-${turnId}`),
+                role: "assistant",
+                text: "A naturally structured implementation plan",
+                turnId,
+                streaming: false,
+                createdAt: NOW,
+                updatedAt: NOW,
+              },
+            ],
+            proposedPlans: [],
+          }),
+        ],
+      }),
+    );
+    await harness.start();
+
+    await waitFor(
+      () => harness!.getSnapshot().planningWorkflows[0]?.branchA.status === "plan_saved",
+    );
+    expect(
+      harness.dispatched.some(
+        (command) =>
+          command.type === "thread.proposed-plan.upsert" &&
+          command.proposedPlan.planMarkdown === "A naturally structured implementation plan",
+      ),
+    ).toBe(true);
+    expect(turnStartsForThread(harness.dispatched, workflow.branchA.authorThreadId)).toHaveLength(
+      0,
+    );
+    expect(
+      harness.getSnapshot().planningWorkflows[0]?.branchA.authorFormatRepairAttempts ?? 0,
+    ).toBe(0);
   });
 
   it("ignores stale proposed-plan upserts while a branch is revising", async () => {
@@ -6122,6 +6245,17 @@ describe("WorkflowService", () => {
     expect(lastWorkflowUpsert(harness.dispatched)?.workflow.branchB.status).toBe(
       "reviews_requested",
     );
+    const reviewIntentIndex = harness.dispatched.findIndex(
+      (command) =>
+        command.type === "project.workflow.upsert" &&
+        command.workflow.branchA.status === "reviews_requested" &&
+        command.workflow.branchB.status === "reviews_requested",
+    );
+    const firstReviewThreadIndex = harness.dispatched.findIndex(
+      (command) => command.type === "thread.create" && command.title.includes("Review"),
+    );
+    expect(reviewIntentIndex).toBeGreaterThanOrEqual(0);
+    expect(firstReviewThreadIndex).toBeGreaterThan(reviewIntentIndex);
     expect(
       harness.dispatched.some(
         (command) => command.type === "thread.create" && command.title.includes("Review"),

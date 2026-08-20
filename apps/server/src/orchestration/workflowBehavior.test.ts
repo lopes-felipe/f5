@@ -20,8 +20,9 @@ describe("workflowBehavior", () => {
     expect(behavior.executionProfileForStage("author")).toBe("attended-readonly");
     expect(behavior.executionProfileForStage("plan-review")).toBe("unattended-readonly");
     expect(behavior.executionProfileForStage("implementation")).toBeUndefined();
-    expect(behavior.planCaptureForProvider("claudeAgent")).toBe("exit-plan-mode");
-    expect(behavior.planCaptureForProvider("codex")).toBe("line-wrapper");
+    expect(behavior.strictPlanCapture).toBe(false);
+    expect(behavior.planCaptureForProvider("claudeAgent")).toBe("assistant-fallback");
+    expect(behavior.planCaptureForProvider("codex")).toBe("assistant-fallback");
   });
 
   it("keeps behavior fields centralized and rejects unsupported profiled providers", () => {

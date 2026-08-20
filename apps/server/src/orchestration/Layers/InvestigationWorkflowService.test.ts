@@ -1306,7 +1306,7 @@ describe("InvestigationWorkflowService", () => {
     await harness.start();
 
     const synthesisTurn = threadTurnStartCommands(harness.dispatched).find((command) =>
-      command.message.text.includes("Produce the final Root Cause Analysis"),
+      command.message.text.includes("Produce the final merged Root Cause Analysis"),
     );
     expect(synthesisTurn?.message.text).toContain("Own-model review A report");
     expect(synthesisTurn?.message.text).toContain("Own-model review B report");

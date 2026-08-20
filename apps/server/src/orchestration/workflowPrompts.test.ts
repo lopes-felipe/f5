@@ -96,7 +96,7 @@ function headings(sections: ReadonlyArray<string | null | undefined>): string[] 
 }
 
 describe("workflowPrompts", () => {
-  it("keeps author sections stable and applies provider-aware capture", () => {
+  it("uses the original author prompt structure", () => {
     const workflow = makeWorkflow();
     expect(
       headings(
@@ -107,15 +107,11 @@ describe("workflowPrompts", () => {
         }),
       ),
     ).toEqual([
-      "## Role",
-      "## Scrutiny Lens A",
-      "## Authoritative Requirement",
+      "Please create a detailed implementation plan for the following requirement:",
+      "You are Author A in a multi-model planning workflow. Your plan will be independently reviewed and later merged with another plan. Focus on producing the strongest standalone plan.",
       "## Provider-Specific Guidance",
-      "## Requested Detail Level",
-      "## Planning Method",
-      "## Clarifying Questions",
-      "## Read-Only Constraint",
-      "## Plan Output Contract",
+      "## Planning Requirements",
+      "Return the full plan in your assistant response.",
     ]);
     const codex = buildAuthorPrompt({
       workflow,
@@ -127,14 +123,13 @@ describe("workflowPrompts", () => {
       branch: workflow.branchB,
       authorSlot: CLAUDE_SLOT,
     });
-    expect(codex).toContain("<proposed_plan>");
-    expect(codex).not.toContain("ExitPlanMode");
-    expect(claude).toContain("ExitPlanMode");
-    expect(claude).not.toContain("<proposed_plan>");
-    expect(codex).not.toContain("Please:");
+    expect(codex).not.toContain("<proposed_plan>");
+    expect(claude).not.toContain("ExitPlanMode");
+    expect(codex).not.toContain("Scrutiny Lens");
+    expect(codex).toContain("Return the full plan in your assistant response");
   });
 
-  it("builds unattended evidence-first plan reviews with requirement propagation", () => {
+  it("uses the original actionable plan-review structure", () => {
     const sections = buildReviewPromptSections({
       requirementPrompt: "Implement the feature",
       planMarkdown: "# Plan\n## Embedded heading",
@@ -144,16 +139,12 @@ describe("workflowPrompts", () => {
       reviewerSlot: CLAUDE_SLOT,
     });
     expect(headings(sections)).toEqual([
-      "## Role",
-      "## Scrutiny Lens B",
-      "## Authoritative Requirement",
-      "## Plan Under Review",
+      "Please review the following implementation plan.",
+      "## Plan",
+      "You are reviewing another model's implementation plan. Provide an independent critique and focus on where the",
       "## Provider-Specific Guidance",
-      "## Plan Review Rubric",
-      "## Severity Scale",
-      "## Unattended Stage",
-      "## Read-Only Constraint",
-      "## Review Output Contract",
+      "## Review Requirements",
+      "Structure your review as actionable findings that the author can apply. Do not rewrite the plan.",
     ]);
     const text = buildReviewPrompt({
       requirementPrompt: "Implement the feature",
@@ -165,23 +156,24 @@ describe("workflowPrompts", () => {
     });
     expect(text).toContain("file_path:line_number");
     expect(text).toContain("code reuse review");
-    expect(text).not.toContain("## Clarifying Questions");
-    expect(text).not.toContain("Read all reviews carefully");
+    expect(text).not.toContain("Scrutiny Lens");
+    expect(text).not.toContain("workflow_upstream_artifact");
   });
 
-  it("requires evidence-backed review dispositions in replacement revisions", () => {
+  it("uses the original revision request", () => {
     const text = buildRevisionPrompt({
       requirementPrompt: "Implement the feature",
       originalPlan: { markdown: "# Plan", source: SOURCE },
       reviews: [{ reviewerLabel: "Cross review", reviewMarkdown: "Finding", source: SOURCE }],
       targetSlot: CODEX_SLOT,
     });
-    expect(text).toContain("## Review Disposition");
-    expect(text).toContain("A blocker may never be deferred");
-    expect(text).toContain("complete replacement");
+    expect(text).toContain("Please:\n1. Read all reviews carefully.");
+    expect(text).toContain("Apply the comments you agree with");
+    expect(text).toContain("complete replacement, not a diff");
+    expect(text).not.toContain("Plan Capture Contract");
   });
 
-  it("merges without concatenating incompatible approaches", () => {
+  it("uses the original merge request", () => {
     const workflow = makeWorkflow();
     const text = buildMergePrompt({
       workflow,
@@ -191,24 +183,24 @@ describe("workflowPrompts", () => {
       modelB: CLAUDE_SLOT,
       mergeSlot: CODEX_SLOT,
     });
-    expect(text).toContain("Do not concatenate plans");
-    expect(text).toContain("one resolution for every genuine conflict");
-    expect(text).toContain("<proposed_plan>");
+    expect(text).toContain("Please merge them into a single comprehensive plan");
+    expect(text).toContain("Does not simply concatenate; truly synthesize the plans");
+    expect(text).not.toContain("Scrutiny Lens");
   });
 
-  it("keeps implementation grounded in repository checks", () => {
+  it("uses the original implementation request", () => {
     const text = buildImplementationPrompt({
       workflow: makeWorkflow(),
       mergedPlanMarkdown: "# Plan\nUse `Array<Foo>`.",
       implementationSlot: CODEX_SLOT,
     });
     expect(text).toContain("Read the relevant existing code before modifying it");
-    expect(text).toContain("actual commands and results");
-    expect(text).toContain("Do not commit or push unless the user asks");
+    expect(text).toContain("Prefer simple, direct changes over clever abstractions");
+    expect(text).toContain("Implement this plan completely");
     expect(text).toContain("Array<Foo>");
   });
 
-  it("reviews persisted implementation artifacts with a closed output contract", () => {
+  it("keeps the original review style while supplying the persisted patch", () => {
     const text = buildCodeReviewPrompt({
       mergedPlanMarkdown: "# Plan",
       requirementPrompt: "Implement the feature",
@@ -224,6 +216,7 @@ describe("workflowPrompts", () => {
     expect(text).toContain("file_path:line_number");
     expect(text).toContain("OWASP Top 10");
     expect(text).toContain("abc123");
-    expect(text).not.toContain("## Clarifying Questions");
+    expect(text).toContain("Structure the report as findings first, ordered by severity");
+    expect(text).not.toContain("Scrutiny Lens");
   });
 });

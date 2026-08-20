@@ -68,7 +68,7 @@ export type ProposedPlanValidationResult =
   | { readonly valid: true; readonly markdown: string }
   | { readonly valid: false; readonly error: string };
 
-/** Validates the strict workflow wrapper contract used by v2 planning stages. */
+/** Validates the strict workflow capture envelope used by v2 planning stages. */
 export function validateProposedPlanOutput(
   text: string | null | undefined,
 ): ProposedPlanValidationResult {

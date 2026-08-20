@@ -89,21 +89,6 @@ function readonlyProfileForStage(
   }
 }
 
-function v2PlanCapture(
-  provider: ProviderKind,
-): ReturnType<WorkflowBehavior["planCaptureForProvider"]> {
-  switch (provider) {
-    case "claudeAgent":
-      return "exit-plan-mode";
-    case "codex":
-    case "cursor":
-    case "opencode":
-      return "line-wrapper";
-    case "grok":
-      return "unsupported";
-  }
-}
-
 function behavior(runKind: WorkflowRunKind, templateVersion: 1 | 2): WorkflowBehavior {
   const templateId = BUILTIN_WORKFLOW_TEMPLATE_IDS[runKind];
   if (templateVersion === 1) {
@@ -127,13 +112,13 @@ function behavior(runKind: WorkflowRunKind, templateVersion: 1 | 2): WorkflowBeh
     runKind,
     templateId,
     templateVersion,
-    strictPlanCapture: true,
+    strictPlanCapture: false,
     checkpointBackedImplementationReview: true,
     idempotentStageSetup: true,
     loudAuthoritativeArtifactLimit: true,
     interactionModeForStage: (stage) => (readonlyProfileForStage(stage) ? "plan" : "default"),
     executionProfileForStage: readonlyProfileForStage,
-    planCaptureForProvider: v2PlanCapture,
+    planCaptureForProvider: () => "assistant-fallback",
   };
 }
 

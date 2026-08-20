@@ -85,6 +85,20 @@ const WORKFLOW_PLANNING_INTERACTION_MODE: ProviderInteractionMode = "plan";
 const MAX_AUTO_RETRY_ATTEMPTS = 2;
 const AUTO_RETRY_BACKOFF_MS = 5_000;
 
+function stableWorkflowUuid(namespace: string, ...parts: ReadonlyArray<string | number | null>) {
+  const digest = createHash("sha256")
+    .update([namespace, ...parts.map(String)].join("\0"))
+    .digest("hex");
+  return `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-a${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+}
+
+function stableWorkflowCommandId(
+  namespace: string,
+  ...parts: ReadonlyArray<string | number | null>
+): CommandId {
+  return CommandId.makeUnsafe(`workflow:${namespace}:${stableWorkflowUuid(namespace, ...parts)}`);
+}
+
 function workflowPromptInvariant(input: {
   readonly workflow: PlanningWorkflow;
   readonly prompt: string;
@@ -1915,12 +1929,17 @@ export const makeWorkflowService = Effect.gen(function* () {
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
-      if (
-        workflow.branchA.status !== "plan_saved" ||
-        workflow.branchB.status !== "plan_saved" ||
-        workflow.branchA.reviews.length > 0 ||
-        workflow.branchB.reviews.length > 0
-      ) {
+      const startsFresh =
+        workflow.branchA.status === "plan_saved" &&
+        workflow.branchB.status === "plan_saved" &&
+        workflow.branchA.reviews.length === 0 &&
+        workflow.branchB.reviews.length === 0;
+      const resumesPersistedIntent =
+        workflow.branchA.status === "reviews_requested" &&
+        workflow.branchB.status === "reviews_requested" &&
+        workflow.branchA.reviews.length > 0 &&
+        workflow.branchB.reviews.length > 0;
+      if (!startsFresh && !resumesPersistedIntent) {
         return;
       }
 
@@ -1938,108 +1957,151 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const budgetError = workflowBudgetError(workflow);
-      if (budgetError) {
-        yield* upsertWorkflow(markMergeError(workflow, budgetError.message, updatedAt));
-        return;
+      const behavior = resolveWorkflowBehavior({
+        runKind: "planning",
+        templateId: workflow.templateId,
+        templateVersion: workflow.templateVersion,
+      });
+      let intentWorkflow = workflow;
+      if (startsFresh) {
+        const budgetError = workflowBudgetError(workflow);
+        if (budgetError) {
+          yield* upsertWorkflow(markMergeError(workflow, budgetError.message, updatedAt));
+          return;
+        }
+        const branchAReviews = [
+          {
+            slot: "cross" as const,
+            threadId: ThreadId.makeUnsafe(
+              stableWorkflowUuid(
+                "plan-review-thread",
+                workflow.id,
+                "a",
+                "cross",
+                workflow.branchA.planTurnId,
+              ),
+            ),
+          },
+          ...(workflow.selfReviewEnabled
+            ? [
+                {
+                  slot: "self" as const,
+                  threadId: ThreadId.makeUnsafe(
+                    stableWorkflowUuid(
+                      "plan-review-thread",
+                      workflow.id,
+                      "a",
+                      "self",
+                      workflow.branchA.planTurnId,
+                    ),
+                  ),
+                },
+              ]
+            : []),
+        ];
+        const branchBReviews = [
+          {
+            slot: "cross" as const,
+            threadId: ThreadId.makeUnsafe(
+              stableWorkflowUuid(
+                "plan-review-thread",
+                workflow.id,
+                "b",
+                "cross",
+                workflow.branchB.planTurnId,
+              ),
+            ),
+          },
+          ...(workflow.selfReviewEnabled
+            ? [
+                {
+                  slot: "self" as const,
+                  threadId: ThreadId.makeUnsafe(
+                    stableWorkflowUuid(
+                      "plan-review-thread",
+                      workflow.id,
+                      "b",
+                      "self",
+                      workflow.branchB.planTurnId,
+                    ),
+                  ),
+                },
+              ]
+            : []),
+        ];
+        intentWorkflow = markReviewsRequested(workflow, {
+          branchAReviews,
+          branchBReviews,
+          updatedAt,
+        });
+        yield* upsertWorkflow(intentWorkflow);
       }
 
-      const branchAReviews: Array<{
-        slot: WorkflowReviewSlot;
-        reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
-        planMarkdown: string;
-        threadId: ThreadId;
-      }> = [
-        {
-          slot: "cross",
-          reviewerSlot: workflow.branchB.authorSlot,
+      const reviews = [
+        ...intentWorkflow.branchA.reviews.map((review) => ({
+          review,
+          reviewedBranchId: "a" as const,
+          reviewerSlot:
+            review.slot === "cross"
+              ? intentWorkflow.branchB.authorSlot
+              : intentWorkflow.branchA.authorSlot,
           planMarkdown: planA,
-          threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
-        },
-      ];
-      if (workflow.selfReviewEnabled) {
-        branchAReviews.push({
-          slot: "self",
-          reviewerSlot: workflow.branchA.authorSlot,
-          planMarkdown: planA,
-          threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
-        });
-      }
-      const branchBReviews: Array<{
-        slot: WorkflowReviewSlot;
-        reviewerSlot: PlanningWorkflow["branchA"]["authorSlot"];
-        planMarkdown: string;
-        threadId: ThreadId;
-      }> = [
-        {
-          slot: "cross",
-          reviewerSlot: workflow.branchA.authorSlot,
+          planTurnId: intentWorkflow.branchA.planTurnId,
+        })),
+        ...intentWorkflow.branchB.reviews.map((review) => ({
+          review,
+          reviewedBranchId: "b" as const,
+          reviewerSlot:
+            review.slot === "cross"
+              ? intentWorkflow.branchA.authorSlot
+              : intentWorkflow.branchB.authorSlot,
           planMarkdown: planB,
-          threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
-        },
+          planTurnId: intentWorkflow.branchB.planTurnId,
+        })),
       ];
-      if (workflow.selfReviewEnabled) {
-        branchBReviews.push({
-          slot: "self",
-          reviewerSlot: workflow.branchB.authorSlot,
-          planMarkdown: planB,
-          threadId: ThreadId.makeUnsafe(crypto.randomUUID()),
-        });
-      }
 
       yield* Effect.forEach(
-        [
-          ...branchAReviews.map((review) => ({
-            ...review,
-            reviewedBranchId: "a" as const,
-          })),
-          ...branchBReviews.map((review) => ({
-            ...review,
-            reviewedBranchId: "b" as const,
-          })),
-        ],
-        (review) =>
-          createReviewThread({
-            orchestrationEngine,
-            workflow,
-            reviewerSlot: review.reviewerSlot,
-            reviewedBranchId: review.reviewedBranchId,
-            reviewSlot: review.slot,
-            threadId: review.threadId,
-            createdAt: updatedAt,
-          }).pipe(
-            Effect.flatMap(() =>
-              startReviewTurn({
+        reviews,
+        ({ review, reviewedBranchId, reviewerSlot, planMarkdown, planTurnId }) =>
+          Effect.gen(function* () {
+            const reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
+            if (!reviewThread) {
+              yield* createReviewThread({
                 orchestrationEngine,
-                workflow,
-                reviewerSlot: review.reviewerSlot,
-                reviewThreadId: review.threadId,
-                planMarkdown: review.planMarkdown,
-                planTurnId:
-                  review.reviewedBranchId === "a"
-                    ? workflow.branchA.planTurnId
-                    : workflow.branchB.planTurnId,
-                reviewKind: review.slot,
-                reviewedBranchId: review.reviewedBranchId,
+                workflow: intentWorkflow,
+                reviewerSlot,
+                reviewedBranchId,
+                reviewSlot: review.slot,
+                threadId: review.threadId,
                 createdAt: updatedAt,
-              }),
-            ),
-          ),
+              });
+            }
+            const existingDelivery = behavior.idempotentStageSetup
+              ? yield* deliveryForStage(review.threadId, review.updatedAt)
+              : null;
+            const deliveryError = ensureDeliveryCanResume(
+              existingDelivery,
+              `${review.slot} plan review`,
+            );
+            if (deliveryError) return yield* Effect.fail(deliveryError);
+            const alreadyStarted =
+              reviewThread?.latestTurn !== null && reviewThread?.latestTurn !== undefined;
+            if (!existingDelivery && !alreadyStarted) {
+              yield* startReviewTurn({
+                orchestrationEngine,
+                workflow: intentWorkflow,
+                reviewerSlot,
+                reviewThreadId: review.threadId,
+                planMarkdown,
+                planTurnId,
+                reviewKind: review.slot,
+                reviewedBranchId,
+                createdAt: updatedAt,
+                attempt: review.retryCount,
+              });
+            }
+          }),
         { discard: true },
-      );
-
-      yield* upsertWorkflow(
-        markReviewsRequested(workflow, {
-          branchAReviews: branchAReviews.map((review) => ({
-            slot: review.slot,
-            threadId: review.threadId,
-          })),
-          branchBReviews: branchBReviews.map((review) => ({
-            slot: review.slot,
-            threadId: review.threadId,
-          })),
-          updatedAt,
-        }),
       );
     });
 
@@ -2049,10 +2111,11 @@ export const makeWorkflowService = Effect.gen(function* () {
     updatedAt: string,
   ) =>
     Effect.gen(function* () {
-      if (
-        workflow.branchA.status !== "reviews_saved" ||
-        workflow.branchB.status !== "reviews_saved"
-      ) {
+      const startsFresh =
+        workflow.branchA.status === "reviews_saved" && workflow.branchB.status === "reviews_saved";
+      const resumesPersistedIntent =
+        workflow.branchA.status === "revising" && workflow.branchB.status === "revising";
+      if (!startsFresh && !resumesPersistedIntent) {
         return;
       }
 
@@ -2066,16 +2129,12 @@ export const makeWorkflowService = Effect.gen(function* () {
         workflow.branchB,
         snapshot,
       );
-      const originalPlanA = completedProposedPlanForTurn(
-        snapshot,
-        workflow.branchA.authorThreadId,
-        workflow.branchA.planTurnId,
-      )?.planMarkdown;
-      const originalPlanB = completedProposedPlanForTurn(
-        snapshot,
-        workflow.branchB.authorThreadId,
-        workflow.branchB.planTurnId,
-      )?.planMarkdown;
+      const originalPlanForBranch = (branch: PlanningWorkflow["branchA"]) =>
+        snapshot.threads
+          .find((thread) => thread.id === branch.authorThreadId)
+          ?.proposedPlans.find((plan) => plan.turnId === branch.planTurnId)?.planMarkdown;
+      const originalPlanA = originalPlanForBranch(workflow.branchA);
+      const originalPlanB = originalPlanForBranch(workflow.branchB);
       const behavior = resolveWorkflowBehavior({
         runKind: "planning",
         templateId: workflow.templateId,
@@ -2090,34 +2149,51 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const branchAAuthorThread = snapshot.threads.find(
-        (entry) => entry.id === workflow.branchA.authorThreadId,
-      );
-      const branchBAuthorThread = snapshot.threads.find(
-        (entry) => entry.id === workflow.branchB.authorThreadId,
-      );
+      const intentWorkflow = startsFresh
+        ? markBranchRevising(markBranchRevising(workflow, "a", updatedAt), "b", updatedAt)
+        : workflow;
+      if (startsFresh) {
+        yield* upsertWorkflow(intentWorkflow);
+      }
 
-      yield* startRevisionTurn({
-        orchestrationEngine,
-        workflow,
-        branch: workflow.branchA,
-        originalPlanMarkdown: originalPlanA ?? "# Original plan unavailable (legacy workflow)",
-        reviews: branchAReviewTexts,
-        ...(branchAAuthorThread ? { thread: branchAAuthorThread } : {}),
-        createdAt: updatedAt,
-      });
-      yield* startRevisionTurn({
-        orchestrationEngine,
-        workflow,
-        branch: workflow.branchB,
-        originalPlanMarkdown: originalPlanB ?? "# Original plan unavailable (legacy workflow)",
-        reviews: branchBReviewTexts,
-        ...(branchBAuthorThread ? { thread: branchBAuthorThread } : {}),
-        createdAt: updatedAt,
-      });
-
-      yield* upsertWorkflow(
-        markBranchRevising(markBranchRevising(workflow, "a", updatedAt), "b", updatedAt),
+      yield* Effect.forEach(
+        [
+          {
+            branch: intentWorkflow.branchA,
+            originalPlanMarkdown: originalPlanA ?? "# Original plan unavailable (legacy workflow)",
+            reviews: branchAReviewTexts,
+          },
+          {
+            branch: intentWorkflow.branchB,
+            originalPlanMarkdown: originalPlanB ?? "# Original plan unavailable (legacy workflow)",
+            reviews: branchBReviewTexts,
+          },
+        ],
+        ({ branch, originalPlanMarkdown, reviews }) =>
+          Effect.gen(function* () {
+            const thread = snapshot.threads.find((entry) => entry.id === branch.authorThreadId);
+            const existingDelivery = behavior.idempotentStageSetup
+              ? yield* deliveryForStage(branch.authorThreadId, branch.updatedAt)
+              : null;
+            const deliveryError = ensureDeliveryCanResume(existingDelivery, "Plan revision");
+            if (deliveryError) return yield* Effect.fail(deliveryError);
+            const alreadyStarted =
+              thread?.latestTurn !== null &&
+              thread?.latestTurn !== undefined &&
+              thread.latestTurn.requestedAt >= branch.updatedAt;
+            if (!existingDelivery && !alreadyStarted) {
+              yield* startRevisionTurn({
+                orchestrationEngine,
+                workflow: intentWorkflow,
+                branch,
+                originalPlanMarkdown,
+                reviews,
+                ...(thread ? { thread } : {}),
+                createdAt: updatedAt,
+              });
+            }
+          }),
+        { discard: true },
       );
     });
 
@@ -2128,11 +2204,16 @@ export const makeWorkflowService = Effect.gen(function* () {
     retry?: WorkflowRetryContext,
   ) =>
     Effect.gen(function* () {
-      if (
-        workflow.branchA.status !== "revised" ||
-        workflow.branchB.status !== "revised" ||
-        workflow.merge.status !== "not_started"
-      ) {
+      const startsFresh =
+        workflow.branchA.status === "revised" &&
+        workflow.branchB.status === "revised" &&
+        workflow.merge.status === "not_started";
+      const resumesPersistedIntent =
+        workflow.branchA.status === "revised" &&
+        workflow.branchB.status === "revised" &&
+        workflow.merge.status === "in_progress" &&
+        workflow.merge.threadId !== null;
+      if (!startsFresh && !resumesPersistedIntent) {
         return;
       }
 
@@ -2150,27 +2231,64 @@ export const makeWorkflowService = Effect.gen(function* () {
         return;
       }
 
-      const mergeThreadId = ThreadId.makeUnsafe(crypto.randomUUID());
-      yield* orchestrationEngine.dispatch({
-        type: "thread.create",
-        commandId: CommandId.makeUnsafe(crypto.randomUUID()),
-        threadId: mergeThreadId,
-        projectId: workflow.projectId,
-        title: "Merge",
-        model: workflow.merge.mergeSlot.model,
-        runtimeMode: DEFAULT_RUNTIME_MODE,
-        interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
-        branch: null,
-        worktreePath: null,
-        createdAt: updatedAt,
+      const behavior = resolveWorkflowBehavior({
+        runKind: "planning",
+        templateId: workflow.templateId,
+        templateVersion: workflow.templateVersion,
       });
+      const mergeThreadId =
+        workflow.merge.threadId ??
+        ThreadId.makeUnsafe(
+          stableWorkflowUuid(
+            "plan-merge-thread",
+            workflow.id,
+            workflow.branchA.revisionTurnId,
+            workflow.branchB.revisionTurnId,
+            workflow.merge.updatedAt,
+          ),
+        );
+      const intentWorkflow = startsFresh
+        ? markMergeStarted(workflow, mergeThreadId, updatedAt)
+        : workflow;
+      if (startsFresh) {
+        yield* upsertWorkflow(intentWorkflow);
+      }
+
+      const mergeThread = snapshot.threads.find((thread) => thread.id === mergeThreadId);
+      if (!mergeThread) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.create",
+          commandId: stableWorkflowCommandId("create-plan-merge-thread", mergeThreadId),
+          threadId: mergeThreadId,
+          projectId: intentWorkflow.projectId,
+          title: "Merge",
+          model: intentWorkflow.merge.mergeSlot.model,
+          runtimeMode: DEFAULT_RUNTIME_MODE,
+          interactionMode: WORKFLOW_PLANNING_INTERACTION_MODE,
+          branch: null,
+          worktreePath: null,
+          createdAt: updatedAt,
+        });
+      }
+      const existingDelivery = behavior.idempotentStageSetup
+        ? yield* deliveryForStage(mergeThreadId, intentWorkflow.merge.updatedAt)
+        : null;
+      const deliveryError = ensureDeliveryCanResume(existingDelivery, "Plan merge");
+      if (deliveryError) return yield* Effect.fail(deliveryError);
+      const alreadyStarted =
+        mergeThread?.latestTurn !== null &&
+        mergeThread?.latestTurn !== undefined &&
+        mergeThread.latestTurn.requestedAt >= intentWorkflow.merge.updatedAt;
+      if (existingDelivery || alreadyStarted) {
+        return;
+      }
       const mergeReviews = [
-        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchA, snapshot)),
-        ...(yield* reviewFeedbackForBranch(workflow.id, workflow.branchB, snapshot)),
+        ...(yield* reviewFeedbackForBranch(intentWorkflow.id, intentWorkflow.branchA, snapshot)),
+        ...(yield* reviewFeedbackForBranch(intentWorkflow.id, intentWorkflow.branchB, snapshot)),
       ];
       yield* startMergeTurn({
         orchestrationEngine,
-        workflow,
+        workflow: intentWorkflow,
         threadId: mergeThreadId,
         planA,
         planB,
@@ -2178,7 +2296,6 @@ export const makeWorkflowService = Effect.gen(function* () {
         createdAt: updatedAt,
         ...(retry ? { retry } : {}),
       });
-      yield* upsertWorkflow(markMergeStarted(workflow, mergeThreadId, updatedAt));
     });
 
   const maybeContinuePlanningWorkflowLifecycle = (
@@ -5612,7 +5729,7 @@ function createReviewThread({
 }) {
   return orchestrationEngine.dispatch({
     type: "thread.create",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: stableWorkflowCommandId("create-plan-review-thread", workflow.id, threadId),
     threadId,
     projectId: workflow.projectId,
     title: `Review ${reviewedBranchId.toUpperCase()} ${reviewSlot === "cross" ? "Cross" : "Self"}`,
@@ -5636,6 +5753,7 @@ function startReviewTurn({
   reviewedBranchId,
   createdAt,
   retry,
+  attempt = 0,
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
@@ -5647,6 +5765,7 @@ function startReviewTurn({
   reviewedBranchId: "a" | "b";
   createdAt: string;
   retry?: WorkflowRetryContext;
+  attempt?: number;
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
@@ -5671,12 +5790,20 @@ function startReviewTurn({
     artifactLabel: "Plan under review",
   });
   if (promptError) return Effect.fail(promptError);
+  const attemptKey = retry?.kind === "retry" ? `retry:${attempt}:${createdAt}` : "initial";
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: stableWorkflowCommandId(
+      "start-plan-review",
+      workflow.id,
+      reviewThreadId,
+      attemptKey,
+    ),
     threadId: reviewThreadId,
     message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+      messageId: MessageId.makeUnsafe(
+        stableWorkflowUuid("plan-review-message", workflow.id, reviewThreadId, attemptKey),
+      ),
       role: "user",
       text: prompt,
       attachments: [],
@@ -5742,12 +5869,30 @@ function startRevisionTurn({
     ...(thread ? { thread } : {}),
   });
   if (promptError) return Effect.fail(promptError);
+  const attemptKey =
+    retry?.kind === "retry"
+      ? `retry:${branch.retryCount}:${branch.revisionFormatRepairAttempts ?? 0}:${createdAt}`
+      : "initial";
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: stableWorkflowCommandId(
+      "start-plan-revision",
+      workflow.id,
+      branch.branchId,
+      branch.planTurnId,
+      attemptKey,
+    ),
     threadId: branch.authorThreadId,
     message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+      messageId: MessageId.makeUnsafe(
+        stableWorkflowUuid(
+          "plan-revision-message",
+          workflow.id,
+          branch.branchId,
+          branch.planTurnId,
+          attemptKey,
+        ),
+      ),
       role: "user",
       text: prompt,
       attachments: [],
@@ -5818,12 +5963,18 @@ function startMergeTurn({
     artifactLabel: "Merge inputs",
   });
   if (promptError) return Effect.fail(promptError);
+  const attemptKey =
+    retry?.kind === "retry"
+      ? `retry:${workflow.merge.formatRepairAttempts ?? 0}:${createdAt}`
+      : "initial";
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
-    commandId: CommandId.makeUnsafe(crypto.randomUUID()),
+    commandId: stableWorkflowCommandId("start-plan-merge", workflow.id, threadId, attemptKey),
     threadId,
     message: {
-      messageId: MessageId.makeUnsafe(crypto.randomUUID()),
+      messageId: MessageId.makeUnsafe(
+        stableWorkflowUuid("plan-merge-message", workflow.id, threadId, attemptKey),
+      ),
       role: "user",
       text: prompt,
       attachments: [],

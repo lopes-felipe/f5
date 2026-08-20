@@ -3152,6 +3152,18 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt: now,
       }),
     );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "codex",
+        status: "running",
+        runtimeMode: "full-access",
+        runtimePayload: {
+          activeTurnId: turnId,
+          instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+        },
+      }),
+    );
     harness.emit({
       type: "turn.started",
       eventId: asEventId("evt-profiled-approval-started"),
@@ -3212,6 +3224,18 @@ describe("ProviderRuntimeIngestion", () => {
         createdAt: now,
       }),
     );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "codex",
+        status: "running",
+        runtimeMode: "full-access",
+        runtimePayload: {
+          activeTurnId: turnId,
+          instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+        },
+      }),
+    );
     harness.emit({
       type: "turn.started",
       eventId: asEventId("evt-profiled-user-input-started"),
@@ -3243,6 +3267,74 @@ describe("ProviderRuntimeIngestion", () => {
       expect.objectContaining({ requestId: "req-profiled-user-input", answers: {} }),
     ]);
     expect(harness.interruptedTurns).toHaveLength(1);
+  });
+
+  it("does not apply a previous workflow profile to a later ordinary turn", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-after-profiled-workflow");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-previous-profile-session"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "codex",
+        status: "running",
+        runtimeMode: "full-access",
+        runtimePayload: {
+          activeTurnId: turnId,
+          instructionContext: {},
+        },
+      }),
+    );
+
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-turn-after-profiled-started"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("evt-turn-after-profiled-request"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+      requestId: ApprovalRequestId.makeUnsafe("req-turn-after-profiled"),
+      payload: {
+        requestType: "command_execution_approval",
+        detail: "run tests",
+      },
+    });
+
+    const requested = await waitForThread(harness.engine, (thread) =>
+      thread.activities.some((activity) => activity.id === "evt-turn-after-profiled-request"),
+    );
+    expect(requested.session?.status).toBe("running");
+    expect(requested.latestTurn?.workflowExecutionProfile).toBeUndefined();
+    expect(harness.requestResponses).toEqual([]);
+    expect(harness.interruptedTurns).toEqual([]);
   });
 
   it("surfaces unknown approvals with their raw type and byte-bounded detail", async () => {

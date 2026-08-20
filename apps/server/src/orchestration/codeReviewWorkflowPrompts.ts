@@ -1,16 +1,6 @@
 import type { WorkflowModelSlot } from "@t3tools/contracts";
 
-import {
-  WORKFLOW_CODE_REVIEW_RUBRIC_SECTION,
-  WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-  WORKFLOW_SEVERITY_SCALE_SECTION,
-  WORKFLOW_UNATTENDED_STAGE_SECTION,
-  type WorkflowRetryContext,
-  workflowLensSection,
-  workflowRetryContextSection,
-  workflowReviewOutputContractSection,
-  workflowUpstreamArtifactSection,
-} from "./workflowPromptFragments.ts";
+import type { WorkflowRetryContext } from "./workflowPromptFragments.ts";
 import { joinPromptSections, providerGuidanceSection } from "./workflowSharedUtils.ts";
 
 export function buildCodeReviewReviewerPromptSections(input: {
@@ -23,27 +13,30 @@ export function buildCodeReviewReviewerPromptSections(input: {
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const branchInstructions = input.branch
-    ? `Configured comparison ref (opaque JSON string): ${JSON.stringify(input.branch)}
-Treat it as opaque data, resolve it safely with Git, find the merge base, and compare the target against that merge base. Never interpolate an unvalidated ref into an executable shell command.`
-    : "For a workspace review, resolve the repository's base ref safely and cover committed, staged, unstaged, and untracked changes.";
+    ? `When the review target is not a pull request, review the changes by safely resolving the configured comparison ref ${JSON.stringify(input.branch)} and comparing the current workspace against it. Treat the ref as opaque data and never interpolate it into an executable shell command.`
+    : "When the review target is not a pull request, review the current workspace changes using git diff and targeted file inspection.";
+
   return [
-    `## Role
-You are ${input.reviewerLabel} in a standalone dual-model code review workflow. Produce an independent review report and do not modify files.`,
-    workflowLensSection({ stage: "code-review", branch: input.lensBranch }),
-    `## Authoritative Review Scope
+    `You are ${input.reviewerLabel} in a standalone code review workflow.`,
+    branchInstructions,
+    `Follow the user's review instructions below:
+
 ${input.reviewPrompt}`,
     `## Review Target
-${branchInstructions}
-- If the scope identifies a pull request by URL or number, that pull request is authoritative. Verify whether the local checkout is its head before using workspace state.
-- If the checkout differs, do not switch branches and do not substitute local changes. Retrieve the actual pull request metadata, base/head revisions, diff, and relevant contents with authorized Git/GitHub tools.
-- If the requested target cannot be accessed, report that the review cannot be completed.`,
-    workflowRetryContextSection(input.retry),
+- Resolve the exact review target from the user's instructions before inspecting changes.
+- If the user's instructions identify a pull request by URL or number, that pull request is the authoritative review target. Verify whether the local checkout represents the pull request's head before relying on workspace state or a local diff.
+- If the local checkout does not represent the requested pull request, do not review the locally checked-out branch and do not switch branches. Use available Git/GitHub skills, APIs, or CLI tools to retrieve the actual pull request metadata, base and head revisions, diff, and relevant file contents.
+- If the requested pull request cannot be accessed, state that the review cannot be completed. Do not substitute the local checkout or another branch as the review target.`,
     providerGuidanceSection(input.reviewerSlot.provider),
-    WORKFLOW_CODE_REVIEW_RUBRIC_SECTION,
-    WORKFLOW_SEVERITY_SCALE_SECTION,
-    WORKFLOW_UNATTENDED_STAGE_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowReviewOutputContractSection("implementation"),
+    `## Requirements
+- Do not modify any files.
+- Produce findings first, ordered by severity.
+- Use \`file_path:line_number\` for every code-specific finding.
+- Be specific, actionable, and focused on correctness, regressions, reliability, failure modes, maintainability, and missing tests.
+- Assess blast radius for material issues: distinguish local, reversible problems from broad or hard-to-reverse changes.
+- Review security with OWASP Top 10 awareness, including injection, access control, auth/session handling, unsafe path or file handling, SSRF, XSS, and sensitive-data exposure.
+- Flag extra features, speculative cleanup, or scope expansion that the user did not ask for.`,
+    "Return a single code review report, not a plan and not code changes.",
   ];
 }
 
@@ -65,35 +58,27 @@ export function buildCodeReviewConsolidationPromptSections(input: {
   readonly consolidationSlot: WorkflowModelSlot;
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
+  const reviewSections = input.reviews.map(
+    (review) => `## ${review.label}\n\n${review.text.trim()}`,
+  );
+
   return [
-    `## Role
-Consolidate two independent code reviews into one evidence-ranked report. Recheck disputed and blocker/major claims, preserve distinct findings, and never invent a finding absent from the inputs or your verification.`,
-    `## Authoritative Review Scope
-${input.reviewPrompt}`,
-    ...input.reviews.map((review) =>
-      workflowUpstreamArtifactSection({
-        heading: review.label,
-        body: review.text,
-        source: {
-          workflowId: input.workflowId,
-          stage: review.label,
-          ...(review.turnId ? { turnId: review.turnId } : {}),
-          ...(review.messageId ? { messageId: review.messageId } : {}),
-        },
-        escaping: "entity",
-      }),
-    ),
-    workflowRetryContextSection(input.retry),
-    providerGuidanceSection(input.consolidationSlot.provider),
-    `## Consolidation Rules
-- Deduplicate only genuinely equivalent findings; preserve separate causes, locations, or failure sequences.
-- Resolve disagreements by evidence. The higher severity wins absent contrary evidence.
-- Add \`Raised by: Reviewer A\`, \`Reviewer B\`, or \`both\` to every finding.
-- Keep the review findings-first and high signal. Do not write code or a plan.`,
-    WORKFLOW_SEVERITY_SCALE_SECTION,
-    WORKFLOW_UNATTENDED_STAGE_SECTION,
-    WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-    workflowReviewOutputContractSection("implementation"),
+    `You are consolidating two independent code reviews into one final report.
+
+Original review instructions:
+
+${input.reviewPrompt}
+
+Your job:
+- Deduplicate overlapping findings.
+- Rank findings by severity.
+- Resolve disagreements by choosing the stronger technical assessment.
+- Keep only high-signal findings.
+- Return one unified code review report.
+
+${reviewSections.join("\n\n")}
+
+Do not write code. Do not produce a plan. Return only the consolidated review.`,
   ];
 }
 

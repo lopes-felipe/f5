@@ -3195,10 +3195,13 @@ const make = Effect.gen(function* () {
       const now = event.createdAt;
       const eventTurnId = toTurnId(event.turnId);
       const activeTurnId = thread.session?.activeTurnId ?? null;
+      const profiledTurnId = eventTurnId ?? activeTurnId ?? undefined;
       let workflowExecutionProfile =
-        thread.latestTurn?.workflowExecutionProfile ??
-        thread.session?.workflowExecutionProfile ??
-        undefined;
+        profiledTurnId && thread.latestTurn?.turnId === profiledTurnId
+          ? thread.latestTurn.workflowExecutionProfile
+          : profiledTurnId && thread.session?.activeTurnId === profiledTurnId
+            ? thread.session.workflowExecutionProfile
+            : undefined;
       if (
         workflowExecutionProfile === undefined &&
         (event.type === "turn.started" ||
@@ -3208,7 +3211,6 @@ const make = Effect.gen(function* () {
         workflowExecutionProfile = yield* readWorkflowExecutionProfileForThread(thread.id);
       }
 
-      const profiledTurnId = eventTurnId ?? activeTurnId ?? undefined;
       if (workflowExecutionProfile && event.type === "request.opened" && profiledTurnId) {
         if (event.requestId !== undefined) {
           yield* providerService

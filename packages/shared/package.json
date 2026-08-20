@@ -120,6 +120,10 @@
       "types": "./src/orchestrationActivityPayload.ts",
       "import": "./src/orchestrationActivityPayload.ts"
     },
+    "./orchestrationRetention": {
+      "types": "./src/orchestrationRetention.ts",
+      "import": "./src/orchestrationRetention.ts"
+    },
     "./slashCommands": {
       "types": "./src/slashCommands.ts",
       "import": "./src/slashCommands.ts"

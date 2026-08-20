@@ -167,6 +167,60 @@ describe("decider project scripts", () => {
     ).rejects.toBeDefined();
   });
 
+  it("rejects unsupported planning workflow behavior metadata", async () => {
+    const now = new Date().toISOString();
+    const readModel = await Effect.runPromise(
+      projectEvent(createEmptyReadModel(now), {
+        sequence: 1,
+        eventId: asEventId("evt-project-create-unsupported-workflow"),
+        aggregateKind: "project",
+        aggregateId: asProjectId("project-unsupported-workflow"),
+        type: "project.created",
+        occurredAt: now,
+        commandId: CommandId.makeUnsafe("cmd-project-create-unsupported-workflow"),
+        causationEventId: null,
+        correlationId: CommandId.makeUnsafe("cmd-project-create-unsupported-workflow"),
+        metadata: {},
+        payload: {
+          projectId: asProjectId("project-unsupported-workflow"),
+          title: "Project",
+          workspaceRoot: "/tmp/project",
+          defaultModel: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      }),
+    );
+
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "project.workflow.create",
+            commandId: CommandId.makeUnsafe("cmd-workflow-create-unsupported"),
+            workflowId: PlanningWorkflowId.makeUnsafe("workflow-unsupported"),
+            projectId: asProjectId("project-unsupported-workflow"),
+            title: "Unsupported workflow",
+            slug: "unsupported-workflow",
+            requirementPrompt: "Ship it",
+            plansDirectory: "plans",
+            templateId: "custom.unsupported",
+            templateVersion: 99,
+            authorThreadIdA: ThreadId.makeUnsafe("thread-unsupported-a"),
+            authorThreadIdB: ThreadId.makeUnsafe("thread-unsupported-b"),
+            selfReviewEnabled: true,
+            branchA: { provider: "codex", model: "gpt-5-codex" },
+            branchB: { provider: "claudeAgent", model: "claude-sonnet-4-5" },
+            merge: { provider: "codex", model: "gpt-5-codex" },
+            createdAt: now,
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow("Unsupported planning workflow template");
+  });
+
   it("propagates scripts in project.meta.update payload", async () => {
     const now = new Date().toISOString();
     const initial = createEmptyReadModel(now);

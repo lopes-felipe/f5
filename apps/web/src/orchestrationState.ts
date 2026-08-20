@@ -11,10 +11,12 @@ import { inferProviderForModel, resolveModelSlugForProvider } from "@t3tools/sha
 import { sanitizeThreadErrorMessage } from "./transportError";
 import type { ChatMessage, Thread } from "./types";
 
-export const MAX_THREAD_MESSAGES = 2_000;
-export const MAX_THREAD_CHECKPOINTS = 500;
-export const MAX_THREAD_ACTIVITIES = 500;
-export const MAX_THREAD_PROPOSED_PLANS = 200;
+export {
+  MAX_THREAD_ACTIVITIES,
+  MAX_THREAD_CHECKPOINTS,
+  MAX_THREAD_MESSAGES,
+  MAX_THREAD_PROPOSED_PLANS,
+} from "@t3tools/shared/orchestrationRetention";
 
 export function arraysShallowEqual<T>(left: ReadonlyArray<T>, right: ReadonlyArray<T>): boolean {
   return left.length === right.length && left.every((entry, index) => entry === right[index]);

@@ -2,11 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildInvestigationCrossReviewPrompt,
-  buildInvestigationCrossReviewPromptSections,
   buildInvestigationPrompt,
   buildInvestigationPromptSections,
   buildInvestigationSelfReviewPrompt,
-  buildInvestigationSelfReviewPromptSections,
   buildInvestigationSynthesisPrompt,
   buildInvestigationSynthesisPromptSections,
 } from "./investigationWorkflowPrompts.ts";
@@ -20,7 +18,7 @@ function headings(sections: ReadonlyArray<string | null | undefined>): string[] 
 }
 
 describe("investigation workflow prompts", () => {
-  it("builds the investigator contract with an attended question path", () => {
+  it("uses the original investigator structure and output", () => {
     const input = {
       workflowId: "wf",
       problemPrompt: "Find the cause",
@@ -30,11 +28,14 @@ describe("investigation workflow prompts", () => {
       attended: true,
       targetSlot: codexSlot,
     };
-    expect(headings(buildInvestigationPromptSections(input))).toContain("## Clarifying Questions");
-    expect(buildInvestigationPrompt(input)).toContain("rg --files");
+    const prompt = buildInvestigationPrompt(input);
+    expect(headings(buildInvestigationPromptSections(input))).toContain("## How To Investigate");
+    expect(prompt).toContain("## Output");
+    expect(prompt).toContain("1. Summary: most likely root cause");
+    expect(prompt).not.toContain("Scrutiny Lens");
   });
 
-  it("preserves the configured comparison ref and does not promise questions when unattended", () => {
+  it("preserves the configured comparison ref as opaque data", () => {
     const prompt = buildInvestigationPrompt({
       workflowId: "wf",
       problemPrompt: "Find the regression",
@@ -45,11 +46,11 @@ describe("investigation workflow prompts", () => {
       targetSlot: codexSlot,
     });
     expect(prompt).toContain('"release/2026; literal"');
-    expect(prompt).not.toContain("## Clarifying Questions");
-    expect(prompt).toContain("## Scrutiny Lens B");
+    expect(prompt).toContain("Treat the ref as opaque data");
+    expect(prompt).not.toContain("Scrutiny Lens");
   });
 
-  it("builds unattended cross and self reviews with bounded artifacts", () => {
+  it("uses the original cross- and self-review outputs with bounded reports", () => {
     const report = "x".repeat(200_000);
     const cross = buildInvestigationCrossReviewPrompt({
       workflowId: "wf",
@@ -60,18 +61,8 @@ describe("investigation workflow prompts", () => {
       retry: { kind: "retry", reusedThread: true },
     });
     expect(cross).toContain("upstream report truncated");
+    expect(cross).toContain("1. Verdict per peer finding");
     expect(cross).toContain("## Retry Context");
-    expect(
-      headings(
-        buildInvestigationCrossReviewPromptSections({
-          workflowId: "wf",
-          problemPrompt: "Find",
-          peerLabel: "B",
-          peerReport: "report",
-          targetSlot: codexSlot,
-        }),
-      ),
-    ).toContain("## Unattended Stage");
 
     const self = buildInvestigationSelfReviewPrompt({
       workflowId: "wf",
@@ -81,20 +72,10 @@ describe("investigation workflow prompts", () => {
       targetSlot: codexSlot,
     });
     expect(self).toContain("upstream report truncated");
-    expect(
-      headings(
-        buildInvestigationSelfReviewPromptSections({
-          workflowId: "wf",
-          problemPrompt: "Find",
-          investigatorLabel: "A",
-          investigationReport: "report",
-          targetSlot: codexSlot,
-        }),
-      ),
-    ).not.toContain("## Clarifying Questions");
+    expect(self).toContain("1. Verdict per original finding");
   });
 
-  it("gives synthesis provider guidance and preserves retry framing", () => {
+  it("uses the original synthesis output and accurate retry framing", () => {
     const input = {
       workflowId: "wf",
       problemPrompt: "Find",
@@ -109,10 +90,9 @@ describe("investigation workflow prompts", () => {
       ],
     };
     const prompt = buildInvestigationSynthesisPrompt(input);
-    expect(prompt).toContain("## Provider-Specific Guidance");
     expect(prompt).toContain("fresh start");
-    expect(headings(buildInvestigationSynthesisPromptSections(input))).toContain(
-      "## Output Contract",
-    );
+    expect(headings(buildInvestigationSynthesisPromptSections(input))).toContain("## Output");
+    expect(prompt).toContain("1. Primary root cause: certainty percent");
+    expect(prompt).not.toContain("## Reporting Guidance");
   });
 });

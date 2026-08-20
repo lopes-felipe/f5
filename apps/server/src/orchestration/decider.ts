@@ -19,6 +19,7 @@ import {
   requireThreadNotArchived,
 } from "./commandInvariants.ts";
 import { validateThreadTasks } from "./threadTasks.ts";
+import { resolveWorkflowBehavior } from "./workflowBehavior.ts";
 import {
   buildCodeReviewWorkflowRecord,
   buildInvestigationWorkflowRecord,
@@ -28,6 +29,22 @@ import {
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
 const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
+
+function unsupportedWorkflowBehaviorMessage(input: {
+  readonly templateId: string;
+  readonly templateVersion: number;
+}): string | null {
+  try {
+    resolveWorkflowBehavior({
+      runKind: "planning",
+      templateId: input.templateId,
+      templateVersion: input.templateVersion,
+    });
+    return null;
+  } catch (cause) {
+    return cause instanceof Error ? cause.message : "Unsupported planning workflow template.";
+  }
+}
 
 const defaultMetadata: Omit<OrchestrationEvent, "sequence" | "type" | "payload"> = {
   eventId: crypto.randomUUID() as OrchestrationEvent["eventId"],
@@ -347,6 +364,18 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
           detail: `Workflow slug '${command.slug}' already exists in project '${command.projectId}'.`,
         });
       }
+      const templateId = command.templateId ?? "builtin.planning.dual";
+      const templateVersion = command.templateVersion ?? 1;
+      const unsupportedBehavior = unsupportedWorkflowBehaviorMessage({
+        templateId,
+        templateVersion,
+      });
+      if (unsupportedBehavior) {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: unsupportedBehavior,
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "project",
@@ -362,8 +391,8 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
             projectId: command.projectId,
             title: command.title,
             slug: command.slug,
-            templateId: command.templateId ?? "builtin.planning.dual",
-            templateVersion: command.templateVersion ?? 1,
+            templateId,
+            templateVersion,
             requirementPrompt: command.requirementPrompt,
             plansDirectory: command.plansDirectory,
             selfReviewEnabled: command.selfReviewEnabled,
