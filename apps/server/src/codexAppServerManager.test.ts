@@ -7,6 +7,7 @@ import {
   ApprovalRequestId,
   DEFAULT_MODEL_BY_PROVIDER,
   EventId,
+  type ProviderEvent,
   ThreadId,
 } from "@t3tools/contracts";
 
@@ -210,6 +211,55 @@ function createPendingApprovalHarness(
 
   return { manager, context, requestId, requireSession, writeMessage, emitEvent };
 }
+
+describe("CodexAppServerManager protocol diagnostics", () => {
+  it("records bounded diagnostics across malformed records without retaining their contents", () => {
+    const manager = new CodexAppServerManager();
+    const emitted: ProviderEvent[] = [];
+    vi.spyOn(
+      manager as unknown as { emitEvent: (event: ProviderEvent) => void },
+      "emitEvent",
+    ).mockImplementation((event) => emitted.push(event));
+
+    const context = {
+      session: {
+        threadId: asThreadId("thread-protocol-diagnostics"),
+      },
+      pending: new Map(),
+      protocolDecodeFailureCount: 0,
+    };
+    const handleStdoutLine = (
+      manager as unknown as {
+        handleStdoutLine: (session: typeof context, line: string) => void;
+      }
+    ).handleStdoutLine.bind(manager);
+
+    const firstMalformed = `{${"sensitive-output".repeat(8_192)}`;
+    const secondMalformed = "not-json-sensitive-output";
+    handleStdoutLine(context, firstMalformed);
+    handleStdoutLine(context, JSON.stringify({ id: "untracked", result: "x".repeat(128_000) }));
+    handleStdoutLine(context, secondMalformed);
+
+    expect(emitted).toHaveLength(2);
+    expect(emitted.map((event) => event.method)).toEqual([
+      "protocol/parseError",
+      "protocol/parseError",
+    ]);
+    expect(emitted.map((event) => event.payload)).toEqual([
+      {
+        recordByteLength: Buffer.byteLength(firstMalformed, "utf8"),
+        recordSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        occurrence: 1,
+      },
+      {
+        recordByteLength: Buffer.byteLength(secondMalformed, "utf8"),
+        recordSha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        occurrence: 2,
+      },
+    ]);
+    expect(JSON.stringify(emitted)).not.toContain("sensitive-output");
+  });
+});
 
 function createSkillsRefreshHarness() {
   const manager = new CodexAppServerManager();

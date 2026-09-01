@@ -66,6 +66,7 @@ import {
   type OrchestrationProjectionPipelineShape,
 } from "../Services/ProjectionPipeline.ts";
 import { truncateMiddleByBytes } from "../outputTruncation.ts";
+import { canRepairErroredTurnFromSuccessfulSettlement } from "../turnStateTransitions.ts";
 
 export const ORCHESTRATION_PROJECTOR_NAMES = {
   projects: "projection.projects",
@@ -1815,6 +1816,23 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             return;
           }
           if (runningTurn.value.state !== "running") {
+            if (
+              event.payload.session.status === "ready" &&
+              canRepairErroredTurnFromSuccessfulSettlement({
+                currentTurnId: runningTurn.value.turnId,
+                currentState: runningTurn.value.state,
+                completedAt: runningTurn.value.completedAt,
+                settledTurnId: event.payload.settledTurnId,
+                settlementAt: event.payload.session.updatedAt,
+              })
+            ) {
+              yield* projectionTurnRepository.upsertByTurnId({
+                ...runningTurn.value,
+                turnId: runningTurn.value.turnId,
+                state: "completed",
+                completedAt: event.payload.session.updatedAt,
+              });
+            }
             return;
           }
           yield* projectionTurnRepository.deletePendingTurnStartByThreadId({

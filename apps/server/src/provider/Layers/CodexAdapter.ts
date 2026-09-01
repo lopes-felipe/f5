@@ -199,12 +199,20 @@ function hookOutputEntriesText(value: unknown): string | undefined {
   return parts.length > 0 ? parts.join("\n\n") : undefined;
 }
 
-function hookCompletedOutcome(value: unknown): "success" | "error" | "cancelled" {
-  switch (value) {
+function isPostToolUseHookEvent(value: unknown): boolean {
+  const eventName = asString(value)?.trim();
+  return eventName?.replace(/[^a-z0-9]/giu, "").toLowerCase() === "posttooluse";
+}
+
+function hookCompletedOutcome(
+  status: unknown,
+  hookEvent: unknown,
+): "success" | "error" | "cancelled" {
+  switch (status) {
     case "completed":
       return "success";
     case "stopped":
-      return "cancelled";
+      return isPostToolUseHookEvent(hookEvent) ? "success" : "cancelled";
     case "failed":
     case "blocked":
     case "running":
@@ -1805,7 +1813,7 @@ function mapToRuntimeEvents(
           hookId: metadata.hookId,
           hookName: metadata.hookEvent,
           hookEvent: metadata.hookEvent,
-          outcome: hookCompletedOutcome(run?.status),
+          outcome: hookCompletedOutcome(run.status, metadata.hookEvent),
           ...(metadata.targetItemId
             ? {
                 targetItemId: asRuntimeItemId(ProviderItemId.makeUnsafe(metadata.targetItemId)),
@@ -1952,6 +1960,26 @@ function mapToRuntimeEvents(
           category: "protocol",
           actionable: true,
           protocolMethod: requestMethod ?? event.method,
+          ...(event.payload !== undefined ? { detail: event.payload } : {}),
+        },
+      },
+    ];
+  }
+
+  if (
+    event.method === "protocol/parseError" ||
+    event.method === "protocol/invalidMessage" ||
+    event.method === "protocol/unrecognizedMessage"
+  ) {
+    return [
+      {
+        type: "runtime.warning",
+        ...runtimeEventBase(event, canonicalThreadId),
+        payload: {
+          message: event.message ?? "Malformed Codex protocol record",
+          category: "protocol",
+          actionable: false,
+          protocolMethod: event.method,
           ...(event.payload !== undefined ? { detail: event.payload } : {}),
         },
       },

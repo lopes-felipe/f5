@@ -2452,170 +2452,169 @@ it.effect("restores pending turn-start metadata across projection pipeline resta
   ),
 );
 
-it.effect(
-  "keeps a non-streaming assistant message turn running until session readiness settles it",
-  () =>
-    Effect.gen(function* () {
-      const projectionPipeline = yield* OrchestrationProjectionPipeline;
-      const eventStore = yield* OrchestrationEventStore;
-      const sql = yield* SqlClient.SqlClient;
-      const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
-        eventStore
-          .append(event)
-          .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
-      const threadId = ThreadId.makeUnsafe("thread-terminal-session");
-      const projectId = ProjectId.makeUnsafe("project-terminal-session");
-      const turnId = TurnId.makeUnsafe("turn-terminal-session");
-      const messageId = MessageId.makeUnsafe("assistant-terminal-session");
-      const requestedAt = "2026-02-26T15:00:00.000Z";
-      const runningAt = "2026-02-26T15:00:01.000Z";
-      const messageAt = "2026-02-26T15:00:02.000Z";
-      const readyAt = "2026-02-26T15:00:03.000Z";
+it.effect("repairs an explicitly settled turn after a transient session error", () =>
+  Effect.gen(function* () {
+    const projectionPipeline = yield* OrchestrationProjectionPipeline;
+    const eventStore = yield* OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const appendAndProject = (event: Parameters<typeof eventStore.append>[0]) =>
+      eventStore
+        .append(event)
+        .pipe(Effect.flatMap((savedEvent) => projectionPipeline.projectEvent(savedEvent)));
+    const threadId = ThreadId.makeUnsafe("thread-terminal-session");
+    const projectId = ProjectId.makeUnsafe("project-terminal-session");
+    const turnId = TurnId.makeUnsafe("turn-terminal-session");
+    const messageId = MessageId.makeUnsafe("assistant-terminal-session");
+    const requestedAt = "2026-02-26T15:00:00.000Z";
+    const runningAt = "2026-02-26T15:00:01.000Z";
+    const messageAt = "2026-02-26T15:00:02.000Z";
+    const errorAt = "2026-02-26T15:00:02.500Z";
+    const readyAt = "2026-02-26T15:00:03.000Z";
 
-      yield* appendAndProject({
-        type: "project.created",
-        eventId: EventId.makeUnsafe("evt-terminal-session-1"),
-        aggregateKind: "project",
-        aggregateId: projectId,
-        occurredAt: requestedAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-1"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-1"),
-        metadata: {},
-        payload: {
-          projectId,
-          title: "Project Terminal Session",
-          workspaceRoot: "/tmp/project-terminal-session",
-          defaultModel: null,
-          scripts: [],
-          createdAt: requestedAt,
-          updatedAt: requestedAt,
-        },
-      });
+    yield* appendAndProject({
+      type: "project.created",
+      eventId: EventId.makeUnsafe("evt-terminal-session-1"),
+      aggregateKind: "project",
+      aggregateId: projectId,
+      occurredAt: requestedAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-1"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-1"),
+      metadata: {},
+      payload: {
+        projectId,
+        title: "Project Terminal Session",
+        workspaceRoot: "/tmp/project-terminal-session",
+        defaultModel: null,
+        scripts: [],
+        createdAt: requestedAt,
+        updatedAt: requestedAt,
+      },
+    });
 
-      yield* appendAndProject({
-        type: "thread.created",
-        eventId: EventId.makeUnsafe("evt-terminal-session-2"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: requestedAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-2"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-2"),
-        metadata: {},
-        payload: {
+    yield* appendAndProject({
+      type: "thread.created",
+      eventId: EventId.makeUnsafe("evt-terminal-session-2"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: requestedAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-2"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-2"),
+      metadata: {},
+      payload: {
+        threadId,
+        projectId,
+        title: "Thread Terminal Session",
+        model: "gpt-5-codex",
+        runtimeMode: "full-access",
+        branch: null,
+        worktreePath: null,
+        createdAt: requestedAt,
+        updatedAt: requestedAt,
+      },
+    });
+
+    yield* appendAndProject({
+      type: "thread.turn-start-requested",
+      eventId: EventId.makeUnsafe("evt-terminal-session-3"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: requestedAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-3"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-3"),
+      metadata: {},
+      payload: {
+        threadId,
+        messageId: MessageId.makeUnsafe("user-terminal-session"),
+        runtimeMode: "full-access",
+        createdAt: requestedAt,
+      },
+    });
+
+    yield* appendAndProject({
+      type: "thread.session-set",
+      eventId: EventId.makeUnsafe("evt-terminal-session-4"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: runningAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-4"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-4"),
+      metadata: {},
+      payload: {
+        threadId,
+        session: {
           threadId,
-          projectId,
-          title: "Thread Terminal Session",
-          model: "gpt-5-codex",
+          status: "running",
+          providerName: "codex",
           runtimeMode: "full-access",
-          branch: null,
-          worktreePath: null,
-          createdAt: requestedAt,
-          updatedAt: requestedAt,
+          activeTurnId: turnId,
+          lastError: null,
+          updatedAt: runningAt,
         },
-      });
+      },
+    });
 
-      yield* appendAndProject({
-        type: "thread.turn-start-requested",
-        eventId: EventId.makeUnsafe("evt-terminal-session-3"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: requestedAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-3"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-3"),
-        metadata: {},
-        payload: {
-          threadId,
-          messageId: MessageId.makeUnsafe("user-terminal-session"),
-          runtimeMode: "full-access",
-          createdAt: requestedAt,
-        },
-      });
+    const auxiliaryTurnId = TurnId.makeUnsafe("turn-terminal-session-auxiliary");
+    yield* appendAndProject({
+      type: "thread.message-sent",
+      eventId: EventId.makeUnsafe("evt-terminal-session-auxiliary"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: messageAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-auxiliary"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-auxiliary"),
+      metadata: {},
+      payload: {
+        threadId,
+        messageId: MessageId.makeUnsafe("assistant-terminal-session-auxiliary"),
+        role: "assistant",
+        text: "auxiliary output",
+        turnId: auxiliaryTurnId,
+        streaming: false,
+        createdAt: messageAt,
+        updatedAt: messageAt,
+      },
+    });
 
-      yield* appendAndProject({
-        type: "thread.session-set",
-        eventId: EventId.makeUnsafe("evt-terminal-session-4"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: runningAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-4"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-4"),
-        metadata: {},
-        payload: {
-          threadId,
-          session: {
-            threadId,
-            status: "running",
-            providerName: "codex",
-            runtimeMode: "full-access",
-            activeTurnId: turnId,
-            lastError: null,
-            updatedAt: runningAt,
-          },
-        },
-      });
-
-      const auxiliaryTurnId = TurnId.makeUnsafe("turn-terminal-session-auxiliary");
-      yield* appendAndProject({
-        type: "thread.message-sent",
-        eventId: EventId.makeUnsafe("evt-terminal-session-auxiliary"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: messageAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-auxiliary"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-auxiliary"),
-        metadata: {},
-        payload: {
-          threadId,
-          messageId: MessageId.makeUnsafe("assistant-terminal-session-auxiliary"),
-          role: "assistant",
-          text: "auxiliary output",
-          turnId: auxiliaryTurnId,
-          streaming: false,
-          createdAt: messageAt,
-          updatedAt: messageAt,
-        },
-      });
-
-      const auxiliaryTurnRows = yield* sql<{ readonly count: number }>`
+    const auxiliaryTurnRows = yield* sql<{ readonly count: number }>`
         SELECT count(*) AS count
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND turn_id = ${auxiliaryTurnId}
       `;
-      assert.deepEqual(auxiliaryTurnRows, [{ count: 0 }]);
+    assert.deepEqual(auxiliaryTurnRows, [{ count: 0 }]);
 
-      yield* appendAndProject({
-        type: "thread.message-sent",
-        eventId: EventId.makeUnsafe("evt-terminal-session-5"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: messageAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-5"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-5"),
-        metadata: {},
-        payload: {
-          threadId,
-          messageId,
-          role: "assistant",
-          text: "still working",
-          turnId,
-          streaming: false,
-          createdAt: messageAt,
-          updatedAt: messageAt,
-        },
-      });
+    yield* appendAndProject({
+      type: "thread.message-sent",
+      eventId: EventId.makeUnsafe("evt-terminal-session-5"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: messageAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-5"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-5"),
+      metadata: {},
+      payload: {
+        threadId,
+        messageId,
+        role: "assistant",
+        text: "still working",
+        turnId,
+        streaming: false,
+        createdAt: messageAt,
+        updatedAt: messageAt,
+      },
+    });
 
-      const runningRows = yield* sql<{
-        readonly state: string;
-        readonly completedAt: string | null;
-        readonly assistantMessageId: string | null;
-      }>`
+    const runningRows = yield* sql<{
+      readonly state: string;
+      readonly completedAt: string | null;
+      readonly assistantMessageId: string | null;
+    }>`
       SELECT
         state,
         completed_at AS "completedAt",
@@ -2624,18 +2623,53 @@ it.effect(
       WHERE thread_id = ${threadId}
         AND turn_id = ${turnId}
     `;
-      assert.deepEqual(runningRows, [
-        {
-          state: "running",
-          completedAt: null,
-          assistantMessageId: "assistant-terminal-session",
-        },
-      ]);
+    assert.deepEqual(runningRows, [
+      {
+        state: "running",
+        completedAt: null,
+        assistantMessageId: "assistant-terminal-session",
+      },
+    ]);
 
-      // Simulate a legacy projection-only row created by an auxiliary Codex
-      // collaboration message. Exact terminal settlement must not select it
-      // merely because it started after the real parent turn.
-      yield* sql`
+    yield* appendAndProject({
+      type: "thread.session-set",
+      eventId: EventId.makeUnsafe("evt-terminal-session-error"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: errorAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-error"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-error"),
+      metadata: {},
+      payload: {
+        threadId,
+        session: {
+          threadId,
+          status: "error",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: turnId,
+          lastError: "Received invalid JSON from codex app-server.",
+          updatedAt: errorAt,
+        },
+      },
+    });
+
+    const erroredRows = yield* sql<{
+      readonly state: string;
+      readonly completedAt: string | null;
+    }>`
+        SELECT state, completed_at AS "completedAt"
+        FROM projection_turns
+        WHERE thread_id = ${threadId}
+          AND turn_id = ${turnId}
+      `;
+    assert.deepEqual(erroredRows, [{ state: "error", completedAt: errorAt }]);
+
+    // Simulate a legacy projection-only row created by an auxiliary Codex
+    // collaboration message. Exact terminal settlement must not select it
+    // merely because it started after the real parent turn.
+    yield* sql`
         INSERT INTO projection_turns (
           thread_id,
           turn_id,
@@ -2653,36 +2687,36 @@ it.effect(
         )
       `;
 
-      yield* appendAndProject({
-        type: "thread.session-set",
-        eventId: EventId.makeUnsafe("evt-terminal-session-6"),
-        aggregateKind: "thread",
-        aggregateId: threadId,
-        occurredAt: readyAt,
-        commandId: CommandId.makeUnsafe("cmd-terminal-session-6"),
-        causationEventId: null,
-        correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-6"),
-        metadata: {},
-        payload: {
+    yield* appendAndProject({
+      type: "thread.session-set",
+      eventId: EventId.makeUnsafe("evt-terminal-session-6"),
+      aggregateKind: "thread",
+      aggregateId: threadId,
+      occurredAt: readyAt,
+      commandId: CommandId.makeUnsafe("cmd-terminal-session-6"),
+      causationEventId: null,
+      correlationId: CorrelationId.makeUnsafe("cmd-terminal-session-6"),
+      metadata: {},
+      payload: {
+        threadId,
+        settledTurnId: turnId,
+        session: {
           threadId,
-          settledTurnId: turnId,
-          session: {
-            threadId,
-            status: "ready",
-            providerName: "codex",
-            runtimeMode: "full-access",
-            activeTurnId: null,
-            lastError: null,
-            updatedAt: readyAt,
-          },
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: readyAt,
         },
-      });
+      },
+    });
 
-      const completedRows = yield* sql<{
-        readonly state: string;
-        readonly completedAt: string | null;
-        readonly assistantMessageId: string | null;
-      }>`
+    const completedRows = yield* sql<{
+      readonly state: string;
+      readonly completedAt: string | null;
+      readonly assistantMessageId: string | null;
+    }>`
       SELECT
         state,
         completed_at AS "completedAt",
@@ -2691,25 +2725,25 @@ it.effect(
       WHERE thread_id = ${threadId}
         AND turn_id = ${turnId}
     `;
-      assert.deepEqual(completedRows, [
-        {
-          state: "completed",
-          completedAt: readyAt,
-          assistantMessageId: "assistant-terminal-session",
-        },
-      ]);
+    assert.deepEqual(completedRows, [
+      {
+        state: "completed",
+        completedAt: readyAt,
+        assistantMessageId: "assistant-terminal-session",
+      },
+    ]);
 
-      const legacyAuxiliaryRows = yield* sql<{
-        readonly state: string;
-        readonly completedAt: string | null;
-      }>`
+    const legacyAuxiliaryRows = yield* sql<{
+      readonly state: string;
+      readonly completedAt: string | null;
+    }>`
         SELECT state, completed_at AS "completedAt"
         FROM projection_turns
         WHERE thread_id = ${threadId}
           AND turn_id = ${auxiliaryTurnId}
       `;
-      assert.deepEqual(legacyAuxiliaryRows, [{ state: "running", completedAt: null }]);
-    }).pipe((effect) => runWithProjectionPipelineLayer(process.cwd(), effect)),
+    assert.deepEqual(legacyAuxiliaryRows, [{ state: "running", completedAt: null }]);
+  }).pipe((effect) => runWithProjectionPipelineLayer(process.cwd(), effect)),
 );
 
 const engineLayer = it.layer(

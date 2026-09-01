@@ -1448,6 +1448,80 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps stopped postToolUse hooks to successful output replacements", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-hook-output-replaced"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "hook/completed",
+        turnId: asTurnId("turn-1"),
+        payload: {
+          threadId: "thread-1",
+          turnId: "turn-1",
+          run: {
+            id: "hook-output-replaced",
+            eventName: "post_tool_use",
+            status: "stopped",
+            entries: [{ text: "PostToolUse hook stopped execution" }],
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "hook.completed") {
+        return;
+      }
+      assert.deepEqual(firstEvent.value.payload, {
+        hookId: "hook-output-replaced",
+        hookName: "post_tool_use",
+        hookEvent: "post_tool_use",
+        outcome: "success",
+        rawStatus: "stopped",
+        entries: [{ text: "PostToolUse hook stopped execution" }],
+        output: "PostToolUse hook stopped execution",
+      });
+    }),
+  );
+
+  it.effect("keeps other stopped hook events cancelled", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-hook-cancelled"),
+        kind: "notification",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "hook/completed",
+        payload: {
+          threadId: "thread-1",
+          run: {
+            id: "hook-cancelled",
+            eventName: "preToolUse",
+            status: "stopped",
+          },
+        },
+      } satisfies ProviderEvent);
+
+      const firstEvent = yield* Fiber.join(firstEventFiber);
+      assert.equal(firstEvent._tag, "Some");
+      if (firstEvent._tag !== "Some" || firstEvent.value.type !== "hook.completed") {
+        return;
+      }
+      assert.equal(firstEvent.value.payload.outcome, "cancelled");
+      assert.equal(firstEvent.value.payload.rawStatus, "stopped");
+    }),
+  );
+
   it.effect("preserves completed hook metadata and correlates Windows source paths safely", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -1784,6 +1858,60 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         firstEvent.value.payload.message,
         "Failed to connect to websocket after retrying",
       );
+    }),
+  );
+
+  it.effect("maps malformed protocol records to non-terminal protocol warnings", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 3)).pipe(
+        Effect.forkChild,
+      );
+      const createdAt = new Date().toISOString();
+
+      for (const [index, method] of [
+        "protocol/parseError",
+        "protocol/invalidMessage",
+        "protocol/unrecognizedMessage",
+      ].entries()) {
+        lifecycleManager.emit("event", {
+          id: asEventId(`evt-protocol-warning-${index}`),
+          kind: "error",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt,
+          method,
+          message: `Malformed record ${index + 1}`,
+          payload: {
+            recordByteLength: 1_024 + index,
+            recordSha256: `${index}`.repeat(64),
+            occurrence: index + 1,
+          },
+        } satisfies ProviderEvent);
+      }
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.deepEqual(
+        events.map((event) => event.type),
+        ["runtime.warning", "runtime.warning", "runtime.warning"],
+      );
+      for (const [index, event] of events.entries()) {
+        assert.equal(event.type, "runtime.warning");
+        if (event.type !== "runtime.warning") {
+          continue;
+        }
+        assert.equal(event.payload.category, "protocol");
+        assert.equal(event.payload.actionable, false);
+        assert.equal(
+          event.payload.protocolMethod,
+          ["protocol/parseError", "protocol/invalidMessage", "protocol/unrecognizedMessage"][index],
+        );
+        assert.deepEqual(event.payload.detail, {
+          recordByteLength: 1_024 + index,
+          recordSha256: `${index}`.repeat(64),
+          occurrence: index + 1,
+        });
+      }
     }),
   );
 

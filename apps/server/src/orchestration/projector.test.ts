@@ -652,6 +652,85 @@ describe("orchestration projector", () => {
     }
   });
 
+  it("repairs an errored turn from a later explicit successful settlement", async () => {
+    const createdAt = "2026-08-31T16:04:32.000Z";
+    const startedAt = "2026-08-31T16:05:00.000Z";
+    const erroredAt = "2026-08-31T16:15:03.000Z";
+    const repairedAt = "2026-08-31T16:34:11.000Z";
+    const makeSessionEvent = (
+      sequence: number,
+      status: "running" | "error" | "ready",
+      updatedAt: string,
+      settledTurnId?: string,
+    ) =>
+      makeEvent({
+        sequence,
+        type: "thread.session-set",
+        aggregateKind: "thread",
+        aggregateId: "thread-repaired",
+        occurredAt: updatedAt,
+        commandId: `cmd-repaired-${sequence}`,
+        payload: {
+          threadId: "thread-repaired",
+          ...(settledTurnId ? { settledTurnId } : {}),
+          session: {
+            threadId: "thread-repaired",
+            status,
+            providerName: "codex",
+            runtimeMode: "full-access",
+            activeTurnId: status === "running" ? "turn-repaired" : null,
+            lastError: status === "error" ? "transient protocol error" : null,
+            updatedAt,
+          },
+        },
+      });
+
+    const afterCreate = await Effect.runPromise(
+      projectEvent(
+        createEmptyReadModel(createdAt),
+        makeEvent({
+          sequence: 1,
+          type: "thread.created",
+          aggregateKind: "thread",
+          aggregateId: "thread-repaired",
+          occurredAt: createdAt,
+          commandId: "cmd-create-repaired",
+          payload: {
+            threadId: "thread-repaired",
+            projectId: "project-1",
+            title: "demo",
+            model: "gpt-5.6-sol",
+            runtimeMode: "full-access",
+            branch: null,
+            worktreePath: null,
+            createdAt,
+            updatedAt: createdAt,
+          },
+        }),
+      ),
+    );
+    const afterRunning = await Effect.runPromise(
+      projectEvent(afterCreate, makeSessionEvent(2, "running", startedAt)),
+    );
+    const afterError = await Effect.runPromise(
+      projectEvent(afterRunning, makeSessionEvent(3, "error", erroredAt)),
+    );
+    const afterRepair = await Effect.runPromise(
+      projectEvent(afterError, makeSessionEvent(4, "ready", repairedAt, "turn-repaired")),
+    );
+
+    expect(afterError.threads[0]?.latestTurn?.state).toBe("error");
+    expect(afterRepair.threads[0]?.latestTurn).toMatchObject({
+      turnId: "turn-repaired",
+      state: "completed",
+      completedAt: repairedAt,
+    });
+    expect(afterRepair.threads[0]?.session).toMatchObject({
+      status: "ready",
+      lastError: null,
+    });
+  });
+
   it("keeps the latest turn running when a turn diff is refreshed before the turn completes", async () => {
     const createdAt = "2026-02-23T08:00:00.000Z";
     const startedAt = "2026-02-23T08:00:05.000Z";

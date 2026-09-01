@@ -1120,6 +1120,72 @@ describe("deriveWorkLogEntries", () => {
     );
   });
 
+  it("uses normalized hook outcomes instead of stopped raw status for issue severity", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "hook-output-replaced",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "hook.completed",
+        summary: "postToolUse hook applied output replacement",
+        tone: "info",
+        payload: {
+          hookId: "hook-output-replaced",
+          hookEvent: "postToolUse",
+          outcome: "success",
+          rawStatus: "stopped",
+        },
+      }),
+      makeActivity({
+        id: "hook-cancelled",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "hook.completed",
+        summary: "preToolUse hook (stopped)",
+        tone: "info",
+        payload: {
+          hookId: "hook-cancelled",
+          hookEvent: "preToolUse",
+          outcome: "cancelled",
+          rawStatus: "stopped",
+        },
+      }),
+      makeActivity({
+        id: "hook-output-replaced-legacy",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "hook.completed",
+        summary: "post_tool_use hook (stopped)",
+        tone: "info",
+        payload: {
+          hookId: "hook-output-replaced-legacy",
+          hookEvent: "post_tool_use",
+          outcome: "cancelled",
+          rawStatus: "stopped",
+        },
+      }),
+    ];
+
+    const diagnostics = deriveWorkLogEntries(activities, undefined, {
+      mode: "diagnostics",
+      filter: "hooks",
+    });
+    expect(diagnostics.find((entry) => entry.id === "hook-output-replaced")).toMatchObject({
+      label: "postToolUse hook applied output replacement",
+      isIssue: false,
+      diagnostic: { status: "stopped", outcome: "success" },
+    });
+    expect(diagnostics.find((entry) => entry.id === "hook-cancelled")).toMatchObject({
+      isIssue: true,
+      diagnostic: { status: "stopped", outcome: "cancelled" },
+    });
+    expect(diagnostics.find((entry) => entry.id === "hook-output-replaced-legacy")).toMatchObject({
+      label: "post_tool_use hook applied output replacement",
+      isIssue: false,
+      diagnostic: { status: "stopped", outcome: "success" },
+    });
+
+    const essential = deriveWorkLogEntries(activities, undefined, { mode: "essential" });
+    expect(essential.map((entry) => entry.id)).toEqual(["hook-cancelled"]);
+  });
+
   it("pairs legacy diagnostic starts, preserves completed handlers, and marks unmatched starts", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

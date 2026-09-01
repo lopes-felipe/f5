@@ -3807,6 +3807,56 @@ describe("ProviderRuntimeIngestion", () => {
     }
   });
 
+  it("labels successful stopped hooks as applied output replacements", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "hook.completed",
+      eventId: asEventId("evt-hook-output-replaced"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-hook"),
+      payload: {
+        hookId: "hook-output-replaced",
+        outcome: "success",
+        hookName: "postToolUse",
+        hookEvent: "postToolUse",
+        source: "plugin",
+        sourcePath: "/Users/example/.codex/plugins/example/hooks-codex.json",
+        displayOrder: 7,
+        rawStatus: "stopped",
+        durationMs: 118,
+        entries: [{ kind: "stop", text: "PostToolUse hook stopped execution" }],
+        output: "PostToolUse hook stopped execution",
+      },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.id === "evt-hook-output-replaced"),
+    );
+    const activity = thread.activities.find((entry) => entry.id === "evt-hook-output-replaced");
+
+    expect(activity).toMatchObject({
+      kind: "hook.completed",
+      tone: "info",
+      summary: "postToolUse hook applied output replacement",
+      payload: {
+        hookId: "hook-output-replaced",
+        hookEvent: "postToolUse",
+        outcome: "success",
+        rawStatus: "stopped",
+        source: "plugin",
+        sourcePath: "/Users/example/.codex/plugins/example/hooks-codex.json",
+        displayOrder: 7,
+        durationMs: 118,
+        entries: [{ kind: "stop", text: "PostToolUse hook stopped execution" }],
+        output: "PostToolUse hook stopped execution",
+      },
+    });
+  });
+
   it("projects MCP, config, and deprecation diagnostics into thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

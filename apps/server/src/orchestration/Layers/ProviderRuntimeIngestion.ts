@@ -1345,6 +1345,8 @@ function runtimeEventToActivities(
     case "hook.completed": {
       const hookEvent = hookEventNameFromEvent(event) ?? event.payload.hookId;
       const rawStatus = hookRawStatusFromEvent(event) ?? event.payload.outcome;
+      const appliedOutputReplacement =
+        event.payload.outcome === "success" && rawStatus === "stopped";
       const run = hookRunRecord(event);
       const sourcePath = event.payload.sourcePath ?? hookSourcePathFromEvent(event);
       const statusMessage = event.payload.statusMessage ?? hookStatusMessageFromEvent(event);
@@ -1365,7 +1367,9 @@ function runtimeEventToActivities(
           createdAt: event.createdAt,
           tone: event.payload.outcome === "error" ? "error" : "info",
           kind: "hook.completed",
-          summary: `${hookEvent} hook (${rawStatus})`,
+          summary: appliedOutputReplacement
+            ? `${hookEvent} hook applied output replacement`
+            : `${hookEvent} hook (${rawStatus})`,
           payload: {
             hookId: event.payload.hookId,
             ...(event.payload.hookName ? { hookName: event.payload.hookName } : {}),

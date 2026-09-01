@@ -39,6 +39,7 @@ export interface WorkLogDiagnostic {
   type: "hook" | "approval-review";
   id: string;
   status: string;
+  outcome?: "success" | "error" | "cancelled";
   incomplete?: boolean;
   hookEvent?: string;
   handlerType?: string;
@@ -731,6 +732,21 @@ function asFiniteNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+function asHookOutcome(value: unknown): WorkLogDiagnostic["outcome"] {
+  switch (value) {
+    case "success":
+    case "error":
+    case "cancelled":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function isPostToolUseHookEvent(value: string | undefined): boolean {
+  return value?.replace(/[^a-z0-9]/giu, "").toLowerCase() === "posttooluse";
+}
+
 function providerItemIdFromPayload(
   payload: Record<string, unknown> | null,
 ): ProviderItemId | undefined {
@@ -751,8 +767,15 @@ function diagnosticFromActivity(
       asTrimmedString(payload?.rawStatus) ??
       asTrimmedString(payload?.outcome) ??
       (activity.kind === "hook.started" ? "running" : "unknown");
-    const output = asTrimmedString(payload?.output);
     const hookEvent = asTrimmedString(payload?.hookEvent);
+    const output = asTrimmedString(payload?.output);
+    const rawOutcome = asHookOutcome(payload?.outcome);
+    const outcome =
+      status === "stopped" &&
+      isPostToolUseHookEvent(hookEvent) &&
+      (rawOutcome === undefined || rawOutcome === "cancelled")
+        ? "success"
+        : rawOutcome;
     const handlerType = asTrimmedString(payload?.handlerType);
     const executionMode = asTrimmedString(payload?.executionMode);
     const scope = asTrimmedString(payload?.scope);
@@ -765,6 +788,7 @@ function diagnosticFromActivity(
       type: "hook",
       id,
       status,
+      ...(outcome ? { outcome } : {}),
       ...(hookEvent ? { hookEvent } : {}),
       ...(handlerType ? { handlerType } : {}),
       ...(executionMode ? { executionMode } : {}),
@@ -817,6 +841,12 @@ function isWorkLogIssue(entry: WorkLogEntry): boolean {
     return true;
   }
   if (entry.diagnostic?.type === "hook") {
+    if (entry.diagnostic.incomplete) {
+      return true;
+    }
+    if (entry.diagnostic.outcome) {
+      return entry.diagnostic.outcome !== "success";
+    }
     return ["failed", "blocked", "stopped", "error", "cancelled", "incomplete"].includes(
       entry.diagnostic.status,
     );
@@ -1014,18 +1044,22 @@ export function deriveWorkLogEntries(
       const diagnostic = diagnosticFromActivity(activity, payload);
       const warningCategory = asTrimmedString(payload?.category);
       const label =
-        toolPayload?.title && isGenericToolActivitySummary(activity.summary)
-          ? toolPayload.title
-          : activity.kind === "runtime.warning" &&
-              (runtimeWarningVisibility === "full" ||
-                warningCategory === "guardian" ||
-                warningCategory === "verification" ||
-                warningCategory === "protocol" ||
-                payload?.actionable === true)
-            ? typeof payload?.message === "string" && payload.message.length > 0
-              ? payload.message
-              : activity.summary
-            : activity.summary;
+        diagnostic?.type === "hook" &&
+        diagnostic.status === "stopped" &&
+        diagnostic.outcome === "success"
+          ? `${diagnostic.hookEvent ?? "postToolUse"} hook applied output replacement`
+          : toolPayload?.title && isGenericToolActivitySummary(activity.summary)
+            ? toolPayload.title
+            : activity.kind === "runtime.warning" &&
+                (runtimeWarningVisibility === "full" ||
+                  warningCategory === "guardian" ||
+                  warningCategory === "verification" ||
+                  warningCategory === "protocol" ||
+                  payload?.actionable === true)
+              ? typeof payload?.message === "string" && payload.message.length > 0
+                ? payload.message
+                : activity.summary
+              : activity.summary;
       const entry: WorkLogEntry = {
         id: activity.id,
         createdAt: activity.createdAt,

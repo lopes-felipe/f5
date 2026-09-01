@@ -715,6 +715,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     entry.itemType ?? "",
                     entry.warningCount ?? 1,
                     entry.diagnostic?.status ?? "",
+                    entry.diagnostic?.outcome ?? "",
                     entry.diagnostic?.sourcePath ?? "",
                     entry.diagnostic?.durationMs ?? "",
                     entry.diagnostic?.output?.length ?? 0,
@@ -1387,6 +1388,7 @@ function diagnosticDataVersion(entry: TimelineWorkEntry): string {
   return [
     entry.id,
     entry.diagnostic?.status ?? "unknown",
+    entry.diagnostic?.outcome ?? "unknown",
     entry.diagnostic?.sourcePath ?? "",
     entry.diagnostic?.durationMs ?? "",
     entry.diagnostic?.output?.length ?? 0,
@@ -2982,12 +2984,16 @@ const DiagnosticWorkEntryRow = memo(function DiagnosticWorkEntryRow(props: {
   const sourceLabel = diagnosticSourceLabel(workEntry);
   const duration =
     diagnostic.durationMs !== undefined ? formatDuration(diagnostic.durationMs) : undefined;
+  const statusLabel =
+    diagnostic.status === "stopped" && diagnostic.outcome === "success"
+      ? "stopped (output replaced)"
+      : diagnostic.status;
   const metadata = [
     sourceLabel,
     diagnostic.displayOrder !== undefined ? `order ${diagnostic.displayOrder}` : undefined,
     diagnostic.handlerType,
     duration,
-    diagnostic.status,
+    statusLabel,
   ].filter((value): value is string => Boolean(value));
   const canExpand = Boolean(
     diagnostic.sourcePath ||

@@ -174,6 +174,7 @@ const ProjectionLatestTurnDbRowSchema = Schema.Struct({
   requestedAt: IsoDateTime,
   startedAt: Schema.NullOr(IsoDateTime),
   completedAt: Schema.NullOr(IsoDateTime),
+  processingQuiescedAt: Schema.NullOr(IsoDateTime),
   assistantMessageId: Schema.NullOr(MessageId),
 });
 const DEFAULT_THREAD_TAIL_MESSAGE_LIMIT = 120;
@@ -1206,6 +1207,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           requested_at AS "requestedAt",
           started_at AS "startedAt",
           completed_at AS "completedAt",
+          processing_quiesced_at AS "processingQuiescedAt",
           assistant_message_id AS "assistantMessageId"
         FROM projection_turns
         WHERE turn_id IS NOT NULL
@@ -2435,6 +2437,7 @@ const makeProjectionSnapshotQuery = Effect.gen(function* () {
           requestedAt: row.requestedAt,
           startedAt: row.startedAt,
           completedAt: row.completedAt,
+          processingQuiescedAt: row.processingQuiescedAt,
           assistantMessageId: row.assistantMessageId,
         });
       }

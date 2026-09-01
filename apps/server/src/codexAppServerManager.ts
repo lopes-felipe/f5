@@ -1,5 +1,5 @@
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import readline from "node:readline";
 
@@ -128,6 +128,7 @@ interface CodexSessionContext {
   initialSkillsRetryTimeout: ReturnType<typeof setTimeout> | undefined;
   initialSkillsRetryAttempted: boolean;
   resumedContextSent: boolean;
+  protocolDecodeFailureCount: number;
   nextRequestId: number;
   stopping: boolean;
 }
@@ -863,6 +864,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         initialSkillsRetryTimeout: undefined,
         initialSkillsRetryAttempted: false,
         resumedContextSent: false,
+        protocolDecodeFailureCount: 0,
         nextRequestId: 1,
         stopping: false,
       };
@@ -1587,19 +1589,23 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     try {
       parsed = JSON.parse(line);
     } catch {
+      const diagnostics = this.protocolDecodeFailureDiagnostics(context, line);
       this.emitErrorEvent(
         context,
         "protocol/parseError",
         "Received invalid JSON from codex app-server.",
+        diagnostics,
       );
       return;
     }
 
     if (!parsed || typeof parsed !== "object") {
+      const diagnostics = this.protocolDecodeFailureDiagnostics(context, line);
       this.emitErrorEvent(
         context,
         "protocol/invalidMessage",
         "Received non-object protocol message.",
+        diagnostics,
       );
       return;
     }
@@ -1623,6 +1629,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       context,
       "protocol/unrecognizedMessage",
       "Received protocol message in an unknown shape.",
+      this.protocolDecodeFailureDiagnostics(context, line),
     );
   }
 
@@ -2127,7 +2134,24 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     });
   }
 
-  private emitErrorEvent(context: CodexSessionContext, method: string, message: string): void {
+  private protocolDecodeFailureDiagnostics(
+    context: CodexSessionContext,
+    line: string,
+  ): Record<string, unknown> {
+    context.protocolDecodeFailureCount += 1;
+    return {
+      recordByteLength: Buffer.byteLength(line, "utf8"),
+      recordSha256: createHash("sha256").update(line).digest("hex"),
+      occurrence: context.protocolDecodeFailureCount,
+    };
+  }
+
+  private emitErrorEvent(
+    context: CodexSessionContext,
+    method: string,
+    message: string,
+    payload?: unknown,
+  ): void {
     this.emitEvent({
       id: EventId.makeUnsafe(randomUUID()),
       kind: "error",
@@ -2136,6 +2160,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       createdAt: new Date().toISOString(),
       method,
       message,
+      ...(payload !== undefined ? { payload } : {}),
     });
   }
 

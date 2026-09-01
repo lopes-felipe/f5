@@ -69,6 +69,7 @@ import {
   MAX_THREAD_MESSAGES,
   MAX_THREAD_PROPOSED_PLANS,
 } from "./readModelRetention.ts";
+import { canRepairErroredTurnFromSuccessfulSettlement } from "./turnStateTransitions.ts";
 
 type ThreadPatch = Partial<Omit<OrchestrationThread, "id" | "projectId">>;
 
@@ -1193,6 +1194,16 @@ export function projectEvent(
             : {}),
         };
         const terminalState = terminalLatestTurnStateForSessionStatus(nextSession.status);
+        const repairsErroredTurn =
+          terminalState === "completed" &&
+          thread.latestTurn !== null &&
+          canRepairErroredTurnFromSuccessfulSettlement({
+            currentTurnId: thread.latestTurn.turnId,
+            currentState: thread.latestTurn.state,
+            completedAt: thread.latestTurn.completedAt,
+            settledTurnId: payload.settledTurnId,
+            settlementAt: nextSession.updatedAt,
+          });
         const latestTurn =
           nextSession.status === "running" && nextSession.activeTurnId !== null
             ? {
@@ -1226,7 +1237,13 @@ export function projectEvent(
                   startedAt: thread.latestTurn.startedAt ?? nextSession.updatedAt,
                   completedAt: nextSession.updatedAt,
                 }
-              : thread.latestTurn;
+              : repairsErroredTurn && thread.latestTurn
+                ? {
+                    ...thread.latestTurn,
+                    state: "completed" as const,
+                    completedAt: nextSession.updatedAt,
+                  }
+                : thread.latestTurn;
 
         return {
           ...nextBase,

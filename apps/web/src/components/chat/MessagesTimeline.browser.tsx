@@ -1862,4 +1862,75 @@ describe("MessagesTimeline (LegendList)", () => {
       host.remove();
     }
   });
+
+  it("renders stopped postToolUse output replacements as successful diagnostics", async () => {
+    const outputReplacement: TimelineWorkEntry = {
+      id: "hook-output-replaced",
+      createdAt: "2026-03-04T12:03:00.000Z",
+      label: "postToolUse hook applied output replacement",
+      tone: "info",
+      activityKind: "hook.completed",
+      category: "hook",
+      isIssue: false,
+      diagnostic: {
+        type: "hook",
+        id: "hook-output-replaced",
+        hookEvent: "postToolUse",
+        source: "plugin",
+        sourcePath: "/Users/example/.codex/plugins/example/hooks-codex.json",
+        handlerType: "command",
+        displayOrder: 7,
+        status: "stopped",
+        outcome: "success",
+        durationMs: 118,
+        entries: [{ kind: "stop", text: "PostToolUse hook stopped execution" }],
+      },
+    };
+    const entries: TimelineEntry[] = [
+      {
+        id: "hook-output-replaced-row",
+        kind: "work",
+        createdAt: outputReplacement.createdAt,
+        entry: outputReplacement,
+      },
+    ];
+
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={entries}
+        initialHeight={400}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+
+    try {
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("postToolUse hook applied output replacement");
+        expect(host.textContent).toContain("plugin:hooks-codex.json");
+        expect(host.textContent).toContain("order 7");
+        expect(host.textContent).toContain("118ms");
+        expect(host.textContent).toContain("stopped (output replaced)");
+      });
+
+      const rowButton = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.includes("postToolUse hook applied output replacement"),
+      );
+      expect(rowButton?.querySelector("svg.lucide-check")).not.toBeNull();
+      expect(rowButton?.querySelector("svg.lucide-circle-alert")).toBeNull();
+
+      rowButton?.click();
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain(
+          "/Users/example/.codex/plugins/example/hooks-codex.json",
+        );
+        expect(host.textContent).toContain("PostToolUse hook stopped execution");
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
 });

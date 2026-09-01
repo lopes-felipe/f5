@@ -295,6 +295,7 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
         requested_at,
         started_at,
         completed_at,
+        processing_quiesced_at,
         checkpoint_turn_count,
         checkpoint_ref,
         checkpoint_status,
@@ -309,6 +310,7 @@ const seedProjectionFixture = (sql: SqlClient.SqlClient) =>
         '2026-04-01T09:00:08.000Z',
         '2026-04-01T09:00:08.000Z',
         '2026-04-01T09:00:08.000Z',
+        '2026-04-01T09:00:08.500Z',
         1,
         'checkpoint-1',
         'ready',
@@ -378,6 +380,15 @@ projectionSnapshotLayer("ProjectionSnapshotQuery lazy loading", (it) => {
         estimatedContextTokens: 1200,
         tokenUsageSource: "estimated",
         updatedAt: "2026-04-01T09:00:07.000Z",
+      });
+      assert.deepEqual(thread.latestTurn, {
+        turnId: asTurnId("turn-1"),
+        state: "completed",
+        requestedAt: "2026-04-01T09:00:08.000Z",
+        startedAt: "2026-04-01T09:00:08.000Z",
+        completedAt: "2026-04-01T09:00:08.000Z",
+        processingQuiescedAt: "2026-04-01T09:00:08.500Z",
+        assistantMessageId: asMessageId("message-1"),
       });
       assert.deepEqual(thread.proposedPlans, [
         {

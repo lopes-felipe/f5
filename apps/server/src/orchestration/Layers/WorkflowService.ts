@@ -1369,6 +1369,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         snapshot,
         branch.authorThreadId,
         branch.planTurnId,
+        branch.updatedAt,
       )?.planMarkdown;
       if (!planMarkdown) {
         return yield* Effect.fail(new Error("Saved plan not found for automatic review retry."));
@@ -1803,6 +1804,7 @@ export const makeWorkflowService = Effect.gen(function* () {
           input.snapshot,
           branch.authorThreadId,
           branch.planTurnId,
+          branch.updatedAt,
         )?.planMarkdown;
         const reviews = yield* reviewFeedbackForBranch(input.workflow.id, branch, input.snapshot);
         if (!originalPlan || reviews.length === 0) {
@@ -1836,11 +1838,13 @@ export const makeWorkflowService = Effect.gen(function* () {
         input.snapshot,
         input.workflow.branchA.authorThreadId,
         input.workflow.branchA.revisionTurnId,
+        input.workflow.branchA.updatedAt,
       )?.planMarkdown;
       const planB = completedProposedPlanForTurn(
         input.snapshot,
         input.workflow.branchB.authorThreadId,
         input.workflow.branchB.revisionTurnId,
+        input.workflow.branchB.updatedAt,
       )?.planMarkdown;
       if (!planA || !planB) {
         yield* upsertWorkflow(
@@ -1887,40 +1891,104 @@ export const makeWorkflowService = Effect.gen(function* () {
       });
     });
 
-  const completedProposedPlanForTurn = (
+  const resolvePinnedAuthorPlan = (
     snapshot: OrchestrationReadModel,
     threadId: ThreadId,
-    expectedTurnId: string | null,
-  ): { readonly planMarkdown: string } | null => {
-    if (!expectedTurnId) {
-      return null;
+    pinnedTurnId: string | null,
+    replacementNotBefore?: string,
+  ):
+    | { readonly status: "missing" | "waiting" }
+    | {
+        readonly status: "ready";
+        readonly plan: OrchestrationReadModel["threads"][number]["proposedPlans"][number];
+      } => {
+    if (!pinnedTurnId) {
+      return { status: "missing" };
     }
 
     const thread = snapshot.threads.find((entry) => entry.id === threadId);
     if (!thread) {
-      return null;
+      return { status: "missing" };
     }
-    const plan = thread.proposedPlans.find((candidate) => candidate.turnId === expectedTurnId);
-    if (!plan) return null;
+    const latestTurn = thread.latestTurn;
+    const pinnedPlan = thread.proposedPlans.find((candidate) => candidate.turnId === pinnedTurnId);
+    if (!pinnedPlan) {
+      if (!latestTurn) {
+        return { status: "missing" };
+      }
+      const latestTurnStillSettling =
+        (thread.session?.status === "running" && thread.session.activeTurnId !== null) ||
+        latestTurn.state === "running" ||
+        latestTurn.completedAt === null ||
+        latestTurn.processingQuiescedAt === null;
+      if (latestTurnStillSettling) {
+        return { status: "waiting" };
+      }
+      const replacementPlan = thread.proposedPlans.find(
+        (candidate) => candidate.turnId === latestTurn.turnId,
+      );
+      if (
+        latestTurn.state === "completed" &&
+        replacementPlan &&
+        (replacementNotBefore === undefined || latestTurn.requestedAt > replacementNotBefore)
+      ) {
+        return { status: "ready", plan: replacementPlan };
+      }
+      return { status: "missing" };
+    }
 
-    if (thread.latestTurn?.turnId === expectedTurnId) {
+    if (thread.latestTurn?.turnId === pinnedTurnId) {
       if (thread.latestTurn.state !== "completed") {
-        return null;
+        return { status: "waiting" };
       }
-      if (thread.session?.status === "running" && thread.session.activeTurnId === expectedTurnId) {
-        return null;
+      if (thread.session?.status === "running" && thread.session.activeTurnId === pinnedTurnId) {
+        return { status: "waiting" };
       }
-    } else if (
-      (thread.session?.status === "running" && thread.session.activeTurnId !== null) ||
-      (thread.latestTurn && thread.latestTurn.requestedAt > plan.updatedAt)
-    ) {
-      // A newer author turn can supersede the pinned record. Do not fan out
-      // from the older plan while that turn is live or while its capture is
-      // still waiting to be projected; the repinning path handles it first.
-      return null;
+      return { status: "ready", plan: pinnedPlan };
     }
 
-    return plan;
+    if (
+      !latestTurn ||
+      latestTurn.requestedAt <= pinnedPlan.updatedAt ||
+      (replacementNotBefore !== undefined && latestTurn.requestedAt < replacementNotBefore)
+    ) {
+      return { status: "ready", plan: pinnedPlan };
+    }
+
+    const newerTurnStillSettling =
+      (thread.session?.status === "running" && thread.session.activeTurnId !== null) ||
+      latestTurn.state === "running" ||
+      latestTurn.completedAt === null ||
+      latestTurn.processingQuiescedAt === null;
+    if (newerTurnStillSettling) {
+      return { status: "waiting" };
+    }
+
+    const replacementPlan = thread.proposedPlans.find(
+      (candidate) => candidate.turnId === latestTurn.turnId,
+    );
+    if (latestTurn.state === "completed" && replacementPlan) {
+      return { status: "ready", plan: replacementPlan };
+    }
+
+    return { status: "ready", plan: pinnedPlan };
+  };
+
+  const completedProposedPlanForTurn = (
+    snapshot: OrchestrationReadModel,
+    threadId: ThreadId,
+    expectedTurnId: string | null,
+    replacementNotBefore?: string,
+  ): { readonly planMarkdown: string } | null => {
+    const resolution = resolvePinnedAuthorPlan(
+      snapshot,
+      threadId,
+      expectedTurnId,
+      replacementNotBefore,
+    );
+    return resolution.status === "ready" && resolution.plan.turnId === expectedTurnId
+      ? resolution.plan
+      : null;
   };
 
   const maybeStartReviews = (
@@ -1947,11 +2015,13 @@ export const makeWorkflowService = Effect.gen(function* () {
         snapshot,
         workflow.branchA.authorThreadId,
         workflow.branchA.planTurnId,
+        workflow.branchA.updatedAt,
       )?.planMarkdown;
       const planB = completedProposedPlanForTurn(
         snapshot,
         workflow.branchB.authorThreadId,
         workflow.branchB.planTurnId,
+        workflow.branchB.updatedAt,
       )?.planMarkdown;
       if (!planA || !planB) {
         return;
@@ -2221,11 +2291,13 @@ export const makeWorkflowService = Effect.gen(function* () {
         snapshot,
         workflow.branchA.authorThreadId,
         workflow.branchA.revisionTurnId,
+        workflow.branchA.updatedAt,
       )?.planMarkdown;
       const planB = completedProposedPlanForTurn(
         snapshot,
         workflow.branchB.authorThreadId,
         workflow.branchB.revisionTurnId,
+        workflow.branchB.updatedAt,
       )?.planMarkdown;
       if (!planA || !planB) {
         return;
@@ -2332,78 +2404,54 @@ export const makeWorkflowService = Effect.gen(function* () {
             : null;
       if (authorBranchId) {
         const branch = authorBranchId === "a" ? workflow.branchA : workflow.branchB;
-        const turnId = getFinishedLatestTurnId(thread);
-        if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
-          return workflow;
-        }
-        if (branch.status === "revised") {
-          if (
-            workflow.merge.status !== "not_started" ||
-            turnId === branch.revisionTurnId ||
-            !thread.latestTurn ||
-            thread.latestTurn.requestedAt <= branch.updatedAt
-          ) {
+        if (branch.status === "plan_saved" || branch.status === "revised") {
+          const pinnedTurnId =
+            branch.status === "revised" ? branch.revisionTurnId : branch.planTurnId;
+          const selection = resolvePinnedAuthorPlan(
+            snapshot,
+            threadId,
+            pinnedTurnId,
+            branch.updatedAt,
+          );
+          if (selection.status !== "ready" || selection.plan.turnId === pinnedTurnId) {
             return workflow;
           }
 
+          const replacementTurnId = selection.plan.turnId;
           if (
-            !validateCapturedPlanForTurn({
-              workflow,
-              provider: branch.authorSlot.provider,
-              thread,
-              turnId,
-            }).valid
-          ) {
-            const synthesized = yield* maybeSynthesizeProposedPlan({
-              workflow,
-              provider: branch.authorSlot.provider,
-              thread,
-              turnId,
-              createdAt: updatedAt,
-            });
-            if (!synthesized) {
-              return workflow;
-            }
-          }
-
-          const nextWorkflow = markBranchRevised(workflow, authorBranchId, {
-            turnId,
-            updatedAt,
-          });
-          yield* Effect.logInfo("workflow revised branch repinned to newer completed turn", {
-            workflowId: workflow.id,
-            branchId: authorBranchId,
-            previousTurnId: branch.revisionTurnId,
-            replacementTurnId: turnId,
-          });
-          yield* upsertWorkflow(nextWorkflow);
-          return nextWorkflow;
-        }
-        if (branch.status === "plan_saved") {
-          if (
-            branch.reviews.length > 0 ||
+            !replacementTurnId ||
+            (options?.expectedTurnId && replacementTurnId !== options.expectedTurnId) ||
+            (branch.status === "plan_saved" && branch.reviews.length > 0) ||
             workflow.merge.status !== "not_started" ||
-            turnId === branch.planTurnId ||
-            !thread.latestTurn ||
-            thread.latestTurn.requestedAt < branch.updatedAt ||
             !validateCapturedPlanForTurn({
               workflow,
               provider: branch.authorSlot.provider,
               thread,
-              turnId,
+              turnId: replacementTurnId,
             }).valid
           ) {
             return workflow;
           }
 
-          const nextWorkflow = markBranchPlanSaved(workflow, authorBranchId, {
-            turnId,
-            updatedAt,
-          });
+          const nextWorkflow =
+            branch.status === "revised"
+              ? markBranchRevised(workflow, authorBranchId, {
+                  turnId: replacementTurnId,
+                  updatedAt,
+                })
+              : markBranchPlanSaved(workflow, authorBranchId, {
+                  turnId: replacementTurnId,
+                  updatedAt,
+                });
           if (nextWorkflow !== workflow) {
             yield* upsertWorkflow(nextWorkflow);
           }
           return nextWorkflow;
+        }
+
+        const turnId = getFinishedLatestTurnId(thread);
+        if (!turnId || (options?.expectedTurnId && turnId !== options.expectedTurnId)) {
+          return workflow;
         }
         const failureStage = planningWorkflowBranchFailureStage(branch);
         const isRevisionCompletion = branch.status === "revising" || failureStage === "revision";
@@ -2610,107 +2658,83 @@ export const makeWorkflowService = Effect.gen(function* () {
           return;
         }
         // Assistant completion can arrive before checkpoint capture. The
-        // thread.turn-diff-completed event re-enters this state machine. Once
-        // a terminal checkpoint record exists, fail loudly instead of leaving
-        // the workflow indefinitely in `implemented`.
+        // thread.turn-diff-completed event re-enters this state machine. At
+        // processing quiescence, absence is definitive. Some valid workspaces,
+        // such as roots spanning multiple Git repositories, cannot produce a
+        // single checkpoint, so continue with read-only workspace inspection.
         if (!checkpoint) {
-          if (implementationThread.latestTurn?.processingQuiescedAt) {
+          if (!implementationThread.latestTurn?.processingQuiescedAt) {
+            return;
+          }
+        } else {
+          if (checkpoint.status !== "ready") {
             yield* upsertWorkflow(
               markImplementationError(
                 workflow,
-                "Implementation review setup reached processing quiescence without a checkpoint artifact.",
+                `Implementation review setup checkpoint ended with status '${checkpoint.status}'.`,
                 updatedAt,
                 "review-setup",
               ),
             );
+            return;
           }
-          return;
-        }
-        if (checkpoint.status !== "ready") {
-          yield* upsertWorkflow(
-            markImplementationError(
-              workflow,
-              `Implementation review setup checkpoint ended with status '${checkpoint.status}'.`,
+          if (checkpointDiffQuery._tag === "None") {
+            yield* upsertWorkflow(
+              markImplementationError(
+                workflow,
+                "Implementation review setup requires the checkpoint diff service.",
+                updatedAt,
+                "review-setup",
+              ),
+            );
+            return;
+          }
+          const diffResult = yield* checkpointDiffQuery.value
+            .getFullThreadDiff({
+              threadId: implementationThreadId,
+              toTurnCount: checkpoint.checkpointTurnCount,
+            })
+            .pipe(
+              Effect.map((value) => ({ ok: true as const, value })),
+              Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
+            );
+          if (!diffResult.ok) {
+            yield* upsertWorkflow(
+              markImplementationError(
+                workflow,
+                `Implementation review setup failed: ${String(diffResult.error)}`,
+                updatedAt,
+                "review-setup",
+              ),
+            );
+            return;
+          }
+          const bounded = truncatePatchAtFileBoundary(diffResult.value.diff, false);
+          reviewArtifact = {
+            sourceThreadId: implementationThreadId,
+            sourceTurnCount: checkpoint.checkpointTurnCount,
+            patchText: bounded.patch,
+            fullPatchHash: createHash("sha256").update(diffResult.value.diff).digest("hex"),
+            truncated: bounded.truncated,
+            truncationReason: bounded.reason,
+            createdAt: updatedAt,
+          };
+          reviewWorkflow = {
+            ...workflow,
+            implementation: {
+              ...workflow.implementation,
+              reviewArtifact,
+              error: null,
+              errorStage: null,
               updatedAt,
-              "review-setup",
-            ),
-          );
-          return;
-        }
-        if (checkpointDiffQuery._tag === "None") {
-          yield* upsertWorkflow(
-            markImplementationError(
-              workflow,
-              "Implementation review setup requires the checkpoint diff service.",
-              updatedAt,
-              "review-setup",
-            ),
-          );
-          return;
-        }
-        const diffResult = yield* checkpointDiffQuery.value
-          .getFullThreadDiff({
-            threadId: implementationThreadId,
-            toTurnCount: checkpoint.checkpointTurnCount,
-          })
-          .pipe(
-            Effect.map((value) => ({ ok: true as const, value })),
-            Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
-          );
-        if (!diffResult.ok) {
-          yield* upsertWorkflow(
-            markImplementationError(
-              workflow,
-              `Implementation review setup failed: ${String(diffResult.error)}`,
-              updatedAt,
-              "review-setup",
-            ),
-          );
-          return;
-        }
-        const bounded = truncatePatchAtFileBoundary(diffResult.value.diff, false);
-        reviewArtifact = {
-          sourceThreadId: implementationThreadId,
-          sourceTurnCount: checkpoint.checkpointTurnCount,
-          patchText: bounded.patch,
-          fullPatchHash: createHash("sha256").update(diffResult.value.diff).digest("hex"),
-          truncated: bounded.truncated,
-          truncationReason: bounded.reason,
-          createdAt: updatedAt,
-        };
-        reviewWorkflow = {
-          ...workflow,
-          implementation: {
-            ...workflow.implementation,
-            reviewArtifact,
-            error: null,
-            errorStage: null,
+            },
             updatedAt,
-          },
-          updatedAt,
-        };
-        yield* upsertWorkflow(reviewWorkflow);
+          };
+          yield* upsertWorkflow(reviewWorkflow);
+        }
       }
 
-      const promptArtifact = reviewArtifact
-        ? {
-            patchText: reviewArtifact.patchText,
-            fullPatchHash: reviewArtifact.fullPatchHash,
-            truncated: reviewArtifact.truncated,
-            truncationReason: reviewArtifact.truncationReason,
-            source: {
-              workflowId: workflow.id,
-              stage: "implementation",
-              ...(workflow.implementation.implementationTurnId
-                ? { turnId: workflow.implementation.implementationTurnId }
-                : {}),
-            },
-          }
-        : {
-            patchText:
-              "The implementation delta is in the current workspace. Inspect it with read-only Git commands, including committed, staged, unstaged, and untracked changes.",
-            source: { workflowId: workflow.id, stage: "implementation" },
-          };
+      const promptArtifact = implementationReviewPromptArtifact(reviewWorkflow);
 
       const reviewImplementation = reviewWorkflow.implementation;
       if (!reviewImplementation) return;
@@ -3805,6 +3829,72 @@ export const makeWorkflowService = Effect.gen(function* () {
           return;
         }
 
+        case "thread.turn-processing-quiesced": {
+          const readModel = yield* orchestrationEngine.getReadModel();
+          const implementationMatch = workflowForImplementationThread(
+            readModel.planningWorkflows,
+            event.payload.threadId,
+          );
+          if (
+            implementationMatch?.workflow.implementation &&
+            implementationMatch.workflow.implementation.implementationTurnId ===
+              event.payload.turnId
+          ) {
+            const nextWorkflow = yield* maybeAdvanceImplementationLifecycle(
+              implementationMatch.workflow,
+              readModel,
+              event.payload.threadId,
+              event.occurredAt,
+            );
+            yield* maybeContinueImplementationLifecycle(nextWorkflow, readModel, event.occurredAt);
+            return;
+          }
+
+          const implementationCodeReviewMatch = workflowForCodeReviewThread(
+            readModel.planningWorkflows,
+            event.payload.threadId,
+          );
+          if (implementationCodeReviewMatch?.workflow.implementation) {
+            const nextWorkflow = yield* maybeAdvanceImplementationLifecycle(
+              implementationCodeReviewMatch.workflow,
+              readModel,
+              event.payload.threadId,
+              event.occurredAt,
+            );
+            yield* maybeContinueImplementationLifecycle(nextWorkflow, readModel, event.occurredAt);
+            return;
+          }
+
+          const planningWorkflow =
+            workflowForAuthorThread(readModel.planningWorkflows, event.payload.threadId)
+              ?.workflow ??
+            workflowForReviewThread(readModel.planningWorkflows, event.payload.threadId)
+              ?.workflow ??
+            workflowForMergeThread(readModel.planningWorkflows, event.payload.threadId)?.workflow ??
+            null;
+          if (!planningWorkflow) {
+            return;
+          }
+
+          const nextWorkflow = yield* maybeAdvancePlanningWorkflowFromCompletedThread(
+            planningWorkflow,
+            readModel,
+            event.payload.threadId,
+            event.occurredAt,
+            { expectedTurnId: event.payload.turnId },
+          );
+          const lifecycleSnapshot =
+            nextWorkflow !== planningWorkflow
+              ? yield* orchestrationEngine.getReadModel()
+              : readModel;
+          yield* maybeContinuePlanningWorkflowLifecycle(
+            nextWorkflow,
+            lifecycleSnapshot,
+            event.occurredAt,
+          );
+          return;
+        }
+
         case "thread.message-sent": {
           if (event.payload.role !== "assistant" || event.payload.streaming) {
             return;
@@ -4037,6 +4127,12 @@ export const makeWorkflowService = Effect.gen(function* () {
             const baseWorkflow = applyTurnCost(authorMatch.workflow);
             const branch =
               authorMatch.branchId === "a" ? baseWorkflow.branchA : baseWorkflow.branchB;
+            if (branch.status !== "authoring" && branch.status !== "revising") {
+              if (baseWorkflow !== authorMatch.workflow) {
+                yield* upsertWorkflow(baseWorkflow);
+              }
+              return;
+            }
             if (
               branch.status === "authoring" &&
               isRetryableSessionError(event.payload.session) &&
@@ -5038,8 +5134,12 @@ export const makeWorkflowService = Effect.gen(function* () {
       }
 
       const planForBranch = (branch: PlanningWorkflow["branchA"]) =>
-        completedProposedPlanForTurn(snapshot, branch.authorThreadId, branch.planTurnId)
-          ?.planMarkdown ?? null;
+        completedProposedPlanForTurn(
+          snapshot,
+          branch.authorThreadId,
+          branch.planTurnId,
+          branch.updatedAt,
+        )?.planMarkdown ?? null;
 
       if (retriesLegacyReviewSetup) {
         const prospectiveStatuses = [workflow.branchA, workflow.branchB].map((branch) =>
@@ -5105,11 +5205,13 @@ export const makeWorkflowService = Effect.gen(function* () {
           snapshot,
           workflow.branchA.authorThreadId,
           workflow.branchA.revisionTurnId,
+          workflow.branchA.updatedAt,
         )?.planMarkdown;
         const planB = completedProposedPlanForTurn(
           snapshot,
           workflow.branchB.authorThreadId,
           workflow.branchB.revisionTurnId,
+          workflow.branchB.updatedAt,
         )?.planMarkdown;
         if (!planA || !planB) {
           return yield* Effect.fail(new Error("Revised plans not found for merge retry."));
@@ -5351,6 +5453,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                 snapshot,
                 originalBranch.authorThreadId,
                 originalBranch.planTurnId,
+                originalBranch.updatedAt,
               )?.planMarkdown ?? "# Original plan unavailable",
             reviews: revisionFeedback.get(branchId)!,
             ...(authorThread ? { thread: authorThread } : {}),
@@ -6042,8 +6145,14 @@ function implementationReviewPromptArtifact(
       }
     : {
         patchText:
-          "The implementation delta is in the current workspace. Inspect it with read-only Git commands, including committed, staged, unstaged, and untracked changes.",
-        source: { workflowId: workflow.id, stage: "implementation" },
+          "The implementation delta is in the current workspace. Inspect it with read-only Git commands, including committed, staged, unstaged, and untracked changes. If the workspace contains nested Git repositories, inspect every repository affected by the implementation.",
+        source: {
+          workflowId: workflow.id,
+          stage: "implementation",
+          ...(workflow.implementation?.implementationTurnId
+            ? { turnId: workflow.implementation.implementationTurnId }
+            : {}),
+        },
       };
 }
 
