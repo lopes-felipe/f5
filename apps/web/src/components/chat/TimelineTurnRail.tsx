@@ -64,7 +64,7 @@ export function TimelineTurnRail(props: {
         "group/turn-rail pointer-events-none absolute inset-y-0 left-0 z-20 hidden w-18 [@media(pointer:fine)]:block",
         props.hasPersistentGutter
           ? "opacity-100"
-          : "opacity-0 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
+          : "opacity-60 transition-opacity duration-150 hover:opacity-100 focus-within:opacity-100",
       )}
       data-testid="timeline-turn-rail"
       data-persistent-gutter={props.hasPersistentGutter ? "true" : "false"}
@@ -73,7 +73,7 @@ export function TimelineTurnRail(props: {
         <button
           aria-label={`Jump to message: ${activeItem?.userText ?? "User message"}`}
           className={cn(
-            "absolute top-1/2 left-3 -translate-y-1/2 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
+            "absolute top-1/2 left-1 -translate-y-1/2 cursor-pointer bg-transparent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70",
             props.hitStripWidth > 0 ? "pointer-events-auto" : "pointer-events-none",
           )}
           data-testid="timeline-turn-rail-strip"
@@ -121,7 +121,12 @@ export function TimelineTurnRail(props: {
           }}
           type="button"
         >
-          <div className="absolute top-0 left-3 h-full w-px bg-border/15" />
+          <div
+            className={cn(
+              "absolute top-0 h-full w-px bg-border/15",
+              props.hasPersistentGutter ? "left-3" : "left-0",
+            )}
+          />
           {props.items.map((item, index) => {
             const activeDistance =
               resolvedActiveIndex === null ? null : Math.abs(index - resolvedActiveIndex);

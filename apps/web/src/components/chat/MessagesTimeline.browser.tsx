@@ -450,7 +450,7 @@ describe("MessagesTimeline (LegendList)", () => {
     });
   });
 
-  it("keeps the turn-rail hit target inside the measured gutter", async () => {
+  it("keeps a visible turn-rail hit target inside the measured gutter", async () => {
     const host = document.createElement("div");
     document.body.append(host);
     await page.viewport(1200, 896);
@@ -471,11 +471,28 @@ describe("MessagesTimeline (LegendList)", () => {
     await page.viewport(600, 896);
     await vi.waitFor(() => {
       expect(rail?.dataset.persistentGutter).toBe("false");
-      expect(Number.parseFloat(getComputedStyle(strip!).width)).toBe(0);
-      expect(getComputedStyle(strip!).pointerEvents).toBe("none");
+      expect(Number.parseFloat(getComputedStyle(strip!).width)).toBeGreaterThan(0);
+      expect(getComputedStyle(strip!).pointerEvents).toBe("auto");
+      expect(Number.parseFloat(getComputedStyle(rail!).opacity)).toBeGreaterThan(0);
     });
     const messageText = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
+    const contentColumn = host.querySelector<HTMLElement>('[data-timeline-root="true"]');
+    expect(strip!.getBoundingClientRect().right).toBeLessThanOrEqual(
+      contentColumn!.getBoundingClientRect().left,
+    );
     expect(getComputedStyle(messageText!).pointerEvents).not.toBe("none");
+
+    const compactStripRect = strip!.getBoundingClientRect();
+    strip!.dispatchEvent(
+      new MouseEvent("mousemove", {
+        bubbles: true,
+        clientX: compactStripRect.left + 1,
+        clientY: compactStripRect.top + compactStripRect.height / 2,
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(host.querySelector("[data-turn-rail-preview]")).not.toBeNull();
+    });
   });
 
   it("renders the empty-state copy and the listHeaderContent when no entries are present", async () => {

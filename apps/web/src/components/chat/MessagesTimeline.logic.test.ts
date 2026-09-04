@@ -232,7 +232,7 @@ describe("timeline turn rail", () => {
       false,
     ]);
     expect([12, 26, 52, 1_000, 0, Number.NaN].map(resolveTimelineTurnRailHitStripWidth)).toEqual([
-      0, 14, 40, 40, 0, 0,
+      8, 22, 40, 40, 0, 0,
     ]);
     expect(resolveTimelineTurnRailHeightStyle(5)).toBe("min(32px, 100%)");
     expect(resolveTimelineTurnRailTopPercent(0, 5)).toBe(0);
