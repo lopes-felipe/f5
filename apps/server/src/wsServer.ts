@@ -17,6 +17,7 @@ import {
   AGENTS_WS_METHODS,
   USAGE_WS_METHODS,
   CommandId,
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   PROJECT_READ_FILE_MAX_SIZE,
   type ClientOrchestrationCommand,
@@ -1719,7 +1720,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const createdAt = new Date().toISOString();
         bootstrapProjectId = ProjectId.makeUnsafe(crypto.randomUUID());
         const bootstrapProjectTitle = path.basename(cwd) || "project";
-        bootstrapProjectDefaultModel = "gpt-5-codex";
+        bootstrapProjectDefaultModel = DEFAULT_MODEL_BY_PROVIDER.codex;
         yield* orchestrationEngine.dispatch({
           type: "project.create",
           commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -1731,7 +1732,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         });
       } else {
         bootstrapProjectId = existingProject.id;
-        bootstrapProjectDefaultModel = existingProject.defaultModel ?? "gpt-5-codex";
+        bootstrapProjectDefaultModel =
+          existingProject.defaultModel ?? DEFAULT_MODEL_BY_PROVIDER.codex;
       }
 
       const existingThread = snapshot.threads.find(

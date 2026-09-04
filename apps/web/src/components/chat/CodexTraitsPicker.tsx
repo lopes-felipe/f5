@@ -8,12 +8,12 @@ import {
   getDefaultReasoningEffort,
   getReasoningEffortOptions,
   normalizeCodexModelOptions,
-  resolveReasoningEffortForProvider,
+  resolveCodexReasoningEffortForModel,
 } from "@t3tools/shared/model";
 import { memo, useState } from "react";
 import { ChevronDownIcon, ZapIcon } from "lucide-react";
 import { useComposerDraftStore, useComposerThreadDraft } from "../../composerDraftStore";
-import { recordModelSelection, useModelPreferencesStore } from "../../modelPreferencesStore";
+import { recordModelSelection } from "../../modelPreferencesStore";
 import { Button } from "../ui/button";
 import {
   Menu,
@@ -34,29 +34,30 @@ const CODEX_REASONING_LABELS: Record<CodexReasoningEffort, string> = {
   low: "Low",
 };
 
-function getSelectedCodexTraits(modelOptions: CodexModelOptions | null | undefined): {
+function getSelectedCodexTraits(
+  model: string,
+  modelOptions: CodexModelOptions | null | undefined,
+): {
   effort: CodexReasoningEffort;
   fastModeEnabled: boolean;
 } {
-  const defaultReasoningEffort = getDefaultReasoningEffort("codex");
   return {
-    effort:
-      resolveReasoningEffortForProvider("codex", modelOptions?.reasoningEffort) ??
-      defaultReasoningEffort,
+    effort: resolveCodexReasoningEffortForModel(model, modelOptions?.reasoningEffort),
     fastModeEnabled: modelOptions?.fastMode === true,
   };
 }
 
 function CodexTraitsMenuContentImpl(props: {
   threadId: ThreadId;
+  model: string;
   onSelectionComplete?: () => void;
 }) {
   const draft = useComposerThreadDraft(props.threadId);
   const modelOptions = draft.modelOptions?.codex;
   const setModelOptions = useComposerDraftStore((store) => store.setModelOptions);
-  const options = getReasoningEffortOptions("codex");
-  const defaultReasoningEffort = getDefaultReasoningEffort("codex");
-  const { effort, fastModeEnabled } = getSelectedCodexTraits(modelOptions);
+  const options = getReasoningEffortOptions("codex", props.model);
+  const defaultReasoningEffort = getDefaultReasoningEffort("codex", props.model);
+  const { effort, fastModeEnabled } = getSelectedCodexTraits(props.model, modelOptions);
 
   const setCodexModelOptions = (nextCodexModelOptions: CodexModelOptions | undefined) => {
     const { codex: _discardedCodex, ...otherProviderModelOptions } = draft.modelOptions ?? {};
@@ -68,15 +69,8 @@ function CodexTraitsMenuContentImpl(props: {
     setModelOptions(props.threadId, nextProviderModelOptions);
     // Record the (provider, model, options) triple so the MRU used by
     // `model.switchRecent` keeps the fresh options attached to the codex
-    // model the user is actively editing. Fall back to the stored
-    // last-selected codex model when the composer draft hasn't set one.
-    const currentModel =
-      draft.model ?? useModelPreferencesStore.getState().lastModelByProvider.codex ?? null;
-    if (currentModel) {
-      recordModelSelection("codex", currentModel, nextProviderModelOptions);
-    } else {
-      useModelPreferencesStore.getState().setLastModelOptions("codex", nextProviderModelOptions);
-    }
+    // model the user is actively editing.
+    recordModelSelection("codex", props.model, nextProviderModelOptions);
   };
 
   return (
@@ -90,7 +84,7 @@ function CodexTraitsMenuContentImpl(props: {
             const nextEffort = options.find((option) => option === value);
             if (!nextEffort) return;
             setCodexModelOptions(
-              normalizeCodexModelOptions({
+              normalizeCodexModelOptions(props.model, {
                 ...modelOptions,
                 reasoningEffort: nextEffort,
               }),
@@ -113,7 +107,7 @@ function CodexTraitsMenuContentImpl(props: {
           value={fastModeEnabled ? "on" : "off"}
           onValueChange={(value) => {
             setCodexModelOptions(
-              normalizeCodexModelOptions({
+              normalizeCodexModelOptions(props.model, {
                 ...modelOptions,
                 fastMode: value === "on",
               }),
@@ -131,10 +125,13 @@ function CodexTraitsMenuContentImpl(props: {
 
 export const CodexTraitsMenuContent = memo(CodexTraitsMenuContentImpl);
 
-export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: { threadId: ThreadId }) {
+export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: {
+  threadId: ThreadId;
+  model: string;
+}) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const modelOptions = useComposerThreadDraft(props.threadId).modelOptions?.codex;
-  const { effort, fastModeEnabled } = getSelectedCodexTraits(modelOptions);
+  const { effort, fastModeEnabled } = getSelectedCodexTraits(props.model, modelOptions);
   const triggerLabel = CODEX_REASONING_LABELS[effort];
 
   return (
@@ -164,6 +161,7 @@ export const CodexTraitsPicker = memo(function CodexTraitsPicker(props: { thread
       <MenuPopup align="start">
         <CodexTraitsMenuContent
           threadId={props.threadId}
+          model={props.model}
           onSelectionComplete={() => {
             setIsMenuOpen(false);
           }}

@@ -26,7 +26,7 @@ import {
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
 import { codexServerRequestDisposition } from "@t3tools/shared/codexProtocolManifest";
-import { normalizeModelSlug } from "@t3tools/shared/model";
+import { normalizeModelSlug, resolveCodexReasoningEffortForModel } from "@t3tools/shared/model";
 import { assertNever } from "@t3tools/shared/exhaustive";
 import { killProcessTree } from "@t3tools/shared/processTree";
 import { Effect, ServiceMap } from "effect";
@@ -36,6 +36,7 @@ import {
   isCodexCliVersionSupported,
   parseCodexCliVersion,
 } from "./provider/codexCliVersion";
+import { formatCodexUnsupportedModelError } from "./provider/codexErrors.ts";
 import {
   buildCodexAssistantInstructions,
   buildInstructionProfile,
@@ -1114,13 +1115,22 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     if (input.serviceTier !== undefined) {
       turnStartParams.serviceTier = input.serviceTier;
     }
-    if (input.effort) {
-      turnStartParams.effort = input.effort;
+    // Persisted state and non-web callers can supply stale or invalid values;
+    // resolve them to a model-supported effort at the provider boundary.
+    const resolvedEffort =
+      input.effort !== undefined
+        ? resolveCodexReasoningEffortForModel(
+            normalizedModel ?? DEFAULT_MODEL_BY_PROVIDER.codex,
+            input.effort,
+          )
+        : undefined;
+    if (resolvedEffort) {
+      turnStartParams.effort = resolvedEffort;
     }
     const collaborationMode = buildCodexCollaborationMode({
       ...(input.interactionMode !== undefined ? { interactionMode: input.interactionMode } : {}),
       ...(normalizedModel !== undefined ? { model: normalizedModel } : {}),
-      ...(input.effort !== undefined ? { effort: input.effort } : {}),
+      ...(resolvedEffort !== undefined ? { effort: resolvedEffort } : {}),
       ...(context.instructionContext !== undefined
         ? { instructionContext: context.instructionContext }
         : {}),
@@ -2051,7 +2061,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     context.pending.delete(key);
 
     if (response.error?.message) {
-      pending.reject(new Error(`${pending.method} failed: ${String(response.error.message)}`));
+      const providerMessage = formatCodexUnsupportedModelError(String(response.error.message));
+      pending.reject(new Error(`${pending.method} failed: ${providerMessage}`));
       return;
     }
 

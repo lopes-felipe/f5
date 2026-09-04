@@ -7,6 +7,7 @@ import {
   type OrchestrationMessage,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
 } from "@t3tools/contracts";
+import { isUnsupportedCodexModelError } from "./provider/codexErrors.ts";
 import { Cause, Effect } from "effect";
 
 import type { TextGenerationShape } from "./git/Services/TextGeneration.ts";
@@ -141,11 +142,7 @@ export function buildFallbackThreadTitle(input: {
 
 export function isUnsupportedCodexChatGptModelError(reason: string): boolean {
   const normalized = reason.toLowerCase();
-  return (
-    normalized.includes("model") &&
-    normalized.includes("not supported") &&
-    normalized.includes("chatgpt account")
-  );
+  return isUnsupportedCodexModelError(reason) && normalized.includes("chatgpt account");
 }
 
 export const resolveBestEffortGeneratedTitle = (input: {

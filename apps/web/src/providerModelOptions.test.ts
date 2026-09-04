@@ -5,6 +5,7 @@ import {
   providerModelOptionsToSelections,
   providerSelectionsToModelOptions,
 } from "./providerModelOptions";
+import { normalizeCodexModelOptions } from "@t3tools/shared/model";
 
 describe("providerModelOptions", () => {
   it("normalizes non-default Codex reasoning efforts from the shared effort options", () => {
@@ -57,6 +58,16 @@ describe("providerModelOptions", () => {
         },
       }),
     ).toEqual([{ id: "reasoningEffort", value: "max" }]);
+  });
+
+  it("serializes the model-aware Astra effort used for dispatch", () => {
+    const codex = normalizeCodexModelOptions("gpt-6-astra", {
+      reasoningEffort: "ultra",
+    });
+
+    expect(providerModelOptionsToSelections("codex", codex ? { codex } : undefined)).toEqual([
+      { id: "reasoningEffort", value: "max" },
+    ]);
   });
 
   it("normalizes Cursor runtime model options without dropping false booleans", () => {

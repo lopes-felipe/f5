@@ -1377,19 +1377,26 @@ export default function ChatView({
   );
   const selectedModelOptionsForDispatch = useMemo(() => {
     if (selectedProvider === "codex") {
-      const codexOptions = normalizeCodexModelOptions(draftModelOptions?.codex);
+      const codexOptions = normalizeCodexModelOptions(selectedModel, draftModelOptions?.codex);
       return codexOptions ? { codex: codexOptions } : undefined;
     }
     return genericModelOptionsForDispatch;
-  }, [draftModelOptions?.codex, genericModelOptionsForDispatch, selectedProvider]);
+  }, [draftModelOptions?.codex, genericModelOptionsForDispatch, selectedModel, selectedProvider]);
+  const selectedModelSelectionOptionsForDispatch = useMemo(
+    () =>
+      selectedProvider === "codex"
+        ? providerModelOptionsToSelections("codex", selectedModelOptionsForDispatch)
+        : selectedProviderModelOptionsForDispatch,
+    [selectedModelOptionsForDispatch, selectedProvider, selectedProviderModelOptionsForDispatch],
+  );
   const selectedModelSelectionForDispatch = useMemo(
     () =>
       createModelSelection(
         selectedProviderInstanceId,
         selectedModel,
-        selectedProviderModelOptionsForDispatch,
+        selectedModelSelectionOptionsForDispatch,
       ),
-    [selectedModel, selectedProviderInstanceId, selectedProviderModelOptionsForDispatch],
+    [selectedModel, selectedProviderInstanceId, selectedModelSelectionOptionsForDispatch],
   );
   const providerOptionsForDispatch = useMemo(
     () =>
@@ -6102,7 +6109,10 @@ export default function ChatView({
                               runtimeMode={runtimeMode}
                               traitsMenuContent={
                                 selectedProvider === "codex" ? (
-                                  <CodexTraitsMenuContent threadId={threadId} />
+                                  <CodexTraitsMenuContent
+                                    threadId={threadId}
+                                    model={selectedModel}
+                                  />
                                 ) : showClaudeTraitsControls ? (
                                   <ClaudeTraitsMenuContent
                                     threadId={threadId}
@@ -6127,7 +6137,7 @@ export default function ChatView({
                                     orientation="vertical"
                                     className="mx-0.5 hidden h-4 sm:block"
                                   />
-                                  <CodexTraitsPicker threadId={threadId} />
+                                  <CodexTraitsPicker threadId={threadId} model={selectedModel} />
                                 </>
                               ) : showClaudeTraitsControls ? (
                                 <>

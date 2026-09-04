@@ -5,14 +5,16 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 
 import {
-  CODEX_REASONING_EFFORT_OPTIONS,
   type CodexSettings,
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
   type ModelSelection,
 } from "@t3tools/contracts";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@t3tools/shared/git";
 import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
-import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
+import {
+  getModelSelectionStringOptionValue,
+  resolveCodexReasoningEffortForModel,
+} from "@t3tools/shared/model";
 import { formatAttachmentMetadata } from "@t3tools/shared/attachmentMetadata";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
@@ -39,8 +41,20 @@ import {
 } from "../Services/TextGeneration.ts";
 
 const DEFAULT_CODEX_REASONING_EFFORT = "low";
-const CODEX_REASONING_EFFORTS = new Set<string>(CODEX_REASONING_EFFORT_OPTIONS);
 const CODEX_TIMEOUT_MS = 180_000;
+
+export function resolveCodexTextGenerationReasoningEffort(
+  model: string,
+  modelSelection: ModelSelection | undefined,
+  reasoningEffort?: string,
+): string {
+  return resolveCodexReasoningEffortForModel(
+    model,
+    reasoningEffort ??
+      getModelSelectionStringOptionValue(modelSelection, "reasoningEffort") ??
+      DEFAULT_CODEX_REASONING_EFFORT,
+  );
+}
 
 function toCodexOutputJsonSchema(schema: Schema.Top): unknown {
   const document = Schema.toJsonSchemaDocument(schema);
@@ -114,14 +128,6 @@ function sanitizePrTitle(raw: string): string {
     return singleLine;
   }
   return "Update project changes";
-}
-
-function resolveCodexReasoningEffort(
-  modelSelection: ModelSelection | undefined,
-  fallback = DEFAULT_CODEX_REASONING_EFFORT,
-): string {
-  const selected = getModelSelectionStringOptionValue(modelSelection, "reasoningEffort");
-  return selected && CODEX_REASONING_EFFORTS.has(selected) ? selected : fallback;
 }
 
 export const makeCodexTextGeneration = (
@@ -240,8 +246,11 @@ export const makeCodexTextGeneration = (
     }): Effect.Effect<S["Type"], TextGenerationError, S["DecodingServices"]> =>
       Effect.gen(function* () {
         const selectedModel = modelSelection?.model ?? model ?? DEFAULT_GIT_TEXT_GENERATION_MODEL;
-        const selectedReasoningEffort =
-          reasoningEffort ?? resolveCodexReasoningEffort(modelSelection);
+        const selectedReasoningEffort = resolveCodexTextGenerationReasoningEffort(
+          selectedModel,
+          modelSelection,
+          reasoningEffort,
+        );
         const schemaPath = yield* writeTempFile(
           operation,
           "codex-schema",

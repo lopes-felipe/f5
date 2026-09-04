@@ -6,6 +6,7 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- GPT-6 Astra support as the new Codex default model.
 - Four runtime safety modes: Supervised, Auto-accept edits, Codex Auto review, and Full access,
   with provider-specific capability gating.
 - Durable per-thread next-turn queues with pause/resume, editing, reordering, run-now,

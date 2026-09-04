@@ -170,6 +170,7 @@ type ModelOption = {
 export const MODEL_OPTIONS_BY_PROVIDER = {
   codex: [
     // NOTE: first codex entry must equal DEFAULT_MODEL_BY_PROVIDER.codex.
+    { slug: "gpt-6-astra", name: "GPT-6 Astra" },
     { slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" },
     { slug: "gpt-5.6-terra", name: "GPT-5.6 Terra" },
     { slug: "gpt-5.6-luna", name: "GPT-5.6 Luna" },
@@ -210,7 +211,7 @@ type BuiltInModelSlug = ModelOptionsByProvider[ProviderKind][number]["slug"];
 export type ModelSlug = BuiltInModelSlug | (string & {});
 
 export const DEFAULT_MODEL_BY_PROVIDER = {
-  codex: "gpt-5.6-sol",
+  codex: "gpt-6-astra",
   claudeAgent: "claude-opus-5",
   cursor: "auto",
   opencode: "openai/gpt-5",
@@ -220,6 +221,8 @@ export const DEFAULT_MODEL_BY_PROVIDER = {
 export const DEFAULT_MODEL = DEFAULT_MODEL_BY_PROVIDER.codex;
 
 export const DEFAULT_GIT_TEXT_GENERATION_MODEL = "gpt-5.4-mini" as const;
+
+export const DEFAULT_PR_ADVISORY_MODEL = "gpt-5.6-sol" as const;
 
 export const DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER = {
   codex: DEFAULT_GIT_TEXT_GENERATION_MODEL,

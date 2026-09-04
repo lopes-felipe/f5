@@ -6,7 +6,10 @@ import { expect } from "vitest";
 import { ProviderInstanceId } from "@t3tools/contracts";
 
 import { ServerConfig } from "../../config.ts";
-import { CodexTextGenerationLive } from "./CodexTextGeneration.ts";
+import {
+  CodexTextGenerationLive,
+  resolveCodexTextGenerationReasoningEffort,
+} from "./CodexTextGeneration.ts";
 import { TextGenerationError } from "../Errors.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
 
@@ -234,6 +237,16 @@ function withFakeCodexEnv<A, E, R>(
 }
 
 const CodexTextGenerationTestLayer = makeCodexTextGenerationTestLayer(process.cwd());
+
+it("clamps unsupported Astra reasoning efforts before invoking the CLI", () => {
+  expect(
+    resolveCodexTextGenerationReasoningEffort("gpt-6-astra", {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6-astra",
+      options: [{ id: "reasoningEffort", value: "ultra" }],
+    }),
+  ).toBe("max");
+});
 
 it.layer(CodexTextGenerationTestLayer)("CodexTextGenerationLive", (it) => {
   it.effect("generates and sanitizes commit messages without branch by default", () =>
