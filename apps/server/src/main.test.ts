@@ -17,6 +17,7 @@ import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appSt
 import { CliConfig, recordStartupHeartbeat, t3Cli, type CliConfigShape } from "./main";
 import { ServerConfig, type ServerConfigShape } from "./config";
 import { LEGACY_STATE_MIGRATION_FAILURE_SENTINEL } from "./legacyStateMigration";
+import { withHomeSandbox } from "./testing/homeSandbox.ts";
 import { Open, type OpenShape } from "./open";
 import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnapshotQuery";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
@@ -207,198 +208,136 @@ it.layer(testLayer)("server CLI command", (it) => {
   );
 
   it.effect("prefers F5_HOME over legacy T3CODE_HOME", () =>
-    Effect.gen(function* () {
-      const previousHome = process.env.HOME;
-      process.env.HOME = `/tmp/f5-main-test-home-${Date.now()}`;
-      yield* runCli(
-        [],
-        {
-          F5_HOME: "/tmp/f5-home",
-          T3CODE_HOME: "/tmp/t3-home",
-          T3CODE_NO_BROWSER: "true",
-        },
-        { injectDefaultStateDir: false },
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousHome === undefined) {
-              delete process.env.HOME;
-            } else {
-              process.env.HOME = previousHome;
-            }
-          }),
-        ),
-      );
+    withHomeSandbox(
+      Effect.gen(function* () {
+        yield* runCli(
+          [],
+          {
+            F5_HOME: "/tmp/f5-home",
+            T3CODE_HOME: "/tmp/t3-home",
+            T3CODE_NO_BROWSER: "true",
+          },
+          { injectDefaultStateDir: false },
+        );
 
-      assert.equal(start.mock.calls.length, 1);
-      assert.equal(resolvedConfig?.baseDir, "/tmp/f5-home");
-      assert.equal(resolvedConfig?.stateDir, "/tmp/f5-home/userdata");
-    }),
+        assert.equal(start.mock.calls.length, 1);
+        assert.equal(resolvedConfig?.baseDir, "/tmp/f5-home");
+        assert.equal(resolvedConfig?.stateDir, "/tmp/f5-home/userdata");
+      }),
+    ),
   );
 
   it.effect("ignores empty F5_HOME before legacy T3CODE_HOME", () =>
-    Effect.gen(function* () {
-      const previousHome = process.env.HOME;
-      process.env.HOME = `/tmp/f5-main-test-home-${Date.now()}`;
-      yield* runCli(
-        [],
-        {
-          F5_HOME: "   ",
-          T3CODE_HOME: "/tmp/t3-home",
-          T3CODE_NO_BROWSER: "true",
-        },
-        { injectDefaultStateDir: false },
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousHome === undefined) {
-              delete process.env.HOME;
-            } else {
-              process.env.HOME = previousHome;
-            }
-          }),
-        ),
-      );
+    withHomeSandbox(
+      Effect.gen(function* () {
+        yield* runCli(
+          [],
+          {
+            F5_HOME: "   ",
+            T3CODE_HOME: "/tmp/t3-home",
+            T3CODE_NO_BROWSER: "true",
+          },
+          { injectDefaultStateDir: false },
+        );
 
-      assert.equal(start.mock.calls.length, 1);
-      assert.equal(resolvedConfig?.baseDir, "/tmp/t3-home");
-      assert.equal(resolvedConfig?.stateDir, "/tmp/t3-home/userdata");
-    }),
+        assert.equal(start.mock.calls.length, 1);
+        assert.equal(resolvedConfig?.baseDir, "/tmp/t3-home");
+        assert.equal(resolvedConfig?.stateDir, "/tmp/t3-home/userdata");
+      }),
+    ),
   );
 
   it.effect("prefers CLI --home-dir over F5_HOME", () =>
-    Effect.gen(function* () {
-      const previousHome = process.env.HOME;
-      process.env.HOME = `/tmp/f5-main-test-home-${Date.now()}`;
-      yield* runCli(
-        ["--home-dir", "/tmp/cli-home"],
-        {
-          F5_HOME: "/tmp/f5-home",
-          T3CODE_NO_BROWSER: "true",
-        },
-        { injectDefaultStateDir: false },
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousHome === undefined) {
-              delete process.env.HOME;
-            } else {
-              process.env.HOME = previousHome;
-            }
-          }),
-        ),
-      );
+    withHomeSandbox(
+      Effect.gen(function* () {
+        yield* runCli(
+          ["--home-dir", "/tmp/cli-home"],
+          {
+            F5_HOME: "/tmp/f5-home",
+            T3CODE_NO_BROWSER: "true",
+          },
+          { injectDefaultStateDir: false },
+        );
 
-      assert.equal(start.mock.calls.length, 1);
-      assert.equal(resolvedConfig?.baseDir, "/tmp/cli-home");
-      assert.equal(resolvedConfig?.stateDir, "/tmp/cli-home/userdata");
-    }),
+        assert.equal(start.mock.calls.length, 1);
+        assert.equal(resolvedConfig?.baseDir, "/tmp/cli-home");
+        assert.equal(resolvedConfig?.stateDir, "/tmp/cli-home/userdata");
+      }),
+    ),
   );
 
   it.effect("refuses to use the legacy T3 userdata directory as F5 state", () =>
-    Effect.gen(function* () {
-      const previousHome = process.env.HOME;
-      const home = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-main-home-"));
-      process.env.HOME = home;
-      yield* runCli(
-        [],
-        {
-          F5_HOME: legacyT3BaseDir(home),
-          T3CODE_NO_BROWSER: "true",
-        },
-        { injectDefaultStateDir: false },
-      ).pipe(
-        Effect.catch(() => Effect.void),
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousHome === undefined) {
-              delete process.env.HOME;
-            } else {
-              process.env.HOME = previousHome;
-            }
-          }),
-        ),
-      );
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const home = OS.homedir();
+        yield* runCli(
+          [],
+          {
+            F5_HOME: legacyT3BaseDir(home),
+            T3CODE_NO_BROWSER: "true",
+          },
+          { injectDefaultStateDir: false },
+        ).pipe(Effect.catch(() => Effect.void));
 
-      assert.equal(start.mock.calls.length, 0);
-      assert.equal(stop.mock.calls.length, 0);
-    }),
+        assert.equal(start.mock.calls.length, 0);
+        assert.equal(stop.mock.calls.length, 0);
+      }),
+    ),
   );
 
   it.effect("skips legacy migration when an explicit state directory is configured", () =>
-    Effect.gen(function* () {
-      const previousHome = process.env.HOME;
-      const home = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-main-home-"));
-      const explicitStateDir = Path.join(home, "explicit-userdata");
-      const legacyStateDir = legacyT3UserdataStateDir(home);
-      FS.mkdirSync(legacyStateDir, { recursive: true });
-      FS.writeFileSync(Path.join(legacyStateDir, "state.sqlite"), "not a sqlite database");
-      process.env.HOME = home;
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const home = OS.homedir();
+        const explicitStateDir = Path.join(home, "explicit-userdata");
+        const legacyStateDir = legacyT3UserdataStateDir(home);
+        FS.mkdirSync(legacyStateDir, { recursive: true });
+        FS.writeFileSync(Path.join(legacyStateDir, "state.sqlite"), "not a sqlite database");
 
-      yield* runCli(
-        [],
-        {
-          F5_STATE_DIR: explicitStateDir,
-          T3CODE_NO_BROWSER: "true",
-        },
-        { injectDefaultStateDir: false },
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousHome === undefined) {
-              delete process.env.HOME;
-            } else {
-              process.env.HOME = previousHome;
-            }
-            FS.rmSync(home, { recursive: true, force: true });
-          }),
-        ),
-      );
+        yield* runCli(
+          [],
+          {
+            F5_STATE_DIR: explicitStateDir,
+            T3CODE_NO_BROWSER: "true",
+          },
+          { injectDefaultStateDir: false },
+        );
 
-      assert.equal(start.mock.calls.length, 1);
-      assert.equal(FS.existsSync(Path.join(explicitStateDir, "state.sqlite")), false);
-      assert.equal(
-        FS.existsSync(Path.join(explicitStateDir, LEGACY_STATE_MIGRATION_FAILURE_SENTINEL)),
-        false,
-      );
-      FS.rmSync(home, { recursive: true, force: true });
-    }),
+        assert.equal(start.mock.calls.length, 1);
+        assert.equal(FS.existsSync(Path.join(explicitStateDir, "state.sqlite")), false);
+        assert.equal(
+          FS.existsSync(Path.join(explicitStateDir, LEGACY_STATE_MIGRATION_FAILURE_SENTINEL)),
+          false,
+        );
+      }),
+    ),
   );
 
   it.effect("continues startup when legacy migration fails and writes a retry sentinel", () =>
-    Effect.gen(function* () {
-      const previousHome = process.env.HOME;
-      const home = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-main-home-"));
-      const legacyStateDir = legacyT3UserdataStateDir(home);
-      FS.mkdirSync(legacyStateDir, { recursive: true });
-      FS.writeFileSync(Path.join(legacyStateDir, "state.sqlite"), "not a sqlite database");
-      process.env.HOME = home;
+    withHomeSandbox(
+      Effect.gen(function* () {
+        const home = OS.homedir();
+        const legacyStateDir = legacyT3UserdataStateDir(home);
+        FS.mkdirSync(legacyStateDir, { recursive: true });
+        FS.writeFileSync(Path.join(legacyStateDir, "state.sqlite"), "not a sqlite database");
 
-      yield* runCli(
-        [],
-        {
-          T3CODE_NO_BROWSER: "true",
-        },
-        { injectDefaultStateDir: false },
-      ).pipe(
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previousHome === undefined) {
-              delete process.env.HOME;
-            } else {
-              process.env.HOME = previousHome;
-            }
-          }),
-        ),
-      );
+        yield* runCli(
+          [],
+          {
+            T3CODE_NO_BROWSER: "true",
+          },
+          { injectDefaultStateDir: false },
+        );
 
-      assert.equal(start.mock.calls.length, 1);
-      assert.equal(
-        FS.existsSync(Path.join(home, ".f5", "userdata", LEGACY_STATE_MIGRATION_FAILURE_SENTINEL)),
-        true,
-      );
-      FS.rmSync(home, { recursive: true, force: true });
-    }),
+        assert.equal(start.mock.calls.length, 1);
+        assert.equal(
+          FS.existsSync(
+            Path.join(home, ".f5", "userdata", LEGACY_STATE_MIGRATION_FAILURE_SENTINEL),
+          ),
+          true,
+        );
+      }),
+    ),
   );
 
   it.effect("reads observability enablement from the environment", () =>

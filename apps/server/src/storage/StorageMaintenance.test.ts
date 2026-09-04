@@ -26,54 +26,10 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../provider/Services/ProviderService.ts";
+import { withHomeSandbox } from "../testing/homeSandbox.ts";
 import { StorageMaintenance } from "./StorageMaintenance.ts";
 import { StorageMaintenanceLive } from "./StorageMaintenance.ts";
 import { sizeIfExists } from "./diskUsage.ts";
-
-const ENV_NAMES = ["HOME", "F5_HOME", "T3CODE_HOME", "F5_STATE_DIR", "T3CODE_STATE_DIR"] as const;
-
-type EnvSnapshot = Record<(typeof ENV_NAMES)[number], string | undefined>;
-
-function captureEnv(): EnvSnapshot {
-  const snapshot = {} as EnvSnapshot;
-  for (const name of ENV_NAMES) {
-    snapshot[name] = process.env[name];
-  }
-  return snapshot;
-}
-
-function restoreEnv(snapshot: EnvSnapshot) {
-  for (const name of ENV_NAMES) {
-    const value = snapshot[name];
-    if (value === undefined) {
-      delete process.env[name];
-    } else {
-      process.env[name] = value;
-    }
-  }
-}
-
-function withIsolatedHome<A, E, R>(effect: Effect.Effect<A, E, R>) {
-  return Effect.gen(function* () {
-    const snapshot = captureEnv();
-    const home = yield* Effect.promise(() =>
-      NodeFS.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-storage-home-")),
-    );
-    process.env.HOME = home;
-    delete process.env.F5_HOME;
-    delete process.env.T3CODE_HOME;
-    delete process.env.F5_STATE_DIR;
-    delete process.env.T3CODE_STATE_DIR;
-    return yield* effect.pipe(
-      Effect.ensuring(
-        Effect.promise(async () => {
-          restoreEnv(snapshot);
-          await NodeFS.rm(home, { recursive: true, force: true }).catch(() => undefined);
-        }),
-      ),
-    );
-  });
-}
 
 function makeProviderServiceStub(input?: {
   readonly stopSession?: ProviderServiceShape["stopSession"];
@@ -239,7 +195,7 @@ const layer = it.layer(makeStorageTestLayer());
 
 layer("StorageMaintenance", (it) => {
   it.effect("inspect enumerates provider log files without following symlinks", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -265,7 +221,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("prunes only provider logs for non-live non-busy segments", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -330,7 +286,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("enforces storage cleanup nonce single use", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -360,7 +316,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("requires typed DELETE confirmation for high-impact legacy cleanup", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const home = NodeOS.homedir();
@@ -402,7 +358,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("includes legacy storage in total used without double-counting legacy targets", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -442,7 +398,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("requires explicit target selection for legacy worktree cleanup", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const home = NodeOS.homedir();
@@ -476,7 +432,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("does not treat archived threads as live legacy worktree references", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const sql = yield* SqlClient.SqlClient;
@@ -509,7 +465,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("splits nested legacy worktree project buckets into child targets", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const sql = yield* SqlClient.SqlClient;
@@ -571,7 +527,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("disables and skips dirty legacy worktree targets", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const home = NodeOS.homedir();
@@ -625,7 +581,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("reclaims legacy worktree directories when parent Git metadata is missing", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const home = NodeOS.homedir();
@@ -667,7 +623,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("prunes archived provider logs while retaining active and busy logs", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -737,7 +693,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("removes clean archived F5 worktrees after clearing thread references", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -785,7 +741,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("disables dirty F5 worktree targets", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -807,7 +763,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("disables ahead F5 worktree targets", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -829,7 +785,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("refuses to clean the configured F5 worktrees root", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -874,7 +830,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("does not scan through symlinked legacy roots", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const home = NodeOS.homedir();
@@ -904,7 +860,7 @@ layer("StorageMaintenance", (it) => {
   it.effect(
     "purges soft-deleted thread rows and preserves colliding attachment and provider log files",
     () =>
-      withIsolatedHome(
+      withHomeSandbox(
         Effect.gen(function* () {
           const storage = yield* StorageMaintenance;
           const config = yield* ServerConfig;
@@ -1020,7 +976,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("purges archived threads older than 30 days through guarded delete", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const config = yield* ServerConfig;
@@ -1084,7 +1040,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("keeps archived threads newer than 30 days out of purge candidates", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const sql = yield* SqlClient.SqlClient;
@@ -1110,7 +1066,7 @@ layer("StorageMaintenance", (it) => {
   );
 
   it.effect("skips archived purge when a scanned thread is unarchived before cleanup", () =>
-    withIsolatedHome(
+    withHomeSandbox(
       Effect.gen(function* () {
         const storage = yield* StorageMaintenance;
         const sql = yield* SqlClient.SqlClient;
