@@ -3,9 +3,12 @@ import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
   deriveTimelineTurnRailItems,
+  deriveCodexCollaborationResponseRows,
   findNearestMinimapMarkerIndex,
   normalizeCompactToolLabel,
   resolveActiveTurnRailIndex,
+  resolveCodexCollaborationHeading,
+  resolveCodexCollaborationStatusLabel,
   resolveTimelineTurnRailHasPersistentGutter,
   resolveTimelineTurnRailHeightStyle,
   resolveTimelineTurnRailHitStripWidth,
@@ -300,5 +303,60 @@ describe("timeline turn rail", () => {
     expect(items[1]?.userText).toBe("one.ts, two.ts, three.ts +1 more");
     expect(items[2]?.userText).toBe("screenshot.png");
     expect(items[3]?.userText).toBeNull();
+  });
+});
+
+describe("Codex collaboration presentation", () => {
+  it.each([
+    ["spawnAgent", "Spawning agent", "Spawned agent", "Agent spawn failed"],
+    [
+      "sendInput",
+      "Sending message to 2 agents",
+      "Sent message to 2 agents",
+      "Message delivery failed",
+    ],
+    ["resumeAgent", "Resuming agent", "Resumed agent", "Agent resume failed"],
+    ["wait", "Waiting for 2 agents", "Finished waiting", "Agent wait failed"],
+    ["closeAgent", "Closing agent", "Closed agent", "Agent close failed"],
+  ] as const)("maps %s lifecycle headings", (tool, active, completed, failed) => {
+    expect(resolveCodexCollaborationHeading(tool, "inProgress", 2)).toBe(active);
+    expect(resolveCodexCollaborationHeading(tool, "completed", 2)).toBe(completed);
+    expect(resolveCodexCollaborationHeading(tool, "failed", 2)).toBe(failed);
+    expect(resolveCodexCollaborationHeading(tool, "declined", 2)).toBe(failed);
+  });
+
+  it("uses singular, plural, and receiver-free wording", () => {
+    expect(resolveCodexCollaborationHeading("sendInput", "inProgress", 1)).toBe(
+      "Sending message to 1 agent",
+    );
+    expect(resolveCodexCollaborationHeading("sendInput", "inProgress", 0)).toBe("Sending message");
+    expect(resolveCodexCollaborationHeading("sendInput", "completed", 0)).toBe("Sent message");
+    expect(resolveCodexCollaborationHeading("wait", "inProgress", 0)).toBe("Waiting for agents");
+  });
+
+  it("maps every agent status and retains receiver order", () => {
+    expect(
+      ["pendingInit", "running", "interrupted", "completed", "errored", "shutdown", "notFound"].map(
+        (status) => resolveCodexCollaborationStatusLabel(status as never),
+      ),
+    ).toEqual([
+      "Pending",
+      "Running",
+      "Interrupted",
+      "Completed",
+      "Errored",
+      "Shut down",
+      "Not found",
+    ]);
+    expect(
+      deriveCodexCollaborationResponseRows(
+        ["b", "a"],
+        [
+          { threadId: "a", status: "running" },
+          { threadId: "b", status: "completed", message: "Done" },
+          { threadId: "extra", status: "completed" },
+        ],
+      ).map((state) => state.threadId),
+    ).toEqual(["b", "a"]);
   });
 });

@@ -660,6 +660,110 @@ describe("hasActionableProposedPlan", () => {
 });
 
 describe("deriveWorkLogEntries", () => {
+  it("coalesces a Codex collaboration lifecycle into one stable retained row", () => {
+    const lifecycle = [
+      makeActivity({
+        id: "collab-started",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        turnId: "turn-1",
+        kind: "tool.started",
+        summary: "Wait started",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          providerItemId: "collab-item",
+          status: "inProgress",
+          subagentPrompt: "Check the implementation",
+          subagentSenderThreadId: "parent",
+          subagentReceiverThreadIds: ["agent-a"],
+          codexCollaborationTool: "wait",
+        },
+      }),
+      makeActivity({
+        id: "collab-updated",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        turnId: "turn-1",
+        kind: "tool.updated",
+        summary: "Wait updated",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          providerItemId: "collab-item",
+          status: "inProgress",
+          codexCollaborationTool: "wait",
+          subagentSenderThreadId: "parent",
+          subagentReceiverThreadIds: ["agent-a"],
+        },
+      }),
+      makeActivity({
+        id: "collab-completed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        turnId: "turn-1",
+        kind: "tool.completed",
+        summary: "Wait completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          providerItemId: "collab-item",
+          status: "completed",
+          codexCollaborationTool: "wait",
+          subagentSenderThreadId: "parent",
+          subagentReceiverThreadIds: ["agent-a"],
+          subagentStates: [{ threadId: "agent-a", status: "completed", message: "Reviewed" }],
+        },
+      }),
+    ];
+    const [entry] = deriveWorkLogEntries(lifecycle, undefined);
+    expect(entry).toMatchObject({
+      id: "collab-started",
+      createdAt: "2026-02-23T00:00:01.000Z",
+      status: "completed",
+      subagentPrompt: "Check the implementation",
+      subagentStates: [{ threadId: "agent-a", status: "completed", message: "Reviewed" }],
+    });
+    expect(deriveWorkLogEntries(lifecycle, TurnId.makeUnsafe("turn-2"))).toHaveLength(1);
+
+    const regressed = deriveWorkLogEntries(
+      [{ ...lifecycle[1]!, createdAt: "2026-02-23T00:00:04.000Z" }, lifecycle[2]!],
+      undefined,
+    );
+    expect(regressed[0]?.status).toBe("completed");
+  });
+
+  it("keeps collaboration rows without provider item ids on the generic path", () => {
+    const entries = deriveWorkLogEntries(
+      [
+        makeActivity({
+          id: "collab-no-id-started",
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.started",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            status: "inProgress",
+            codexCollaborationTool: "sendInput",
+            subagentSenderThreadId: "parent",
+            subagentReceiverThreadIds: ["agent-a"],
+          },
+        }),
+        makeActivity({
+          id: "collab-no-id-completed",
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            status: "completed",
+            codexCollaborationTool: "sendInput",
+            subagentSenderThreadId: "parent",
+            subagentReceiverThreadIds: ["agent-a"],
+          },
+        }),
+      ],
+      undefined,
+    );
+
+    expect(entries.map((entry) => entry.id)).toEqual([
+      "collab-no-id-started",
+      "collab-no-id-completed",
+    ]);
+  });
+
   it("omits tool started entries and keeps completed entries", () => {
     const activities: OrchestrationThreadActivity[] = [
       makeActivity({

@@ -2036,4 +2036,86 @@ describe("MessagesTimeline (LegendList)", () => {
       host.remove();
     }
   });
+
+  it("keeps a manually collapsed Codex collaboration row closed across stable rerenders", async () => {
+    const makeCollaborationEntry = (status: "inProgress" | "completed"): TimelineEntry =>
+      ({
+        id: "collaboration-row",
+        kind: "work",
+        createdAt: "2026-03-04T12:01:00.000Z",
+        entry: {
+          id: "collaboration-started",
+          createdAt: "2026-03-04T12:01:00.000Z",
+          label: "Collaboration call",
+          tone: "tool",
+          itemType: "collab_agent_tool_call",
+          status,
+          codexCollaborationTool: "sendInput",
+          subagentPrompt: "Review reconnect handling",
+          subagentReceiverThreadIds: ["agent-reviewer"],
+          ...(status === "completed"
+            ? {
+                subagentStates: [
+                  {
+                    threadId: "agent-reviewer",
+                    status: "completed" as const,
+                    message: "Reconnect handling is sound",
+                  },
+                ],
+              }
+            : {}),
+        },
+      }) as TimelineEntry;
+
+    let api: TimelineHarnessApi | null = null;
+    const started = makeCollaborationEntry("inProgress");
+    const completed = makeCollaborationEntry("completed");
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await render(
+      <TimelineHarness
+        initialEntries={[started]}
+        initialHeight={400}
+        onIsAtEndChangeSpy={() => {}}
+        setApi={(nextApi) => {
+          api = nextApi;
+        }}
+      />,
+      { container: host },
+    );
+
+    try {
+      expect(api).not.toBeNull();
+      expect(host.textContent).toContain("Sending message to 1 agent");
+      expect(host.querySelector('[data-subagent-state="completed"]')).toBeNull();
+
+      api!.setEntries([completed]);
+      await vi.waitFor(() => {
+        expect(host.textContent).toContain("Sent message to 1 agent");
+        expect(host.querySelector('[data-subagent-state="completed"]')).not.toBeNull();
+      });
+
+      const trigger = Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find(
+        (button) => button.textContent?.includes("Sent message to 1 agent"),
+      );
+      expect(trigger).toBeDefined();
+      trigger!.click();
+      await vi.waitFor(() => {
+        expect(host.querySelector('[data-subagent-state="completed"]')).toBeNull();
+      });
+
+      api!.setEntries([
+        makeAssistantEntry("unrelated-before", "Unrelated earlier row", -1),
+        completed,
+        makeAssistantEntry("unrelated-after", "Unrelated later row", 120),
+      ]);
+      await vi.waitFor(() => {
+        expect(host.querySelector('[data-timeline-row-id="collaboration-row"]')).not.toBeNull();
+        expect(host.querySelector('[data-subagent-state="completed"]')).toBeNull();
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
 });

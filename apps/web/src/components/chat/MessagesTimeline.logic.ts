@@ -1,3 +1,13 @@
+import type {
+  CodexCollaborationAgentStatus,
+  CodexCollaborationTool,
+  CompactSubagentState,
+  RuntimeItemStatus,
+} from "@t3tools/contracts";
+
+import { extractTrailingAttachedFiles } from "../../lib/attachedFiles";
+import { extractTrailingTerminalContexts } from "../../lib/terminalContext";
+
 export interface TimelineDurationMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -127,8 +137,6 @@ export function resolveActiveTurnRailIndex(
   if (nearest < 0) return -1;
   return markerRowIndices[nearest]! > activeRowIndex && nearest > 0 ? nearest - 1 : nearest;
 }
-import { extractTrailingAttachedFiles } from "../../lib/attachedFiles";
-import { extractTrailingTerminalContexts } from "../../lib/terminalContext";
 
 export const TIMELINE_TURN_RAIL_ITEM_SPACING = 8;
 export const TIMELINE_TURN_RAIL_MIN_ITEMS = 2;
@@ -250,4 +258,66 @@ export function deriveTimelineTurnRailItems(
     });
   });
   return items;
+}
+
+export function resolveCodexCollaborationHeading(
+  tool: CodexCollaborationTool,
+  status: RuntimeItemStatus | undefined,
+  receiverCount: number,
+): string {
+  const failed = status === "failed" || status === "declined";
+  if (failed) {
+    return {
+      spawnAgent: "Agent spawn failed",
+      sendInput: "Message delivery failed",
+      resumeAgent: "Agent resume failed",
+      wait: "Agent wait failed",
+      closeAgent: "Agent close failed",
+    }[tool];
+  }
+  const completed = status === "completed";
+  const target =
+    receiverCount > 0 ? `${receiverCount} ${receiverCount === 1 ? "agent" : "agents"}` : null;
+  switch (tool) {
+    case "spawnAgent":
+      return completed ? "Spawned agent" : "Spawning agent";
+    case "sendInput":
+      if (!target) return completed ? "Sent message" : "Sending message";
+      return `${completed ? "Sent message to" : "Sending message to"} ${target}`;
+    case "resumeAgent":
+      return completed ? "Resumed agent" : "Resuming agent";
+    case "wait":
+      return completed
+        ? "Finished waiting"
+        : target
+          ? `Waiting for ${target}`
+          : "Waiting for agents";
+    case "closeAgent":
+      return completed ? "Closed agent" : "Closing agent";
+  }
+}
+
+export function resolveCodexCollaborationStatusLabel(
+  status: CodexCollaborationAgentStatus,
+): string {
+  return {
+    pendingInit: "Pending",
+    running: "Running",
+    interrupted: "Interrupted",
+    completed: "Completed",
+    errored: "Errored",
+    shutdown: "Shut down",
+    notFound: "Not found",
+  }[status];
+}
+
+export function deriveCodexCollaborationResponseRows(
+  receiverThreadIds: ReadonlyArray<string>,
+  states: ReadonlyArray<CompactSubagentState>,
+): CompactSubagentState[] {
+  const byThreadId = new Map(states.map((state) => [state.threadId, state]));
+  return receiverThreadIds.flatMap((threadId) => {
+    const state = byThreadId.get(threadId);
+    return state ? [state] : [];
+  });
 }
