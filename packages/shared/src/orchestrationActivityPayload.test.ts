@@ -452,6 +452,8 @@ describe("orchestrationActivityPayload", () => {
         subagentStates: [
           { threadId: "agent-a", status: "completed", message: "first" },
           { threadId: "agent-a", status: "errored", message: "second" },
+          { threadId: "agent-b", status: "unknown", message: "invalid" },
+          { threadId: "agent-b", status: "completed", message: "valid fallback" },
           { threadId: "state-only", status: "completed", message: "hidden" },
         ],
       },
@@ -459,6 +461,7 @@ describe("orchestrationActivityPayload", () => {
 
     expect(compacted.subagentStates).toEqual([
       { threadId: "agent-a", status: "completed", message: "first" },
+      { threadId: "agent-b", status: "completed", message: "valid fallback" },
     ]);
   });
 

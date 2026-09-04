@@ -388,7 +388,12 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
   for (const value of compactStates ?? []) {
     const state = asRecord(value);
     const threadId = asTrimmedString(state?.threadId);
-    if (threadId && state && !compactStateByThreadId.has(threadId)) {
+    if (
+      threadId &&
+      state &&
+      normalizeCollaborationStatus(state.status) &&
+      !compactStateByThreadId.has(threadId)
+    ) {
       compactStateByThreadId.set(threadId, state);
     }
   }
