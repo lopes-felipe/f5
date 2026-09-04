@@ -584,6 +584,33 @@ const CompactToolActivityStatus = Schema.Literals([
   "declined",
 ]);
 
+export const CodexCollaborationTool = Schema.Literals([
+  "spawnAgent",
+  "sendInput",
+  "resumeAgent",
+  "wait",
+  "closeAgent",
+]);
+export type CodexCollaborationTool = typeof CodexCollaborationTool.Type;
+
+export const CodexCollaborationAgentStatus = Schema.Literals([
+  "pendingInit",
+  "running",
+  "interrupted",
+  "completed",
+  "errored",
+  "shutdown",
+  "notFound",
+]);
+export type CodexCollaborationAgentStatus = typeof CodexCollaborationAgentStatus.Type;
+
+export const CompactSubagentState = Schema.Struct({
+  threadId: TrimmedNonEmptyString,
+  status: CodexCollaborationAgentStatus,
+  message: Schema.optional(Schema.String),
+});
+export type CompactSubagentState = typeof CompactSubagentState.Type;
+
 export const CompactToolActivityPayload = Schema.Struct({
   itemType: CompactToolLifecycleItemType,
   providerItemId: Schema.optional(ProviderItemId),
@@ -606,6 +633,9 @@ export const CompactToolActivityPayload = Schema.Struct({
   subagentPath: Schema.optional(TrimmedNonEmptyString),
   subagentSenderThreadId: Schema.optional(TrimmedNonEmptyString),
   subagentReceiverThreadIds: Schema.optional(Schema.Array(TrimmedNonEmptyString)),
+  codexCollaborationTool: Schema.optional(CodexCollaborationTool),
+  subagentStates: Schema.optional(Schema.Array(CompactSubagentState)),
+  subagentStatesTruncated: Schema.optional(Schema.Boolean),
   mcpServerName: Schema.optional(TrimmedNonEmptyString),
   mcpToolName: Schema.optional(TrimmedNonEmptyString),
   mcpInput: Schema.optional(Schema.String),

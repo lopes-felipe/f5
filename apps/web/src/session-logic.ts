@@ -1,5 +1,7 @@
 import {
   ApprovalRequestId,
+  type CodexCollaborationTool,
+  type CompactSubagentState,
   ProviderItemId,
   type RuntimeItemStatus,
   type OrchestrationCommandExecutionSummary,
@@ -15,7 +17,10 @@ import {
   type TurnId,
 } from "@t3tools/contracts";
 import { isIgnorableCodexProcessStderrMessage } from "@t3tools/shared/codexStderr";
-import { readToolActivityPayload } from "@t3tools/shared/orchestrationActivityPayload";
+import {
+  normalizeCodexCollaborationTool,
+  readToolActivityPayload,
+} from "@t3tools/shared/orchestrationActivityPayload";
 
 import type {
   ChatMessage,
@@ -111,6 +116,9 @@ export interface WorkLogEntry {
   subagentPath?: string;
   subagentSenderThreadId?: string;
   subagentReceiverThreadIds?: ReadonlyArray<string>;
+  codexCollaborationTool?: CodexCollaborationTool;
+  subagentStates?: ReadonlyArray<CompactSubagentState>;
+  subagentStatesTruncated?: boolean;
 }
 
 export interface PendingApproval {
@@ -642,6 +650,7 @@ function inferWorkLogStatus(
 function shouldKeepHistoricalWorkEntry(
   activity: OrchestrationThreadActivity,
   latestTurnId: TurnId | undefined,
+  terminalCodexProviderItemIds: ReadonlySet<ProviderItemId>,
 ): boolean {
   if (!latestTurnId) {
     return true;
@@ -663,7 +672,20 @@ function shouldKeepHistoricalWorkEntry(
   const isHistoricalFileChange =
     toolPayload?.itemType === "file_change" || requestKind === "file-change";
 
-  return isHistoricalFileChange && inferredStatus === "completed";
+  const isTerminalCodexCollaboration =
+    Boolean(toolPayload?.codexCollaborationTool) &&
+    (inferredStatus === "completed" ||
+      inferredStatus === "failed" ||
+      inferredStatus === "declined");
+  const isLifecycleOfTerminalCodexCollaboration = Boolean(
+    toolPayload?.providerItemId && terminalCodexProviderItemIds.has(toolPayload.providerItemId),
+  );
+
+  return (
+    (isHistoricalFileChange && inferredStatus === "completed") ||
+    isTerminalCodexCollaboration ||
+    isLifecycleOfTerminalCodexCollaboration
+  );
 }
 
 function workEntryVisibleSignature(entry: WorkLogEntry): string {
@@ -689,6 +711,8 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
     subagentPath: entry.subagentPath,
     subagentSenderThreadId: entry.subagentSenderThreadId,
     subagentReceiverThreadIds: entry.subagentReceiverThreadIds ?? [],
+    codexCollaborationTool: entry.codexCollaborationTool,
+    subagentStatesTruncated: entry.subagentStatesTruncated,
     mcpServerName: entry.mcpServerName,
     mcpToolName: entry.mcpToolName,
     mcpInput: entry.mcpInput,
@@ -720,6 +744,50 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
   }
 
   return deduped.filter((entry): entry is WorkLogEntry => entry !== null);
+}
+
+function collaborationLifecyclePrecedence(entry: WorkLogEntry): number {
+  if (entry.status === "completed" || entry.status === "failed" || entry.status === "declined") {
+    return 2;
+  }
+  if (entry.activityKind === "tool.updated") return 1;
+  return 0;
+}
+
+function coalesceCodexCollaborationEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
+  const result: WorkLogEntry[] = [];
+  const indexByProviderItemId = new Map<ProviderItemId, number>();
+  for (const entry of entries) {
+    if (!entry.providerItemId || !entry.codexCollaborationTool) {
+      result.push(entry);
+      continue;
+    }
+    const existingIndex = indexByProviderItemId.get(entry.providerItemId);
+    if (existingIndex === undefined) {
+      indexByProviderItemId.set(entry.providerItemId, result.length);
+      result.push(entry);
+      continue;
+    }
+    const existing = result[existingIndex]!;
+    const laterDefined = Object.fromEntries(
+      Object.entries(entry).filter(([, value]) => value !== undefined),
+    ) as Partial<WorkLogEntry>;
+    const lifecycleWinner =
+      collaborationLifecyclePrecedence(entry) >= collaborationLifecyclePrecedence(existing)
+        ? entry
+        : existing;
+    result[existingIndex] = {
+      ...existing,
+      ...laterDefined,
+      id: existing.id,
+      createdAt: existing.createdAt,
+      tone: lifecycleWinner.tone,
+      label: lifecycleWinner.label,
+      ...(lifecycleWinner.activityKind ? { activityKind: lifecycleWinner.activityKind } : {}),
+      ...(lifecycleWinner.status ? { status: lifecycleWinner.status } : {}),
+    };
+  }
+  return result;
 }
 
 function workLogPayload(activity: OrchestrationThreadActivity): Record<string, unknown> | null {
@@ -951,12 +1019,10 @@ function correlateSubagentActivities(entries: ReadonlyArray<WorkLogEntry>): Work
       if (correlatedMetadata) {
         correlated[index] = { ...entry, ...correlatedMetadata };
       }
-      const normalizedSubagentType = entry.subagentType
-        ?.replace(/[\s_-]+/gu, "")
-        .toLocaleLowerCase();
+      const normalizedSubagentType = normalizeCodexCollaborationTool(entry.subagentType);
       for (const threadId of entry.subagentReceiverThreadIds ?? []) {
         latestParentIndexByAgentThreadId.set(threadId, index);
-        if (normalizedSubagentType === "spawnagent") {
+        if (normalizedSubagentType === "spawnAgent") {
           spawnParentIndexByAgentThreadId.set(threadId, index);
         }
       }
@@ -1008,8 +1074,22 @@ export function deriveWorkLogEntries(
   const mode = options?.mode ?? "essential";
   const selectedFilter = options?.filter ?? "all";
   const ordered = [...activities].toSorted(compareActivitiesByOrder);
+  const terminalCodexProviderItemIds = new Set<ProviderItemId>();
+  for (const activity of ordered) {
+    const payload = readToolActivityPayload(activity.payload);
+    const status = inferWorkLogStatus(activity, payload?.status);
+    if (
+      payload?.providerItemId &&
+      payload.codexCollaborationTool &&
+      (status === "completed" || status === "failed" || status === "declined")
+    ) {
+      terminalCodexProviderItemIds.add(payload.providerItemId);
+    }
+  }
   const entries = ordered
-    .filter((activity) => shouldKeepHistoricalWorkEntry(activity, latestTurnId))
+    .filter((activity) =>
+      shouldKeepHistoricalWorkEntry(activity, latestTurnId, terminalCodexProviderItemIds),
+    )
     .filter((activity) =>
       options?.suppressCommandToolLifecycle ? !isCommandToolLifecycleActivity(activity) : true,
     )
@@ -1032,7 +1112,11 @@ export function deriveWorkLogEntries(
         payload?.actionable === true;
       return alwaysVisible || runtimeWarningVisibility !== "hidden";
     })
-    .filter((activity) => activity.kind !== "tool.started")
+    .filter(
+      (activity) =>
+        activity.kind !== "tool.started" ||
+        Boolean(readToolActivityPayload(activity.payload)?.codexCollaborationTool),
+    )
     .filter((activity) => activity.kind !== "runtime.configured")
     .filter((activity) => activity.kind !== "account.updated")
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
@@ -1156,6 +1240,15 @@ export function deriveWorkLogEntries(
       ) {
         entry.subagentReceiverThreadIds = toolPayload.subagentReceiverThreadIds;
       }
+      if (toolPayload?.codexCollaborationTool) {
+        entry.codexCollaborationTool = toolPayload.codexCollaborationTool;
+      }
+      if (toolPayload?.subagentStates && toolPayload.subagentStates.length > 0) {
+        entry.subagentStates = toolPayload.subagentStates;
+      }
+      if (toolPayload?.subagentStatesTruncated) {
+        entry.subagentStatesTruncated = true;
+      }
       if (toolPayload?.mcpServerName) {
         entry.mcpServerName = toolPayload.mcpServerName;
       }
@@ -1208,7 +1301,9 @@ export function deriveWorkLogEntries(
       return entry;
     });
 
-  const deduped = dedupeProviderItemWorkLogEntries(correlateSubagentActivities(entries));
+  const deduped = dedupeProviderItemWorkLogEntries(
+    coalesceCodexCollaborationEntries(correlateSubagentActivities(entries)),
+  );
   const paired = pairDiagnosticLifecycles(deduped);
   const modeFiltered = paired.filter((entry) => {
     if (mode === "diagnostics") {

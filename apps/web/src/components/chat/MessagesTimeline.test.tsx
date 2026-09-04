@@ -598,6 +598,89 @@ describe("MessagesTimeline", () => {
     );
   });
 
+  it("renders Codex collaboration prompts and compact receiver responses", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        hasMessages
+        isWorking={false}
+        activeTurnStartedAt={null}
+        listRef={{ current: null }}
+        onIsAtEndChange={() => {}}
+        timelineEntries={[
+          {
+            id: "entry-codex-collab",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:28.000Z",
+            entry: {
+              id: "work-codex-collab",
+              createdAt: "2026-03-17T19:12:28.000Z",
+              label: "Collaboration call",
+              itemType: "collab_agent_tool_call",
+              tone: "error",
+              status: "failed",
+              codexCollaborationTool: "sendInput",
+              subagentPrompt: "Review the reconnect path",
+              subagentReceiverThreadIds: ["agent-b", "agent-a"],
+              subagentStates: [
+                { threadId: "agent-b", status: "errored", message: "Connection failed" },
+                { threadId: "agent-a", status: "completed", message: "Review complete" },
+              ],
+              subagentStatesTruncated: true,
+            },
+          },
+          {
+            id: "entry-codex-empty-wait",
+            kind: "work",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            entry: {
+              id: "work-codex-empty-wait",
+              createdAt: "2026-03-17T19:12:29.000Z",
+              label: "Collaboration call",
+              itemType: "collab_agent_tool_call",
+              tone: "tool",
+              status: "completed",
+              codexCollaborationTool: "wait",
+              subagentPrompt: "Check whether any reviews finished",
+              subagentReceiverThreadIds: ["agent-c"],
+            },
+          },
+        ]}
+        completionDividerBeforeEntryId={null}
+        completionSummary={null}
+        turnDiffSummaryByAssistantMessageId={new Map()}
+        turnDiffSummaryByTurnId={new Map()}
+        nowIso="2026-03-17T19:12:30.000Z"
+        expandedWorkGroups={{}}
+        onToggleWorkGroup={() => {}}
+        onOpenTurnDiff={() => {}}
+        revertTurnCountByUserMessageId={new Map()}
+        onRevertUserMessage={() => {}}
+        isRevertingCheckpoint={false}
+        onImageExpand={() => {}}
+        markdownCwd={undefined}
+        resolvedTheme="light"
+        timestampFormat="locale"
+        workspaceRoot={undefined}
+        expandedCommandExecutions={{}}
+        onToggleCommandExecution={() => {}}
+        allDirectoriesExpanded={true}
+        onToggleAllDirectories={() => {}}
+      />,
+    );
+
+    expect(markup).toContain("Message delivery failed");
+    expect(markup).toContain("Review the reconnect path");
+    expect(markup).toContain('title="Message delivery failed - Review the reconnect path"');
+    expect(markup).not.toContain("Tool Call");
+    expect(markup).toContain("Errored - Connection failed");
+    expect(markup).toContain("Completed - Review complete");
+    expect(markup.indexOf("agent-b")).toBeLessThan(markup.indexOf("agent-a"));
+    expect(markup).toContain("Additional agent details omitted");
+    expect(markup).toContain("Finished waiting");
+    expect(markup).toContain("No agents completed yet.");
+  });
+
   it("renders parsed server and tool names for compact MCP rows by default", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(

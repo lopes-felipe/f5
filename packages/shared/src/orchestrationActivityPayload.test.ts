@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   compactThreadActivityPayload,
+  normalizeCodexCollaborationTool,
   parseMcpToolName,
   readRuntimeConfiguredPayload,
   readToolActivityPayload,
@@ -365,7 +366,103 @@ describe("orchestrationActivityPayload", () => {
       subagentModel: "gpt-5.4-mini",
       subagentSenderThreadId: "thread-parent",
       subagentReceiverThreadIds: ["thread-reviewer"],
+      codexCollaborationTool: "spawnAgent",
     });
+  });
+
+  it("normalizes, bounds, and round-trips Codex collaboration receiver states", () => {
+    const receivers = [
+      " agent-a ",
+      "agent-a",
+      "agent-b",
+      ...Array.from({ length: 16 }, (_, index) => `agent-${index + 3}`),
+    ];
+    const compacted = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        status: "completed",
+        data: {
+          item: {
+            tool: "SPAWN_agent",
+            senderThreadId: " parent ",
+            receiverThreadIds: receivers,
+            agentsStates: {
+              "agent-a": { status: "completed", message: `  ${"result ".repeat(50)} ` },
+              "agent-b": { status: "running", message: "must not be retained" },
+              "agent-3": { status: "errored", message: " first\n error " },
+              unrelated: { status: "completed", message: "must not leak" },
+              "agent-4": { status: "unknown", message: "invalid" },
+              "agent-5": { status: "completed", message: null },
+            },
+          },
+        },
+      },
+    });
+    expect(compacted.codexCollaborationTool).toBe("spawnAgent");
+    expect(compacted.subagentReceiverThreadIds).toHaveLength(16);
+    expect((compacted.subagentReceiverThreadIds as string[]).slice(0, 3)).toEqual([
+      "agent-a",
+      "agent-b",
+      "agent-3",
+    ]);
+    expect(compacted.subagentStates).toEqual([
+      {
+        threadId: "agent-a",
+        status: "completed",
+        message: expect.stringMatching(/…$/u),
+      },
+      { threadId: "agent-b", status: "running" },
+      { threadId: "agent-3", status: "errored", message: "first error" },
+      { threadId: "agent-5", status: "completed" },
+    ]);
+    expect(compacted.subagentStatesTruncated).toBe(true);
+    expect(compactThreadActivityPayload({ kind: "tool.completed", payload: compacted })).toEqual(
+      compacted,
+    );
+  });
+
+  it("requires the Codex collaboration envelope and normalizes audited spellings", () => {
+    expect(normalizeCodexCollaborationTool("send-input")).toBe("sendInput");
+    expect(normalizeCodexCollaborationTool("Resume Agent")).toBe("resumeAgent");
+    const claudeLike = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        data: {
+          item: {
+            tool: "task-agent",
+            senderThreadId: "thread-parent",
+            receiverThreadIds: ["agent-a"],
+          },
+        },
+      },
+    });
+    expect(claudeLike.codexCollaborationTool).toBeUndefined();
+  });
+
+  it("keeps the first valid compact state for each explicit receiver", () => {
+    const compacted = compactThreadActivityPayload({
+      kind: "tool.completed",
+      payload: {
+        itemType: "collab_agent_tool_call",
+        codexCollaborationTool: "wait",
+        subagentSenderThreadId: "thread-parent",
+        subagentReceiverThreadIds: ["agent-a", "agent-b"],
+        subagentStates: [
+          { threadId: "agent-a", status: "completed", message: "first" },
+          { threadId: "agent-a", status: "errored", message: "second" },
+          { threadId: "agent-b", status: "unknown", message: "invalid" },
+          { threadId: "agent-b", status: "completed", message: "valid fallback" },
+          { threadId: "state-only", status: "completed", message: "hidden" },
+        ],
+      },
+    });
+
+    expect(compacted.subagentStates).toEqual([
+      { threadId: "agent-a", status: "completed", message: "first" },
+      { threadId: "agent-b", status: "completed", message: "valid fallback" },
+    ]);
   });
 
   it("truncates oversized subagent prompt and result text during compaction", () => {

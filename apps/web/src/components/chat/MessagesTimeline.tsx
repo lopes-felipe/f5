@@ -58,10 +58,19 @@ import { AssistantMessageActions } from "./AssistantMessageActions";
 import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
+  deriveCodexCollaborationResponseRows,
+  deriveTimelineTurnRailItems,
   findNearestMinimapMarkerIndex,
   normalizeCompactToolLabel,
+  resolveActiveTurnRailIndex,
+  resolveCodexCollaborationHeading,
+  resolveCodexCollaborationStatusLabel,
+  resolveTimelineTurnRailHasPersistentGutter,
+  resolveTimelineTurnRailHitStripWidth,
   sampleTimelineMinimapRowIndices,
+  TIMELINE_TURN_RAIL_MIN_ITEMS,
 } from "./MessagesTimeline.logic";
+import { TimelineTurnRail } from "./TimelineTurnRail";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { SkillInlineChip } from "./SkillInlineChip";
 import {
@@ -487,6 +496,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }),
     [activeMinimapRowIndex, entryRowIndexMap, rowCount, rows],
   );
+  const turnRailItems = useMemo(() => deriveTimelineTurnRailItems(rows), [rows]);
+  const turnRailRowIndices = useMemo(
+    () => turnRailItems.map((item) => item.rowIndex),
+    [turnRailItems],
+  );
+  const turnRailActiveTickIndex = resolveActiveTurnRailIndex(
+    turnRailRowIndices,
+    activeMinimapRowIndex,
+  );
+  const [turnRailHasPersistentGutter, setTurnRailHasPersistentGutter] = useState(false);
+  const [turnRailHitStripWidth, setTurnRailHitStripWidth] = useState(0);
 
   // Upstream fix 33dadb5a:
   // once a brand-new thread receives its first message, LegendList's
@@ -555,6 +575,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
   }, [listRef, onIsAtEndChange]);
 
+  const measureTurnRailGutter = useCallback(() => {
+    const node = listRef.current?.getScrollableNode?.();
+    if (!(node instanceof HTMLElement)) return;
+    // Measure rendered geometry so scrollbars, responsive padding, and zoom
+    // cannot make the hit target overlap the content column.
+    const column = node.querySelector<HTMLElement>('[data-timeline-root="true"]');
+    if (!column) return;
+    const gutterPx = column.getBoundingClientRect().left - node.getBoundingClientRect().left;
+    setTurnRailHasPersistentGutter((current) => {
+      const next = resolveTimelineTurnRailHasPersistentGutter(gutterPx);
+      return current === next ? current : next;
+    });
+    setTurnRailHitStripWidth((current) => {
+      const next = resolveTimelineTurnRailHitStripWidth(gutterPx);
+      return current === next ? current : next;
+    });
+  }, [listRef]);
+
   useEffect(() => {
     if (!hasMessages && !isWorking) {
       return;
@@ -580,6 +618,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       syncFrame = window.requestAnimationFrame(() => {
         syncFrame = 0;
         syncIsAtEndFromListState();
+        measureTurnRailGutter();
       });
     };
 
@@ -617,11 +656,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         cleanup();
       }
     };
-  }, [hasMessages, isWorking, listRef, syncIsAtEndFromListState]);
+  }, [hasMessages, isWorking, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
 
   const handleScroll = useCallback(() => {
     syncIsAtEndFromListState();
   }, [syncIsAtEndFromListState]);
+
+  const navigateToTimelineRow = useCallback(
+    (rowIndex: number, viewPosition: number) => {
+      isAtEndRef.current = false;
+      onIsAtEndChange(false);
+      void listRef.current?.scrollToIndex({
+        index: rowIndex,
+        animated: false,
+        viewPosition,
+      });
+    },
+    [listRef, onIsAtEndChange],
+  );
 
   const keyExtractor = useCallback((row: TimelineRow) => row.id, []);
 
@@ -1244,15 +1296,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           markerRowIndices={minimapRowIndices}
           activeRowIndex={activeMinimapRowIndex}
           hasUnloadedHistory={hasOlderHistory}
-          onNavigate={(rowIndex) => {
-            isAtEndRef.current = false;
-            onIsAtEndChange(false);
-            void listRef.current?.scrollToIndex({
-              index: rowIndex,
-              animated: false,
-              viewPosition: 0.3,
-            });
-          }}
+          onNavigate={(rowIndex) => navigateToTimelineRow(rowIndex, 0.3)}
+        />
+      ) : null}
+      {turnRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
+        <TimelineTurnRail
+          items={turnRailItems}
+          hasPersistentGutter={turnRailHasPersistentGutter}
+          hitStripWidth={turnRailHitStripWidth}
+          activeTickIndex={turnRailActiveTickIndex}
+          onSelect={(item) => navigateToTimelineRow(item.rowIndex, 0.1)}
         />
       ) : null}
     </div>
@@ -2807,31 +2860,58 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
   markdownCwd: string | undefined;
 }) {
   const { workEntry, turnDiffSummaryByTurnId, workspaceRoot, markdownCwd } = props;
-  const [open, setOpen] = useState(Boolean(workEntry.subagentResult));
+  const isCodexCollaboration = Boolean(workEntry.codexCollaborationTool);
+  const responseRows = isCodexCollaboration
+    ? deriveCodexCollaborationResponseRows(
+        workEntry.subagentReceiverThreadIds ?? [],
+        workEntry.subagentStates ?? [],
+      )
+    : [];
+  const isCompletedEmptyWait =
+    workEntry.codexCollaborationTool === "wait" &&
+    workEntry.status === "completed" &&
+    responseRows.length === 0;
+  const hasResponseDetails =
+    responseRows.length > 0 || Boolean(workEntry.subagentStatesTruncated) || isCompletedEmptyWait;
+  const hasCorrelatedAgentPath = Boolean(
+    workEntry.subagentPath &&
+    workEntry.subagentThreadId &&
+    workEntry.subagentReceiverThreadIds?.includes(workEntry.subagentThreadId),
+  );
+  const [open, setOpen] = useState(Boolean(workEntry.subagentResult) || hasResponseDetails);
   const [userOverrodeOpen, setUserOverrodeOpen] = useState(false);
 
   useEffect(() => {
     if (userOverrodeOpen) {
       return;
     }
-    setOpen(Boolean(workEntry.subagentResult));
-  }, [userOverrodeOpen, workEntry.subagentResult]);
+    setOpen(Boolean(workEntry.subagentResult) || hasResponseDetails);
+  }, [hasResponseDetails, userOverrodeOpen, workEntry.subagentResult]);
 
   const iconConfig = workToneIcon(workEntry.tone);
   const EntryIcon = workEntryIcon(workEntry);
-  const heading = toolWorkEntryHeading(workEntry);
+  const heading = workEntry.codexCollaborationTool
+    ? resolveCodexCollaborationHeading(
+        workEntry.codexCollaborationTool,
+        workEntry.status,
+        workEntry.subagentReceiverThreadIds?.length ?? 0,
+      )
+    : toolWorkEntryHeading(workEntry);
   const preview =
-    workEntry.subagentDescription ??
+    (isCodexCollaboration
+      ? (workEntry.subagentPrompt ?? workEntry.subagentDescription ?? workEntry.subagentPath)
+      : workEntry.subagentDescription) ??
     workEntry.detail ??
-    workEntry.subagentPath ??
+    (!isCodexCollaboration ? workEntry.subagentPath : undefined) ??
     workEntry.subagentResult ??
     workEntryPreview(workEntry, turnDiffSummaryByTurnId, workspaceRoot);
   const displayText = preview ? `${heading} - ${preview}` : heading;
-  const hasNestedContent =
-    Boolean(workEntry.subagentPrompt) ||
-    Boolean(workEntry.subagentResult) ||
-    Boolean(workEntry.subagentPath) ||
-    Boolean(workEntry.subagentThreadId);
+  const hasNestedContent = isCodexCollaboration
+    ? hasResponseDetails || hasCorrelatedAgentPath
+    : Boolean(workEntry.subagentPrompt) ||
+      Boolean(workEntry.subagentResult) ||
+      Boolean(workEntry.subagentPath) ||
+      Boolean(workEntry.subagentThreadId);
 
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     setUserOverrodeOpen(true);
@@ -2901,17 +2981,18 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
       {hasNestedContent && (
         <CollapsiblePanel>
           <div className="mt-1 ml-6 space-y-2 rounded-lg border border-border/45 bg-background/60 p-3">
-            {workEntry.subagentPath && (
-              <div>
-                <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
-                  Agent
-                </p>
-                <p className="break-all font-mono text-[11px] text-muted-foreground/75">
-                  {workEntry.subagentPath}
-                </p>
-              </div>
-            )}
-            {workEntry.subagentPrompt && (
+            {workEntry.subagentPath &&
+              (!isCodexCollaboration || (hasCorrelatedAgentPath && responseRows.length === 0)) && (
+                <div>
+                  <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
+                    Agent
+                  </p>
+                  <p className="break-all font-mono text-[11px] text-muted-foreground/75">
+                    {workEntry.subagentPath}
+                  </p>
+                </div>
+              )}
+            {workEntry.subagentPrompt && !isCodexCollaboration && (
               <div>
                 <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
                   Tool Call
@@ -2925,7 +3006,35 @@ const SubagentWorkEntryRow = memo(function SubagentWorkEntryRow(props: {
                 </div>
               </div>
             )}
-            {workEntry.subagentResult && (
+            {isCodexCollaboration &&
+              responseRows.map((state) => (
+                <div key={state.threadId} data-subagent-state={state.status}>
+                  <p className="break-all font-mono text-[11px] text-muted-foreground/75">
+                    {state.threadId}
+                  </p>
+                  <p className="text-[12px] text-muted-foreground/80">
+                    {resolveCodexCollaborationStatusLabel(state.status)}
+                    {state.message ? ` - ${state.message}` : ""}
+                  </p>
+                  {workEntry.subagentPath && workEntry.subagentThreadId === state.threadId ? (
+                    <p className="break-all font-mono text-[11px] text-muted-foreground/65">
+                      {workEntry.subagentPath}
+                    </p>
+                  ) : null}
+                </div>
+              ))}
+            {isCodexCollaboration &&
+            workEntry.codexCollaborationTool === "wait" &&
+            workEntry.status === "completed" &&
+            responseRows.length === 0 ? (
+              <p className="text-[12px] text-muted-foreground/75">No agents completed yet.</p>
+            ) : null}
+            {isCodexCollaboration && workEntry.subagentStatesTruncated ? (
+              <p className="text-[11px] text-muted-foreground/65">
+                Additional agent details omitted
+              </p>
+            ) : null}
+            {workEntry.subagentResult && !isCodexCollaboration && (
               <div>
                 <p className="mb-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground/60">
                   Result

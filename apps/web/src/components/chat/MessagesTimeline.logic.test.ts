@@ -2,10 +2,23 @@ import { describe, expect, it } from "vitest";
 import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
+  deriveTimelineTurnRailItems,
+  deriveCodexCollaborationResponseRows,
   findNearestMinimapMarkerIndex,
   normalizeCompactToolLabel,
+  resolveActiveTurnRailIndex,
+  resolveCodexCollaborationHeading,
+  resolveCodexCollaborationStatusLabel,
+  resolveTimelineTurnRailHasPersistentGutter,
+  resolveTimelineTurnRailHeightStyle,
+  resolveTimelineTurnRailHitStripWidth,
+  resolveTimelineTurnRailIndexFromPointer,
+  resolveTimelineTurnRailInteractiveWidth,
+  resolveTimelineTurnRailTopPercent,
   sampleTimelineMinimapRowIndices,
 } from "./MessagesTimeline.logic";
+import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
+import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -207,5 +220,143 @@ describe("timeline row navigation mapping", () => {
     expect(markers[0]).toBe(0);
     expect(markers.at(-1)).toBe(999);
     expect(markers).toContain(843);
+  });
+});
+
+describe("timeline turn rail", () => {
+  it("resolves measured gutter geometry", () => {
+    expect([47, 48, 0, Number.NaN].map(resolveTimelineTurnRailHasPersistentGutter)).toEqual([
+      false,
+      true,
+      false,
+      false,
+    ]);
+    expect([12, 26, 52, 1_000, 0, Number.NaN].map(resolveTimelineTurnRailHitStripWidth)).toEqual([
+      8, 22, 40, 40, 0, 0,
+    ]);
+    expect(resolveTimelineTurnRailHeightStyle(5)).toBe("min(32px, 100%)");
+    expect(resolveTimelineTurnRailTopPercent(0, 5)).toBe(0);
+    expect(resolveTimelineTurnRailTopPercent(2, 5)).toBe(50);
+    expect(resolveTimelineTurnRailTopPercent(4, 5)).toBe(100);
+    expect(resolveTimelineTurnRailInteractiveWidth(14, false)).toBe(14);
+    expect(resolveTimelineTurnRailInteractiveWidth(14, true)).toBe("22rem");
+  });
+
+  it("maps and clamps pointer positions", () => {
+    const input = { itemCount: 5, railTop: 100, railHeight: 80, pointerY: 100 };
+    expect(resolveTimelineTurnRailIndexFromPointer(input)).toBe(0);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, pointerY: 140 })).toBe(2);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, pointerY: 1_000 })).toBe(4);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, pointerY: -1_000 })).toBe(0);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, itemCount: 0 })).toBeNull();
+  });
+
+  it("selects the containing turn rather than the nearest following turn", () => {
+    expect(resolveActiveTurnRailIndex([], 3)).toBe(-1);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 10)).toBe(1);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 17)).toBe(1);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 0)).toBe(0);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 99)).toBe(2);
+  });
+
+  it("derives user turns and their final assistant previews", () => {
+    const items = deriveTimelineTurnRailItems([
+      { id: "u1", kind: "message", message: { role: "user", text: "  First\n question " } },
+      { id: "w1", kind: "work" },
+      { id: "a1", kind: "message", message: { role: "assistant", text: "draft" } },
+      { id: "a2", kind: "message", message: { role: "assistant", text: " Final\n answer " } },
+      { id: "u2", kind: "message", message: { role: "user", text: "Second" } },
+    ]);
+    expect(items).toEqual([
+      { id: "u1", rowIndex: 0, userText: "First question", assistantText: "Final answer" },
+      { id: "u2", rowIndex: 4, userText: "Second", assistantText: null },
+    ]);
+  });
+
+  it("strips terminal dumps and falls back through file and attachment names", () => {
+    const terminalOnly = appendTerminalContextsToPrompt("Investigate this", [
+      {
+        terminalId: "terminal-1",
+        terminalLabel: "Terminal 1",
+        lineStart: 1,
+        lineEnd: 2,
+        text: "bun test\nlots of output",
+      },
+    ]);
+    const fileOnly = appendAttachedFilesToPrompt("", [
+      "C:/a/one.ts",
+      "/b/two.ts",
+      "three.ts",
+      "four.ts",
+    ]);
+    const items = deriveTimelineTurnRailItems([
+      { id: "context", kind: "message", message: { role: "user", text: terminalOnly } },
+      { id: "files", kind: "message", message: { role: "user", text: fileOnly } },
+      {
+        id: "image",
+        kind: "message",
+        message: { role: "user", text: " ", attachments: [{ name: "screenshot.png" }] },
+      },
+      { id: "blank", kind: "message", message: { role: "user", text: " \n " } },
+    ]);
+    expect(items[0]?.userText).toBe("Investigate this");
+    expect(items[1]?.userText).toBe("one.ts, two.ts, three.ts +1 more");
+    expect(items[2]?.userText).toBe("screenshot.png");
+    expect(items[3]?.userText).toBeNull();
+  });
+});
+
+describe("Codex collaboration presentation", () => {
+  it.each([
+    ["spawnAgent", "Spawning agent", "Spawned agent", "Agent spawn failed"],
+    [
+      "sendInput",
+      "Sending message to 2 agents",
+      "Sent message to 2 agents",
+      "Message delivery failed",
+    ],
+    ["resumeAgent", "Resuming agent", "Resumed agent", "Agent resume failed"],
+    ["wait", "Waiting for 2 agents", "Finished waiting", "Agent wait failed"],
+    ["closeAgent", "Closing agent", "Closed agent", "Agent close failed"],
+  ] as const)("maps %s lifecycle headings", (tool, active, completed, failed) => {
+    expect(resolveCodexCollaborationHeading(tool, "inProgress", 2)).toBe(active);
+    expect(resolveCodexCollaborationHeading(tool, "completed", 2)).toBe(completed);
+    expect(resolveCodexCollaborationHeading(tool, "failed", 2)).toBe(failed);
+    expect(resolveCodexCollaborationHeading(tool, "declined", 2)).toBe(failed);
+  });
+
+  it("uses singular, plural, and receiver-free wording", () => {
+    expect(resolveCodexCollaborationHeading("sendInput", "inProgress", 1)).toBe(
+      "Sending message to 1 agent",
+    );
+    expect(resolveCodexCollaborationHeading("sendInput", "inProgress", 0)).toBe("Sending message");
+    expect(resolveCodexCollaborationHeading("sendInput", "completed", 0)).toBe("Sent message");
+    expect(resolveCodexCollaborationHeading("wait", "inProgress", 0)).toBe("Waiting for agents");
+  });
+
+  it("maps every agent status and retains receiver order", () => {
+    expect(
+      ["pendingInit", "running", "interrupted", "completed", "errored", "shutdown", "notFound"].map(
+        (status) => resolveCodexCollaborationStatusLabel(status as never),
+      ),
+    ).toEqual([
+      "Pending",
+      "Running",
+      "Interrupted",
+      "Completed",
+      "Errored",
+      "Shut down",
+      "Not found",
+    ]);
+    expect(
+      deriveCodexCollaborationResponseRows(
+        ["b", "a"],
+        [
+          { threadId: "a", status: "running" },
+          { threadId: "b", status: "completed", message: "Done" },
+          { threadId: "extra", status: "completed" },
+        ],
+      ).map((state) => state.threadId),
+    ).toEqual(["b", "a"]);
   });
 });

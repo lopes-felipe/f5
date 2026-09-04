@@ -212,8 +212,8 @@
     {
       "upstreamSha": "5015d7cf9f98fe551115b625031f01e3f022cd2d",
       "subject": "fix(web): keep turn minimap stable as composer grows (#6414)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): keep turn minimap stable as composer grows (#6414))."
+      "disposition": "ported",
+      "f5Shas": ["70b2955b7b2c8c58609ca6f9273b386dc07af6bc"]
     },
     {
       "upstreamSha": "df19f6cfe3046dbbeb4073a3aac4c12f991b8fc7",
@@ -3009,8 +3009,8 @@
     {
       "upstreamSha": "946b867666be94482e9e41015a304f55fe1e4754",
       "subject": "fix(web): scope timeline minimap hover target to the side gutter (#3869)",
-      "disposition": "deferred",
-      "reason": "Outside the reviewed merged port set; retain for a later f5-native user-impact assessment (fix(web): scope timeline minimap hover target to the side gutter (#3869))."
+      "disposition": "ported",
+      "f5Shas": ["70b2955b7b2c8c58609ca6f9273b386dc07af6bc"]
     },
     {
       "upstreamSha": "0ca3240691bf1773802b3ed70330515d68b0a6b8",
@@ -3038,6 +3038,14 @@
     }
   ],
   "olderBacklog": [
+    {
+      "category": "timeline-turn-rail",
+      "selection": "Upstream fda6486233e0b2f07ecfea166e1a94533cb923c4 (#3587), which predates the frozen first-parent window",
+      "disposition": "ported",
+      "reason": "Reimplemented additively alongside F5's row minimap: measured-gutter geometry instead of the viewport-width formula (F5 has no scrollbar-gutter), container-relative rail height instead of calc(100vh - 18rem), single active tick via the existing findNearestMinimapMarkerIndex instead of positionAtIndex-driven in-view state, and previews built from the cheap terminal-context extractors with attachment fallbacks.",
+      "upstreamShas": ["fda6486233e0b2f07ecfea166e1a94533cb923c4"],
+      "f5Shas": ["70b2955b7b2c8c58609ca6f9273b386dc07af6bc"]
+    },
     {
       "category": "codex-launch-arguments",
       "selection": "Upstream 40c0ab088308fb010a3db488c545f10aa7179ed2 (#2892), which predates the frozen first-parent window",

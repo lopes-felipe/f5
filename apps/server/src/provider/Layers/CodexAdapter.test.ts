@@ -631,6 +631,37 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("keeps Codex collaboration fields in the raw lifecycle payload", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const firstEventFiber = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      const item = {
+        type: "collabAgentToolCall",
+        id: "collab_1",
+        tool: "wait",
+        senderThreadId: "thread-1",
+        receiverThreadIds: ["agent-a"],
+        agentsStates: { "agent-a": { status: "completed", message: "Done" } },
+      };
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-collab-complete"),
+        kind: "notification",
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        method: "item/completed",
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("collab_1"),
+        payload: { item },
+      } satisfies ProviderEvent);
+      const event = yield* Fiber.join(firstEventFiber);
+      assert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "item.completed") return;
+      assert.equal(event.value.payload.itemType, "collab_agent_tool_call");
+      assert.deepEqual(event.value.payload.data, { item });
+    }),
+  );
+
   it.effect("maps completed plan items to canonical proposed-plan completion events", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;

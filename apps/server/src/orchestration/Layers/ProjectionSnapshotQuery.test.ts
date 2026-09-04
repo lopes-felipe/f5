@@ -586,6 +586,26 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
               },
             })},
             '2026-02-24T00:00:02.750Z'
+          ),
+          (
+            'activity-collab',
+            'thread-compact',
+            'turn-compact',
+            'tool',
+            'tool.completed',
+            'Finished waiting',
+            ${JSON.stringify({
+              itemType: "collab_agent_tool_call",
+              providerItemId: "collab-item",
+              status: "completed",
+              codexCollaborationTool: "wait",
+              subagentSenderThreadId: "thread-compact",
+              subagentReceiverThreadIds: ["agent-a"],
+              subagentStates: [
+                { threadId: "agent-a", status: "completed", message: "Review complete" },
+              ],
+            })},
+            '2026-02-24T00:00:02.800Z'
           )
       `;
 
@@ -643,6 +663,19 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
         instructionContractVersion: "v2",
         instructionSupplementVersion: "v7",
         instructionStrategy: "claude.append_system_prompt",
+      });
+
+      const collabActivity = thread?.activities.find(
+        (entry) => entry.id === asEventId("activity-collab"),
+      );
+      assert.deepEqual(collabActivity?.payload, {
+        itemType: "collab_agent_tool_call",
+        providerItemId: "collab-item",
+        status: "completed",
+        codexCollaborationTool: "wait",
+        subagentSenderThreadId: "thread-compact",
+        subagentReceiverThreadIds: ["agent-a"],
+        subagentStates: [{ threadId: "agent-a", status: "completed", message: "Review complete" }],
       });
     }),
   );

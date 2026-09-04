@@ -5706,6 +5706,83 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("persists only Codex collaboration lifecycle endpoints and retains failures", async () => {
+    const harness = await createHarness();
+    const base = {
+      provider: "codex" as const,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-collab"),
+      itemId: asItemId("item-collab"),
+      payload: {
+        itemType: "collab_agent_tool_call" as const,
+        data: {
+          item: {
+            tool: "wait",
+            senderThreadId: "thread-1",
+            receiverThreadIds: ["agent-a"],
+            agentsStates: { "agent-a": { status: "completed", message: "Done" } },
+          },
+        },
+      },
+    };
+    harness.emit({
+      ...base,
+      type: "item.started",
+      eventId: asEventId("evt-collab-started"),
+      createdAt: "2026-04-08T16:01:00.000Z",
+      payload: { ...base.payload, status: "inProgress" },
+    });
+    for (let index = 0; index < 2; index += 1) {
+      harness.emit({
+        ...base,
+        type: "item.updated",
+        eventId: asEventId(`evt-collab-updated-${index}`),
+        createdAt: `2026-04-08T16:01:0${index + 1}.000Z`,
+        payload: { ...base.payload, status: "inProgress" },
+      });
+    }
+    harness.emit({
+      ...base,
+      type: "item.completed",
+      eventId: asEventId("evt-collab-completed"),
+      createdAt: "2026-04-08T16:01:03.000Z",
+      payload: { ...base.payload, status: "completed" },
+    });
+    harness.emit({
+      ...base,
+      type: "item.completed",
+      itemId: asItemId("item-collab-failed"),
+      eventId: asEventId("evt-collab-failed"),
+      createdAt: "2026-04-08T16:01:04.000Z",
+      payload: { ...base.payload, status: "failed" },
+    });
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-collab-failed",
+      ),
+    );
+    expect(
+      thread.activities.filter((activity: ProviderRuntimeTestActivity) =>
+        activity.id.startsWith("evt-collab-updated"),
+      ),
+    ).toHaveLength(0);
+    expect(
+      thread.activities.find((activity) => activity.id === "evt-collab-started")?.payload,
+    ).toMatchObject({
+      codexCollaborationTool: "wait",
+      subagentReceiverThreadIds: ["agent-a"],
+    });
+    const completed = thread.activities.find((activity) => activity.id === "evt-collab-completed");
+    expect(completed?.payload).toMatchObject({
+      codexCollaborationTool: "wait",
+      subagentStates: [{ threadId: "agent-a", status: "completed", message: "Done" }],
+    });
+    expect(thread.activities.find((activity) => activity.id === "evt-collab-failed")?.tone).toBe(
+      "error",
+    );
+  });
+
   it("projects Codex task lifecycle chunks into thread activities", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

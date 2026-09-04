@@ -3,6 +3,8 @@ import {
   type CompactMcpStatusActivityPayload,
   isToolLifecycleItemType,
   type CompactRuntimeConfiguredActivityPayload,
+  type CodexCollaborationAgentStatus,
+  type CodexCollaborationTool,
   type CompactToolActivityPayload,
   OrchestrationFileChangeId,
   ProviderItemId,
@@ -18,6 +20,7 @@ type UnknownRecord = Record<string, unknown>;
 
 const MAX_CHANGED_FILE_PREVIEW = 12;
 const MAX_COMPACT_TEXT_CHARS = 4_000;
+const MAX_SUBAGENT_RECEIVERS = 16;
 const APPLY_PATCH_FILE_HEADER_REGEX = /^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm;
 const APPLY_PATCH_MOVE_TO_REGEX = /^\*\*\* Move to: (.+)$/gm;
 
@@ -191,6 +194,56 @@ function normalizeStringList(value: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+export function normalizeCodexCollaborationTool(
+  value: unknown,
+): CodexCollaborationTool | undefined {
+  const normalized = asTrimmedString(value)
+    ?.replace(/[\s_-]+/gu, "")
+    .toLocaleLowerCase();
+  switch (normalized) {
+    case "spawnagent":
+      return "spawnAgent";
+    case "sendinput":
+      return "sendInput";
+    case "resumeagent":
+      return "resumeAgent";
+    case "wait":
+      return "wait";
+    case "closeagent":
+      return "closeAgent";
+    default:
+      return undefined;
+  }
+}
+
+function normalizeCollaborationStatus(value: unknown): CodexCollaborationAgentStatus | undefined {
+  switch (value) {
+    case "pendingInit":
+    case "running":
+    case "interrupted":
+    case "completed":
+    case "errored":
+    case "shutdown":
+    case "notFound":
+      return value;
+    default:
+      return undefined;
+  }
+}
+
+function normalizeCollaborationMessage(
+  value: unknown,
+  maxChars: number,
+): { value?: string; truncated: boolean } {
+  const compacted = typeof value === "string" ? value.replace(/\s+/gu, " ").trim() : "";
+  if (!compacted) return { truncated: false };
+  const normalized = truncateCompactText(compacted, maxChars);
+  return {
+    ...(normalized ? { value: normalized } : {}),
+    truncated: compacted.length > maxChars,
+  };
+}
+
 function asInteger(value: unknown): number | undefined {
   if (typeof value === "number" && Number.isInteger(value)) {
     return value;
@@ -309,10 +362,65 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
     asTrimmedString(data?.agentPath) ??
     asTrimmedString(item?.agentPath);
   const subagentSenderThreadId =
-    asTrimmedString(payload.subagentSenderThreadId) ?? asTrimmedString(item?.senderThreadId);
-  const subagentReceiverThreadIds =
-    normalizeStringList(payload.subagentReceiverThreadIds) ??
-    normalizeStringList(item?.receiverThreadIds);
+    asTrimmedString(payload.subagentSenderThreadId) ??
+    asTrimmedString(data?.subagentSenderThreadId) ??
+    asTrimmedString(item?.senderThreadId);
+  const rawReceiverThreadIds =
+    (Array.isArray(payload.subagentReceiverThreadIds)
+      ? payload.subagentReceiverThreadIds
+      : undefined) ??
+    (Array.isArray(data?.subagentReceiverThreadIds) ? data.subagentReceiverThreadIds : undefined) ??
+    (Array.isArray(item?.receiverThreadIds) ? item.receiverThreadIds : undefined);
+  const allReceiverThreadIds = normalizeStringList(rawReceiverThreadIds) ?? [];
+  const subagentReceiverThreadIds = allReceiverThreadIds.slice(0, MAX_SUBAGENT_RECEIVERS);
+  const codexCollaborationTool = normalizeCodexCollaborationTool(
+    payload.codexCollaborationTool ?? data?.codexCollaborationTool ?? item?.tool,
+  );
+  const isCodexCollaboration = Boolean(
+    codexCollaborationTool && subagentSenderThreadId && rawReceiverThreadIds,
+  );
+  const compactStates = Array.isArray(payload.subagentStates)
+    ? payload.subagentStates
+    : Array.isArray(data?.subagentStates)
+      ? data.subagentStates
+      : undefined;
+  const compactStateByThreadId = new Map<string, UnknownRecord>();
+  for (const value of compactStates ?? []) {
+    const state = asRecord(value);
+    const threadId = asTrimmedString(state?.threadId);
+    if (
+      threadId &&
+      state &&
+      normalizeCollaborationStatus(state.status) &&
+      !compactStateByThreadId.has(threadId)
+    ) {
+      compactStateByThreadId.set(threadId, state);
+    }
+  }
+  const rawStates = asRecord(item?.agentsStates);
+  let subagentStatesTruncated =
+    payload.subagentStatesTruncated === true ||
+    data?.subagentStatesTruncated === true ||
+    allReceiverThreadIds.length > MAX_SUBAGENT_RECEIVERS;
+  const subagentStates = isCodexCollaboration
+    ? subagentReceiverThreadIds.flatMap((threadId) => {
+        const state = compactStateByThreadId.get(threadId) ?? asRecord(rawStates?.[threadId]);
+        const status = normalizeCollaborationStatus(state?.status);
+        if (!status) return [];
+        const allowsMessage = !["pendingInit", "running"].includes(status);
+        const normalizedMessage = allowsMessage
+          ? normalizeCollaborationMessage(state?.message, status === "completed" ? 240 : 160)
+          : { truncated: false };
+        subagentStatesTruncated ||= normalizedMessage.truncated;
+        return [
+          {
+            threadId,
+            status,
+            ...(normalizedMessage.value ? { message: normalizedMessage.value } : {}),
+          },
+        ];
+      })
+    : [];
 
   return {
     ...(subagentType ? { subagentType } : {}),
@@ -323,9 +431,10 @@ function readSubagentPayload(payload: UnknownRecord): Partial<CompactToolActivit
     ...(subagentThreadId ? { subagentThreadId } : {}),
     ...(subagentPath ? { subagentPath } : {}),
     ...(subagentSenderThreadId ? { subagentSenderThreadId } : {}),
-    ...(subagentReceiverThreadIds && subagentReceiverThreadIds.length > 0
-      ? { subagentReceiverThreadIds }
-      : {}),
+    ...(subagentReceiverThreadIds.length > 0 ? { subagentReceiverThreadIds } : {}),
+    ...(isCodexCollaboration ? { codexCollaborationTool } : {}),
+    ...(subagentStates.length > 0 ? { subagentStates } : {}),
+    ...(isCodexCollaboration && subagentStatesTruncated ? { subagentStatesTruncated: true } : {}),
   };
 }
 
@@ -670,6 +779,17 @@ function compactToolPayload(payload: CompactToolActivityPayload): Record<string,
     payload.subagentReceiverThreadIds &&
     payload.subagentReceiverThreadIds.length > 0
       ? { subagentReceiverThreadIds: [...payload.subagentReceiverThreadIds] }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" && payload.codexCollaborationTool
+      ? { codexCollaborationTool: payload.codexCollaborationTool }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" &&
+    payload.subagentStates &&
+    payload.subagentStates.length > 0
+      ? { subagentStates: payload.subagentStates.map((state) => ({ ...state })) }
+      : {}),
+    ...(payload.itemType === "collab_agent_tool_call" && payload.subagentStatesTruncated
+      ? { subagentStatesTruncated: true }
       : {}),
     ...(payload.itemType === "mcp_tool_call" && payload.mcpServerName
       ? { mcpServerName: payload.mcpServerName }

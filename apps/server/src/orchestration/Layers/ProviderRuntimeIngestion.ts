@@ -1103,9 +1103,19 @@ function extractTodoWriteTasksFromLifecycleEvent(
   return tasks;
 }
 
-function hasSubagentResultInLifecycleEvent(event: ItemLifecycleRuntimeEvent): boolean {
+function shouldSuppressCollaborationUpdate(event: ItemLifecycleRuntimeEvent): boolean {
   if (event.payload.itemType !== "collab_agent_tool_call") {
     return false;
+  }
+
+  if (
+    event.provider === "codex" &&
+    readToolActivityPayload({
+      itemType: event.payload.itemType,
+      ...(event.payload.data !== undefined ? { data: event.payload.data } : {}),
+    })?.codexCollaborationTool
+  ) {
+    return true;
   }
 
   const data = asRecord(event.payload.data);
@@ -1910,7 +1920,7 @@ function runtimeEventToActivities(
       if (todoWriteInputFromLifecycleEvent(event)) {
         return [];
       }
-      if (hasSubagentResultInLifecycleEvent(event)) {
+      if (shouldSuppressCollaborationUpdate(event)) {
         return [];
       }
       if (!isToolLifecycleItemType(event.payload.itemType)) {
