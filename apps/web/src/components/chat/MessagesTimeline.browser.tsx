@@ -16,6 +16,7 @@ import {
 import type { LegendListRef } from "@legendapp/list/react";
 import { useRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 
 import type { deriveTimelineEntries } from "../../session-logic";
@@ -373,6 +374,108 @@ describe("MessagesTimeline (LegendList)", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("navigates from a turn-rail tick to an offscreen user turn", async () => {
+    await page.viewport(1200, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let listRef: LegendListRef | null = null;
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(40)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    const container = await waitForScrollContainer(host);
+    await vi.waitFor(() => {
+      expect(
+        host
+          .querySelector('[data-testid="timeline-turn-rail"]')
+          ?.getAttribute("data-persistent-gutter"),
+      ).toBe("true");
+    });
+    await scrollTimelineToOffset(listRef, container, container.scrollHeight);
+    const targetBefore = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
+    expect(targetBefore === null || !isElementVisibleWithinContainer(targetBefore, container)).toBe(
+      true,
+    );
+    const strip = host.querySelector<HTMLButtonElement>('[data-testid="timeline-turn-rail-strip"]');
+    expect(strip).not.toBeNull();
+    const rect = strip!.getBoundingClientRect();
+    strip!.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, clientY: rect.top + 1, clientX: rect.left + 1 }),
+    );
+    await vi.waitFor(() => {
+      const target = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
+      expect(target).not.toBeNull();
+      expect(isElementVisibleWithinContainer(target!, container)).toBe(true);
+    });
+  });
+
+  it("tracks the active turn-rail tick while scrolling", async () => {
+    await page.viewport(1200, 896);
+    const host = document.createElement("div");
+    document.body.append(host);
+    let listRef: LegendListRef | null = null;
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(40)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+        onListRefChange={(next) => {
+          listRef = next;
+        }}
+      />,
+      { container: host },
+    );
+    const container = await waitForScrollContainer(host);
+    await scrollTimelineToOffset(listRef, container, 0);
+    await vi.waitFor(() => {
+      const active = host.querySelector('[data-turn-rail-active="true"]');
+      expect(active).not.toBeNull();
+      expect([...host.querySelectorAll("[data-turn-rail-tick]")].indexOf(active!)).toBe(0);
+    });
+    await scrollTimelineToOffset(listRef, container, container.scrollHeight);
+    await vi.waitFor(() => {
+      const ticks = [...host.querySelectorAll("[data-turn-rail-tick]")];
+      const active = host.querySelector('[data-turn-rail-active="true"]');
+      expect(active).not.toBeNull();
+      expect(ticks.indexOf(active!)).toBeGreaterThan(0);
+    });
+  });
+
+  it("keeps the turn-rail hit target inside the measured gutter", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    await page.viewport(1200, 896);
+    await render(
+      <TimelineHarness
+        initialEntries={makeOverflowEntries(8)}
+        initialHeight={360}
+        onIsAtEndChangeSpy={() => {}}
+      />,
+      { container: host },
+    );
+    await waitForScrollContainer(host);
+    const rail = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail"]');
+    const strip = host.querySelector<HTMLElement>('[data-testid="timeline-turn-rail-strip"]');
+    await vi.waitFor(() => expect(rail?.dataset.persistentGutter).toBe("true"));
+    expect(Number.parseFloat(getComputedStyle(strip!).width)).toBeGreaterThan(0);
+
+    await page.viewport(600, 896);
+    await vi.waitFor(() => {
+      expect(rail?.dataset.persistentGutter).toBe("false");
+      expect(Number.parseFloat(getComputedStyle(strip!).width)).toBe(0);
+      expect(getComputedStyle(strip!).pointerEvents).toBe("none");
+    });
+    const messageText = host.querySelector<HTMLElement>('[data-message-id="overflow-user-0"]');
+    expect(getComputedStyle(messageText!).pointerEvents).not.toBe("none");
   });
 
   it("renders the empty-state copy and the listHeaderContent when no entries are present", async () => {

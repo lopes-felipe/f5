@@ -58,10 +58,16 @@ import { AssistantMessageActions } from "./AssistantMessageActions";
 import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
+  deriveTimelineTurnRailItems,
   findNearestMinimapMarkerIndex,
   normalizeCompactToolLabel,
+  resolveActiveTurnRailIndex,
+  resolveTimelineTurnRailHasPersistentGutter,
+  resolveTimelineTurnRailHitStripWidth,
   sampleTimelineMinimapRowIndices,
+  TIMELINE_TURN_RAIL_MIN_ITEMS,
 } from "./MessagesTimeline.logic";
+import { TimelineTurnRail } from "./TimelineTurnRail";
 import { TerminalContextInlineChip } from "./TerminalContextInlineChip";
 import { SkillInlineChip } from "./SkillInlineChip";
 import {
@@ -487,6 +493,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       }),
     [activeMinimapRowIndex, entryRowIndexMap, rowCount, rows],
   );
+  const turnRailItems = useMemo(() => deriveTimelineTurnRailItems(rows), [rows]);
+  const turnRailRowIndices = useMemo(
+    () => turnRailItems.map((item) => item.rowIndex),
+    [turnRailItems],
+  );
+  const turnRailActiveTickIndex = resolveActiveTurnRailIndex(
+    turnRailRowIndices,
+    activeMinimapRowIndex,
+  );
+  const [turnRailHasPersistentGutter, setTurnRailHasPersistentGutter] = useState(false);
+  const [turnRailHitStripWidth, setTurnRailHitStripWidth] = useState(0);
 
   // Upstream fix 33dadb5a:
   // once a brand-new thread receives its first message, LegendList's
@@ -555,6 +572,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
   }, [listRef, onIsAtEndChange]);
 
+  const measureTurnRailGutter = useCallback(() => {
+    const node = listRef.current?.getScrollableNode?.();
+    if (!(node instanceof HTMLElement)) return;
+    // Measure rendered geometry so scrollbars, responsive padding, and zoom
+    // cannot make the hit target overlap the content column.
+    const column = node.querySelector<HTMLElement>('[data-timeline-root="true"]');
+    if (!column) return;
+    const gutterPx = column.getBoundingClientRect().left - node.getBoundingClientRect().left;
+    setTurnRailHasPersistentGutter((current) => {
+      const next = resolveTimelineTurnRailHasPersistentGutter(gutterPx);
+      return current === next ? current : next;
+    });
+    setTurnRailHitStripWidth((current) => {
+      const next = resolveTimelineTurnRailHitStripWidth(gutterPx);
+      return current === next ? current : next;
+    });
+  }, [listRef]);
+
   useEffect(() => {
     if (!hasMessages && !isWorking) {
       return;
@@ -580,6 +615,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       syncFrame = window.requestAnimationFrame(() => {
         syncFrame = 0;
         syncIsAtEndFromListState();
+        measureTurnRailGutter();
       });
     };
 
@@ -617,11 +653,24 @@ export const MessagesTimeline = memo(function MessagesTimeline({
         cleanup();
       }
     };
-  }, [hasMessages, isWorking, listRef, syncIsAtEndFromListState]);
+  }, [hasMessages, isWorking, listRef, measureTurnRailGutter, syncIsAtEndFromListState]);
 
   const handleScroll = useCallback(() => {
     syncIsAtEndFromListState();
   }, [syncIsAtEndFromListState]);
+
+  const navigateToTimelineRow = useCallback(
+    (rowIndex: number, viewPosition: number) => {
+      isAtEndRef.current = false;
+      onIsAtEndChange(false);
+      void listRef.current?.scrollToIndex({
+        index: rowIndex,
+        animated: false,
+        viewPosition,
+      });
+    },
+    [listRef, onIsAtEndChange],
+  );
 
   const keyExtractor = useCallback((row: TimelineRow) => row.id, []);
 
@@ -1244,15 +1293,16 @@ export const MessagesTimeline = memo(function MessagesTimeline({
           markerRowIndices={minimapRowIndices}
           activeRowIndex={activeMinimapRowIndex}
           hasUnloadedHistory={hasOlderHistory}
-          onNavigate={(rowIndex) => {
-            isAtEndRef.current = false;
-            onIsAtEndChange(false);
-            void listRef.current?.scrollToIndex({
-              index: rowIndex,
-              animated: false,
-              viewPosition: 0.3,
-            });
-          }}
+          onNavigate={(rowIndex) => navigateToTimelineRow(rowIndex, 0.3)}
+        />
+      ) : null}
+      {turnRailItems.length >= TIMELINE_TURN_RAIL_MIN_ITEMS ? (
+        <TimelineTurnRail
+          items={turnRailItems}
+          hasPersistentGutter={turnRailHasPersistentGutter}
+          hitStripWidth={turnRailHitStripWidth}
+          activeTickIndex={turnRailActiveTickIndex}
+          onSelect={(item) => navigateToTimelineRow(item.rowIndex, 0.1)}
         />
       ) : null}
     </div>

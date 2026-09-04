@@ -2,10 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   buildTimelineEntryRowIndexMap,
   computeMessageDurationStart,
+  deriveTimelineTurnRailItems,
   findNearestMinimapMarkerIndex,
   normalizeCompactToolLabel,
+  resolveActiveTurnRailIndex,
+  resolveTimelineTurnRailHasPersistentGutter,
+  resolveTimelineTurnRailHeightStyle,
+  resolveTimelineTurnRailHitStripWidth,
+  resolveTimelineTurnRailIndexFromPointer,
+  resolveTimelineTurnRailInteractiveWidth,
+  resolveTimelineTurnRailTopPercent,
   sampleTimelineMinimapRowIndices,
 } from "./MessagesTimeline.logic";
+import { appendAttachedFilesToPrompt } from "../../lib/attachedFiles";
+import { appendTerminalContextsToPrompt } from "../../lib/terminalContext";
 
 describe("computeMessageDurationStart", () => {
   it("returns message createdAt when there is no preceding user message", () => {
@@ -207,5 +217,88 @@ describe("timeline row navigation mapping", () => {
     expect(markers[0]).toBe(0);
     expect(markers.at(-1)).toBe(999);
     expect(markers).toContain(843);
+  });
+});
+
+describe("timeline turn rail", () => {
+  it("resolves measured gutter geometry", () => {
+    expect([47, 48, 0, Number.NaN].map(resolveTimelineTurnRailHasPersistentGutter)).toEqual([
+      false,
+      true,
+      false,
+      false,
+    ]);
+    expect([12, 26, 52, 1_000, 0, Number.NaN].map(resolveTimelineTurnRailHitStripWidth)).toEqual([
+      0, 14, 40, 40, 0, 0,
+    ]);
+    expect(resolveTimelineTurnRailHeightStyle(5)).toBe("min(32px, 100%)");
+    expect(resolveTimelineTurnRailTopPercent(0, 5)).toBe(0);
+    expect(resolveTimelineTurnRailTopPercent(2, 5)).toBe(50);
+    expect(resolveTimelineTurnRailTopPercent(4, 5)).toBe(100);
+    expect(resolveTimelineTurnRailInteractiveWidth(14, false)).toBe(14);
+    expect(resolveTimelineTurnRailInteractiveWidth(14, true)).toBe("22rem");
+  });
+
+  it("maps and clamps pointer positions", () => {
+    const input = { itemCount: 5, railTop: 100, railHeight: 80, pointerY: 100 };
+    expect(resolveTimelineTurnRailIndexFromPointer(input)).toBe(0);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, pointerY: 140 })).toBe(2);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, pointerY: 1_000 })).toBe(4);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, pointerY: -1_000 })).toBe(0);
+    expect(resolveTimelineTurnRailIndexFromPointer({ ...input, itemCount: 0 })).toBeNull();
+  });
+
+  it("selects the containing turn rather than the nearest following turn", () => {
+    expect(resolveActiveTurnRailIndex([], 3)).toBe(-1);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 10)).toBe(1);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 17)).toBe(1);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 0)).toBe(0);
+    expect(resolveActiveTurnRailIndex([2, 10, 20], 99)).toBe(2);
+  });
+
+  it("derives user turns and their final assistant previews", () => {
+    const items = deriveTimelineTurnRailItems([
+      { id: "u1", kind: "message", message: { role: "user", text: "  First\n question " } },
+      { id: "w1", kind: "work" },
+      { id: "a1", kind: "message", message: { role: "assistant", text: "draft" } },
+      { id: "a2", kind: "message", message: { role: "assistant", text: " Final\n answer " } },
+      { id: "u2", kind: "message", message: { role: "user", text: "Second" } },
+    ]);
+    expect(items).toEqual([
+      { id: "u1", rowIndex: 0, userText: "First question", assistantText: "Final answer" },
+      { id: "u2", rowIndex: 4, userText: "Second", assistantText: null },
+    ]);
+  });
+
+  it("strips terminal dumps and falls back through file and attachment names", () => {
+    const terminalOnly = appendTerminalContextsToPrompt("Investigate this", [
+      {
+        terminalId: "terminal-1",
+        terminalLabel: "Terminal 1",
+        lineStart: 1,
+        lineEnd: 2,
+        text: "bun test\nlots of output",
+      },
+    ]);
+    const fileOnly = appendAttachedFilesToPrompt("", [
+      "C:/a/one.ts",
+      "/b/two.ts",
+      "three.ts",
+      "four.ts",
+    ]);
+    const items = deriveTimelineTurnRailItems([
+      { id: "context", kind: "message", message: { role: "user", text: terminalOnly } },
+      { id: "files", kind: "message", message: { role: "user", text: fileOnly } },
+      {
+        id: "image",
+        kind: "message",
+        message: { role: "user", text: " ", attachments: [{ name: "screenshot.png" }] },
+      },
+      { id: "blank", kind: "message", message: { role: "user", text: " \n " } },
+    ]);
+    expect(items[0]?.userText).toBe("Investigate this");
+    expect(items[1]?.userText).toBe("one.ts, two.ts, three.ts +1 more");
+    expect(items[2]?.userText).toBe("screenshot.png");
+    expect(items[3]?.userText).toBeNull();
   });
 });
