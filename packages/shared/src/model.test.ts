@@ -25,6 +25,7 @@ import {
   normalizeModelSlug,
   roughTokenEstimateFromCharacters,
   resolveSelectableModel,
+  resolveCodexReasoningEffortForModel,
   resolveModelSlug,
   supportsClaudeAdaptiveReasoning,
   supportsClaudeContextWindow,
@@ -121,6 +122,23 @@ describe("resolveModelSlug", () => {
       "claude-haiku-4-5",
     ]);
   });
+
+  it("makes GPT-6 Astra the Codex default and first catalog entry", () => {
+    expect(DEFAULT_MODEL_BY_PROVIDER.codex).toBe("gpt-6-astra");
+    expect(getModelOptions("codex").map((option) => option.slug)).toEqual([
+      "gpt-6-astra",
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.5",
+      "gpt-5.4",
+      "gpt-5.4-mini",
+      "gpt-5.3-codex",
+      "gpt-5.3-codex-spark",
+      "gpt-5.2-codex",
+      "gpt-5.2",
+    ]);
+  });
 });
 
 describe("resolveSelectableModel", () => {
@@ -189,6 +207,37 @@ describe("getReasoningEffortOptions", () => {
       "medium",
       "low",
     ]);
+  });
+
+  it("omits ultra from GPT-6 Astra while preserving the descending effort order", () => {
+    expect(getReasoningEffortOptions("codex", "gpt-6-astra")).toEqual([
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+    ]);
+    expect(getReasoningEffortOptions("codex", "gpt-6-astra")).not.toContain("ultra");
+  });
+
+  it("keeps all Codex reasoning efforts for GPT-5.6 Sol", () => {
+    expect(getReasoningEffortOptions("codex", "gpt-5.6-sol")).toEqual([
+      "ultra",
+      "max",
+      "xhigh",
+      "high",
+      "medium",
+      "low",
+    ]);
+  });
+
+  it("clamps unsupported Codex efforts toward the nearest weaker supported effort", () => {
+    expect(resolveCodexReasoningEffortForModel("gpt-6-astra", "ultra")).toBe("max");
+    expect(resolveCodexReasoningEffortForModel("gpt-6-astra", "garbage")).toBe("high");
+  });
+
+  it("keeps provider-wide efforts available for custom Codex models", () => {
+    expect(resolveCodexReasoningEffortForModel("custom/internal-model", "ultra")).toBe("ultra");
   });
 
   it("exposes full Claude Fable effort controls", () => {
@@ -354,6 +403,7 @@ describe("getEffectiveClaudeCodeEffort", () => {
 
 describe("estimateModelContextWindowTokens", () => {
   it("returns the configured context windows for known models", () => {
+    expect(estimateModelContextWindowTokens("gpt-6-astra")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.6-sol")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.6")).toBe(1_050_000);
     expect(estimateModelContextWindowTokens("gpt-5.5")).toBe(1_050_000);

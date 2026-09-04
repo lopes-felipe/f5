@@ -213,6 +213,68 @@ function createPendingApprovalHarness(
 }
 
 describe("CodexAppServerManager protocol diagnostics", () => {
+  it("appends recovery guidance to unsupported-model response errors", () => {
+    const manager = new CodexAppServerManager();
+    const reject = vi.fn();
+    const original =
+      "The 'gpt-6-astra' model is not supported when using Codex with a ChatGPT account.";
+    const context = {
+      pending: new Map([
+        [
+          "1",
+          {
+            method: "turn/start",
+            timeout: setTimeout(() => {}, 60_000),
+            resolve: vi.fn(),
+            reject,
+          },
+        ],
+      ]),
+    };
+
+    (
+      manager as unknown as {
+        handleResponse: (
+          context: unknown,
+          response: { id: number; error: { message: string } },
+        ) => void;
+      }
+    ).handleResponse(context, { id: 1, error: { message: original } });
+
+    const rejectedError = reject.mock.calls[0]?.[0] as Error | undefined;
+    expect(rejectedError?.message).toContain(`turn/start failed: ${original}`);
+    expect(rejectedError?.message).toContain("Choose another model");
+  });
+
+  it("does not classify model/list method errors as unsupported-model errors", () => {
+    const manager = new CodexAppServerManager();
+    const reject = vi.fn();
+    const context = {
+      pending: new Map([
+        [
+          "1",
+          {
+            method: "model/list",
+            timeout: setTimeout(() => {}, 60_000),
+            resolve: vi.fn(),
+            reject,
+          },
+        ],
+      ]),
+    };
+
+    (
+      manager as unknown as {
+        handleResponse: (
+          context: unknown,
+          response: { id: number; error: { message: string } },
+        ) => void;
+      }
+    ).handleResponse(context, { id: 1, error: { message: "method not supported" } });
+
+    expect(reject).toHaveBeenCalledWith(new Error("model/list failed: method not supported"));
+  });
+
   it("records bounded diagnostics across malformed records without retaining their contents", () => {
     const manager = new CodexAppServerManager();
     const emitted: ProviderEvent[] = [];
@@ -841,6 +903,58 @@ describe("sendTurn", () => {
       activeTurnId: "turn_1",
       resumeCursor: { threadId: "thread_1" },
     });
+  });
+
+  it("sends explicit Astra selections and clamps ultra to max everywhere", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use Astra",
+      model: "gpt-6-astra",
+      effort: "ultra",
+    });
+
+    expect(sendRequest).toHaveBeenCalledWith(
+      context,
+      "turn/start",
+      expect.objectContaining({
+        model: "gpt-6-astra",
+        effort: "max",
+        collaborationMode: expect.objectContaining({
+          settings: expect.objectContaining({
+            model: "gpt-6-astra",
+            reasoning_effort: "max",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("clamps ultra for the default Astra selection", async () => {
+    const { manager, context, sendRequest } = createSendTurnHarness();
+    delete (context.session as { model?: string }).model;
+
+    await manager.sendTurn({
+      threadId: asThreadId("thread_1"),
+      input: "Use the default model",
+      effort: "ultra",
+    });
+
+    expect(sendRequest).toHaveBeenCalledWith(
+      context,
+      "turn/start",
+      expect.objectContaining({
+        model: "gpt-6-astra",
+        effort: "max",
+        collaborationMode: expect.objectContaining({
+          settings: expect.objectContaining({
+            model: "gpt-6-astra",
+            reasoning_effort: "max",
+          }),
+        }),
+      }),
+    );
   });
 
   it("passes Codex plan mode as a collaboration preset on turn/start", async () => {

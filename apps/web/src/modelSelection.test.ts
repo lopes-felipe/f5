@@ -55,6 +55,29 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("uses GPT-6 Astra from the live Codex provider snapshot", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("codex"),
+        instanceId: "codex",
+        models: ["gpt-6-astra", "gpt-5.6-sol"],
+      }),
+    ];
+    const entry = deriveProviderInstanceEntries(providers)[0]!;
+
+    expect(
+      getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entry).map((option) => option.slug),
+    ).toEqual(["gpt-6-astra", "gpt-5.6-sol"]);
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("codex"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        "",
+      ),
+    ).toBe("gpt-6-astra");
+  });
+
   it("keeps custom models on the provider instance that declared them", () => {
     const providers = [
       provider({

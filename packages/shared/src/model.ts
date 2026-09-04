@@ -112,17 +112,27 @@ const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata>
   },
 };
 
-const CODEX_MODEL_CONTEXT_WINDOW_TOKENS: Record<string, number> = {
-  "gpt-5.6-sol": 1_050_000,
-  "gpt-5.6-terra": 1_050_000,
-  "gpt-5.6-luna": 1_050_000,
-  "gpt-5.5": 1_050_000,
-  "gpt-5.4": 1_050_000,
-  "gpt-5.4-mini": 400_000,
-  "gpt-5.3-codex": 400_000,
-  "gpt-5.3-codex-spark": 400_000,
-  "gpt-5.2": 400_000,
-  "gpt-5.2-codex": 400_000,
+interface CodexModelMetadata {
+  readonly contextWindowTokens: number;
+  readonly effortOptions?: ReadonlyArray<CodexReasoningEffort>;
+  readonly defaultEffort?: CodexReasoningEffort;
+}
+
+const CODEX_MODEL_METADATA: Record<string, CodexModelMetadata> = {
+  "gpt-6-astra": {
+    contextWindowTokens: 1_050_000,
+    effortOptions: ["max", "xhigh", "high", "medium", "low"],
+  },
+  "gpt-5.6-sol": { contextWindowTokens: 1_050_000 },
+  "gpt-5.6-terra": { contextWindowTokens: 1_050_000 },
+  "gpt-5.6-luna": { contextWindowTokens: 1_050_000 },
+  "gpt-5.5": { contextWindowTokens: 1_050_000 },
+  "gpt-5.4": { contextWindowTokens: 1_050_000 },
+  "gpt-5.4-mini": { contextWindowTokens: 400_000 },
+  "gpt-5.3-codex": { contextWindowTokens: 400_000 },
+  "gpt-5.3-codex-spark": { contextWindowTokens: 400_000 },
+  "gpt-5.2": { contextWindowTokens: 400_000 },
+  "gpt-5.2-codex": { contextWindowTokens: 400_000 },
 };
 
 export function roughTokenEstimateFromCharacters(characters: number): number {
@@ -473,6 +483,17 @@ function getClaudeModelMetadata(model: string | null | undefined): ClaudeModelMe
     : undefined;
 }
 
+function lookupCodexModelMetadata(normalized: string): CodexModelMetadata | undefined {
+  return Object.prototype.hasOwnProperty.call(CODEX_MODEL_METADATA, normalized)
+    ? CODEX_MODEL_METADATA[normalized]
+    : undefined;
+}
+
+function getCodexModelMetadata(model: string | null | undefined): CodexModelMetadata | undefined {
+  const normalized = normalizeModelSlug(model, "codex");
+  return normalized ? lookupCodexModelMetadata(normalized) : undefined;
+}
+
 function getClaudeReasoningEffortOptions(
   model: string | null | undefined,
 ): ReadonlyArray<ClaudeCodeEffort> {
@@ -613,10 +634,14 @@ export function estimateModelContextWindowTokens(
   return resolvedProvider === "claudeAgent"
     ? (getClaudeModelMetadata(normalized)?.contextWindowTokens ??
         DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS)
-    : (CODEX_MODEL_CONTEXT_WINDOW_TOKENS[normalized] ?? DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS);
+    : (lookupCodexModelMetadata(normalized)?.contextWindowTokens ??
+        DEFAULT_MODEL_CONTEXT_WINDOW_TOKENS);
 }
 
-export function getReasoningEffortOptions(provider: "codex"): ReadonlyArray<CodexReasoningEffort>;
+export function getReasoningEffortOptions(
+  provider: "codex",
+  model?: string | null | undefined,
+): ReadonlyArray<CodexReasoningEffort>;
 export function getReasoningEffortOptions(
   provider: "claudeAgent",
   model?: string | null | undefined,
@@ -632,10 +657,18 @@ export function getReasoningEffortOptions(
   if (provider === "claudeAgent") {
     return getClaudeReasoningEffortOptions(model);
   }
+  if (provider === "codex") {
+    return (
+      getCodexModelMetadata(model)?.effortOptions ?? REASONING_EFFORT_OPTIONS_BY_PROVIDER.codex
+    );
+  }
   return REASONING_EFFORT_OPTIONS_BY_PROVIDER[provider];
 }
 
-export function getDefaultReasoningEffort(provider: "codex"): CodexReasoningEffort;
+export function getDefaultReasoningEffort(
+  provider: "codex",
+  model?: string | null | undefined,
+): CodexReasoningEffort;
 export function getDefaultReasoningEffort(
   provider: "claudeAgent",
   model?: string | null | undefined,
@@ -655,6 +688,13 @@ export function getDefaultReasoningEffort(
     return metadata?.effortOptions?.includes(defaultEffort)
       ? defaultEffort
       : DEFAULT_REASONING_EFFORT_BY_PROVIDER.claudeAgent;
+  }
+  if (provider === "codex") {
+    const metadata = getCodexModelMetadata(model);
+    const defaultEffort = metadata?.defaultEffort ?? DEFAULT_REASONING_EFFORT_BY_PROVIDER.codex;
+    return metadata?.effortOptions && !metadata.effortOptions.includes(defaultEffort)
+      ? (metadata.effortOptions[0] ?? DEFAULT_REASONING_EFFORT_BY_PROVIDER.codex)
+      : defaultEffort;
   }
   return DEFAULT_REASONING_EFFORT_BY_PROVIDER[provider];
 }
@@ -697,13 +737,30 @@ export function getEffectiveClaudeCodeEffort(
   return effort === "ultrathink" ? null : effort;
 }
 
+export function resolveCodexReasoningEffortForModel(
+  model: string | null | undefined,
+  effort: string | null | undefined,
+): CodexReasoningEffort {
+  const supportedOptions = getReasoningEffortOptions("codex", model);
+  const resolved = resolveReasoningEffortForProvider("codex", effort);
+  if (resolved) {
+    const requestedIndex = CODEX_REASONING_EFFORT_OPTIONS.indexOf(resolved);
+    for (let index = requestedIndex; index < CODEX_REASONING_EFFORT_OPTIONS.length; index += 1) {
+      const candidate = CODEX_REASONING_EFFORT_OPTIONS[index]!;
+      if (supportedOptions.includes(candidate)) {
+        return candidate;
+      }
+    }
+  }
+  return getDefaultReasoningEffort("codex", model);
+}
+
 export function normalizeCodexModelOptions(
+  model: string | null | undefined,
   modelOptions: CodexModelOptions | null | undefined,
 ): CodexModelOptions | undefined {
-  const defaultReasoningEffort = getDefaultReasoningEffort("codex");
-  const reasoningEffort =
-    resolveReasoningEffortForProvider("codex", modelOptions?.reasoningEffort) ??
-    defaultReasoningEffort;
+  const defaultReasoningEffort = getDefaultReasoningEffort("codex", model);
+  const reasoningEffort = resolveCodexReasoningEffortForModel(model, modelOptions?.reasoningEffort);
   const fastModeEnabled = modelOptions?.fastMode === true;
   const nextOptions: CodexModelOptions = {
     ...(reasoningEffort !== defaultReasoningEffort ? { reasoningEffort } : {}),

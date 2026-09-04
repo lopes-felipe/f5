@@ -25,6 +25,7 @@ import {
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeModelSlug,
+  resolveCodexReasoningEffortForModel,
   resolveReasoningEffortForProvider,
   supportsClaudeFastMode,
   supportsClaudeThinkingToggle,
@@ -124,11 +125,12 @@ function WorkflowReasoningPicker(props: {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
   if (props.provider === "codex") {
-    const options = getReasoningEffortOptions("codex");
-    const defaultEffort = getDefaultReasoningEffort("codex");
-    const selectedEffort =
-      resolveReasoningEffortForProvider("codex", props.modelOptions?.codex?.reasoningEffort) ??
-      defaultEffort;
+    const options = getReasoningEffortOptions("codex", props.model);
+    const defaultEffort = getDefaultReasoningEffort("codex", props.model);
+    const selectedEffort = resolveCodexReasoningEffortForModel(
+      props.model,
+      props.modelOptions?.codex?.reasoningEffort,
+    );
     return (
       <Menu open={isMenuOpen} onOpenChange={setIsMenuOpen}>
         <MenuTrigger
@@ -154,7 +156,7 @@ function WorkflowReasoningPicker(props: {
                 if (!nextEffort) return;
                 props.onChange({
                   ...props.modelOptions,
-                  codex: normalizeCodexModelOptions({
+                  codex: normalizeCodexModelOptions(props.model, {
                     ...props.modelOptions?.codex,
                     reasoningEffort: nextEffort,
                   }),
@@ -308,15 +310,14 @@ export function normalizeWorkflowSlotModelOptions(
   modelOptions: ProviderModelOptions | undefined,
 ): ProviderModelOptions | undefined {
   if (provider === "codex") {
-    const effort = resolveReasoningEffortForProvider("codex", modelOptions?.codex?.reasoningEffort);
+    const effort = modelOptions?.codex?.reasoningEffort
+      ? resolveCodexReasoningEffortForModel(model, modelOptions.codex.reasoningEffort)
+      : undefined;
     const codex = {
       ...(effort ? { reasoningEffort: effort } : {}),
       ...(modelOptions?.codex?.fastMode === true ? { fastMode: true } : {}),
     };
-    if (Object.keys(codex).length === 0) {
-      return undefined;
-    }
-    return codex ? { codex } : undefined;
+    return Object.keys(codex).length > 0 ? { codex } : undefined;
   }
   if (provider !== "claudeAgent") {
     return getSingleProviderModelOptions(provider, modelOptions);

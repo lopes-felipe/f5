@@ -4,6 +4,7 @@ import {
   CodexSettings,
   MODEL_OPTIONS_BY_PROVIDER,
   ProviderDriverKind,
+  type ModelCapabilities,
   type ProviderStartOptions,
   type ServerProvider,
 } from "@t3tools/contracts";
@@ -30,6 +31,8 @@ import {
   resolveCodexHomeLayout,
 } from "./CodexHomeLayout.ts";
 import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
+import { createModelCapabilities } from "@t3tools/shared/model";
+import { providerModelsFromSettings } from "../providerSnapshot.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("codex");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -42,25 +45,22 @@ export type CodexDriverEnv =
   | PreviewMcpHttpServer
   | ServerConfig;
 
-const codexModels = (settings: CodexSettings): ServerProvider["models"] => {
-  const builtIns = MODEL_OPTIONS_BY_PROVIDER.codex.map((model) => ({
-    slug: model.slug,
-    name: model.name,
-    isCustom: false,
-    capabilities: null,
-  }));
-  const custom = settings.customModels
-    .map((model) => model.trim())
-    .filter((model) => model.length > 0)
-    .filter((model, index, models) => models.indexOf(model) === index)
-    .map((model) => ({
-      slug: model,
-      name: model,
-      isCustom: true,
+const CODEX_CUSTOM_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
+  optionDescriptors: [],
+});
+
+export const codexModels = (settings: CodexSettings): ServerProvider["models"] =>
+  providerModelsFromSettings(
+    MODEL_OPTIONS_BY_PROVIDER.codex.map((model) => ({
+      slug: model.slug,
+      name: model.name,
+      isCustom: false,
       capabilities: null,
-    }));
-  return [...builtIns, ...custom];
-};
+    })),
+    "codex",
+    settings.customModels,
+    CODEX_CUSTOM_MODEL_CAPABILITIES,
+  );
 
 export function providerOptionsFromCodexSettings(settings: CodexSettings): ProviderStartOptions {
   const launchArgs = parseLaunchArgv(settings.launchArgs);

@@ -2,7 +2,7 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_PR_ADVISORY_MODEL,
   DEFAULT_SERVER_SETTINGS,
   ProviderInstanceId,
   PullRequestKey,
@@ -45,7 +45,7 @@ const ADVISORY_PROMPT_DIFF_MAX_CHARS = 2_000;
 
 const ADVISORY_DEFAULT_MODEL_SELECTION = createModelSelection(
   ProviderInstanceId.make("codex"),
-  DEFAULT_MODEL_BY_PROVIDER.codex,
+  DEFAULT_PR_ADVISORY_MODEL,
   [{ id: "reasoningEffort", value: "high" }],
 );
 

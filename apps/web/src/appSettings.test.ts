@@ -691,6 +691,7 @@ describe("getAppModelOptions", () => {
     const options = getAppModelOptions("codex", ["custom/internal-model"]);
 
     expect(options.map((option) => option.slug)).toEqual([
+      "gpt-6-astra",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
@@ -731,6 +732,10 @@ describe("getAppModelOptions", () => {
       name: "GPT-5.6 Sol",
       shortName: "5.6 Sol",
     });
+    expect(codexOptions.find((option) => option.slug === "gpt-6-astra")).toMatchObject({
+      name: "GPT-6 Astra",
+      shortName: "6 Astra",
+    });
     expect(codexOptions.at(-1)).toMatchObject({
       slug: "openai/gpt-oss-120b",
       name: "gpt-oss-120b",
@@ -764,7 +769,7 @@ describe("resolveAppModelSelection", () => {
   });
 
   it("falls back to the provider default when no model is selected", () => {
-    expect(resolveAppModelSelection("codex", [], "")).toBe("gpt-5.6-sol");
+    expect(resolveAppModelSelection("codex", [], "")).toBe("gpt-6-astra");
   });
 
   it("normalizes the GPT-5.6 Sol short alias to the runnable Codex slug", () => {

@@ -447,6 +447,44 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("omits Ultra for Astra and normalizes persisted Ultra to Max", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const onModelOptionsChange = vi.fn();
+    const screen = await render(
+      <ProviderFields
+        label="Branch A"
+        provider="codex"
+        model="gpt-6-astra"
+        modelOptions={{ codex: { reasoningEffort: "ultra" } }}
+        modelOptionsByProvider={{
+          codex: [{ slug: "gpt-6-astra", name: "GPT-6 Astra" }],
+          claudeAgent: [{ slug: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+          cursor: [{ slug: "auto", name: "Auto" }],
+          opencode: [{ slug: "openai/gpt-5", name: "OpenAI GPT-5" }],
+          grok: [{ slug: "grok-build", name: "Grok Build" }],
+        }}
+        onProviderModelChange={() => {}}
+        onModelOptionsChange={onModelOptionsChange}
+      />,
+      { container: host },
+    );
+
+    try {
+      await page.getByRole("button", { name: /Max/ }).click();
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").not.toContain("Ultra");
+      });
+      await page.getByRole("menuitemradio", { name: "Max" }).click();
+      expect(onModelOptionsChange).toHaveBeenCalledWith({
+        codex: { reasoningEffort: "max" },
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("shows separate Extra High and Max options for Claude Opus 4.7", async () => {
     const host = document.createElement("div");
     document.body.append(host);
@@ -684,6 +722,16 @@ describe("WorkflowCreateDialog", () => {
     });
   });
 
+  it("clamps unsupported Astra workflow reasoning before submission", () => {
+    expect(
+      normalizeWorkflowSlotModelOptions("codex", "gpt-6-astra", {
+        codex: { reasoningEffort: "ultra" },
+      }),
+    ).toEqual({
+      codex: { reasoningEffort: "max" },
+    });
+  });
+
   it("preserves explicit workflow claude medium effort", () => {
     expect(
       normalizeWorkflowSlotModelOptions("claudeAgent", "claude-opus-4-6", {
@@ -855,6 +903,7 @@ describe("WorkflowCreateDialog", () => {
         projectId: "project-1",
         requirementPrompt: "Plan the new workflow behavior",
         titleGenerationModel: "custom/thread-title-model",
+        branchA: { provider: "codex", model: "gpt-6-astra" },
       });
       await vi.waitFor(() => {
         expect(onWorkflowCreated).toHaveBeenCalledWith("workflow-1");
