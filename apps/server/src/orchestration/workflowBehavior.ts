@@ -71,12 +71,18 @@ function readonlyProfileForStage(
   stage: WorkflowBehaviorStage,
 ): WorkflowTurnExecutionProfile | undefined {
   switch (stage) {
+    // Stages the user is actively watching. A clarifying question is legitimate
+    // here and the workflow blocks on the answer: `author`/`investigation` open
+    // the run, and `revision`/`merge` reconcile competing artifacts, which is
+    // exactly where genuine product decisions surface.
     case "author":
     case "investigation":
-      return "attended-readonly";
-    case "plan-review":
     case "revision":
     case "merge":
+      return "attended-readonly";
+    // Fan-out stages that run in parallel with nobody watching, so there is no
+    // reply path for a question.
+    case "plan-review":
     case "implementation-review":
     case "investigation-review":
     case "synthesis":

@@ -4375,6 +4375,11 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                       typeof question.multiSelect === "boolean" ? question.multiSelect : false,
                   }),
                 );
+                // No reply path exists, so the request is auto-declined rather
+                // than registered in `pendingUserInputs`. Emit the matching
+                // `resolved` event too: the timeline keeps a record of what was
+                // asked, and the UI does not leave an unanswerable question card
+                // open (pending requests are only closed by a `resolved` event).
                 const stamp = yield* makeEventStamp();
                 yield* offerRuntimeEvent({
                   type: "user-input.requested",
@@ -4394,6 +4399,27 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     source: "claude.sdk.permission",
                     method: "canUseTool/AskUserQuestion",
                     payload: { toolName, input: toolInput },
+                  },
+                });
+                const declinedStamp = yield* makeEventStamp();
+                yield* offerRuntimeEvent({
+                  type: "user-input.resolved",
+                  eventId: declinedStamp.eventId,
+                  provider: PROVIDER,
+                  createdAt: declinedStamp.createdAt,
+                  threadId: context.session.threadId,
+                  ...(context.turnState
+                    ? { turnId: asCanonicalTurnId(context.turnState.turnId) }
+                    : {}),
+                  requestId: asRuntimeRequestId(requestId),
+                  payload: { answers: {} },
+                  providerRefs: nativeProviderRefs(context, {
+                    providerItemId: callbackOptions.toolUseID,
+                  }),
+                  raw: {
+                    source: "claude.sdk.permission",
+                    method: "canUseTool/AskUserQuestion/unattended-declined",
+                    payload: { answers: {} },
                   },
                 });
                 return {

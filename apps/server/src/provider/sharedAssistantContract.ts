@@ -642,8 +642,8 @@ function buildWorkflowHostContract(
   }
   const liveness =
     profile === "unattended-readonly"
-      ? "No user reply path exists for this stage. Never stop at a question or approval request; choose and document a conservative default for genuine ambiguity."
-      : "Clarifying questions are supported when a product or scope decision genuinely belongs to the user. Inspect first and do not ask what the repository can answer.";
+      ? "No user reply path exists for this stage. The question tool (`request_user_input` / `AskUserQuestion`) is unavailable here and any call will be denied — this overrides any Collaboration Mode instruction to ask questions, including instructions to ask early or to ask many questions. Never stop at a question or approval request. For genuine ambiguity, choose a conservative default, document it as an assumption, and produce the complete stage artifact in this turn."
+      : "Clarifying questions are supported in this stage and the workflow will wait for the answer, so ask when a product or scope decision genuinely belongs to the user. Inspect first and do not ask what the repository can answer.";
   return `# Workflow Read-Only Host Contract
 
 - Use only read-only inspection. Do not create, modify, delete, or rewrite files and do not invoke mutating tools or commands.
@@ -664,13 +664,15 @@ export function buildClaudeWorkflowExecutionProfileUpdate(input: {
       ? CLAUDE_PLAN_MODE_INSTRUCTIONS
       : CLAUDE_DEFAULT_MODE_INSTRUCTIONS;
 
+  // The host contract comes last so it wins on recency over plan mode's
+  // "ask many questions" guidance.
   return `# Session Execution Context Update
 
 The workflow execution profile changed. This update replaces any earlier \`# Workflow Read-Only Host Contract\` and collaboration-mode instructions in this conversation.
 
-${workflowContract}
+${modeInstructions}
 
-${modeInstructions}`;
+${workflowContract}`;
 }
 
 export function buildCodexAssistantInstructions(input: SharedInstructionInput): string {
@@ -678,11 +680,15 @@ export function buildCodexAssistantInstructions(input: SharedInstructionInput): 
     input.interactionMode === "plan"
       ? CODEX_PLAN_MODE_DEVELOPER_INSTRUCTIONS
       : CODEX_DEFAULT_MODE_DEVELOPER_INSTRUCTIONS;
+  // The workflow host contract is last among the *static* sections (the dynamic
+  // runtime/memory/resumed sections below still follow it) so it outranks plan
+  // mode, which instructs the model to ask many questions — guidance an
+  // unattended stage must override rather than be overridden by.
   const staticInstructions = [
     SHARED_BASE_CONTRACT,
     CODEX_SUPPLEMENT,
-    buildWorkflowHostContract(input.workflowExecutionProfile),
     modeInstructions,
+    buildWorkflowHostContract(input.workflowExecutionProfile),
   ]
     .filter((section): section is string => section !== undefined)
     .join("\n\n");
@@ -702,12 +708,16 @@ export function buildClaudeAssistantInstructions(input: SharedInstructionInput):
       ? CLAUDE_PLAN_MODE_INSTRUCTIONS
       : CLAUDE_DEFAULT_MODE_INSTRUCTIONS;
   // Keep the static prefix byte-identical across turns so Claude can reuse
-  // prompt-cache hits for the appended host contract.
+  // prompt-cache hits for the appended host contract. The host contract is last
+  // among the *static* sections (the dynamic runtime/memory/resumed sections
+  // below still follow it) both because it must outrank plan mode's "ask many
+  // questions" guidance, and because it varies more than the mode block does,
+  // which keeps the cacheable prefix as long as possible.
   const staticInstructions = [
     SHARED_BASE_CONTRACT,
     CLAUDE_SUPPLEMENT,
-    buildWorkflowHostContract(input.workflowExecutionProfile),
     modeInstructions,
+    buildWorkflowHostContract(input.workflowExecutionProfile),
   ]
     .filter((section): section is string => section !== undefined)
     .join("\n\n");

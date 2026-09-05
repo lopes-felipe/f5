@@ -1028,6 +1028,67 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
     }),
   );
 
+  it.effect("pairs requested/resolved when auto-declining in an unattended stage", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-unattended-user-input");
+      const bothEvents = yield* Deferred.make<void>();
+      const seen: Array<{ type: string; requestId: string; answers?: unknown }> = [];
+
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({ T3_ACP_EMIT_ASK_QUESTION: "1" }),
+      );
+      yield* serverSettings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+
+      yield* Stream.runForEach(adapter.streamEvents, (event) => {
+        if (
+          String(event.threadId) !== String(threadId) ||
+          (event.type !== "user-input.requested" && event.type !== "user-input.resolved")
+        ) {
+          return Effect.void;
+        }
+        seen.push({
+          type: event.type,
+          requestId: String(event.requestId),
+          ...(event.type === "user-input.resolved"
+            ? { answers: (event.payload as { answers: unknown }).answers }
+            : {}),
+        });
+        return seen.length >= 2
+          ? Deferred.succeed(bothEvents, undefined).pipe(Effect.ignore)
+          : Effect.void;
+      }).pipe(Effect.forkChild);
+
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("cursor"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+        modelSelection: { instanceId: ProviderInstanceId.make("cursor"), model: "default" },
+      });
+
+      // The turn must not block: the adapter auto-declines without registering
+      // a pending entry, so sendTurn runs to completion on its own.
+      yield* adapter.sendTurn({
+        threadId,
+        input: "ask me a question",
+        attachments: [],
+      });
+
+      yield* Deferred.await(bothEvents);
+
+      // Both events must be emitted so the timeline records what was asked and
+      // the UI does not leave an unanswerable question card open.
+      assert.equal(seen[0]?.type, "user-input.requested");
+      assert.equal(seen[1]?.type, "user-input.resolved");
+      assert.equal(seen[0]?.requestId, seen[1]?.requestId);
+      assert.deepEqual(seen[1]?.answers, {});
+    }),
+  );
+
   it.effect("interrupting a session settles pending user-input waits", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;

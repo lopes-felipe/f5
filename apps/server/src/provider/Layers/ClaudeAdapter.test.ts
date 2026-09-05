@@ -6430,6 +6430,137 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("keeps AskUserQuestion answerable in an attended workflow stage", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // `merge` and `revision` stages run attended-readonly: the user is
+      // watching and the workflow blocks on the answer, so the question must
+      // reach a real reply path rather than being auto-declined.
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        interactionMode: "plan",
+        workflowExecutionProfile: "attended-readonly",
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const askInput = {
+        questions: [
+          {
+            question: "Which plan wins?",
+            header: "Merge",
+            options: [
+              { label: "Plan A", description: "Take plan A" },
+              { label: "Plan B", description: "Take plan B" },
+            ],
+            multiSelect: false,
+          },
+        ],
+      };
+
+      const permissionPromise = canUseTool("AskUserQuestion", askInput, {
+        signal: new AbortController().signal,
+        toolUseID: "tool-ask-attended",
+        requestId: "request-tool-ask-attended",
+      });
+
+      const requestedEvent = yield* Stream.runHead(adapter.streamEvents);
+      if (requestedEvent._tag !== "Some" || requestedEvent.value.type !== "user-input.requested") {
+        assert.fail("Expected user-input.requested event");
+        return;
+      }
+      const requestId = requestedEvent.value.requestId;
+
+      // The request must be pending (answerable), not pre-resolved.
+      yield* adapter.respondToUserInput(
+        session.threadId,
+        ApprovalRequestId.makeUnsafe(requestId!),
+        { "Which plan wins?": "Plan A" },
+      );
+      yield* Stream.runHead(adapter.streamEvents);
+
+      const permissionResult = yield* Effect.promise(() => permissionPromise);
+      assert.equal((permissionResult as PermissionResult).behavior, "allow");
+      const updatedInput = (permissionResult as { updatedInput: Record<string, unknown> })
+        .updatedInput;
+      assert.deepEqual(updatedInput.answers, { "Which plan wins?": "Plan A" });
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("pairs requested/resolved when auto-declining in an unattended stage", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+        runtimeMode: "full-access",
+      });
+
+      yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runDrain);
+
+      const createInput = harness.getLastCreateQueryInput();
+      const canUseTool = createInput?.options.canUseTool;
+      assert.equal(typeof canUseTool, "function");
+      if (!canUseTool) {
+        return;
+      }
+
+      const result = yield* Effect.promise(() =>
+        canUseTool(
+          "AskUserQuestion",
+          {
+            questions: [
+              {
+                question: "Which plan wins?",
+                header: "Merge",
+                options: [{ label: "Plan A", description: "Take plan A" }],
+                multiSelect: false,
+              },
+            ],
+          },
+          {
+            signal: new AbortController().signal,
+            toolUseID: "tool-ask-unattended",
+            requestId: "request-tool-ask-unattended",
+          },
+        ),
+      );
+
+      // The deny message is the recovery path the model is expected to follow.
+      assert.equal((result as PermissionResult).behavior, "deny");
+
+      // Both events must be emitted so the timeline records what was asked and
+      // the UI does not leave an unanswerable question card open.
+      const events = yield* Stream.take(adapter.streamEvents, 2).pipe(Stream.runCollect);
+      const emitted = Array.from(events);
+      assert.equal(emitted[0]?.type, "user-input.requested");
+      assert.equal(emitted[1]?.type, "user-input.resolved");
+      assert.equal(emitted[0]?.requestId, emitted[1]?.requestId);
+      assert.deepEqual((emitted[1] as { payload: { answers: unknown } }).payload.answers, {});
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("denies AskUserQuestion when the waiting turn is aborted", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

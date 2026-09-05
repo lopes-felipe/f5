@@ -2,9 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   WORKFLOW_PLAN_DEPTH_SECTION,
-  WORKFLOW_PLAN_MODE_QUESTIONS_SECTION,
-  WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-  WORKFLOW_UNATTENDED_STAGE_SECTION,
   workflowEvidenceRulesSection,
   workflowLensSection,
   workflowRetryContextSection,
@@ -15,9 +12,6 @@ describe("workflow prompt fragments", () => {
   it("keeps every reusable fragment as a clean Markdown section", () => {
     const fragments = [
       WORKFLOW_PLAN_DEPTH_SECTION,
-      WORKFLOW_PLAN_MODE_QUESTIONS_SECTION,
-      WORKFLOW_READ_ONLY_CONSTRAINT_SECTION,
-      WORKFLOW_UNATTENDED_STAGE_SECTION,
       workflowEvidenceRulesSection({ subjects: "claims" }),
       workflowLensSection({ stage: "author", branch: "a" }),
     ];
