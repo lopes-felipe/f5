@@ -1,3 +1,5 @@
+import * as Path from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -86,12 +88,14 @@ describe("buildDesktopBackendEnv", () => {
   });
 
   it("defaults desktop state to the F5 userdata directory", () => {
-    expect(resolveDesktopStateDir({}, "/Users/test-user")).toBe("/Users/test-user/.f5/userdata");
+    expect(resolveDesktopStateDir({}, "/Users/test-user")).toBe(
+      Path.join("/Users/test-user", ".f5", "userdata"),
+    );
   });
 
   it("marks the default desktop state as not explicit", () => {
     expect(resolveDesktopStateDirConfig({}, "/Users/test-user")).toEqual({
-      stateDir: "/Users/test-user/.f5/userdata",
+      stateDir: Path.join("/Users/test-user", ".f5", "userdata"),
       source: "default",
     });
   });
@@ -110,7 +114,7 @@ describe("buildDesktopBackendEnv", () => {
 
   it("resolves F5_HOME to its userdata state directory", () => {
     expect(resolveDesktopStateDirConfig({ F5_HOME: "/tmp/f5-home" }, "/Users/test-user")).toEqual({
-      stateDir: "/tmp/f5-home/userdata",
+      stateDir: Path.resolve("/tmp/f5-home", "userdata"),
       source: "home",
     });
   });
@@ -129,7 +133,7 @@ describe("buildDesktopBackendEnv", () => {
 
   it("resolves legacy T3CODE_HOME when no F5 state or home is configured", () => {
     expect(resolveDesktopStateDir({ T3CODE_HOME: "~/t3-home" }, "/Users/test-user")).toBe(
-      "/Users/test-user/t3-home/userdata",
+      Path.resolve("/Users/test-user", "t3-home", "userdata"),
     );
   });
 });
