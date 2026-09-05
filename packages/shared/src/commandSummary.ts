@@ -279,6 +279,34 @@ function maybeUnquoteShellToken(token: string): string {
   return isQuotedToken(token) ? unwrapShellCommandArg(token) : token;
 }
 
+// Codex can serialize a single argv value as adjacent single/double-quoted
+// fragments. Decode only that complete transport form, never PowerShell escapes.
+function unwrapQuotedCommandFragments(value: string): string | null {
+  let offset = 0;
+  let fragments = 0;
+  let result = "";
+  while (offset < value.length) {
+    const quote = value[offset++];
+    if (quote !== "'" && quote !== '"') return null;
+    let closed = false;
+    while (offset < value.length) {
+      const char = value[offset++];
+      if (char === quote) {
+        closed = true;
+        break;
+      }
+      if (quote === '"' && char === "\\" && /["\\$`]/.test(value[offset] ?? "")) {
+        result += value[offset++];
+      } else {
+        result += char;
+      }
+    }
+    if (!closed) return null;
+    fragments += 1;
+  }
+  return fragments > 1 ? result : null;
+}
+
 function displayPowerShellCommand(command: string): string | null {
   const match =
     /^(?:"(?<doubleQuotedShell>[^"]+)"|'(?<singleQuotedShell>[^']+)'|(?<shell>[^\s"']+))\s+(?<args>.+)$/s.exec(
@@ -303,6 +331,8 @@ function displayPowerShellCommand(command: string): string | null {
   // Provider command strings already contain the script text. Only remove its
   // enclosing quotes: POSIX unescaping would corrupt Windows paths and scripts.
   if (body.startsWith("'") || body.startsWith('"')) {
+    const fragments = unwrapQuotedCommandFragments(body);
+    if (fragments !== null) return fragments || null;
     return isQuotedToken(body) && body.length > 2 ? body.slice(1, -1) : null;
   }
   return body;

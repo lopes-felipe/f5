@@ -106,12 +106,13 @@ describe("CommandTranscriptCard", () => {
   });
 
   it.each([false, true])(
-    "hides and copies PowerShell wrappers with expanded=%s",
+    "hides and copies fragmented PowerShell wrappers with expanded=%s",
     async (expanded) => {
       const onToggle = vi.fn();
       const host = document.createElement("div");
       document.body.append(host);
-      const command = String.raw`"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'Get-Content AGENTS.md'`;
+      const command = String.raw`"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bun typecheck *> "$env:TEMP'"\\f5-usage-pr-typecheck.log\""`;
+      const body = String.raw`bun typecheck *> "$env:TEMP\f5-usage-pr-typecheck.log"`;
       const screen = await renderWithQueryClient(
         <CommandTranscriptCard
           execution={makeExecution({
@@ -127,11 +128,11 @@ describe("CommandTranscriptCard", () => {
         host,
       );
       try {
-        expect(host.textContent).toContain("Get-Content AGENTS.md");
+        expect(host.textContent).toContain(body);
         expect(host.textContent).not.toContain("powershell.exe");
         expect(host.textContent).not.toContain("-Command");
         await page.getByRole("button", { name: "Copy command" }).click();
-        expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Get-Content AGENTS.md");
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith(body);
         expect(onToggle).not.toHaveBeenCalled();
       } finally {
         await screen.unmount();
