@@ -15,7 +15,7 @@ export const writeFileStringAtomically = (input: {
       yield* fs.makeDirectory(targetDirectory, { recursive: true });
       const tempDirectory = yield* fs.makeTempDirectoryScoped({
         directory: targetDirectory,
-        prefix: `${path.basename(input.filePath)}.`,
+        prefix: ".write-",
       });
       const tempPath = path.join(tempDirectory, `${tempFileId}.tmp`);
 
@@ -38,7 +38,7 @@ export const writeFileBytesAtomically = (input: {
       yield* fs.makeDirectory(targetDirectory, { recursive: true });
       const tempDirectory = yield* fs.makeTempDirectoryScoped({
         directory: targetDirectory,
-        prefix: `${path.basename(input.filePath)}.`,
+        prefix: ".write-",
       });
       const tempPath = path.join(tempDirectory, `${tempFileId}.tmp`);
 

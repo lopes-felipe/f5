@@ -327,6 +327,7 @@ projectionSnapshotLayer("ProjectionSnapshotQuery", (it) => {
             requestedAt: "2026-02-24T00:00:08.000Z",
             startedAt: "2026-02-24T00:00:08.000Z",
             completedAt: "2026-02-24T00:00:08.000Z",
+            processingQuiescedAt: null,
             assistantMessageId: asMessageId("message-1"),
           },
           archivedAt: null,

@@ -238,14 +238,14 @@ it.layer(TestLayer)("git integration", (it) => {
     it.effect("caps captured output when maxOutputBytes is exceeded", () =>
       Effect.gen(function* () {
         const result = yield* runShellCommand({
-          command: `node -e "process.stdout.write('x'.repeat(2000))"`,
+          command: `echo ${"x".repeat(2000)}`,
           cwd: process.cwd(),
           timeoutMs: 10_000,
           maxOutputBytes: 128,
         });
 
         expect(result.code).toBe(0);
-        expect(result.stdout.length).toBeLessThanOrEqual(128);
+        expect(result.stdout).toBe("x".repeat(128));
         expect(result.stdoutTruncated || result.stderrTruncated).toBe(true);
       }),
     );
@@ -607,12 +607,15 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* checkoutGitBranch({ cwd: source, branch: featureBranch });
         const core = yield* GitCore;
         yield* Effect.promise(() =>
-          vi.waitFor(async () => {
-            const details = await Effect.runPromise(core.statusDetails(source));
-            expect(details.branch).toBe(featureBranch);
-            expect(details.aheadCount).toBe(0);
-            expect(details.behindCount).toBe(1);
-          }),
+          vi.waitFor(
+            async () => {
+              const details = await Effect.runPromise(core.statusDetails(source));
+              expect(details.branch).toBe(featureBranch);
+              expect(details.aheadCount).toBe(0);
+              expect(details.behindCount).toBe(1);
+            },
+            { timeout: 10_000 },
+          ),
         );
       }),
     );

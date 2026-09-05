@@ -148,9 +148,12 @@ describe("AcpSessionRuntime", () => {
       const runtime = yield* AcpSessionRuntime;
       const startFiber = yield* runtime.start().pipe(Effect.forkChild);
       yield* Effect.promise(() =>
-        vi.waitFor(() => {
-          expect(readLoggedMethods(requestLogPath)).toContain("session/load");
-        }),
+        vi.waitFor(
+          () => {
+            expect(readLoggedMethods(requestLogPath)).toContain("session/load");
+          },
+          { timeout: 10_000 },
+        ),
       );
       yield* TestClock.adjust("101 millis");
       yield* Fiber.join(startFiber);

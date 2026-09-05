@@ -1,3 +1,4 @@
+import { writeCliCommand } from "./testUtils/cli.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -333,7 +334,7 @@ it.layer(NodeServices.layer)("OpenLive observability", (it) => {
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-open-observability-"));
       const cursorCommand = path.join(tempDir, "cursor");
-      fs.writeFileSync(cursorCommand, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      writeCliCommand(cursorCommand, "process.exit(0)");
 
       const originalPath = process.env.PATH ?? "";
       try {

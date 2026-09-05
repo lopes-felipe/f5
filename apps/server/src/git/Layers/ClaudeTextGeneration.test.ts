@@ -1,3 +1,5 @@
+import { delimiter } from "node:path";
+import { writeCliScript } from "../../testUtils/cli.ts";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -16,49 +18,25 @@ const ClaudeTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
 
 function makeFakeClaudeBinary(dir: string) {
   return Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const binDir = path.join(dir, "bin");
-    const claudePath = path.join(binDir, "claude");
-    yield* fs.makeDirectory(binDir, { recursive: true });
-
-    yield* fs.writeFileString(
-      claudePath,
-      [
-        "#!/bin/sh",
-        'args="$*"',
-        'stdin_content="$(cat)"',
-        'if [ -n "$T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN" ]; then',
-        '  printf "%s" "$args" | grep -F -- "$T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN" >/dev/null || {',
-        '    printf "%s\\n" "args missing expected content" >&2',
-        "    exit 2",
-        "  }",
-        "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" ]; then',
-        '  if printf "%s" "$args" | grep -F -- "$T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN" >/dev/null; then',
-        '    printf "%s\\n" "args contained forbidden content" >&2',
-        "    exit 3",
-        "  fi",
-        "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN" ]; then',
-        '  printf "%s" "$stdin_content" | grep -F -- "$T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN" >/dev/null || {',
-        '    printf "%s\\n" "stdin missing expected content" >&2',
-        "    exit 4",
-        "  }",
-        "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_HOME_MUST_BE" ] && [ "$HOME" != "$T3_FAKE_CLAUDE_HOME_MUST_BE" ]; then',
-        '  printf "%s\\n" "HOME was $HOME" >&2',
-        "  exit 5",
-        "fi",
-        'if [ -n "$T3_FAKE_CLAUDE_STDERR" ]; then',
-        '  printf "%s\\n" "$T3_FAKE_CLAUDE_STDERR" >&2',
-        "fi",
-        'printf "%s" "$T3_FAKE_CLAUDE_OUTPUT"',
-        'exit "${T3_FAKE_CLAUDE_EXIT_CODE:-0}"',
-        "",
-      ].join("\n"),
+    const claudePath = writeCliScript(
+      path.join(binDir, "claude"),
+      `
+const fs = require("node:fs");
+const env = process.env;
+const args = process.argv.slice(2).join(" ");
+const input = fs.readFileSync(0, "utf8");
+function fail(message, code) { console.error(message); process.exit(code); }
+if (env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN && !args.includes(env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN)) fail("args missing expected content", 2);
+if (env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN && args.includes(env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN)) fail("args contained forbidden content", 3);
+if (env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 4);
+if (env.T3_FAKE_CLAUDE_HOME_MUST_BE && env.HOME !== env.T3_FAKE_CLAUDE_HOME_MUST_BE) fail("HOME was " + env.HOME, 5);
+if (env.T3_FAKE_CLAUDE_STDERR) console.error(env.T3_FAKE_CLAUDE_STDERR);
+process.stdout.write(env.T3_FAKE_CLAUDE_OUTPUT ?? "");
+process.exitCode = Number(env.T3_FAKE_CLAUDE_EXIT_CODE ?? 0);
+`,
     );
-    yield* fs.chmod(claudePath, 0o755);
     return { binDir, claudePath };
   });
 }
@@ -91,7 +69,7 @@ function withFakeClaudeEnv<A, E, R>(
 
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        process.env.PATH = `${binDir}:${previousPath ?? ""}`;
+        process.env.PATH = `${binDir}${delimiter}${previousPath ?? ""}`;
         process.env.T3_FAKE_CLAUDE_OUTPUT = input.output;
 
         if (input.exitCode !== undefined) {

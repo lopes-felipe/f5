@@ -215,7 +215,11 @@ layer("StorageMaintenance", (it) => {
 
         assert.equal(providerLogs?.targetCount, 1);
         assert.equal(providerLogs?.targets[0]?.path, logPath);
-        assert.ok(report.logsBytes < 4096);
+        // Directory entries and the symlink itself also occupy bytes. Growing
+        // the external target must not change the measured logs usage.
+        yield* Effect.promise(() => NodeFS.appendFile(outsidePath, "x".repeat(4096)));
+        const afterGrowth = yield* storage.inspect({ force: true });
+        assert.equal(afterGrowth.logsBytes, report.logsBytes);
       }),
     ),
   );
@@ -503,10 +507,10 @@ layer("StorageMaintenance", (it) => {
         const liveTarget = worktrees?.targets.find((entry) => entry.path === liveWorktreePath);
         const staleTarget = worktrees?.targets.find((entry) => entry.path === staleWorktreePath);
 
-        assert.equal(liveTarget?.label, "f3-code/t3code-live");
+        assert.equal(liveTarget?.label, NodePath.join("f3-code", "t3code-live"));
         assert.equal(liveTarget?.safeToDelete, false);
         assert.equal(liveTarget?.disabledReason, "Referenced by a live thread.");
-        assert.equal(staleTarget?.label, "f3-code/t3code-stale");
+        assert.equal(staleTarget?.label, NodePath.join("f3-code", "t3code-stale"));
         assert.equal(staleTarget?.safeToDelete, true);
 
         const result = yield* storage.cleanup({

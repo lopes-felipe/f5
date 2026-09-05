@@ -398,7 +398,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         const status = yield* checkCodexProviderPreflight({
           providerOptions: {
             codex: {
-              binaryPath: "/tmp/custom-codex",
+              binaryPath: process.execPath,
               homePath: overrideHome,
             },
           },
@@ -427,7 +427,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           status.message,
           "Using a custom Codex model provider; OpenAI login check skipped.",
         );
-        assert.strictEqual(command.command, "/tmp/custom-codex");
+        assert.strictEqual(command.command, process.execPath);
         assert.strictEqual(command.options?.env?.CODEX_HOME, overrideHome);
       }),
     );
@@ -827,7 +827,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         const status = yield* checkClaudeProviderPreflight({
           providerOptions: {
             claudeAgent: {
-              binaryPath: "/tmp/custom-claude",
+              binaryPath: process.execPath,
             },
           },
         }).pipe(
@@ -854,7 +854,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
 
         const command = observedCommand as { command?: string };
         assert.strictEqual(status.status, "ready");
-        assert.strictEqual(command.command, "/tmp/custom-claude");
+        assert.strictEqual(command.command, process.execPath);
       }),
     );
 

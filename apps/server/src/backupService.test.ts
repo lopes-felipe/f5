@@ -127,7 +127,7 @@ describe("applyPendingRestore", () => {
         stateDir,
         dbPath: join(stateDir, "state.sqlite"),
         keybindingsConfigPath: sharedActivePath,
-        attachmentsDir: sharedActivePath,
+        attachmentsDir: join(sharedActivePath, "attachments"),
       }),
     ).rejects.toThrow("active state was rolled back");
 

@@ -789,7 +789,7 @@ describe("ClaudeAdapterLive", () => {
           prompt: "Summarize this thread",
           providerOptions: {
             claudeAgent: {
-              binaryPath: "/tmp/custom-claude",
+              binaryPath: process.execPath,
             },
           },
         })
@@ -797,7 +797,7 @@ describe("ClaudeAdapterLive", () => {
 
       yield* Effect.yieldNow;
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.pathToClaudeCodeExecutable, "/tmp/custom-claude");
+      assert.equal(createInput?.options.pathToClaudeCodeExecutable, process.execPath);
 
       harness.query.emit({
         type: "assistant",
@@ -852,7 +852,7 @@ describe("ClaudeAdapterLive", () => {
           prompt: "Reply with OK",
           providerOptions: {
             claudeAgent: {
-              binaryPath: "/tmp/custom-claude",
+              binaryPath: process.execPath,
               permissionMode: "bypassPermissions",
               maxThinkingTokens: 321,
               launchArgs: {
@@ -872,7 +872,7 @@ describe("ClaudeAdapterLive", () => {
             })
           | undefined;
 
-        assert.equal(queryOptions?.pathToClaudeCodeExecutable, "/tmp/custom-claude");
+        assert.equal(queryOptions?.pathToClaudeCodeExecutable, process.execPath);
         assert.equal(queryOptions?.permissionMode, "bypassPermissions");
         assert.equal(queryOptions?.allowDangerouslySkipPermissions, undefined);
         assert.equal(queryOptions?.maxThinkingTokens, 321);

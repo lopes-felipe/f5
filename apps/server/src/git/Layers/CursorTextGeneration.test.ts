@@ -1,7 +1,8 @@
+import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -18,34 +19,12 @@ import { makeCursorTextGeneration } from "./CursorTextGeneration.ts";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
 
-function shellSingleQuote(value: string): string {
-  return `'${value.replaceAll("'", `'"'"'`)}'`;
-}
-
 const CursorTextGenerationTestLayer = ServerConfig.layerTest(process.cwd(), {
   prefix: "t3code-cursor-text-generation-test-",
 }).pipe(Layer.provideMerge(NodeServices.layer));
 
 function makeAcpAgentWrapper(dir: string, env: Record<string, string>): string {
-  const binDir = path.join(dir, "bin");
-  const agentPath = path.join(binDir, "agent");
-  mkdirSync(binDir, { recursive: true });
-  writeFileSync(
-    agentPath,
-    [
-      "#!/bin/sh",
-      ...Object.entries(env).map(([key, value]) => `export ${key}=${shellSingleQuote(value)}`),
-      'if [ "$1" != "acp" ]; then',
-      '  printf "%s\\n" "unexpected args: $*" >&2',
-      "  exit 11",
-      "fi",
-      `exec bun ${JSON.stringify(mockAgentPath)}`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
-  chmodSync(agentPath, 0o755);
-  return agentPath;
+  return writeAcpWrapper(path.join(dir, "bin", "agent"), mockAgentPath, { env, requireAcp: true });
 }
 
 function withFakeAcpAgent<A, E, R>(
@@ -64,22 +43,6 @@ function withFakeAcpAgent<A, E, R>(
     const textGeneration = yield* makeCursorTextGeneration(config);
     return yield* effectFn(textGeneration);
   }).pipe(Effect.scoped);
-}
-
-function waitForFileContent(path: string): Effect.Effect<string> {
-  return Effect.promise(async () => {
-    const deadline = Date.now() + 5_000;
-    for (;;) {
-      try {
-        return readFileSync(path, "utf8");
-      } catch (error) {
-        if (Date.now() >= deadline) {
-          throw error instanceof Error ? error : new Error(String(error));
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 25));
-    }
-  });
 }
 
 it.layer(CursorTextGenerationTestLayer)("CursorTextGenerationLive", (it) => {
@@ -254,8 +217,7 @@ it.layer(CursorTextGenerationTestLayer)("CursorTextGenerationLive", (it) => {
 
           expect(generated.subject).toBe("Close runtime after generation");
 
-          const exitLog = yield* waitForFileContent(exitLogPath);
-          expect(exitLog).toContain("exit:0");
+          yield* Effect.promise(() => waitForAgentExit(exitLogPath));
 
           rmSync(exitLogDir, { recursive: true, force: true });
         }),

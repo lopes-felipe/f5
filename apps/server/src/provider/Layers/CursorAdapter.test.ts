@@ -1,6 +1,7 @@
+import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as path from "node:path";
 import * as os from "node:os";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -29,25 +30,16 @@ class CursorAdapter extends ServiceMap.Service<CursorAdapter, CursorAdapterShape
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
-const bunExe = "bun";
 
 async function makeMockAgentWrapper(
   extraEnv?: Record<string, string>,
   options?: { initialDelaySeconds?: number },
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-mock-"));
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
-${options?.initialDelaySeconds ? `sleep ${JSON.stringify(String(options.initialDelaySeconds))}` : ""}
-exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
-`;
-  await writeFile(wrapperPath, script, "utf8");
-  await chmod(wrapperPath, 0o755);
-  return wrapperPath;
+  return writeAcpWrapper(path.join(dir, "fake-agent"), mockAgentPath, {
+    env: extraEnv,
+    delayMs: (options?.initialDelaySeconds ?? 0) * 1000,
+  });
 }
 
 async function makeProbeWrapper(
@@ -56,20 +48,10 @@ async function makeProbeWrapper(
   extraEnv?: Record<string, string>,
 ) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "cursor-acp-probe-"));
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-printf '%s\t' "$@" >> ${JSON.stringify(argvLogPath)}
-printf '\n' >> ${JSON.stringify(argvLogPath)}
-export T3_ACP_REQUEST_LOG_PATH=${JSON.stringify(requestLogPath)}
-${envExports}
-exec ${JSON.stringify(bunExe)} ${JSON.stringify(mockAgentPath)} "$@"
-`;
-  await writeFile(wrapperPath, script, "utf8");
-  await chmod(wrapperPath, 0o755);
-  return wrapperPath;
+  return writeAcpWrapper(path.join(dir, "fake-agent"), mockAgentPath, {
+    env: { T3_ACP_REQUEST_LOG_PATH: requestLogPath, ...extraEnv },
+    argvLogPath,
+  });
 }
 
 async function readArgvLog(filePath: string) {
@@ -264,8 +246,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       yield* adapter.stopSession(threadId);
 
-      const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-      assert.include(exitLog, "SIGTERM");
+      yield* Effect.promise(() => waitForAgentExit(exitLogPath));
     }),
   );
 
@@ -316,8 +297,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
         yield* adapter.stopSession(threadId);
 
-        const exitLog = yield* Effect.promise(() => waitForFileContent(exitLogPath));
-        assert.equal(exitLog.match(/SIGTERM/g)?.length ?? 0, 2);
+        yield* Effect.promise(() => waitForAgentExit(exitLogPath, 2));
       }),
   );
 

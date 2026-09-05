@@ -2,7 +2,7 @@ import { KeybindingCommand, KeybindingRule, KeybindingsConfig } from "@t3tools/c
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { assertFailure } from "@effect/vitest/utils";
-import { Effect, FileSystem, Layer, Path, Schema } from "effect";
+import { Effect, FileSystem, Layer, Path, PlatformError, Schema } from "effect";
 import { ServerConfig, type ServerConfigShape } from "./config";
 
 import {
@@ -675,11 +675,9 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const { keybindingsConfigPath } = yield* ServerConfig;
-      const { dirname } = yield* Path.Path;
       yield* writeKeybindingsConfig(keybindingsConfigPath, [
         { key: "mod+j", command: "terminal.toggle" },
       ]);
-      yield* fs.chmod(dirname(keybindingsConfigPath), 0o500);
 
       const result = yield* Effect.gen(function* () {
         const keybindings = yield* Keybindings;
@@ -687,10 +685,24 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
           key: "mod+shift+r",
           command: "script.run-tests.run",
         });
-      }).pipe(toDetailResult);
+      }).pipe(
+        Effect.provide(Layer.fresh(KeybindingsLive)),
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          writeFileString: (path) =>
+            Effect.fail(
+              PlatformError.systemError({
+                _tag: "PermissionDenied",
+                module: "FileSystem",
+                method: "writeFileString",
+                pathOrDescriptor: path,
+                description: "Test directory is not writable",
+              }),
+            ),
+        }),
+        toDetailResult,
+      );
       assertFailure(result, "failed to write keybindings config");
-
-      yield* fs.chmod(dirname(keybindingsConfigPath), 0o700);
 
       const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
       const persistedView = persisted.map(({ key, command }) => ({ key, command }));

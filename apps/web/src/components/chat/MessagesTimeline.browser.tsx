@@ -341,11 +341,20 @@ async function scrollTimelineToOffset(
   container: HTMLElement,
   nextScrollTop: number,
 ) {
-  if (listRef?.scrollToOffset) {
-    await listRef.scrollToOffset({ offset: nextScrollTop, animated: false });
-    return;
-  }
-  scrollContainerToOffset(container, nextScrollTop);
+  await vi.waitFor(async () => {
+    if (listRef?.scrollToOffset) {
+      await listRef.scrollToOffset({ offset: nextScrollTop, animated: false });
+    } else {
+      scrollContainerToOffset(container, nextScrollTop);
+    }
+    // Let initial virtual-row measurements and scroll anchoring settle before
+    // the test observes the requested position or appends more rows.
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    const expectedOffset = Math.min(nextScrollTop, container.scrollHeight - container.clientHeight);
+    expect(Math.abs(container.scrollTop - expectedOffset)).toBeLessThan(2);
+  });
 }
 
 describe("MessagesTimeline (LegendList)", () => {

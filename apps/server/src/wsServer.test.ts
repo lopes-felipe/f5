@@ -1179,6 +1179,7 @@ describe("WebSocket Server", () => {
       `http://127.0.0.1:${port}/api/project-favicon?projectId=${encodeURIComponent(workspaceRoot)}`,
     );
     expect(arbitraryRootResponse.status).toBe(404);
+    await arbitraryRootResponse.arrayBuffer();
   });
 
   it("serves static index for root path", async () => {

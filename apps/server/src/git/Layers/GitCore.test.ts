@@ -203,7 +203,11 @@ describe("GitCore unit", () => {
     expect(
       scripted.calls.find((call) => argsEqual(call, ["status", "--porcelain=2", "--branch", "-z"]))
         ?.env,
-    ).toMatchObject({ HOME: process.env.HOME, PATH: process.env.PATH, GIT_OPTIONAL_LOCKS: "0" });
+    ).toMatchObject({
+      ...(process.env.HOME === undefined ? {} : { HOME: process.env.HOME }),
+      PATH: process.env.PATH,
+      GIT_OPTIONAL_LOCKS: "0",
+    });
 
     expect(status).toEqual({
       branch: "feature/parser",

@@ -105,6 +105,41 @@ describe("CommandTranscriptCard", () => {
     }
   });
 
+  it.each([false, true])(
+    "hides and copies PowerShell wrappers with expanded=%s",
+    async (expanded) => {
+      const onToggle = vi.fn();
+      const host = document.createElement("div");
+      document.body.append(host);
+      const command = String.raw`"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'Get-Content AGENTS.md'`;
+      const screen = await renderWithQueryClient(
+        <CommandTranscriptCard
+          execution={makeExecution({
+            command,
+            title: expanded ? "Read project instructions" : null,
+          })}
+          expanded={expanded}
+          nowIso="2026-03-20T12:00:02.000Z"
+          timestampFormat="locale"
+          onToggle={onToggle}
+          onExpandedBodyResize={() => {}}
+        />,
+        host,
+      );
+      try {
+        expect(host.textContent).toContain("Get-Content AGENTS.md");
+        expect(host.textContent).not.toContain("powershell.exe");
+        expect(host.textContent).not.toContain("-Command");
+        await page.getByRole("button", { name: "Copy command" }).click();
+        expect(navigator.clipboard.writeText).toHaveBeenCalledWith("Get-Content AGENTS.md");
+        expect(onToggle).not.toHaveBeenCalled();
+      } finally {
+        await screen.unmount();
+        host.remove();
+      }
+    },
+  );
+
   it("shows an error toast when clipboard writes fail", async () => {
     const clipboardError = new Error("Permission denied");
     Object.defineProperty(navigator, "clipboard", {

@@ -666,7 +666,8 @@ describe("TerminalManager", () => {
 
   it("retries with fallback shells when preferred shell spawn fails", async () => {
     const { manager, ptyAdapter } = makeManager(5, {
-      shellResolver: () => "/definitely/missing-shell -l",
+      shellResolver: () =>
+        process.platform === "win32" ? "/definitely/missing-shell" : "/definitely/missing-shell -l",
     });
     ptyAdapter.spawnFailures.push(
       Object.assign(new Error("localized missing-shell message"), { code: "ENOENT" }),
@@ -680,8 +681,10 @@ describe("TerminalManager", () => {
 
     if (process.platform === "win32") {
       expect(
-        ptyAdapter.spawnInputs.some(
-          (input) => input.shell === "cmd.exe" || input.shell === "powershell.exe",
+        ptyAdapter.spawnInputs.some((input) =>
+          ["cmd.exe", "powershell.exe", "pwsh.exe"].includes(
+            path.win32.basename(input.shell).toLowerCase(),
+          ),
         ),
       ).toBe(true);
     } else {

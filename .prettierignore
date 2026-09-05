@@ -1,1 +1,3 @@
 apps/web/src/routeTree.gen.ts
+# MSW regenerates this vendor-owned file during dependency installation.
+apps/web/public/mockServiceWorker.js
