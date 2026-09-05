@@ -7,10 +7,69 @@ import {
   detectFileReadCommand,
   displayCommandExecutionCommand,
   normalizeCommandExecutionDetail,
+  resolveCommandExecutionDisplayCommand,
   resolveCommandExecutionSummaryText,
 } from "./commandSummary";
 
 describe("commandSummary", () => {
+  it.each([
+    String.raw`"C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe" -Command 'Get-Content AGENTS.md'`,
+    String.raw`"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'Get-Content AGENTS.md'`,
+    String.raw`"C:\Program Files\PowerShell\7\pwsh.exe" -Command "Get-Content AGENTS.md"`,
+    "powershell -c Get-Content AGENTS.md",
+    "pwsh -Command 'Get-Content AGENTS.md'",
+    "POWERSHELL.EXE -nOpRoFiLe -NoLogo -NonInteractive -ExecutionPolicy Bypass -COMMAND 'Get-Content AGENTS.md'",
+    "'C:/Program Files/PowerShell/7/PWSH.EXE' -ExecutionPolicy \"RemoteSigned\" -NoProfile -c Get-Content AGENTS.md",
+    "pwsh -ExecutionPolicy 'Bypass' -c Get-Content AGENTS.md",
+  ])("strips PowerShell wrappers: %s", (command) => {
+    expect(displayCommandExecutionCommand(command)).toBe("Get-Content AGENTS.md");
+  });
+
+  it.each(["'", '"', ""])("preserves PowerShell script contents with %s wrapping", (quote) => {
+    const body = [
+      String.raw`$path = 'C:\new\test'; Get-Content "$path" | Select-Object -First 2`,
+      "Write-Output `\"$env:HOME`\"; Write-Output 'it''s intact'",
+    ].join("\n");
+    expect(displayCommandExecutionCommand(`pwsh -Command ${quote}${body}${quote}`)).toBe(body);
+  });
+
+  it.each([
+    "powershell -File script.ps1",
+    "pwsh -EncodedCommand ZWNobw==",
+    "pwsh -Unknown -Command 'echo hello'",
+    "pwsh -ExecutionPolicy -Command 'echo hello'",
+    "pwsh -Command",
+    "pwsh -Command ''",
+    "pwsh -Command -",
+    "pwsh -Command 'unterminated",
+    'pwsh -Command "unterminated',
+    '"C:\\Program Files\\pwsh.exe -Command echo hello',
+    "my-pwsh.exe -Command 'echo hello'",
+    "cmd.exe /d /s /c dir",
+    "bun run typecheck",
+  ])("preserves unsupported or malformed invocations: %s", (command) => {
+    expect(displayCommandExecutionCommand(command)).toBe(command);
+  });
+
+  it("normalizes resolved provider command and detail payloads", () => {
+    const command = "pwsh -Command 'Get-Content AGENTS.md'";
+    const payload = `Shell: ${JSON.stringify({ command })}`;
+    expect(resolveCommandExecutionDisplayCommand({ command: payload })).toBe(
+      "Get-Content AGENTS.md",
+    );
+    expect(resolveCommandExecutionDisplayCommand({ command: "Shell: {}", detail: payload })).toBe(
+      "Get-Content AGENTS.md",
+    );
+    expect(resolveCommandExecutionDisplayCommand({ command: payload, detail: payload })).toBe(
+      "Get-Content AGENTS.md",
+    );
+    expect(normalizeCommandExecutionDetail(payload)).toBe("Get-Content AGENTS.md");
+    expect(normalizeCommandExecutionDetail("ordinary detail")).toBe("ordinary detail");
+    expect(resolveCommandExecutionSummaryText({ command, title: "Ran command" })).toBe(
+      "Get-Content AGENTS.md",
+    );
+  });
+
   it("strips common posix shell wrappers", () => {
     expect(displayCommandExecutionCommand("/bin/zsh -lc 'uname -a'")).toBe("uname -a");
     expect(displayCommandExecutionCommand("/bin/bash -lc bun\\ run\\ lint")).toBe(

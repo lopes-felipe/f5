@@ -279,7 +279,40 @@ function maybeUnquoteShellToken(token: string): string {
   return isQuotedToken(token) ? unwrapShellCommandArg(token) : token;
 }
 
+function displayPowerShellCommand(command: string): string | null {
+  const match =
+    /^(?:"(?<doubleQuotedShell>[^"]+)"|'(?<singleQuotedShell>[^']+)'|(?<shell>[^\s"']+))\s+(?<args>.+)$/s.exec(
+      command.trim(),
+    );
+  const shell =
+    match?.groups?.doubleQuotedShell ?? match?.groups?.singleQuotedShell ?? match?.groups?.shell;
+  const args = match?.groups?.args;
+  if (!shell || !args || !/^(?:powershell|pwsh)(?:\.exe)?$/i.test(shellBasename(shell))) {
+    return null;
+  }
+
+  const invocation =
+    /^(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+|-ExecutionPolicy\s+(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s\-"']+)\s+)*-(?:Command|c)\s+(?<body>.+)$/is.exec(
+      args,
+    );
+  const body = invocation?.groups?.body?.trim();
+  if (!body || body === "-") {
+    return null;
+  }
+
+  // Provider command strings already contain the script text. Only remove its
+  // enclosing quotes: POSIX unescaping would corrupt Windows paths and scripts.
+  if (body.startsWith("'") || body.startsWith('"')) {
+    return isQuotedToken(body) && body.length > 2 ? body.slice(1, -1) : null;
+  }
+  return body;
+}
+
 export function displayCommandExecutionCommand(command: string): string {
+  const powerShellCommand = displayPowerShellCommand(command);
+  if (powerShellCommand !== null) {
+    return powerShellCommand;
+  }
   const match = /^(?<shell>\S+)\s+(?<flag>-(?:ilc|lc|ic|c))\s+(?<rest>.+)$/s.exec(command.trim());
   const shell = match?.groups?.shell;
   const rest = match?.groups?.rest;
@@ -350,7 +383,8 @@ export function normalizeCommandExecutionDetail(detail: string | null | undefine
   if (detail === null || detail === undefined) {
     return null;
   }
-  return extractCommandToolSummaryPayload(detail) ?? detail;
+  const payload = extractCommandToolSummaryPayload(detail);
+  return payload === null ? detail : displayCommandExecutionCommand(payload);
 }
 
 export function resolveCommandExecutionDisplayCommand(
@@ -364,13 +398,12 @@ export function resolveCommandExecutionDisplayCommand(
       isUnhelpfulCommandSummary(execution.command) ||
       commandSummary !== detailSummary
     ) {
-      return detailSummary;
+      return displayCommandExecutionCommand(detailSummary);
     }
   }
 
-  return (
-    extractCommandToolSummaryPayload(execution.command) ??
-    displayCommandExecutionCommand(execution.command)
+  return displayCommandExecutionCommand(
+    extractCommandToolSummaryPayload(execution.command) ?? execution.command,
   );
 }
 
