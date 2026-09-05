@@ -205,6 +205,7 @@ export class CodexControlClient extends EventEmitter<{
   >();
   private nextRequestId = 1;
   private closed = false;
+  private removeAbortListener: (() => void) | undefined;
 
   private constructor(
     private readonly environment: CodexControlEnvironmentConfig,
@@ -221,7 +222,11 @@ export class CodexControlClient extends EventEmitter<{
     this.attachProcessListeners();
   }
 
-  static async create(environment: CodexControlEnvironmentConfig): Promise<CodexControlClient> {
+  static async create(
+    environment: CodexControlEnvironmentConfig,
+    signal?: AbortSignal,
+  ): Promise<CodexControlClient> {
+    signal?.throwIfAborted();
     const binaryPath = environment.binaryPath ?? "codex";
     const codexHomePath = resolveCodexHome({ homePath: environment.homePath });
     assertSupportedCodexCliVersion({
@@ -270,6 +275,12 @@ export class CodexControlClient extends EventEmitter<{
       listMcpServerStatus: false,
     });
 
+    if (signal) {
+      const abort = () => client.close();
+      signal.addEventListener("abort", abort, { once: true });
+      client.removeAbortListener = () => signal.removeEventListener("abort", abort);
+      if (signal.aborted) client.close();
+    }
     try {
       await client.sendRequest("initialize", buildCodexInitializeParams());
       await client.writeMessage({
@@ -330,6 +341,8 @@ export class CodexControlClient extends EventEmitter<{
         return;
       }
       this.closed = true;
+      this.removeAbortListener?.();
+      this.removeAbortListener = undefined;
       for (const pending of this.pending.values()) {
         clearTimeout(pending.timeout);
         pending.reject(cause);
@@ -555,6 +568,8 @@ export class CodexControlClient extends EventEmitter<{
   }
 
   close(): void {
+    this.removeAbortListener?.();
+    this.removeAbortListener = undefined;
     if (this.closed) {
       return;
     }

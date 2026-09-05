@@ -1924,6 +1924,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         );
       }
 
+      case USAGE_WS_METHODS.getAccounts: {
+        const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
+        return yield* usageService
+          .getAccounts(stripRequestTag(request.body))
+          .pipe(
+            Effect.mapError(
+              () => new RouteRequestError({ message: "Unable to load account usage." }),
+            ),
+          );
+      }
+
       case USAGE_WS_METHODS.getSummary: {
         const { usageService } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* usageService.getSummary(stripRequestTag(request.body)).pipe(

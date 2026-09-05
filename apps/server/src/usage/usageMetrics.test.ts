@@ -64,7 +64,7 @@ describe("normalizeTurnUsage", () => {
     expect(usage.providerReportedCostUsd).toBeNull();
   });
 
-  it("aggregates per-model provider fields without inventing a price", () => {
+  it("keeps Claude whole-tree model fields token-unreported", () => {
     const usage = normalizeTurnUsage({
       ...baseEvent,
       provider: "claudeAgent",
@@ -77,10 +77,11 @@ describe("normalizeTurnUsage", () => {
       },
     });
 
-    expect(usage.inputTokens).toBe(15);
-    expect(usage.outputTokens).toBe(5);
-    expect(usage.cacheReadTokens).toBe(23);
-    expect(usage.totalTokens).toBe(43);
+    expect(usage.inputTokens).toBeNull();
+    expect(usage.outputTokens).toBeNull();
+    expect(usage.cacheReadTokens).toBeNull();
+    expect(usage.totalTokens).toBeNull();
+    expect(usage.tokenProvenance).toBe("unreported");
     expect(usage.costProvenance).toBe("unreported");
   });
 
@@ -95,4 +96,19 @@ describe("normalizeTurnUsage", () => {
     expect(usage.tokenProvenance).toBe("unreported");
     expect(usage.costProvenance).toBe("unreported");
   });
+});
+
+it("does not fill partial Claude main-agent usage from modelUsage", () => {
+  const usage = normalizeTurnUsage({
+    ...baseEvent,
+    provider: "claudeAgent",
+    payload: {
+      state: "completed",
+      usage: { input_tokens: 12 },
+      modelUsage: { opus: { outputTokens: 9, cacheReadInputTokens: 100 } },
+    },
+  });
+  expect(usage.totalTokens).toBe(12);
+  expect(usage.outputTokens).toBeNull();
+  expect(usage.cacheReadTokens).toBeNull();
 });

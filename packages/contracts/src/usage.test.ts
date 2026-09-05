@@ -46,10 +46,10 @@ describe("usage contracts", () => {
 
     expect(decoded.metrics.providerReportedCostUsd).toBeNull();
     expect(decoded.coverage.costUnreportedTurnCount).toBe(1);
-    expect(decoded.codexAccount).toBeNull();
+    expect(decoded).not.toHaveProperty("codexAccount");
   });
 
-  it("decodes provider-native Codex account usage without treating it as cost", () => {
+  it("ignores the retired embedded account field from older servers", () => {
     const decoded = Schema.decodeUnknownSync(UsageSummary)({
       range: "7d",
       timeZone: "UTC",
@@ -94,7 +94,7 @@ describe("usage contracts", () => {
       },
     });
 
-    expect(decoded.codexAccount?.tokenSummary?.lifetimeTokens).toBe("123456");
+    expect(decoded).not.toHaveProperty("codexAccount");
     expect(decoded.metrics.providerReportedCostUsd).toBeNull();
   });
 });

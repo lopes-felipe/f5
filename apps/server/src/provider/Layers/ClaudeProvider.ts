@@ -1,3 +1,4 @@
+import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription.ts";
 import {
   type ClaudeSettings,
   type ModelCapabilities,
@@ -39,6 +40,8 @@ import {
   resolveClaudeCliInvocation,
   resolveClaudeSdkExecutableOptions,
 } from "../claudeSdkExecutable.ts";
+import { AccountUsageReadError, accountUsageErrorCode } from "../../usage/accountUsageErrors.ts";
+import { normalizeClaudeAccountUsage } from "../../usage/claudeAccountUsage.ts";
 import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -223,53 +226,6 @@ export function resolveClaudeApiModelId(modelSelection: ModelSelection): string 
   }
 }
 
-function toTitleCaseWords(value: string): string {
-  return value
-    .split(/[\s_-]+/g)
-    .filter(Boolean)
-    .map((part) => part[0]!.toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
-  const normalized = subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "");
-  if (!normalized) return undefined;
-
-  switch (normalized) {
-    case "claudemaxsubscription":
-      return "Max";
-    case "claudemax5xsubscription":
-      return "Max 5x";
-    case "claudemax20xsubscription":
-      return "Max 20x";
-    case "claudeenterprisesubscription":
-      return "Enterprise";
-    case "claudeteamsubscription":
-      return "Team";
-    case "claudeprosubscription":
-      return "Pro";
-    case "claudefreesubscription":
-      return "Free";
-    case "max":
-    case "maxplan":
-      return "Max";
-    case "max5":
-      return "Max 5x";
-    case "max20":
-      return "Max 20x";
-    case "enterprise":
-      return "Enterprise";
-    case "team":
-      return "Team";
-    case "pro":
-      return "Pro";
-    case "free":
-      return "Free";
-    default:
-      return toTitleCaseWords(subscriptionType!);
-  }
-}
-
 function normalizeClaudeAuthMethod(authMethod: string | undefined): string | undefined {
   const normalized = authMethod?.toLowerCase().replace(/[\s_-]+/g, "");
   if (!normalized) return undefined;
@@ -323,14 +279,12 @@ function claudeAuthMetadata(input: {
 
 // ── SDK capability probe ────────────────────────────────────────────
 
-const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
-
 function nonEmptyProbeString(value: string): string | undefined {
   const candidate = value.trim();
   return candidate ? candidate : undefined;
 }
 
-type ClaudeCapabilitiesProbe = {
+export type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
@@ -410,72 +364,149 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Probe account information by spawning a lightweight Claude Agent SDK
- * session and reading the initialization result.
+ * Run a prompt-free control query in the configured server authentication context.
  *
- * We pass a never-yielding AsyncIterable as the prompt so that no user
- * message is ever written to the subprocess stdin. This means the Claude
- * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts an API request to
- * Anthropic. We read the init data and then abort the subprocess.
- *
- * This is used as a fallback when `claude auth status` does not include
- * subscription type information.
+ * We pass a never-yielding AsyncIterable so no user message reaches stdin.
+ * Initialization alone is local; usage control calls can contact the provider
+ * and scan local transcripts. Always abort after the supplied operation.
  */
+export function withClaudeProbeQuery<A>(
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  use: (
+    query: ReturnType<typeof claudeQuery>,
+  ) => Promise<A> | Effect.Effect<A, AccountUsageReadError>,
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+) {
+  return Effect.suspend(() => {
+    const abort = new AbortController();
+    const cwd = options.cwd ?? process.cwd();
+    return Effect.gen(function* () {
+      const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+      const q = yield* Effect.tryPromise({
+        try: async () => {
+          const q = (options.createQuery ?? claudeQuery)({
+            // Never yield: closing stdin before the control request can terminate the CLI.
+            // oxlint-disable-next-line require-yield
+            prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+              await waitForAbortSignal(abort.signal);
+            })(),
+            options: {
+              persistSession: false,
+              // Keep resolution inside tryPromise: Windows shim resolution throws synchronously.
+              ...resolveClaudeSdkExecutableOptions(
+                claudeSettings.binaryPath,
+                claudeEnvironment,
+                process.platform,
+                cwd,
+              ),
+              cwd,
+              abortController: abort,
+              settingSources: ["user", "project", "local"],
+              allowedTools: [],
+              env: claudeEnvironment,
+              stderr: () => {},
+            },
+          });
+          return q;
+        },
+        catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+      });
+      return yield* Effect.suspend(() => {
+        const operation = use(q);
+        return Effect.isEffect(operation)
+          ? operation
+          : Effect.tryPromise({
+              try: () => operation,
+              catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+            });
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (!abort.signal.aborted) abort.abort();
+        }),
+      ),
+      Effect.timeoutOption(8_000),
+      Effect.flatMap((result) =>
+        Option.isSome(result)
+          ? Effect.succeed(result.value)
+          : Effect.fail(new AccountUsageReadError("timeout")),
+      ),
+    );
+  });
+}
+
+export function claudeCapabilitiesFromInitialization(
+  init: Awaited<ReturnType<ReturnType<typeof claudeQuery>["initializationResult"]>>,
+): ClaudeCapabilitiesProbe {
+  const account = init.account;
+  return {
+    email: account?.email,
+    subscriptionType: account?.subscriptionType,
+    tokenSource: account?.tokenSource,
+    slashCommands: parseClaudeInitializationCommands(init.commands),
+  };
+}
+
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
-) => {
-  const abort = new AbortController();
-  return Effect.gen(function* () {
-    const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    return yield* Effect.tryPromise(async () => {
-      const q = claudeQuery({
-        // Never yield — we only need initialization data, not a conversation.
-        // This prevents any prompt from reaching the Anthropic API.
-        // oxlint-disable-next-line require-yield
-        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-          await waitForAbortSignal(abort.signal);
-        })(),
-        options: {
-          persistSession: false,
-          ...resolveClaudeSdkExecutableOptions(claudeSettings.binaryPath, claudeEnvironment),
-          abortController: abort,
-          settingSources: ["user", "project", "local"],
-          allowedTools: [],
-          env: claudeEnvironment,
-          stderr: () => {},
-        },
-      });
-      const init = await q.initializationResult();
-      const account = init.account as
-        | {
-            readonly email?: string;
-            readonly subscriptionType?: string;
-            readonly tokenSource?: string;
-          }
-        | undefined;
-      return {
-        email: account?.email,
-        subscriptionType: account?.subscriptionType,
-        tokenSource: account?.tokenSource,
-        slashCommands: parseClaudeInitializationCommands(init.commands),
-      } satisfies ClaudeCapabilitiesProbe;
-    });
-  }).pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        if (!abort.signal.aborted) abort.abort();
-      }),
-    ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+) =>
+  withClaudeProbeQuery(
+    claudeSettings,
+    environment,
+    async (q) => claudeCapabilitiesFromInitialization(await q.initializationResult()),
+    options,
+  ).pipe(
     Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
+    Effect.map((result) => (Result.isSuccess(result) ? result.success : undefined)),
   );
-};
+
+export const probeClaudeAccountUsage = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  options: {
+    readonly createQuery?: typeof claudeQuery;
+    readonly cwd?: string;
+    readonly onCapabilities?: (value: ClaudeCapabilitiesProbe) => Effect.Effect<void>;
+  } = {},
+) =>
+  withClaudeProbeQuery(
+    claudeSettings,
+    environment,
+    (q) =>
+      Effect.gen(function* () {
+        const init = yield* Effect.tryPromise({
+          try: () => q.initializationResult(),
+          catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+        });
+        const capabilities = claudeCapabilitiesFromInitialization(init);
+        if (options.onCapabilities) yield* options.onCapabilities(capabilities);
+        const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+        if (typeof read !== "function")
+          return yield* Effect.fail(new AccountUsageReadError("unsupported"));
+        const response = yield* Effect.tryPromise({
+          try: () => read.call(q),
+          // Only a rejection from this operation can prove unsupported usage RPCs.
+          catch: (error) =>
+            new AccountUsageReadError(
+              error instanceof Error &&
+                /unknown (request|subtype)|unsupported|not supported|unrecognized/i.test(
+                  error.message,
+                )
+                ? "unsupported"
+                : accountUsageErrorCode(error),
+            ),
+        });
+        return yield* Effect.try({
+          try: () => normalizeClaudeAccountUsage(response),
+          catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+        });
+      }),
+    options,
+  );
 
 const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,

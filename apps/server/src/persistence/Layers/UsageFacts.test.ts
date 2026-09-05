@@ -88,6 +88,17 @@ it.layer(SqliteClient.layerMemory())("UsageFactRepository", (it) => {
       });
 
       assert.equal(rows.length, 2);
+      for (const provider of ["codex", "claudeAgent", "cursor"] as const) {
+        const filtered = yield* repository.summarizeHourly({
+          startedAt: "2026-08-08T00:00:00.000Z",
+          endedAt: "2026-08-13T00:00:00.000Z",
+          provider,
+        });
+        assert.deepStrictEqual(
+          filtered,
+          rows.filter((row) => row.provider === provider),
+        );
+      }
       assert.deepStrictEqual(
         rows.map((row) => ({
           provider: row.provider,

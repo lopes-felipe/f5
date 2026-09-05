@@ -145,6 +145,7 @@ const make = Effect.gen(function* () {
         FROM projection_turn_usage_facts
         WHERE completed_at >= ${input.startedAt}
           AND completed_at < ${input.endedAt}
+          AND (${input.provider ?? null} IS NULL OR provider_name = ${input.provider ?? null})
           AND COALESCE(recorded_at, completed_at) >= ${factCutoverAt}
         GROUP BY hourStartedAt, provider_name, model
         ORDER BY hourStartedAt ASC, provider_name ASC, model ASC
@@ -175,6 +176,7 @@ const make = Effect.gen(function* () {
                 event_type = 'thread.session-set'
                 AND occurred_at >= ${input.startedAt}
                 AND occurred_at < ${legacyEndedAt}
+                AND (${input.provider ?? null} IS NULL OR json_extract(payload_json, '$.session.providerName') = ${input.provider ?? null})
                 AND json_type(payload_json, '$.session.turnCostUsd') IN ('integer', 'real')
                 AND CAST(json_extract(payload_json, '$.session.turnCostUsd') AS REAL) >= 0
               GROUP BY hourStartedAt, provider

@@ -13,18 +13,19 @@
  * @module provider/Drivers/ClaudeDriver
  */
 import { ClaudeSettings, ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { Cache, Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { Duration, Effect, FileSystem, Path, Schema, Stream } from "effect";
+import { makeClaudeInstanceProbes } from "./ClaudeProbeCache.ts";
+import {
+  emptyAccountSection,
+  makeAccountUsageCapability,
+} from "../../usage/Layers/AccountUsageService.ts";
 import { ChildProcessSpawner } from "effect/unstable/process";
 
 import { makeClaudeTextGeneration } from "../../git/Layers/ClaudeTextGeneration.ts";
 import { ServerConfig } from "../../config.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { makeClaudeAdapter } from "../Layers/ClaudeAdapter.ts";
-import {
-  checkClaudeProviderStatus,
-  makePendingClaudeProvider,
-  probeClaudeCapabilities,
-} from "../Layers/ClaudeProvider.ts";
+import { checkClaudeProviderStatus, makePendingClaudeProvider } from "../Layers/ClaudeProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
 import {
@@ -34,11 +35,10 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { makeClaudeCapabilitiesCacheKey, makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
-const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 
 export type ClaudeDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
@@ -75,6 +75,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
+      const serverCwd = (yield* ServerConfig).cwd;
       const eventLoggers = yield* ProviderEventLoggers;
       const processEnv = mergeProviderInstanceEnvironment(environment);
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
@@ -98,19 +99,39 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
 
       // Per-instance capabilities cache: keyed on binary + resolved HOME so
       // account-specific probes never share auth metadata across instances.
-      const capabilitiesProbeCache = yield* Cache.make({
-        capacity: 1,
-        timeToLive: CAPABILITIES_PROBE_TTL,
-        lookup: () =>
-          probeClaudeCapabilities(effectiveConfig, processEnv).pipe(
-            Effect.provideService(Path.Path, path),
-          ),
+      const probes = yield* makeClaudeInstanceProbes(effectiveConfig, processEnv, {
+        cwd: serverCwd,
       });
-      const capabilitiesCacheKey = yield* makeClaudeCapabilitiesCacheKey(effectiveConfig);
+      const accountUsage = yield* makeAccountUsageCapability(
+        {
+          key: `claude:${instanceId}`,
+          provider: "claudeAgent",
+          providerInstanceId: instanceId,
+          displayName: displayName ?? "Claude",
+          enabled,
+          refreshState: "idle",
+          sections: [emptyAccountSection("claude-usage")],
+        },
+        probes.usage.pipe(
+          Effect.map((data) => {
+            const fetchedAt = new Date().toISOString();
+            return [
+              {
+                kind: "claude-usage" as const,
+                outcome: "available" as const,
+                lastAttemptAt: fetchedAt,
+                errorCode: null,
+                snapshot: { fetchedAt, data },
+              },
+            ];
+          }),
+        ),
+        { readerOwnsTimeout: true },
+      );
 
       const checkProvider = checkClaudeProviderStatus(
         effectiveConfig,
-        () => Cache.get(capabilitiesProbeCache, capabilitiesCacheKey),
+        () => probes.capabilities,
         processEnv,
       ).pipe(
         Effect.map(stampIdentity),
@@ -150,6 +171,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         snapshot,
         adapter,
         textGeneration,
+        accountUsage,
       } satisfies ProviderInstance;
     }),
 };

@@ -1,47 +1,29 @@
+import { Clock, Effect } from "effect";
 import type {
   CodexAccountCredits,
   CodexAccountDailyUsageBucket,
   CodexAccountRateLimit,
   CodexAccountRateLimitWindow,
   CodexAccountTokenSummary,
-  CodexAccountUsage,
-  IsoDateTime,
+  AccountUsageSection,
 } from "@t3tools/contracts";
 
-import { type CodexControlClient, isMethodNotFoundError } from "../codex/CodexControlClient.ts";
+import { AccountUsageReadError, accountUsageErrorCode } from "./accountUsageErrors.ts";
+import {
+  CodexControlClient,
+  type CodexControlEnvironmentConfig,
+  isMethodNotFoundError,
+} from "../codex/CodexControlClient.ts";
 
-type UnknownRecord = Record<string, unknown>;
+import {
+  asRecord,
+  asTrimmedString,
+  asNonNegativeInteger,
+  asNonNegativeNumber,
+  asDecimalCount,
+} from "./accountUsageJson.ts";
 
-function asRecord(value: unknown): UnknownRecord | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as UnknownRecord)
-    : null;
-}
-
-function asTrimmedString(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-}
-
-function asNonNegativeInteger(value: unknown): number | null {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : null;
-}
-
-function asNonNegativeNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
-}
-
-function asDecimalCount(value: unknown): string | null {
-  if (typeof value === "bigint" && value >= 0n) return value.toString();
-  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
-    return value.toString();
-  }
-  if (typeof value === "string" && /^\d+$/.test(value.trim())) return value.trim();
-  return null;
-}
-
-function normalizeTokenSummary(value: unknown): CodexAccountTokenSummary | null {
+export function normalizeTokenSummary(value: unknown): CodexAccountTokenSummary | null {
   const record = asRecord(value);
   if (!record) return null;
   return {
@@ -53,7 +35,9 @@ function normalizeTokenSummary(value: unknown): CodexAccountTokenSummary | null 
   };
 }
 
-function normalizeDailyUsageBuckets(value: unknown): ReadonlyArray<CodexAccountDailyUsageBucket> {
+export function normalizeDailyUsageBuckets(
+  value: unknown,
+): ReadonlyArray<CodexAccountDailyUsageBucket> {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
     const record = asRecord(entry);
@@ -100,7 +84,7 @@ function normalizeRateLimit(value: unknown, fallbackId: string): CodexAccountRat
   };
 }
 
-function normalizeRateLimits(value: unknown): ReadonlyArray<CodexAccountRateLimit> {
+export function normalizeRateLimits(value: unknown): ReadonlyArray<CodexAccountRateLimit> {
   const response = asRecord(value);
   if (!response) return [];
   const byLimitId = asRecord(response.rateLimitsByLimitId);
@@ -114,55 +98,68 @@ function normalizeRateLimits(value: unknown): ReadonlyArray<CodexAccountRateLimi
   return legacy ? [legacy] : [];
 }
 
-function messageForErrors(errors: ReadonlyArray<unknown>): string | null {
-  const messages = errors.flatMap((error) =>
-    error instanceof Error && error.message.trim().length > 0 ? [error.message.trim()] : [],
-  );
-  return messages.length > 0 ? [...new Set(messages)].join(" ") : null;
-}
+/** Own a dedicated client: cancelling startup or either scoped read retires its process.
+ * The shared admin pool cannot provide this guarantee without cancelling unrelated callers.
+ */
+export const probeCodexAccountSections = (environment: CodexControlEnvironmentConfig) =>
+  Effect.suspend(() => {
+    let client: CodexControlClient | undefined;
+    return Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis;
+      client = yield* Effect.tryPromise({
+        try: (signal) => CodexControlClient.create(environment, signal),
+        catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+      }).pipe(Effect.timeout(8_000));
+      const remaining = Math.max(1, 8_000 - ((yield* Clock.currentTimeMillis) - startedAt));
+      return yield* readCodexAccountSections(client, remaining);
+    }).pipe(Effect.ensuring(Effect.sync(() => client?.close())));
+  });
 
-export async function readCodexAccountUsage(input: {
-  readonly client: CodexControlClient;
-  readonly fetchedAt: IsoDateTime;
-}): Promise<CodexAccountUsage> {
-  const [tokenUsageResult, rateLimitsResult] = await Promise.allSettled([
-    input.client.readAccountTokenUsage(),
-    input.client.readAccountRateLimits(),
-  ]);
-  const errors = [tokenUsageResult, rateLimitsResult].flatMap((result) =>
-    result.status === "rejected" ? [result.reason] : [],
-  );
-  const hasSuccessfulResponse =
-    tokenUsageResult.status === "fulfilled" || rateLimitsResult.status === "fulfilled";
-  const status = hasSuccessfulResponse
-    ? "available"
-    : errors.length > 0 && errors.every(isMethodNotFoundError)
-      ? "unsupported"
-      : "unavailable";
-  const tokenUsage =
-    tokenUsageResult.status === "fulfilled" ? asRecord(tokenUsageResult.value) : null;
-
-  return {
-    status,
-    fetchedAt: input.fetchedAt,
-    tokenSummary: normalizeTokenSummary(tokenUsage?.summary),
-    dailyUsageBuckets: normalizeDailyUsageBuckets(tokenUsage?.dailyUsageBuckets),
-    rateLimits:
-      rateLimitsResult.status === "fulfilled" ? normalizeRateLimits(rateLimitsResult.value) : [],
-    message: messageForErrors(errors),
-  };
-}
-
-export function unavailableCodexAccountUsage(input: {
-  readonly fetchedAt: IsoDateTime;
-  readonly error: unknown;
-}): CodexAccountUsage {
-  return {
-    status: isMethodNotFoundError(input.error) ? "unsupported" : "unavailable",
-    fetchedAt: input.fetchedAt,
-    tokenSummary: null,
-    dailyUsageBuckets: [],
-    rateLimits: [],
-    message: input.error instanceof Error ? input.error.message : String(input.error),
-  };
+/** RPC failures are values, so one failed section never discards a successful sibling.
+ * The caller owns the client and must close it after this effect, including interruption.
+ */
+export function readCodexAccountSections(client: CodexControlClient, timeoutMs = 8_000) {
+  const read = (kind: "codex-tokens" | "codex-limits"): Effect.Effect<AccountUsageSection> =>
+    Effect.gen(function* () {
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          kind === "codex-tokens" ? client.readAccountTokenUsage() : client.readAccountRateLimits(),
+        catch: (error) =>
+          new AccountUsageReadError(
+            isMethodNotFoundError(error) ? "unsupported" : accountUsageErrorCode(error),
+          ),
+      }).pipe(Effect.timeout(timeoutMs));
+      const record = asRecord(response);
+      if (!record) return yield* Effect.fail(new AccountUsageReadError("invalid-response"));
+      const data =
+        kind === "codex-tokens"
+          ? {
+              tokenSummary: normalizeTokenSummary(record.summary),
+              dailyUsageBuckets: normalizeDailyUsageBuckets(record.dailyUsageBuckets),
+            }
+          : { rateLimits: normalizeRateLimits(record) };
+      const fetchedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      return {
+        kind,
+        outcome: "available",
+        lastAttemptAt: fetchedAt,
+        errorCode: null,
+        snapshot: { fetchedAt, data },
+      } as AccountUsageSection;
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          // Classify typed Effect failures here, before any Promise/FiberFailure boundary.
+          const errorCode = accountUsageErrorCode(error);
+          return {
+            kind,
+            outcome: errorCode === "unsupported" ? "unsupported" : "unavailable",
+            lastAttemptAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+            errorCode,
+            snapshot: null,
+          } as AccountUsageSection;
+        }),
+      ),
+    );
+  return Effect.all([read("codex-tokens"), read("codex-limits")], { concurrency: 2 });
 }

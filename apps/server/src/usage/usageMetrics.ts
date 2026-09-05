@@ -84,7 +84,8 @@ export function normalizeTurnUsage(
   const tokenUsage = asRecord(usage?.tokenUsage);
   const lastUsage = asRecord(tokenUsage?.last);
   const records = [usage, nestedUsage, lastUsage] as const;
-  const modelUsage = asRecord(payload?.modelUsage);
+  // Claude modelUsage covers the whole agent tree, not the main-agent usage scope.
+  const modelUsage = event.provider === "claudeAgent" ? undefined : asRecord(payload?.modelUsage);
 
   const inputTokens = readMetric(records, modelUsage, [
     "input_tokens",

@@ -1,5 +1,7 @@
+import { ServerConfig } from "../../config.ts";
 import {
-  type CodexAccountUsage,
+  type UsageTokenComposition,
+  type UsageAccount,
   type IsoDateTime,
   ProjectId,
   type ProviderKind,
@@ -11,9 +13,16 @@ import {
   type UsageSummary,
 } from "@t3tools/contracts";
 import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
-import { Clock, Effect, Layer, Schema } from "effect";
+import { Clock, Effect, Layer, Schema, Scope, Exit, Stream } from "effect";
 
-import { CodexControlClientRegistry } from "../../codex/CodexControlClientRegistry.ts";
+import * as Semaphore from "effect/Semaphore";
+import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
+import {
+  makeAccountUsageCapability,
+  emptyAccountSection,
+  type AccountUsageCapability,
+} from "./AccountUsageService.ts";
+import { readCodexControlEnvironmentConfig } from "../../codex/CodexControlClientRegistry.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import {
   UsageFactRepository,
@@ -21,7 +30,7 @@ import {
 } from "../../persistence/Services/UsageFacts.ts";
 import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { readCodexAccountUsage, unavailableCodexAccountUsage } from "../codexAccountUsage.ts";
+import { probeCodexAccountSections } from "../codexAccountUsage.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 
 interface MutableMetrics {
@@ -52,13 +61,15 @@ const RANGE_DAY_COUNTS: Record<Exclude<UsageRange, "24h">, number> = {
   "90d": 90,
 };
 
-class CodexAccountUsageReadError extends Schema.TaggedErrorClass<CodexAccountUsageReadError>()(
-  "CodexAccountUsageReadError",
-  {
-    message: Schema.String,
-    cause: Schema.optional(Schema.Defect),
-  },
-) {}
+function emptyComposition() {
+  return {
+    uncachedInputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    unattributedTokens: 0,
+  };
+}
 
 function emptyMetrics(): MutableMetrics {
   return {
@@ -209,6 +220,7 @@ function makeEmptyBuckets(input: {
         label: labelFormatter.format(startAt),
         startAt: startAt.toISOString(),
         metrics: freezeMetrics(emptyMetrics()),
+        composition: emptyComposition(),
       };
     });
   }
@@ -229,6 +241,7 @@ function makeEmptyBuckets(input: {
       label: labelFormatter.format(startAt),
       startAt: startAt.toISOString(),
       metrics: freezeMetrics(emptyMetrics()),
+      composition: emptyComposition(),
     };
   });
 }
@@ -247,7 +260,6 @@ export function buildUsageSummary(input: {
   readonly coverageStartedAt: IsoDateTime;
   readonly rangeStartedAt: IsoDateTime;
   readonly rows: ReadonlyArray<HourlyUsageFactSummary>;
-  readonly codexAccount?: CodexAccountUsage | null;
 }): UsageSummary {
   const formatter = assertTimeZone(input.request.timeZone);
   const emptyBuckets = makeEmptyBuckets({
@@ -257,6 +269,7 @@ export function buildUsageSummary(input: {
     formatter,
   });
   const bucketMetrics = new Map(emptyBuckets.map((bucket) => [bucket.key, emptyMetrics()]));
+  const compositions = new Map(emptyBuckets.map((bucket) => [bucket.key, emptyComposition()]));
   const totalMetrics = emptyMetrics();
   const providerMetrics = new Map<string, MutableMetrics>();
   const providerIdentity = new Map<string, { provider: ProviderKind; model: string | null }>();
@@ -266,6 +279,21 @@ export function buildUsageSummary(input: {
   for (const row of input.rows) {
     const bucket = bucketMetrics.get(bucketKeyForRow(row, input.request.range, formatter));
     if (!bucket) continue;
+    const composition = compositions.get(bucketKeyForRow(row, input.request.range, formatter))!;
+    const segments: UsageTokenComposition = {
+      uncachedInputTokens:
+        row.provider === "claudeAgent"
+          ? row.inputTokens
+          : Math.max(0, row.inputTokens - row.cacheReadTokens),
+      outputTokens: row.outputTokens,
+      cacheReadTokens: row.cacheReadTokens,
+      cacheWriteTokens: row.provider === "claudeAgent" ? row.cacheWriteTokens : 0,
+      unattributedTokens: 0,
+    };
+    const attributed = Object.values(segments).reduce((sum, value) => sum + value, 0);
+    for (const key of Object.keys(segments) as Array<keyof UsageTokenComposition>)
+      composition[key] += segments[key];
+    composition.unattributedTokens += Math.max(0, row.totalTokens - attributed);
     addMetrics(bucket, row);
     addMetrics(totalMetrics, row);
     historicalCostTurnCount += row.historicalCostTurnCount;
@@ -284,6 +312,7 @@ export function buildUsageSummary(input: {
   const buckets = emptyBuckets.map((bucket) => ({
     ...bucket,
     metrics: freezeMetrics(bucketMetrics.get(bucket.key) ?? emptyMetrics()),
+    composition: compositions.get(bucket.key) ?? emptyComposition(),
   }));
   const byProvider: Array<UsageProviderBreakdown> = Array.from(providerMetrics.entries())
     .map(([key, metrics]) => ({
@@ -324,51 +353,96 @@ export function buildUsageSummary(input: {
       providersMissingTokens,
       providersMissingCost,
     },
-    codexAccount: input.codexAccount ?? null,
   };
 }
 
 const make = Effect.gen(function* () {
   const repository = yield* UsageFactRepository;
-  const codexControlClients = yield* CodexControlClientRegistry;
+  const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
 
-  const getCodexAccountUsage = (fetchedAt: IsoDateTime) =>
+  const registry = yield* ProviderInstanceRegistry;
+  const permits = yield* Semaphore.make(2);
+  const parentScope = yield* Effect.scope;
+  const configurationLock = yield* Semaphore.make(1);
+  let codex:
+    | { key: string; scope: Scope.Closeable; capability: AccountUsageCapability }
+    | undefined;
+  const configureCodex = configurationLock.withPermits(1)(
     Effect.gen(function* () {
-      const settings = yield* serverSettings.getSettings;
-      if (!settings.providers.codex.enabled) {
-        return unavailableCodexAccountUsage({
-          fetchedAt,
-          error: new Error("Codex is disabled in provider settings."),
+      const settings = (yield* serverSettings.getSettings).providers.codex;
+      const key = JSON.stringify(settings);
+      if (codex?.key === key) return codex.capability;
+      if (codex) yield* Scope.close(codex.scope, Exit.void);
+      const scope = yield* Scope.make();
+      yield* Scope.addFinalizer(parentScope, Scope.close(scope, Exit.void));
+      // Account data has its own five-minute cache. Each attempt owns a dedicated
+      // process so configuration retirement cannot leave pooled RPC work running.
+      const read = Effect.gen(function* () {
+        const parsed = parseLaunchArgv(settings.launchArgs);
+        if (!parsed.ok) return yield* Effect.fail(new Error("Invalid executable configuration"));
+        const providerOptions = toCodexProviderStartOptions({
+          binaryPath: settings.binaryPath,
+          homePath: settings.homePath || undefined,
+          launchArgs: parsed.argv,
         });
-      }
-      const parsedLaunchArgs = parseLaunchArgv(settings.providers.codex.launchArgs);
-      if (!parsedLaunchArgs.ok) {
-        return unavailableCodexAccountUsage({
-          fetchedAt,
-          error: new Error(`Invalid Codex launch arguments: ${parsedLaunchArgs.error}`),
-        });
-      }
-      const providerOptions = toCodexProviderStartOptions({
-        binaryPath: settings.providers.codex.binaryPath,
-        homePath: settings.providers.codex.homePath || undefined,
-        launchArgs: parsedLaunchArgs.argv,
+        return yield* probeCodexAccountSections(
+          readCodexControlEnvironmentConfig(
+            {
+              projectId: ProjectId.makeUnsafe("f5-account-usage"),
+              ...(providerOptions ? { providerOptions } : {}),
+            },
+            serverConfig.cwd,
+          ),
+        );
       });
-      const client = yield* codexControlClients.getAdminClient({
-        projectId: ProjectId.makeUnsafe("f5-account-usage"),
-        ...(providerOptions ? { providerOptions } : {}),
-      });
-      return yield* Effect.tryPromise({
-        try: () => readCodexAccountUsage({ client, fetchedAt }),
-        catch: (error) =>
-          new CodexAccountUsageReadError({
-            message: error instanceof Error ? error.message : String(error),
-            cause: error,
-          }),
-      });
+      const capability = yield* makeAccountUsageCapability(
+        {
+          key: "codex:default",
+          provider: "codex",
+          providerInstanceId: null,
+          displayName: "Codex — default configuration",
+          enabled: settings.enabled,
+          refreshState: "idle",
+          sections: [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")],
+        },
+        read,
+        { readerOwnsTimeout: true },
+      ).pipe(Effect.provideService(Scope.Scope, scope));
+      codex = { key, scope, capability };
+      return capability;
+    }),
+  );
+  yield* Stream.runForEach(serverSettings.streamChanges, () =>
+    configureCodex.pipe(Effect.ignore),
+  ).pipe(Effect.forkScoped);
+  const getAccounts: UsageServiceShape["getAccounts"] = (request) =>
+    Effect.gen(function* () {
+      const defaultCodex = yield* configureCodex;
+      const instances = yield* registry.listInstances;
+      const capabilities = [
+        defaultCodex,
+        ...instances.flatMap((instance) => (instance.accountUsage ? [instance.accountUsage] : [])),
+      ];
+      yield* Effect.forEach(capabilities, (capability) =>
+        capability.refresh(request.refresh, permits),
+      );
+      const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
+      const unavailable = yield* registry.listUnavailable;
+      const shadows: Array<UsageAccount> = unavailable
+        .filter((entry) => entry.driver === "claudeAgent")
+        .map((entry) => ({
+          key: `claude:${entry.instanceId}`,
+          provider: "claudeAgent",
+          providerInstanceId: entry.instanceId,
+          displayName: entry.displayName ?? "Claude",
+          enabled: entry.enabled,
+          refreshState: "idle",
+          sections: [{ ...emptyAccountSection("claude-usage"), errorCode: "temporary-failure" }],
+        }));
+      return [...snapshots, ...shadows];
     }).pipe(
-      Effect.timeout("8 seconds"),
-      Effect.catch((error) => Effect.succeed(unavailableCodexAccountUsage({ fetchedAt, error }))),
+      Effect.mapError(() => new UsageQueryError({ message: "Account settings are unavailable." })),
     );
 
   const getSummary: UsageServiceShape["getSummary"] = (request) =>
@@ -382,13 +456,15 @@ const make = Effect.gen(function* () {
             ? error
             : new UsageQueryError({ message: `Unsupported IANA time zone: ${request.timeZone}` }),
       });
-      const [coverageStartedAt, rows, codexAccount] = yield* Effect.all(
+      const [coverageStartedAt, rows] = yield* Effect.all(
         [
           repository.readCoverageStartedAt,
-          repository.summarizeHourly(window),
-          getCodexAccountUsage(now.toISOString()),
+          repository.summarizeHourly({
+            ...window,
+            ...(request.provider ? { provider: request.provider } : {}),
+          }),
         ],
-        { concurrency: 3 },
+        { concurrency: 2 },
       );
       return buildUsageSummary({
         request,
@@ -396,11 +472,10 @@ const make = Effect.gen(function* () {
         coverageStartedAt,
         rangeStartedAt: window.startedAt,
         rows,
-        codexAccount,
       });
     });
 
-  return { getSummary } satisfies UsageServiceShape;
+  return { getSummary, getAccounts } satisfies UsageServiceShape;
 });
 
 export const UsageServiceLive = Layer.effect(UsageService, make).pipe(

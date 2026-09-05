@@ -122,3 +122,51 @@ describe("usage summary", () => {
     assert.equal(summary.metrics.turnCount, 1);
   });
 });
+
+it("computes disjoint provider-aware composition before aggregating mixed buckets", () => {
+  const summary = buildUsageSummary({
+    request: { range: "7d", timeZone: "UTC" },
+    now: new Date("2026-08-15T12:00:00Z"),
+    coverageStartedAt: "2026-08-12T00:00:00Z",
+    rangeStartedAt: "2026-08-09T00:00:00Z",
+    rows: [
+      row({
+        hourStartedAt: "2026-08-14T10:00:00.000Z",
+        provider: "codex",
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        totalTokens: 120,
+      }),
+      row({
+        hourStartedAt: "2026-08-14T11:00:00.000Z",
+        provider: "claudeAgent",
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 10,
+        totalTokens: 160,
+      }),
+      row({
+        hourStartedAt: "2026-08-14T12:00:00.000Z",
+        provider: "cursor",
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        totalTokens: 50,
+      }),
+    ],
+  });
+  const bucket = summary.buckets.find((b) => b.key === "2026-08-14")!;
+  assert.deepStrictEqual(bucket.composition, {
+    uncachedInputTokens: 170,
+    outputTokens: 40,
+    cacheReadTokens: 60,
+    cacheWriteTokens: 10,
+    unattributedTokens: 50,
+  });
+  assert.equal(
+    Object.values(bucket.composition!).reduce((a, b) => a + b, 0),
+    bucket.metrics.totalTokens,
+  );
+});
