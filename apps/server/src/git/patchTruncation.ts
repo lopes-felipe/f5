@@ -2,6 +2,12 @@
 export const REVIEW_PATCH_LIMIT_BYTES = 120 * 1024;
 
 function truncatePatchSection(section: string, limitBytes: number, marker: string): string {
+  if (limitBytes < Buffer.byteLength(marker)) {
+    return Buffer.from(marker)
+      .subarray(0, limitBytes)
+      .toString("utf8")
+      .replace(/\uFFFD+$/g, "");
+  }
   const markerBytes = Buffer.byteLength(marker);
   const bodyBudget = Math.max(0, limitBytes - markerBytes);
   const headBudget = Math.floor(bodyBudget * 0.7);
@@ -23,6 +29,7 @@ export function truncatePatchAtFileBoundary(
   sourceTruncated: boolean,
   limitBytes = REVIEW_PATCH_LIMIT_BYTES,
 ): { readonly patch: string; readonly truncated: boolean; readonly reason: string | null } {
+  limitBytes = Math.max(0, Math.floor(limitBytes));
   if (!sourceTruncated && Buffer.byteLength(patch) <= limitBytes) {
     return { patch, truncated: false, reason: null };
   }

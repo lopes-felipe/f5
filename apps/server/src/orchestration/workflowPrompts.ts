@@ -206,7 +206,7 @@ export function buildCodeReviewPromptSections(input: {
   readonly retry?: WorkflowRetryContext | undefined;
 }): ReadonlyArray<string | null | undefined> {
   const truncationNote = input.reviewArtifact.truncated
-    ? `The patch was truncated (${input.reviewArtifact.truncationReason ?? "size limit"}); do not assume omitted files are clean.`
+    ? `The patch was truncated (${input.reviewArtifact.truncationReason ?? "size limit"}); do not assume omitted files are clean. Use read-only repository inspection to review omitted changes before concluding the review. If any omitted changes cannot be inspected, explicitly report the coverage gap.`
     : null;
   return [
     "You are performing a code review of an implementation that was produced from a merged plan.",

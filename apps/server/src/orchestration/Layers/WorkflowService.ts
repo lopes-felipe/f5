@@ -80,6 +80,7 @@ import {
 } from "../workflowBehavior.ts";
 import { buildPlanningWorkflowRecord } from "../workflowRecordBuilders.ts";
 import type { WorkflowRetryContext } from "../workflowPromptFragments.ts";
+import { prepareCodeReviewPrompt } from "../workflowReviewPrompt.ts";
 
 const WORKFLOW_PLANNING_INTERACTION_MODE: ProviderInteractionMode = "plan";
 const MAX_AUTO_RETRY_ATTEMPTS = 2;
@@ -2774,57 +2775,90 @@ export const makeWorkflowService = Effect.gen(function* () {
             };
       yield* upsertWorkflow(pendingWorkflow);
 
-      const setupResult = yield* Effect.forEach(
-        requestedReviews,
-        (review) =>
-          Effect.gen(function* () {
-            const reviewState = pendingWorkflow.implementation?.codeReviews.find(
-              (candidate) => candidate.threadId === review.threadId,
-            );
-            if (reviewState?.status !== "pending") return;
-            let reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
-            if (!reviewThread) {
-              yield* createCodeReviewThread({
-                orchestrationEngine,
-                workflow: pendingWorkflow,
-                reviewerSlot: review.reviewerSlot,
-                threadId: review.threadId,
-                reviewerLabel: review.reviewerLabel,
-                createdAt: updatedAt,
-              });
-              const refreshed = yield* orchestrationEngine.getReadModel();
-              reviewThread = refreshed.threads.find((thread) => thread.id === review.threadId);
-            }
-            const existingDelivery = behavior.idempotentStageSetup
-              ? yield* deliveryForStage(
-                  review.threadId,
-                  reviewState?.updatedAt ?? pendingWorkflow.updatedAt,
-                )
-              : null;
-            const deliveryError = ensureDeliveryCanResume(
-              existingDelivery,
-              `${review.reviewerLabel} implementation review`,
-            );
-            if (deliveryError) return yield* Effect.fail(deliveryError);
-            if (!reviewThread?.latestTurn && !existingDelivery) {
-              yield* startCodeReviewTurn({
-                orchestrationEngine,
-                workflow: pendingWorkflow,
-                reviewerSlot: review.reviewerSlot,
-                reviewThreadId: review.threadId,
-                mergedPlanMarkdown: mergedPlan.planMarkdown,
-                reviewerLabel: review.reviewerLabel,
-                lensBranch:
-                  pendingWorkflow.implementation?.codeReviews.at(0)?.threadId === review.threadId
-                    ? "a"
-                    : "b",
-                reviewArtifact: promptArtifact,
-                createdAt: updatedAt,
-              });
-            }
-          }),
-        { discard: true },
-      ).pipe(
+      const setupResult = yield* Effect.gen(function* () {
+        // Validate every undelivered review before creating threads or starting either turn.
+        const preparedPrompts = new Map<ThreadId, string>();
+        for (const [index, review] of requestedReviews.entries()) {
+          const reviewState = pendingWorkflow.implementation?.codeReviews.find(
+            (candidate) => candidate.threadId === review.threadId,
+          );
+          if (reviewState?.status !== "pending") continue;
+          const reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
+          const delivery = behavior.idempotentStageSetup
+            ? yield* deliveryForStage(review.threadId, reviewState.updatedAt)
+            : null;
+          const deliveryError = ensureDeliveryCanResume(
+            delivery,
+            `${review.reviewerLabel} implementation review`,
+          );
+          if (deliveryError) return yield* Effect.fail(deliveryError);
+          if (reviewThread?.latestTurn || delivery) continue;
+          const prepared = prepareCodeReviewPrompt({
+            mergedPlanMarkdown: mergedPlan.planMarkdown,
+            requirementPrompt: pendingWorkflow.requirementPrompt,
+            reviewArtifact: promptArtifact,
+            reviewerLabel: review.reviewerLabel,
+            lensBranch: index === 0 ? "a" : "b",
+            reviewerSlot: review.reviewerSlot,
+            enforceArtifactBudget: behavior.loudAuthoritativeArtifactLimit,
+            thread: reviewThread,
+          });
+          if (!("prompt" in prepared)) return yield* prepared;
+          preparedPrompts.set(review.threadId, prepared.prompt);
+        }
+        yield* Effect.forEach(
+          requestedReviews,
+          (review) =>
+            Effect.gen(function* () {
+              const reviewState = pendingWorkflow.implementation?.codeReviews.find(
+                (candidate) => candidate.threadId === review.threadId,
+              );
+              if (reviewState?.status !== "pending") return;
+              let reviewThread = snapshot.threads.find((thread) => thread.id === review.threadId);
+              if (!reviewThread) {
+                yield* createCodeReviewThread({
+                  orchestrationEngine,
+                  workflow: pendingWorkflow,
+                  reviewerSlot: review.reviewerSlot,
+                  threadId: review.threadId,
+                  reviewerLabel: review.reviewerLabel,
+                  createdAt: updatedAt,
+                });
+                const refreshed = yield* orchestrationEngine.getReadModel();
+                reviewThread = refreshed.threads.find((thread) => thread.id === review.threadId);
+              }
+              const existingDelivery = behavior.idempotentStageSetup
+                ? yield* deliveryForStage(
+                    review.threadId,
+                    reviewState?.updatedAt ?? pendingWorkflow.updatedAt,
+                  )
+                : null;
+              const deliveryError = ensureDeliveryCanResume(
+                existingDelivery,
+                `${review.reviewerLabel} implementation review`,
+              );
+              if (deliveryError) return yield* Effect.fail(deliveryError);
+              if (!reviewThread?.latestTurn && !existingDelivery) {
+                yield* startCodeReviewTurn({
+                  orchestrationEngine,
+                  workflow: pendingWorkflow,
+                  reviewerSlot: review.reviewerSlot,
+                  reviewThreadId: review.threadId,
+                  mergedPlanMarkdown: mergedPlan.planMarkdown,
+                  reviewerLabel: review.reviewerLabel,
+                  lensBranch:
+                    pendingWorkflow.implementation?.codeReviews.at(0)?.threadId === review.threadId
+                      ? "a"
+                      : "b",
+                  reviewArtifact: promptArtifact,
+                  preparedPrompt: preparedPrompts.get(review.threadId),
+                  createdAt: updatedAt,
+                });
+              }
+            }),
+          { discard: true },
+        );
+      }).pipe(
         Effect.map(() => ({ ok: true as const })),
         Effect.catch((error) => Effect.succeed({ ok: false as const, error })),
       );
@@ -4335,6 +4369,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                           ? "a"
                           : "b",
                       reviewArtifact: implementationReviewPromptArtifact(workflow),
+                      thread: retryThread,
                       createdAt: new Date().toISOString(),
                       retry: {
                         kind: "retry",
@@ -4842,6 +4877,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         } else if (
           workflow.implementation.errorStage !== "implementation-start" &&
           workflow.implementation.errorStage !== "apply-feedback" &&
+          workflow.implementation.errorStage !== "review-setup" &&
           workflow.implementation.threadId
         ) {
           failedThreadIds.add(workflow.implementation.threadId);
@@ -5072,6 +5108,7 @@ export const makeWorkflowService = Effect.gen(function* () {
 
         if (
           failedReviews.length === 0 &&
+          workflow.implementation.errorStage !== "review-setup" &&
           workflow.implementation.threadId &&
           deliveryMode(workflow.implementation.threadId) === "accepted"
         ) {
@@ -5124,6 +5161,8 @@ export const makeWorkflowService = Effect.gen(function* () {
           return mode === "fresh" || mode === "retry";
         }) ||
         retriesLegacyReviewSetup ||
+        (workflow.implementation?.status === "error" &&
+          workflow.implementation.errorStage === "review-setup") ||
         (workflow.merge.status === "error" &&
           (!workflow.merge.threadId || deliveryMode(workflow.merge.threadId) === "fresh"));
       if (willSpend) {
@@ -5240,6 +5279,7 @@ export const makeWorkflowService = Effect.gen(function* () {
         workflow.implementation?.status === "error" &&
         workflow.implementation.errorStage !== "implementation-start" &&
         workflow.implementation.errorStage !== "apply-feedback" &&
+        workflow.implementation.errorStage !== "review-setup" &&
         failedCodeReviews.length === 0
       ) {
         if (!workflow.implementation.threadId) {
@@ -5601,6 +5641,7 @@ export const makeWorkflowService = Effect.gen(function* () {
                       ? "a"
                       : "b",
                   reviewArtifact: implementationReviewPromptArtifact(retriedWorkflow),
+                  thread: snapshot.threads.find((thread) => thread.id === review.threadId),
                   createdAt: updatedAt,
                   retry: {
                     kind: "retry",
@@ -6167,6 +6208,8 @@ function startCodeReviewTurn({
   reviewArtifact,
   createdAt,
   retry,
+  preparedPrompt,
+  thread,
 }: {
   orchestrationEngine: OrchestrationEngineShape;
   workflow: PlanningWorkflow;
@@ -6178,26 +6221,30 @@ function startCodeReviewTurn({
   reviewArtifact: Parameters<typeof buildCodeReviewPrompt>[0]["reviewArtifact"];
   createdAt: string;
   retry?: WorkflowRetryContext;
+  preparedPrompt?: string | undefined;
+  thread?: Pick<OrchestrationReadModel["threads"][number], "estimatedContextTokens"> | undefined;
 }) {
   const budgetError = workflowBudgetError(workflow);
   if (budgetError) return Effect.fail(budgetError);
-  const prompt = buildCodeReviewPrompt({
-    mergedPlanMarkdown,
-    requirementPrompt: workflow.requirementPrompt,
-    reviewArtifact,
-    reviewerLabel,
-    lensBranch,
-    reviewerSlot,
-    retry,
-  });
-  const promptError = workflowPromptInvariant({
-    workflow,
-    prompt,
-    artifacts: [mergedPlanMarkdown, reviewArtifact.patchText],
-    targetSlot: reviewerSlot,
-    artifactLabel: "Implementation review inputs",
-  });
-  if (promptError) return Effect.fail(promptError);
+  const prepared =
+    preparedPrompt === undefined
+      ? prepareCodeReviewPrompt({
+          mergedPlanMarkdown,
+          requirementPrompt: workflow.requirementPrompt,
+          reviewArtifact,
+          reviewerLabel,
+          lensBranch,
+          reviewerSlot,
+          retry,
+          thread,
+          enforceArtifactBudget: resolveWorkflowBehavior({
+            runKind: "planning",
+            templateId: workflow.templateId,
+            templateVersion: workflow.templateVersion,
+          }).loudAuthoritativeArtifactLimit,
+        })
+      : { prompt: preparedPrompt };
+  if (!("prompt" in prepared)) return Effect.fail(prepared);
   return orchestrationEngine.dispatch({
     type: "thread.turn.start",
     commandId: CommandId.makeUnsafe(crypto.randomUUID()),
@@ -6205,7 +6252,7 @@ function startCodeReviewTurn({
     message: {
       messageId: MessageId.makeUnsafe(crypto.randomUUID()),
       role: "user",
-      text: prompt,
+      text: prepared.prompt,
       attachments: [],
     },
     ...workflowTurnProviderFields(reviewerSlot),
