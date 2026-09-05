@@ -2019,12 +2019,38 @@ const make = Effect.gen(function* () {
     { readonly turnId: TurnId; readonly timer: ReturnType<typeof setTimeout> }
   >();
 
+  /**
+   * Per-turn count of `user-input.requested` events auto-declined in an
+   * unattended stage. A single question is a recoverable mistake, but a model
+   * that keeps re-asking after each empty answer would otherwise loop until the
+   * 30-minute watchdog fires, writing durable activities and burning tokens the
+   * whole time (`maxCostUsd` is only checked at stage entry).
+   */
+  const unattendedDeclineCounts = new Map<ThreadId, { readonly turnId: TurnId; count: number }>();
+  const MAX_UNATTENDED_DECLINES_PER_TURN = 3;
+
   const clearProfiledTurnWatchdog = (threadId: ThreadId, turnId?: TurnId) =>
     Effect.sync(() => {
       const existing = profiledTurnWatchdogs.get(threadId);
       if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return;
       clearTimeout(existing.timer);
       profiledTurnWatchdogs.delete(threadId);
+    });
+
+  /** Records an auto-declined question and returns the running count for the turn. */
+  const countUnattendedDecline = (threadId: ThreadId, turnId: TurnId) =>
+    Effect.sync(() => {
+      const existing = unattendedDeclineCounts.get(threadId);
+      const next = existing && existing.turnId === turnId ? existing.count + 1 : 1;
+      unattendedDeclineCounts.set(threadId, { turnId, count: next });
+      return next;
+    });
+
+  const clearUnattendedDeclines = (threadId: ThreadId, turnId?: TurnId) =>
+    Effect.sync(() => {
+      const existing = unattendedDeclineCounts.get(threadId);
+      if (!existing || (turnId !== undefined && existing.turnId !== turnId)) return;
+      unattendedDeclineCounts.delete(threadId);
     });
 
   const readWorkflowExecutionProfileForThread = Effect.fnUntraced(function* (threadId: ThreadId) {
@@ -3259,7 +3285,26 @@ const make = Effect.gen(function* () {
         event.type === "user-input.requested" &&
         profiledTurnId
       ) {
+        // An unattended stage has no reply path, but asking once is a
+        // recoverable mistake, not a fatal one: killing the turn discards all
+        // the work it already completed. Settle the request with empty answers
+        // so the provider unblocks and can choose a conservative default.
+        //
+        // The watchdog is deliberately NOT cleared here — unlike the attended
+        // case below, this turn is still unattended and must stay time-bounded.
+        const declineCount = yield* countUnattendedDecline(thread.id, profiledTurnId);
+        yield* Effect.logInfo("unattended workflow stage attempted to ask a question", {
+          threadId: thread.id,
+          turnId: profiledTurnId,
+          requestId: event.requestId,
+          declineCount,
+        });
         if (event.requestId !== undefined) {
+          // Codex and OpenCode have no adapter-side short-circuit and depend on
+          // this to unblock. Claude and Cursor already declined synchronously
+          // and registered no pending entry, so for them this call fails with
+          // `ProviderAdapterRequestError` ("Unknown pending user-input
+          // request") — an expected outcome on the success path, not a fault.
           yield* providerService
             .respondToUserInput({
               threadId: thread.id,
@@ -3267,6 +3312,14 @@ const make = Effect.gen(function* () {
               answers: {},
             })
             .pipe(
+              Effect.catchTag("ProviderAdapterRequestError", (error) =>
+                Effect.logDebug("unattended workflow user input had no pending request", {
+                  threadId: thread.id,
+                  turnId: profiledTurnId,
+                  requestId: event.requestId,
+                  detail: error.detail,
+                }),
+              ),
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to settle unattended workflow user input", {
                   threadId: thread.id,
@@ -3277,16 +3330,21 @@ const make = Effect.gen(function* () {
               ),
             );
         }
-        yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
-        yield* recordProfiledTurnFailure({
-          threadId: thread.id,
-          turnId: profiledTurnId,
-          error:
-            "Workflow unattended read-only profile violation: the provider requested user input even though no reply path exists. The turn was interrupted.",
-          retryable: false,
-          createdAt: now,
-        });
-        return;
+        // A model that keeps re-asking after each empty answer would otherwise
+        // loop until the watchdog fires. Fail the stage once the allowance is
+        // spent so the failure is loud and attributable.
+        if (declineCount >= MAX_UNATTENDED_DECLINES_PER_TURN) {
+          yield* clearProfiledTurnWatchdog(thread.id, profiledTurnId);
+          yield* clearUnattendedDeclines(thread.id, profiledTurnId);
+          yield* recordProfiledTurnFailure({
+            threadId: thread.id,
+            turnId: profiledTurnId,
+            error: `Workflow unattended read-only profile violation: the provider requested user input ${declineCount} times even though no reply path exists. The turn was interrupted.`,
+            retryable: false,
+            createdAt: now,
+          });
+          return;
+        }
       }
       if (
         workflowExecutionProfile === "attended-readonly" &&
@@ -3501,9 +3559,11 @@ const make = Effect.gen(function* () {
         eventTurnId !== undefined
       ) {
         yield* clearProfiledTurnWatchdog(thread.id, eventTurnId);
+        yield* clearUnattendedDeclines(thread.id, eventTurnId);
       }
       if (event.type === "session.exited") {
         yield* clearProfiledTurnWatchdog(thread.id);
+        yield* clearUnattendedDeclines(thread.id);
       }
 
       if (

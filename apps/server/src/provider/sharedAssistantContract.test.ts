@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildClaudeAssistantInstructions,
+  buildClaudeWorkflowExecutionProfileUpdate,
   buildCodexAssistantInstructions,
   buildInstructionProfile,
   buildSharedAssistantContractText,
@@ -187,6 +188,45 @@ describe("sharedAssistantContract", () => {
     });
     expect(unattended).toContain("No user reply path exists");
     expect(unattended).toContain("read-only inspection");
+  });
+
+  it("places the workflow host contract after the collaboration mode block", () => {
+    // Plan mode instructs the model to ask many questions. An unattended stage
+    // must override that, so the host contract has to come last (recency).
+    // Regression: merge/revision turns were killed because the model followed
+    // plan mode's "ask early" guidance over a single earlier "never ask" line.
+    for (const build of [buildClaudeAssistantInstructions, buildCodexAssistantInstructions]) {
+      const text = build({
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+      const modeIndex = text.indexOf("Plan Mode (Conversational)");
+      const contractIndex = text.indexOf("# Workflow Read-Only Host Contract");
+      expect(modeIndex).toBeGreaterThanOrEqual(0);
+      expect(contractIndex).toBeGreaterThan(modeIndex);
+    }
+  });
+
+  it("overrides the collaboration-mode question mandate for unattended stages", () => {
+    const text = buildClaudeAssistantInstructions({
+      interactionMode: "plan",
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    expect(text).toContain("overrides any Collaboration Mode instruction to ask questions");
+    expect(text).toContain("AskUserQuestion");
+  });
+
+  it("keeps the profile update contract after the mode block", () => {
+    const update = buildClaudeWorkflowExecutionProfileUpdate({
+      interactionMode: "plan",
+      workflowExecutionProfile: "unattended-readonly",
+    });
+    const modeIndex = update.indexOf("Plan Mode (Conversational)");
+    // The preamble names the contract heading verbatim, so anchor on the last
+    // occurrence to find the actual section rather than that reference.
+    const contractIndex = update.lastIndexOf("# Workflow Read-Only Host Contract");
+    expect(modeIndex).toBeGreaterThanOrEqual(0);
+    expect(contractIndex).toBeGreaterThan(modeIndex);
   });
 
   it("delimits restored thread content as untrusted literal data", () => {

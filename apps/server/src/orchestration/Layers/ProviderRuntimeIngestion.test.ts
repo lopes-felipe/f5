@@ -3202,7 +3202,7 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
-  it("settles and terminates unattended workflow user-input requests", async () => {
+  it("settles unattended workflow user-input requests without failing the turn", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();
     const turnId = asTurnId("turn-profiled-user-input");
@@ -3257,16 +3257,93 @@ describe("ProviderRuntimeIngestion", () => {
       payload: { questions: [] },
     });
 
+    // Wait on the activity being asserted below, not on the settle side effect:
+    // the activity is appended later than the `respondToUserInput` call, so
+    // waiting on the latter can return a snapshot that predates the append.
+    const settled = await waitForThread(harness.engine, (thread) =>
+      thread.activities.some((activity) => activity.kind === "user-input.requested"),
+    );
+
+    // The request is settled with empty answers so the provider unblocks...
+    expect(harness.userInputResponses).toEqual([
+      expect.objectContaining({ requestId: "req-profiled-user-input", answers: {} }),
+    ]);
+
+    // ...but asking is recoverable, so the turn keeps running and keeps its work.
+    // (The question itself being recorded is guaranteed by the wait predicate.)
+    expect(settled.session?.status).toBe("running");
+    expect(settled.session?.lastError).toBeNull();
+    expect(harness.interruptedTurns).toHaveLength(0);
+  });
+
+  it("fails the turn once an unattended stage exhausts its question allowance", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    const turnId = asTurnId("turn-profiled-user-input-loop");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-profiled-user-input-loop-session"),
+        threadId: asThreadId("thread-1"),
+        session: {
+          threadId: asThreadId("thread-1"),
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          workflowExecutionProfile: "unattended-readonly",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.providerSessionDirectory.upsert({
+        threadId: asThreadId("thread-1"),
+        provider: "codex",
+        status: "running",
+        runtimeMode: "full-access",
+        runtimePayload: {
+          activeTurnId: turnId,
+          instructionContext: { workflowExecutionProfile: "unattended-readonly" },
+        },
+      }),
+    );
+    harness.emit({
+      type: "turn.started",
+      eventId: asEventId("evt-profiled-user-input-loop-started"),
+      provider: "codex",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId,
+    });
+    await waitForThread(harness.engine, (thread) => thread.session?.status === "running");
+
+    // A model that ignores the empty answer and keeps re-asking must not be
+    // able to loop until the 30-minute watchdog fires.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      harness.emit({
+        type: "user-input.requested",
+        eventId: asEventId(`evt-profiled-user-input-loop-${attempt}`),
+        provider: "codex",
+        createdAt: new Date().toISOString(),
+        threadId: asThreadId("thread-1"),
+        turnId,
+        requestId: ApprovalRequestId.makeUnsafe(`req-profiled-user-input-loop-${attempt}`),
+        payload: { questions: [] },
+      });
+    }
+
     const failed = await waitForThread(
       harness.engine,
       (thread) => thread.session?.status === "error",
     );
     expect(failed.session?.lastError).toContain("unattended read-only profile violation");
     expect(failed.session?.lastErrorRetryability).toBe("non-retryable");
-    expect(harness.userInputResponses).toEqual([
-      expect.objectContaining({ requestId: "req-profiled-user-input", answers: {} }),
-    ]);
     expect(harness.interruptedTurns).toHaveLength(1);
+    // Every attempt is still settled so the provider never blocks.
+    expect(harness.userInputResponses).toHaveLength(3);
   });
 
   it("does not apply a previous workflow profile to a later ordinary turn", async () => {

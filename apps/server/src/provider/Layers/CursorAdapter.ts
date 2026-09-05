@@ -619,6 +619,11 @@ export function makeCursorAdapter(
                   "acp.cursor.extension",
                 );
                 if (input.workflowExecutionProfile === "unattended-readonly") {
+                  // No reply path exists, so the request is auto-declined rather
+                  // than registered as pending. Emit the matching `resolved`
+                  // event too: the timeline keeps a record of what was asked,
+                  // and the UI does not leave an unanswerable question card open
+                  // (pending requests are only closed by a `resolved` event).
                   const requestId = RuntimeRequestId.make(crypto.randomUUID());
                   yield* offerRuntimeEvent({
                     type: "user-input.requested",
@@ -632,6 +637,20 @@ export function makeCursorAdapter(
                       source: "acp.cursor.extension",
                       method: "cursor/ask_question",
                       payload: params,
+                    },
+                  });
+                  yield* offerRuntimeEvent({
+                    type: "user-input.resolved",
+                    ...(yield* makeEventStamp()),
+                    provider: PROVIDER,
+                    threadId: input.threadId,
+                    turnId: ctx?.activeTurnId,
+                    requestId,
+                    payload: { answers: {} },
+                    raw: {
+                      source: "acp.cursor.extension",
+                      method: "cursor/ask_question/unattended-declined",
+                      payload: { answers: {} },
                     },
                   });
                   return { answers: {} };

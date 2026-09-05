@@ -58,6 +58,18 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Session failures now carry stable server-generated identities and occurrence times, so dismissing
   an error survives reconnects while a later failure with identical text remains visible.
 
+### Fixed
+
+- Clarifying questions asked during a workflow's merge or revision stage no longer fail the turn.
+  Those stages ran as `unattended-readonly`, so a question was treated as a profile violation that
+  interrupted the turn and discarded its work, while the model was simultaneously being told by
+  plan-mode instructions to ask questions. `merge` and `revision` are now `attended-readonly`: the
+  question is surfaced and the workflow waits for an answer. Fan-out reviewer stages stay
+  unattended, but a question there is now recoverable — the request is auto-declined with guidance
+  to pick and document a conservative default instead of killing the turn — and the workflow
+  host contract is placed after the collaboration-mode block so it can override plan mode's
+  instruction to ask questions.
+
 ### Changed
 
 - PR Hub keys are now provider-qualified (for example, `github:github.com/owner/repo#123`). Existing
