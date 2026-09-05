@@ -3,7 +3,11 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
 import { ChildProcessSpawner } from "effect/unstable/process";
-import { ProviderInstanceId, type ClaudeSettings } from "@t3tools/contracts";
+import {
+  MODEL_OPTIONS_BY_PROVIDER,
+  ProviderInstanceId,
+  type ClaudeSettings,
+} from "@t3tools/contracts";
 import { getReasoningEffortOptions } from "@t3tools/shared/model";
 
 import {
@@ -11,6 +15,9 @@ import {
   getClaudeModelCapabilities,
   makePendingClaudeProvider,
   resolveClaudeApiModelId,
+  normalizeClaudeCliEffort,
+  resolveClaudeEffort,
+  VERSION_GATED_CLAUDE_MODELS,
 } from "./ClaudeProvider.ts";
 
 const encoder = new TextEncoder();
@@ -103,6 +110,7 @@ function modelSlugs(snapshot: Awaited<ReturnType<typeof runStatusForVersion>>) {
 
 function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
   expect(slugs).toContain("claude-opus-5");
+  expect(slugs).toContain("claude-fable-5-1");
   expect(slugs).toContain("claude-fable-5");
   expect(slugs).toContain("claude-sonnet-5");
   expect(slugs).toContain("claude-opus-4-8");
@@ -115,7 +123,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.169 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Claude Code v2.1.169 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-8",
@@ -132,7 +140,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.153 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Claude Code v2.1.153 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-7",
@@ -147,7 +155,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.110");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.110 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Claude Code v2.1.110 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-6",
@@ -161,7 +169,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.154");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.154 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Claude Code v2.1.154 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot).slice(0, 2)).toEqual(["claude-opus-4-8", "claude-opus-4-7"]);
   });
@@ -170,7 +178,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.219");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.219 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Claude Code v2.1.219 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
   });
@@ -178,7 +186,7 @@ describe("checkClaudeProviderStatus", () => {
   it("exposes Claude Opus 5 first at Claude Code v2.1.220", async () => {
     const snapshot = await runStatusForVersion("2.1.220");
 
-    expect(snapshot.message).toBeUndefined();
+    expect(snapshot.message).toContain("Claude Fable 5.1");
     expect(modelSlugs(snapshot).slice(0, 4)).toEqual([
       "claude-opus-5",
       "claude-fable-5",
@@ -187,7 +195,7 @@ describe("checkClaudeProviderStatus", () => {
     ]);
   });
 
-  it("preserves the Opus 5 upgrade hint when capability probing fails", async () => {
+  it("preserves the Fable 5.1 upgrade hint when capability probing fails", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, () => Effect.sync(() => undefined)).pipe(
         Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.219"))),
@@ -196,7 +204,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("warning");
     expect(snapshot.message).toBe(
-      "Could not verify Claude authentication status from initialization result. Claude Code v2.1.219 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Could not verify Claude authentication status from initialization result. Claude Code v2.1.219 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
   });
@@ -212,7 +220,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.170");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.170 is too old for Claude Opus 5. Upgrade to v2.1.220 or newer to access it.",
+      "Claude Code v2.1.170 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot).slice(0, 3)).toEqual([
       "claude-fable-5",
@@ -265,6 +273,37 @@ describe("checkClaudeProviderStatus", () => {
 });
 
 describe("makePendingClaudeProvider", () => {
+  it("matches contract membership while preserving the server leading order", () => {
+    const slugs = makePendingClaudeProvider(claudeSettings).models.map((model) => model.slug);
+    expect(new Set(slugs)).toEqual(
+      new Set(MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((model) => model.slug)),
+    );
+    expect(slugs.slice(0, 4)).toEqual([
+      "claude-opus-5",
+      "claude-fable-5-1",
+      "claude-fable-5",
+      "claude-sonnet-5",
+    ]);
+    expect(VERSION_GATED_CLAUDE_MODELS[0]).toEqual({
+      slug: "claude-fable-5-1",
+      name: "Claude Fable 5.1",
+      minVersion: "2.1.257",
+    });
+  });
+
+  it.each(["2.1.256", "2.1.257"])("gates Fable 5.1 and custom aliases at %s", async (version) => {
+    const snapshot = await runStatusForVersionWithSettings(version, {
+      ...claudeSettings,
+      customModels: ["fable", "fable-5.1", "fable-5-1", "claude-fable-5-1[1m]", "fable-5"],
+    });
+    const slugs = modelSlugs(snapshot);
+    expect(slugs.filter((slug) => slug === "claude-fable-5-1")).toHaveLength(
+      version === "2.1.257" ? 1 : 0,
+    );
+    expect(slugs.filter((slug) => slug === "claude-fable-5")).toHaveLength(1);
+    if (version === "2.1.256") expect(snapshot.message).toContain("Upgrade to v2.1.257");
+    else expect(snapshot.message).toBeUndefined();
+  });
   it("keeps gated models visible in pending provider snapshots when the version is unknown", () => {
     const snapshot = makePendingClaudeProvider(claudeSettings);
 
@@ -285,6 +324,21 @@ describe("makePendingClaudeProvider", () => {
 });
 
 describe("getClaudeModelCapabilities", () => {
+  it("uses only effort for Fable 5.1 and strips stale context suffixes on the wire", () => {
+    const caps = getClaudeModelCapabilities("fable");
+    expect(caps.optionDescriptors?.map((descriptor) => descriptor.id)).toEqual(["effort"]);
+    expect(resolveClaudeEffort(caps, undefined)).toBe("high");
+    expect(resolveClaudeEffort(caps, "xhigh")).toBe("xhigh");
+    expect(normalizeClaudeCliEffort("xhigh")).toBe("xhigh");
+    expect(normalizeClaudeCliEffort("ultrathink")).toBeUndefined();
+    expect(
+      resolveClaudeApiModelId({
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "fable[200k]",
+        options: [{ id: "contextWindow", value: "1m" }],
+      }),
+    ).toBe("claude-fable-5-1");
+  });
   it("keeps Opus 5 descriptors aligned with shared metadata", () => {
     const caps = getClaudeModelCapabilities("claude-opus-5");
     const descriptors = caps.optionDescriptors ?? [];

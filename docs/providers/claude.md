@@ -31,6 +31,17 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
+F5 pins Claude Agent SDK 0.3.261, which bundles Claude Code v2.1.261. Claude Fable 5.1
+requires v2.1.257+ and provides native 1M context. Opus 5 remains the default Claude model.
+F5 enables task tools and selects the legacy TodoWrite surface to match its assistant contract.
+
+With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
+advisory. Unknown versions remain permissive. Bare `fable` and `claude-fable` aliases now
+resolve to Fable 5.1; explicit `fable-5` stays on Fable 5. Unavailable picker selections
+fall back to a supported option. Persisted thread models and sub-agent overrides are forwarded
+without silent substitution, so an older executable can reject them. Select a supported model
+or upgrade the custom executable to recover.
+
 ## I Want Work And Personal Claude Accounts
 
 Use a different Claude home for each account.

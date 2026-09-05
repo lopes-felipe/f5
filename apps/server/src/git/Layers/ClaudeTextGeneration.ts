@@ -36,6 +36,7 @@ import {
 } from "../Utils.ts";
 import {
   createModelSelection,
+  applyClaudePromptEffortPrefix,
   getModelSelectionStringOptionValue,
   getProviderOptionDescriptors,
 } from "@t3tools/shared/model";
@@ -157,7 +158,14 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         env: claudeEnvironment,
         cwd,
         stdin: {
-          stream: Stream.encodeText(Stream.make(prompt)),
+          stream: Stream.encodeText(
+            Stream.make(
+              applyClaudePromptEffortPrefix(
+                prompt,
+                resolvedEffort === "ultrathink" ? "ultrathink" : undefined,
+              ),
+            ),
+          ),
         },
       });
 

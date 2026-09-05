@@ -316,77 +316,97 @@ describe("useSettingsRouteState", () => {
     }
   });
 
-  it("uses inherit effectively for gated subagent models and reactivates them after upgrade", async () => {
-    const settings = {
-      claudeProjectSettings: {
-        [PROJECT_ONE]: {
-          subagentsEnabled: true,
-          subagentModel: "opus-5[1m]",
+  it.each([
+    {
+      name: "Claude Opus 5",
+      alias: "opus-5[1m]",
+      slug: "claude-opus-5",
+      before: "2.1.219",
+      after: "2.1.220",
+    },
+    {
+      name: "Claude Fable 5.1",
+      alias: "fable[1m]",
+      slug: "claude-fable-5-1",
+      before: "2.1.256",
+      after: "2.1.257",
+    },
+  ])(
+    "uses inherit for gated $name subagents and reactivates hidden selections after upgrade",
+    async ({ name, alias, slug, before, after }) => {
+      const settings = {
+        claudeProjectSettings: {
+          [PROJECT_ONE]: {
+            subagentsEnabled: true,
+            subagentModel: alias,
+          },
         },
-      },
-      providerModelPreferences: {
-        claudeAgent: {
-          hiddenModels: ["claude-opus-5"],
-          modelOrder: [],
+        providerModelPreferences: {
+          claudeAgent: {
+            hiddenModels: [slug],
+            modelOrder: [],
+          },
         },
-      },
-    };
-    const preUpgrade = await renderHarness({
-      settings,
-      providers: [
-        createTestServerProvider("claudeAgent", {
-          version: "2.1.219",
-          models: [
-            {
-              slug: "claude-fable-5",
-              name: "Claude Fable 5",
-              isCustom: false,
-              capabilities: null,
-            },
-          ],
-        }),
-      ],
-    });
-
-    try {
-      await vi.waitFor(() => {
-        expect(
-          document.querySelector<HTMLElement>('[aria-label="Claude sub-agent model"]')?.textContent,
-        ).toContain("Inherit from parent");
+      };
+      const preUpgrade = await renderHarness({
+        settings,
+        providers: [
+          createTestServerProvider("claudeAgent", {
+            version: before,
+            models: [
+              {
+                slug: "claude-fable-5",
+                name: "Claude Fable 5",
+                isCustom: false,
+                capabilities: null,
+              },
+            ],
+          }),
+        ],
       });
-      expect(localStorage.getItem(APP_SETTINGS_STORAGE_KEY)).toContain("opus-5[1m]");
-    } finally {
-      preUpgrade.queryClient.clear();
-      await preUpgrade.screen.unmount();
-      document.body.innerHTML = "";
-    }
 
-    const postUpgrade = await renderHarness({
-      settings,
-      providers: [
-        createTestServerProvider("claudeAgent", {
-          version: "2.1.220",
-          models: [
-            {
-              slug: "claude-opus-5",
-              name: "Claude Opus 5",
-              isCustom: false,
-              capabilities: null,
-            },
-          ],
-        }),
-      ],
-    });
+      try {
+        await vi.waitFor(() => {
+          expect(
+            document.querySelector<HTMLElement>('[aria-label="Claude sub-agent model"]')
+              ?.textContent,
+          ).toContain("Inherit from parent");
+        });
+        expect(localStorage.getItem(APP_SETTINGS_STORAGE_KEY)).toContain(alias);
+      } finally {
+        preUpgrade.queryClient.clear();
+        await preUpgrade.screen.unmount();
+        document.body.innerHTML = "";
+      }
 
-    try {
-      await vi.waitFor(() => {
-        expect(
-          document.querySelector<HTMLElement>('[aria-label="Claude sub-agent model"]')?.textContent,
-        ).toContain("Claude Opus 5");
+      const postUpgrade = await renderHarness({
+        settings,
+        providers: [
+          createTestServerProvider("claudeAgent", {
+            version: after,
+            models: [
+              {
+                slug: slug,
+                name: name,
+                isCustom: false,
+                capabilities: null,
+              },
+            ],
+          }),
+        ],
       });
-    } finally {
-      postUpgrade.queryClient.clear();
-      await postUpgrade.screen.unmount();
-    }
-  });
+
+      try {
+        await vi.waitFor(() => {
+          expect(
+            document.querySelector<HTMLElement>('[aria-label="Claude sub-agent model"]')
+              ?.textContent,
+          ).toContain(name);
+        });
+      } finally {
+        postUpgrade.queryClient.clear();
+        await postUpgrade.screen.unmount();
+      }
+    },
+  );
 });
