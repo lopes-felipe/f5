@@ -25,6 +25,28 @@ describe("commandSummary", () => {
     expect(displayCommandExecutionCommand(command)).toBe("Get-Content AGENTS.md");
   });
 
+  it.each([
+    {
+      command: String.raw`"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command 'bun typecheck *> "$env:TEMP'"\\f5-usage-pr-typecheck.log\""`,
+      body: String.raw`bun typecheck *> "$env:TEMP\f5-usage-pr-typecheck.log"`,
+    },
+    {
+      command: String.raw`"C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command '$env:F5_TEST_MAX_WORKERS='"'2'; bun run test:full *> \""'$env:TEMP'"\\f5-usage-pr-full.log\""`,
+      body: String.raw`$env:F5_TEST_MAX_WORKERS='2'; bun run test:full *> "$env:TEMP\f5-usage-pr-full.log"`,
+    },
+    {
+      command: `pwsh -c 'Write-Output '"'"'it is intact'"'"''`,
+      body: "Write-Output 'it is intact'",
+    },
+  ])("decodes Codex quoted argv fragments: $body", ({ command, body }) => {
+    expect(displayCommandExecutionCommand(command)).toBe(body);
+    expect(resolveCommandExecutionDisplayCommand({ command })).toBe(body);
+    const payload = `Shell: ${JSON.stringify({ command })}`;
+    expect(resolveCommandExecutionDisplayCommand({ command: "Shell: {}", detail: payload })).toBe(
+      body,
+    );
+  });
+
   it.each(["'", '"', ""])("preserves PowerShell script contents with %s wrapping", (quote) => {
     const body = [
       String.raw`$path = 'C:\new\test'; Get-Content "$path" | Select-Object -First 2`,
