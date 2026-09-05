@@ -1151,7 +1151,7 @@ const CLAUDE_SETTING_SOURCES = [
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
-function buildClaudeQueryEnv(providerOptions?: {
+export function buildClaudeQueryEnv(providerOptions?: {
   readonly subagentModel?: string | undefined;
 }): NodeJS.ProcessEnv {
   // New models omit task tools by default. Keep the TodoWrite surface required

@@ -29,6 +29,7 @@
     "test:git-manager": "vitest run integration/git/extended/GitManager.extended.test.ts --no-file-parallelism",
     "test:integration": "vitest run integration --exclude 'integration/git/**'",
     "test:file": "vitest run",
+    "test:claude:live": "F5_CLAUDE_LIVE_TEST=1 vitest run integration/claudeRuntime.live.test.ts --no-file-parallelism",
     "test:unit:shard": "vitest run src"
   },
   "dependencies": {

@@ -3140,56 +3140,6 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect(
-    "surfaces a custom CLI rejection of persisted Fable aliases and allows recovery",
-    () => {
-      const harness = makeHarness();
-      return Effect.gen(function* () {
-        const adapter = yield* ClaudeAdapter;
-        yield* adapter.startSession({
-          threadId: THREAD_ID,
-          provider: "claudeAgent",
-          model: "fable",
-          runtimeMode: "full-access",
-          providerOptions: { claudeAgent: { subagentModel: "fable[1m]" } },
-        });
-        assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
-        assert.equal(
-          harness.getLastCreateQueryInput()?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL,
-          "claude-fable-5-1",
-        );
-        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
-        harness.query.emit({
-          type: "result",
-          subtype: "error_during_execution",
-          is_error: true,
-          errors: ["Model claude-fable-5-1 is not supported by this executable"],
-          session_id: "sdk-fable-rejected",
-          uuid: "fable-rejection",
-        } as unknown as SDKMessage);
-        const completed = yield* Stream.filter(
-          adapter.streamEvents,
-          (event) => event.type === "turn.completed",
-        ).pipe(Stream.runHead);
-        assert.equal(completed._tag, "Some");
-        if (completed._tag === "Some") {
-          assert.equal(completed.value.payload.state, "failed");
-          assert.match(completed.value.payload.errorMessage ?? "", /claude-fable-5-1/);
-        }
-        yield* adapter.sendTurn({
-          threadId: THREAD_ID,
-          model: "fable-5",
-          input: "retry with supported model",
-          attachments: [],
-        });
-        assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5"]);
-      }).pipe(
-        Effect.provideService(Random.Random, makeDeterministicRandomService()),
-        Effect.provide(harness.layer),
-      );
-    },
-  );
-
   it.effect("treats aborted_tools results as interrupted and hides ede_diagnostic errors", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

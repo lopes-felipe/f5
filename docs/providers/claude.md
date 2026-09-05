@@ -42,6 +42,28 @@ fall back to a supported option. Persisted thread models and sub-agent overrides
 without silent substitution, so an older executable can reject them. Select a supported model
 or upgrade the custom executable to recover.
 
+### Reproducing bundled-runtime release checks
+
+Run `bun run --cwd apps/server test:claude:live` using Node 24.13.1+ on `PATH` and an
+authenticated Claude account with Fable 5.1 access. This opt-in suite consumes account quota;
+ordinary test runs skip it. Authentication, quota, entitlement, timeout, and response-shape
+failures fail the live run rather than being reported as passes or automatic skips.
+
+The suite uses the bundled executable and the adapter's production query environment. It checks
+account usage through `normalizeClaudeAccountUsage`, native 1M context, cancellation and child
+process exit, streamed `TodoWrite` calls completing a three-step task, and structured `xhigh`
+generation through the production generator and schema validator.
+
+On September 5, 2026 at 17:47 CEST, all three live checks passed with SDK 0.3.261 / Claude Code
+2.1.261 on Windows under Node 24.13.1 (30.75 seconds). The earlier account session-limit blocker
+had cleared. These results do not claim live historical-CLI or workflow/sub-agent dispatch coverage.
+
+`ClaudeRecovery.test.ts` separately runs the real SDK against a deterministic executable fixture:
+an unsupported parent or sub-agent alias makes the child exit nonzero, F5 emits a bounded failed
+turn and session exit, and correcting the corresponding configuration produces a successful
+retry. It verifies both child processes exit. This is transport/adapter coverage, not a smoke test
+of an actual older Anthropic release.
+
 ## I Want Work And Personal Claude Accounts
 
 Use a different Claude home for each account.
