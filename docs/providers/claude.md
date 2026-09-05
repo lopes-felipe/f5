@@ -238,7 +238,7 @@ unsupported state; an initialization, authentication, executable, or response fa
 separately. Raw provider errors and account payloads are not sent to the browser.
 
 Opening Usage schedules stale account reads without blocking historical activity. Attempts are reused
-for five minutes, with at most two account probes running across all instances. Refresh updates
+for five minutes after completion, with at most two account probes running across all instances. Refresh updates
 history and requests fresh account data; force refresh bypasses the five-minute cache after a
 30-second minimum interval and coalesces with any queued or running job. Each probe has an eight-second
 budget after acquiring a permit. Switching the history range or provider does not trigger account
@@ -250,7 +250,10 @@ Claude percentages are already percentages, including values above 100%. Missing
 as Unknown. If plan limits are not reported, the card says so without inferring the authentication
 cause. Extra usage shows enabled state and utilization only; monetary amounts are omitted because the
 SDK does not establish their denomination. A failed refresh keeps the last successful data and its own
-fetch timestamp visible. Codex token history and quota snapshots retain successes independently.
+fetch timestamp visible. Updated labels use absolute local timestamps, so they remain accurate on
+an idle page without periodic external reads. History loading or failures do not hide account cards.
+Codex token history and quota snapshots share one account card and retain successes independently;
+each Codex refresh owns a short-lived control client that closes on completion or cancellation.
 
 F5 historical Claude tokens use reported main-agent usage fields. Whole-tree `modelUsage` fields do
 not fill gaps in these token facts. As a result, some older or repaired events can have unreported

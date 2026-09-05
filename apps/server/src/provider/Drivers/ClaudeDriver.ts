@@ -126,6 +126,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
             ];
           }),
         ),
+        { readerOwnsTimeout: true },
       );
 
       const checkProvider = checkClaudeProviderStatus(

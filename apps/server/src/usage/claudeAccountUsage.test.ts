@@ -64,3 +64,36 @@ describe("Claude account normalization", () => {
     ).toEqual(normalized);
   });
 });
+
+it.each(["Claude Opus 4.5", "Opus 4.1", "claude-opus-4-5"])(
+  "prefers versioned %s over the legacy Opus window",
+  (display_name) => {
+    const result = normalizeClaudeAccountUsage(
+      payload({
+        seven_day_opus: { utilization: 10 },
+        seven_day_sonnet: { utilization: 10 },
+        model_scoped: [
+          { display_name, utilization: 10 },
+          { display_name: "Fable", utilization: 10 },
+        ],
+      }),
+    );
+    expect(result.windows.map((window) => window.key)).not.toContain("seven_day_opus");
+    expect(result.windows.map((window) => window.key)).toContain("seven_day_sonnet");
+    expect(result.windows).toHaveLength(3);
+  },
+);
+it("recognizes versioned Sonnet but does not invent equivalence for unknown aliases", () => {
+  const result = normalizeClaudeAccountUsage(
+    payload({
+      seven_day_opus: { utilization: 10 },
+      seven_day_sonnet: { utilization: 10 },
+      model_scoped: [
+        { display_name: "Claude Sonnet 4.5", utilization: 10 },
+        { display_name: "My Opus alias", utilization: 10 },
+      ],
+    }),
+  );
+  expect(result.windows.map((window) => window.key)).toContain("seven_day_opus");
+  expect(result.windows.map((window) => window.key)).not.toContain("seven_day_sonnet");
+});

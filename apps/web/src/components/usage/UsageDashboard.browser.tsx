@@ -218,7 +218,9 @@ describe("query-connected usage dashboard", () => {
       await expect.element(page.getByRole("heading", { name: "Usage", exact: true })).toBeVisible();
       await expect.element(page.getByText("Codex — default configuration")).toBeVisible();
       await page.getByRole("button", { name: "Refresh usage" }).click();
-      await expect.element(page.getByRole("alert")).toHaveTextContent("Usage refresh failed");
+      await expect
+        .element(page.getByRole("alert"))
+        .toHaveTextContent("Historical usage refresh failed. Account usage refresh failed.");
       await expect.element(page.getByRole("heading", { name: "Usage", exact: true })).toBeVisible();
       await expect
         .element(page.getByRole("heading", { name: "Usage is unavailable" }))
@@ -332,7 +334,7 @@ it("renders Claude unknown and zero meters distinctly alongside Codex, with neut
               { key: "five_hour", label: "5-hour limit", utilization: null, resetsAt: "bad date" },
               { key: "seven_day", label: "Weekly limit", utilization: 0, resetsAt: null },
             ],
-            extraUsage: { enabled: false, utilization: null },
+            extraUsage: { enabled: true, utilization: 105.4 },
           },
         },
       },
@@ -370,6 +372,13 @@ it("renders Claude unknown and zero meters distinctly alongside Codex, with neut
       .element(page.getByRole("progressbar", { name: "Codex · 5-hour limit" }))
       .toBeVisible();
     await expect.element(page.getByText("Unknown", { exact: true })).toBeVisible();
+    await expect.element(page.getByText("Extra usage enabled")).toBeVisible();
+    await expect
+      .element(page.getByRole("progressbar", { name: "Claude \u00b7 Extra usage" }))
+      .toHaveAttribute("aria-valuetext", "105% used");
+    await expect
+      .element(page.getByRole("progressbar", { name: "Claude \u00b7 Extra usage" }))
+      .toHaveAttribute("aria-valuenow", "100");
   } finally {
     await screen.unmount();
   }
@@ -459,5 +468,130 @@ it("gives a zero bucket no visible bar and uses the Codex snapshot's UTC clock",
     await expect.element(page.getByText("40K", { exact: true })).toBeVisible();
   } finally {
     await screen.unmount();
+  }
+});
+
+it.each(["pending", "failed"])(
+  "renders account snapshots while initial history is %s",
+  async (state) => {
+    if (state === "pending") api.getSummary.mockImplementation(() => new Promise(() => {}));
+    else api.getSummary.mockRejectedValue(new Error("history offline"));
+    api.getAccounts.mockResolvedValue(accounts());
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <UsageDashboard />
+      </QueryClientProvider>,
+    );
+    try {
+      await expect
+        .element(page.getByRole("region", { name: "Account usage and limits" }))
+        .toBeVisible();
+      await expect
+        .element(page.getByRole("progressbar", { name: "Codex \u00b7 5-hour limit" }))
+        .toBeVisible();
+      if (state === "failed")
+        await expect
+          .element(page.getByRole("heading", { name: "Usage is unavailable" }))
+          .toBeVisible();
+    } finally {
+      await screen.unmount();
+      client.clear();
+      vi.resetAllMocks();
+    }
+  },
+);
+
+it("keeps account snapshots visible when an uncached history range is loading", async () => {
+  api.getSummary.mockResolvedValueOnce(summary()).mockImplementation(() => new Promise(() => {}));
+  api.getAccounts.mockResolvedValue(accounts());
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <UsageDashboard />
+    </QueryClientProvider>,
+  );
+  try {
+    await expect.element(page.getByRole("button", { name: "30 days" })).toBeVisible();
+    await page.getByRole("button", { name: "30 days" }).click();
+    await expect
+      .element(page.getByRole("progressbar", { name: "Codex \u00b7 5-hour limit" }))
+      .toBeVisible();
+    expect(api.getAccounts).toHaveBeenCalledTimes(1);
+  } finally {
+    await screen.unmount();
+    client.clear();
+    vi.resetAllMocks();
+  }
+});
+
+it("uses absolute freshness timestamps that stay truthful after idle time without reads", async () => {
+  api.getSummary.mockResolvedValue(summary());
+  api.getAccounts.mockResolvedValue(accounts());
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <UsageDashboard />
+    </QueryClientProvider>,
+  );
+  try {
+    const stamp = page.getByText(/Token history \u00b7 Updated/);
+    await expect.element(stamp).toBeVisible();
+    const before = stamp.element().textContent;
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 3_600_000);
+    expect(stamp.element().textContent).toBe(before);
+    expect(before).not.toMatch(/ago|just now|\?/);
+    expect(api.getAccounts).toHaveBeenCalledTimes(1);
+    expect(
+      page
+        .getByText(
+          "Provider-native ChatGPT/Codex account totals and quota windows. These are not dollar costs.",
+        )
+        .elements(),
+    ).toHaveLength(1);
+  } finally {
+    vi.restoreAllMocks();
+    await screen.unmount();
+    client.clear();
+    vi.resetAllMocks();
+  }
+});
+
+it("reports the refresh cooldown and shows an account loading placeholder", async () => {
+  api.getSummary.mockResolvedValue(summary());
+  let finishAccounts!: (value: UsageAccounts) => void;
+  api.getAccounts
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishAccounts = resolve;
+        }),
+    )
+    .mockResolvedValue(accounts());
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const screen = await render(
+    <QueryClientProvider client={client}>
+      <UsageDashboard />
+    </QueryClientProvider>,
+  );
+  try {
+    await expect.element(page.getByRole("status", { name: "Loading account usage" })).toBeVisible();
+    finishAccounts(accounts());
+    await expect
+      .element(page.getByRole("region", { name: "Account usage and limits" }))
+      .toBeVisible();
+    await page.getByRole("button", { name: "Refresh usage" }).click();
+    await expect
+      .element(
+        page.getByText(
+          "No new account refresh was scheduled. Refreshes have a 30-second minimum interval.",
+        ),
+      )
+      .toBeVisible();
+    expect(api.getAccounts).toHaveBeenCalledTimes(2);
+  } finally {
+    await screen.unmount();
+    client.clear();
+    vi.resetAllMocks();
   }
 });

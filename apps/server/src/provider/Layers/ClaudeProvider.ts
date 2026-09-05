@@ -1,3 +1,4 @@
+import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription.ts";
 import {
   type ClaudeSettings,
   type ModelCapabilities,
@@ -225,53 +226,6 @@ export function resolveClaudeApiModelId(modelSelection: ModelSelection): string 
   }
 }
 
-function toTitleCaseWords(value: string): string {
-  return value
-    .split(/[\s_-]+/g)
-    .filter(Boolean)
-    .map((part) => part[0]!.toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
-}
-
-export function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
-  const normalized = subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "");
-  if (!normalized) return undefined;
-
-  switch (normalized) {
-    case "claudemaxsubscription":
-      return "Max";
-    case "claudemax5xsubscription":
-      return "Max 5x";
-    case "claudemax20xsubscription":
-      return "Max 20x";
-    case "claudeenterprisesubscription":
-      return "Enterprise";
-    case "claudeteamsubscription":
-      return "Team";
-    case "claudeprosubscription":
-      return "Pro";
-    case "claudefreesubscription":
-      return "Free";
-    case "max":
-    case "maxplan":
-      return "Max";
-    case "max5":
-      return "Max 5x";
-    case "max20":
-      return "Max 20x";
-    case "enterprise":
-      return "Enterprise";
-    case "team":
-      return "Team";
-    case "pro":
-      return "Pro";
-    case "free":
-      return "Free";
-    default:
-      return toTitleCaseWords(subscriptionType!);
-  }
-}
-
 function normalizeClaudeAuthMethod(authMethod: string | undefined): string | undefined {
   const normalized = authMethod?.toLowerCase().replace(/[\s_-]+/g, "");
   if (!normalized) return undefined;
@@ -419,7 +373,9 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 export function withClaudeProbeQuery<A>(
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv,
-  use: (query: ReturnType<typeof claudeQuery>) => Promise<A>,
+  use: (
+    query: ReturnType<typeof claudeQuery>,
+  ) => Promise<A> | Effect.Effect<A, AccountUsageReadError>,
   options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
 ) {
   return Effect.suspend(() => {
@@ -427,7 +383,7 @@ export function withClaudeProbeQuery<A>(
     const cwd = options.cwd ?? process.cwd();
     return Effect.gen(function* () {
       const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-      return yield* Effect.tryPromise({
+      const q = yield* Effect.tryPromise({
         try: async () => {
           const q = (options.createQuery ?? claudeQuery)({
             // Never yield: closing stdin before the control request can terminate the CLI.
@@ -452,9 +408,18 @@ export function withClaudeProbeQuery<A>(
               stderr: () => {},
             },
           });
-          return await use(q);
+          return q;
         },
         catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+      });
+      return yield* Effect.suspend(() => {
+        const operation = use(q);
+        return Effect.isEffect(operation)
+          ? operation
+          : Effect.tryPromise({
+              try: () => operation,
+              catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+            });
       });
     }).pipe(
       Effect.ensuring(
@@ -505,31 +470,41 @@ export const probeClaudeAccountUsage = (
   options: {
     readonly createQuery?: typeof claudeQuery;
     readonly cwd?: string;
-    readonly onCapabilities?: (value: ClaudeCapabilitiesProbe) => Promise<void>;
+    readonly onCapabilities?: (value: ClaudeCapabilitiesProbe) => Effect.Effect<void>;
   } = {},
 ) =>
   withClaudeProbeQuery(
     claudeSettings,
     environment,
-    async (q) => {
-      const capabilities = claudeCapabilitiesFromInitialization(await q.initializationResult());
-      await options.onCapabilities?.(capabilities);
-      const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
-      if (typeof read !== "function") throw new AccountUsageReadError("unsupported");
-      let response: unknown;
-      try {
-        response = await read.call(q);
-      } catch (error) {
-        // Only a rejection from this operation can prove unsupported usage RPCs.
-        if (
-          error instanceof Error &&
-          /unknown (request|subtype)|unsupported|not supported|unrecognized/i.test(error.message)
-        )
-          throw new AccountUsageReadError("unsupported");
-        throw error;
-      }
-      return normalizeClaudeAccountUsage(response);
-    },
+    (q) =>
+      Effect.gen(function* () {
+        const init = yield* Effect.tryPromise({
+          try: () => q.initializationResult(),
+          catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+        });
+        const capabilities = claudeCapabilitiesFromInitialization(init);
+        if (options.onCapabilities) yield* options.onCapabilities(capabilities);
+        const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+        if (typeof read !== "function")
+          return yield* Effect.fail(new AccountUsageReadError("unsupported"));
+        const response = yield* Effect.tryPromise({
+          try: () => read.call(q),
+          // Only a rejection from this operation can prove unsupported usage RPCs.
+          catch: (error) =>
+            new AccountUsageReadError(
+              error instanceof Error &&
+                /unknown (request|subtype)|unsupported|not supported|unrecognized/i.test(
+                  error.message,
+                )
+                ? "unsupported"
+                : accountUsageErrorCode(error),
+            ),
+        });
+        return yield* Effect.try({
+          try: () => normalizeClaudeAccountUsage(response),
+          catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+        });
+      }),
     options,
   );
 

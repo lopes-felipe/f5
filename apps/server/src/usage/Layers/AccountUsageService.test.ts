@@ -242,3 +242,49 @@ it.effect(
       expect((yield* capability.getSnapshot).sections[0]?.snapshot).toEqual(response[0]?.snapshot);
     }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "expires five minutes after a nonzero-duration probe, without cache hits postponing it",
+  () =>
+    Effect.gen(function* () {
+      const calls = yield* Ref.make(0);
+      const permits = yield* Semaphore.make(2);
+      const capability = yield* makeAccountUsageCapability(
+        initial(),
+        Ref.update(calls, (n) => n + 1).pipe(
+          Effect.andThen(Effect.sleep("5 seconds")),
+          Effect.as(sections),
+        ),
+      );
+      yield* capability.refresh("if-stale", permits);
+      yield* settle;
+      yield* TestClock.adjust("5 seconds");
+      yield* settle;
+      yield* TestClock.adjust("296 seconds");
+      yield* capability.refresh("if-stale", permits);
+      yield* settle;
+      expect(yield* Ref.get(calls)).toBe(1);
+      yield* TestClock.adjust("4 seconds");
+      yield* capability.refresh("if-stale", permits);
+      yield* settle;
+      expect(yield* Ref.get(calls)).toBe(2);
+      yield* TestClock.adjust("5 seconds");
+    }).pipe(Effect.scoped),
+);
+
+it.effect("sanitizes defects and clears refresh state", () =>
+  Effect.gen(function* () {
+    const permits = yield* Semaphore.make(1);
+    const capability = yield* makeAccountUsageCapability(
+      initial(),
+      Effect.die(new Error("secret-sdk-payload")),
+    );
+    yield* capability.refresh("force", permits);
+    yield* settle;
+    expect(yield* capability.getSnapshot).toMatchObject({
+      refreshState: "idle",
+      sections: [{ outcome: "unavailable", errorCode: "temporary-failure" }],
+    });
+    yield* permits.withPermits(1)(Effect.void);
+  }).pipe(Effect.scoped),
+);

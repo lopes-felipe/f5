@@ -8,7 +8,7 @@ import {
   type ClaudeCapabilitiesProbe,
 } from "../Layers/ClaudeProvider.ts";
 import { makeClaudeCapabilitiesCacheKey } from "./ClaudeHome.ts";
-import { ACCOUNT_ATTEMPT_TTL_MS } from "../../usage/Layers/AccountUsageService.ts";
+import { ACCOUNT_ATTEMPT_TTL_MS } from "../../usage/accountUsage.ts";
 
 /** Constructed in the instance scope: status checks never invoke the usage scan. */
 export const makeClaudeInstanceProbes = (
@@ -43,12 +43,10 @@ export const makeClaudeInstanceProbes = (
       probeClaudeAccountUsage(settings, environment, {
         ...options,
         onCapabilities: (value) =>
-          Effect.runPromise(
-            Effect.gen(function* () {
-              yield* Ref.set(initialized, { at: yield* Clock.currentTimeMillis, value });
-              yield* Cache.set(cache, key, value);
-            }),
-          ),
+          Effect.gen(function* () {
+            yield* Ref.set(initialized, { at: yield* Clock.currentTimeMillis, value });
+            yield* Cache.set(cache, key, value);
+          }),
       }).pipe(Effect.provideService(Path.Path, path)),
     );
     return { capabilities: Cache.get(cache, key), usage };

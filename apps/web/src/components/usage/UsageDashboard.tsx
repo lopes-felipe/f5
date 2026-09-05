@@ -8,8 +8,11 @@ import type {
   UsageRange,
   UsageSummary,
 } from "@t3tools/contracts";
+
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 import { AlertTriangleIcon, CoinsIcon, GaugeIcon, RefreshCwIcon, SigmaIcon } from "lucide-react";
+
 import { useMemo, useState } from "react";
 
 import {
@@ -19,34 +22,48 @@ import {
   usageQueryKeys,
   usageSummaryQueryOptions,
 } from "../../lib/usageReactQuery";
+
 import { ensureNativeApi } from "../../nativeApi";
-import { formatRelativeTimeLabel } from "../../lib/relativeTime";
+
+import { formatAbsoluteTimeLabel } from "../../lib/relativeTime";
+
 import { QuotaMeter } from "./charts/QuotaMeter";
+
 import { StackedBarChart } from "./charts/StackedBarChart";
+
 import { cn } from "../../lib/utils";
+
 import { Button } from "../ui/button";
+
 import { Card, CardHeader, CardPanel, CardTitle } from "../ui/card";
+
 import { Skeleton } from "../ui/skeleton";
 
 const RANGES: ReadonlyArray<{ readonly value: UsageRange; readonly label: string }> = [
   { value: "24h", label: "24 hours" },
+
   { value: "7d", label: "7 days" },
+
   { value: "30d", label: "30 days" },
+
   { value: "90d", label: "90 days" },
 ];
 
 function compactNumber(value: number): string {
   return new Intl.NumberFormat(undefined, {
     notation: value >= 10_000 ? "compact" : "standard",
+
     maximumFractionDigits: value >= 10_000 ? 1 : 0,
   }).format(value);
 }
 
 function compactDecimalCount(value: string | null): string {
   if (value === null) return "Unavailable";
+
   try {
     return new Intl.NumberFormat(undefined, {
       notation: value.length > 4 ? "compact" : "standard",
+
       maximumFractionDigits: value.length > 4 ? 1 : 0,
     }).format(BigInt(value));
   } catch {
@@ -56,23 +73,33 @@ function compactDecimalCount(value: string | null): string {
 
 function rateLimitWindowLabel(window: CodexAccountRateLimitWindow, fallback: string): string {
   const minutes = window.windowDurationMins;
+
   if (minutes === null) return fallback;
+
   if (minutes === 300) return "5-hour limit";
+
   if (minutes === 10_080) return "Weekly limit";
+
   if (minutes % 1_440 === 0) return `${minutes / 1_440}-day limit`;
+
   if (minutes % 60 === 0) return `${minutes / 60}-hour limit`;
+
   return `${minutes}-minute limit`;
 }
 
 function CodexRateLimitWindowView(props: {
   readonly window: CodexAccountRateLimitWindow;
+
   readonly fallbackLabel: string;
 }) {
   const label = rateLimitWindowLabel(props.window, props.fallbackLabel);
+
   const milliseconds = props.window.resetsAt === null ? NaN : props.window.resetsAt * 1000;
+
   const resetsAt = Number.isFinite(new Date(milliseconds).getTime())
     ? new Date(milliseconds).toISOString()
     : null;
+
   return (
     <QuotaMeter
       label={label}
@@ -85,139 +112,136 @@ function CodexRateLimitWindowView(props: {
 
 function codexAccountRangeTokens(input: {
   readonly usage: CodexAccountUsage;
+
   readonly range: UsageRange;
 }): string | null {
   const rangeDays = input.range === "24h" ? 1 : Number.parseInt(input.range, 10);
+
   const firstDay = new Date(input.usage.fetchedAt);
+
   firstDay.setUTCHours(0, 0, 0, 0);
+
   firstDay.setUTCDate(firstDay.getUTCDate() - (rangeDays - 1));
+
   const firstDate = firstDay.toISOString().slice(0, 10);
+
   let total = 0n;
+
   let found = false;
+
   for (const bucket of input.usage.dailyUsageBuckets) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(bucket.startDate)) continue;
+
     const date = new Date(`${bucket.startDate}T00:00:00.000Z`);
+
     if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== bucket.startDate)
       continue;
+
     if (bucket.startDate < firstDate || bucket.startDate > input.usage.fetchedAt.slice(0, 10))
       continue;
+
     total += BigInt(bucket.tokens);
+
     found = true;
   }
+
   return found ? total.toString() : null;
 }
 
-function CodexAccountUsageCard(props: {
+function CodexAccountUsageSection(props: {
   readonly usage: CodexAccountUsage;
+
   readonly range: UsageRange;
 }) {
   const { usage } = props;
+
   const summary = usage.tokenSummary;
+
   const rangeTokens = codexAccountRangeTokens(props);
-  if (usage.status !== "available") {
-    return (
-      <Card className="rounded-xl">
-        <CardHeader className="p-4 pb-2">
-          <CardTitle className="text-sm">Codex account usage</CardTitle>
-        </CardHeader>
-        <CardPanel className="p-4 pt-1 text-xs text-muted-foreground">
-          {usage.status === "unsupported"
-            ? "This installed Codex version does not expose account usage and rate limits."
-            : "Codex account usage is temporarily unavailable."}
-          {usage.message ? <p className="mt-1 break-words opacity-80">{usage.message}</p> : null}
-        </CardPanel>
-      </Card>
-    );
-  }
 
   return (
-    <Card className="rounded-xl">
-      <CardHeader className="p-4 pb-2">
-        <CardTitle className="text-sm">Codex account usage</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          Provider-native ChatGPT/Codex account totals and quota windows. These are not dollar
-          costs.
-        </p>
-      </CardHeader>
-      <CardPanel className="space-y-4 p-4 pt-2">
-        {summary ? (
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            <div>
-              <p className="text-[11px] text-muted-foreground">
-                Account tokens ·{" "}
-                {props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`}
-              </p>
-              <p className="mt-0.5 text-lg font-semibold tabular-nums">
-                {compactDecimalCount(rangeTokens)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-muted-foreground">Lifetime tokens</p>
-              <p className="mt-0.5 text-lg font-semibold tabular-nums">
-                {compactDecimalCount(summary.lifetimeTokens)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-muted-foreground">Peak daily tokens</p>
-              <p className="mt-0.5 text-lg font-semibold tabular-nums">
-                {compactDecimalCount(summary.peakDailyTokens)}
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-muted-foreground">Current usage streak</p>
-              <p className="mt-0.5 text-lg font-semibold tabular-nums">
-                {summary.currentStreakDays === null
-                  ? "Unavailable"
-                  : `${summary.currentStreakDays} day${summary.currentStreakDays === "1" ? "" : "s"}`}
-              </p>
-            </div>
+    <div className="space-y-4 pt-2">
+      {summary ? (
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div>
+            <p className="text-[11px] text-muted-foreground">
+              Account tokens ·{" "}
+              {props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`}
+            </p>
+            <p className="mt-0.5 text-lg font-semibold tabular-nums">
+              {compactDecimalCount(rangeTokens)}
+            </p>
           </div>
-        ) : null}
+          <div>
+            <p className="text-[11px] text-muted-foreground">Lifetime tokens</p>
+            <p className="mt-0.5 text-lg font-semibold tabular-nums">
+              {compactDecimalCount(summary.lifetimeTokens)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] text-muted-foreground">Peak daily tokens</p>
+            <p className="mt-0.5 text-lg font-semibold tabular-nums">
+              {compactDecimalCount(summary.peakDailyTokens)}
+            </p>
+          </div>
+          <div>
+            <p className="text-[11px] text-muted-foreground">Current usage streak</p>
+            <p className="mt-0.5 text-lg font-semibold tabular-nums">
+              {summary.currentStreakDays === null
+                ? "Unavailable"
+                : `${summary.currentStreakDays} day${summary.currentStreakDays === "1" ? "" : "s"}`}
+            </p>
+          </div>
+        </div>
+      ) : null}
 
-        {usage.rateLimits.length > 0 ? (
-          <div className="grid gap-4 border-t border-border/60 pt-4 md:grid-cols-2">
-            {usage.rateLimits.map((limit) => (
-              <div key={limit.id} className="space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-medium">{limit.name ?? limit.id}</p>
-                  {limit.planType ? (
-                    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                      {limit.planType}
-                    </span>
-                  ) : null}
-                </div>
-                {limit.primary ? (
-                  <CodexRateLimitWindowView window={limit.primary} fallbackLabel="Primary limit" />
-                ) : null}
-                {limit.secondary ? (
-                  <CodexRateLimitWindowView
-                    window={limit.secondary}
-                    fallbackLabel="Secondary limit"
-                  />
-                ) : null}
-                {limit.credits?.hasCredits ? (
-                  <p className="text-[11px] text-muted-foreground">
-                    Credits:{" "}
-                    {limit.credits.unlimited ? "Unlimited" : (limit.credits.balance ?? "—")}
-                  </p>
+      {usage.rateLimits.length > 0 ? (
+        <div className="grid gap-4 border-t border-border/60 pt-4 md:grid-cols-2">
+          {usage.rateLimits.map((limit) => (
+            <div key={limit.id} className="space-y-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium">{limit.name ?? limit.id}</p>
+                {limit.planType ? (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {limit.planType}
+                  </span>
                 ) : null}
               </div>
-            ))}
-          </div>
-        ) : null}
-      </CardPanel>
-    </Card>
+              {limit.primary ? (
+                <CodexRateLimitWindowView window={limit.primary} fallbackLabel="Primary limit" />
+              ) : null}
+              {limit.secondary ? (
+                <CodexRateLimitWindowView
+                  window={limit.secondary}
+                  fallbackLabel="Secondary limit"
+                />
+              ) : null}
+              {limit.credits?.hasCredits ? (
+                <p className="text-[11px] text-muted-foreground">
+                  Credits: {limit.credits.unlimited ? "Unlimited" : (limit.credits.balance ?? "—")}
+                </p>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
 function costLabel(metrics: UsageMetrics): string {
   if (metrics.providerReportedCostUsd === null) return "Unreported";
+
   const formatted = new Intl.NumberFormat(undefined, {
     style: "currency",
+
     currency: "USD",
+
     minimumFractionDigits: 2,
+
     maximumFractionDigits: 4,
   }).format(metrics.providerReportedCostUsd);
+
   return metrics.unpricedTurnCount > 0 ? `${formatted} + unreported` : formatted;
 }
 
@@ -225,12 +249,16 @@ function providerLabel(provider: UsageSummary["byProvider"][number]["provider"])
   switch (provider) {
     case "claudeAgent":
       return "Claude";
+
     case "opencode":
       return "OpenCode";
+
     case "codex":
       return "Codex";
+
     case "cursor":
       return "Cursor";
+
     case "grok":
       return "Grok";
   }
@@ -238,11 +266,15 @@ function providerLabel(provider: UsageSummary["byProvider"][number]["provider"])
 
 function MetricCard(props: {
   readonly label: string;
+
   readonly value: string;
+
   readonly detail: string;
+
   readonly icon: typeof GaugeIcon;
 }) {
   const Icon = props.icon;
+
   return (
     <Card className="rounded-xl">
       <CardPanel className="p-4">
@@ -261,10 +293,15 @@ function MetricCard(props: {
 
 const ACCOUNT_ERROR_MESSAGES: Record<AccountUsageErrorCode, string> = {
   unsupported: "This installed provider version does not expose account usage and rate limits.",
+
   "authentication-required": "Account usage requires authentication in provider settings.",
+
   timeout: "The account usage request timed out.",
+
   "process-unavailable": "The configured provider executable is unavailable.",
+
   "invalid-response": "The provider returned an invalid account usage response.",
+
   "temporary-failure": "Account usage is temporarily unavailable.",
 };
 
@@ -284,6 +321,12 @@ function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range
                   : "Refreshing…"}
             </span>
           </div>
+          {account.provider === "codex" && (
+            <p className="text-xs text-muted-foreground">
+              Provider-native ChatGPT/Codex account totals and quota windows. These are not dollar
+              costs.
+            </p>
+          )}
           {account.provider === "claudeAgent" && (
             <p className="text-xs text-muted-foreground">
               Configured instance's server-default authentication context.
@@ -298,12 +341,12 @@ function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range
               <div key={section.kind} className="space-y-2">
                 <p className="text-xs text-muted-foreground">
                   {section.kind === "codex-tokens"
-                    ? "Token history ? "
+                    ? "Token history · "
                     : section.kind === "codex-limits"
-                      ? "Rate limits ? "
+                      ? "Rate limits · "
                       : ""}
                   {section.snapshot
-                    ? `Updated ${formatRelativeTimeLabel(section.snapshot.fetchedAt)}`
+                    ? `Updated ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}`
                     : "No successful snapshot yet"}
                 </p>
                 {section.outcome !== "available" &&
@@ -313,7 +356,7 @@ function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range
                         ? `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`
                         : ACCOUNT_ERROR_MESSAGES[section.errorCode ?? "temporary-failure"]}
                       {section.snapshot
-                        ? ` Showing data from ${formatRelativeTimeLabel(section.snapshot.fetchedAt)}.`
+                        ? ` Showing data from ${formatAbsoluteTimeLabel(section.snapshot.fetchedAt)}.`
                         : ""}
                     </p>
                   )}
@@ -364,26 +407,35 @@ function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range
                   </div>
                 )}
                 {section.kind === "codex-tokens" && section.snapshot && (
-                  <CodexAccountUsageCard
+                  <CodexAccountUsageSection
                     range={range}
                     usage={{
                       ...section.snapshot.data,
+
                       status: "available",
+
                       fetchedAt: section.snapshot.fetchedAt,
+
                       rateLimits: [],
+
                       message: null,
                     }}
                   />
                 )}
                 {section.kind === "codex-limits" && section.snapshot && (
-                  <CodexAccountUsageCard
+                  <CodexAccountUsageSection
                     range={range}
                     usage={{
                       ...section.snapshot.data,
+
                       status: "available",
+
                       fetchedAt: section.snapshot.fetchedAt,
+
                       tokenSummary: null,
+
                       dailyUsageBuckets: [],
+
                       message: null,
                     }}
                   />
@@ -399,19 +451,34 @@ function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range
 
 export function UsageDashboardView(props: {
   readonly summary: UsageSummary;
+
   readonly range: UsageRange;
+
   readonly onRangeChange: (range: UsageRange) => void;
+
   readonly fetching: boolean;
+
   readonly accounts?: UsageAccounts | undefined;
+
   readonly provider?: ProviderKind | undefined;
+
   readonly onProviderChange?: (provider: ProviderKind | undefined) => void;
+
   readonly onRefresh?: () => void;
+
   readonly error?: string | null;
+
   readonly onDismissError?: () => void;
+
+  readonly renderAccounts?: boolean;
+
+  readonly refreshNotice?: string | null;
 }) {
   const { summary } = props;
+
   const coverageDate = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
+
     timeStyle: "short",
   }).format(new Date(summary.coverage.coverageStartedAt));
 
@@ -435,7 +502,7 @@ export function UsageDashboardView(props: {
               Refresh
             </Button>
             <span className="text-xs text-muted-foreground" title={summary.generatedAt}>
-              Updated {formatRelativeTimeLabel(summary.generatedAt)}
+              Updated {formatAbsoluteTimeLabel(summary.generatedAt)}
             </span>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
@@ -467,7 +534,7 @@ export function UsageDashboardView(props: {
         >
           <span>
             {props.error} Last successful history update:{" "}
-            {formatRelativeTimeLabel(summary.generatedAt)}.
+            {formatAbsoluteTimeLabel(summary.generatedAt)}.
           </span>
           <Button
             size="xs"
@@ -623,47 +690,100 @@ export function UsageDashboardView(props: {
             </div>
           </div>
         </section>
-      ) : null}{" "}
+      ) : null}
       <p className="text-xs text-muted-foreground">
         Claude history uses reported main-agent token fields. SDK-reported cost estimates can cover
         a broader scope and are not billing data.
       </p>
-      <AccountUsageCards accounts={props.accounts ?? []} range={props.range} />
+      {props.refreshNotice && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {props.refreshNotice}
+        </p>
+      )}
+      {props.renderAccounts !== false && props.accounts && (
+        <AccountUsageCards accounts={props.accounts} range={props.range} />
+      )}
     </div>
   );
 }
 
 export function UsageDashboard() {
   const [range, setRange] = useState<UsageRange>("7d");
+
   const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", []);
+
   const [provider, setProvider] = useState<ProviderKind>();
+
   const [refreshing, setRefreshing] = useState(false);
+
+  const [refreshNotice, setRefreshNotice] = useState<string | null>(null);
+
   const [refreshError, setRefreshError] = useState<string | null>(null);
+
   const [dismissedErrorAt, setDismissedErrorAt] = useState(0);
+
   const queryClient = useQueryClient();
+
   const summaryQuery = useQuery(usageSummaryQueryOptions(range, timeZone, provider));
+
   const accountsQuery = useQuery(usageAccountsQueryOptions());
+
   const jobsPending = accountJobsPending(accountsQuery.data);
+
   const refresh = async () => {
     if (refreshing || jobsPending) return;
+
     setRefreshing(true);
+
     setRefreshError(null);
+
+    setRefreshNotice(null);
+
+    const errors: string[] = [];
+
     try {
       const result = await summaryQuery.refetch();
-      if (result.error) setRefreshError("Historical usage refresh failed.");
+
+      if (result.error) errors.push("Historical usage refresh failed.");
+    } catch {
+      errors.push("Historical usage refresh failed.");
+    }
+
+    try {
       const accounts = decodeUsageAccounts(
         await ensureNativeApi().usage.getAccounts({ refresh: "force" }),
       );
+
+      if (
+        !accountJobsPending(accounts) &&
+        accounts.some((account) => account.enabled) &&
+        accounts.every(
+          (account) =>
+            JSON.stringify(account.sections) ===
+            JSON.stringify(
+              accountsQuery.data?.find((prior) => prior.key === account.key)?.sections,
+            ),
+        )
+      ) {
+        setRefreshNotice(
+          "No new account refresh was scheduled. Refreshes have a 30-second minimum interval.",
+        );
+      }
+
       queryClient.setQueryData(usageQueryKeys.accounts, accounts);
     } catch {
-      setRefreshError("Usage refresh failed. Please retry.");
+      errors.push("Account usage refresh failed. Please retry.");
     } finally {
+      setRefreshError(errors.length ? errors.join(" ") : null);
+
       setRefreshing(false);
     }
   };
 
+  let history;
+
   if (summaryQuery.isPending) {
-    return (
+    history = (
       <div className="mx-auto grid w-full max-w-6xl gap-4 px-4 py-6 sm:px-6">
         <Skeleton className="h-16 w-full" />
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -674,11 +794,9 @@ export function UsageDashboard() {
         <Skeleton className="h-64 w-full rounded-xl" />
       </div>
     );
-  }
-
-  if (!summaryQuery.data) {
-    return (
-      <div className="flex min-h-full items-center justify-center p-6">
+  } else if (!summaryQuery.data) {
+    history = (
+      <div className="flex items-center justify-center p-6">
         <div className="max-w-md text-center">
           <AlertTriangleIcon aria-hidden="true" className="mx-auto size-7 text-muted-foreground" />
           <h1 className="mt-3 text-base font-medium">Usage is unavailable</h1>
@@ -697,32 +815,55 @@ export function UsageDashboard() {
         </div>
       </div>
     );
+  } else {
+    history = (
+      <UsageDashboardView
+        summary={summaryQuery.data}
+        range={range}
+        onRangeChange={setRange}
+        fetching={summaryQuery.isFetching || refreshing || jobsPending}
+        renderAccounts={false}
+        refreshNotice={refreshNotice}
+        provider={provider}
+        onProviderChange={setProvider}
+        onRefresh={() => {
+          void refresh();
+        }}
+        error={
+          refreshError ??
+          (summaryQuery.isError && summaryQuery.errorUpdatedAt > dismissedErrorAt
+            ? "Historical usage refresh failed."
+            : accountsQuery.isError && accountsQuery.errorUpdatedAt > dismissedErrorAt
+              ? "Account snapshots could not be refreshed."
+              : null)
+        }
+        onDismissError={() => {
+          setRefreshError(null);
+
+          setDismissedErrorAt(Date.now());
+        }}
+      />
+    );
   }
 
   return (
-    <UsageDashboardView
-      summary={summaryQuery.data}
-      range={range}
-      onRangeChange={setRange}
-      fetching={summaryQuery.isFetching || refreshing || jobsPending}
-      accounts={accountsQuery.data}
-      provider={provider}
-      onProviderChange={setProvider}
-      onRefresh={() => {
-        void refresh();
-      }}
-      error={
-        refreshError ??
-        (summaryQuery.isError && summaryQuery.errorUpdatedAt > dismissedErrorAt
-          ? "Historical usage refresh failed."
-          : accountsQuery.isError && accountsQuery.errorUpdatedAt > dismissedErrorAt
-            ? "Account snapshots could not be refreshed."
-            : null)
-      }
-      onDismissError={() => {
-        setRefreshError(null);
-        setDismissedErrorAt(Date.now());
-      }}
-    />
+    <>
+      {history}
+      <div className="mx-auto w-full max-w-6xl space-y-3 px-4 pb-6 sm:px-6">
+        {accountsQuery.isPending ? (
+          <div role="status" aria-label="Loading account usage">
+            <Skeleton className="h-32 w-full rounded-xl" />
+          </div>
+        ) : null}
+        {accountsQuery.isError &&
+          !summaryQuery.data &&
+          accountsQuery.errorUpdatedAt > dismissedErrorAt && (
+            <p role="alert" className="text-xs text-muted-foreground">
+              Account snapshots could not be refreshed.
+            </p>
+          )}
+        {accountsQuery.data && <AccountUsageCards accounts={accountsQuery.data} range={range} />}
+      </div>
+    </>
   );
 }

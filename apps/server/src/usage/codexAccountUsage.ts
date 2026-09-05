@@ -1,16 +1,19 @@
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import type {
   CodexAccountCredits,
   CodexAccountDailyUsageBucket,
   CodexAccountRateLimit,
   CodexAccountRateLimitWindow,
   CodexAccountTokenSummary,
-  CodexAccountUsage,
-  IsoDateTime,
+  AccountUsageSection,
 } from "@t3tools/contracts";
 
 import { AccountUsageReadError, accountUsageErrorCode } from "./accountUsageErrors.ts";
-import { type CodexControlClient, isMethodNotFoundError } from "../codex/CodexControlClient.ts";
+import {
+  CodexControlClient,
+  type CodexControlEnvironmentConfig,
+  isMethodNotFoundError,
+} from "../codex/CodexControlClient.ts";
 
 import {
   asRecord,
@@ -95,116 +98,68 @@ export function normalizeRateLimits(value: unknown): ReadonlyArray<CodexAccountR
   return legacy ? [legacy] : [];
 }
 
-function messageForErrors(errors: ReadonlyArray<unknown>): string | null {
-  return errors.length
-    ? errors.every(isMethodNotFoundError)
-      ? "Method not found."
-      : "Account usage is temporarily unavailable."
-    : null;
-}
+/** Own a dedicated client: cancelling startup or either scoped read retires its process.
+ * The shared admin pool cannot provide this guarantee without cancelling unrelated callers.
+ */
+export const probeCodexAccountSections = (environment: CodexControlEnvironmentConfig) =>
+  Effect.suspend(() => {
+    let client: CodexControlClient | undefined;
+    return Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis;
+      client = yield* Effect.tryPromise({
+        try: (signal) => CodexControlClient.create(environment, signal),
+        catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+      }).pipe(Effect.timeout(8_000));
+      const remaining = Math.max(1, 8_000 - ((yield* Clock.currentTimeMillis) - startedAt));
+      return yield* readCodexAccountSections(client, remaining);
+    }).pipe(Effect.ensuring(Effect.sync(() => client?.close())));
+  });
 
-export async function readCodexAccountUsage(input: {
-  readonly client: CodexControlClient;
-  readonly fetchedAt: IsoDateTime;
-}): Promise<CodexAccountUsage> {
-  const [tokenUsageResult, rateLimitsResult] = await Promise.allSettled([
-    input.client.readAccountTokenUsage(),
-    input.client.readAccountRateLimits(),
-  ]);
-  const errors = [tokenUsageResult, rateLimitsResult].flatMap((result) =>
-    result.status === "rejected" ? [result.reason] : [],
-  );
-  const hasSuccessfulResponse =
-    tokenUsageResult.status === "fulfilled" || rateLimitsResult.status === "fulfilled";
-  const status = hasSuccessfulResponse
-    ? "available"
-    : errors.length > 0 && errors.every(isMethodNotFoundError)
-      ? "unsupported"
-      : "unavailable";
-  const tokenUsage =
-    tokenUsageResult.status === "fulfilled" ? asRecord(tokenUsageResult.value) : null;
-
-  return {
-    status,
-    fetchedAt: input.fetchedAt,
-    tokenSummary: normalizeTokenSummary(tokenUsage?.summary),
-    dailyUsageBuckets: normalizeDailyUsageBuckets(tokenUsage?.dailyUsageBuckets),
-    rateLimits:
-      rateLimitsResult.status === "fulfilled" ? normalizeRateLimits(rateLimitsResult.value) : [],
-    message: messageForErrors(errors),
-  };
-}
-
-export function unavailableCodexAccountUsage(input: {
-  readonly fetchedAt: IsoDateTime;
-  readonly error: unknown;
-}): CodexAccountUsage {
-  return {
-    status: isMethodNotFoundError(input.error) ? "unsupported" : "unavailable",
-    fetchedAt: input.fetchedAt,
-    tokenSummary: null,
-    dailyUsageBuckets: [],
-    rateLimits: [],
-    message: messageForErrors([input.error]),
-  };
-}
-
-/** Separate outcomes allow one RPC to fail without discarding the other snapshot. */
-export async function readCodexAccountSections(
-  client: CodexControlClient,
-  timeoutMs = 8_000,
-): Promise<ReadonlyArray<import("@t3tools/contracts").AccountUsageSection>> {
-  const read = async (
-    kind: "codex-tokens" | "codex-limits",
-  ): Promise<import("@t3tools/contracts").AccountUsageSection> => {
-    try {
-      const response = await Effect.runPromise(
-        Effect.tryPromise({
-          try: () =>
-            kind === "codex-tokens"
-              ? client.readAccountTokenUsage()
-              : client.readAccountRateLimits(),
-          catch: (error) =>
-            new AccountUsageReadError(
-              isMethodNotFoundError(error) ? "unsupported" : accountUsageErrorCode(error),
-            ),
-        }).pipe(Effect.timeout(timeoutMs)),
-      );
+/** RPC failures are values, so one failed section never discards a successful sibling.
+ * The caller owns the client and must close it after this effect, including interruption.
+ */
+export function readCodexAccountSections(client: CodexControlClient, timeoutMs = 8_000) {
+  const read = (kind: "codex-tokens" | "codex-limits"): Effect.Effect<AccountUsageSection> =>
+    Effect.gen(function* () {
+      const response = yield* Effect.tryPromise({
+        try: () =>
+          kind === "codex-tokens" ? client.readAccountTokenUsage() : client.readAccountRateLimits(),
+        catch: (error) =>
+          new AccountUsageReadError(
+            isMethodNotFoundError(error) ? "unsupported" : accountUsageErrorCode(error),
+          ),
+      }).pipe(Effect.timeout(timeoutMs));
       const record = asRecord(response);
-      if (!record) throw new AccountUsageReadError("invalid-response");
-      if (kind === "codex-tokens") {
-        const data = {
-          tokenSummary: normalizeTokenSummary(record.summary),
-          dailyUsageBuckets: normalizeDailyUsageBuckets(record.dailyUsageBuckets),
-        };
-        const fetchedAt = new Date().toISOString();
-        return {
-          kind,
-          outcome: "available",
-          lastAttemptAt: fetchedAt,
-          errorCode: null,
-          snapshot: { fetchedAt, data },
-        };
-      }
-      const data = { rateLimits: normalizeRateLimits(record) };
-      const fetchedAt = new Date().toISOString();
+      if (!record) return yield* Effect.fail(new AccountUsageReadError("invalid-response"));
+      const data =
+        kind === "codex-tokens"
+          ? {
+              tokenSummary: normalizeTokenSummary(record.summary),
+              dailyUsageBuckets: normalizeDailyUsageBuckets(record.dailyUsageBuckets),
+            }
+          : { rateLimits: normalizeRateLimits(record) };
+      const fetchedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
       return {
         kind,
         outcome: "available",
         lastAttemptAt: fetchedAt,
         errorCode: null,
         snapshot: { fetchedAt, data },
-      };
-    } catch (error) {
-      const errorCode = isMethodNotFoundError(error) ? "unsupported" : accountUsageErrorCode(error);
-      return {
-        kind,
-        outcome: errorCode === "unsupported" ? "unsupported" : "unavailable",
-        lastAttemptAt: new Date().toISOString(),
-        errorCode,
-        snapshot: null,
-      };
-    }
-  };
-  return Promise.all([read("codex-tokens"), read("codex-limits")]);
+      } as AccountUsageSection;
+    }).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* () {
+          // Classify typed Effect failures here, before any Promise/FiberFailure boundary.
+          const errorCode = accountUsageErrorCode(error);
+          return {
+            kind,
+            outcome: errorCode === "unsupported" ? "unsupported" : "unavailable",
+            lastAttemptAt: new Date(yield* Clock.currentTimeMillis).toISOString(),
+            errorCode,
+            snapshot: null,
+          } as AccountUsageSection;
+        }),
+      ),
+    );
+  return Effect.all([read("codex-tokens"), read("codex-limits")], { concurrency: 2 });
 }

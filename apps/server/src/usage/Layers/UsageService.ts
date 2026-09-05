@@ -1,3 +1,4 @@
+import { ServerConfig } from "../../config.ts";
 import {
   type UsageTokenComposition,
   type UsageAccount,
@@ -21,7 +22,7 @@ import {
   emptyAccountSection,
   type AccountUsageCapability,
 } from "./AccountUsageService.ts";
-import { CodexControlClientRegistry } from "../../codex/CodexControlClientRegistry.ts";
+import { readCodexControlEnvironmentConfig } from "../../codex/CodexControlClientRegistry.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import {
   UsageFactRepository,
@@ -29,7 +30,7 @@ import {
 } from "../../persistence/Services/UsageFacts.ts";
 import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
-import { readCodexAccountSections } from "../codexAccountUsage.ts";
+import { probeCodexAccountSections } from "../codexAccountUsage.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 
 interface MutableMetrics {
@@ -357,7 +358,7 @@ export function buildUsageSummary(input: {
 
 const make = Effect.gen(function* () {
   const repository = yield* UsageFactRepository;
-  const codexControlClients = yield* CodexControlClientRegistry;
+  const serverConfig = yield* ServerConfig;
   const serverSettings = yield* ServerSettingsService;
 
   const registry = yield* ProviderInstanceRegistry;
@@ -375,10 +376,9 @@ const make = Effect.gen(function* () {
       if (codex) yield* Scope.close(codex.scope, Exit.void);
       const scope = yield* Scope.make();
       yield* Scope.addFinalizer(parentScope, Scope.close(scope, Exit.void));
-      // The admin-client TTL caches the process, not account data. This separate
-      // in-memory cache makes refresh meaningful and keeps history independent.
+      // Account data has its own five-minute cache. Each attempt owns a dedicated
+      // process so configuration retirement cannot leave pooled RPC work running.
       const read = Effect.gen(function* () {
-        const startedAt = yield* Clock.currentTimeMillis;
         const parsed = parseLaunchArgv(settings.launchArgs);
         if (!parsed.ok) return yield* Effect.fail(new Error("Invalid executable configuration"));
         const providerOptions = toCodexProviderStartOptions({
@@ -386,14 +386,15 @@ const make = Effect.gen(function* () {
           homePath: settings.homePath || undefined,
           launchArgs: parsed.argv,
         });
-        const client = yield* codexControlClients
-          .getAdminClient({
-            projectId: ProjectId.makeUnsafe("f5-account-usage"),
-            ...(providerOptions ? { providerOptions } : {}),
-          })
-          .pipe(Effect.timeout("8 seconds"));
-        const remaining = Math.max(1, 8_000 - ((yield* Clock.currentTimeMillis) - startedAt));
-        return yield* Effect.tryPromise(() => readCodexAccountSections(client, remaining));
+        return yield* probeCodexAccountSections(
+          readCodexControlEnvironmentConfig(
+            {
+              projectId: ProjectId.makeUnsafe("f5-account-usage"),
+              ...(providerOptions ? { providerOptions } : {}),
+            },
+            serverConfig.cwd,
+          ),
+        );
       });
       const capability = yield* makeAccountUsageCapability(
         {
@@ -437,7 +438,7 @@ const make = Effect.gen(function* () {
           displayName: entry.displayName ?? "Claude",
           enabled: entry.enabled,
           refreshState: "idle",
-          sections: [{ ...emptyAccountSection("claude-usage"), errorCode: "process-unavailable" }],
+          sections: [{ ...emptyAccountSection("claude-usage"), errorCode: "temporary-failure" }],
         }));
       return [...snapshots, ...shadows];
     }).pipe(

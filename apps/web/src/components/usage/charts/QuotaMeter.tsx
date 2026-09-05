@@ -26,7 +26,9 @@ export function QuotaMeter(props: {
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={percent}
-        aria-valuetext={props.utilization === null ? "Unknown" : `${props.utilization}% used`}
+        aria-valuetext={
+          props.utilization === null ? "Unknown" : `${props.utilization.toFixed(0)}% used`
+        }
         className="h-1.5 overflow-hidden rounded-full bg-muted"
       >
         <div

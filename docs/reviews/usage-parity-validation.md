@@ -38,7 +38,7 @@ The images are included in this PR. No PR was created during the original implem
 - `bun run --cwd apps/web test:browser src/components/usage/UsageDashboard.browser.tsx`: 11 tests
 - `bun run upstream-ports:check`: ledger valid (500 frozen commits); remote provenance verification skipped by the script because the authoritative upstream remote is unavailable. The manifest was not refreshed.
 
-The original `codexAccountUsage.test.ts` is unchanged. Tests include the real SDK stdio control-request harness, prompt-free initialization and usage, exactly-once abort on success/failure/interruption/timeout, capabilities reuse, scope retirement, sixteen queued accounts, two-probe concurrency, TTL/cooldown, independent Codex failures, provider predicates in both SQL branches, mixed-provider composition, older-server decoding, query-connected rejected refreshes, focus/reconnect, memory-only progress polling, and accessible unknown/zero meters.
+The original normalization assertions in `codexAccountUsage.test.ts` now target the production section reader; the superseded combined reader was removed during review. Tests include the real SDK stdio control-request harness, prompt-free initialization and usage, exactly-once abort on success/failure/interruption/timeout, capabilities reuse, scope retirement, sixteen queued accounts, two-probe concurrency, TTL/cooldown, independent Codex failures, provider predicates in both SQL branches, mixed-provider composition, older-server decoding, query-connected rejected refreshes, focus/reconnect, memory-only progress polling, and accessible unknown/zero meters.
 
 ## Repository failures and environment limits
 
@@ -65,3 +65,46 @@ The local projects history contained 183 files totaling 30,366,002 bytes. The re
 - Complete the live page refresh-after-cooldown and disable/re-enable walkthrough. The equivalent browser interaction states pass in the query-connected harness.
 
 The subscription API path itself is verified; the outstanding checks above are not represented as passed.
+
+## Review corrections (2026-09-05)
+
+Applied Author A's four findings: the five-minute cache age now starts at probe completion,
+cache hits cannot change attempt timestamps, account cards remain outside the history loading/error
+boundary, scoped Codex clients close pending startup/RPC work on cancellation or deadline, and
+freshness labels use absolute timestamps rather than relative labels that stop aging.
+
+Applied Author B's presentation and lifecycle findings: corrected the literal question-mark separators;
+rendered Codex sections inside one account card; recognized versioned Opus/Sonnet display names while
+preserving unknown aliases; sanitized defects without swallowing interruption; classified Codex errors
+inside the Effect runtime; removed Claude's competing outer timeout; kept capability-cache updates
+in the calling fiber; moved subscription formatting and capability contracts/constants into leaf
+modules; used neutral copy for unregistered drivers; and removed the unused combined Codex reader.
+Account loading has a placeholder, refresh failures preserve both operation messages, cooldowns have
+inline feedback, and visible/accessibility quota percentages use the same rounding.
+
+Two review points did not warrant the proposed change:
+
+- The claimed absence of Claude fixtures, stacked composition, and omitted-field decoding tests
+  did not match the reviewed branch. Those tests already existed in `UsageDashboard.browser.tsx`.
+  They are retained; coverage now also includes enabled extra usage above 100%, initial history
+  rejection/loading, an uncached range, absolute freshness after clock advancement, and cooldown feedback.
+- The parameterized SQL predicate remains unchanged. No query-plan regression was demonstrated,
+  and speculative indexing/query rewrites are outside these correctness fixes.
+
+Review validation: 59 focused usage/Claude/persistence server tests, 22 adjacent provider/control-registry
+tests, and 16 query-connected/presentation browser tests pass. The new Codex cancellation tests exercise
+the real control client and reader over fake stdio, including startup interruption/deadline, in-flight
+RPC interruption/deadline with partial success, and scope retirement before permit reuse. A TestClock
+regression covers a five-second probe and requests at seconds 301 and 305; another verifies the
+capabilities cache shares the usage caller's clock. The existing Claude SDK stdio tests still pass.
+
+The full suite was run again. It reported failures in storage symlinks, repair/migration, assets,
+backup, NodePTY, and WebSocket transport, then stopped producing output for over three minutes and
+was terminated. This remains an incomplete, failing full-suite run. A separate run on `main`
+reproduced all five failures across StorageMaintenance, StuckTurnRepair, and webSocketTransport
+(26 other tests passed), confirming those examples predate these edits. Other full-suite failures
+were not individually re-baselined. The separately run exhaustive Git matrix passed all 107 tests.
+The upstream ledger passed; authoritative remote provenance was skipped by the script.
+
+The earlier live-validation gaps remain outstanding; this review pass does not claim to close them.
+The before/after images above document the initial implementation, before these review corrections.

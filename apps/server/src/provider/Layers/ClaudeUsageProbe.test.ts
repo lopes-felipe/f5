@@ -20,7 +20,7 @@ describe("Claude account probe", () => {
   it("uses real SDK initialization and get_usage without writing a prompt; aborts once", async () => {
     const messages: string[] = [];
     const abort = vi.fn();
-    const onCapabilities = vi.fn(async () => {});
+    const onCapabilities = vi.fn(() => Effect.void);
     let child: FakeClaudeCodeProcess | undefined;
     const createQuery: typeof query = (input) => {
       expect(input.options?.cwd).toBe(process.cwd());
@@ -224,4 +224,31 @@ it.skipIf(process.platform !== "win32")(
       rmdirSync(cwd);
     }
   },
+);
+
+effectIt.effect(
+  "usage initialization shares the calling TestClock with capability TTL checks",
+  () =>
+    Effect.gen(function* () {
+      const createQuery = vi.fn<typeof query>(
+        () =>
+          ({
+            initializationResult: async () => ({ commands: [] }),
+            usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => ({
+              rate_limits_available: false,
+            }),
+          }) as unknown as Query,
+      );
+      const probes = yield* makeClaudeInstanceProbes(settings, process.env, {
+        cwd: process.cwd(),
+        createQuery,
+      });
+      yield* probes.usage;
+      yield* TestClock.adjust("299 seconds");
+      yield* probes.capabilities;
+      expect(createQuery).toHaveBeenCalledTimes(1);
+      yield* TestClock.adjust("2 seconds");
+      yield* probes.capabilities;
+      expect(createQuery).toHaveBeenCalledTimes(2);
+    }).pipe(Effect.provide(NodePath.layer)),
 );

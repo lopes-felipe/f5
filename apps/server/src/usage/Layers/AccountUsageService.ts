@@ -1,17 +1,13 @@
-import type { AccountUsageSection, UsageAccount, UsageGetAccountsInput } from "@t3tools/contracts";
-import { Cache, Clock, Effect, Ref } from "effect";
-import type * as Semaphore from "effect/Semaphore";
+import type { AccountUsageSection, UsageAccount } from "@t3tools/contracts";
+import { Cache, Cause, Clock, Effect, Ref } from "effect";
 import { accountUsageErrorCode } from "../accountUsageErrors.ts";
 
-export const ACCOUNT_ATTEMPT_TTL_MS = 5 * 60_000;
-export const ACCOUNT_FORCE_COOLDOWN_MS = 30_000;
-export interface AccountUsageCapability {
-  readonly getSnapshot: Effect.Effect<UsageAccount>;
-  readonly refresh: (
-    mode: UsageGetAccountsInput["refresh"],
-    permits: Semaphore.Semaphore,
-  ) => Effect.Effect<void>;
-}
+import {
+  ACCOUNT_ATTEMPT_TTL_MS,
+  ACCOUNT_FORCE_COOLDOWN_MS,
+  type AccountUsageCapability,
+} from "../accountUsage.ts";
+export type { AccountUsageCapability } from "../accountUsage.ts";
 export function emptyAccountSection(kind: AccountUsageSection["kind"]): AccountUsageSection {
   return { kind, outcome: "unavailable", lastAttemptAt: null, snapshot: null, errorCode: null };
 }
@@ -25,18 +21,48 @@ export const makeAccountUsageCapability = <E>(
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const state = yield* Ref.make(initial);
-    const lastScheduled = yield* Ref.make<number | null>(null);
+    // Cache TTL starts at completion; force cooldown starts only on a real miss.
+    // A cache hit must never postpone the next eligible attempt.
+    const lastStarted = yield* Ref.make<number | null>(null);
+    const lastCompleted = yield* Ref.make<number | null>(null);
     const attempts = yield* Cache.make({
       capacity: 4,
       timeToLive: ACCOUNT_ATTEMPT_TTL_MS,
-      lookup: () => read,
+      lookup: () =>
+        Effect.gen(function* () {
+          yield* Ref.set(lastStarted, yield* Clock.currentTimeMillis);
+          return yield* options.readerOwnsTimeout ? read : read.pipe(Effect.timeout("8 seconds"));
+        }).pipe(
+          // Readers return section failures independently. Only a connection-level
+          // failure (or defect) here applies to every section. Never swallow retirement.
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.failCause(cause)
+              : Effect.gen(function* () {
+                  const at = new Date(yield* Clock.currentTimeMillis).toISOString();
+                  const errorCode = accountUsageErrorCode(Cause.squash(cause));
+                  return initial.sections.map((section) => ({
+                    ...section,
+                    outcome:
+                      errorCode === "unsupported"
+                        ? ("unsupported" as const)
+                        : ("unavailable" as const),
+                    lastAttemptAt: at,
+                    errorCode,
+                  }));
+                }),
+          ),
+          Effect.ensuring(
+            Clock.currentTimeMillis.pipe(Effect.flatMap((at) => Ref.set(lastCompleted, at))),
+          ),
+        ),
     });
     const refresh: AccountUsageCapability["refresh"] = (mode = "if-stale", permits) =>
       Effect.uninterruptible(
         Effect.gen(function* () {
           if (!initial.enabled || mode === "none") return;
           const now = yield* Clock.currentTimeMillis;
-          const previous = yield* Ref.get(lastScheduled);
+          const previous = yield* Ref.get(mode === "force" ? lastStarted : lastCompleted);
           const scheduled = yield* Ref.modify(state, (current) => {
             if (
               current.refreshState !== "idle" ||
@@ -48,35 +74,14 @@ export const makeAccountUsageCapability = <E>(
             return [true, { ...current, refreshState: "queued" as const }] as const;
           });
           if (!scheduled) return;
-          yield* Ref.set(lastScheduled, now);
           const job = permits.withPermits(1)(
             Effect.gen(function* () {
               yield* Ref.update(state, (current) => ({
                 ...current,
                 refreshState: "refreshing" as const,
               }));
-              yield* Ref.set(lastScheduled, yield* Clock.currentTimeMillis);
               if (mode === "force") yield* Cache.invalidate(attempts, initial.key);
-              const sections = yield* Cache.get(attempts, initial.key).pipe(
-                // Queue time is intentionally outside the eight-second probe budget.
-                (effect) =>
-                  options.readerOwnsTimeout ? effect : effect.pipe(Effect.timeout("8 seconds")),
-                Effect.catch((error) =>
-                  Effect.gen(function* () {
-                    const at = new Date(yield* Clock.currentTimeMillis).toISOString();
-                    const errorCode = accountUsageErrorCode(error);
-                    return initial.sections.map((section) => ({
-                      ...section,
-                      outcome:
-                        errorCode === "unsupported"
-                          ? ("unsupported" as const)
-                          : ("unavailable" as const),
-                      lastAttemptAt: at,
-                      errorCode,
-                    }));
-                  }),
-                ),
-              );
+              const sections = yield* Cache.get(attempts, initial.key);
               yield* Ref.update(state, (current) => ({
                 ...current,
                 sections: sections.map((section) => {

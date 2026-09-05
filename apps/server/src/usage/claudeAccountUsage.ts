@@ -1,5 +1,5 @@
 import type { ClaudeAccountUsage } from "@t3tools/contracts";
-import { claudeSubscriptionLabel } from "../provider/Layers/ClaudeProvider.ts";
+import { claudeSubscriptionLabel } from "../provider/claudeSubscription.ts";
 import {
   asRecord,
   asTrimmedString,
@@ -46,7 +46,14 @@ export function normalizeClaudeAccountUsage(value: unknown): ClaudeAccountUsage 
       const row = asRecord(limits[key]);
       const model =
         key === "seven_day_opus" ? "opus" : key === "seven_day_sonnet" ? "sonnet" : null;
-      if (!row || (model && (scoped.has(model) || scoped.has(`claude ${model}`)))) continue;
+      if (
+        !row ||
+        (model &&
+          Array.from(scoped.keys()).some((name) =>
+            new RegExp(`^(?:claude[ -]+)?${model}(?:[ -]+[0-9]+(?:[.-][0-9]+)*)?$`).test(name),
+          ))
+      )
+        continue;
       windows.push({
         key,
         label,
