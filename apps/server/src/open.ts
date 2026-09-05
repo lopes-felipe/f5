@@ -6,14 +6,14 @@
  *
  * @module Open
  */
-import spawn from "cross-spawn";
+import { spawn } from "node:child_process";
 import NodePath from "node:path";
 
 import { EDITORS, type EditorId } from "@t3tools/contracts";
 import { Cause, Effect, Exit, Layer, Schema, ServiceMap } from "effect";
 
 import { editorLaunchTotal, increment } from "./observability/Metrics.ts";
-import { isCommandAvailable } from "./spawn/resolveCommand.ts";
+import { isCommandAvailable, resolveInvocation } from "./spawn/resolveCommand.ts";
 
 export { isCommandAvailable } from "./spawn/resolveCommand.ts";
 
@@ -236,9 +236,11 @@ export const launchDetached = (launch: EditorLaunch) =>
     yield* Effect.callback<void, OpenError>((resume) => {
       let child;
       try {
-        child = spawn(launch.command, [...launch.args], {
+        const invocation = resolveInvocation(launch.command, launch.args);
+        child = spawn(invocation.file, [...invocation.args], {
           detached: true,
           stdio: "ignore",
+          windowsHide: true,
         });
       } catch (error) {
         return resume(

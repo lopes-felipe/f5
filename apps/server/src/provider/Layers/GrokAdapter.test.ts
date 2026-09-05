@@ -1,6 +1,7 @@
+import { writeAcpWrapper } from "../../testUtils/cli.ts";
 import * as os from "node:os";
 import * as path from "node:path";
-import { chmod, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -29,14 +30,8 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
   GrokAdapter,
   Effect.gen(function* () {
     const dir = yield* Effect.promise(() => mkdtemp(path.join(os.tmpdir(), "grok-acp-mock-")));
-    const wrapperPath = path.join(dir, "fake-grok.sh");
-    yield* Effect.promise(async () => {
-      await writeFile(
-        wrapperPath,
-        `#!/bin/sh\nexport T3_ACP_PROMPT_DELAY_MS=80\nexport T3_ACP_LOAD_FAIL_NOT_FOUND=1\nexec bun ${JSON.stringify(mockAgentPath)} "$@"\n`,
-        "utf8",
-      );
-      await chmod(wrapperPath, 0o755);
+    const wrapperPath = writeAcpWrapper(path.join(dir, "fake-grok"), mockAgentPath, {
+      env: { T3_ACP_PROMPT_DELAY_MS: "80", T3_ACP_LOAD_FAIL_NOT_FOUND: "1" },
     });
     const settings = Schema.decodeSync(GrokSettings)({ binaryPath: wrapperPath });
     return yield* makeGrokAdapter(settings);

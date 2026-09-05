@@ -117,7 +117,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.mode, "desktop");
       assert.equal(resolvedConfig?.port, 4010);
       assert.equal(resolvedConfig?.host, "0.0.0.0");
-      assert.equal(resolvedConfig?.stateDir, "/tmp/t3-cli-state");
+      assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/t3-cli-state"));
       assert.equal(resolvedConfig?.devUrl?.toString(), "http://127.0.0.1:5173/");
       assert.equal(resolvedConfig?.noBrowser, true);
       assert.equal(resolvedConfig?.authToken, "auth-secret-auth-secret-auth-secret");
@@ -154,7 +154,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       assert.equal(resolvedConfig?.mode, "desktop");
       assert.equal(resolvedConfig?.port, 4999);
       assert.equal(resolvedConfig?.host, "100.88.10.4");
-      assert.equal(resolvedConfig?.stateDir, "/tmp/t3-env-state");
+      assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/t3-env-state"));
       assert.equal(resolvedConfig?.devUrl?.toString(), "http://localhost:5173/");
       assert.equal(resolvedConfig?.noBrowser, true);
       assert.equal(resolvedConfig?.authToken, "env-token-env-token-env-token");
@@ -174,7 +174,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       });
 
       assert.equal(start.mock.calls.length, 1);
-      assert.equal(resolvedConfig?.stateDir, "/tmp/f5-env-state");
+      assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/f5-env-state"));
     }),
   );
 
@@ -191,7 +191,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       );
 
       assert.equal(start.mock.calls.length, 1);
-      assert.equal(resolvedConfig?.stateDir, "/tmp/t3-env-state");
+      assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/t3-env-state"));
     }),
   );
 
@@ -203,7 +203,7 @@ it.layer(testLayer)("server CLI command", (it) => {
       });
 
       assert.equal(start.mock.calls.length, 1);
-      assert.equal(resolvedConfig?.stateDir, "/tmp/cli-state");
+      assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/cli-state"));
     }),
   );
 
@@ -221,8 +221,8 @@ it.layer(testLayer)("server CLI command", (it) => {
         );
 
         assert.equal(start.mock.calls.length, 1);
-        assert.equal(resolvedConfig?.baseDir, "/tmp/f5-home");
-        assert.equal(resolvedConfig?.stateDir, "/tmp/f5-home/userdata");
+        assert.equal(resolvedConfig?.baseDir, Path.resolve("/tmp/f5-home"));
+        assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/f5-home/userdata"));
       }),
     ),
   );
@@ -241,8 +241,8 @@ it.layer(testLayer)("server CLI command", (it) => {
         );
 
         assert.equal(start.mock.calls.length, 1);
-        assert.equal(resolvedConfig?.baseDir, "/tmp/t3-home");
-        assert.equal(resolvedConfig?.stateDir, "/tmp/t3-home/userdata");
+        assert.equal(resolvedConfig?.baseDir, Path.resolve("/tmp/t3-home"));
+        assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/t3-home/userdata"));
       }),
     ),
   );
@@ -260,8 +260,8 @@ it.layer(testLayer)("server CLI command", (it) => {
         );
 
         assert.equal(start.mock.calls.length, 1);
-        assert.equal(resolvedConfig?.baseDir, "/tmp/cli-home");
-        assert.equal(resolvedConfig?.stateDir, "/tmp/cli-home/userdata");
+        assert.equal(resolvedConfig?.baseDir, Path.resolve("/tmp/cli-home"));
+        assert.equal(resolvedConfig?.stateDir, Path.resolve("/tmp/cli-home/userdata"));
       }),
     ),
   );

@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, writeFileSync } from "node:fs";
+import { writeCliScript } from "../../testUtils/cli.ts";
+import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
@@ -27,76 +28,28 @@ import { makeAdapterRegistryMock } from "../testUtils/providerAdapterRegistryMoc
 type RunOneOffPrompt = NonNullable<ProviderAdapterShape<ProviderAdapterError>["runOneOffPrompt"]>;
 type OneOffInput = Parameters<RunOneOffPrompt>[0];
 
-function writeExecutable(filePath: string, contents: string): void {
-  writeFileSync(filePath, contents, { mode: 0o755 });
-  chmodSync(filePath, 0o755);
-}
-
 function makeReadyCodexCli(filePath: string): void {
-  writeExecutable(
+  writeCliScript(
     filePath,
-    `#!/bin/sh
-case "$*" in
-  *"--version"*)
-  echo "codex 1.0.0"
-  exit 0
-  ;;
-  *"login status"*)
-  echo '{"authenticated":true}'
-  exit 0
-  ;;
-esac
-echo "unexpected args: $*" >&2
-exit 1
-`,
+    'if (process.argv.includes("--version")) console.log("codex 1.0.0"); else if (process.argv.slice(2).join(" ") === "login status") console.log(JSON.stringify({authenticated:true})); else process.exitCode = 1;',
   );
 }
-
 function makeUnsupportedCodexCli(filePath: string): void {
-  writeExecutable(
+  writeCliScript(
     filePath,
-    `#!/bin/sh
-case "$*" in
-  *"--version"*)
-  echo "codex 0.36.0"
-  exit 0
-  ;;
-esac
-echo "unexpected args: $*" >&2
-exit 1
-`,
+    'if (process.argv.includes("--version")) console.log("codex 0.36.0"); else process.exitCode = 1;',
   );
 }
-
 function makeReadyClaudeCli(filePath: string): void {
-  writeExecutable(
+  writeCliScript(
     filePath,
-    `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo "1.0.0"
-  exit 0
-fi
-if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
-  echo '{"loggedIn":true}'
-  exit 0
-fi
-echo "unexpected args: $*" >&2
-exit 1
-`,
+    'if (process.argv.includes("--version")) console.log("1.0.0"); else if (process.argv.slice(2).join(" ") === "auth status") console.log(JSON.stringify({loggedIn:true})); else process.exitCode = 1;',
   );
 }
-
 function makeReadyCursorCli(filePath: string): void {
-  writeExecutable(
+  writeCliScript(
     filePath,
-    `#!/bin/sh
-if [ "$1" = "about" ]; then
-  echo '{"cliVersion":"2026.04.08-test","userEmail":"cursor@example.com","subscriptionTier":"pro"}'
-  exit 0
-fi
-echo "unexpected args: $*" >&2
-exit 1
-`,
+    'if (process.argv[2] === "about") console.log(JSON.stringify({cliVersion:"2026.04.08-test", userEmail:"cursor@example.com", subscriptionTier:"pro"})); else process.exitCode = 1;',
   );
 }
 
@@ -244,7 +197,7 @@ describe("HarnessValidationLive", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const service = yield* Effect.service(HarnessValidation);
         const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-        const codexPath = path.join(tempDir, "codex");
+        const codexPath = path.join(tempDir, "codex.cjs");
         const missingClaudePath = path.join(tempDir, "missing-claude");
         makeUnsupportedCodexCli(codexPath);
 
@@ -305,8 +258,8 @@ describe("HarnessValidationLive", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const service = yield* Effect.service(HarnessValidation);
         const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-        const codexPath = path.join(tempDir, "codex");
-        const claudePath = path.join(tempDir, "claude");
+        const codexPath = path.join(tempDir, "codex.cjs");
+        const claudePath = path.join(tempDir, "claude.cjs");
         const codexHomePath = path.join(tempDir, ".codex-home");
         makeReadyCodexCli(codexPath);
         makeReadyClaudeCli(claudePath);
@@ -387,9 +340,9 @@ describe("HarnessValidationLive", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const service = yield* Effect.service(HarnessValidation);
         const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-        const codexPath = path.join(tempDir, "codex");
-        const claudePath = path.join(tempDir, "claude");
-        const cursorPath = path.join(tempDir, "agent");
+        const codexPath = path.join(tempDir, "codex.cjs");
+        const claudePath = path.join(tempDir, "claude.cjs");
+        const cursorPath = path.join(tempDir, "agent.cjs");
         makeReadyCodexCli(codexPath);
         makeReadyClaudeCli(claudePath);
         makeReadyCursorCli(cursorPath);
@@ -480,8 +433,8 @@ describe("HarnessValidationLive", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const service = yield* Effect.service(HarnessValidation);
         const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-        const codexPath = path.join(tempDir, "codex");
-        const claudePath = path.join(tempDir, "claude");
+        const codexPath = path.join(tempDir, "codex.cjs");
+        const claudePath = path.join(tempDir, "claude.cjs");
         makeReadyCodexCli(codexPath);
         makeReadyClaudeCli(claudePath);
 
@@ -530,8 +483,8 @@ describe("HarnessValidationLive", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const service = yield* Effect.service(HarnessValidation);
         const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-        const codexPath = path.join(tempDir, "codex");
-        const claudePath = path.join(tempDir, "claude");
+        const codexPath = path.join(tempDir, "codex.cjs");
+        const claudePath = path.join(tempDir, "claude.cjs");
         makeReadyCodexCli(codexPath);
         makeReadyClaudeCli(claudePath);
 
@@ -597,8 +550,8 @@ describe("HarnessValidationLive", () => {
         const fileSystem = yield* FileSystem.FileSystem;
         const service = yield* Effect.service(HarnessValidation);
         const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-        const codexPath = path.join(tempDir, "codex");
-        const claudePath = path.join(tempDir, "claude");
+        const codexPath = path.join(tempDir, "codex.cjs");
+        const claudePath = path.join(tempDir, "claude.cjs");
         makeReadyCodexCli(codexPath);
         makeReadyClaudeCli(claudePath);
 
@@ -635,8 +588,8 @@ describe("HarnessValidationLive", () => {
           const fileSystem = yield* FileSystem.FileSystem;
           const service = yield* Effect.service(HarnessValidation);
           const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-harness-test-" });
-          const codexPath = path.join(tempDir, "codex");
-          const claudePath = path.join(tempDir, "claude");
+          const codexPath = path.join(tempDir, "codex.cjs");
+          const claudePath = path.join(tempDir, "claude.cjs");
           makeReadyCodexCli(codexPath);
           makeReadyClaudeCli(claudePath);
 

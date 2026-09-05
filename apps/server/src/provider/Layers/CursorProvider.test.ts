@@ -1,3 +1,4 @@
+import { writeAcpWrapper, waitForAgentExit } from "../../testUtils/cli.ts";
 import * as NodeOS from "node:os";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -67,71 +68,30 @@ function booleanDescriptor(id: string, label: string, currentValue?: boolean) {
 const makeMockAgentWrapper = Effect.fn("makeMockAgentWrapper")(function* (
   extraEnv?: Record<string, string>,
 ) {
-  const fileSystem = yield* FileSystem.FileSystem;
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const mockAgentPath = yield* resolveMockAgentPath();
-  const dir = yield* fileSystem.makeTempDirectory({
+  const agent = yield* resolveMockAgentPath();
+  const dir = yield* fs.makeTempDirectory({
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-mock-",
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
-exec ${JSON.stringify("bun")} ${JSON.stringify(mockAgentPath)} "$@"
-`;
-  yield* fileSystem.writeFileString(wrapperPath, script);
-  yield* fileSystem.chmod(wrapperPath, 0o755);
-  return wrapperPath;
+  return writeAcpWrapper(path.join(dir, "fake-agent"), agent, { env: extraEnv });
 });
 
 const makeMockAgentWithAboutWrapper = Effect.fn("makeMockAgentWithAboutWrapper")(function* (
   extraEnv?: Record<string, string>,
 ) {
-  const fileSystem = yield* FileSystem.FileSystem;
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const mockAgentPath = yield* resolveMockAgentPath();
-  const dir = yield* fileSystem.makeTempDirectory({
+  const agent = yield* resolveMockAgentPath();
+  const dir = yield* fs.makeTempDirectory({
     directory: NodeOS.tmpdir(),
     prefix: "cursor-provider-about-mock-",
   });
-  const wrapperPath = path.join(dir, "fake-agent.sh");
-  const envExports = Object.entries(extraEnv ?? {})
-    .map(([key, value]) => `export ${key}=${JSON.stringify(value)}`)
-    .join("\n");
-  const script = `#!/bin/sh
-${envExports}
-if [ "$1" = "about" ]; then
-  printf 'CLI Version         2026.04.09-f2b0fcd\\n'
-  printf 'User Email          cursor@example.com\\n'
-  exit 0
-fi
-exec ${JSON.stringify("bun")} ${JSON.stringify(mockAgentPath)} "$@"
-`;
-  yield* fileSystem.writeFileString(wrapperPath, script);
-  yield* fileSystem.chmod(wrapperPath, 0o755);
-  return wrapperPath;
-});
-
-const waitForFileContent = Effect.fn("waitForFileContent")(function* (
-  filePath: string,
-  attempts = 40,
-) {
-  const fileSystem = yield* FileSystem.FileSystem;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const content = yield* fileSystem
-      .readFileString(filePath)
-      .pipe(Effect.catch(() => Effect.void));
-    if (content !== undefined) {
-      if (content.trim().length > 0) {
-        return content;
-      }
-    }
-    yield* Effect.sleep("50 millis");
-  }
-  return yield* Effect.fail(new Error(`Timed out waiting for file content at ${filePath}`));
+  return writeAcpWrapper(path.join(dir, "fake-agent"), agent, {
+    env: extraEnv,
+    about: "CLI Version         2026.04.09-f2b0fcd\nUser Email          cursor@example.com\n",
+  });
 });
 
 const readFileIfPresent = Effect.fn("readFileIfPresent")(function* (filePath: string) {
@@ -648,8 +608,7 @@ describe("discoverCursorModelsViaAcp", () => {
       }).pipe(Effect.provide(NodeServices.layer)),
     );
 
-    const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog).toContain("SIGTERM");
+    await waitForAgentExit(exitLogPath);
   });
 });
 
@@ -689,8 +648,7 @@ describe("discoverCursorModelCapabilitiesViaAcp", () => {
       "claude-opus-4-6",
     ]);
 
-    const exitLog = await runNode(waitForFileContent(exitLogPath));
-    expect(exitLog.match(/SIGTERM/g)?.length ?? 0).toBe(4);
+    await waitForAgentExit(exitLogPath, 4);
   });
 });
 

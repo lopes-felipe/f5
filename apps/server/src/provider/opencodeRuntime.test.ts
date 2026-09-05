@@ -54,11 +54,13 @@ describe("buildOpenCodePermissionRules", () => {
 
 describe("resolveOpenCodeInvocation", () => {
   it("routes OpenCode commands through the shared invocation resolver", () => {
-    expect(resolveOpenCodeInvocation("opencode", ["serve", "--port=0"], process.env)).toEqual({
-      file: "opencode",
-      args: ["serve", "--port=0"],
-      kind: "native",
-    });
+    expect(resolveOpenCodeInvocation(process.execPath, ["serve", "--port=0"], process.env)).toEqual(
+      {
+        file: process.execPath,
+        args: ["serve", "--port=0"],
+        kind: "native",
+      },
+    );
   });
 
   it.skipIf(process.platform !== "win32")(

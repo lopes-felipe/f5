@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
   CheckpointRef,
   CommandId,
@@ -1653,7 +1654,10 @@ describe("WorkflowService", () => {
     expect(createWorktreeArgs?.branch).toBe("main");
     expect(typeof createWorktreeArgs?.newBranch).toBe("string");
     expect(createWorktreeArgs?.path).toBe(
-      `/tmp/f5-workflow/worktrees/project/${createWorktreeArgs?.newBranch?.replace(/\//g, "-")}`,
+      join(
+        "/tmp/f5-workflow/worktrees/project",
+        createWorktreeArgs!.newBranch!.replace(/\//g, "-"),
+      ),
     );
 
     const threadCreate = harness.dispatched.find(

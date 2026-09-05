@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# Each package starts its own test workers. Bound the server pool so those
+# processes do not exhaust hosted runners while the other packages run.
+env:
+  F5_TEST_MAX_WORKERS: "2"
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
