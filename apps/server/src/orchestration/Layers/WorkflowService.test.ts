@@ -767,6 +767,164 @@ describe("WorkflowService", () => {
     harness = null;
   });
 
+  function oversizedReviewSnapshot(
+    options: {
+      retry?: boolean;
+      planSize?: number;
+      acceptedFirst?: boolean;
+      exhaustedSecond?: boolean;
+    } = {},
+  ) {
+    const base = makeWorkflow();
+    const implementation = makeImplementation({
+      status: options.retry ? "error" : "implemented",
+      errorStage: options.retry ? "review-setup" : null,
+      error: options.retry
+        ? "Implementation review inputs rendered prompt is 157166 characters; maximum is 116000."
+        : null,
+      implementationTurnId: "implementation-turn",
+      reviewArtifact: {
+        sourceThreadId: ThreadId.makeUnsafe("implementation-thread"),
+        sourceTurnCount: 1,
+        patchText: `diff --git a/large.ts b/large.ts\n${"+payload\n".repeat(13_000)}`,
+        fullPatchHash: "persisted-full-patch-hash",
+        truncated: true,
+        truncationReason: "Original capture limit.",
+        createdAt: NOW,
+      },
+      codeReviews: [base.branchA, base.branchB].map((branch) => ({
+        reviewerLabel: `Author ${branch.branchId}`,
+        reviewerSlot: branch.authorSlot,
+        threadId: ThreadId.makeUnsafe(`code-review-${branch.branchId}`),
+        status: "pending",
+        error: null,
+        retryCount: 0,
+        lastRetryAt: null,
+        updatedAt: NOW,
+      })),
+    });
+    const workflow = makeWorkflow({
+      templateId: "builtin.planning.dual",
+      templateVersion: 2,
+      implementation,
+    });
+    return makeReadModel({
+      workflow,
+      threads: [
+        makeThread({
+          id: ThreadId.makeUnsafe("merge-thread"),
+          proposedPlans: [
+            {
+              id: "approved-plan",
+              turnId: TurnId.makeUnsafe("merge-turn"),
+              planMarkdown: `# Approved plan\n${"p".repeat(options.planSize ?? 38_000)}`,
+              implementedAt: null,
+              implementationThreadId: null,
+              createdAt: NOW,
+              updatedAt: NOW,
+            },
+          ],
+        }),
+        // No implementation user message: review setup must not require or replay one.
+        makeThread({ id: ThreadId.makeUnsafe("implementation-thread") }),
+        ...(options.acceptedFirst
+          ? [makeThread({ id: ThreadId.makeUnsafe("code-review-a") })]
+          : []),
+        ...(options.exhaustedSecond
+          ? [
+              makeThread({
+                id: ThreadId.makeUnsafe("code-review-b"),
+                estimatedContextTokens: 2_000_000,
+              }),
+            ]
+          : []),
+      ],
+    });
+  }
+
+  it.each([false, true])(
+    "budgets saved implementation review artifacts on %s retry",
+    async (retry) => {
+      const snapshot = oversizedReviewSnapshot({ retry });
+      harness = await createHarness(snapshot);
+      if (retry)
+        await Effect.runPromise(
+          harness.service.retryWorkflow({ workflowId: snapshot.planningWorkflows[0]!.id }),
+        );
+      else await harness.start();
+      await waitFor(
+        () =>
+          turnStartsForThread(harness!.dispatched, ThreadId.makeUnsafe("code-review-b")).length ===
+          1,
+      );
+      for (const branch of ["a", "b"]) {
+        const starts = turnStartsForThread(
+          harness.dispatched,
+          ThreadId.makeUnsafe(`code-review-${branch}`),
+        );
+        expect(starts).toHaveLength(1);
+        expect(starts[0]!.message.text.length).toBeLessThanOrEqual(116_000);
+        expect(starts[0]!.message.text).toContain(
+          snapshot.threads[0]!.proposedPlans[0]!.planMarkdown,
+        );
+        expect(starts[0]!.message.text).toContain("Original capture limit.");
+      }
+      expect(
+        turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("implementation-thread")),
+      ).toHaveLength(0);
+      expect(harness.getSnapshot().planningWorkflows[0]!.implementation!.reviewArtifact).toEqual(
+        snapshot.planningWorkflows[0]!.implementation!.reviewArtifact,
+      );
+      expect(harness.getSnapshot().planningWorkflows[0]!.implementation!.error).toBeNull();
+    },
+  );
+
+  it("retries review setup without duplicating a review with accepted delivery", async () => {
+    const snapshot = oversizedReviewSnapshot({ retry: true, acceptedFirst: true });
+    const recheckDelivery = vi.fn<ProviderTurnDeliveryWorkerShape["recheck"]>((threadId) =>
+      Effect.succeed(
+        threadId === "code-review-a" ? makeProviderTurnDelivery(threadId, "accepted") : null,
+      ),
+    );
+    harness = await createHarness(snapshot, { recheckDelivery });
+    await Effect.runPromise(
+      harness.service.retryWorkflow({ workflowId: snapshot.planningWorkflows[0]!.id }),
+    );
+    expect(
+      turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("code-review-a")),
+    ).toHaveLength(0);
+    expect(
+      turnStartsForThread(harness.dispatched, ThreadId.makeUnsafe("code-review-b")),
+    ).toHaveLength(1);
+    expect(recheckDelivery).not.toHaveBeenCalledWith("implementation-thread");
+  });
+
+  it.each(["characters", "second-reviewer-context"])(
+    "preflights both implementation reviews before fan-out on %s overflow",
+    async (kind) => {
+      const snapshot = oversizedReviewSnapshot({
+        retry: true,
+        ...(kind === "characters" ? { planSize: 116_000 } : { exhaustedSecond: true }),
+      });
+      harness = await createHarness(snapshot);
+      await Effect.runPromise(
+        harness.service.retryWorkflow({ workflowId: snapshot.planningWorkflows[0]!.id }),
+      );
+      expect(
+        harness.dispatched.filter(
+          (command) => command.type === "thread.create" || command.type === "thread.turn.start",
+        ),
+      ).toHaveLength(0);
+      expect(harness.getSnapshot().planningWorkflows[0]!.implementation).toMatchObject({
+        status: "error",
+        errorStage: "review-setup",
+      });
+      expect(harness.getSnapshot().planningWorkflows[0]!.implementation!.error).toContain(
+        "requirement",
+      );
+    },
+  );
+
   async function expectPlanSavedBranchRepinSkipped(input: {
     readonly reviews?: PlanningWorkflow["branchA"]["reviews"];
     readonly mergeStatus?: PlanningWorkflow["merge"]["status"];
