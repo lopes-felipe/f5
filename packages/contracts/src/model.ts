@@ -184,6 +184,7 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   ],
   claudeAgent: [
     { slug: "claude-opus-5", name: "Claude Opus 5" },
+    { slug: "claude-fable-5-1", name: "Claude Fable 5.1" },
     { slug: "claude-fable-5", name: "Claude Fable 5" },
     { slug: "claude-opus-4-8", name: "Claude Opus 4.8" },
     { slug: "claude-opus-4-7", name: "Claude Opus 4.7" },
@@ -254,9 +255,12 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "gpt-5.3-spark": "gpt-5.3-codex-spark",
   },
   claudeAgent: {
-    fable: "claude-fable-5",
+    fable: "claude-fable-5-1",
+    "fable-5.1": "claude-fable-5-1",
+    "fable-5-1": "claude-fable-5-1",
+    "claude-fable-5.1": "claude-fable-5-1",
     "fable-5": "claude-fable-5",
-    "claude-fable": "claude-fable-5",
+    "claude-fable": "claude-fable-5-1",
     opus: "claude-opus-5",
     "opus-5": "claude-opus-5",
     "claude-opus-5.0": "claude-opus-5",

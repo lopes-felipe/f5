@@ -32,7 +32,13 @@ const PROVIDERS: ServerProvider[] = [
 
 const MODELS = new Map([
   [CODEX_ID, [{ slug: "gpt-5.6-sol", name: "GPT-5.6 Sol" }]],
-  [CLAUDE_ID, [{ slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" }]],
+  [
+    CLAUDE_ID,
+    [
+      { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { slug: "claude-fable-5-1", name: "Claude Fable 5.1" },
+    ],
+  ],
   [
     CURSOR_ID,
     [
@@ -50,6 +56,25 @@ afterEach(async () => {
 });
 
 describe("ProviderInstanceModelPicker", () => {
+  it("selects Fable 5.1 on the Claude instance from search", async () => {
+    const onChange = vi.fn();
+    active = await render(
+      <TooltipProvider delay={0}>
+        <ProviderInstanceModelPicker
+          instanceId={CODEX_ID}
+          model="gpt-5.6-sol"
+          lockedInstanceId={null}
+          providers={PROVIDERS}
+          modelOptionsByInstance={MODELS}
+          onInstanceModelChange={onChange}
+        />
+      </TooltipProvider>,
+    );
+    await page.getByRole("button", { name: /GPT-5.6 Sol/ }).click();
+    await page.getByPlaceholder("Search models...").fill("Fable 5.1");
+    await page.getByText("Claude Fable 5.1", { exact: true }).click();
+    expect(onChange).toHaveBeenCalledWith(CLAUDE_ID, "claudeAgent", "claude-fable-5-1");
+  });
   it("restores provider-sidebar browsing and keeps cross-provider lab search", async () => {
     active = await render(
       <TooltipProvider delay={0}>

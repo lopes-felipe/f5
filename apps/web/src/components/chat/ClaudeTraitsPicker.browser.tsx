@@ -13,6 +13,12 @@ import { providerModelOptionsToSelections } from "../../providerModelOptions";
 
 const CLAUDE_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
+    slug: "claude-fable-5-1",
+    name: "Claude Fable 5.1",
+    isCustom: false,
+    capabilities: createClaudeModelCapabilities("claude-fable-5-1"),
+  },
+  {
     slug: "claude-opus-5",
     name: "Claude Opus 5",
     isCustom: false,
@@ -237,6 +243,29 @@ describe("ClaudeTraitsPicker", () => {
         expect(text).toContain("On");
         expect(text).not.toContain("Context Window");
         expect(text).not.toContain("Thinking");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows six Fable 5.1 efforts with high default and no unsupported controls", async () => {
+    const mounted = await mountPicker({ model: "claude-fable-5-1" });
+    try {
+      await expect.element(page.getByRole("button")).toHaveTextContent("High");
+      await page.getByRole("button").click();
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        for (const label of ["Low", "Medium", "High", "Extra High", "Max", "Ultrathink"])
+          expect(text).toContain(label);
+        for (const label of ["Context Window", "Fast Mode", "Thinking"])
+          expect(text).not.toContain(label);
+      });
+      await page.getByText("Extra High", { exact: true }).click();
+      await vi.waitFor(() => {
+        expect(
+          useComposerDraftStore.getState().draftsByThreadId[mounted.threadId]?.modelOptions,
+        ).toEqual({ claudeAgent: { effort: "xhigh" } });
       });
     } finally {
       await mounted.cleanup();

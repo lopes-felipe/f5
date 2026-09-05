@@ -31,6 +31,39 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
+F5 pins Claude Agent SDK 0.3.261, which bundles Claude Code v2.1.261. Claude Fable 5.1
+requires v2.1.257+ and provides native 1M context. Opus 5 remains the default Claude model.
+F5 enables task tools and selects the legacy TodoWrite surface to match its assistant contract.
+
+With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
+advisory. Unknown versions remain permissive. Bare `fable` and `claude-fable` aliases now
+resolve to Fable 5.1; explicit `fable-5` stays on Fable 5. Unavailable picker selections
+fall back to a supported option. Persisted thread models and sub-agent overrides are forwarded
+without silent substitution, so an older executable can reject them. Select a supported model
+or upgrade the custom executable to recover.
+
+### Reproducing bundled-runtime release checks
+
+Run `bun run --cwd apps/server test:claude:live` using Node 24.13.1+ on `PATH` and an
+authenticated Claude account with Fable 5.1 access. This opt-in suite consumes account quota;
+ordinary test runs skip it. Authentication, quota, entitlement, timeout, and response-shape
+failures fail the live run rather than being reported as passes or automatic skips.
+
+The suite uses the bundled executable and the adapter's production query environment. It checks
+account usage through `normalizeClaudeAccountUsage`, native 1M context, cancellation and child
+process exit, streamed `TodoWrite` calls completing a three-step task, and structured `xhigh`
+generation through the production generator and schema validator.
+
+On September 5, 2026 at 17:47 CEST, all three live checks passed with SDK 0.3.261 / Claude Code
+2.1.261 on Windows under Node 24.13.1 (30.75 seconds). The earlier account session-limit blocker
+had cleared. These results do not claim live historical-CLI or workflow/sub-agent dispatch coverage.
+
+`ClaudeRecovery.test.ts` separately runs the real SDK against a deterministic executable fixture:
+an unsupported parent or sub-agent alias makes the child exit nonzero, F5 emits a bounded failed
+turn and session exit, and correcting the corresponding configuration produces a successful
+retry. It verifies both child processes exit. This is transport/adapter coverage, not a smoke test
+of an actual older Anthropic release.
+
 ## I Want Work And Personal Claude Accounts
 
 Use a different Claude home for each account.

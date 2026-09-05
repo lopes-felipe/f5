@@ -745,10 +745,17 @@ describe("getAppModelOptions", () => {
   });
 
   it("lists Claude Opus 5 first in built-in Claude options", () => {
-    const options = getAppModelOptions("claudeAgent", []);
+    const options = getAppModelOptions("claudeAgent", ["fable", "fable-5.1", "claude-fable-5-1"]);
+    expect(options[1]).toMatchObject({
+      slug: "claude-fable-5-1",
+      name: "Claude Fable 5.1",
+      isCustom: false,
+    });
+    expect(options.filter((option) => option.slug === "claude-fable-5-1")).toHaveLength(1);
 
-    expect(options.slice(0, 9).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 10).map((option) => option.slug)).toEqual([
       "claude-opus-5",
+      "claude-fable-5-1",
       "claude-fable-5",
       "claude-opus-4-8",
       "claude-opus-4-7",

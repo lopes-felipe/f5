@@ -649,6 +649,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.permissionMode, "default");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -685,6 +687,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -708,6 +712,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, "claude-opus-5");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -946,7 +952,7 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
-  it.effect("forwards Claude Fable 5 default max effort into query options", () => {
+  it.effect("forwards Claude Fable 5 default high effort into query options", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -958,7 +964,7 @@ describe("ClaudeAdapterLive", () => {
       });
 
       const createInput = harness.getLastCreateQueryInput();
-      assert.equal(createInput?.options.effort, "max");
+      assert.equal(createInput?.options.effort, "high");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -5727,6 +5733,96 @@ describe("ClaudeAdapterLive", () => {
         readFirstPromptText(harness.getLastCreateQueryInput()),
       );
       assert.match(promptText ?? "", /Active model: "claude-opus-5"/);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("switches Fable 5 at 200k to native 1M Fable 5.1, resumes, and switches back", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const instance = ProviderInstanceId.make("claudeAgent");
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(instance, "claude-fable-5", [
+          { id: "contextWindow", value: "200k" },
+        ]),
+      });
+      const initial = yield* Stream.take(adapter.streamEvents, 3).pipe(Stream.runCollect);
+      assert.equal(
+        initial.find((event) => event.type === "session.configured")?.payload.config
+          .modelContextWindowTokens,
+        200_000,
+      );
+      const selection = createModelSelection(instance, "fable[200k]", [
+        { id: "contextWindow", value: "200k" },
+        { id: "fastMode", value: true },
+        { id: "thinking", value: false },
+      ]);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "switch",
+        modelSelection: selection,
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5-1"]);
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { effortLevel: "high", fastMode: false, alwaysThinkingEnabled: null },
+      ]);
+      const configured = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.runHead);
+      assert.equal(configured._tag, "Some");
+      if (configured._tag === "Some") {
+        assert.equal(configured.value.payload.config.model, "claude-fable-5-1");
+        assert.equal(configured.value.payload.config.context_window, undefined);
+        assert.equal(configured.value.payload.config.modelContextWindowTokens, 1_000_000);
+      }
+      yield* adapter.stopSession(THREAD_ID);
+      const resumed = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        modelSelection: selection,
+        resumeCursor: {
+          threadId: THREAD_ID,
+          resume: "550e8400-e29b-41d4-a716-446655440000",
+          turnCount: 1,
+        },
+      });
+      assert.equal(resumed.model, "claude-fable-5-1");
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
+      const resumedConfig = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.runHead);
+      if (resumedConfig._tag === "Some") {
+        assert.equal(resumedConfig.value.payload.config.context_window, undefined);
+        assert.equal(resumedConfig.value.payload.config.modelContextWindowTokens, 1_000_000);
+      }
+      yield* adapter.sendTurn({
+        threadId: RESUME_THREAD_ID,
+        input: "switch back",
+        attachments: [],
+        modelSelection: createModelSelection(instance, "fable-5", [
+          { id: "contextWindow", value: "200k" },
+        ]),
+      });
+      const back = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.runHead);
+      assert.equal(back._tag, "Some");
+      if (back._tag === "Some") {
+        assert.equal(back.value.payload.config.model, "claude-fable-5");
+        assert.equal(back.value.payload.config.context_window, "200k");
+        assert.equal(back.value.payload.config.modelContextWindowTokens, 200_000);
+      }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
