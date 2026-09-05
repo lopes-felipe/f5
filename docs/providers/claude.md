@@ -224,3 +224,42 @@ If the preset needs different Claude files, give it a different `Claude HOME pat
 different API keys, base URLs, or router settings, use Environment variables.
 
 Do not put environment variable assignments in `Launch arguments`.
+
+## Account Usage and Limits
+
+The Usage page shows one account card for each configured Claude instance, alongside F5 activity.
+Account cards use the instance's server-default authentication context: its configured HOME and
+environment, with the server working directory and user/project/local settings. A conversation's
+project-specific overrides can select another authentication context and are outside these cards.
+
+Account usage uses the installed Claude Agent SDK's experimental structured `/usage` control API.
+Its method and response can change between SDK releases. Unsupported versions receive an explicit
+unsupported state; an initialization, authentication, executable, or response failure is reported
+separately. Raw provider errors and account payloads are not sent to the browser.
+
+Opening Usage schedules stale account reads without blocking historical activity. Attempts are reused
+for five minutes, with at most two account probes running across all instances. Refresh updates
+history and requests fresh account data; force refresh bypasses the five-minute cache after a
+30-second minimum interval and coalesces with any queued or running job. Each probe has an eight-second
+budget after acquiring a permit. Switching the history range or provider does not trigger account
+reads. Focus and reconnect refresh stale account snapshots. While jobs run, the page polls in-memory
+progress; it does not periodically launch external usage probes. Account snapshots live only in memory.
+Disabling, removing, or replacing an instance cancels its account work.
+
+Claude percentages are already percentages, including values above 100%. Missing utilization is shown
+as Unknown. If plan limits are not reported, the card says so without inferring the authentication
+cause. Extra usage shows enabled state and utilization only; monetary amounts are omitted because the
+SDK does not establish their denomination. A failed refresh keeps the last successful data and its own
+fetch timestamp visible. Codex token history and quota snapshots retain successes independently.
+
+F5 historical Claude tokens use reported main-agent usage fields. Whole-tree `modelUsage` fields do
+not fill gaps in these token facts. As a result, some older or repaired events can have unreported
+tokens. SDK-reported cost estimates can cover a broader scope and are not invoice data; an exact
+cost-per-token or cache-ratio relationship should not be inferred. This feature neither rewrites
+persisted facts nor changes cost accounting.
+
+The structured usage operation can scan local transcripts; omitting those fields from the UI does
+not avoid that work. On 2026-09-05, a prompt-free OAuth Pro read took approximately 1.1 seconds against
+183 files (30 MB) under the local Claude projects history. A process inventory after completion showed
+no additional Claude process. Larger histories still need representative latency checks if usage
+refresh feels slow.

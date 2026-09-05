@@ -966,6 +966,18 @@ describe("WebSocket Server", () => {
       }),
     );
     expect((response.result as { buckets: unknown[] }).buckets).toHaveLength(24);
+    const accounts = await sendRequest(ws, USAGE_WS_METHODS.getAccounts, { refresh: "none" });
+    expect(accounts.error).toBeUndefined();
+    expect(accounts.result).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          provider: "codex",
+          refreshState: "idle",
+          sections: expect.any(Array),
+        }),
+      ]),
+    );
+    expect(response.result).not.toHaveProperty("codexAccount");
   });
 
   it("writes rpc and websocket observability records when enabled", async () => {
@@ -1462,6 +1474,7 @@ describe("WebSocket Server", () => {
         }),
         Layer.succeed(usageServiceModule.UsageService, {
           getSummary: () => Effect.die("unused usage summary"),
+          getAccounts: () => Effect.succeed([]),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {} as any),
         Layer.succeed(workflowServiceModule.WorkflowService, {} as any),
@@ -1710,6 +1723,7 @@ describe("WebSocket Server", () => {
         }),
         Layer.succeed(usageServiceModule.UsageService, {
           getSummary: () => Effect.die("unused usage summary"),
+          getAccounts: () => Effect.succeed([]),
         }),
         Layer.succeed(providerSessionDirectoryModule.ProviderSessionDirectory, {
           getBinding: (requestedThreadId: ThreadId) =>

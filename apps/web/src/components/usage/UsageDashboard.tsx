@@ -1,15 +1,28 @@
 import type {
+  UsageAccounts,
+  AccountUsageErrorCode,
+  ProviderKind,
   CodexAccountRateLimitWindow,
   CodexAccountUsage,
   UsageMetrics,
   UsageRange,
   UsageSummary,
 } from "@t3tools/contracts";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangleIcon, CoinsIcon, GaugeIcon, RefreshCwIcon, SigmaIcon } from "lucide-react";
 import { useMemo, useState } from "react";
 
-import { usageSummaryQueryOptions } from "../../lib/usageReactQuery";
+import {
+  accountJobsPending,
+  decodeUsageAccounts,
+  usageAccountsQueryOptions,
+  usageQueryKeys,
+  usageSummaryQueryOptions,
+} from "../../lib/usageReactQuery";
+import { ensureNativeApi } from "../../nativeApi";
+import { formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { QuotaMeter } from "./charts/QuotaMeter";
+import { StackedBarChart } from "./charts/StackedBarChart";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/button";
 import { Card, CardHeader, CardPanel, CardTitle } from "../ui/card";
@@ -51,64 +64,43 @@ function rateLimitWindowLabel(window: CodexAccountRateLimitWindow, fallback: str
   return `${minutes}-minute limit`;
 }
 
-function resetLabel(resetsAt: number | null): string {
-  if (resetsAt === null) return "Reset time unavailable";
-  return `Resets ${new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(resetsAt * 1_000))}`;
-}
-
 function CodexRateLimitWindowView(props: {
   readonly window: CodexAccountRateLimitWindow;
   readonly fallbackLabel: string;
 }) {
-  const percent = Math.min(100, props.window.usedPercent);
+  const label = rateLimitWindowLabel(props.window, props.fallbackLabel);
+  const milliseconds = props.window.resetsAt === null ? NaN : props.window.resetsAt * 1000;
+  const resetsAt = Number.isFinite(new Date(milliseconds).getTime())
+    ? new Date(milliseconds).toISOString()
+    : null;
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-3 text-xs">
-        <span className="font-medium text-foreground">
-          {rateLimitWindowLabel(props.window, props.fallbackLabel)}
-        </span>
-        <span className="tabular-nums text-muted-foreground">
-          {props.window.usedPercent.toFixed(0)}% used
-        </span>
-      </div>
-      <div
-        role="progressbar"
-        aria-label={rateLimitWindowLabel(props.window, props.fallbackLabel)}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        className="h-1.5 overflow-hidden rounded-full bg-muted"
-      >
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width]",
-            percent >= 90 ? "bg-warning" : "bg-primary",
-          )}
-          style={{ width: `${percent}%` }}
-        />
-      </div>
-      <p className="text-[11px] text-muted-foreground">{resetLabel(props.window.resetsAt)}</p>
-    </div>
+    <QuotaMeter
+      label={label}
+      accessibleName={`Codex · ${label}`}
+      utilization={props.window.usedPercent}
+      resetsAt={resetsAt}
+    />
   );
 }
 
 function codexAccountRangeTokens(input: {
   readonly usage: CodexAccountUsage;
   readonly range: UsageRange;
-  readonly generatedAt: string;
 }): string | null {
   const rangeDays = input.range === "24h" ? 1 : Number.parseInt(input.range, 10);
-  const firstDay = new Date(input.generatedAt);
+  const firstDay = new Date(input.usage.fetchedAt);
   firstDay.setUTCHours(0, 0, 0, 0);
   firstDay.setUTCDate(firstDay.getUTCDate() - (rangeDays - 1));
   const firstDate = firstDay.toISOString().slice(0, 10);
   let total = 0n;
   let found = false;
   for (const bucket of input.usage.dailyUsageBuckets) {
-    if (bucket.startDate < firstDate) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(bucket.startDate)) continue;
+    const date = new Date(`${bucket.startDate}T00:00:00.000Z`);
+    if (!Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== bucket.startDate)
+      continue;
+    if (bucket.startDate < firstDate || bucket.startDate > input.usage.fetchedAt.slice(0, 10))
+      continue;
     total += BigInt(bucket.tokens);
     found = true;
   }
@@ -118,7 +110,6 @@ function codexAccountRangeTokens(input: {
 function CodexAccountUsageCard(props: {
   readonly usage: CodexAccountUsage;
   readonly range: UsageRange;
-  readonly generatedAt: string;
 }) {
   const { usage } = props;
   const summary = usage.tokenSummary;
@@ -153,7 +144,8 @@ function CodexAccountUsageCard(props: {
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
             <div>
               <p className="text-[11px] text-muted-foreground">
-                Account tokens · {props.range === "24h" ? "today" : props.range}
+                Account tokens ·{" "}
+                {props.range === "24h" ? "Today (UTC)" : `${props.range} (UTC calendar days)`}
               </p>
               <p className="mt-0.5 text-lg font-semibold tabular-nums">
                 {compactDecimalCount(rangeTokens)}
@@ -267,14 +259,157 @@ function MetricCard(props: {
   );
 }
 
+const ACCOUNT_ERROR_MESSAGES: Record<AccountUsageErrorCode, string> = {
+  unsupported: "This installed provider version does not expose account usage and rate limits.",
+  "authentication-required": "Account usage requires authentication in provider settings.",
+  timeout: "The account usage request timed out.",
+  "process-unavailable": "The configured provider executable is unavailable.",
+  "invalid-response": "The provider returned an invalid account usage response.",
+  "temporary-failure": "Account usage is temporarily unavailable.",
+};
+
+function AccountUsageCards({ accounts, range }: { accounts: UsageAccounts; range: UsageRange }) {
+  return (
+    <section aria-label="Account usage and limits" className="space-y-3">
+      <h2 className="text-sm font-medium">Account usage and limits</h2>
+      {accounts.map((account) => (
+        <div key={account.key} className="space-y-2 rounded-xl border border-border p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h3 className="text-sm font-medium">{account.displayName}</h3>
+            <span role="status" className="text-xs text-muted-foreground">
+              {account.refreshState === "idle"
+                ? ""
+                : account.refreshState === "queued"
+                  ? "Queued"
+                  : "Refreshing…"}
+            </span>
+          </div>
+          {account.provider === "claudeAgent" && (
+            <p className="text-xs text-muted-foreground">
+              Configured instance's server-default authentication context.
+            </p>
+          )}
+          {!account.enabled ? (
+            <p className="text-xs text-muted-foreground">
+              {providerLabel(account.provider)} is disabled in provider settings.
+            </p>
+          ) : (
+            account.sections.map((section) => (
+              <div key={section.kind} className="space-y-2">
+                <p className="text-xs text-muted-foreground">
+                  {section.kind === "codex-tokens"
+                    ? "Token history ? "
+                    : section.kind === "codex-limits"
+                      ? "Rate limits ? "
+                      : ""}
+                  {section.snapshot
+                    ? `Updated ${formatRelativeTimeLabel(section.snapshot.fetchedAt)}`
+                    : "No successful snapshot yet"}
+                </p>
+                {section.outcome !== "available" &&
+                  (section.lastAttemptAt || section.errorCode) && (
+                    <p role="status" className="text-xs text-muted-foreground">
+                      {section.outcome === "unsupported"
+                        ? `This installed ${providerLabel(account.provider)} version does not expose account usage and rate limits.`
+                        : ACCOUNT_ERROR_MESSAGES[section.errorCode ?? "temporary-failure"]}
+                      {section.snapshot
+                        ? ` Showing data from ${formatRelativeTimeLabel(section.snapshot.fetchedAt)}.`
+                        : ""}
+                    </p>
+                  )}
+                {section.kind === "claude-usage" && section.snapshot && (
+                  <div className="space-y-3">
+                    {section.snapshot.data.subscriptionLabel && (
+                      <p className="text-xs font-medium">
+                        {section.snapshot.data.subscriptionLabel}
+                      </p>
+                    )}
+                    {!section.snapshot.data.limitsAvailable ? (
+                      <p className="text-xs text-muted-foreground">
+                        Plan limits aren't reported for this Claude session.
+                      </p>
+                    ) : section.snapshot.data.windows.length === 0 ? (
+                      <p className="text-xs text-muted-foreground">
+                        Account usage is temporarily unavailable.
+                      </p>
+                    ) : (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        {section.snapshot.data.windows.map((window) => (
+                          <QuotaMeter
+                            key={window.key}
+                            label={window.label}
+                            utilization={window.utilization}
+                            resetsAt={window.resetsAt}
+                            accessibleName={`${account.displayName} · ${window.label}`}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {section.snapshot.data.extraUsage && (
+                      <div className="space-y-2">
+                        <p className="text-xs">
+                          Extra usage{" "}
+                          {section.snapshot.data.extraUsage.enabled ? "enabled" : "disabled"}
+                        </p>
+                        {section.snapshot.data.extraUsage.enabled && (
+                          <QuotaMeter
+                            label="Extra usage"
+                            accessibleName={`${account.displayName} · Extra usage`}
+                            utilization={section.snapshot.data.extraUsage.utilization}
+                            resetsAt={null}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {section.kind === "codex-tokens" && section.snapshot && (
+                  <CodexAccountUsageCard
+                    range={range}
+                    usage={{
+                      ...section.snapshot.data,
+                      status: "available",
+                      fetchedAt: section.snapshot.fetchedAt,
+                      rateLimits: [],
+                      message: null,
+                    }}
+                  />
+                )}
+                {section.kind === "codex-limits" && section.snapshot && (
+                  <CodexAccountUsageCard
+                    range={range}
+                    usage={{
+                      ...section.snapshot.data,
+                      status: "available",
+                      fetchedAt: section.snapshot.fetchedAt,
+                      tokenSummary: null,
+                      dailyUsageBuckets: [],
+                      message: null,
+                    }}
+                  />
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      ))}
+    </section>
+  );
+}
+
 export function UsageDashboardView(props: {
   readonly summary: UsageSummary;
   readonly range: UsageRange;
   readonly onRangeChange: (range: UsageRange) => void;
   readonly fetching: boolean;
+  readonly accounts?: UsageAccounts | undefined;
+  readonly provider?: ProviderKind | undefined;
+  readonly onProviderChange?: (provider: ProviderKind | undefined) => void;
+  readonly onRefresh?: () => void;
+  readonly error?: string | null;
+  readonly onDismissError?: () => void;
 }) {
   const { summary } = props;
-  const maxTokens = Math.max(0, ...summary.buckets.map((bucket) => bucket.metrics.totalTokens));
   const coverageDate = new Intl.DateTimeFormat(undefined, {
     dateStyle: "medium",
     timeStyle: "short",
@@ -286,16 +421,26 @@ export function UsageDashboardView(props: {
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-xl font-semibold tracking-tight">Usage</h1>
-            {props.fetching ? (
+            <Button
+              size="xs"
+              variant="outline"
+              aria-label="Refresh usage"
+              disabled={props.fetching}
+              onClick={props.onRefresh}
+            >
               <RefreshCwIcon
-                aria-label="Refreshing"
-                className="size-3.5 animate-spin text-muted-foreground"
+                aria-hidden="true"
+                className={cn("size-3.5", props.fetching && "animate-spin")}
               />
-            ) : null}
+              Refresh
+            </Button>
+            <span className="text-xs text-muted-foreground" title={summary.generatedAt}>
+              Updated {formatRelativeTimeLabel(summary.generatedAt)}
+            </span>
           </div>
           <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-            Historical provider-reported tokens and API-equivalent cost, plus Codex account usage
-            and limits. Subscription or invoice spend may differ.
+            Historical provider-reported tokens and API-equivalent cost, plus account usage and
+            limits. Subscription or invoice spend may differ.
           </p>
         </div>
         <div
@@ -315,7 +460,45 @@ export function UsageDashboardView(props: {
           ))}
         </div>
       </div>
-
+      {props.error && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-2 rounded-lg border border-border p-3 text-xs"
+        >
+          <span>
+            {props.error} Last successful history update:{" "}
+            {formatRelativeTimeLabel(summary.generatedAt)}.
+          </span>
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label="Dismiss refresh error"
+            onClick={props.onDismissError}
+          >
+            Dismiss
+          </Button>
+        </div>
+      )}
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="text-sm font-medium">F5 activity</h2>
+        <select
+          aria-label="History provider"
+          className="rounded-md border border-border bg-background p-1 text-xs"
+          value={props.provider ?? "all"}
+          onChange={(event) =>
+            props.onProviderChange?.(
+              event.target.value === "all" ? undefined : (event.target.value as ProviderKind),
+            )
+          }
+        >
+          <option value="all">All providers</option>
+          {(["codex", "claudeAgent", "cursor", "opencode", "grok"] as const).map((provider) => (
+            <option key={provider} value={provider}>
+              {providerLabel(provider)}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Total tokens"
@@ -342,65 +525,18 @@ export function UsageDashboardView(props: {
           icon={CoinsIcon}
         />
       </div>
-
-      {summary.codexAccount ? (
-        <CodexAccountUsageCard
-          usage={summary.codexAccount}
-          range={props.range}
-          generatedAt={summary.generatedAt}
-        />
-      ) : null}
-
       <Card className="rounded-xl">
         <CardHeader className="p-4 pb-2">
           <CardTitle className="text-sm">Token usage over time</CardTitle>
         </CardHeader>
         <CardPanel className="p-4 pt-2">
-          {maxTokens === 0 ? (
-            <div className="flex h-44 items-center justify-center rounded-lg border border-dashed text-sm text-muted-foreground">
-              No token totals were reported in this range.
-            </div>
-          ) : (
-            <div
-              role="img"
-              aria-label={`Token usage chart for ${RANGES.find((option) => option.value === props.range)?.label}`}
-              className="flex h-52 items-end gap-1 overflow-hidden rounded-lg border border-border/70 bg-muted/20 px-2 pt-4 pb-2"
-            >
-              {summary.buckets.map((bucket, index) => {
-                const height = Math.max(2, (bucket.metrics.totalTokens / maxTokens) * 100);
-                const showLabel =
-                  summary.buckets.length <= 24 ||
-                  index === 0 ||
-                  index === summary.buckets.length - 1 ||
-                  index % Math.ceil(summary.buckets.length / 8) === 0;
-                return (
-                  <div
-                    key={bucket.key}
-                    className="group flex min-w-0 flex-1 flex-col items-center justify-end self-stretch"
-                    title={`${bucket.label}: ${bucket.metrics.totalTokens.toLocaleString()} tokens`}
-                  >
-                    <div className="relative flex w-full flex-1 items-end">
-                      <div
-                        className="w-full min-w-0 rounded-t-sm bg-primary/70 transition-colors group-hover:bg-primary"
-                        style={{ height: `${height}%` }}
-                      />
-                    </div>
-                    <span
-                      className={cn(
-                        "mt-1 h-4 max-w-full truncate text-[9px] text-muted-foreground",
-                        !showLabel && "invisible",
-                      )}
-                    >
-                      {bucket.label}
-                    </span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
+          <StackedBarChart
+            buckets={summary.buckets}
+            label={`Token usage chart for ${RANGES.find((option) => option.value === props.range)?.label}`}
+            timeZone={summary.timeZone}
+          />
         </CardPanel>
       </Card>
-
       <Card className="rounded-xl">
         <CardHeader className="p-4 pb-2">
           <CardTitle className="text-sm">Providers and models</CardTitle>
@@ -413,7 +549,7 @@ export function UsageDashboardView(props: {
               <thead className="border-y border-border/70 bg-muted/20 text-muted-foreground">
                 <tr>
                   <th className="px-4 py-2 font-medium">Provider</th>
-                  <th className="px-4 py-2 font-medium">Model</th>
+                  <th className="px-4 py-2 font-medium">Thread model</th>
                   <th className="px-4 py-2 text-right font-medium">Turns</th>
                   <th className="px-4 py-2 text-right font-medium">Tokens</th>
                   <th className="px-4 py-2 text-right font-medium">Reported cost</th>
@@ -449,7 +585,6 @@ export function UsageDashboardView(props: {
           )}
         </CardPanel>
       </Card>
-
       {summary.coverage.partialHistory ||
       summary.coverage.tokenUnreportedTurnCount > 0 ||
       summary.coverage.costUnreportedTurnCount > 0 ? (
@@ -467,7 +602,7 @@ export function UsageDashboardView(props: {
               <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
                 {summary.coverage.partialHistory ? (
                   <li>
-                    Token coverage starts {coverageDate}. Earlier provider-reported costs are
+                    F5 token recording began {coverageDate}. Earlier provider-reported costs are
                     included where available, but earlier token history is incomplete.
                   </li>
                 ) : null}
@@ -488,7 +623,12 @@ export function UsageDashboardView(props: {
             </div>
           </div>
         </section>
-      ) : null}
+      ) : null}{" "}
+      <p className="text-xs text-muted-foreground">
+        Claude history uses reported main-agent token fields. SDK-reported cost estimates can cover
+        a broader scope and are not billing data.
+      </p>
+      <AccountUsageCards accounts={props.accounts ?? []} range={props.range} />
     </div>
   );
 }
@@ -496,7 +636,31 @@ export function UsageDashboardView(props: {
 export function UsageDashboard() {
   const [range, setRange] = useState<UsageRange>("7d");
   const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC", []);
-  const summaryQuery = useQuery(usageSummaryQueryOptions(range, timeZone));
+  const [provider, setProvider] = useState<ProviderKind>();
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const [dismissedErrorAt, setDismissedErrorAt] = useState(0);
+  const queryClient = useQueryClient();
+  const summaryQuery = useQuery(usageSummaryQueryOptions(range, timeZone, provider));
+  const accountsQuery = useQuery(usageAccountsQueryOptions());
+  const jobsPending = accountJobsPending(accountsQuery.data);
+  const refresh = async () => {
+    if (refreshing || jobsPending) return;
+    setRefreshing(true);
+    setRefreshError(null);
+    try {
+      const result = await summaryQuery.refetch();
+      if (result.error) setRefreshError("Historical usage refresh failed.");
+      const accounts = decodeUsageAccounts(
+        await ensureNativeApi().usage.getAccounts({ refresh: "force" }),
+      );
+      queryClient.setQueryData(usageQueryKeys.accounts, accounts);
+    } catch {
+      setRefreshError("Usage refresh failed. Please retry.");
+    } finally {
+      setRefreshing(false);
+    }
+  };
 
   if (summaryQuery.isPending) {
     return (
@@ -512,7 +676,7 @@ export function UsageDashboard() {
     );
   }
 
-  if (summaryQuery.isError || !summaryQuery.data) {
+  if (!summaryQuery.data) {
     return (
       <div className="flex min-h-full items-center justify-center p-6">
         <div className="max-w-md text-center">
@@ -540,7 +704,25 @@ export function UsageDashboard() {
       summary={summaryQuery.data}
       range={range}
       onRangeChange={setRange}
-      fetching={summaryQuery.isFetching}
+      fetching={summaryQuery.isFetching || refreshing || jobsPending}
+      accounts={accountsQuery.data}
+      provider={provider}
+      onProviderChange={setProvider}
+      onRefresh={() => {
+        void refresh();
+      }}
+      error={
+        refreshError ??
+        (summaryQuery.isError && summaryQuery.errorUpdatedAt > dismissedErrorAt
+          ? "Historical usage refresh failed."
+          : accountsQuery.isError && accountsQuery.errorUpdatedAt > dismissedErrorAt
+            ? "Account snapshots could not be refreshed."
+            : null)
+      }
+      onDismissError={() => {
+        setRefreshError(null);
+        setDismissedErrorAt(Date.now());
+      }}
     />
   );
 }

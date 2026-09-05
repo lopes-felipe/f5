@@ -567,6 +567,7 @@ export function createWsNativeApi(): NativeApi {
       },
     },
     usage: {
+      getAccounts: (input) => transport.request(USAGE_WS_METHODS.getAccounts, input),
       getSummary: (input) => transport.request(USAGE_WS_METHODS.getSummary, input),
     },
     workflowPlatform: {

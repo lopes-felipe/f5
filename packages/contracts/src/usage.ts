@@ -13,6 +13,7 @@ import { ProviderInstanceId } from "./providerInstance";
 
 export const USAGE_WS_METHODS = {
   getSummary: "usage.getSummary",
+  getAccounts: "usage.getAccounts",
 } as const;
 
 export const UsageRange = Schema.Literals(["24h", "7d", "30d", "90d"]);
@@ -52,6 +53,7 @@ export type UsageTurnFact = typeof UsageTurnFact.Type;
 
 export const UsageGetSummaryInput = Schema.Struct({
   range: UsageRange,
+  provider: Schema.optional(ProviderKind),
   timeZone: TrimmedNonEmptyString,
 });
 export type UsageGetSummaryInput = typeof UsageGetSummaryInput.Type;
@@ -70,11 +72,23 @@ export const UsageMetrics = Schema.Struct({
 });
 export type UsageMetrics = typeof UsageMetrics.Type;
 
+export const UsageTokenComposition = Schema.Struct({
+  uncachedInputTokens: NonNegativeInt,
+  outputTokens: NonNegativeInt,
+  cacheReadTokens: NonNegativeInt,
+  cacheWriteTokens: NonNegativeInt,
+  unattributedTokens: NonNegativeInt,
+});
+export type UsageTokenComposition = typeof UsageTokenComposition.Type;
+
 export const UsageBucket = Schema.Struct({
   key: TrimmedNonEmptyString,
   label: TrimmedNonEmptyString,
   startAt: IsoDateTime,
   metrics: UsageMetrics,
+  composition: Schema.optional(Schema.NullOr(UsageTokenComposition)).pipe(
+    Schema.withDecodingDefault(() => null),
+  ),
 });
 export type UsageBucket = typeof UsageBucket.Type;
 
@@ -159,8 +173,82 @@ export const UsageSummary = Schema.Struct({
   buckets: Schema.Array(UsageBucket),
   byProvider: Schema.Array(UsageProviderBreakdown),
   coverage: UsageCoverage,
-  codexAccount: Schema.optional(Schema.NullOr(CodexAccountUsage)).pipe(
-    Schema.withDecodingDefault(() => null),
-  ),
 });
 export type UsageSummary = typeof UsageSummary.Type;
+
+export const UsageGetAccountsInput = Schema.Struct({
+  refresh: Schema.optional(Schema.Literals(["if-stale", "force", "none"])),
+});
+export type UsageGetAccountsInput = typeof UsageGetAccountsInput.Type;
+export const AccountUsageErrorCode = Schema.Literals([
+  "unsupported",
+  "authentication-required",
+  "timeout",
+  "process-unavailable",
+  "invalid-response",
+  "temporary-failure",
+]);
+export type AccountUsageErrorCode = typeof AccountUsageErrorCode.Type;
+export const ClaudeAccountUsageWindow = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  utilization: Schema.NullOr(NonNegativeNumber),
+  resetsAt: Schema.NullOr(IsoDateTime),
+});
+export const ClaudeAccountUsage = Schema.Struct({
+  subscriptionLabel: Schema.NullOr(TrimmedNonEmptyString),
+  limitsAvailable: Schema.Boolean,
+  windows: Schema.Array(ClaudeAccountUsageWindow),
+  extraUsage: Schema.NullOr(
+    Schema.Struct({ enabled: Schema.Boolean, utilization: Schema.NullOr(NonNegativeNumber) }),
+  ),
+});
+export type ClaudeAccountUsage = typeof ClaudeAccountUsage.Type;
+const sectionState = {
+  outcome: CodexAccountUsageStatus,
+  lastAttemptAt: Schema.NullOr(IsoDateTime),
+  errorCode: Schema.NullOr(AccountUsageErrorCode),
+};
+export const AccountUsageSection = Schema.Union([
+  Schema.Struct({
+    ...sectionState,
+    kind: Schema.Literal("claude-usage"),
+    snapshot: Schema.NullOr(Schema.Struct({ fetchedAt: IsoDateTime, data: ClaudeAccountUsage })),
+  }),
+  Schema.Struct({
+    ...sectionState,
+    kind: Schema.Literal("codex-tokens"),
+    snapshot: Schema.NullOr(
+      Schema.Struct({
+        fetchedAt: IsoDateTime,
+        data: Schema.Struct({
+          tokenSummary: Schema.NullOr(CodexAccountTokenSummary),
+          dailyUsageBuckets: Schema.Array(CodexAccountDailyUsageBucket),
+        }),
+      }),
+    ),
+  }),
+  Schema.Struct({
+    ...sectionState,
+    kind: Schema.Literal("codex-limits"),
+    snapshot: Schema.NullOr(
+      Schema.Struct({
+        fetchedAt: IsoDateTime,
+        data: Schema.Struct({ rateLimits: Schema.Array(CodexAccountRateLimit) }),
+      }),
+    ),
+  }),
+]);
+export type AccountUsageSection = typeof AccountUsageSection.Type;
+export const UsageAccount = Schema.Struct({
+  key: TrimmedNonEmptyString,
+  provider: ProviderKind,
+  displayName: TrimmedNonEmptyString,
+  providerInstanceId: Schema.NullOr(ProviderInstanceId),
+  enabled: Schema.Boolean,
+  refreshState: Schema.Literals(["idle", "queued", "refreshing"]),
+  sections: Schema.Array(AccountUsageSection),
+});
+export type UsageAccount = typeof UsageAccount.Type;
+export const UsageAccounts = Schema.Array(UsageAccount);
+export type UsageAccounts = typeof UsageAccounts.Type;

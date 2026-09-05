@@ -1,10 +1,11 @@
-import type { IsoDateTime, UsageTurnFact } from "@t3tools/contracts";
+import type { IsoDateTime, ProviderKind, UsageTurnFact } from "@t3tools/contracts";
 import { ServiceMap } from "effect";
 import type { Effect } from "effect";
 
 import type { ProjectionRepositoryError } from "../Errors.ts";
 
 export interface UsageSummaryRangeInput {
+  readonly provider?: ProviderKind;
   readonly startedAt: IsoDateTime;
   readonly endedAt: IsoDateTime;
 }

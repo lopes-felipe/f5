@@ -39,6 +39,8 @@ import {
   resolveClaudeCliInvocation,
   resolveClaudeSdkExecutableOptions,
 } from "../claudeSdkExecutable.ts";
+import { AccountUsageReadError, accountUsageErrorCode } from "../../usage/accountUsageErrors.ts";
+import { normalizeClaudeAccountUsage } from "../../usage/claudeAccountUsage.ts";
 import { CommandNotFoundError } from "../../spawn/resolveCommand.ts";
 
 const DEFAULT_CLAUDE_MODEL_CAPABILITIES: ModelCapabilities = createModelCapabilities({
@@ -231,7 +233,7 @@ function toTitleCaseWords(value: string): string {
     .join(" ");
 }
 
-function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
+export function claudeSubscriptionLabel(subscriptionType: string | undefined): string | undefined {
   const normalized = subscriptionType?.toLowerCase().replace(/[\s_-]+/g, "");
   if (!normalized) return undefined;
 
@@ -323,14 +325,12 @@ function claudeAuthMetadata(input: {
 
 // ── SDK capability probe ────────────────────────────────────────────
 
-const CAPABILITIES_PROBE_TIMEOUT_MS = 8_000;
-
 function nonEmptyProbeString(value: string): string | undefined {
   const candidate = value.trim();
   return candidate ? candidate : undefined;
 }
 
-type ClaudeCapabilitiesProbe = {
+export type ClaudeCapabilitiesProbe = {
   readonly email: string | undefined;
   readonly subscriptionType: string | undefined;
   readonly tokenSource: string | undefined;
@@ -410,72 +410,128 @@ function waitForAbortSignal(signal: AbortSignal): Promise<void> {
 }
 
 /**
- * Probe account information by spawning a lightweight Claude Agent SDK
- * session and reading the initialization result.
+ * Run a prompt-free control query in the configured server authentication context.
  *
- * We pass a never-yielding AsyncIterable as the prompt so that no user
- * message is ever written to the subprocess stdin. This means the Claude
- * Code subprocess completes its local initialization IPC (returning
- * account info and slash commands) but never starts an API request to
- * Anthropic. We read the init data and then abort the subprocess.
- *
- * This is used as a fallback when `claude auth status` does not include
- * subscription type information.
+ * We pass a never-yielding AsyncIterable so no user message reaches stdin.
+ * Initialization alone is local; usage control calls can contact the provider
+ * and scan local transcripts. Always abort after the supplied operation.
  */
+export function withClaudeProbeQuery<A>(
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  use: (query: ReturnType<typeof claudeQuery>) => Promise<A>,
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+) {
+  return Effect.suspend(() => {
+    const abort = new AbortController();
+    const cwd = options.cwd ?? process.cwd();
+    return Effect.gen(function* () {
+      const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const q = (options.createQuery ?? claudeQuery)({
+            // Never yield: closing stdin before the control request can terminate the CLI.
+            // oxlint-disable-next-line require-yield
+            prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
+              await waitForAbortSignal(abort.signal);
+            })(),
+            options: {
+              persistSession: false,
+              // Keep resolution inside tryPromise: Windows shim resolution throws synchronously.
+              ...resolveClaudeSdkExecutableOptions(
+                claudeSettings.binaryPath,
+                claudeEnvironment,
+                process.platform,
+                cwd,
+              ),
+              cwd,
+              abortController: abort,
+              settingSources: ["user", "project", "local"],
+              allowedTools: [],
+              env: claudeEnvironment,
+              stderr: () => {},
+            },
+          });
+          return await use(q);
+        },
+        catch: (error) => new AccountUsageReadError(accountUsageErrorCode(error)),
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          if (!abort.signal.aborted) abort.abort();
+        }),
+      ),
+      Effect.timeoutOption(8_000),
+      Effect.flatMap((result) =>
+        Option.isSome(result)
+          ? Effect.succeed(result.value)
+          : Effect.fail(new AccountUsageReadError("timeout")),
+      ),
+    );
+  });
+}
+
+export function claudeCapabilitiesFromInitialization(
+  init: Awaited<ReturnType<ReturnType<typeof claudeQuery>["initializationResult"]>>,
+): ClaudeCapabilitiesProbe {
+  const account = init.account;
+  return {
+    email: account?.email,
+    subscriptionType: account?.subscriptionType,
+    tokenSource: account?.tokenSource,
+    slashCommands: parseClaudeInitializationCommands(init.commands),
+  };
+}
+
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
-) => {
-  const abort = new AbortController();
-  return Effect.gen(function* () {
-    const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
-    return yield* Effect.tryPromise(async () => {
-      const q = claudeQuery({
-        // Never yield — we only need initialization data, not a conversation.
-        // This prevents any prompt from reaching the Anthropic API.
-        // oxlint-disable-next-line require-yield
-        prompt: (async function* (): AsyncGenerator<SDKUserMessage> {
-          await waitForAbortSignal(abort.signal);
-        })(),
-        options: {
-          persistSession: false,
-          ...resolveClaudeSdkExecutableOptions(claudeSettings.binaryPath, claudeEnvironment),
-          abortController: abort,
-          settingSources: ["user", "project", "local"],
-          allowedTools: [],
-          env: claudeEnvironment,
-          stderr: () => {},
-        },
-      });
-      const init = await q.initializationResult();
-      const account = init.account as
-        | {
-            readonly email?: string;
-            readonly subscriptionType?: string;
-            readonly tokenSource?: string;
-          }
-        | undefined;
-      return {
-        email: account?.email,
-        subscriptionType: account?.subscriptionType,
-        tokenSource: account?.tokenSource,
-        slashCommands: parseClaudeInitializationCommands(init.commands),
-      } satisfies ClaudeCapabilitiesProbe;
-    });
-  }).pipe(
-    Effect.ensuring(
-      Effect.sync(() => {
-        if (!abort.signal.aborted) abort.abort();
-      }),
-    ),
-    Effect.timeoutOption(CAPABILITIES_PROBE_TIMEOUT_MS),
+  options: { readonly createQuery?: typeof claudeQuery; readonly cwd?: string } = {},
+) =>
+  withClaudeProbeQuery(
+    claudeSettings,
+    environment,
+    async (q) => claudeCapabilitiesFromInitialization(await q.initializationResult()),
+    options,
+  ).pipe(
     Effect.result,
-    Effect.map((result) => {
-      if (Result.isFailure(result)) return undefined;
-      return Option.isSome(result.success) ? result.success.value : undefined;
-    }),
+    Effect.map((result) => (Result.isSuccess(result) ? result.success : undefined)),
   );
-};
+
+export const probeClaudeAccountUsage = (
+  claudeSettings: ClaudeSettings,
+  environment: NodeJS.ProcessEnv,
+  options: {
+    readonly createQuery?: typeof claudeQuery;
+    readonly cwd?: string;
+    readonly onCapabilities?: (value: ClaudeCapabilitiesProbe) => Promise<void>;
+  } = {},
+) =>
+  withClaudeProbeQuery(
+    claudeSettings,
+    environment,
+    async (q) => {
+      const capabilities = claudeCapabilitiesFromInitialization(await q.initializationResult());
+      await options.onCapabilities?.(capabilities);
+      const read = q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET;
+      if (typeof read !== "function") throw new AccountUsageReadError("unsupported");
+      let response: unknown;
+      try {
+        response = await read.call(q);
+      } catch (error) {
+        // Only a rejection from this operation can prove unsupported usage RPCs.
+        if (
+          error instanceof Error &&
+          /unknown (request|subtype)|unsupported|not supported|unrecognized/i.test(error.message)
+        )
+          throw new AccountUsageReadError("unsupported");
+        throw error;
+      }
+      return normalizeClaudeAccountUsage(response);
+    },
+    options,
+  );
 
 const runClaudeCommand = Effect.fn("runClaudeCommand")(function* (
   claudeSettings: ClaudeSettings,
