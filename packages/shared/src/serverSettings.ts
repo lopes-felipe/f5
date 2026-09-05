@@ -41,7 +41,7 @@ export function parsePersistedServerObservabilitySettings(
   }
 }
 
-function shouldReplaceTextGenerationModelSelection(
+function shouldReplaceModelSelection(
   patch: ServerSettingsPatch["textGenerationModelSelection"] | undefined,
 ): boolean {
   return Boolean(patch && (patch.instanceId !== undefined || patch.model !== undefined));
@@ -134,7 +134,7 @@ function preserveRedactedProviderSecrets(
 }
 
 /**
- * Applies a server settings patch while treating textGenerationModelSelection as
+ * Applies a server settings patch while treating model selections as
  * replace-on-provider/model updates. This prevents stale nested options from
  * surviving a reset patch that intentionally omits options.
  */
@@ -142,7 +142,6 @@ export function applyServerSettingsPatch(
   current: ServerSettings,
   patch: ServerSettingsPatch,
 ): ServerSettings {
-  const selectionPatch = patch.textGenerationModelSelection;
   const next = deepMerge(current, patch);
   const nextWithReplacements =
     patch.providerInstances !== undefined
@@ -152,21 +151,19 @@ export function applyServerSettingsPatch(
         }
       : next;
   const nextWithSecrets = preserveRedactedProviderSecrets(current, nextWithReplacements, patch);
-  if (!selectionPatch) {
-    return nextWithSecrets;
+  let result = nextWithSecrets;
+  for (const key of ["textGenerationModelSelection", "sessionNotesModelSelection"] as const) {
+    const selectionPatch = patch[key];
+    if (!selectionPatch) continue;
+    const instanceId = selectionPatch.instanceId ?? current[key].instanceId;
+    const model = selectionPatch.model ?? current[key].model;
+    const options = shouldReplaceModelSelection(selectionPatch)
+      ? selectionPatch.options
+      : mergeModelSelectionOptionsById({
+          current: current[key].options,
+          patch: selectionPatch.options,
+        });
+    result = { ...result, [key]: createModelSelection(instanceId, model, options) };
   }
-
-  const instanceId = selectionPatch.instanceId ?? current.textGenerationModelSelection.instanceId;
-  const model = selectionPatch.model ?? current.textGenerationModelSelection.model;
-  const options = shouldReplaceTextGenerationModelSelection(selectionPatch)
-    ? selectionPatch.options
-    : mergeModelSelectionOptionsById({
-        current: current.textGenerationModelSelection.options,
-        patch: selectionPatch.options,
-      });
-
-  return {
-    ...nextWithSecrets,
-    textGenerationModelSelection: createModelSelection(instanceId, model, options),
-  };
+  return result;
 }

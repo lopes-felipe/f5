@@ -13,6 +13,37 @@ import {
 } from "./serverSettings";
 
 describe("serverSettings helpers", () => {
+  it("defaults summaries to Luna low independently of Git generation", () => {
+    expect(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection).toEqual({
+      instanceId: "codex",
+      model: "gpt-5.6-luna",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    });
+    const edited = applyServerSettingsPatch(DEFAULT_SERVER_SETTINGS, {
+      sessionNotesModelSelection: { options: [{ id: "fastMode", value: true }] },
+    });
+    expect(edited.sessionNotesModelSelection.options).toEqual([
+      { id: "reasoningEffort", value: "low" },
+      { id: "fastMode", value: true },
+    ]);
+    expect(edited.textGenerationModelSelection).toEqual(
+      DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+    );
+    const switched = applyServerSettingsPatch(edited, {
+      sessionNotesModelSelection: {
+        instanceId: ProviderInstanceId.make("claude-work"),
+        model: "claude-sonnet-4-6",
+      },
+    });
+    expect(switched.sessionNotesModelSelection).toEqual({
+      instanceId: "claude-work",
+      model: "claude-sonnet-4-6",
+    });
+    expect(
+      applyServerSettingsPatch(edited, { sessionNotesModelSelection: { options: [] } })
+        .sessionNotesModelSelection.options,
+    ).toBeUndefined();
+  });
   it("normalizes optional persisted strings", () => {
     expect(normalizePersistedServerSettingString(undefined)).toBeUndefined();
     expect(normalizePersistedServerSettingString("   ")).toBeUndefined();

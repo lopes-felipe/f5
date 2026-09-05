@@ -2,6 +2,14 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const PROVIDERS_SETTINGS_DESCRIPTORS = [
   {
+    id: "providers.session-notes",
+    category: "providers",
+    label: "Thread summaries",
+    description: "Choose the provider, model, and reasoning effort for all thread summaries.",
+    keywords: ["summary", "notes", "luna", "cost", "reasoning"],
+    targetSelector: '[data-settings-search-target="providers.session-notes"]',
+  },
+  {
     id: "providers.instances",
     category: "providers",
     label: "Provider instances",

@@ -24,6 +24,34 @@ const makeServerSettingsLayer = () =>
   );
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect(
+    "persists summary selection atomically without falling back from disabled instances",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig;
+        const selection = {
+          instanceId: ProviderInstanceId.make("missing-summary-account"),
+          model: "gpt-5.6-luna",
+        };
+        yield* service.updateSettings({ sessionNotesModelSelection: selection });
+        const next = yield* service.getSettings;
+        assert.deepEqual(next.sessionNotesModelSelection, selection);
+        // Decode the persisted file again: default low effort must not reappear.
+        assert.ok(config.settingsPath);
+        const persisted = yield* fs.readFileString(config.settingsPath);
+        assert.deepEqual(
+          Schema.decodeUnknownSync(ServerSettings)(JSON.parse(persisted))
+            .sessionNotesModelSelection,
+          selection,
+        );
+        assert.deepEqual(
+          next.textGenerationModelSelection,
+          DEFAULT_SERVER_SETTINGS.textGenerationModelSelection,
+        );
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
   it.effect("decodes nested settings patches", () =>
     Effect.sync(() => {
       const decodePatch = Schema.decodeUnknownSync(ServerSettingsPatch);

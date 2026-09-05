@@ -8,6 +8,7 @@
  * @module ProviderAdapter
  */
 import type {
+  ModelSelection,
   ApprovalRequestId,
   ChatAttachment,
   ProviderApprovalDecision,
@@ -51,6 +52,8 @@ export interface ProviderOneOffPromptInput {
   readonly prompt: string;
   readonly cwd?: string;
   readonly model?: string;
+  /** Explicit instance/model/options; overrides legacy routing and skips source-thread configuration. */
+  readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: ProviderSessionStartInput["runtimeMode"];
   readonly providerOptions?: ProviderStartOptions;
   readonly timeoutMs?: number;

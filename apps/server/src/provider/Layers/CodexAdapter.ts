@@ -23,6 +23,10 @@ import {
 } from "@t3tools/contracts";
 import { extractProposedPlanMarkdown } from "@t3tools/shared/proposedPlan";
 import {
+  getModelSelectionStringOptionValue,
+  getProviderOptionBooleanSelectionValue,
+} from "@t3tools/shared/model";
+import {
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
@@ -2373,10 +2377,34 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           manager.runOneOffPrompt({
             prompt: input.prompt,
             ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-            ...(input.model !== undefined ? { model: input.model } : {}),
+            ...(input.modelSelection
+              ? {
+                  model: input.modelSelection.model,
+                  effort: getModelSelectionStringOptionValue(
+                    input.modelSelection,
+                    "reasoningEffort",
+                  ),
+                  serviceTier:
+                    getProviderOptionBooleanSelectionValue(
+                      input.modelSelection.options,
+                      "fastMode",
+                    ) === true
+                      ? "priority"
+                      : null,
+                }
+              : input.model !== undefined
+                ? { model: input.model }
+                : {}),
             ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
-            ...(input.providerOptions !== undefined
-              ? { providerOptions: input.providerOptions }
+            ...(input.providerOptions !== undefined || input.modelSelection !== undefined
+              ? {
+                  providerOptions: input.modelSelection
+                    ? mergeCodexProviderOptions(
+                        options?.defaultProviderOptions,
+                        input.providerOptions,
+                      )
+                    : input.providerOptions,
+                }
               : {}),
             ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
           }),

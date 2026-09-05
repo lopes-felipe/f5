@@ -35,7 +35,8 @@ import {
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
-import { makeClaudeContinuationGroupKey } from "./ClaudeHome.ts";
+import { makeClaudeContinuationGroupKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
+import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
@@ -91,10 +92,22 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         continuationGroupKey,
       });
 
-      const adapterOptions = eventLoggers.native
-        ? { nativeEventLogger: eventLoggers.native }
-        : undefined;
-      const adapter = yield* makeClaudeAdapter(adapterOptions);
+      const launchArgs = parseClaudeLaunchArgs(effectiveConfig.launchArgs);
+      if (!launchArgs.ok) {
+        return yield* new ProviderDriverError({
+          driver: DRIVER_KIND,
+          instanceId,
+          detail: launchArgs.error,
+        });
+      }
+      const adapter = yield* makeClaudeAdapter({
+        ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
+        oneOffProviderOptions: {
+          binaryPath: effectiveConfig.binaryPath,
+          launchArgs: launchArgs.args,
+        },
+        processEnvironment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
+      });
       const textGeneration = yield* makeClaudeTextGeneration(effectiveConfig, processEnv);
 
       // Per-instance capabilities cache: keyed on binary + resolved HOME so

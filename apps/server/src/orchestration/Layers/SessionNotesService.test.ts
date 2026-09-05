@@ -1,6 +1,8 @@
 import {
   CommandId,
-  DEFAULT_GIT_TEXT_GENERATION_MODEL,
+  DEFAULT_SERVER_SETTINGS,
+  ProviderInstanceId,
+  type ModelSelection,
   EventId,
   MessageId,
   ProjectId,
@@ -22,6 +24,7 @@ import {
 } from "../Services/OrchestrationEngine.ts";
 import { SessionNotesService } from "../Services/SessionNotesService.ts";
 import { SessionNotesServiceLive } from "./SessionNotesService.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 
 const THREAD_ID = ThreadId.makeUnsafe("thread-1");
 const PROJECT_ID = ProjectId.makeUnsafe("project-1");
@@ -184,6 +187,7 @@ async function createHarness(input: {
     SessionNotesServiceLive.pipe(
       Layer.provideMerge(Layer.succeed(OrchestrationEngineService, orchestrationEngine)),
       Layer.provideMerge(Layer.succeed(ProviderService, providerService)),
+      Layer.provideMerge(ServerSettingsService.layerTest()),
     ),
   );
   const service = await runtime.runPromise(Effect.service(SessionNotesService));
@@ -193,6 +197,13 @@ async function createHarness(input: {
 
   return {
     service,
+    updateSelection: (selection: ModelSelection) =>
+      runtime.runPromise(
+        Effect.gen(function* () {
+          const settings = yield* ServerSettingsService;
+          yield* settings.updateSettings({ sessionNotesModelSelection: selection });
+        }),
+      ),
     dispatched,
     emit: async (event: OrchestrationEvent) => {
       await Effect.runPromise(PubSub.publish(domainEventPubSub, event));
@@ -213,6 +224,33 @@ describe("SessionNotesService", () => {
 
   afterEach(async () => {
     await Promise.all(disposers.splice(0).map((dispose) => dispose()));
+  });
+  it("uses a stable independent selection for retries and reads changes on the next refresh", async () => {
+    const selections: Array<ModelSelection | undefined> = [];
+    const selected = {
+      instanceId: ProviderInstanceId.make("claude-work"),
+      model: "claude-sonnet-4-6",
+      options: [{ id: "effort", value: "low" }],
+    };
+    const harness = await createHarness({
+      runOneOffPrompt: (input) =>
+        Effect.promise(async () => {
+          selections.push(input.modelSelection);
+          if (selections.length === 1) await harness.updateSelection(selected);
+          return { text: "invalid" };
+        }),
+    });
+    disposers.push(harness.dispose);
+    await harness.emit(makeSessionSetEvent("ready"));
+    await Effect.runPromise(harness.service.drain);
+    expect(selections).toEqual([
+      DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection,
+      DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection,
+    ]);
+    await harness.emit(makeSessionSetEvent("ready"));
+    await Effect.runPromise(harness.service.drain);
+    expect(selections.slice(2)).toEqual([selected, selected]);
+    expect(harness.dispatched).toEqual([]);
   });
 
   it("records normalized session notes for settled Claude threads", async () => {
@@ -274,6 +312,43 @@ describe("SessionNotesService", () => {
     expect(
       harness.dispatched.some((command) => command.type === "thread.session-notes.record"),
     ).toBe(false);
+  });
+
+  it("keeps previous notes when the selected provider request fails", async () => {
+    const requests: Array<ModelSelection | undefined> = [];
+    const harness = await createHarness({
+      runOneOffPrompt: (input) => {
+        requests.push(input.modelSelection);
+        return Effect.die(new Error("selected account unavailable"));
+      },
+    });
+    disposers.push(harness.dispose);
+    const previous = {
+      title: "Previous notes",
+      currentState: "Keep this",
+      taskSpecification: "Task",
+      filesAndFunctions: "Files",
+      workflow: "Workflow",
+      errorsAndCorrections: "Errors",
+      codebaseAndSystemDocumentation: "Docs",
+      learnings: "Learnings",
+      keyResults: "Results",
+      worklog: "Work",
+      updatedAt: NOW,
+      sourceLastInteractionAt: "2026-04-07T10:00:00.000Z",
+    };
+    harness.mutateReadModel((current) => ({
+      ...current,
+      threads: current.threads.map((thread) => ({ ...thread, sessionNotes: previous })),
+    }));
+    await harness.emit(makeSessionSetEvent("ready"));
+    await Effect.runPromise(harness.service.drain);
+    expect(requests).toEqual([DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection]);
+    expect(harness.dispatched).toEqual([]);
+    harness.mutateReadModel((current) => {
+      expect(current.threads[0]?.sessionNotes).toEqual(previous);
+      return current;
+    });
   });
 
   it("tolerates conversational prose surrounding the JSON payload", async () => {
@@ -380,13 +455,15 @@ describe("SessionNotesService", () => {
     ).toBe(false);
   });
 
-  it("refreshes notes for non-Claude threads using the inferred provider", async () => {
+  it("refreshes GPT-6 threads using the independent Luna model", async () => {
     let requestedProvider: string | null = null;
+    let requestedSelection: ModelSelection | undefined;
     let requestedRuntimeMode: string | null = null;
     const harness = await createHarness({
       runOneOffPrompt: (input) =>
         Effect.sync(() => {
           requestedProvider = input.provider;
+          requestedSelection = input.modelSelection;
           requestedRuntimeMode = input.runtimeMode ?? null;
           return {
             text: JSON.stringify({
@@ -415,7 +492,7 @@ describe("SessionNotesService", () => {
           ? {
               ...thread,
               title: "Codex thread",
-              model: "gpt-5.3-codex",
+              model: "gpt-6-astra",
               runtimeMode: "approval-required",
               session: thread.session
                 ? {
@@ -432,6 +509,7 @@ describe("SessionNotesService", () => {
     await Effect.runPromise(harness.service.drain);
 
     expect(requestedProvider).toBe("codex");
+    expect(requestedSelection).toEqual(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection);
     expect(requestedRuntimeMode).toBe("approval-required");
     expect(
       harness.dispatched.some((command) => command.type === "thread.session-notes.record"),
@@ -443,7 +521,7 @@ describe("SessionNotesService", () => {
     const harness = await createHarness({
       runOneOffPrompt: (input) =>
         Effect.sync(() => {
-          requests.push({ provider: input.provider, model: input.model });
+          requests.push({ provider: input.provider, model: input.modelSelection?.model });
           return {
             text: JSON.stringify({
               title: "OpenCode notes",
@@ -489,7 +567,7 @@ describe("SessionNotesService", () => {
     expect(requests).toEqual([
       {
         provider: "codex",
-        model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+        model: DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection.model,
       },
     ]);
     expect(

@@ -13,6 +13,8 @@ import { access } from "node:fs/promises";
 
 import {
   DEFAULT_RUNTIME_MODE,
+  ModelSelection,
+  isKnownProviderKind,
   type TurnId,
   NonNegativeInt,
   ProjectId,
@@ -123,6 +125,7 @@ const ProviderConversationCompactionInputSchema = Schema.Struct({
   prompt: TrimmedNonEmptyString,
   cwd: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(TrimmedNonEmptyString),
+  modelSelection: Schema.optional(ModelSelection),
   runtimeMode: Schema.optional(RuntimeMode),
   providerOptions: Schema.optional(ProviderStartOptions),
   timeoutMs: Schema.optional(NonNegativeInt),
@@ -1437,14 +1440,32 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           schema: ProviderConversationCompactionInputSchema,
           payload: rawInput,
         });
-        const adapter = yield* registry.getByProvider(input.provider);
-        if (!adapter.runOneOffPrompt && !adapter.compactConversation) {
+        const selectedInstance = input.modelSelection
+          ? yield* registry.getInstanceInfo(input.modelSelection.instanceId)
+          : undefined;
+        if (
+          selectedInstance &&
+          (!selectedInstance.enabled || !isKnownProviderKind(selectedInstance.driverKind))
+        ) {
           return yield* toValidationError(
             "ProviderService.runOneOffPrompt",
-            `Provider '${input.provider}' does not support one-off prompts.`,
+            `Summary provider instance '${selectedInstance.instanceId}' is disabled or unsupported.`,
           );
         }
-        const persistedBinding = yield* directory.getBinding(input.threadId);
+        const provider =
+          (selectedInstance?.driverKind as ProviderKind | undefined) ?? input.provider;
+        const adapter = input.modelSelection
+          ? yield* registry.getByInstance(input.modelSelection.instanceId)
+          : yield* registry.getByProvider(provider);
+        if (!adapter.runOneOffPrompt && (input.modelSelection || !adapter.compactConversation)) {
+          return yield* toValidationError(
+            "ProviderService.runOneOffPrompt",
+            `Provider '${provider}' does not support one-off prompts.`,
+          );
+        }
+        const persistedBinding = input.modelSelection
+          ? Option.none<ProviderRuntimeBinding>()
+          : yield* directory.getBinding(input.threadId);
         const persistedProviderOptions = Option.match(persistedBinding, {
           onNone: () => undefined,
           onSome: (binding) => readPersistedProviderOptions(binding.runtimePayload),
@@ -1455,10 +1476,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         const providerInput = {
           threadId: input.threadId,
-          provider: input.provider,
+          provider,
           prompt: input.prompt,
           ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-          ...(input.model !== undefined ? { model: input.model } : {}),
+          ...(input.modelSelection
+            ? { model: input.modelSelection.model, modelSelection: input.modelSelection }
+            : input.model !== undefined
+              ? { model: input.model }
+              : {}),
           ...(input.runtimeMode !== undefined
             ? { runtimeMode: input.runtimeMode }
             : persistedRuntimeMode !== undefined
@@ -1477,8 +1502,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               Effect.map((response) => ({ text: response.summary })),
             );
         yield* analytics.record("provider.one_off_prompt.ran", {
-          provider: input.provider,
-          model: input.model,
+          provider,
+          model: input.modelSelection?.model ?? input.model,
           hasCwd: input.cwd !== undefined,
           hasProviderOptions:
             input.providerOptions !== undefined || persistedProviderOptions !== undefined,

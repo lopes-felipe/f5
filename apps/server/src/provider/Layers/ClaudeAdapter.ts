@@ -26,6 +26,7 @@ import {
   EventId,
   type ClaudeCodeEffort,
   type ModelSelection,
+  type ProviderStartOptions,
   type ProviderApprovalDecision,
   ProviderInstanceId,
   ProviderItemId,
@@ -326,6 +327,8 @@ type ClaudeQueryOptionsWithAppend = Omit<ClaudeQueryOptions, "effort"> & {
 };
 
 export interface ClaudeAdapterLiveOptions {
+  readonly oneOffProviderOptions?: ProviderStartOptions["claudeAgent"];
+  readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly createQuery?: (input: {
     readonly prompt: AsyncIterable<SDKUserMessage>;
     readonly options: ClaudeQueryOptionsWithAppend;
@@ -1151,9 +1154,10 @@ const CLAUDE_SETTING_SOURCES = [
   "local",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
-export function buildClaudeQueryEnv(providerOptions?: {
-  readonly subagentModel?: string | undefined;
-}): NodeJS.ProcessEnv {
+export function buildClaudeQueryEnv(
+  providerOptions?: { readonly subagentModel?: string | undefined },
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
   // New models omit task tools by default. Keep the TodoWrite surface required
   // by sharedAssistantContract (ENABLE_TASKS=0 selects it over TaskCreate et al.).
   const taskEnvironment = {
@@ -1162,17 +1166,15 @@ export function buildClaudeQueryEnv(providerOptions?: {
   };
   const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
   if (!rawSubagentModel) {
-    return buildProviderChildProcessEnv(process.env, taskEnvironment);
+    return buildProviderChildProcessEnv(environment, taskEnvironment);
   }
-
   if (rawSubagentModel === "inherit") {
-    return buildProviderChildProcessEnv(process.env, {
+    return buildProviderChildProcessEnv(environment, {
       ...taskEnvironment,
       CLAUDE_CODE_SUBAGENT_MODEL: undefined,
     });
   }
-
-  return buildProviderChildProcessEnv(process.env, {
+  return buildProviderChildProcessEnv(environment, {
     ...taskEnvironment,
     CLAUDE_CODE_SUBAGENT_MODEL:
       normalizeModelSlug(rawSubagentModel, "claudeAgent") ?? rawSubagentModel,
@@ -4021,9 +4023,21 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const prompt = (async function* () {
           yield promptMessage;
         })();
-        const providerOptions = input.providerOptions?.claudeAgent;
+        const providerOptions = input.modelSelection
+          ? { ...options?.oneOffProviderOptions, ...input.providerOptions?.claudeAgent }
+          : input.providerOptions?.claudeAgent;
         const permissionMode = toPermissionMode(providerOptions?.permissionMode);
-        const queryEnvironment = buildClaudeQueryEnv(providerOptions);
+        const queryEnvironment = buildClaudeQueryEnv(
+          providerOptions,
+          input.modelSelection ? options?.processEnvironment : undefined,
+        );
+        const selection = input.modelSelection
+          ? resolveClaudeRuntimeModelSelection({
+              modelSelection: input.modelSelection,
+              providerInstanceId: input.modelSelection.instanceId,
+            })
+          : undefined;
+        const traits = selection ? resolveClaudeRuntimeTraits(selection) : undefined;
         // One-off prompts intentionally exclude MCP so the output stays
         // deterministic and tool-free. Even when the saved session config uses
         // bypass permissions, we keep the explicit tool-deny gate active here.
@@ -4034,7 +4048,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               prompt,
               options: {
                 ...(input.cwd ? { cwd: input.cwd } : {}),
-                ...(input.model ? { model: input.model } : {}),
+                ...(selection?.apiModel
+                  ? { model: selection.apiModel }
+                  : input.model
+                    ? { model: input.model }
+                    : {}),
+                ...(traits?.effectiveEffort ? { effort: traits.effectiveEffort } : {}),
+                ...(traits
+                  ? {
+                      settings: {
+                        ...(typeof traits.thinking === "boolean"
+                          ? { alwaysThinkingEnabled: traits.thinking }
+                          : {}),
+                        fastMode: traits.fastMode,
+                      },
+                    }
+                  : {}),
                 ...resolveClaudeSdkExecutableOptions(
                   providerOptions?.binaryPath,
                   queryEnvironment,

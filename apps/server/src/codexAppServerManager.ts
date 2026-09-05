@@ -1187,6 +1187,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly prompt: string;
     readonly cwd?: string;
     readonly model?: string;
+    readonly effort?: string | undefined;
+    readonly serviceTier?: string | null;
     readonly runtimeMode?: RuntimeMode;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     readonly timeoutMs?: number;
@@ -1283,6 +1285,8 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       await this.sendTurn({
         threadId,
         input: input.prompt,
+        ...(input.effort !== undefined ? { effort: input.effort } : {}),
+        ...(input.serviceTier !== undefined ? { serviceTier: input.serviceTier } : {}),
       });
       await completion;
       const text = capturedText.trim();
