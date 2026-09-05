@@ -649,6 +649,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.permissionMode, "default");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
       assert.equal(createInput?.options.allowDangerouslySkipPermissions, undefined);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -685,6 +687,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, undefined);
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
@@ -708,6 +712,8 @@ describe("ClaudeAdapterLive", () => {
 
       const createInput = harness.getLastCreateQueryInput();
       assert.equal(createInput?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL, "claude-opus-5");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+      assert.equal(createInput?.options.env?.CLAUDE_CODE_ENABLE_TASKS, "0");
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
