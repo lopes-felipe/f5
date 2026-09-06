@@ -119,6 +119,15 @@ import {
 } from "./desktopUpdate.logic";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "./ui/alert";
 import { Button } from "./ui/button";
+import {
+  AlertDialog,
+  AlertDialogClose,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogPopup,
+  AlertDialogTitle,
+} from "./ui/alert-dialog";
 import { ThreadWorktreeIndicator } from "./ThreadWorktreeIndicator";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "./ui/tooltip";
@@ -1077,17 +1086,25 @@ export default function Sidebar() {
       };
     });
   }, []);
+  const [workflowToArchive, setWorkflowToArchive] = useState<{
+    workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId;
+    workflowTitle: string;
+    workflowType: SidebarWorkflowEntry["type"];
+  } | null>(null);
+  const archiveCancelRef = useRef<HTMLButtonElement>(null);
+  const archiveTriggerRef = useRef<HTMLElement | null>(null);
   const archiveWorkflow = useCallback(
-    async (
+    (
       workflowId: PlanningWorkflowId | CodeReviewWorkflowId | InvestigationWorkflowId,
       workflowTitle: string,
       workflowType: SidebarWorkflowEntry["type"],
     ) => {
-      await setWorkflowArchived({
+      archiveTriggerRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setWorkflowToArchive({
         workflowId,
         workflowTitle,
         workflowType,
-        archived: true,
       });
     },
     [],
@@ -3402,6 +3419,46 @@ export default function Sidebar() {
       </SidebarContent>
 
       <SidebarSeparator />
+      <AlertDialog
+        open={workflowToArchive !== null}
+        onOpenChange={(open) => {
+          if (!open) setWorkflowToArchive(null);
+        }}
+      >
+        <AlertDialogPopup
+          className="sm:max-w-[440px]"
+          initialFocus={archiveCancelRef}
+          finalFocus={archiveTriggerRef}
+        >
+          <AlertDialogHeader className="text-left">
+            <AlertDialogTitle>Archive workflow?</AlertDialogTitle>
+            <p className="mt-1 text-sm font-medium wrap-anywhere">
+              {workflowToArchive?.workflowTitle || "Untitled workflow"}
+            </p>
+            <AlertDialogDescription>
+              Move this workflow to Archived. You can restore it later.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter variant="bare">
+            <AlertDialogClose render={<Button ref={archiveCancelRef} variant="outline" />}>
+              Cancel
+            </AlertDialogClose>
+            <Button
+              onClick={() => {
+                if (!workflowToArchive) return;
+                setWorkflowToArchive(null);
+                void setWorkflowArchived({
+                  ...workflowToArchive,
+                  archived: true,
+                  confirm: false,
+                });
+              }}
+            >
+              Archive workflow
+            </Button>
+          </AlertDialogFooter>
+        </AlertDialogPopup>
+      </AlertDialog>
       {workflowDialogProjectId ? (
         <WorkflowCreateDialog
           open
