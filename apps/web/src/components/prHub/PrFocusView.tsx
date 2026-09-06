@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CheckCheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { PrHubAdvisory, PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
 import { sourceControlPullRequestKeysEqual } from "@t3tools/shared/sourceControl";
@@ -34,42 +34,54 @@ export function PrFocusView({
   onAnalyzeAdvisory,
   onThreadCreated,
   focusedPrKey,
+  onSelectionChange,
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
-  const [index, setIndex] = useState(0);
+  const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
+  const index = ordered.findIndex((pr) => pr.key === selectedKey);
+  const setIndex = useCallback(
+    (update: number | ((current: number) => number)) => {
+      setSelectedKey((currentKey) => {
+        const currentIndex = Math.max(
+          0,
+          ordered.findIndex((pr) => pr.key === currentKey),
+        );
+        const next = typeof update === "number" ? update : update(currentIndex);
+        return ordered[Math.max(0, Math.min(next, ordered.length - 1))]?.key ?? null;
+      });
+    },
+    [ordered],
+  );
   const detailHandleRef = useRef<PrDetailHandle | null>(null);
   // The deep-link is honoured exactly once per distinct `focusedPrKey` value, so
   // that Prev/Next (and n/p) aren't snapped back to it.
   const honoredDeepLinkRef = useRef<string | null>(null);
 
-  // Jump to a deep-linked PR once, when it is present in the queue.
+  // Resolve the key once for each update; deep links and first-row fallback must
+  // share an effect so a refresh cannot replace the selected PR by its old index.
   useEffect(() => {
-    if (!focusedPrKey) {
-      honoredDeepLinkRef.current = null;
-      return;
-    }
-    if (honoredDeepLinkRef.current === focusedPrKey) return;
-    const deepLinked = ordered.findIndex((pr) =>
-      sourceControlPullRequestKeysEqual(pr.key, focusedPrKey),
-    );
-    if (deepLinked < 0) return;
-    honoredDeepLinkRef.current = focusedPrKey;
-    setIndex(deepLinked);
-  }, [focusedPrKey, ordered]);
-
-  // Clamp the cursor when the queue shrinks (e.g. after acting on a PR).
-  useEffect(() => {
+    if (!focusedPrKey) honoredDeepLinkRef.current = null;
     if (ordered.length === 0) {
-      if (index !== 0) setIndex(0);
+      if (selectedKey !== null) setSelectedKey(null);
       return;
     }
-    if (index > ordered.length - 1) {
-      setIndex(ordered.length - 1);
+    if (focusedPrKey && honoredDeepLinkRef.current !== focusedPrKey) {
+      const match = ordered.find((pr) => sourceControlPullRequestKeysEqual(pr.key, focusedPrKey));
+      if (match) {
+        honoredDeepLinkRef.current = focusedPrKey;
+        setSelectedKey(match.key);
+        return;
+      }
     }
-  }, [ordered, index]);
+    if (!ordered.some((pr) => pr.key === selectedKey)) setSelectedKey(ordered[0]!.key);
+  }, [focusedPrKey, ordered, selectedKey]);
 
-  const safeIndex = ordered.length === 0 ? -1 : Math.min(index, ordered.length - 1);
+  const safeIndex = ordered.length === 0 ? -1 : Math.min(Math.max(0, index), ordered.length - 1);
   const currentPr = safeIndex >= 0 ? ordered[safeIndex] : null;
+
+  useEffect(() => {
+    if (currentPr) onSelectionChange?.(currentPr.key);
+  }, [currentPr, onSelectionChange]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -104,7 +116,7 @@ export function PrFocusView({
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [ordered]);
+  }, [ordered, setIndex]);
 
   if (!currentPr) {
     return (

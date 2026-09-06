@@ -1,8 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { derivePrAttention, PR_HUB_NEEDS_YOU_STATES, type RawPrFields } from "./prHub";
+import {
+  canViewerReview,
+  derivePrWaitingSince,
+  derivePrAttention,
+  derivePrAttentionReasons,
+  prAttentionText,
+  PR_HUB_NEEDS_YOU_STATES,
+  type RawPrFields,
+} from "./prHub";
 
 const basePr: RawPrFields = {
+  actionableUnresolvedThreadCount: 0,
+  headRefOid: null,
+  viewerLastReviewedCommitOid: null,
   author: "octocat",
   isAuthor: false,
   isDraft: false,
@@ -10,6 +21,7 @@ const basePr: RawPrFields = {
   checkRollup: "success",
   mergeable: "mergeable",
   mergeStateStatus: "CLEAN",
+  mergePermission: "allowed",
   reviewDecision: "none",
   viewerHasReviewed: false,
   viewerReviewRequested: false,
@@ -131,17 +143,186 @@ describe("derivePrAttention", () => {
     });
   });
 
-  it("tracks every needs-you state in the exported set", () => {
-    expect(PR_HUB_NEEDS_YOU_STATES).toEqual(
-      new Set([
-        "ci_failing",
-        "merge_conflict",
-        "branch_behind",
-        "changes_requested",
-        "ready_to_merge",
-        "review_requested",
-        "re_review_requested",
-      ]),
+  it.each([
+    [{ checkRollup: "failure" }, "ci_failing"],
+    [{ mergeable: "conflicting" }, "merge_conflict"],
+    [{ mergeStateStatus: "BEHIND" }, "branch_behind"],
+    [{ reviewDecision: "changes_requested" }, "changes_requested"],
+    [{ reviewDecision: "approved" }, "ready_to_merge"],
+    [{}, "unresolved_comments"],
+  ] as const)(
+    "orders unresolved author feedback behind blockers and approval: %j",
+    (overrides, expected) => {
+      expect(
+        derive({ isAuthor: true, actionableUnresolvedThreadCount: 5, ...overrides }).attentionState,
+      ).toBe(expected);
+    },
+  );
+
+  it.each([
+    ["head", "head", "reviewed_waiting"],
+    ["new", "old", "changes_pushed"],
+    [null, "old", "reviewed_waiting"],
+    ["new", null, "reviewed_waiting"],
+  ] as const)(
+    "compares reviewed revisions %s / %s",
+    (headRefOid, viewerLastReviewedCommitOid, state) => {
+      expect(
+        derive({ viewerHasReviewed: true, headRefOid, viewerLastReviewedCommitOid }).attentionState,
+      ).toBe(state);
+    },
+  );
+
+  it.each(["BLOCKED", "UNKNOWN", "", "BEHIND"])(
+    "never calls a blocked or unknown PR ready: %s",
+    (mergeStateStatus) => {
+      expect(
+        derive({ isAuthor: true, reviewDecision: "approved", mergeStateStatus }).attentionState,
+      ).not.toBe("ready_to_merge");
+    },
+  );
+
+  it("tracks exactly the needs-you states produced by the fixture matrix", () => {
+    const matrix: Partial<RawPrFields>[] = [
+      { state: "merged" },
+      { state: "closed" },
+      { isAuthor: true, isDraft: true },
+      { isAuthor: true, checkRollup: "failure" },
+      { isAuthor: true, mergeable: "conflicting" },
+      { isAuthor: true, mergeStateStatus: "BEHIND" },
+      { isAuthor: true, reviewDecision: "changes_requested" },
+      { isAuthor: true, reviewDecision: "approved" },
+      { isAuthor: true, actionableUnresolvedThreadCount: 1 },
+      { isAuthor: true },
+      { viewerReviewRequested: true },
+      { viewerReviewRequested: true, viewerHasReviewed: true },
+      { viewerHasReviewed: true, headRefOid: "new", viewerLastReviewedCommitOid: "old" },
+      { viewerHasReviewed: true },
+      {},
+    ];
+    expect(
+      new Set(
+        matrix
+          .map(derive)
+          .filter((pr) => pr.attentionBucket === "needs_you")
+          .map((pr) => pr.attentionState),
+      ),
+    ).toEqual(PR_HUB_NEEDS_YOU_STATES);
+  });
+
+  it("uses one review eligibility predicate for all lifecycle and relationship combinations", () => {
+    for (const state of ["open", "closed", "merged"] as const) {
+      for (const isAuthor of [false, true]) {
+        for (const viewerReviewRequested of [false, true]) {
+          for (const attentionState of [
+            "changes_pushed",
+            "review_requested",
+            "reviewed_waiting",
+          ] as const) {
+            expect(
+              canViewerReview({
+                state,
+                roles: isAuthor ? ["author"] : [],
+                viewerReviewRequested,
+                attentionState,
+              }),
+            ).toBe(
+              state === "open" &&
+                !isAuthor &&
+                (viewerReviewRequested || attentionState === "changes_pushed"),
+            );
+          }
+        }
+      }
+    }
+  });
+
+  it("derives waiting timestamps from data, with no elapsed-time escalation", () => {
+    const input = {
+      ...basePr,
+      createdAt: "2026-01-01T00:00:00Z",
+      updatedAt: "2026-02-01T00:00:00Z",
+      headCommittedAt: null,
+    };
+    expect(derivePrWaitingSince({ ...input, roles: ["author"] })).toBe(input.createdAt);
+    expect(derivePrWaitingSince({ ...input, viewerHasReviewed: true })).toBe(input.updatedAt);
+    expect(derivePrWaitingSince({ ...input, roles: ["author"], isDraft: true })).toBeNull();
+    expect(derivePrWaitingSince({ ...input, viewerHasReviewed: true, state: "closed" })).toBeNull();
+  });
+});
+
+describe("attention reasons", () => {
+  it("keeps simultaneous blockers in precedence order and stable observation times", () => {
+    const input = {
+      ...basePr,
+      isAuthor: true,
+      checkRollup: "failure" as const,
+      mergeable: "conflicting" as const,
+      actionableUnresolvedThreadCount: 3,
+    };
+    const first = derivePrAttentionReasons(input, {
+      at: "2026-01-01T00:00:00.000Z",
+      url: "https://github.com/org/repo/pull/1",
+      verified: true,
+    });
+    expect(first.map((reason) => reason.code)).toEqual([
+      "ci_failing",
+      "merge_conflict",
+      "unresolved_comments",
+    ]);
+    const next = derivePrAttentionReasons(
+      { ...input, actionableUnresolvedThreadCount: 2 },
+      {
+        at: "2026-01-02T00:00:00.000Z",
+        url: "https://github.com/org/repo/pull/1",
+        verified: true,
+        previous: first,
+      },
+    );
+    expect(next).toEqual(first);
+    expect(prAttentionText(next[2]!.code, 2).nextAction).toBe(
+      "Address 2 unresolved review comments",
     );
   });
+  it("identifies who acts next without treating degraded evidence as verified", () => {
+    expect(
+      derivePrAttentionReasons(
+        { ...basePr, isAuthor: true },
+        { at: "2026-01-01T00:00:00.000Z", url: "url", verified: false },
+      )[0],
+    ).toMatchObject({ actor: "reviewer", action: "wait", verification: "unverified" });
+    expect(
+      derivePrAttentionReasons(
+        { ...basePr, viewerHasReviewed: true },
+        { at: "2026-01-01T00:00:00.000Z", url: "url", verified: true },
+      )[0]?.actor,
+    ).toBe("author");
+  });
+});
+
+it("retains stable observation times for provider evidence independent of response ordering", () => {
+  const input = { ...basePr, isAuthor: true, actionableUnresolvedThreadCount: 2 };
+  const observation = {
+    at: "2026-01-01T00:00:00.000Z",
+    url: "pr-url",
+    verified: true,
+    evidence: {
+      unresolved_comments: [
+        { id: "b", url: "comment-b" },
+        { id: "a", url: "comment-a" },
+      ],
+    },
+  };
+  const first = derivePrAttentionReasons(input, observation);
+  const next = derivePrAttentionReasons(input, {
+    ...observation,
+    at: "2026-01-02T00:00:00.000Z",
+    previous: first,
+    evidence: { unresolved_comments: [...observation.evidence.unresolved_comments].reverse() },
+  });
+  expect(next).toEqual(first);
+  expect(next[0]?.evidence).toEqual([
+    { id: "a", url: "comment-a" },
+    { id: "b", url: "comment-b" },
+  ]);
 });

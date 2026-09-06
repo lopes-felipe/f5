@@ -1,3 +1,10 @@
+import { GitHubCredentialScope } from "../../git/githubApi.ts";
+import {
+  GITHUB_REVIEW_THREADS_SELECTION,
+  parseReviewThreads,
+  type ReviewThreadFact,
+  type ReviewCommentFact,
+} from "../reviewThreads.ts";
 import os from "node:os";
 import { createHash } from "node:crypto";
 
@@ -12,6 +19,7 @@ import {
   type PrHubAdvisoryCommentValidity,
   type PrHubAdvisoryRecommendation,
   type PrHubAdvisorySnapshot,
+  type PrHubAdvisoriesChanged,
   type PrHubAdvisoryStatus,
   type PrHubAnalyzeAdvisoriesInput,
   type PrHubGetAdvisoriesInput,
@@ -109,26 +117,6 @@ interface AdvisoryRow {
   readonly error_kind: string | null;
   readonly error_message: string | null;
   readonly payload_json: string;
-}
-
-interface ReviewCommentFact {
-  readonly id: string;
-  readonly url: string;
-  readonly author: string | null;
-  readonly bodyText: string;
-  readonly createdAt: string | null;
-  readonly updatedAt: string | null;
-  readonly outdated: boolean;
-  readonly diffHunk: string | null;
-}
-
-interface ReviewThreadFact {
-  readonly id: string;
-  readonly isResolved: boolean;
-  readonly path: string | null;
-  readonly line: number | null;
-  readonly originalLine: number | null;
-  readonly comments: ReadonlyArray<ReviewCommentFact>;
 }
 
 interface IssueCommentFact {
@@ -957,20 +945,7 @@ fragment PrHubAdvisoryFields on PullRequest {
     totalCount
     nodes { id bodyText url author { login } createdAt updatedAt }
   }
-  reviewThreads(first:100) {
-    totalCount
-    nodes {
-      id
-      isResolved
-      path
-      line
-      originalLine
-      comments(first:20) {
-        totalCount
-        nodes { id bodyText url author { login } createdAt updatedAt outdated diffHunk }
-      }
-    }
-  }
+  ${GITHUB_REVIEW_THREADS_SELECTION}
   latestReviews(first:50) {
     nodes { id state bodyText author { login } submittedAt url }
   }
@@ -1031,20 +1006,7 @@ fragment PrHubAdvisoryFields on PullRequest {
     totalCount
     nodes { id bodyText url author { login } createdAt updatedAt }
   }
-  reviewThreads(first:100) {
-    totalCount
-    nodes {
-      id
-      isResolved
-      path
-      line
-      originalLine
-      comments(first:20) {
-        totalCount
-        nodes { id bodyText url author { login } createdAt updatedAt outdated diffHunk }
-      }
-    }
-  }
+  ${GITHUB_REVIEW_THREADS_SELECTION}
   latestReviews(first:50) {
     nodes { id state bodyText author { login } submittedAt url }
   }
@@ -1078,26 +1040,6 @@ function repositoryParts(
   const [owner = "", ...nameParts] = nameWithOwner.split("/");
   const name = nameParts.join("/");
   return owner && name ? { owner, name } : null;
-}
-
-function parseReviewThreads(connection: unknown): ReviewThreadFact[] {
-  return nodeArray(connection).map((thread) => ({
-    id: stringValue(thread.id) ?? "",
-    isResolved: booleanValue(thread.isResolved),
-    path: stringValue(thread.path),
-    line: numberValue(thread.line),
-    originalLine: numberValue(thread.originalLine),
-    comments: nodeArray(thread.comments).map((comment) => ({
-      id: stringValue(comment.id) ?? "",
-      url: stringValue(comment.url) ?? "",
-      author: stringValue(asRecord(comment.author)?.login),
-      bodyText: stringValue(comment.bodyText) ?? "",
-      createdAt: stringValue(comment.createdAt),
-      updatedAt: stringValue(comment.updatedAt),
-      outdated: booleanValue(comment.outdated),
-      diffHunk: stringValue(comment.diffHunk),
-    })),
-  }));
 }
 
 function parseIssueComments(connection: unknown): IssueCommentFact[] {
@@ -1190,16 +1132,16 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
   const host = DEFAULT_HOST;
   const providerKind = "github" as const;
   const cwd = accountCwd(serverConfig.cwd);
-  const pubSub = yield* PubSub.unbounded<PrHubAdvisorySnapshot>();
+  const pubSub = yield* PubSub.sliding<PrHubAdvisoriesChanged>(1);
 
-  const upsertAdvisory = (viewerLogin: string, advisory: PrHubAdvisory, pr: TrackedPullRequest) => {
+  const upsertAdvisory = (viewerId: string, advisory: PrHubAdvisory, pr: TrackedPullRequest) => {
     const parts = keyParts(pr);
     const now = new Date().toISOString();
     return sql`
       INSERT INTO pr_hub_advisories (
         provider_kind,
         host,
-        viewer_login,
+        viewer_id,
         repo,
         number,
         key,
@@ -1221,7 +1163,7 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
       VALUES (
         ${parts.provider},
         ${parts.host},
-        ${viewerLogin},
+        ${viewerId},
         ${parts.repo},
         ${parts.number},
         ${advisory.key},
@@ -1240,7 +1182,7 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
         ${JSON.stringify(advisory)},
         ${now}
       )
-      ON CONFLICT (provider_kind, host, viewer_login, repo, number)
+      ON CONFLICT (provider_kind, host, viewer_id, repo, number)
       DO UPDATE SET
         key = excluded.key,
         fingerprint = excluded.fingerprint,
@@ -1260,7 +1202,7 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
     `;
   };
 
-  const loadRows = (viewerLogin: string) =>
+  const loadRows = (viewerId: string, keys: readonly PullRequestKey[] = []) =>
     sql<AdvisoryRow>`
       SELECT
         key,
@@ -1280,8 +1222,9 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
       FROM pr_hub_advisories
       WHERE provider_kind = ${providerKind}
         AND host = ${host}
-        AND viewer_login = ${viewerLogin}
-      ORDER BY updated_at DESC
+        AND viewer_id = ${viewerId}
+        AND ${keys.length ? sql.in("key", keys) : sql`1 = 1`}
+      ORDER BY updated_at DESC LIMIT 100
     `;
 
   const getAdvisories = (
@@ -1290,22 +1233,34 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* prHub.getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
-      if (!viewerLogin) {
-        return { viewerLogin: null, host: snapshot.host, advisories: [] };
+      if (
+        !viewerLogin ||
+        !snapshot.account ||
+        (input.accountGeneration !== undefined &&
+          input.accountGeneration !== snapshot.account.generation)
+      ) {
+        return {
+          viewerLogin: null,
+          host: snapshot.host,
+          accountGeneration: snapshot.account?.generation,
+          advisories: [],
+        };
       }
       const allPrs = [...snapshot.pullRequests, ...snapshot.recentlyResolved];
       const requestedKeys = new Set((input.keys ?? []).map(String));
       const fingerprintByKey = new Map(
         allPrs.map((pr) => [String(pr.key), prHubAdvisoryFingerprint(pr)] as const),
       );
-      const rows = yield* loadRows(viewerLogin);
+      const rows = yield* loadRows(String(snapshot.account.viewerId), input.keys);
       const advisories = rows
+        .filter((row) => fingerprintByKey.has(row.key))
         .filter((row) => requestedKeys.size === 0 || requestedKeys.has(row.key))
         .map((row) => advisoryFromRow(row, fingerprintByKey))
         .filter((advisory): advisory is PrHubAdvisory => advisory !== null);
       return {
         viewerLogin,
         host: snapshot.host,
+        accountGeneration: snapshot.account?.generation,
         advisories,
       };
     }).pipe(
@@ -1318,14 +1273,25 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
           return {
             viewerLogin: snapshot.viewerLogin,
             host: snapshot.host,
+            accountGeneration: snapshot.account?.generation,
             advisories: [],
           } satisfies PrHubAdvisorySnapshot;
         }),
       ),
     );
 
-  const publishAdvisories = () =>
-    getAdvisories({}).pipe(Effect.flatMap((snapshot) => PubSub.publish(pubSub, snapshot)));
+  const publishAdvisories = (keys: readonly PullRequestKey[] = [], accountGeneration?: string) =>
+    Effect.gen(function* () {
+      const snapshot = yield* prHub.getSnapshot;
+      if (accountGeneration !== undefined && accountGeneration !== snapshot.account?.generation)
+        return;
+      const bounded = keys.length <= 500 && Buffer.byteLength(JSON.stringify(keys)) < 60 * 1024;
+      yield* PubSub.publish(pubSub, {
+        accountGeneration: snapshot.account?.generation,
+        keys: bounded ? keys : [],
+        resyncRequired: !bounded || keys.length === 0,
+      });
+    });
 
   const fetchFacts = (
     pr: TrackedPullRequest,
@@ -1433,13 +1399,15 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
     });
 
   const analyzeOne = (
+    viewerId: string,
+    accountGeneration: string,
     viewerLogin: string,
     pr: TrackedPullRequest,
     modelSelection: ModelSelection,
   ) =>
     Effect.gen(function* () {
-      yield* upsertAdvisory(viewerLogin, transitionalAdvisory(pr, "running"), pr);
-      yield* publishAdvisories();
+      yield* upsertAdvisory(viewerId, transitionalAdvisory(pr, "running"), pr);
+      yield* publishAdvisories([pr.key], accountGeneration);
       const detail = yield* fetchFacts(pr, viewerLogin);
       const baseline = derivePrHubAdvisory(detail.facts);
       const modelResult = yield* Effect.exit(
@@ -1474,8 +1442,8 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
               ...(detail.errorMessage ? { errorMessage: detail.errorMessage } : {}),
             }
           : advisory;
-      yield* upsertAdvisory(viewerLogin, finalAdvisory, pr);
-      yield* publishAdvisories();
+      yield* upsertAdvisory(viewerId, finalAdvisory, pr);
+      yield* publishAdvisories([pr.key], accountGeneration);
       return finalAdvisory;
     }).pipe(
       Effect.catchCause((cause) =>
@@ -1485,8 +1453,8 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
             errorKind: errorKind(cause),
             errorMessage: errorMessage(cause, "Could not analyze this pull request."),
           });
-          yield* upsertAdvisory(viewerLogin, advisory, pr);
-          yield* publishAdvisories();
+          yield* upsertAdvisory(viewerId, advisory, pr);
+          yield* publishAdvisories([pr.key], accountGeneration);
           return advisory;
         }),
       ),
@@ -1498,16 +1466,22 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
     Effect.gen(function* () {
       const snapshot = yield* prHub.getSnapshot;
       const viewerLogin = snapshot.viewerLogin;
-      if (!viewerLogin) {
+      if (!viewerLogin || !snapshot.account) {
         return { viewerLogin: null, host: snapshot.host, advisories: [] };
       }
 
+      const context = yield* githubCli.getCredentialContext({ cwd, host });
+      if (
+        context.generation !== snapshot.account.generation ||
+        (input.accountGeneration !== undefined && input.accountGeneration !== context.generation)
+      )
+        return yield* getAdvisories(input);
       const requestedKeys = new Set((input.keys ?? []).map(String));
       const allPrs = [...snapshot.pullRequests, ...snapshot.recentlyResolved];
       const targets = allPrs.filter((pr) =>
         requestedKeys.size > 0 ? requestedKeys.has(String(pr.key)) : isActiveDefaultTarget(pr),
       );
-      const rows = yield* loadRows(viewerLogin);
+      const rows = yield* loadRows(String(snapshot.account.viewerId), input.keys);
       const cachedByKey = new Map(rows.map((row) => [row.key, row] as const));
       const mode = input.mode ?? "stale_only";
       const settings = yield* serverSettings.getSettings.pipe(
@@ -1529,17 +1503,26 @@ const makePrHubAdvisoryService = Effect.gen(function* () {
         );
       });
 
-      const batch = toAnalyze;
+      const batch = toAnalyze.slice(0, 100);
 
       for (const pr of batch) {
-        yield* upsertAdvisory(viewerLogin, transitionalAdvisory(pr, "queued"), pr);
+        yield* upsertAdvisory(
+          String(snapshot.account.viewerId),
+          transitionalAdvisory(pr, "queued"),
+          pr,
+        );
       }
       if (batch.length > 0) yield* publishAdvisories();
 
-      yield* Effect.forEach(batch, (pr) => analyzeOne(viewerLogin, pr, modelSelection), {
-        concurrency: ADVISORY_ANALYSIS_CONCURRENCY,
-        discard: true,
-      });
+      yield* Effect.forEach(
+        batch,
+        (pr) =>
+          analyzeOne(String(context.viewerId), context.generation, viewerLogin, pr, modelSelection),
+        {
+          concurrency: ADVISORY_ANALYSIS_CONCURRENCY,
+          discard: true,
+        },
+      ).pipe(Effect.provideService(GitHubCredentialScope, context));
 
       return yield* getAdvisories({
         keys: targets.map((pr) => pr.key),

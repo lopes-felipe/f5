@@ -1,6 +1,8 @@
-import { useMemo, useState } from "react";
+import { isPrSnoozed } from "./prHubPresentation";
+import { useEffect, useMemo, useState } from "react";
 import type {
   PrHubAdvisory,
+  PrHubComparisonIdentity,
   PrHubLocalCheckoutCandidate,
   ThreadId,
   TrackedPullRequest,
@@ -65,6 +67,9 @@ export interface PrActionDialogProps {
   reviewers: string;
   setReviewers: (value: string) => void;
   mergeMethod: PrMergeMethod;
+  mergeComparison: PrHubComparisonIdentity | null;
+  mergeComparisonError: string | null;
+  reloadMergeComparison: () => void;
   setMergeMethod: (value: PrMergeMethod) => void;
   snoozeUntil: string;
   setSnoozeUntil: (value: string) => void;
@@ -102,6 +107,33 @@ export function usePrActions(
   const [body, setBody] = useState("");
   const [reviewers, setReviewers] = useState("");
   const [mergeMethod, setMergeMethod] = useState<PrMergeMethod>("squash");
+  const [mergeComparison, setMergeComparison] = useState<PrHubComparisonIdentity | null>(null);
+  const [mergeComparisonError, setMergeComparisonError] = useState<string | null>(null);
+  const [mergeReadAttempt, setMergeReadAttempt] = useState(0);
+  useEffect(() => {
+    let active = true;
+    setMergeComparison(null);
+    setMergeComparisonError(null);
+    if (pendingAction === "merge")
+      void ensureNativeApi()
+        .prHub.getFiles({ key: pr.key, mode: "force" })
+        .then((page) => {
+          if (active) {
+            if (!page.comparison)
+              setMergeComparisonError("GitHub did not provide the merge comparison.");
+            else setMergeComparison(page.comparison);
+          }
+        })
+        .catch((cause: unknown) => {
+          if (active)
+            setMergeComparisonError(
+              cause instanceof Error ? cause.message : "The merge comparison could not be loaded.",
+            );
+        });
+    return () => {
+      active = false;
+    };
+  }, [pendingAction, pr.key, pr.headRefOid, mergeReadAttempt]);
   const [snoozeUntil, setSnoozeUntil] = useState(defaultSnoozeUntil);
   const [isRunning, setIsRunning] = useState(false);
   const [isIgnoring, setIsIgnoring] = useState(false);
@@ -111,12 +143,9 @@ export function usePrActions(
   const isAuthor = pr.roles.includes("author");
   const isOpen = pr.state === "open";
   const isIgnored = pr.ignoredAt !== null;
-  const isSnoozed =
-    pr.snoozedUntil !== null &&
-    Number.isFinite(new Date(pr.snoozedUntil).getTime()) &&
-    new Date(pr.snoozedUntil).getTime() > Date.now();
+  const isSnoozed = isPrSnoozed(pr);
   const runKind = resolvePrF5RunKind(pr, options.advisory);
-  const runInF5Label = runKind ? prF5RunLabel(runKind) : null;
+  const runInF5Label = runKind ? prF5RunLabel(runKind, pr) : null;
 
   const dialogTitle = useMemo(() => {
     switch (pendingAction) {
@@ -151,9 +180,11 @@ export function usePrActions(
       } else if (pendingAction === "requestChanges") {
         await api.requestChanges({ url: pr.url, body: body.trim() });
       } else if (pendingAction === "merge") {
+        if (!mergeComparison) throw new Error("Load the merge comparison before confirming.");
         await api.merge({
           url: pr.url,
           method: mergeMethod,
+          expectedComparison: mergeComparison,
         });
       } else if (pendingAction === "markReady") {
         await api.markReady({ url: pr.url });
@@ -203,7 +234,8 @@ export function usePrActions(
       });
       toastManager.add({
         type: "success",
-        title: intent === "open" ? "Pull request opened in F5" : `${prF5RunLabel(intent)} started`,
+        title:
+          intent === "open" ? "Pull request opened in F5" : `${prF5RunLabel(intent, pr)} started`,
         description: result.worktreePath,
       });
       setCandidatePicker(null);
@@ -295,6 +327,9 @@ export function usePrActions(
       reviewers,
       setReviewers,
       mergeMethod,
+      mergeComparison,
+      mergeComparisonError,
+      reloadMergeComparison: () => setMergeReadAttempt((value) => value + 1),
       setMergeMethod,
       snoozeUntil,
       setSnoozeUntil,

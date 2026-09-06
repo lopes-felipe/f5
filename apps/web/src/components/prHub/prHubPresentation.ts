@@ -1,7 +1,9 @@
+import { canViewerReview } from "@t3tools/shared/prHub";
+import { formatRelativeTimeLabel } from "../../lib/relativeTime";
 import {
   AlertCircleIcon,
   CheckCircle2Icon,
-  CheckIcon,
+  GitPullRequestIcon,
   ClockIcon,
   GitMergeIcon,
   MinusCircleIcon,
@@ -76,7 +78,7 @@ export function checkIconFor(checkRollup: TrackedPullRequest["checkRollup"]): {
   }
 }
 
-export type PrimaryActionKind = "approve" | "merge" | "markReady" | "reRequest";
+export type PrimaryActionKind = "review" | "merge" | "markReady" | "reRequest";
 
 export interface PrimaryActionDescriptor {
   kind: PrimaryActionKind;
@@ -94,12 +96,10 @@ export function primaryActionFor(
   flags: { isAuthor: boolean; isOpen: boolean; isIgnored: boolean },
 ): PrimaryActionDescriptor | null {
   const { isAuthor, isOpen, isIgnored } = flags;
-  if (!isOpen || isIgnored) return null;
+  if (!isOpen || isIgnored || pr.repositoryArchived) return null;
 
-  const canReview =
-    !isAuthor &&
-    (pr.attentionState === "review_requested" || pr.attentionState === "re_review_requested");
-  if (canReview) return { kind: "approve", label: "Approve", Icon: CheckIcon };
+  const canReview = canViewerReview(pr);
+  if (canReview) return { kind: "review", label: "Review", Icon: GitPullRequestIcon };
 
   if (isAuthor && pr.attentionState === "ready_to_merge") {
     return { kind: "merge", label: "Merge", Icon: GitMergeIcon };
@@ -107,7 +107,11 @@ export function primaryActionFor(
   if (isAuthor && pr.attentionState === "draft") {
     return { kind: "markReady", label: "Ready", Icon: SendIcon };
   }
-  if (isAuthor && pr.attentionState === "awaiting_review" && pr.reviewRequestReviewers.length > 0) {
+  if (
+    isAuthor &&
+    (pr.attentionState === "awaiting_review" || pr.attentionState === "unresolved_comments") &&
+    pr.reviewRequestReviewers.length > 0
+  ) {
     return { kind: "reRequest", label: "Re-request", Icon: RefreshCwIcon };
   }
   return null;
@@ -135,12 +139,9 @@ export function prRowActionVisibility(
   pr: TrackedPullRequest,
   flags: { isAuthor: boolean; isOpen: boolean; isIgnored: boolean },
 ): PrRowActionVisibility {
-  const { isAuthor, isOpen, isIgnored } = flags;
+  const { isOpen, isIgnored } = flags;
   const actionable = isOpen && !isIgnored;
-  const canReview =
-    actionable &&
-    !isAuthor &&
-    (pr.attentionState === "review_requested" || pr.attentionState === "re_review_requested");
+  const canReview = actionable && canViewerReview(pr);
   return {
     primary: primaryActionFor(pr, flags),
     canReview,
@@ -239,76 +240,7 @@ export type PrHubViewMode = "inbox" | "focus";
 
 export const PR_HUB_VIEW_MODE_STORAGE_KEY = "f5.prHub.viewMode";
 
-/**
- * Attention buckets, ordered by how much they demand the viewer's attention.
- * Lower rank sorts first (more urgent).
- */
-function bucketRank(pr: TrackedPullRequest): number {
-  switch (pr.attentionBucket) {
-    case "needs_you":
-      return 0;
-    case "waiting_on_others":
-      return 1;
-    default:
-      return 2;
-  }
-}
-
-/**
- * Within a bucket, order by how actionable / pressing the attention state is.
- * Lower rank sorts first. States not listed fall to the end.
- */
-function stateSeverityRank(pr: TrackedPullRequest): number {
-  switch (pr.attentionState) {
-    case "merge_conflict":
-      return 0;
-    case "ci_failing":
-      return 1;
-    case "branch_behind":
-      return 2;
-    case "changes_requested":
-      return 3;
-    case "re_review_requested":
-      return 4;
-    case "review_requested":
-      return 5;
-    case "ready_to_merge":
-      return 6;
-    case "awaiting_review":
-      return 7;
-    case "reviewed_waiting":
-      return 8;
-    case "draft":
-      return 9;
-    case "mentioned":
-      return 10;
-    case "merged":
-      return 11;
-    case "closed":
-      return 12;
-    default:
-      return 13;
-  }
-}
-
-/**
- * Total ordering for the Focus queue and the Inbox spine: most-pressing first.
- * Bucket (needs_you → waiting_on_others → informational), then state severity,
- * then most-recently-updated first. Pure and stable for a given snapshot.
- */
-export function comparePrPriority(a: TrackedPullRequest, b: TrackedPullRequest): number {
-  const byBucket = bucketRank(a) - bucketRank(b);
-  if (byBucket !== 0) return byBucket;
-  const bySeverity = stateSeverityRank(a) - stateSeverityRank(b);
-  if (bySeverity !== 0) return bySeverity;
-  const aTime = new Date(a.updatedAt).getTime();
-  const bTime = new Date(b.updatedAt).getTime();
-  const aValid = Number.isFinite(aTime);
-  const bValid = Number.isFinite(bTime);
-  if (aValid && bValid && aTime !== bTime) return bTime - aTime;
-  if (aValid !== bValid) return aValid ? -1 : 1;
-  return 0;
-}
+export { comparePrPriority } from "@t3tools/shared/prHub";
 
 export function safeHttpsUrl(input: string): string | null {
   try {
@@ -330,4 +262,29 @@ export async function openExternalHttps(input: string, label: string): Promise<v
     return;
   }
   await ensureNativeApi().shell.openExternal(safeUrl);
+}
+
+export function isPrSnoozed(pr: TrackedPullRequest, now = Date.now()): boolean {
+  return pr.snoozedUntil !== null && Date.parse(pr.snoozedUntil) > now;
+}
+
+export function isPrStalled(pr: TrackedPullRequest, hours: number, now = Date.now()): boolean {
+  return (
+    hours > 0 &&
+    pr.state === "open" &&
+    !pr.isDraft &&
+    pr.roles.includes("author") &&
+    pr.waitingSince !== null &&
+    now - Date.parse(pr.waitingSince) >= hours * 3_600_000
+  );
+}
+
+export function waitingLabel(pr: TrackedPullRequest, now = Date.now()): string | null {
+  if (
+    !pr.waitingSince ||
+    !Number.isFinite(Date.parse(pr.waitingSince)) ||
+    now - Date.parse(pr.waitingSince) < 3_600_000
+  )
+    return null;
+  return `Waiting since ${formatRelativeTimeLabel(pr.waitingSince, now)}`;
 }

@@ -125,6 +125,7 @@ it.effect("accepts GitHub PR detail reads and mutations", () =>
       id: "pr-detail",
       body: {
         _tag: PR_HUB_WS_METHODS.getDetail,
+        accountGeneration: "account-1",
         key: "github:github.com/octo/repo#7",
       },
     });
@@ -134,6 +135,7 @@ it.effect("accepts GitHub PR detail reads and mutations", () =>
       id: "pr-edit",
       body: {
         _tag: PR_HUB_WS_METHODS.updateComment,
+        accountGeneration: "account-1",
         key: "github:github.com/octo/repo#7",
         commentId: "123",
         kind: "issue-comment",
@@ -141,6 +143,24 @@ it.effect("accepts GitHub PR detail reads and mutations", () =>
       },
     });
     assert.strictEqual(edit.body._tag, PR_HUB_WS_METHODS.updateComment);
+  }),
+);
+
+it.effect("rejects PR mutations without an account generation", () =>
+  Effect.gen(function* () {
+    const result = yield* Effect.exit(
+      decodeWebSocketRequest({
+        id: "legacy-pr-edit",
+        body: {
+          _tag: PR_HUB_WS_METHODS.updateComment,
+          key: "github:github.com/octo/repo#7",
+          commentId: "123",
+          kind: "issue-comment",
+          body: "Updated comment",
+        },
+      }),
+    );
+    assert.strictEqual(result._tag, "Failure");
   }),
 );
 

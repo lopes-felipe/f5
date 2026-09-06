@@ -1300,13 +1300,14 @@ function resolveWsRpc(body: WsRequestEnvelope["body"]): unknown {
       fileChange: fixture.threadFileChangeById[threadId]?.[fileChangeId] ?? null,
     } satisfies OrchestrationGetThreadFileChangeResult;
   }
-  if (tag === PR_HUB_WS_METHODS.getSnapshot) {
+  if (tag === PR_HUB_WS_METHODS.getOverview) {
     return {
       status: "ok",
       viewerLogin: null,
       host: "github.com",
-      pullRequests: [],
-      recentlyResolved: [],
+      counts: { needs_you: 0 },
+      coverage: [],
+      revision: "0",
       lastPolledAt: null,
     };
   }

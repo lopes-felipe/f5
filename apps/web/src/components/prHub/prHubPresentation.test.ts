@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { PrAttentionState, TrackedPullRequest } from "@t3tools/contracts";
 import { PullRequestKey } from "@t3tools/contracts";
 
-import { comparePrPriority, prRowActionVisibility, primaryActionFor } from "./prHubPresentation";
+import {
+  isPrStalled,
+  waitingLabel,
+  comparePrPriority,
+  prRowActionVisibility,
+  primaryActionFor,
+} from "./prHubPresentation";
 
 function makePr(
   overrides: Partial<TrackedPullRequest> & { attentionState: PrAttentionState },
@@ -28,11 +34,15 @@ function makePr(
     mergeable: "mergeable",
     mergeStateStatus: "CLEAN",
     viewerHasReviewed: false,
-    viewerReviewRequested: false,
+    viewerReviewRequested:
+      overrides.attentionState === "review_requested" ||
+      overrides.attentionState === "re_review_requested",
     reviewRequestReviewers: [],
     reviewRequestsCount: 0,
     commentsCount: 0,
     unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 0,
     deletions: 0,
     changedFiles: 0,
@@ -55,13 +65,13 @@ const reviewer = { isAuthor: false, isOpen: true, isIgnored: false };
 const author = { isAuthor: true, isOpen: true, isIgnored: false };
 
 describe("primaryActionFor", () => {
-  it("offers Approve to a requested reviewer", () => {
+  it("offers Review to a requested reviewer", () => {
     expect(primaryActionFor(makePr({ attentionState: "review_requested" }), reviewer)?.kind).toBe(
-      "approve",
+      "review",
     );
     expect(
       primaryActionFor(makePr({ attentionState: "re_review_requested" }), reviewer)?.kind,
-    ).toBe("approve");
+    ).toBe("review");
   });
 
   it("offers Merge to the author when ready to merge", () => {
@@ -90,7 +100,9 @@ describe("primaryActionFor", () => {
   });
 
   it("does not let an author review their own PR", () => {
-    expect(primaryActionFor(makePr({ attentionState: "review_requested" }), author)).toBeNull();
+    expect(
+      primaryActionFor(makePr({ attentionState: "review_requested", roles: ["author"] }), author),
+    ).toBeNull();
   });
 
   it("returns null for non-actionable states", () => {
@@ -111,7 +123,10 @@ describe("prRowActionVisibility", () => {
       prRowActionVisibility(makePr({ attentionState: "review_requested" }), reviewer).canReview,
     ).toBe(true);
     expect(
-      prRowActionVisibility(makePr({ attentionState: "review_requested" }), author).canReview,
+      prRowActionVisibility(
+        makePr({ attentionState: "review_requested", roles: ["author"] }),
+        author,
+      ).canReview,
     ).toBe(false);
   });
 
@@ -183,4 +198,39 @@ describe("comparePrPriority", () => {
 
     expect(order([older, newer])).toEqual([2, 1]);
   });
+});
+
+it("offers review actions after new commits without a repeated review request", () => {
+  expect(
+    prRowActionVisibility(
+      makePr({ attentionState: "changes_pushed", viewerReviewRequested: false }),
+      reviewer,
+    ).canReview,
+  ).toBe(true);
+});
+it("sorts the longest wait first even when the oldest PR was updated most recently", () => {
+  const a = makePr({
+    attentionState: "awaiting_review",
+    waitingSince: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-03-01T00:00:00Z",
+  });
+  const b = makePr({
+    attentionState: "awaiting_review",
+    waitingSince: "2026-02-01T00:00:00Z",
+    updatedAt: "2026-04-01T00:00:00Z",
+  });
+  expect(comparePrPriority(a, b)).toBeLessThan(0);
+});
+it("derives staleness locally and supports disabling it", () => {
+  const pr = makePr({
+    attentionState: "awaiting_review",
+    roles: ["author"],
+    waitingSince: "2026-01-01T00:00:00Z",
+  });
+  const now = Date.parse("2026-01-02T00:00:00Z");
+  expect(isPrStalled(pr, 24, now)).toBe(true);
+  expect(isPrStalled(pr, 0, now)).toBe(false);
+  expect(isPrStalled(pr, 25, now)).toBe(false);
+  expect(waitingLabel(pr, now)).toContain("1d ago");
+  expect(waitingLabel(pr, now - 23.5 * 3_600_000)).toBeNull();
 });

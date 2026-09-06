@@ -39,6 +39,8 @@ function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest
     reviewRequestsCount: 1,
     commentsCount: 2,
     unresolvedThreadCount: 1,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 12,
     deletions: 3,
     changedFiles: 2,
@@ -117,6 +119,7 @@ describe("PrDetailPanel", () => {
   it("renders the contextual primary action", () => {
     const pr = makePr({
       roles: ["review_requested"],
+      viewerReviewRequested: true,
       attentionState: "review_requested",
       attentionBucket: "needs_you",
     });

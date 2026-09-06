@@ -876,27 +876,14 @@ export default function Sidebar() {
     const api = readNativeApi();
     if (!api?.prHub) return;
 
-    const updateCount = (snapshot: Awaited<ReturnType<typeof api.prHub.getSnapshot>>) => {
-      const now = Date.now();
-      setPrHubNeedsYouCount(
-        snapshot.pullRequests.filter((pr) => {
-          const snoozedUntil = pr.snoozedUntil ? new Date(pr.snoozedUntil).getTime() : 0;
-          return (
-            pr.attentionBucket === "needs_you" &&
-            (!Number.isFinite(snoozedUntil) || snoozedUntil <= now)
-          );
-        }).length,
-      );
+    const updateCount = (snapshot: { counts: { needs_you: number } }) => {
+      setPrHubNeedsYouCount(snapshot.counts.needs_you);
     };
-
     void api.prHub
-      .getSnapshot()
+      .getOverview()
       .then(updateCount)
-      .catch(() => {
-        setPrHubNeedsYouCount(0);
-      });
-
-    return api.prHub.onSnapshotUpdated(updateCount);
+      .catch(() => setPrHubNeedsYouCount(0));
+    return api.prHub.onChanged(updateCount);
   }, []);
   const persistedThreadIds = useMemo(() => new Set(threads.map((thread) => thread.id)), [threads]);
   const projectCwdById = useMemo(

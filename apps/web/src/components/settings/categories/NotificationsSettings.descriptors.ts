@@ -41,4 +41,28 @@ export const NOTIFICATIONS_SETTINGS_DESCRIPTORS = [
     keywords: ["github", "pull request", "polling", "interval"],
     targetSelector: '[aria-label="Auto-refresh PR Hub"]',
   },
+  {
+    id: "notifications.pr-refresh-interval",
+    category: "notifications",
+    label: "PR Hub refresh interval",
+    description: "Seconds between PR Hub refreshes.",
+    keywords: ["github", "polling", "seconds"],
+    targetSelector: '[aria-label="PR Hub refresh interval in seconds"]',
+  },
+  {
+    id: "notifications.pr-stalled",
+    category: "notifications",
+    label: "Flag my PRs as stalled after",
+    description: "Filters and sorts stalled PRs without notifications.",
+    keywords: ["waiting", "hours", "stalled"],
+    targetSelector: '[aria-label="Flag my PRs as stalled after"]',
+  },
+  {
+    id: "notifications.pr-discovery",
+    category: "notifications",
+    label: "Discover PRs from GitHub notifications",
+    description: "Read-only notification subjects and mentions discovery.",
+    keywords: ["github", "mentions", "coverage"],
+    targetSelector: '[aria-label="Discover PRs from GitHub notifications"]',
+  },
 ] as const satisfies ReadonlyArray<SettingsItemDescriptor>;

@@ -1,3 +1,4 @@
+import { SourceControlRateLimit } from "@t3tools/contracts";
 import { Schema } from "effect";
 import type { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 
@@ -20,6 +21,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
  * GitHubCliError - GitHub CLI execution or authentication failed.
  */
 export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("GitHubCliError", {
+  rateLimit: Schema.optional(SourceControlRateLimit),
   operation: Schema.String,
   detail: Schema.String,
   kind: Schema.optional(

@@ -1,9 +1,7 @@
 import type {
   PrHubActor,
-  PrHubChangedFile,
   PrHubCheck,
   PrHubDetail,
-  PrHubFileChangeType,
   PrHubReaction,
   PrHubReactionContent,
   PrHubReviewer,
@@ -53,19 +51,6 @@ query F5PrTimeline($owner:String!,$repo:String!,$number:Int!,$issueLimit:Int!,$i
       commits(last:$commitLimit,before:$commitCursor){
         nodes { commit { oid messageHeadline committedDate authors(first:10){ nodes { name user { login avatarUrl } } } } }
         pageInfo { hasPreviousPage startCursor }
-      }
-    }
-  }
-  rateLimit { remaining limit resetAt }
-}`;
-
-export const GITHUB_PR_FILES_QUERY = `
-query F5PrFiles($owner:String!,$repo:String!,$number:Int!,$cursor:String){
-  repository(owner:$owner,name:$repo){
-    pullRequest(number:$number){
-      files(first:50,after:$cursor){
-        nodes { path additions deletions changeType }
-        pageInfo { hasNextPage endCursor }
       }
     }
   }
@@ -558,48 +543,6 @@ export function decodeGitHubPrTimeline(
       hasNextPage,
       endCursor: hasNextPage ? encodeTimelineCursor(next) : null,
       truncated: nestedReviewTruncated,
-      ...(rateLimit ? { rateLimit } : {}),
-    },
-  };
-}
-
-function fileChangeTypeOf(value: unknown): PrHubFileChangeType {
-  switch (stringOf(value).toUpperCase()) {
-    case "ADDED":
-      return "added";
-    case "DELETED":
-      return "deleted";
-    case "RENAMED":
-      return "renamed";
-    case "COPIED":
-      return "copied";
-    case "CHANGED":
-    case "MODIFIED":
-      return "changed";
-    default:
-      return "unknown";
-  }
-}
-
-export function decodeGitHubPrFiles(response: unknown): {
-  readonly files: ReadonlyArray<PrHubChangedFile>;
-  readonly pageInfo: SourceControlPageInfo;
-} {
-  const { root, pr } = pullRequestOf(response);
-  const files = recordOrNull(pr.files);
-  const pageInfo = recordOrNull(files?.pageInfo);
-  const rateLimit = rateLimitOf(root);
-  return {
-    files: nodesOf(files).map((file) => ({
-      path: stringOf(file.path),
-      additions: nonNegativeInt(file.additions),
-      deletions: nonNegativeInt(file.deletions),
-      changeType: fileChangeTypeOf(file.changeType),
-    })),
-    pageInfo: {
-      hasNextPage: pageInfo?.hasNextPage === true,
-      endCursor: nullableString(pageInfo?.endCursor),
-      truncated: false,
       ...(rateLimit ? { rateLimit } : {}),
     },
   };

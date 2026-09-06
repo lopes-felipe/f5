@@ -1,5 +1,10 @@
 import {
   AGENTS_WS_CHANNELS,
+  PR_HUB_WS_CHANNELS,
+  PR_HUB_WS_METHODS,
+  PrHubListFilter,
+  PullRequestKey,
+  type PrHubChanged,
   AGENTS_WS_METHODS,
   CommandId,
   type ContextMenuItem,
@@ -687,6 +692,67 @@ describe("wsNativeApi", () => {
     expect(showContextMenuFallbackMock).toHaveBeenCalledWith(
       [{ id: "delete", label: "Delete", destructive: true }],
       { x: 20, y: 30 },
+    );
+  });
+});
+
+describe("PR Hub revision protocol", () => {
+  const counts = Object.fromEntries(
+    PrHubListFilter.literals.map((filter) => [filter, 0]),
+  ) as PrHubChanged["counts"];
+  const changed = (accountGeneration: string): PrHubChanged => ({
+    accountGeneration,
+    revision: "1",
+    counts,
+    changedKeys: [],
+    removedKeys: [],
+    resyncRequired: true,
+  });
+  it("rejects an old-account detail response before it reaches a query cache", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    emitPush(PR_HUB_WS_CHANNELS.changed, changed("first"));
+    let finish!: (value: unknown) => void;
+    requestMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = api.prHub.getDetail({
+      key: PullRequestKey.makeUnsafe("github:github.com/octo/repo#1"),
+    });
+    const rejected = expect(pending).rejects.toThrow("account changed");
+    expect(requestMock.mock.calls.at(-1)?.[1]).toMatchObject({ accountGeneration: "first" });
+    emitPush(PR_HUB_WS_CHANNELS.changed, changed("second"));
+    finish({});
+    await rejected;
+    expect(subscribeMock.mock.calls.some((call) => call[0] === "prHub.snapshotUpdated")).toBe(
+      false,
+    );
+  });
+  it("does not let a delayed overview roll back a newer account invalidation", async () => {
+    const { createWsNativeApi } = await import("./wsNativeApi");
+    const api = createWsNativeApi();
+    emitPush(PR_HUB_WS_CHANNELS.changed, changed("first"));
+    let finish!: (value: unknown) => void;
+    requestMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending = api.prHub.getOverview();
+    const rejected = expect(pending).rejects.toThrow("previous GitHub account");
+    emitPush(PR_HUB_WS_CHANNELS.changed, changed("second"));
+    finish({ account: { generation: "first" } });
+    await rejected;
+    requestMock.mockResolvedValueOnce({});
+    await api.prHub.listPullRequests({ filter: "all" });
+    expect(requestMock).toHaveBeenLastCalledWith(
+      PR_HUB_WS_METHODS.listPullRequests,
+      { filter: "all", accountGeneration: "second" },
+      undefined,
     );
   });
 });

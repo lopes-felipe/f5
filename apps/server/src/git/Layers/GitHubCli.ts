@@ -1,4 +1,6 @@
-import { Effect, Layer, Schema } from "effect";
+import { githubRequestScheduler } from "../githubRequestScheduler.ts";
+import { makeGitHubApi, GitHubCredentialScope, githubCredentialEnvironment } from "../githubApi.ts";
+import { Effect, Layer, Schema, Option } from "effect";
 import { PositiveInt, TrimmedNonEmptyString } from "@t3tools/contracts";
 
 import { runProcess } from "../../processRunner";
@@ -252,17 +254,78 @@ function mergeArgsForMethod(method: GitHubMergePullRequestInput["method"]): stri
 
 const makeGitHubCli = Effect.sync(() => {
   const execute: GitHubCliShape["execute"] = (input) =>
-    Effect.tryPromise({
-      try: () =>
-        runProcess("gh", input.args, {
-          cwd: input.cwd,
-          timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-          allowNonZeroExit: input.allowNonZeroExit ?? false,
-        }),
-      catch: (error) => normalizeGitHubCliError("execute", error),
+    Effect.gen(function* () {
+      const capture = yield* Effect.serviceOption(GitHubCredentialScope);
+      const context = input.env === undefined && Option.isSome(capture) ? capture.value : null;
+      const args = [...input.args];
+      if (context && args[0] === "api") {
+        const hostIndex = args.indexOf("--hostname");
+        if (hostIndex >= 0 && args[hostIndex + 1]?.toLowerCase() !== context.host) {
+          return yield* new GitHubCliError({
+            operation: "execute",
+            kind: "forbidden",
+            detail: "GitHub request host does not match the captured account.",
+          });
+        }
+        if (hostIndex < 0) args.push("--hostname", context.host);
+      }
+      if (
+        context &&
+        args[0] === "pr" &&
+        args[2]?.startsWith("https://") &&
+        new URL(args[2]).hostname !== context.host
+      )
+        return yield* new GitHubCliError({
+          operation: "execute",
+          kind: "forbidden",
+          detail: "Pull request host does not match the captured account.",
+        });
+      const command = Effect.tryPromise({
+        try: (signal) => {
+          if (input.stdin !== undefined && Buffer.byteLength(input.stdin, "utf8") > 1024 * 1024) {
+            return Promise.reject(new Error("GitHub request exceeds the 1 MiB body limit."));
+          }
+          return runProcess("gh", args, {
+            cwd: input.cwd,
+            env: context ? githubCredentialEnvironment(context) : input.env,
+            timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+            allowNonZeroExit: input.allowNonZeroExit ?? false,
+            stdin: input.stdin,
+            signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal,
+            maxStdoutBytes: input.maxStdoutBytes ?? 8 * 1024 * 1024,
+            outputMode: "error",
+          });
+        },
+        catch: (error) => normalizeGitHubCliError("execute", error),
+      });
+      if (!context) return yield* command;
+      const methodIndex = Math.max(args.indexOf("--method"), args.indexOf("-X"));
+      const writes =
+        (args[0] === "pr" &&
+          ["review", "comment", "merge", "ready", "edit"].includes(args[1] ?? "")) ||
+        (args[0] === "api" && methodIndex >= 0 && args[methodIndex + 1] !== "GET");
+      const checked = writes
+        ? Effect.gen(function* () {
+            const current = yield* api.getCredentialContext({ cwd: input.cwd, host: context.host });
+            if (current.generation !== context.generation)
+              return yield* new GitHubCliError({
+                operation: "execute",
+                kind: "forbidden",
+                detail: "The GitHub account changed before the write. Nothing was sent.",
+              });
+            return yield* command;
+          })
+        : command;
+      return yield* githubRequestScheduler.run(
+        context.host,
+        writes ? "write" : args[0] === "search" ? "search" : "rest",
+        checked,
+      );
     });
 
+  const api = makeGitHubApi(execute);
   const service = {
+    ...api,
     execute,
     listOpenPullRequests: (input) =>
       execute({
@@ -408,70 +471,98 @@ const makeGitHubCli = Effect.sync(() => {
                 .toSorted(),
         ),
       ),
-    runGraphql: (input) => {
-      const variableArgs = Object.entries(input.variables ?? {}).flatMap(([key, value]) =>
-        value === undefined
-          ? []
-          : Array.isArray(value)
-            ? value.flatMap((item) =>
-                item === undefined || item === null ? [] : ["-f", `${key}[]=${String(item)}`],
-              )
-            : typeof value === "string"
-              ? ["-f", `${key}=${value}`]
-              : ["-F", `${key}=${value === null ? "null" : String(value)}`],
-      );
-      return execute({
-        cwd: input.cwd,
-        args: [
-          "api",
-          "graphql",
-          ...(input.host ? ["--hostname", input.host] : []),
-          "-f",
-          `query=${input.query}`,
-          ...variableArgs,
-        ],
-        timeoutMs: 45_000,
-        // `gh api graphql` exits 1 when a response contains both partial data
-        // and GraphQL errors. Decode the body so callers can retain the data
-        // and surface the partial failure accurately.
-        allowNonZeroExit: true,
-      }).pipe(
-        Effect.flatMap((result) => {
-          const processFailed = result.timedOut || (result.code !== null && result.code !== 0);
-          const processError = () => {
-            const detail = result.timedOut
-              ? "GitHub CLI command timed out."
-              : result.stderr.trim() || `GitHub CLI command failed (code=${result.code}).`;
-            return normalizeGitHubCliError("execute", new Error(detail));
-          };
-          return decodeGitHubJson(
-            result.stdout.trim(),
-            Schema.Unknown,
-            "runGraphql",
-            "GitHub CLI returned invalid GraphQL JSON.",
-          ).pipe(
-            Effect.flatMap((response) => {
-              if (!processFailed) {
-                return Effect.succeed(response);
-              }
-              const root =
-                typeof response === "object" && response !== null
-                  ? (response as Record<string, unknown>)
-                  : null;
-              const hasPartialData =
-                root?.data !== undefined && Array.isArray(root.errors) && root.errors.length > 0;
-              if (hasPartialData && !result.timedOut) {
-                return Effect.succeed(response);
-              }
-              return Effect.fail(processError());
-            }),
-            Effect.catch((error) =>
-              processFailed ? Effect.fail(processError()) : Effect.fail(error),
-            ),
-          );
-        }),
-      );
-    },
+    runGraphql: (input) =>
+      Effect.gen(function* () {
+        const capture = yield* Effect.serviceOption(GitHubCredentialScope);
+        if (Option.isSome(capture)) {
+          if (input.host !== undefined && input.host.toLowerCase() !== capture.value.host) {
+            return yield* new GitHubCliError({
+              operation: "runGraphql",
+              kind: "forbidden",
+              detail: "GitHub request host does not match the captured account.",
+            });
+          }
+          const response = yield* api.request({
+            cwd: input.cwd,
+            context: capture.value,
+            method: "POST",
+            endpoint: "graphql",
+            body: { query: input.query, variables: input.variables ?? {} },
+          });
+          if (response.status < 200 || response.status >= 300) {
+            return yield* new GitHubCliError({
+              operation: "runGraphql",
+              detail: `GitHub API returned HTTP ${response.status}.`,
+              kind:
+                response.status === 401
+                  ? "unauthenticated"
+                  : response.status === 429 || response.rateLimit.remaining === 0
+                    ? "rate_limited"
+                    : response.status === 403
+                      ? "forbidden"
+                      : response.status >= 500
+                        ? "network"
+                        : "generic",
+              rateLimit: response.rateLimit,
+            });
+          }
+          return response.body;
+        }
+        return yield* execute({
+          cwd: input.cwd,
+          args: ["api", "graphql", "--hostname", input.host ?? "github.com", "--input", "-"],
+          stdin: JSON.stringify({ query: input.query, variables: input.variables ?? {} }),
+          timeoutMs: 45_000,
+          // `gh api graphql` exits 1 when a response contains both partial data
+          // and GraphQL errors. Decode the body so callers can retain the data
+          // and surface the partial failure accurately.
+          allowNonZeroExit: true,
+        }).pipe(
+          Effect.flatMap((result) => {
+            if (result.stdoutTruncated || result.aborted || result.signal) {
+              return Effect.fail(
+                new GitHubCliError({
+                  operation: "runGraphql",
+                  kind: "invalid_json",
+                  detail: "GitHub response was interrupted or truncated.",
+                }),
+              );
+            }
+            const processFailed = result.timedOut || result.code !== 0;
+            const processError = () => {
+              const detail = result.timedOut
+                ? "GitHub CLI command timed out."
+                : result.stderr.trim() || `GitHub CLI command failed (code=${result.code}).`;
+              return normalizeGitHubCliError("execute", new Error(detail));
+            };
+            return decodeGitHubJson(
+              result.stdout.trim(),
+              Schema.Unknown,
+              "runGraphql",
+              "GitHub CLI returned invalid GraphQL JSON.",
+            ).pipe(
+              Effect.flatMap((response) => {
+                if (!processFailed) {
+                  return Effect.succeed(response);
+                }
+                const root =
+                  typeof response === "object" && response !== null
+                    ? (response as Record<string, unknown>)
+                    : null;
+                const hasPartialData =
+                  root?.data !== undefined && Array.isArray(root.errors) && root.errors.length > 0;
+                if (hasPartialData && !result.timedOut) {
+                  return Effect.succeed(response);
+                }
+                return Effect.fail(processError());
+              }),
+              Effect.catch((error) =>
+                processFailed ? Effect.fail(processError()) : Effect.fail(error),
+              ),
+            );
+          }),
+        );
+      }),
     searchPullRequests: (input) =>
       execute({
         cwd: input.cwd,
@@ -500,23 +591,20 @@ const makeGitHubCli = Effect.sync(() => {
     reviewPullRequest: (input) =>
       execute({
         cwd: input.cwd,
-        args: [
-          "pr",
-          "review",
-          input.url,
-          "--approve",
-          ...(input.body ? ["--body", input.body] : []),
-        ],
+        args: ["pr", "review", input.url, "--approve", ...(input.body ? ["--body-file", "-"] : [])],
+        ...(input.body ? { stdin: input.body } : {}),
       }).pipe(Effect.asVoid),
     requestChanges: (input) =>
       execute({
         cwd: input.cwd,
-        args: ["pr", "review", input.url, "--request-changes", "--body", input.body],
+        args: ["pr", "review", input.url, "--request-changes", "--body-file", "-"],
+        stdin: input.body,
       }).pipe(Effect.asVoid),
     commentPullRequest: (input) =>
       execute({
         cwd: input.cwd,
-        args: ["pr", "comment", input.url, "--body", input.body],
+        args: ["pr", "comment", input.url, "--body-file", "-"],
+        stdin: input.body,
       }).pipe(Effect.asVoid),
     mergePullRequest: (input) =>
       execute({
@@ -577,9 +665,10 @@ const makeGitHubCli = Effect.sync(() => {
           input.host,
           "--method",
           "PATCH",
-          "-f",
-          `body=${input.body}`,
+          "--input",
+          "-",
         ],
+        stdin: JSON.stringify({ body: input.body }),
       }).pipe(Effect.asVoid),
   } satisfies GitHubCliShape;
 

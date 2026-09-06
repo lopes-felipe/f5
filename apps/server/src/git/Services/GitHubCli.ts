@@ -1,3 +1,4 @@
+import type { GitHubApiRequest, GitHubApiResponse, GitHubCredentialContext } from "../githubApi.ts";
 /**
  * GitHubCli - Effect service contract for `gh` process interactions.
  *
@@ -41,6 +42,11 @@ export interface GitHubMergePullRequestInput {
  * GitHubCliShape - Service API for executing GitHub CLI commands.
  */
 export interface GitHubCliShape {
+  readonly request: (input: GitHubApiRequest) => Effect.Effect<GitHubApiResponse, GitHubCliError>;
+  readonly getCredentialContext: (input: {
+    cwd: string;
+    host: string;
+  }) => Effect.Effect<GitHubCredentialContext, GitHubCliError>;
   /**
    * Execute a GitHub CLI command and return full process output.
    */
@@ -49,6 +55,10 @@ export interface GitHubCliShape {
     readonly args: ReadonlyArray<string>;
     readonly timeoutMs?: number;
     readonly allowNonZeroExit?: boolean;
+    readonly stdin?: string;
+    readonly env?: NodeJS.ProcessEnv;
+    readonly signal?: AbortSignal;
+    readonly maxStdoutBytes?: number;
   }) => Effect.Effect<ProcessRunResult, GitHubCliError>;
 
   /**
