@@ -11,7 +11,7 @@ import { resolveThreadWorkspaceCwd } from "../../checkpointing/Utils.ts";
 import { roughTokenEstimateFromCharacters } from "../../provider/providerContext.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { deriveActivePlan, deriveTaskLines } from "../compactionService.ts";
-import { resolveOneOffPromptRoute } from "../oneOffPromptRouting.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
 import {
   SessionNotesService,
@@ -377,6 +377,7 @@ function trimSessionNotesToBudget(
 const make = Effect.gen(function* () {
   const orchestrationEngine = yield* OrchestrationEngineService;
   const providerService = yield* ProviderService;
+  const serverSettings = yield* ServerSettingsService;
   const queuedThreadIds = new Set<ThreadId>();
 
   const warnInvalidNotes = (input: { readonly threadId: ThreadId; readonly detail: string }) =>
@@ -399,10 +400,7 @@ const make = Effect.gen(function* () {
       }
 
       const now = new Date().toISOString();
-      const notesRoute = resolveOneOffPromptRoute({
-        model: thread.model,
-        sessionProviderName: thread.session?.providerName ?? null,
-      });
+      const { sessionNotesModelSelection } = yield* serverSettings.getSettings;
       const cwd = resolveThreadWorkspaceCwd({
         thread,
         projects: readModel.projects,
@@ -420,15 +418,25 @@ const make = Effect.gen(function* () {
       });
 
       const invokeNotesProvider = (promptText: string) =>
-        providerService.runOneOffPrompt({
-          threadId: thread.id,
-          provider: notesRoute.provider,
-          prompt: promptText,
-          ...(cwd ? { cwd } : {}),
-          model: notesRoute.model,
-          runtimeMode: thread.runtimeMode,
-          timeoutMs: SESSION_NOTES_ONE_OFF_PROMPT_TIMEOUT_MS,
-        });
+        providerService
+          .runOneOffPrompt({
+            threadId: thread.id,
+            prompt: promptText,
+            ...(cwd ? { cwd } : {}),
+            modelSelection: sessionNotesModelSelection,
+            runtimeMode: thread.runtimeMode,
+            timeoutMs: SESSION_NOTES_ONE_OFF_PROMPT_TIMEOUT_MS,
+          })
+          .pipe(
+            Effect.tapError((cause) =>
+              Effect.logWarning("session notes provider request failed", {
+                threadId: thread.id,
+                instanceId: sessionNotesModelSelection.instanceId,
+                model: sessionNotesModelSelection.model,
+                cause: String(cause),
+              }),
+            ),
+          );
 
       const response = yield* invokeNotesProvider(prompt);
 

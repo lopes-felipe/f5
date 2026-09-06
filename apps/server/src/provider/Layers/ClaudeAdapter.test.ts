@@ -199,6 +199,8 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 }
 
 function makeHarness(config?: {
+  readonly oneOffProviderOptions?: ClaudeAdapterLiveOptions["oneOffProviderOptions"];
+  readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly nativeEventLogPath?: string;
   readonly nativeEventLogger?: ClaudeAdapterLiveOptions["nativeEventLogger"];
   readonly cwd?: string;
@@ -219,6 +221,10 @@ function makeHarness(config?: {
     | undefined;
 
   const adapterOptions: ClaudeAdapterLiveOptions = {
+    ...(config?.oneOffProviderOptions
+      ? { oneOffProviderOptions: config.oneOffProviderOptions }
+      : {}),
+    ...(config?.processEnvironment ? { processEnvironment: config.processEnvironment } : {}),
     createQuery: (input) => {
       createInput = input;
       createInputs.push(input);
@@ -782,6 +788,109 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  for (const fastMode of [undefined, false, true]) {
+    it.effect(`applies summary Ultrathink and inherits unset Claude fastMode=${fastMode}`, () => {
+      const harness = makeHarness({ oneOffProviderOptions: { binaryPath: process.execPath } });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const fiber = yield* adapter.runOneOffPrompt!({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          prompt: "Summarize",
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claude-work"),
+            "claude-opus-5",
+            [
+              { id: "effort", value: "ultrathink" },
+              ...(fastMode !== undefined ? [{ id: "fastMode", value: fastMode }] : []),
+            ],
+          ),
+        }).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        const request = harness.getLastCreateQueryInput();
+        assert.ok(request);
+        const messages = yield* Effect.promise(async () => {
+          const result: SDKUserMessage[] = [];
+          for await (const message of request.prompt) result.push(message);
+          return result;
+        });
+        assert.deepEqual(messages[0]?.message.content, [
+          { type: "text", text: "Ultrathink:\nSummarize" },
+        ]);
+        assert.equal(request.options.effort, undefined);
+        assert.deepEqual(request.options.settings, fastMode ? { fastMode: true } : undefined);
+        assert.equal(Object.hasOwn(request.options, "settings"), fastMode === true);
+        harness.query.emit({
+          type: "assistant",
+          message: { content: [{ type: "text", text: "notes" }] },
+        } as unknown as SDKMessage);
+        harness.query.emit({
+          type: "result",
+          subtype: "success",
+          result: "notes",
+        } as unknown as SDKMessage);
+        yield* Fiber.join(fiber);
+      }).pipe(Effect.provide(harness.layer));
+    });
+  }
+  it.effect("uses independent summary selection and instance configuration", () => {
+    const harness = makeHarness({
+      oneOffProviderOptions: {
+        binaryPath: process.execPath,
+        launchArgs: {
+          verbose: null,
+          model: "claude-opus-4-6",
+          effort: "high",
+          "fallback-model": "claude-opus-4-6",
+          "--model": "claude-opus-4-6",
+          "--effort": "max",
+          "--fallback-model": "claude-opus-4-6",
+        },
+      },
+      processEnvironment: {
+        ...process.env,
+        HOME: "/summary-account",
+        SUMMARY_ACCOUNT_TEST: "selected",
+      },
+    });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const fiber = yield* adapter.runOneOffPrompt!({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        prompt: "Summarize",
+        model: "claude-opus-4-6",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claude-work"),
+          "claude-sonnet-4-6",
+          [
+            { id: "effort", value: "low" },
+            { id: "thinking", value: false },
+          ],
+        ),
+      }).pipe(Effect.forkChild);
+      yield* Effect.yieldNow;
+      const queryOptions = harness.getLastCreateQueryInput()?.options;
+      assert.equal(queryOptions?.model, "claude-sonnet-4-6");
+      assert.equal(queryOptions?.effort, "low");
+      assert.equal(queryOptions?.settings, undefined);
+      assert.equal(queryOptions?.pathToClaudeCodeExecutable, process.execPath);
+      assert.equal(queryOptions?.env?.HOME, "/summary-account");
+      assert.equal(queryOptions?.env?.SUMMARY_ACCOUNT_TEST, "selected");
+      assert.deepEqual(queryOptions?.extraArgs, { verbose: null });
+      harness.query.emit({
+        type: "assistant",
+        message: { content: [{ type: "text", text: "notes" }] },
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        result: "notes",
+      } as unknown as SDKMessage);
+      assert.deepEqual(yield* Fiber.join(fiber), { text: "notes" });
+    }).pipe(Effect.provide(harness.layer));
   });
 
   it.effect("uses the configured Claude binary for one-off compaction queries", () => {

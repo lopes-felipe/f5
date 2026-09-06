@@ -97,11 +97,13 @@ export function isReservedClaudeLaunchArgName(name: string): boolean {
  */
 export function filterReservedClaudeLaunchArgs(
   args: Record<string, string | null> | undefined | null,
+  additionalReservedNames?: ReadonlySet<string>,
 ): Record<string, string | null> | undefined {
   if (!args) return undefined;
   const out: Record<string, string | null> = {};
   for (const [key, value] of Object.entries(args)) {
-    if (isReservedClaudeLaunchArgName(key)) continue;
+    const name = key.replace(/^--/, "");
+    if (isReservedClaudeLaunchArgName(name) || additionalReservedNames?.has(name)) continue;
     out[key] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;

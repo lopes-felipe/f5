@@ -26,6 +26,7 @@ export default mergeConfig(
         "src/components/FileBrowserPanel.browser.tsx",
         "src/components/WebSocketConnectionSurface.browser.tsx",
         "src/components/settings/DisplayProfileSelector.browser.tsx",
+        "src/components/settings/SessionNotesSettings.browser.tsx",
         "src/components/settings/KeybindingEditor.browser.tsx",
         "src/components/settings/McpServersSettings.browser.tsx",
         "src/components/settings/ProviderInstanceCard.browser.tsx",

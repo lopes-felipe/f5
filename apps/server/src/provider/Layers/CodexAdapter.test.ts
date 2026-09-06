@@ -3,6 +3,7 @@ import {
   ApprovalRequestId,
   EventId,
   ProviderItemId,
+  ProviderInstanceId,
   type ProviderApprovalDecision,
   type ProviderEvent,
   type ProviderSession,
@@ -344,6 +345,57 @@ const configuredLayer = it.layer(
 );
 
 configuredLayer("CodexAdapterLive configured launch identity", (it) => {
+  for (const fastMode of [undefined, false, true]) {
+    it.effect(`preserves Codex tier presence for summary fastMode=${fastMode}`, () =>
+      Effect.gen(function* () {
+        configuredManager.runOneOffPromptImpl.mockClear();
+        const adapter = yield* CodexAdapter;
+        yield* adapter.runOneOffPrompt!({
+          threadId: asThreadId("summary-tier"),
+          provider: "codex",
+          prompt: "Summarize",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("codex-work"),
+            model: "gpt-5.6-luna",
+            ...(fastMode !== undefined ? { options: [{ id: "fastMode", value: fastMode }] } : {}),
+          },
+        });
+        const request = configuredManager.runOneOffPromptImpl.mock.calls[0]?.[0];
+        assert.equal(request?.serviceTier, fastMode ? "fast" : undefined);
+        assert.equal(Object.hasOwn(request!, "serviceTier"), fastMode === true);
+      }),
+    );
+  }
+
+  it.effect("uses the selected summary model, effort, and instance defaults", () =>
+    Effect.gen(function* () {
+      configuredManager.runOneOffPromptImpl.mockClear();
+      const adapter = yield* CodexAdapter;
+      yield* adapter.runOneOffPrompt!({
+        threadId: asThreadId("summary"),
+        provider: "codex",
+        prompt: "Summarize",
+        model: "gpt-6-astra",
+        modelSelection: {
+          instanceId: ProviderInstanceId.make("codex-work"),
+          model: "gpt-5.6-luna",
+          options: [{ id: "reasoningEffort", value: "low" }],
+        },
+      });
+      assert.deepStrictEqual(configuredManager.runOneOffPromptImpl.mock.calls[0]?.[0], {
+        prompt: "Summarize",
+        model: "gpt-5.6-luna",
+        effort: "low",
+        providerOptions: {
+          codex: {
+            binaryPath: "/configured/codex",
+            homePath: "/configured/home",
+            launchArgs: ["--enable=configured"],
+          },
+        },
+      });
+    }),
+  );
   it.effect("hydrates instance defaults and appends explicit launch arguments", () =>
     Effect.gen(function* () {
       configuredManager.startSessionImpl.mockClear();

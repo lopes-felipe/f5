@@ -187,6 +187,13 @@ export const ServerSettings = Schema.Struct({
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
     })),
   ),
+  sessionNotesModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(() => ({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-luna",
+      options: [{ id: "reasoningEffort", value: "low" }],
+    })),
+  ),
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
 
   // Legacy single-instance-per-driver settings. Continues to be the source
@@ -306,6 +313,7 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   observability: Schema.optionalKey(
     Schema.Struct({
