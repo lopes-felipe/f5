@@ -160,10 +160,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         stdin: {
           stream: Stream.encodeText(
             Stream.make(
-              applyClaudePromptEffortPrefix(
-                prompt,
-                resolvedEffort === "ultrathink" ? "ultrathink" : undefined,
-              ),
+              // resolveClaudeEffort excludes choices unsupported by this model.
+              // Preserve prompt whitespace when no keyword injection is needed.
+              resolvedEffort === "ultrathink"
+                ? applyClaudePromptEffortPrefix(prompt, resolvedEffort)
+                : prompt,
             ),
           ),
         },
