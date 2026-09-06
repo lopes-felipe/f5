@@ -1188,7 +1188,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     readonly cwd?: string;
     readonly model?: string;
     readonly effort?: string | undefined;
-    readonly serviceTier?: string | null;
+    readonly serviceTier?: "fast" | null;
     readonly runtimeMode?: RuntimeMode;
     readonly providerOptions?: ProviderSessionStartInput["providerOptions"];
     readonly timeoutMs?: number;

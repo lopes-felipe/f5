@@ -38,6 +38,19 @@ import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment
 import { makeClaudeContinuationGroupKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 
+export const resolveClaudeOneOffLaunchArgs = Effect.fn("resolveClaudeOneOffLaunchArgs")(function* (
+  raw: string,
+  instanceId: string,
+) {
+  const parsed = parseClaudeLaunchArgs(raw);
+  if (parsed.ok) return parsed.args;
+  yield* Effect.logWarning("ignoring invalid Claude launch arguments for one-off prompts", {
+    instanceId,
+    detail: parsed.error,
+  });
+  return {};
+});
+
 const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
 const SNAPSHOT_REFRESH_INTERVAL = Duration.minutes(5);
 
@@ -92,19 +105,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         continuationGroupKey,
       });
 
-      const launchArgs = parseClaudeLaunchArgs(effectiveConfig.launchArgs);
-      if (!launchArgs.ok) {
-        return yield* new ProviderDriverError({
-          driver: DRIVER_KIND,
-          instanceId,
-          detail: launchArgs.error,
-        });
-      }
+      const launchArgs = yield* resolveClaudeOneOffLaunchArgs(
+        effectiveConfig.launchArgs,
+        instanceId,
+      );
       const adapter = yield* makeClaudeAdapter({
         ...(eventLoggers.native ? { nativeEventLogger: eventLoggers.native } : {}),
         oneOffProviderOptions: {
           binaryPath: effectiveConfig.binaryPath,
-          launchArgs: launchArgs.args,
+          launchArgs,
         },
         processEnvironment: yield* makeClaudeEnvironment(effectiveConfig, processEnv),
       });

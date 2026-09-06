@@ -448,70 +448,85 @@ it.effect("rejects disabled explicit summary instances", () => {
     ),
   );
 });
-it.effect("routes explicit one-off selections by instance without source account options", () => {
-  const source = makeFakeCodexAdapter("claudeAgent");
-  const selected = makeFakeCodexAdapter();
-  const requests: Array<ProviderOneOffPromptInput> = [];
-  const selectedAdapter = {
-    ...selected.adapter,
-    runOneOffPrompt: (input: ProviderOneOffPromptInput) =>
-      Effect.sync(() => {
-        requests.push(input);
-        return { text: "notes" };
-      }),
-  };
-  return Effect.gen(function* () {
-    const service = yield* ProviderService;
-    const directory = yield* ProviderSessionDirectory;
-    const threadId = asThreadId("summary-source");
-    yield* directory.upsert({
-      threadId,
-      provider: "claudeAgent",
-      runtimeMode: "full-access",
-      runtimePayload: {
-        providerOptions: {
-          claudeAgent: { binaryPath: "/source/claude" },
-          codex: { homePath: "/wrong-account" },
-        },
-      },
-    });
-    const modelSelection = {
-      instanceId: ProviderInstanceId.make("codex-work"),
-      model: "gpt-5.6-luna",
-      options: [{ id: "reasoningEffort", value: "low" }],
-    };
-    const result = yield* service.runOneOffPrompt({
-      threadId,
-      provider: "claudeAgent",
-      model: "gpt-6-astra",
-      prompt: "Summarize",
-      modelSelection,
-    });
-    assert.deepStrictEqual(result, { text: "notes" });
-    assert.deepStrictEqual(requests, [
-      { threadId, provider: "codex", prompt: "Summarize", model: "gpt-5.6-luna", modelSelection },
-    ]);
-    const failure = yield* service
-      .runOneOffPrompt({
-        threadId,
-        provider: "codex",
-        prompt: "Summarize",
-        modelSelection: { ...modelSelection, instanceId: ProviderInstanceId.make("missing") },
-      })
-      .pipe(Effect.flip);
-    assert.equal(failure._tag, "ProviderUnsupportedError");
-    assert.equal(requests.length, 1);
-  }).pipe(
-    Effect.provide(
-      makeProviderServiceLayerForAdapters(
-        new Map([
-          ["claudeAgent", source.adapter],
-          ["codex-work" as ProviderKind, selectedAdapter],
-        ]),
-      ),
-    ),
+for (const driver of ["codex", "claudeAgent"] as const) {
+  it.effect(
+    `routes explicit ${driver} one-off selections by instance without source account options`,
+    () => {
+      const source = makeFakeCodexAdapter("claudeAgent");
+      const selected = makeFakeCodexAdapter(driver);
+      const requests: Array<ProviderOneOffPromptInput> = [];
+      const selectedAdapter = {
+        ...selected.adapter,
+        runOneOffPrompt: (input: ProviderOneOffPromptInput) =>
+          Effect.sync(() => {
+            requests.push(input);
+            return { text: "notes" };
+          }),
+      };
+      return Effect.gen(function* () {
+        const service = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+        const threadId = asThreadId("summary-source");
+        yield* directory.upsert({
+          threadId,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          runtimePayload: {
+            providerOptions: {
+              claudeAgent: { binaryPath: "/source/claude" },
+              codex: { homePath: "/wrong-account" },
+            },
+          },
+        });
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make(`${driver}-work`),
+          model: driver === "codex" ? "gpt-5.6-luna" : "claude-sonnet-4-6",
+          options: [{ id: driver === "codex" ? "reasoningEffort" : "effort", value: "low" }],
+        };
+        const result = yield* service.runOneOffPrompt({
+          threadId,
+          ...(driver === "codex" ? { provider: "claudeAgent" as const } : {}),
+          model: "gpt-6-astra",
+          prompt: "Summarize",
+          modelSelection,
+        });
+        assert.deepStrictEqual(result, { text: "notes" });
+        assert.deepStrictEqual(requests, [
+          {
+            threadId,
+            provider: driver,
+            prompt: "Summarize",
+            model: driver === "codex" ? "gpt-5.6-luna" : "claude-sonnet-4-6",
+            modelSelection,
+          },
+        ]);
+        const failure = yield* service
+          .runOneOffPrompt({
+            threadId,
+            provider: driver,
+            prompt: "Summarize",
+            modelSelection: { ...modelSelection, instanceId: ProviderInstanceId.make("missing") },
+          })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderUnsupportedError");
+        assert.equal(requests.length, 1);
+        const missingRoute = yield* service
+          .runOneOffPrompt({ threadId, prompt: "Summarize" })
+          .pipe(Effect.flip);
+        assert.equal(missingRoute._tag, "ProviderValidationError");
+      }).pipe(
+        Effect.provide(
+          makeProviderServiceLayerForAdapters(
+            new Map([
+              ["claudeAgent", source.adapter],
+              [`${driver}-work` as ProviderKind, selectedAdapter],
+            ]),
+          ),
+        ),
+      );
+    },
   );
-});
+}
 
 it.effect("keeps legacy one-off provider options from the source binding", () => {
   const selected = makeFakeCodexAdapter();

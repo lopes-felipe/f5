@@ -941,6 +941,16 @@ function withClaudeRuntimeSelectionConfig(
   };
 }
 
+function claudeRuntimeSettings(traits: {
+  readonly fastMode: boolean;
+  readonly thinking?: boolean;
+}) {
+  return {
+    ...(traits.fastMode ? { fastMode: true } : {}),
+    ...(typeof traits.thinking === "boolean" ? { alwaysThinkingEnabled: traits.thinking } : {}),
+  };
+}
+
 function withClaudeRuntimeTraitsConfig(
   config: Record<string, unknown>,
   traits: ReturnType<typeof resolveClaudeRuntimeTraits>,
@@ -954,8 +964,7 @@ function withClaudeRuntimeTraitsConfig(
   return {
     ...rest,
     ...(traits.effectiveEffort ? { effort: traits.effectiveEffort } : {}),
-    ...(traits.fastMode ? { fastMode: true } : {}),
-    ...(typeof traits.thinking === "boolean" ? { alwaysThinkingEnabled: traits.thinking } : {}),
+    ...claudeRuntimeSettings(traits),
   };
 }
 
@@ -1148,6 +1157,7 @@ const SUPPORTED_CLAUDE_IMAGE_MIME_TYPES = new Set([
   "image/png",
   "image/webp",
 ]);
+const CLAUDE_ONE_OFF_SELECTION_FLAGS = new Set(["model", "effort", "fallback-model"]);
 const CLAUDE_SETTING_SOURCES = [
   "user",
   "project",
@@ -1168,12 +1178,14 @@ export function buildClaudeQueryEnv(
   if (!rawSubagentModel) {
     return buildProviderChildProcessEnv(environment, taskEnvironment);
   }
+
   if (rawSubagentModel === "inherit") {
     return buildProviderChildProcessEnv(environment, {
       ...taskEnvironment,
       CLAUDE_CODE_SUBAGENT_MODEL: undefined,
     });
   }
+
   return buildProviderChildProcessEnv(environment, {
     ...taskEnvironment,
     CLAUDE_CODE_SUBAGENT_MODEL:
@@ -1195,19 +1207,28 @@ function buildClaudeTurnRuntimeContext(model: string | undefined): string | unde
   ].join("\n");
 }
 
-function buildPromptText(input: ProviderAdapterSendTurnInput, activeModel?: string): string {
-  const requestedEffort = resolveReasoningEffortForProvider(
-    "claudeAgent",
-    input.modelOptions?.claudeAgent?.effort ?? null,
-  );
-  const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", input.model);
+function applyClaudeModelPromptEffort(
+  prompt: string,
+  model: string | undefined,
+  effort: string | undefined,
+) {
+  const requestedEffort = resolveReasoningEffortForProvider("claudeAgent", effort ?? null);
+  const supportedEffortOptions = getReasoningEffortOptions("claudeAgent", model);
   const promptEffort =
-    requestedEffort === "ultrathink" && supportsClaudeUltrathinkKeyword(input.model)
+    requestedEffort === "ultrathink" && supportsClaudeUltrathinkKeyword(model)
       ? "ultrathink"
       : requestedEffort && supportedEffortOptions.includes(requestedEffort)
         ? requestedEffort
         : null;
-  const userPrompt = applyClaudePromptEffortPrefix(input.input?.trim() ?? "", promptEffort);
+  return applyClaudePromptEffortPrefix(prompt, promptEffort);
+}
+
+function buildPromptText(input: ProviderAdapterSendTurnInput, activeModel?: string): string {
+  const userPrompt = applyClaudeModelPromptEffort(
+    input.input?.trim() ?? "",
+    input.model,
+    input.modelOptions?.claudeAgent?.effort,
+  );
   // Claude Code slash commands must remain the leading prompt text so the CLI
   // can recognize them before normal model dispatch.
   const runtimeContext = userPrompt.startsWith("/")
@@ -4017,12 +4038,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           });
         }
 
-        const promptMessage = buildUserMessage({
-          sdkContent: [{ type: "text", text: input.prompt }],
-        });
-        const prompt = (async function* () {
-          yield promptMessage;
-        })();
         const providerOptions = input.modelSelection
           ? { ...options?.oneOffProviderOptions, ...input.providerOptions?.claudeAgent }
           : input.providerOptions?.claudeAgent;
@@ -4038,6 +4053,20 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             })
           : undefined;
         const traits = selection ? resolveClaudeRuntimeTraits(selection) : undefined;
+        const settings = traits ? claudeRuntimeSettings(traits) : {};
+        const promptText = input.modelSelection
+          ? applyClaudeModelPromptEffort(
+              input.prompt,
+              selection?.baseModel,
+              getProviderOptionStringSelectionValue(input.modelSelection.options, "effort"),
+            )
+          : input.prompt;
+        const promptMessage = buildUserMessage({
+          sdkContent: [{ type: "text", text: promptText }],
+        });
+        const prompt = (async function* () {
+          yield promptMessage;
+        })();
         // One-off prompts intentionally exclude MCP so the output stays
         // deterministic and tool-free. Even when the saved session config uses
         // bypass permissions, we keep the explicit tool-deny gate active here.
@@ -4054,16 +4083,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                     ? { model: input.model }
                     : {}),
                 ...(traits?.effectiveEffort ? { effort: traits.effectiveEffort } : {}),
-                ...(traits
-                  ? {
-                      settings: {
-                        ...(typeof traits.thinking === "boolean"
-                          ? { alwaysThinkingEnabled: traits.thinking }
-                          : {}),
-                        fastMode: traits.fastMode,
-                      },
-                    }
-                  : {}),
+                ...(Object.keys(settings).length > 0 ? { settings } : {}),
                 ...resolveClaudeSdkExecutableOptions(
                   providerOptions?.binaryPath,
                   queryEnvironment,
@@ -4076,7 +4096,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                   ? { maxThinkingTokens: providerOptions.maxThinkingTokens }
                   : {}),
                 ...(() => {
-                  const filtered = filterReservedClaudeLaunchArgs(providerOptions?.launchArgs);
+                  const filtered = filterReservedClaudeLaunchArgs(
+                    providerOptions?.launchArgs,
+                    input.modelSelection ? CLAUDE_ONE_OFF_SELECTION_FLAGS : undefined,
+                  );
                   return filtered ? { extraArgs: filtered } : {};
                 })(),
                 includePartialMessages: true,
@@ -4708,10 +4731,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // session into a more permissive SDK mode.
         const permissionMode = input.workflowExecutionProfile ? "plan" : runtimePermissionMode;
         const translatedMcpServers = translateMcpForClaudeAgent(input.providerOptions?.mcpServers);
-        const settings = {
-          ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
-          ...(fastMode ? { fastMode: true } : {}),
-        };
+        const settings = claudeRuntimeSettings({
+          fastMode,
+          ...(typeof thinking === "boolean" ? { thinking } : {}),
+        });
         const configuredBase = {
           ...(selectedModel ? { model: selectedModel } : {}),
           ...(input.cwd ? { cwd: input.cwd } : {}),

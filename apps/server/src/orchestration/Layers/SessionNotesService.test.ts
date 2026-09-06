@@ -23,6 +23,7 @@ import {
   type OrchestrationEngineShape,
 } from "../Services/OrchestrationEngine.ts";
 import { SessionNotesService } from "../Services/SessionNotesService.ts";
+import { ProviderUnsupportedError } from "../../provider/Errors.ts";
 import { SessionNotesServiceLive } from "./SessionNotesService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 
@@ -319,7 +320,7 @@ describe("SessionNotesService", () => {
     const harness = await createHarness({
       runOneOffPrompt: (input) => {
         requests.push(input.modelSelection);
-        return Effect.die(new Error("selected account unavailable"));
+        return Effect.fail(new ProviderUnsupportedError({ provider: "codex" }));
       },
     });
     disposers.push(harness.dispose);
@@ -456,7 +457,7 @@ describe("SessionNotesService", () => {
   });
 
   it("refreshes GPT-6 threads using the independent Luna model", async () => {
-    let requestedProvider: string | null = null;
+    let requestedProvider: string | undefined;
     let requestedSelection: ModelSelection | undefined;
     let requestedRuntimeMode: string | null = null;
     const harness = await createHarness({
@@ -508,7 +509,7 @@ describe("SessionNotesService", () => {
     await harness.emit(makeSessionSetEvent("ready"));
     await Effect.runPromise(harness.service.drain);
 
-    expect(requestedProvider).toBe("codex");
+    expect(requestedProvider).toBeUndefined();
     expect(requestedSelection).toEqual(DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection);
     expect(requestedRuntimeMode).toBe("approval-required");
     expect(
@@ -517,7 +518,7 @@ describe("SessionNotesService", () => {
   });
 
   it("uses a safe Codex one-off model for OpenCode session notes", async () => {
-    const requests: Array<{ provider: string; model: string | undefined }> = [];
+    const requests: Array<{ provider: string | undefined; model: string | undefined }> = [];
     const harness = await createHarness({
       runOneOffPrompt: (input) =>
         Effect.sync(() => {
@@ -566,7 +567,7 @@ describe("SessionNotesService", () => {
 
     expect(requests).toEqual([
       {
-        provider: "codex",
+        provider: undefined,
         model: DEFAULT_SERVER_SETTINGS.sessionNotesModelSelection.model,
       },
     ]);

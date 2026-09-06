@@ -62,6 +62,10 @@ import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeCont
 
 const PROVIDER = "codex" as const;
 
+function codexServiceTierOptions(fastMode: boolean | undefined): { readonly serviceTier?: "fast" } {
+  return fastMode ? { serviceTier: "fast" } : {};
+}
+
 export interface CodexAdapterLiveOptions {
   readonly manager?: CodexAppServerManager;
   readonly makeManager?: (services?: ServiceMap.ServiceMap<never>) => CodexAppServerManager;
@@ -2214,7 +2218,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.model !== undefined ? { model: input.model } : {}),
-          ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+          ...codexServiceTierOptions(input.modelOptions?.codex?.fastMode),
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
@@ -2305,7 +2309,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(input.modelOptions?.codex?.reasoningEffort !== undefined
                 ? { effort: input.modelOptions.codex.reasoningEffort }
                 : {}),
-              ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+              ...codexServiceTierOptions(input.modelOptions?.codex?.fastMode),
               ...(input.interactionMode !== undefined
                 ? { interactionMode: input.interactionMode }
                 : {}),
@@ -2384,13 +2388,12 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
                     input.modelSelection,
                     "reasoningEffort",
                   ),
-                  serviceTier:
+                  ...codexServiceTierOptions(
                     getProviderOptionBooleanSelectionValue(
                       input.modelSelection.options,
                       "fastMode",
-                    ) === true
-                      ? "priority"
-                      : null,
+                    ),
+                  ),
                 }
               : input.model !== undefined
                 ? { model: input.model }

@@ -44,8 +44,9 @@ export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<S
     >
       <h2 className="text-sm font-medium text-foreground">Thread summaries</h2>
       <p className="mt-1 text-xs text-muted-foreground">
-        Summaries for every thread use this model and the selected provider’s account. Changes apply
-        to the next summary refresh.
+        Thread messages, activities, plans, tasks, and checkpoints are sent to the selected
+        provider's account, including threads created with other providers. The default is
+        Codex/OpenAI using GPT-5.6 Luna. Changes apply to the next summary refresh.
       </p>
       <p className="mt-3 text-xs text-muted-foreground">
         Selected: {selected?.displayName ?? selection.instanceId} / {selection.model}
@@ -62,8 +63,9 @@ export function SessionNotesSettings({ providers }: { providers: ReadonlyArray<S
             void save({ instanceId, model });
           }}
         />
-        {!unavailable && selected && !saving ? (
+        {selected ? (
           <TraitsPicker
+            disabled={saving}
             provider={selected.driverKind}
             models={selected.models}
             model={selection.model}

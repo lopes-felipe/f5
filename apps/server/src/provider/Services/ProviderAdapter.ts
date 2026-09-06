@@ -48,7 +48,8 @@ export interface ProviderThreadSnapshot {
 
 export interface ProviderOneOffPromptInput {
   readonly threadId: ThreadId;
-  readonly provider: ProviderKind;
+  /** Required when modelSelection is absent. */
+  readonly provider?: ProviderKind;
   readonly prompt: string;
   readonly cwd?: string;
   readonly model?: string;
@@ -63,7 +64,9 @@ export interface ProviderOneOffPromptResult {
   readonly text: string;
 }
 
-export interface ProviderConversationCompactionInput extends ProviderOneOffPromptInput {}
+export interface ProviderConversationCompactionInput extends ProviderOneOffPromptInput {
+  readonly provider: ProviderKind;
+}
 
 export interface ProviderConversationCompactionResult {
   readonly summary: string;

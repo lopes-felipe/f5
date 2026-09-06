@@ -42,7 +42,7 @@ export function parsePersistedServerObservabilitySettings(
 }
 
 function shouldReplaceModelSelection(
-  patch: ServerSettingsPatch["textGenerationModelSelection"] | undefined,
+  patch: ServerSettingsPatch["textGenerationModelSelection" | "sessionNotesModelSelection"],
 ): boolean {
   return Boolean(patch && (patch.instanceId !== undefined || patch.model !== undefined));
 }

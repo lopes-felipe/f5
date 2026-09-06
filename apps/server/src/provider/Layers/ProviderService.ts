@@ -121,7 +121,7 @@ const ProviderRollbackConversationInput = Schema.Struct({
 
 const ProviderConversationCompactionInputSchema = Schema.Struct({
   threadId: ThreadId,
-  provider: ProviderKind,
+  provider: Schema.optional(ProviderKind),
   prompt: TrimmedNonEmptyString,
   cwd: Schema.optional(TrimmedNonEmptyString),
   model: Schema.optional(TrimmedNonEmptyString),
@@ -1454,6 +1454,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         const provider =
           (selectedInstance?.driverKind as ProviderKind | undefined) ?? input.provider;
+        if (!provider) {
+          return yield* toValidationError(
+            "ProviderService.runOneOffPrompt",
+            "A provider or modelSelection is required.",
+          );
+        }
         const adapter = input.modelSelection
           ? yield* registry.getByInstance(input.modelSelection.instanceId)
           : yield* registry.getByProvider(provider);

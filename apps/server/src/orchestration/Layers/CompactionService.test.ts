@@ -355,7 +355,7 @@ describe("CompactionService", () => {
   });
 
   it("runs compaction for non-Claude threads using the thread provider", async () => {
-    let requestedProvider: string | null = null;
+    let requestedProvider: string | undefined;
     let requestedRuntimeMode: string | null = null;
     const harness = await createHarness({
       runOneOffPrompt: (input) =>
@@ -399,7 +399,7 @@ describe("CompactionService", () => {
   });
 
   it("uses a safe Codex one-off model when compacting OpenCode threads", async () => {
-    const requests: Array<{ provider: string; model: string | undefined }> = [];
+    const requests: Array<{ provider: string | undefined; model: string | undefined }> = [];
     const harness = await createHarness({
       runOneOffPrompt: (input) =>
         Effect.sync(() => {

@@ -4,6 +4,7 @@ import {
   ProviderInstanceId,
   type ModelSelection,
 } from "@t3tools/contracts";
+import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import { createModelCapabilities } from "@t3tools/shared/model";
 import { page } from "vitest/browser";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -54,7 +55,10 @@ let active: Awaited<ReturnType<typeof render>> | undefined;
 beforeEach(() => {
   state.selection = DEFAULT_UNIFIED_SETTINGS.sessionNotesModelSelection;
   state.update.mockReset().mockImplementation(async (patch) => {
-    state.selection = patch.sessionNotesModelSelection;
+    state.selection = applyServerSettingsPatch(
+      { ...DEFAULT_UNIFIED_SETTINGS, sessionNotesModelSelection: state.selection! },
+      patch,
+    ).sessionNotesModelSelection;
   });
 });
 afterEach(async () => {
@@ -101,3 +105,52 @@ it("shows an unavailable selection without silently changing it", async () => {
     .toHaveTextContent("No fallback model will be used");
   expect(state.update).not.toHaveBeenCalled();
 });
+
+it("keeps the reasoning control mounted and disabled while saving", async () => {
+  const save = state.update.getMockImplementation()!;
+  let finishSave!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    finishSave = resolve;
+  });
+  state.update.mockImplementationOnce(async (patch) => {
+    await pending;
+    await save(patch);
+  });
+  await mount();
+  await page.getByRole("button", { name: "Low", exact: true }).click();
+  await page.getByRole("menuitemradio", { name: "Medium (default)", exact: true }).click();
+  await expect.element(page.getByRole("button", { name: "Low", exact: true })).toBeDisabled();
+  finishSave();
+  await expect.element(page.getByRole("button", { name: "Medium", exact: true })).toBeEnabled();
+});
+
+for (const lifecycle of ["disabled", "deleted"] as const) {
+  it(`preserves the summary selection when its instance is ${lifecycle}`, async () => {
+    await mount();
+    const nextProviders =
+      lifecycle === "deleted"
+        ? providers.filter((provider) => provider.driver !== "codex")
+        : providers.map((provider) =>
+            provider.driver === "codex"
+              ? { ...provider, enabled: false, status: "disabled" as const }
+              : provider,
+          );
+    await active!.rerender(
+      <TooltipProvider>
+        <SessionNotesSettings providers={nextProviders} />
+      </TooltipProvider>,
+    );
+    await expect
+      .element(page.getByRole("status"))
+      .toHaveTextContent("No fallback model will be used");
+    expect(state.selection).toEqual(DEFAULT_UNIFIED_SETTINGS.sessionNotesModelSelection);
+    expect(state.update).not.toHaveBeenCalled();
+    if (lifecycle === "disabled") {
+      await page.getByRole("button", { name: "Low", exact: true }).click();
+      await page.getByRole("menuitemradio", { name: "Medium (default)", exact: true }).click();
+      await expect
+        .poll(() => state.selection?.options)
+        .toContainEqual({ id: "reasoningEffort", value: "medium" });
+    }
+  });
+}

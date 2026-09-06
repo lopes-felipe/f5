@@ -421,8 +421,6 @@ const make = Effect.gen(function* () {
         providerService
           .runOneOffPrompt({
             threadId: thread.id,
-            // Explicit selection takes precedence over the legacy provider field.
-            provider: "codex",
             prompt: promptText,
             ...(cwd ? { cwd } : {}),
             modelSelection: sessionNotesModelSelection,
