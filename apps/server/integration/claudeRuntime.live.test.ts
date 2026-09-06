@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -78,7 +79,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
         try {
           await expect.poll(() => closed.size, { timeout: 5_000 }).toBe(children.length);
         } finally {
-          rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+          await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
         }
       }
     }
@@ -159,32 +160,36 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
       });
     }, 60_000);
 
-    it("validates real --json-schema output with --effort xhigh through production generation", async () => {
-      const cwd = mkdtempSync(join(tmpdir(), "f5-claude-json-live-"));
-      try {
-        const result = await Effect.runPromise(
-          Effect.gen(function* () {
-            const generation = yield* makeClaudeTextGeneration(
-              Schema.decodeSync(ClaudeSettings)({}),
-            );
-            return yield* generation.generateStructuredJson({
-              cwd,
-              operation: "release-smoke",
-              prompt: "Return the required JSON object with ok true. Do not use tools.",
-              outputSchema: Schema.Struct({ ok: Schema.Literal(true) }),
-              modelSelection: {
-                instanceId: ProviderInstanceId.make("claudeAgent"),
-                model: "claude-fable-5-1",
-                options: [{ id: "effort", value: "xhigh" }],
-              },
-            });
-          }).pipe(Effect.provide(NodeServices.layer), Effect.timeout("50 seconds")),
-        );
-        expect(result).toEqual({ ok: true });
-      } finally {
-        // Windows can briefly retain filesystem handles after the CLI exits.
-        rmSync(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
-      }
-    }, 60_000);
+    it.each(["claude-fable-5-1", "claude-opus-4-8"])(
+      "validates %s --json-schema output with --effort xhigh through production generation",
+      async (model) => {
+        const cwd = mkdtempSync(join(tmpdir(), "f5-claude-json-live-"));
+        try {
+          const result = await Effect.runPromise(
+            Effect.gen(function* () {
+              const generation = yield* makeClaudeTextGeneration(
+                Schema.decodeSync(ClaudeSettings)({}),
+              );
+              return yield* generation.generateStructuredJson({
+                cwd,
+                operation: "release-smoke",
+                prompt: "Return the required JSON object with ok true. Do not use tools.",
+                outputSchema: Schema.Struct({ ok: Schema.Literal(true) }),
+                modelSelection: {
+                  instanceId: ProviderInstanceId.make("claudeAgent"),
+                  model,
+                  options: [{ id: "effort", value: "xhigh" }],
+                },
+              });
+            }).pipe(Effect.provide(NodeServices.layer), Effect.timeout("50 seconds")),
+          );
+          expect(result).toEqual({ ok: true });
+        } finally {
+          // Windows can briefly retain filesystem handles after the CLI exits.
+          await rm(cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+        }
+      },
+      60_000,
+    );
   },
 );

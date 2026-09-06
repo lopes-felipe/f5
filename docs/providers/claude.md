@@ -33,7 +33,11 @@ your normal home directory.
 
 F5 pins Claude Agent SDK 0.3.261, which bundles Claude Code v2.1.261. Claude Fable 5.1
 requires v2.1.257+ and provides native 1M context. Opus 5 remains the default Claude model.
-F5 enables task tools and selects the legacy TodoWrite surface to match its assistant contract.
+F5 sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and defaults `CLAUDE_CODE_ENABLE_TASKS=0`
+to expose the legacy `TodoWrite` surface required by its assistant instructions. Set
+`CLAUDE_CODE_ENABLE_TASKS=1` in the server environment to opt into the newer task-tracking
+surface instead; F5 preserves this explicit operator override. That surface replaces
+`TodoWrite` with task-tracking tools.
 
 With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
 advisory. Unknown versions remain permissive. Bare `fable` and `claude-fable` aliases now
@@ -45,7 +49,7 @@ or upgrade the custom executable to recover.
 ### Reproducing bundled-runtime release checks
 
 Run `bun run --cwd apps/server test:claude:live` using Node 24.13.1+ on `PATH` and an
-authenticated Claude account with Fable 5.1 access. This opt-in suite consumes account quota;
+authenticated Claude account with Fable 5.1 and Opus 4.8 access. This opt-in suite consumes account quota;
 ordinary test runs skip it. Authentication, quota, entitlement, timeout, and response-shape
 failures fail the live run rather than being reported as passes or automatic skips.
 
@@ -53,16 +57,6 @@ The suite uses the bundled executable and the adapter's production query environ
 account usage through `normalizeClaudeAccountUsage`, native 1M context, cancellation and child
 process exit, streamed `TodoWrite` calls completing a three-step task, and structured `xhigh`
 generation through the production generator and schema validator.
-
-On September 5, 2026 at 17:47 CEST, all three live checks passed with SDK 0.3.261 / Claude Code
-2.1.261 on Windows under Node 24.13.1 (30.75 seconds). The earlier account session-limit blocker
-had cleared. These results do not claim live historical-CLI or workflow/sub-agent dispatch coverage.
-
-`ClaudeRecovery.test.ts` separately runs the real SDK against a deterministic executable fixture:
-an unsupported parent or sub-agent alias makes the child exit nonzero, F5 emits a bounded failed
-turn and session exit, and correcting the corresponding configuration produces a successful
-retry. It verifies both child processes exit. This is transport/adapter coverage, not a smoke test
-of an actual older Anthropic release.
 
 ## I Want Work And Personal Claude Accounts
 

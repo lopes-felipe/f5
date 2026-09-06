@@ -1172,7 +1172,7 @@ export function buildClaudeQueryEnv(
   // by sharedAssistantContract (ENABLE_TASKS=0 selects it over TaskCreate et al.).
   const taskEnvironment = {
     CLAUDE_CODE_ENABLE_TODO_TOOLS: "1",
-    CLAUDE_CODE_ENABLE_TASKS: "0",
+    CLAUDE_CODE_ENABLE_TASKS: environment.CLAUDE_CODE_ENABLE_TASKS ?? "0",
   };
   const rawSubagentModel = normalizeOptionalString(providerOptions?.subagentModel);
   if (!rawSubagentModel) {

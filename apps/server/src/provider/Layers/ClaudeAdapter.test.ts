@@ -33,6 +33,7 @@ import {
   buildInstructionProfile,
 } from "../sharedAssistantContract.ts";
 import {
+  buildClaudeQueryEnv,
   isClaudeMissingConversationError,
   makeClaudeAdapterLive,
   probeClaudeSessionAvailability,
@@ -662,6 +663,14 @@ describe("ClaudeAdapterLive", () => {
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
     );
+  });
+
+  it("honors the operator task-tool override in every subagent environment branch", () => {
+    for (const options of [undefined, { subagentModel: "inherit" }, { subagentModel: "fable-5" }]) {
+      const env = buildClaudeQueryEnv(options, { CLAUDE_CODE_ENABLE_TASKS: "1" });
+      assert.equal(env.CLAUDE_CODE_ENABLE_TASKS, "1");
+      assert.equal(env.CLAUDE_CODE_ENABLE_TODO_TOOLS, "1");
+    }
   });
 
   it.effect("removes an ambient subagent model override when inherit is configured", () => {
@@ -3242,6 +3251,72 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(turnCompleted.payload.state, "interrupted");
         assert.equal(turnCompleted.payload.errorMessage, "Error: Request was aborted.");
         assert.equal(turnCompleted.payload.stopReason, "tool_use");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("surfaces in-band Fable alias rejection and completes a supported-model retry", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "fable",
+        runtimeMode: "full-access",
+        providerOptions: { claudeAgent: { subagentModel: "inherit" } },
+      });
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-fable-5-1");
+      assert.equal(
+        harness.getLastCreateQueryInput()?.options.env?.CLAUDE_CODE_SUBAGENT_MODEL,
+        undefined,
+      );
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "hello", attachments: [] });
+      harness.query.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        is_error: true,
+        errors: ["Model claude-fable-5-1 is not supported by this executable"],
+        session_id: "sdk-fable-rejected",
+        uuid: "fable-rejection",
+      } as unknown as SDKMessage);
+      const completed = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead);
+      assert.equal(completed._tag, "Some");
+      if (completed._tag === "Some") {
+        assert.equal(completed.value.payload.state, "failed");
+        assert.match(completed.value.payload.errorMessage ?? "", /claude-fable-5-1/);
+      }
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        model: "fable-5",
+        input: "retry with supported model",
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["claude-fable-5"]);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        result: "Retry succeeded",
+        session_id: "sdk-fable-rejected",
+        uuid: "retry-success",
+        usage: {},
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const retry = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead);
+      assert.equal(retry._tag, "Some");
+      if (retry._tag === "Some") {
+        assert.equal(retry.value.payload.state, "completed");
+        assert.equal(retry.value.payload.errorMessage, undefined);
       }
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),

@@ -744,7 +744,7 @@ describe("getAppModelOptions", () => {
     });
   });
 
-  it("lists Claude Opus 5 first in built-in Claude options", () => {
+  it("preserves Claude built-in ordering and deduplicates custom aliases", () => {
     const options = getAppModelOptions("claudeAgent", ["fable", "fable-5.1", "claude-fable-5-1"]);
     expect(options[1]).toMatchObject({
       slug: "claude-fable-5-1",

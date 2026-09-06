@@ -1,10 +1,6 @@
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { createRequire } from "node:module";
-import { execFileSync } from "node:child_process";
-import { VERSION_GATED_CLAUDE_MODELS } from "./Layers/ClaudeProvider.ts";
-import { compareCliVersions } from "./cliVersion.ts";
 
 import { describe, expect, it } from "vitest";
 
@@ -16,22 +12,6 @@ import {
 } from "./claudeSdkExecutable.ts";
 
 describe("Claude SDK executable resolution", () => {
-  it("pins a bundled runtime that satisfies every built-in model gate", () => {
-    const require = createRequire(import.meta.url);
-    // package.json is not exported; resolve the SDK entry through Node first.
-    const sdkEntry = require.resolve("@anthropic-ai/claude-agent-sdk");
-    const manifest = require(path.join(path.dirname(sdkEntry), "package.json"));
-    expect(manifest.version).toBe("0.3.261");
-    const output = execFileSync(resolveBundledClaudeExecutable(), ["--version"], {
-      encoding: "utf8",
-      timeout: 10_000,
-    });
-    const version = output.match(/\d+\.\d+\.\d+/)?.[0];
-    expect(version).toBeDefined();
-    for (const gate of VERSION_GATED_CLAUDE_MODELS) {
-      expect(compareCliVersions(version!, gate.minVersion), gate.slug).toBeGreaterThanOrEqual(0);
-    }
-  });
   it("omits the executable override for the default provider setting", () => {
     expect(resolveClaudeSdkExecutableOptions(undefined)).toEqual({});
     expect(resolveClaudeSdkExecutableOptions("claude")).toEqual({});

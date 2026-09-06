@@ -1,3 +1,4 @@
+import { compareCliVersions } from "../cliVersion.ts";
 import { describe, expect, it } from "vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Sink, Stream } from "effect";
@@ -118,7 +119,21 @@ function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
 }
 
 describe("checkClaudeProviderStatus", () => {
-  it("filters Claude Opus 5 and shows its upgrade message before the minimum CLI version", async () => {
+  it.each(["2.1.256", "2.1.257"])("gates Fable 5.1 and custom aliases at %s", async (version) => {
+    const snapshot = await runStatusForVersionWithSettings(version, {
+      ...claudeSettings,
+      customModels: ["fable", "fable-5.1", "fable-5-1", "claude-fable-5-1[1m]", "fable-5"],
+    });
+    const slugs = modelSlugs(snapshot);
+    expect(slugs.filter((slug) => slug === "claude-fable-5-1")).toHaveLength(
+      version === "2.1.257" ? 1 : 0,
+    );
+    expect(slugs.filter((slug) => slug === "claude-fable-5")).toHaveLength(1);
+    if (version === "2.1.256") expect(snapshot.message).toContain("Upgrade to v2.1.257");
+    else expect(snapshot.message).toBeUndefined();
+  });
+
+  it("filters Claude Opus 5 and shows the newest model upgrade message before the minimum CLI version", async () => {
     const snapshot = await runStatusForVersion("2.1.169");
 
     expect(snapshot.status).toBe("ready");
@@ -135,7 +150,7 @@ describe("checkClaudeProviderStatus", () => {
     ]);
   });
 
-  it("uses the Opus 5 upgrade message when the CLI version misses multiple gates", async () => {
+  it("uses the newest model upgrade message when the CLI version misses multiple gates", async () => {
     const snapshot = await runStatusForVersion("2.1.153");
 
     expect(snapshot.status).toBe("ready");
@@ -151,7 +166,7 @@ describe("checkClaudeProviderStatus", () => {
     ]);
   });
 
-  it("uses the Opus 5 upgrade message when a CLI version misses all gated models", async () => {
+  it("uses the newest model upgrade message when a CLI version misses all gated models", async () => {
     const snapshot = await runStatusForVersion("2.1.110");
 
     expect(snapshot.message).toBe(
@@ -260,6 +275,7 @@ describe("checkClaudeProviderStatus", () => {
         "claude-opus-5",
         "claude-opus-5[1m]",
         "fable",
+        "fable-5",
         "claude-fable-5",
         "custom/claude-model",
       ],
@@ -291,19 +307,6 @@ describe("makePendingClaudeProvider", () => {
     });
   });
 
-  it.each(["2.1.256", "2.1.257"])("gates Fable 5.1 and custom aliases at %s", async (version) => {
-    const snapshot = await runStatusForVersionWithSettings(version, {
-      ...claudeSettings,
-      customModels: ["fable", "fable-5.1", "fable-5-1", "claude-fable-5-1[1m]", "fable-5"],
-    });
-    const slugs = modelSlugs(snapshot);
-    expect(slugs.filter((slug) => slug === "claude-fable-5-1")).toHaveLength(
-      version === "2.1.257" ? 1 : 0,
-    );
-    expect(slugs.filter((slug) => slug === "claude-fable-5")).toHaveLength(1);
-    if (version === "2.1.256") expect(snapshot.message).toContain("Upgrade to v2.1.257");
-    else expect(snapshot.message).toBeUndefined();
-  });
   it("keeps gated models visible in pending provider snapshots when the version is unknown", () => {
     const snapshot = makePendingClaudeProvider(claudeSettings);
 
@@ -421,5 +424,18 @@ describe("resolveClaudeApiModelId", () => {
         options: [{ id: "contextWindow", value: "1m" }],
       }),
     ).toBe("claude-opus-5");
+  });
+});
+
+describe("Claude version gates", () => {
+  it("orders minimum versions descending so the first failing gate recommends a sufficient upgrade", () => {
+    for (let i = 1; i < VERSION_GATED_CLAUDE_MODELS.length; i++) {
+      expect(
+        compareCliVersions(
+          VERSION_GATED_CLAUDE_MODELS[i - 1]!.minVersion,
+          VERSION_GATED_CLAUDE_MODELS[i]!.minVersion,
+        ),
+      ).toBeGreaterThanOrEqual(0);
+    }
   });
 });
