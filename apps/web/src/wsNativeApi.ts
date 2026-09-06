@@ -18,8 +18,9 @@ import {
   type NativeApi,
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
-  type PrHubAdvisorySnapshot,
-  type PrHubSnapshot,
+  type PrHubAdvisoriesChanged,
+  type PrHubOverview,
+  type PrHubChanged,
   type ServerProviderAdvisoriesUpdatedPayload,
   ServerConfigUpdatedPayload,
   type StorageCleanupProgressPayload,
@@ -33,6 +34,11 @@ import { Schema } from "effect";
 
 import { showContextMenuFallback } from "./contextMenuFallback";
 import { WsTransport } from "./wsTransport";
+import {
+  assertPrHubAccountGeneration,
+  getPrHubAccountGeneration,
+  setPrHubAccountGeneration,
+} from "./lib/prHubAccount";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
@@ -50,8 +56,8 @@ const storageInvalidatedListeners = new Set<(payload: StorageInvalidatedPayload)
 const storageCleanupProgressListeners = new Set<(payload: StorageCleanupProgressPayload) => void>();
 const nextTurnQueueUpdatedListeners = new Set<(payload: NextTurnQueueSnapshot) => void>();
 const nextTurnQueueSummaryUpdatedListeners = new Set<(payload: NextTurnQueueSummary) => void>();
-const prHubSnapshotUpdatedListeners = new Set<(payload: PrHubSnapshot) => void>();
-const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisorySnapshot) => void>();
+const prHubChangedListeners = new Set<(payload: PrHubChanged) => void>();
+const prHubAdvisoriesUpdatedListeners = new Set<(payload: PrHubAdvisoriesChanged) => void>();
 const agentsSnapshotUpdatedListeners = new Set<(payload: AgentsSnapshot) => void>();
 
 function decodeRetryWorkflowResult(result: unknown) {
@@ -126,12 +132,12 @@ export function onProviderAdvisoriesUpdated(
   };
 }
 
-export function onPrHubUpdated(listener: (payload: PrHubSnapshot) => void): () => void {
-  prHubSnapshotUpdatedListeners.add(listener);
+export function onPrHubChanged(listener: (payload: PrHubChanged) => void): () => void {
+  prHubChangedListeners.add(listener);
 
   const latestSnapshot =
-    instance?.transport.getLatestPush(PR_HUB_WS_CHANNELS.snapshotUpdated)?.data ?? null;
-  if (latestSnapshot) {
+    instance?.transport.getLatestPush(PR_HUB_WS_CHANNELS.changed)?.data ?? null;
+  if (latestSnapshot && latestSnapshot.accountGeneration === getPrHubAccountGeneration()) {
     try {
       listener(latestSnapshot);
     } catch {
@@ -140,18 +146,18 @@ export function onPrHubUpdated(listener: (payload: PrHubSnapshot) => void): () =
   }
 
   return () => {
-    prHubSnapshotUpdatedListeners.delete(listener);
+    prHubChangedListeners.delete(listener);
   };
 }
 
 export function onPrHubAdvisoriesUpdated(
-  listener: (payload: PrHubAdvisorySnapshot) => void,
+  listener: (payload: PrHubAdvisoriesChanged) => void,
 ): () => void {
   prHubAdvisoriesUpdatedListeners.add(listener);
 
   const latestSnapshot =
     instance?.transport.getLatestPush(PR_HUB_WS_CHANNELS.advisoriesUpdated)?.data ?? null;
-  if (latestSnapshot) {
+  if (latestSnapshot && latestSnapshot.accountGeneration === getPrHubAccountGeneration()) {
     try {
       listener(latestSnapshot);
     } catch {
@@ -168,6 +174,30 @@ export function createWsNativeApi(): NativeApi {
   if (instance) return instance.api;
 
   const transport = new WsTransport();
+
+  const requestPrHub = async <T>(
+    method: string,
+    input: { readonly accountGeneration?: string | undefined } = {},
+    options?: Parameters<WsTransport["request"]>[2],
+  ): Promise<T> => {
+    const accountGeneration = input.accountGeneration ?? getPrHubAccountGeneration();
+    assertPrHubAccountGeneration(accountGeneration);
+    const result = await transport.request<T>(method, { ...input, accountGeneration }, options);
+    assertPrHubAccountGeneration(accountGeneration);
+    return result;
+  };
+  const requestPrHubOverview = async (method: string, input?: unknown): Promise<PrHubOverview> => {
+    const startedGeneration = getPrHubAccountGeneration();
+    const snapshot = await transport.request<PrHubOverview>(method, input);
+    if (
+      startedGeneration !== getPrHubAccountGeneration() &&
+      snapshot.account?.generation !== getPrHubAccountGeneration()
+    ) {
+      throw new Error("Discarded a PR Hub response from a previous GitHub account.");
+    }
+    setPrHubAccountGeneration(snapshot.account?.generation);
+    return snapshot;
+  };
 
   transport.subscribe(WS_CHANNELS.serverWelcome, (message) => {
     const payload = message.data;
@@ -309,9 +339,10 @@ export function createWsNativeApi(): NativeApi {
       }
     }
   });
-  transport.subscribe(PR_HUB_WS_CHANNELS.snapshotUpdated, (message) => {
+  transport.subscribe(PR_HUB_WS_CHANNELS.changed, (message) => {
     const payload = message.data;
-    for (const listener of prHubSnapshotUpdatedListeners) {
+    setPrHubAccountGeneration(payload.accountGeneration);
+    for (const listener of prHubChangedListeners) {
       try {
         listener(payload);
       } catch {
@@ -321,6 +352,7 @@ export function createWsNativeApi(): NativeApi {
   });
   transport.subscribe(PR_HUB_WS_CHANNELS.advisoriesUpdated, (message) => {
     const payload = message.data;
+    if (payload.accountGeneration !== getPrHubAccountGeneration()) return;
     for (const listener of prHubAdvisoriesUpdatedListeners) {
       try {
         listener(payload);
@@ -576,33 +608,54 @@ export function createWsNativeApi(): NativeApi {
       inspectRun: (input) => transport.request(WS_METHODS.workflowPlatformInspectRun, input),
     },
     prHub: {
-      getSnapshot: () => transport.request(PR_HUB_WS_METHODS.getSnapshot),
-      refresh: (input) => transport.request(PR_HUB_WS_METHODS.refresh, input),
-      approve: (input) => transport.request(PR_HUB_WS_METHODS.approve, input),
-      requestChanges: (input) => transport.request(PR_HUB_WS_METHODS.requestChanges, input),
-      comment: (input) => transport.request(PR_HUB_WS_METHODS.comment, input),
-      merge: (input) => transport.request(PR_HUB_WS_METHODS.merge, input),
-      markReady: (input) => transport.request(PR_HUB_WS_METHODS.markReady, input),
-      reRequestReview: (input) => transport.request(PR_HUB_WS_METHODS.reRequestReview, input),
-      snooze: (input) => transport.request(PR_HUB_WS_METHODS.snooze, input),
-      unsnooze: (input) => transport.request(PR_HUB_WS_METHODS.unsnooze, input),
-      ignore: (input) => transport.request(PR_HUB_WS_METHODS.ignore, input),
-      markSeen: (input) => transport.request(PR_HUB_WS_METHODS.markSeen, input),
-      markNotified: (input) => transport.request(PR_HUB_WS_METHODS.markNotified, input),
+      claimNotifications: (input) => requestPrHub(PR_HUB_WS_METHODS.claimNotifications, input),
+      acknowledgeNotifications: (input) =>
+        requestPrHub(PR_HUB_WS_METHODS.acknowledgeNotifications, input),
+      getOverview: (input = {}) => requestPrHubOverview(PR_HUB_WS_METHODS.getOverview, input),
+      listPullRequests: (input) => requestPrHub(PR_HUB_WS_METHODS.listPullRequests, input),
+      refresh: (input) => requestPrHubOverview(PR_HUB_WS_METHODS.refresh, input),
+      approve: (input) => requestPrHub(PR_HUB_WS_METHODS.approve, input),
+      requestChanges: (input) => requestPrHub(PR_HUB_WS_METHODS.requestChanges, input),
+      comment: (input) => requestPrHub(PR_HUB_WS_METHODS.comment, input),
+      merge: (input) => requestPrHub(PR_HUB_WS_METHODS.merge, input),
+      markReady: (input) => requestPrHub(PR_HUB_WS_METHODS.markReady, input),
+      reRequestReview: (input) => requestPrHub(PR_HUB_WS_METHODS.reRequestReview, input),
+      snooze: (input) => requestPrHub(PR_HUB_WS_METHODS.snooze, input),
+      unsnooze: (input) => requestPrHub(PR_HUB_WS_METHODS.unsnooze, input),
+      ignore: (input) => requestPrHub(PR_HUB_WS_METHODS.ignore, input),
+      markSeen: (input) => requestPrHub(PR_HUB_WS_METHODS.markSeen, input),
+      markNotified: (input) => requestPrHub(PR_HUB_WS_METHODS.markNotified, input),
       analyzeAdvisories: (input = {}) =>
-        transport.request(PR_HUB_WS_METHODS.analyzeAdvisories, input, { timeoutMs: null }),
-      getAdvisories: (input = {}) => transport.request(PR_HUB_WS_METHODS.getAdvisories, input),
+        requestPrHub(PR_HUB_WS_METHODS.analyzeAdvisories, input, { timeoutMs: null }),
+      getAdvisories: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.getAdvisories, input),
       listLocalCheckoutCandidates: (input) =>
-        transport.request(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, input),
-      getDetail: (input) => transport.request(PR_HUB_WS_METHODS.getDetail, input),
-      getTimeline: (input) => transport.request(PR_HUB_WS_METHODS.getTimeline, input),
-      getFiles: (input) => transport.request(PR_HUB_WS_METHODS.getFiles, input),
-      updateComment: (input) => transport.request(PR_HUB_WS_METHODS.updateComment, input),
-      setReaction: (input) => transport.request(PR_HUB_WS_METHODS.setReaction, input),
-      changeReviewers: (input) => transport.request(PR_HUB_WS_METHODS.changeReviewers, input),
-      updateBranch: (input) => transport.request(PR_HUB_WS_METHODS.updateBranch, input),
-      clearData: (input = {}) => transport.request(PR_HUB_WS_METHODS.clearData, input),
-      onSnapshotUpdated: (callback) => onPrHubUpdated(callback),
+        requestPrHub(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, input),
+      getDetail: (input) => requestPrHub(PR_HUB_WS_METHODS.getDetail, input),
+      getTimeline: (input) => requestPrHub(PR_HUB_WS_METHODS.getTimeline, input),
+      prepareReview: (input) => requestPrHub(PR_HUB_WS_METHODS.prepareReview, input),
+      submitReview: (input) => requestPrHub(PR_HUB_WS_METHODS.submitReview, input),
+      getReviewOperation: (input) => requestPrHub(PR_HUB_WS_METHODS.getReviewOperation, input),
+      track: (input) => requestPrHub(PR_HUB_WS_METHODS.track, input),
+      recoverReview: (input) => requestPrHub(PR_HUB_WS_METHODS.recoverReview, input),
+      cancelReviewPreparation: (input) =>
+        requestPrHub(PR_HUB_WS_METHODS.cancelReviewPreparation, input),
+      replyReviewThread: (input) => requestPrHub(PR_HUB_WS_METHODS.replyReviewThread, input),
+      getReplyOperation: (input) => requestPrHub(PR_HUB_WS_METHODS.getReplyOperation, input),
+      recoverReply: (input) => requestPrHub(PR_HUB_WS_METHODS.recoverReply, input),
+      getReplyDraft: (input) => requestPrHub(PR_HUB_WS_METHODS.getReplyDraft, input),
+      saveReplyDraft: (input) => requestPrHub(PR_HUB_WS_METHODS.saveReplyDraft, input),
+      getReviewThreads: (input) => requestPrHub(PR_HUB_WS_METHODS.getReviewThreads, input),
+      setReviewThreadState: (input) => requestPrHub(PR_HUB_WS_METHODS.setReviewThreadState, input),
+      getReviewDraft: (input) => requestPrHub(PR_HUB_WS_METHODS.getReviewDraft, input),
+      saveReviewDraft: (input) => requestPrHub(PR_HUB_WS_METHODS.saveReviewDraft, input),
+      getUnresolvedThreads: (input) => requestPrHub(PR_HUB_WS_METHODS.getUnresolvedThreads, input),
+      getFiles: (input) => requestPrHub(PR_HUB_WS_METHODS.getFiles, input),
+      updateComment: (input) => requestPrHub(PR_HUB_WS_METHODS.updateComment, input),
+      setReaction: (input) => requestPrHub(PR_HUB_WS_METHODS.setReaction, input),
+      changeReviewers: (input) => requestPrHub(PR_HUB_WS_METHODS.changeReviewers, input),
+      updateBranch: (input) => requestPrHub(PR_HUB_WS_METHODS.updateBranch, input),
+      clearData: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.clearData, input),
+      onChanged: (callback) => onPrHubChanged(callback),
       onAdvisoriesUpdated: (callback) => onPrHubAdvisoriesUpdated(callback),
     },
     orchestration: {

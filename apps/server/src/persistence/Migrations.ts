@@ -1,3 +1,14 @@
+import Migration0087 from "./Migrations/087_PrHubReplyDrafts.ts";
+import Migration0086 from "./Migrations/086_PrHubAbandonedReviews.ts";
+import Migration0085 from "./Migrations/085_PrHubActiveReplies.ts";
+import Migration0084 from "./Migrations/084_PrHubOperations.ts";
+import Migration0083 from "./Migrations/083_PrHubReviewDrafts.ts";
+import Migration0082 from "./Migrations/082_PrHubCoverage.ts";
+import Migration0081 from "./Migrations/081_PrHubSyncTasks.ts";
+import Migration0080 from "./Migrations/080_PrHubNotificationLeases.ts";
+import Migration0079 from "./Migrations/079_PrHubPublicationRevision.ts";
+import Migration0078 from "./Migrations/078_PrHubViewerIsolation.ts";
+import Migration0077 from "./Migrations/077_PrHubAttentionVersion.ts";
 /**
  * MigrationsLive - Migration runner with inline loader
  *
@@ -177,6 +188,17 @@ export const MIGRATIONS = {
   "74_ProviderTerminalEvents": Migration0074,
   "75_SessionErrorRetryability": Migration0075,
   "76_AuxiliaryTurnProjectionRepair": Migration0076,
+  "77_PrHubAttentionVersion": Migration0077,
+  "78_PrHubViewerIsolation": Migration0078,
+  "79_PrHubPublicationRevision": Migration0079,
+  "80_PrHubNotificationLeases": Migration0080,
+  "81_PrHubSyncTasks": Migration0081,
+  "82_PrHubCoverage": Migration0082,
+  "83_PrHubReviewDrafts": Migration0083,
+  "84_PrHubOperations": Migration0084,
+  "85_PrHubActiveReplies": Migration0085,
+  "86_PrHubAbandonedReviews": Migration0086,
+  "87_PrHubReplyDrafts": Migration0087,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

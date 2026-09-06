@@ -1,3 +1,12 @@
+import { PrHubTrackInput } from "./prHub";
+import { PrHubReplyInput, PrHubSaveReplyDraftInput, PrHubRecoverReplyInput } from "./prHub";
+import { PrHubThreadsInput, PrHubThreadStateInput } from "./prHub";
+import {
+  PrHubPrepareReviewInput,
+  PrHubReviewOperationInput,
+  PrHubRecoverReviewInput,
+} from "./prHub";
+import { PrHubSaveReviewDraftInput } from "./prHub";
 import { Schema, Struct, Tuple } from "effect";
 import { NonNegativeInt, ProjectId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 
@@ -125,11 +134,13 @@ import {
 import {
   PR_HUB_WS_CHANNELS,
   PR_HUB_WS_METHODS,
-  PrHubAdvisorySnapshot,
+  PrHubAdvisoriesChanged,
   PrHubAnalyzeAdvisoriesInput,
   PrHubChangeReviewersInput,
   PrHubClearDataInput,
   PrHubCommentInput,
+  PrHubClaimNotificationsInput,
+  PrHubAcknowledgeNotificationsInput,
   PrHubDetailInput,
   PrHubFilesInput,
   PrHubGetAdvisoriesInput,
@@ -143,7 +154,9 @@ import {
   PrHubRequestChangesInput,
   PrHubReRequestInput,
   PrHubReviewInput,
-  PrHubSnapshot,
+  PrHubChanged,
+  PrHubOverviewInput,
+  PrHubListInput,
   PrHubSetReactionInput,
   PrHubSnoozeInput,
   PrHubTimelineInput,
@@ -333,6 +346,13 @@ const tagRequestBody = <const Tag extends string, const Fields extends Schema.St
     // PreserveChecks is safe here. No existing schema should have checks depending on the tag
     { unsafePreserveChecks: true },
   );
+
+// All account-owned PR reads and writes require the incarnation the caller saw.
+// Older PR clients must reload before they can issue a mutation.
+const tagPrHubRequestBody = <const Tag extends string, const Fields extends Schema.Struct.Fields>(
+  tag: Tag,
+  schema: Schema.Struct<Fields>,
+) => tagRequestBody(tag, schema.mapFields(Struct.assign({ accountGeneration: Schema.String })));
 
 const WebSocketRequestBody = Schema.Union([
   tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
@@ -526,29 +546,51 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
 
   // PR Hub methods
-  tagRequestBody(PR_HUB_WS_METHODS.getSnapshot, Schema.Struct({})),
+  tagRequestBody(PR_HUB_WS_METHODS.getOverview, PrHubOverviewInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.claimNotifications, PrHubClaimNotificationsInput),
+  tagPrHubRequestBody(
+    PR_HUB_WS_METHODS.acknowledgeNotifications,
+    PrHubAcknowledgeNotificationsInput,
+  ),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.listPullRequests, PrHubListInput),
   tagRequestBody(PR_HUB_WS_METHODS.refresh, PrHubRefreshInput),
-  tagRequestBody(PR_HUB_WS_METHODS.approve, PrHubReviewInput),
-  tagRequestBody(PR_HUB_WS_METHODS.requestChanges, PrHubRequestChangesInput),
-  tagRequestBody(PR_HUB_WS_METHODS.comment, PrHubCommentInput),
-  tagRequestBody(PR_HUB_WS_METHODS.merge, PrHubMergeInput),
-  tagRequestBody(PR_HUB_WS_METHODS.markReady, PrHubMarkReadyInput),
-  tagRequestBody(PR_HUB_WS_METHODS.reRequestReview, PrHubReRequestInput),
-  tagRequestBody(PR_HUB_WS_METHODS.snooze, PrHubSnoozeInput),
-  tagRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
-  tagRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
-  tagRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
-  tagRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),
-  tagRequestBody(PR_HUB_WS_METHODS.analyzeAdvisories, PrHubAnalyzeAdvisoriesInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getAdvisories, PrHubGetAdvisoriesInput),
-  tagRequestBody(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, PrHubLocalCandidatesInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getDetail, PrHubDetailInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getTimeline, PrHubTimelineInput),
-  tagRequestBody(PR_HUB_WS_METHODS.getFiles, PrHubFilesInput),
-  tagRequestBody(PR_HUB_WS_METHODS.updateComment, PrHubUpdateCommentInput),
-  tagRequestBody(PR_HUB_WS_METHODS.setReaction, PrHubSetReactionInput),
-  tagRequestBody(PR_HUB_WS_METHODS.changeReviewers, PrHubChangeReviewersInput),
-  tagRequestBody(PR_HUB_WS_METHODS.updateBranch, PrHubUpdateBranchInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.approve, PrHubReviewInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.requestChanges, PrHubRequestChangesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.comment, PrHubCommentInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.merge, PrHubMergeInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.markReady, PrHubMarkReadyInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.reRequestReview, PrHubReRequestInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.snooze, PrHubSnoozeInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.analyzeAdvisories, PrHubAnalyzeAdvisoriesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getAdvisories, PrHubGetAdvisoriesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, PrHubLocalCandidatesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getDetail, PrHubDetailInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getTimeline, PrHubTimelineInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getFiles, PrHubFilesInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewDraft, PrHubDetailInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewThreads, PrHubThreadsInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReplyOperation, PrHubThreadsInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReplyDraft, PrHubThreadsInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.saveReplyDraft, PrHubSaveReplyDraftInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverReply, PrHubRecoverReplyInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.replyReviewThread, PrHubReplyInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.setReviewThreadState, PrHubThreadStateInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareReview, PrHubPrepareReviewInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.track, PrHubTrackInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverReview, PrHubRecoverReviewInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.submitReview, PrHubReviewOperationInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getReviewOperation, PrHubDetailInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.cancelReviewPreparation, PrHubReviewOperationInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.saveReviewDraft, PrHubSaveReviewDraftInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getUnresolvedThreads, PrHubDetailInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.updateComment, PrHubUpdateCommentInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.setReaction, PrHubSetReactionInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.changeReviewers, PrHubChangeReviewersInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.updateBranch, PrHubUpdateBranchInput),
   tagRequestBody(PR_HUB_WS_METHODS.clearData, PrHubClearDataInput),
 ]);
 
@@ -598,8 +640,8 @@ export interface WsPushPayloadByChannel {
   readonly [WS_CHANNELS.nextTurnQueueUpdated]: typeof NextTurnQueueSnapshot.Type;
   readonly [WS_CHANNELS.nextTurnQueueSummaryUpdated]: typeof NextTurnQueueSummary.Type;
   readonly [ORCHESTRATION_WS_CHANNELS.domainEvent]: OrchestrationEvent;
-  readonly [PR_HUB_WS_CHANNELS.snapshotUpdated]: typeof PrHubSnapshot.Type;
-  readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisorySnapshot.Type;
+  readonly [PR_HUB_WS_CHANNELS.changed]: typeof PrHubChanged.Type;
+  readonly [PR_HUB_WS_CHANNELS.advisoriesUpdated]: typeof PrHubAdvisoriesChanged.Type;
 }
 
 export type WsPushChannel = keyof WsPushPayloadByChannel;
@@ -671,13 +713,10 @@ export const WsPushOrchestrationDomainEvent = makeWsPushSchema(
   ORCHESTRATION_WS_CHANNELS.domainEvent,
   OrchestrationEvent,
 );
-export const WsPushPrHubSnapshotUpdated = makeWsPushSchema(
-  PR_HUB_WS_CHANNELS.snapshotUpdated,
-  PrHubSnapshot,
-);
+export const WsPushPrHubChanged = makeWsPushSchema(PR_HUB_WS_CHANNELS.changed, PrHubChanged);
 export const WsPushPrHubAdvisoriesUpdated = makeWsPushSchema(
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
-  PrHubAdvisorySnapshot,
+  PrHubAdvisoriesChanged,
 );
 
 export const WsPushChannelSchema = Schema.Literals([
@@ -697,7 +736,7 @@ export const WsPushChannelSchema = Schema.Literals([
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
   ORCHESTRATION_WS_CHANNELS.domainEvent,
-  PR_HUB_WS_CHANNELS.snapshotUpdated,
+  PR_HUB_WS_CHANNELS.changed,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
 ]);
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
@@ -719,7 +758,7 @@ export const WsPush = Schema.Union([
   WsPushNextTurnQueueUpdated,
   WsPushNextTurnQueueSummaryUpdated,
   WsPushOrchestrationDomainEvent,
-  WsPushPrHubSnapshotUpdated,
+  WsPushPrHubChanged,
   WsPushPrHubAdvisoriesUpdated,
 ]);
 export type WsPush = typeof WsPush.Type;

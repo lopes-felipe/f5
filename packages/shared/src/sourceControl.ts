@@ -41,6 +41,39 @@ export function providerKindFromHost(host: string): SourceControlProviderKind {
   return "unknown";
 }
 
+/** Parse only HTTPS PR URLs on the explicitly selected GitHub host. */
+export function parseGitHubPullRequestUrl(
+  value: string,
+  host = "github.com",
+): SourceControlPullRequestRef | null {
+  try {
+    const url = new URL(value.trim());
+    const match = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\/pull\/([0-9]+)(?:\/.*)?$/.exec(
+      url.pathname,
+    );
+    if (
+      url.protocol !== "https:" ||
+      url.hostname.toLowerCase() !== host.toLowerCase() ||
+      url.port ||
+      url.username ||
+      url.password ||
+      !match
+    )
+      return null;
+    const number = Number(match[3]);
+    return Number.isSafeInteger(number) && number > 0
+      ? {
+          provider: "github",
+          host: url.hostname.toLowerCase(),
+          repository: `${match[1]}/${match[2]}`,
+          number,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function formatSourceControlPullRequestKey(
   reference: SourceControlPullRequestRef,
 ): PullRequestKey {

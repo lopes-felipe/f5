@@ -1,14 +1,18 @@
-import { forwardRef, useImperativeHandle, type ReactNode } from "react";
+import { prAttentionText } from "@t3tools/shared/prHub";
+import { waitingLabel } from "./prHubPresentation";
+import { forwardRef, useEffect, useImperativeHandle, useState, type ReactNode } from "react";
+import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { ensureNativeApi } from "../../nativeApi";
 import { GitPullRequestIcon, SparklesIcon } from "lucide-react";
 import type { PrHubAdvisory, ThreadId, TrackedPullRequest } from "@t3tools/contracts";
 
-import { formatRelativeTimeLabel } from "../../lib/relativeTime";
+import { formatRelativeTimeLabel, formatAbsoluteTimeLabel } from "../../lib/relativeTime";
 import { Badge } from "../ui/badge";
 import { Button } from "../ui/button";
 import { PrActionDialogs } from "./PrActionDialogs";
 import { PrAdvisoryInline } from "./PrAdvisoryInline";
 import { PrDetailActions } from "./PrDetailActions";
-import { PrDetailsTabs } from "./PrDetailsTabs";
+import { PrDetailsTabs, type PrDetailTab } from "./PrDetailsTabs";
 import {
   attentionVariant,
   checkIconFor,
@@ -82,6 +86,23 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
   { pr, advisory, isAnalyzingAdvisory = false, onAnalyzeAdvisory, onThreadCreated },
   ref,
 ) {
+  const [activeTab, setActiveTab] = useState<PrDetailTab>("summary");
+  const accountGeneration = getPrHubAccountGeneration();
+  useEffect(() => {
+    if (!accountGeneration) return;
+    // A visible detail is seen; merely loading the dashboard never marks the collection.
+    const timer = window.setTimeout(() => {
+      if (!document.hasFocus() || document.visibilityState !== "visible") return;
+      void ensureNativeApi()
+        .prHub.markSeen({
+          key: pr.key,
+          attentionFingerprint: pr.attentionFingerprint,
+          accountGeneration,
+        })
+        .catch(() => {});
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [accountGeneration, pr.key, pr.attentionFingerprint]);
   const { flags, handlers, dialogProps, runInF5Label } = usePrActions(pr, {
     advisory,
     onThreadCreated,
@@ -98,8 +119,8 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
       primaryLabel: visibility.primary?.label ?? null,
       triggerPrimary: () => {
         switch (visibility.primary?.kind) {
-          case "approve":
-            handlers.onApprove();
+          case "review":
+            setActiveTab("files");
             break;
           case "merge":
             handlers.onMerge();
@@ -160,6 +181,7 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         isAnalyzingAdvisory={isAnalyzingAdvisory}
         isOpeningInF5={dialogProps.isOpeningInF5}
         runInF5Label={runInF5Label}
+        onReview={() => setActiveTab("files")}
         onApprove={handlers.onApprove}
         onComment={handlers.onComment}
         onRequestChanges={handlers.onRequestChanges}
@@ -175,8 +197,13 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
         onOpenGitHub={handlers.onOpenGitHub}
       />
 
+      {pr.repositoryArchived ? (
+        <p className="px-4 text-sm">Archived repository ? this pull request is read-only.</p>
+      ) : null}
       <PrDetailsTabs
         pr={pr}
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
         summary={
           <>
             <div className="rounded-lg border border-border bg-muted/30 p-3">
@@ -228,6 +255,62 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
                   <span className="font-mono text-xs">
                     {pr.headRefName} → {pr.baseRefName}
                   </span>
+                </Fact>
+              ) : null}
+              {waitingLabel(pr) && pr.waitingSince ? (
+                <Fact label="Waiting">
+                  <span title={formatAbsoluteTimeLabel(pr.waitingSince)}>{waitingLabel(pr)}</span>
+                </Fact>
+              ) : null}
+              {pr.reasons?.[0] ? (
+                <Fact label="Next actor">
+                  {pr.reasons[0].actor === "viewer" ? "You" : pr.reasons[0].actor}
+                </Fact>
+              ) : null}
+              {pr.reasons && pr.reasons.length > 0 ? (
+                <Fact label="All reasons">
+                  <ul className="space-y-1">
+                    {pr.reasons.map((reason) => (
+                      <li key={reason.code} title={formatAbsoluteTimeLabel(reason.firstObservedAt)}>
+                        {
+                          prAttentionText(reason.code, pr.actionableUnresolvedThreadCount)
+                            .nextAction
+                        }
+                        {reason.verification === "unverified" ? " (unverified)" : ""}
+                        {reason.evidence.length ? (
+                          <span className="flex flex-wrap gap-2">
+                            {reason.evidence.slice(0, 5).map((evidence, index) => (
+                              <a
+                                key={evidence.id}
+                                href={evidence.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="underline"
+                              >
+                                Evidence {index + 1}
+                              </a>
+                            ))}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </Fact>
+              ) : null}
+              <Fact label="Verified">
+                {pr.lastVerifiedAt ? (
+                  <span title={formatAbsoluteTimeLabel(pr.lastVerifiedAt)}>
+                    {formatRelativeTimeLabel(pr.lastVerifiedAt)}
+                  </span>
+                ) : (
+                  "Not verified yet"
+                )}
+              </Fact>
+              {pr.reviewFactsComplete !== true ? (
+                <Fact label="Review coverage">
+                  {pr.reviewFactsComplete === false
+                    ? "Partial ? more review history remains to scan"
+                    : "Not verified yet"}
                 </Fact>
               ) : null}
               <Fact label="Author">{pr.author ?? "unknown"}</Fact>

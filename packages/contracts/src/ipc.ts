@@ -171,15 +171,36 @@ import type {
 } from "./workflowPlatform";
 import type {
   PrHubAdvisorySnapshot,
+  PrHubAdvisoriesChanged,
   PrHubAnalyzeAdvisoriesInput,
   PrHubClearDataInput,
   PrHubChangeReviewersInput,
   PrHubCommentInput,
+  PrHubClaimNotificationsInput,
+  PrHubAcknowledgeNotificationsInput,
+  PrHubNotificationBatch,
   PrHubDetailInput,
   PrHubDetailMutationResult,
   PrHubDetailResult,
   PrHubFilesInput,
   PrHubFilesPage,
+  PrHubThreadsInput,
+  PrHubReplyInput,
+  PrHubRecoverReplyInput,
+  PrHubReplyDraft,
+  PrHubReplyDraftResult,
+  PrHubSaveReplyDraftInput,
+  PrHubReplyOperation,
+  PrHubThreadsPage,
+  PrHubThreadStateInput,
+  PrHubReviewThread,
+  PrHubSaveReviewDraftInput,
+  PrHubPrepareReviewInput,
+  PrHubReviewOperationInput,
+  PrHubRecoverReviewInput,
+  PrHubReviewOperation,
+  PrHubReviewDraftResult,
+  PrHubUnresolvedThreadsResult,
   PrHubGetAdvisoriesInput,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
@@ -192,7 +213,13 @@ import type {
   PrHubRequestChangesInput,
   PrHubReRequestInput,
   PrHubReviewInput,
-  PrHubSnapshot,
+  PrHubTrackInput,
+  TrackedPullRequest,
+  PrHubOverview,
+  PrHubOverviewInput,
+  PrHubListInput,
+  PrHubListPage,
+  PrHubChanged,
   PrHubSetReactionInput,
   PrHubSnoozeInput,
   PrHubTimelineInput,
@@ -571,19 +598,22 @@ export interface NativeApi {
     ) => Promise<WorkflowPlatformInspectRunResult>;
   };
   prHub: {
-    getSnapshot: () => Promise<PrHubSnapshot>;
-    refresh: (input: PrHubRefreshInput) => Promise<PrHubSnapshot>;
-    approve: (input: PrHubReviewInput) => Promise<PrHubSnapshot>;
-    requestChanges: (input: PrHubRequestChangesInput) => Promise<PrHubSnapshot>;
-    comment: (input: PrHubCommentInput) => Promise<PrHubSnapshot>;
-    merge: (input: PrHubMergeInput) => Promise<PrHubSnapshot>;
-    markReady: (input: PrHubMarkReadyInput) => Promise<PrHubSnapshot>;
-    reRequestReview: (input: PrHubReRequestInput) => Promise<PrHubSnapshot>;
-    snooze: (input: PrHubSnoozeInput) => Promise<PrHubSnapshot>;
-    unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubSnapshot>;
-    ignore: (input: PrHubIgnoreInput) => Promise<PrHubSnapshot>;
-    markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubSnapshot>;
-    markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubSnapshot>;
+    getOverview: (input?: PrHubOverviewInput) => Promise<PrHubOverview>;
+    claimNotifications: (input: PrHubClaimNotificationsInput) => Promise<PrHubNotificationBatch>;
+    acknowledgeNotifications: (input: PrHubAcknowledgeNotificationsInput) => Promise<PrHubOverview>;
+    listPullRequests: (input: PrHubListInput) => Promise<PrHubListPage>;
+    refresh: (input: PrHubRefreshInput) => Promise<PrHubOverview>;
+    approve: (input: PrHubReviewInput) => Promise<PrHubOverview>;
+    requestChanges: (input: PrHubRequestChangesInput) => Promise<PrHubOverview>;
+    comment: (input: PrHubCommentInput) => Promise<PrHubOverview>;
+    merge: (input: PrHubMergeInput) => Promise<PrHubOverview>;
+    markReady: (input: PrHubMarkReadyInput) => Promise<PrHubOverview>;
+    reRequestReview: (input: PrHubReRequestInput) => Promise<PrHubOverview>;
+    snooze: (input: PrHubSnoozeInput) => Promise<PrHubOverview>;
+    unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubOverview>;
+    ignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
+    markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubOverview>;
+    markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;
     analyzeAdvisories: (input?: PrHubAnalyzeAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
     getAdvisories: (input?: PrHubGetAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
     listLocalCheckoutCandidates: (
@@ -591,14 +621,30 @@ export interface NativeApi {
     ) => Promise<PrHubLocalCheckoutCandidate[]>;
     getDetail: (input: PrHubDetailInput) => Promise<PrHubDetailResult>;
     getTimeline: (input: PrHubTimelineInput) => Promise<PrHubTimelinePage>;
+    getUnresolvedThreads: (input: PrHubDetailInput) => Promise<PrHubUnresolvedThreadsResult>;
     getFiles: (input: PrHubFilesInput) => Promise<PrHubFilesPage>;
+    replyReviewThread: (input: PrHubReplyInput) => Promise<PrHubReplyOperation>;
+    getReplyOperation: (input: PrHubThreadsInput) => Promise<PrHubReplyOperation | null>;
+    recoverReply: (input: PrHubRecoverReplyInput) => Promise<PrHubReplyOperation>;
+    getReplyDraft: (input: PrHubThreadsInput) => Promise<PrHubReplyDraft | null>;
+    saveReplyDraft: (input: PrHubSaveReplyDraftInput) => Promise<PrHubReplyDraftResult>;
+    getReviewThreads: (input: PrHubThreadsInput) => Promise<PrHubThreadsPage>;
+    setReviewThreadState: (input: PrHubThreadStateInput) => Promise<PrHubReviewThread>;
+    getReviewDraft: (input: PrHubDetailInput) => Promise<PrHubReviewDraftResult>;
+    prepareReview: (input: PrHubPrepareReviewInput) => Promise<PrHubReviewOperation>;
+    track: (input: PrHubTrackInput) => Promise<TrackedPullRequest>;
+    recoverReview: (input: PrHubRecoverReviewInput) => Promise<PrHubReviewOperation>;
+    submitReview: (input: PrHubReviewOperationInput) => Promise<PrHubReviewOperation>;
+    getReviewOperation: (input: PrHubDetailInput) => Promise<PrHubReviewOperation | null>;
+    cancelReviewPreparation: (input: PrHubReviewOperationInput) => Promise<PrHubReviewOperation>;
+    saveReviewDraft: (input: PrHubSaveReviewDraftInput) => Promise<PrHubReviewDraftResult>;
     updateComment: (input: PrHubUpdateCommentInput) => Promise<PrHubDetailMutationResult>;
     setReaction: (input: PrHubSetReactionInput) => Promise<PrHubDetailMutationResult>;
     changeReviewers: (input: PrHubChangeReviewersInput) => Promise<PrHubDetailMutationResult>;
     updateBranch: (input: PrHubUpdateBranchInput) => Promise<PrHubDetailMutationResult>;
-    clearData: (input?: PrHubClearDataInput) => Promise<PrHubSnapshot>;
-    onSnapshotUpdated: (callback: (snapshot: PrHubSnapshot) => void) => () => void;
-    onAdvisoriesUpdated: (callback: (snapshot: PrHubAdvisorySnapshot) => void) => () => void;
+    clearData: (input?: PrHubClearDataInput) => Promise<PrHubOverview>;
+    onChanged: (callback: (snapshot: PrHubChanged) => void) => () => void;
+    onAdvisoriesUpdated: (callback: (snapshot: PrHubAdvisoriesChanged) => void) => () => void;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

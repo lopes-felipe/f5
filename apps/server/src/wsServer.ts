@@ -1511,8 +1511,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* Stream.runForEach(providerUpdateAdvisor.streamChanges, (advisories) =>
     pushBus.publishAll(WS_CHANNELS.providerAdvisoriesUpdated, { advisories }),
   ).pipe(Effect.forkIn(subscriptionsScope));
-  yield* Stream.runForEach(prHub.streamSnapshots, (snapshot) =>
-    pushBus.publishAll(PR_HUB_WS_CHANNELS.snapshotUpdated, snapshot),
+  yield* Stream.runForEach(prHub.streamChanges, (snapshot) =>
+    pushBus.publishAll(PR_HUB_WS_CHANNELS.changed, snapshot),
   ).pipe(Effect.forkIn(subscriptionsScope));
   yield* Stream.runForEach(prHubAdvisory.streamAdvisories, (snapshot) =>
     pushBus.publishAll(PR_HUB_WS_CHANNELS.advisoriesUpdated, snapshot),
@@ -1836,32 +1836,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
   yield* readiness.markHttpListening;
-  yield* Effect.sleep(Duration.seconds(5)).pipe(
-    Effect.andThen(
-      Effect.forever(
-        Effect.gen(function* () {
-          const settings = yield* serverSettings.getSettings;
-          const configuredSeconds = settings.prHub.pollIntervalSeconds;
-          if (configuredSeconds === 0) {
-            yield* serverSettings.streamChanges.pipe(
-              Stream.filter((nextSettings) => nextSettings.prHub.pollIntervalSeconds !== 0),
-              Stream.runHead,
-            );
-            return;
-          }
-          yield* prHub.refreshNow({ mode: "if_stale" }).pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("PR Hub refresh failed", {
-                causePretty: Cause.pretty(cause),
-              }),
-            ),
-          );
-          yield* Effect.sleep(Duration.seconds(configuredSeconds));
-        }),
-      ),
-    ),
-    Effect.forkIn(subscriptionsScope),
-  );
+  yield* prHub.startMonitoring;
 
   yield* Effect.addFinalizer(() =>
     Effect.all([closeAllClients, closeWebSocketServer.pipe(Effect.ignoreCause({ log: true }))]),
@@ -2808,67 +2783,86 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* getReviewPreviewDiff({ request: body, readModel });
       }
 
-      case PR_HUB_WS_METHODS.getSnapshot:
-        return yield* prHub.getSnapshot;
+      case PR_HUB_WS_METHODS.claimNotifications:
+        return yield* prHub.claimNotifications(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.acknowledgeNotifications:
+        yield* prHub.acknowledgeNotifications(stripRequestTag(request.body));
+        return yield* prHub.getOverview({});
+      case PR_HUB_WS_METHODS.getOverview:
+        return yield* prHub.getOverview(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.listPullRequests:
+        return yield* prHub.listPullRequests(stripRequestTag(request.body));
 
       case PR_HUB_WS_METHODS.refresh: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.refreshNow(body);
+        yield* prHub.refreshNow(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.approve: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.approve(body);
+        yield* prHub.approve(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.requestChanges: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.requestChanges(body);
+        yield* prHub.requestChanges(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.comment: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.comment(body);
+        yield* prHub.comment(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.merge: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.merge(body);
+        yield* prHub.merge(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.markReady: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.markReady(body);
+        yield* prHub.markReady(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.reRequestReview: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.reRequestReview(body);
+        yield* prHub.reRequestReview(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.snooze: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.snooze(body);
+        yield* prHub.snooze(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.unsnooze: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.unsnooze(body);
+        yield* prHub.unsnooze(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.ignore: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.ignore(body);
+        yield* prHub.ignore(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.markSeen: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.markSeen(body);
+        yield* prHub.markSeen(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.markNotified: {
         const body = stripRequestTag(request.body);
-        return yield* prHub.markNotified(body);
+        yield* prHub.markNotified(body);
+        return yield* prHub.getOverview({});
       }
 
       case PR_HUB_WS_METHODS.analyzeAdvisories: {
@@ -2896,6 +2890,42 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* prHub.getTimeline(body);
       }
 
+      case PR_HUB_WS_METHODS.getUnresolvedThreads: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.getUnresolvedThreads(body);
+      }
+      case PR_HUB_WS_METHODS.prepareReview:
+        return yield* prHub.prepareReview(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.submitReview:
+        return yield* prHub.submitReview(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getReviewOperation:
+        return yield* prHub.getReviewOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.track:
+        return yield* prHub.track(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.recoverReview:
+        return yield* prHub.recoverReview(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.cancelReviewPreparation:
+        return yield* prHub.cancelReviewPreparation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.replyReviewThread:
+        return yield* prHub.replyReviewThread(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.recoverReply:
+        return yield* prHub.recoverReply(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getReplyDraft:
+        return yield* prHub.getReplyDraft(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.saveReplyDraft:
+        return yield* prHub.saveReplyDraft(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getReplyOperation:
+        return yield* prHub.getReplyOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getReviewThreads:
+        return yield* prHub.getReviewThreads(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.setReviewThreadState:
+        return yield* prHub.setReviewThreadState(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getReviewDraft: {
+        return yield* prHub.getReviewDraft(stripRequestTag(request.body));
+      }
+      case PR_HUB_WS_METHODS.saveReviewDraft: {
+        return yield* prHub.saveReviewDraft(stripRequestTag(request.body));
+      }
       case PR_HUB_WS_METHODS.getFiles: {
         const body = stripRequestTag(request.body);
         return yield* prHub.getFiles(body);
@@ -2922,7 +2952,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case PR_HUB_WS_METHODS.clearData:
-        return yield* prHub.clearData();
+        yield* prHub.clearData(stripRequestTag(request.body));
+        return yield* prHub.getOverview({});
 
       case WS_METHODS.terminalOpen: {
         const body = stripRequestTag(request.body);

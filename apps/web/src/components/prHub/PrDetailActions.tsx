@@ -1,5 +1,6 @@
 import {
   ArchiveIcon,
+  CheckIcon,
   EllipsisIcon,
   GithubIcon,
   MessageSquareIcon,
@@ -25,6 +26,7 @@ export interface PrDetailActionsProps {
   isAnalyzingAdvisory: boolean;
   isOpeningInF5: boolean;
   runInF5Label: string | null;
+  onReview: () => void;
   onApprove: () => void;
   onComment: () => void;
   onRequestChanges: () => void;
@@ -56,6 +58,7 @@ export function PrDetailActions({
   isAnalyzingAdvisory,
   isOpeningInF5,
   runInF5Label,
+  onReview,
   onApprove,
   onComment,
   onRequestChanges,
@@ -77,8 +80,8 @@ export function PrDetailActions({
   });
 
   const onPrimary =
-    primary?.kind === "approve"
-      ? onApprove
+    primary?.kind === "review"
+      ? onReview
       : primary?.kind === "merge"
         ? onMerge
         : primary?.kind === "markReady"
@@ -99,6 +102,9 @@ export function PrDetailActions({
 
       {canReview ? (
         <>
+          <Button size="sm" variant="outline" onClick={onApprove}>
+            <CheckIcon /> Approve
+          </Button>
           <Button size="sm" variant="outline" onClick={onComment}>
             <MessageSquareIcon /> Comment
           </Button>

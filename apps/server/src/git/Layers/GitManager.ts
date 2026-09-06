@@ -1,3 +1,4 @@
+import { parseGitHubPullRequestUrl } from "@t3tools/shared/sourceControl";
 import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 
@@ -78,10 +79,7 @@ interface BranchHeadContext {
 }
 
 function parseRepositoryNameFromPullRequestUrl(url: string): string | null {
-  const trimmed = url.trim();
-  const match = /^https:\/\/github\.com\/[^/]+\/([^/]+)\/pull\/\d+(?:\/.*)?$/i.exec(trimmed);
-  const repositoryName = match?.[1]?.trim() ?? "";
-  return repositoryName.length > 0 ? repositoryName : null;
+  return parseGitHubPullRequestUrl(url)?.repository.split("/")[1] ?? null;
 }
 
 function resolveHeadRepositoryNameWithOwner(

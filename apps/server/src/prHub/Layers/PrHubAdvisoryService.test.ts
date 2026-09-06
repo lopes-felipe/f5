@@ -52,6 +52,8 @@ function makePr(input: Partial<TrackedPullRequest> = {}): TrackedPullRequest {
     reviewRequestsCount: input.reviewRequestsCount ?? 1,
     commentsCount: input.commentsCount ?? 0,
     unresolvedThreadCount: input.unresolvedThreadCount ?? 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: input.additions ?? 10,
     deletions: input.deletions ?? 2,
     changedFiles: input.changedFiles ?? 1,
@@ -90,6 +92,7 @@ function makeFacts(input: {
 function makeSnapshot(prs: ReadonlyArray<TrackedPullRequest>): PrHubSnapshot {
   return {
     status: "ok",
+    account: { host: "github.com", viewerId: 1, login: "me", generation: "test-account" },
     viewerLogin: "me",
     host: "github.com",
     pullRequests: prs.filter((pr) => pr.state === "open" && pr.ignoredAt === null),
@@ -102,7 +105,12 @@ function makePrHubStub(snapshot: PrHubSnapshot): PrHubServiceShape {
   return {
     getSnapshot: Effect.succeed(snapshot),
     refreshNow: () => Effect.succeed(snapshot),
-    streamSnapshots: Stream.empty,
+    streamChanges: Stream.empty,
+    claimNotifications: () => Effect.die("unused"),
+    startMonitoring: Effect.void,
+    acknowledgeNotifications: () => Effect.die("unused"),
+    getOverview: () => Effect.die("unused"),
+    listPullRequests: () => Effect.die("unused"),
     approve: () => Effect.die("approve must not be called"),
     requestChanges: () => Effect.die("requestChanges must not be called"),
     comment: () => Effect.die("comment must not be called"),
@@ -117,7 +125,30 @@ function makePrHubStub(snapshot: PrHubSnapshot): PrHubServiceShape {
     listLocalCheckoutCandidates: () => Effect.succeed([]),
     getDetail: () => Effect.die("getDetail must not be called"),
     getTimeline: () => Effect.die("getTimeline must not be called"),
+    getUnresolvedThreads: () =>
+      Effect.succeed({
+        threads: [],
+        truncated: false,
+        omittedCount: 0,
+        stale: false,
+        refreshedAt: new Date().toISOString(),
+      }),
     getFiles: () => Effect.die("getFiles must not be called"),
+    prepareReview: () => Effect.die("prepareReview must not be called"),
+    submitReview: () => Effect.die("submitReview must not be called"),
+    getReviewOperation: () => Effect.die("getReviewOperation must not be called"),
+    track: () => Effect.die("unused"),
+    recoverReview: () => Effect.die("recoverReview must not be called"),
+    cancelReviewPreparation: () => Effect.die("cancelReviewPreparation must not be called"),
+    replyReviewThread: () => Effect.die("unused"),
+    getReplyOperation: () => Effect.die("unused"),
+    recoverReply: () => Effect.die("unused"),
+    getReplyDraft: () => Effect.die("unused"),
+    saveReplyDraft: () => Effect.die("unused"),
+    getReviewThreads: () => Effect.die("unused"),
+    setReviewThreadState: () => Effect.die("unused"),
+    getReviewDraft: () => Effect.die("getReviewDraft must not be called"),
+    saveReviewDraft: () => Effect.die("saveReviewDraft must not be called"),
     updateComment: () => Effect.die("updateComment must not be called"),
     setReaction: () => Effect.die("setReaction must not be called"),
     changeReviewers: () => Effect.die("changeReviewers must not be called"),
@@ -201,6 +232,9 @@ function makeLayer(input: {
 }) {
   const responses = [...(input.graphqlResponses ?? [])];
   const github: GitHubCliShape = {
+    request: () => Effect.die("Unexpected request"),
+    getCredentialContext: () =>
+      Effect.succeed({ host: "github.com", viewerId: 1, login: "me", generation: "test-account" }),
     execute: () => Effect.die("execute must not be called"),
     listOpenPullRequests: () => Effect.die("listOpenPullRequests must not be called"),
     getPullRequest: () => Effect.die("getPullRequest must not be called"),
@@ -311,6 +345,8 @@ it("maps unresolved review-thread comments into advisory findings", () => {
       pr: makePr({
         reviewDecision: "changes_requested",
         unresolvedThreadCount: 1,
+        actionableUnresolvedThreadCount: 0,
+        waitingSince: null,
       }),
       latestReviews: [
         {
@@ -410,6 +446,8 @@ it.effect("uses the stronger default advisory model and maps model JSON onto rea
   const pr = makePr({
     number: 31,
     unresolvedThreadCount: 1,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
   });
   const calls = { graphql: 0, mutating: 0 };
   const modelSelections: string[] = [];

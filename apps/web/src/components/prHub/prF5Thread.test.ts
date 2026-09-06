@@ -5,12 +5,19 @@ import {
   PullRequestKey,
   type NativeApi,
   type PrHubAdvisory,
+  type PrHubUnresolvedThreadsResult,
   type ServerProvider,
   type TrackedPullRequest,
 } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vitest";
 
-import { buildPrF5Prompt, createPrF5Thread, resolvePrF5RunKind } from "./prF5Thread";
+import {
+  reviewThreadsContext,
+  prF5RunLabel,
+  buildPrF5Prompt,
+  createPrF5Thread,
+  resolvePrF5RunKind,
+} from "./prF5Thread";
 
 function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest {
   return {
@@ -40,6 +47,8 @@ function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest
     reviewRequestsCount: 0,
     commentsCount: 0,
     unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 1,
     deletions: 1,
     changedFiles: 1,
@@ -208,4 +217,60 @@ describe("PR Hub F5 threads", () => {
     ).rejects.toThrow("Refresh PR Hub");
     expect(harness.preparePullRequestThread).not.toHaveBeenCalled();
   });
+});
+
+it("offers review handoff after new commits, without a new review request", () => {
+  const pr = makePr({
+    attentionState: "changes_pushed",
+    roles: ["involved"],
+    checkRollup: "success",
+  });
+  expect(resolvePrF5RunKind(pr, undefined)).toBe("review");
+  expect(prF5RunLabel("fix", makePr({ actionableUnresolvedThreadCount: 1 }))).toBe(
+    "Address comments",
+  );
+});
+it("includes verbatim review evidence and an honest bounded truncation notice", () => {
+  const result: PrHubUnresolvedThreadsResult = {
+    threads: [
+      {
+        id: "t",
+        isResolved: false,
+        path: "src/a.ts",
+        line: 7,
+        originalLine: null,
+        comments: [
+          {
+            id: "c",
+            url: "https://github.com",
+            author: "alice",
+            bodyText: "Verbatim feedback\nnext line",
+            createdAt: null,
+            updatedAt: null,
+            outdated: true,
+            diffHunk: null,
+          },
+        ],
+      },
+    ],
+    truncated: true,
+    omittedCount: 3,
+    stale: false,
+    refreshedAt: "2026-01-01T00:00:00Z",
+  };
+  const prompt = buildPrF5Prompt({ pr: makePr(), kind: "fix", reviewThreads: result });
+  expect(prompt).toContain("src/a.ts:7");
+  expect(prompt).toContain("[outdated] @alice: Verbatim feedback\nnext line");
+  expect(prompt).toContain("3 further threads/comments not shown");
+  const enormous = {
+    ...result,
+    threads: Array.from({ length: 30 }, () => ({
+      ...result.threads[0]!,
+      comments: [{ ...result.threads[0]!.comments[0]!, bodyText: "x".repeat(50_000) }],
+    })),
+  };
+  const context = reviewThreadsContext(enormous);
+  expect(context.length).toBeLessThanOrEqual(24_000);
+  expect(context).toContain("read them on GitHub before concluding");
+  expect(reviewThreadsContext(null)).toContain("could not load review threads");
 });

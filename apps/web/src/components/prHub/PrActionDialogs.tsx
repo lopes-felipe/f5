@@ -30,6 +30,9 @@ export function PrActionDialogs({
   reviewers,
   setReviewers,
   mergeMethod,
+  mergeComparison,
+  mergeComparisonError,
+  reloadMergeComparison,
   setMergeMethod,
   snoozeUntil,
   setSnoozeUntil,
@@ -64,6 +67,25 @@ export function PrActionDialogs({
               />
             ) : null}
             {pendingAction === "merge" ? (
+              <div className="space-y-1 text-xs">
+                {mergeComparison ? (
+                  <p title={JSON.stringify(mergeComparison)}>
+                    Merge {mergeComparison.headRepository}:{mergeComparison.headRef} (
+                    {mergeComparison.headOid.slice(0, 12)}) into {mergeComparison.baseRepository}:
+                    {mergeComparison.baseRef} ({mergeComparison.baseOid.slice(0, 12)}). Merge base:{" "}
+                    {mergeComparison.mergeBaseOid.slice(0, 12)}.
+                  </p>
+                ) : (
+                  <p role="status">{mergeComparisonError ?? "Loading merge comparison?"}</p>
+                )}
+                {mergeComparisonError ? (
+                  <Button size="xs" variant="outline" onClick={reloadMergeComparison}>
+                    Retry comparison
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+            {pendingAction === "merge" ? (
               <Select
                 value={mergeMethod}
                 onValueChange={(value) => setMergeMethod(value as typeof mergeMethod)}
@@ -92,7 +114,9 @@ export function PrActionDialogs({
             <Button
               onClick={() => void runAction()}
               disabled={
-                isRunning || (pendingAction === "reRequestReview" && reviewers.trim().length === 0)
+                isRunning ||
+                (pendingAction === "merge" && !mergeComparison) ||
+                (pendingAction === "reRequestReview" && reviewers.trim().length === 0)
               }
             >
               {isRunning ? "Working..." : "Confirm"}

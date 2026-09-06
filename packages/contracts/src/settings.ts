@@ -154,6 +154,7 @@ const PrHubPollIntervalSeconds = Schema.Union([
 ]);
 
 export const PrHubSettings = Schema.Struct({
+  discoverNotifications: Schema.optional(Schema.Boolean),
   pollIntervalSeconds: PrHubPollIntervalSeconds.pipe(Schema.withDecodingDefault(() => 180)),
   excludeRepos: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
 });
