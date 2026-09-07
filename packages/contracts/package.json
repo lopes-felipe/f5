@@ -27,11 +27,11 @@
     }
   },
   "scripts": {
-    "dev": "tsdown src/index.ts --format esm,cjs --dts --watch --clean",
-    "build": "tsdown src/index.ts --format esm,cjs --dts --clean",
-    "prepare": "effect-language-service patch",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "dev": "node node_modules/tsdown/dist/run.mjs src/index.ts --format esm,cjs --dts --watch --clean",
+    "build": "node node_modules/tsdown/dist/run.mjs src/index.ts --format esm,cjs --dts --clean",
+    "prepare": "node node_modules/@effect/language-service/cli.js patch",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "test": "node node_modules/vitest/vitest.mjs run"
   },
   "dependencies": {
     "effect": "catalog:"

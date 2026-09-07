@@ -10,7 +10,7 @@ describe("desktop production start", () => {
     ) as { readonly scripts?: Readonly<Record<string, string>> };
 
     expect(rootPackageJson.scripts?.["start:desktop"]).toBe(
-      "bun run build:desktop && turbo run start --filter=@t3tools/desktop",
+      "bun run build:desktop && node node_modules/turbo/bin/turbo run start --filter=@t3tools/desktop",
     );
   });
 });

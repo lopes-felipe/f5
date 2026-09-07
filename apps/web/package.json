@@ -4,14 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build && bun ../../scripts/check-web-bundle-budget.ts",
+    "dev": "node node_modules/vite/bin/vite.js",
+    "build": "node node_modules/vite/bin/vite.js build && bun ../../scripts/check-web-bundle-budget.ts",
     "check:bundle-budget": "bun ../../scripts/check-web-bundle-budget.ts",
-    "prepare": "effect-language-service patch",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests",
-    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "prepare": "node node_modules/@effect/language-service/cli.js patch",
+    "preview": "node node_modules/vite/bin/vite.js preview",
+    "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
+    "test": "node node_modules/vitest/vitest.mjs run --passWithNoTests",
+    "test:browser": "node node_modules/vitest/vitest.mjs run --config vitest.browser.config.ts",
     "test:browser:install": "playwright install --with-deps chromium"
   },
   "dependencies": {

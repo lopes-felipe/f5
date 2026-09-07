@@ -135,9 +135,8 @@ const buildCmd = Command.make(
           cwd: serverDir,
           stdout: config.verbose ? "inherit" : "ignore",
           stderr: "inherit",
-          // Windows needs shell mode to resolve .cmd shims (e.g. bun.cmd).
-          shell: process.platform === "win32",
-        })`bun tsdown`,
+          // Invoke the JS entry point directly so Windows does not need a generated .exe shim.
+        })`node node_modules/tsdown/dist/run.mjs`,
       );
 
       const webDist = path.join(repoRoot, "apps/web/dist");
