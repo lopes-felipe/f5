@@ -6,7 +6,7 @@
  * requiring a second emitted build artifact. Process isolation lets cancellation
  * stop native FFI work as well as JavaScript execution.
  */
-function projectContentSearchWorkerMain(): void {
+function projectContentSearchWorkerMain(loadModule: NodeJS.Require): void {
   type FileFinder = import("@ff-labs/fff-node").FileFinder;
   type GrepCursor = import("@ff-labs/fff-node").GrepCursor;
   type GrepResult = import("@ff-labs/fff-node").GrepResult;
@@ -25,8 +25,8 @@ function projectContentSearchWorkerMain(): void {
       }
     | { readonly id: number; readonly type: "dispose" };
 
-  const fs = require("node:fs") as typeof import("node:fs");
-  const path = require("node:path") as typeof import("node:path");
+  const fs = loadModule("node:fs") as typeof import("node:fs");
+  const path = loadModule("node:path") as typeof import("node:path");
   if (!process.send) {
     throw new Error("Project content search worker requires an IPC channel.");
   }
@@ -365,4 +365,6 @@ function projectContentSearchWorkerMain(): void {
   });
 }
 
-export const PROJECT_CONTENT_SEARCH_WORKER_SOURCE = `(${projectContentSearchWorkerMain.toString()})();`;
+// Pass require inside the evaluated source so bundlers cannot replace it with
+// a helper belonging to the parent process's module scope.
+export const PROJECT_CONTENT_SEARCH_WORKER_SOURCE = `(${projectContentSearchWorkerMain.toString()})(require);`;
