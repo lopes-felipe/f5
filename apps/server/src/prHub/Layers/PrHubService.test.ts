@@ -1,3 +1,6 @@
+import { PrHubRepositoryLive } from "./PrHubRepository.ts";
+import type { TrackedPullRequest } from "@t3tools/contracts";
+import type { PrHubServiceShape } from "../Services/PrHubService.ts";
 import { PrHubJobCoordinatorLive } from "./PrHubJobCoordinator.ts";
 import { PrHubDiscoveryLive } from "./PrHubDiscovery.ts";
 import { PrHubReviewOperationsLive } from "./PrHubReviewOperations.ts";
@@ -121,6 +124,10 @@ function makeGithubStub(input: {
   const mutationResponses = [...(input.mutationResponses ?? [])];
   const reconcileResponses = [...(input.reconcileResponses ?? [])];
   const reconcileByNumberResponses = [...(input.reconcileByNumberResponses ?? [])];
+  const remoteReviews = new Map<
+    string,
+    { id: number; user: { id: number }; body: string; state: string; commit_id: string }
+  >();
   const detailNodesById = new Map<string, Record<string, unknown>>();
   let searchRequestCount = 0;
   const nextResponse = (responses: unknown[], fallback: unknown) =>
@@ -152,8 +159,60 @@ function makeGithubStub(input: {
   };
 
   return {
-    request: (request) =>
-      input.apiRequest
+    request: (request) => {
+      if (
+        !input.apiRequest &&
+        /\/reviews(?:\/\d+(?:\/(?:events|comments))?)?$/.test(request.endpoint)
+      ) {
+        const root = request.endpoint.replace(/\/\d+(?:\/(?:events|comments))?$/, "");
+        const body = request.body as
+          | { body?: string; commit_id?: string; event?: string }
+          | undefined;
+        if (request.method === "POST") {
+          if (request.endpoint.endsWith("/events")) {
+            const previous = remoteReviews.get(root)!;
+            const event = body!.event!;
+            remoteReviews.set(root, {
+              ...previous,
+              state:
+                event === "APPROVE"
+                  ? "APPROVED"
+                  : event === "REQUEST_CHANGES"
+                    ? "CHANGES_REQUESTED"
+                    : "COMMENTED",
+            });
+            const url = `https://github.com/${root.split("/").slice(1, 3).join("/")}/pull/${root.split("/")[4]}`;
+            (event === "APPROVE" ? input.calls.approvals : input.calls.changeRequests).push({
+              url,
+              body: previous.body,
+            });
+          } else
+            remoteReviews.set(root, {
+              id: 101,
+              user: { id: 1 },
+              body: body!.body!,
+              state: "PENDING",
+              commit_id: body!.commit_id!,
+            });
+        }
+        return Effect.succeed({
+          status: request.method === "POST" && !request.endpoint.endsWith("/events") ? 201 : 200,
+          graphqlErrors: [],
+          links: {},
+          etag: null,
+          lastModified: null,
+          rateLimit: {},
+          rateLimitResource: null,
+          body: request.endpoint.endsWith("/comments")
+            ? []
+            : request.method === "GET" && request.endpoint.endsWith("/reviews")
+              ? remoteReviews.has(root)
+                ? [remoteReviews.get(root)!]
+                : []
+              : remoteReviews.get(root)!,
+        });
+      }
+      return input.apiRequest
         ? input.apiRequest(request)
         : Effect.succeed({
             status: 200,
@@ -163,16 +222,22 @@ function makeGithubStub(input: {
             lastModified: null,
             rateLimit: { remaining: 100, limit: 5000, resetAt: null },
             rateLimitResource: "core",
-            body: request.endpoint.endsWith("/files")
-              ? nextResponse(fileResponses, [])
-              : request.endpoint.includes("/compare/")
-                ? { merge_base_commit: { sha: "base" } }
-                : {
-                    base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
-                    head: { ref: "feature", sha: "head", repo: { full_name: "octo/repo" } },
-                    changed_files: 1,
-                  },
-          }),
+            body: request.endpoint.includes("/rules/branches/")
+              ? []
+              : request.endpoint.endsWith("/files")
+                ? nextResponse(fileResponses, [])
+                : request.endpoint.includes("/compare/")
+                  ? { merge_base_commit: { sha: "base" } }
+                  : {
+                      state: "open",
+                      locked: false,
+                      user: { id: 2 },
+                      base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
+                      head: { ref: "feature", sha: "head", repo: { full_name: "octo/repo" } },
+                      changed_files: 1,
+                    },
+          });
+    },
     getCredentialContext: () =>
       Effect.succeed(
         input.credentialContext?.() ?? {
@@ -329,6 +394,7 @@ function makeLayer(input: {
   return PrHubServiceLive.pipe(
     Layer.provide(PrHubReviewOperationsLive),
     Layer.provide(PrHubDiscoveryLive),
+    Layer.provide(PrHubRepositoryLive),
     Layer.provide(PrHubJobCoordinatorLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-pr-hub-test-" })),
@@ -468,6 +534,7 @@ function makePrNode(input: {
     updatedAt: input.updatedAt ?? "2026-01-02T00:00:00.000Z",
     closedAt: null,
     baseRefName: "main",
+    baseRef: { branchProtectionRule: null },
     headRefName: `feature-${number}`,
     headRefOid: input.headRefOid === undefined ? `head-${number}` : input.headRefOid,
     additions: 10,
@@ -491,12 +558,44 @@ function makePrNode(input: {
       nodes: [
         {
           commit: {
-            statusCheckRollup: { state: input.checkState ?? "SUCCESS" },
+            statusCheckRollup: {
+              state: input.checkState ?? "SUCCESS",
+              contexts: { totalCount: 0, nodes: [], pageInfo: { hasNextPage: false } },
+            },
           },
         },
       ],
     },
   };
+}
+
+function quickReview(
+  service: PrHubServiceShape,
+  pr: TrackedPullRequest,
+  event: "APPROVE" | "REQUEST_CHANGES",
+  body = "",
+) {
+  return Effect.gen(function* () {
+    const accountGeneration = "test-account";
+    const files = yield* service.getFiles({ key: pr.key, accountGeneration, mode: "force" });
+    assert.ok(files.comparison);
+    const operation = yield* service.prepareQuickReview({
+      key: pr.key,
+      accountGeneration,
+      id: crypto.randomUUID(),
+      expectedComparison: files.comparison,
+      event,
+      body,
+    });
+    const input = {
+      url: pr.url,
+      accountGeneration,
+      body,
+      operationId: operation.id,
+      payloadHash: operation.payloadHash,
+    };
+    return yield* event === "APPROVE" ? service.approve(input) : service.requestChanges(input);
+  });
 }
 
 function prDetailResponse(input: { readonly title?: string } = {}) {
@@ -1379,14 +1478,15 @@ it.effect("enforces tracked-state predicates before mutating PRs", () => {
     assert.equal(authorDraft.attentionState, "draft");
     assert.equal(authorWaiting.attentionState, "awaiting_review");
 
-    yield* service.approve({ url: reviewRequested.url, body: "looks good" });
-    yield* service.requestChanges({ url: reviewRequested.url, body: "please fix" });
+    yield* quickReview(service, reviewRequested, "APPROVE", "looks good");
+    yield* quickReview(service, reviewRequested, "REQUEST_CHANGES", "please fix");
     yield* service.markReady({ url: authorDraft.url });
 
-    assert.deepStrictEqual(calls.approvals, [{ url: reviewRequested.url, body: "looks good" }]);
-    assert.deepStrictEqual(calls.changeRequests, [
-      { url: reviewRequested.url, body: "please fix" },
-    ]);
+    assert.equal(calls.approvals.length, 1);
+    assert.equal(calls.approvals[0]?.url, reviewRequested.url);
+    assert.ok(calls.approvals[0]?.body?.startsWith("looks good\n\n<!-- F5 review "));
+    assert.equal(calls.changeRequests.length, 1);
+    assert.ok(calls.changeRequests[0]?.body?.startsWith("please fix\n\n<!-- F5 review "));
     assert.deepStrictEqual(calls.markReady, [{ url: authorDraft.url }]);
 
     const deniedApprove = yield* Effect.exit(service.approve({ url: authorWaiting.url }));
@@ -1443,12 +1543,14 @@ it.effect("returns a successful review action without waiting for post-action re
     const reviewRequested = snapshot.pullRequests.find((pr) => pr.number === 25);
     assert.ok(reviewRequested);
 
-    const result = yield* service
-      .approve({ url: reviewRequested.url, body: "looks good" })
-      .pipe(Effect.timeoutOption(100));
+    const result = yield* quickReview(service, reviewRequested, "APPROVE", "looks good").pipe(
+      Effect.timeoutOption(100),
+    );
 
     assert.equal(Option.isSome(result), true);
-    assert.deepStrictEqual(calls.approvals, [{ url: reviewRequested.url, body: "looks good" }]);
+    assert.equal(calls.approvals.length, 1);
+    assert.equal(calls.approvals[0]?.url, reviewRequested.url);
+    assert.ok(calls.approvals[0]?.body?.startsWith("looks good\n\n<!-- F5 review "));
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -1582,15 +1684,21 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
             lastModified: null,
             rateLimit: {},
             rateLimitResource: "core",
-            body: input.endpoint.endsWith("/files")
+            body: input.endpoint.includes("/rules/branches/")
               ? []
-              : input.endpoint.includes("/compare/")
-                ? { merge_base_commit: { sha: "base" } }
-                : {
-                    base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
-                    head: { ref: "feature", sha: "tracked-head", repo: { full_name: "octo/repo" } },
-                    changed_files: 1,
-                  },
+              : input.endpoint.endsWith("/files")
+                ? []
+                : input.endpoint.includes("/compare/")
+                  ? { merge_base_commit: { sha: "base" } }
+                  : {
+                      base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
+                      head: {
+                        ref: "feature",
+                        sha: "tracked-head",
+                        repo: { full_name: "octo/repo" },
+                      },
+                      changed_files: 1,
+                    },
           }),
         searchResponses: [searchResponse("author", [readyPr]), searchResponse("author", [readyPr])],
       }),
@@ -1867,7 +1975,7 @@ it.effect("uses reviewed commit identity even when pushed commits have old times
     assert.equal(pr.attentionState, "changes_pushed");
     assert.equal(pr.viewerReviewRequested, false);
     assert.equal(pr.waitingSince, "2025-01-01T00:00:00.000Z");
-    yield* service.approve({ url: pr.url });
+    yield* quickReview(service, pr, "APPROVE");
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -2156,6 +2264,63 @@ it.effect("leases notifications across clients and acknowledges only captured ve
     ),
   );
 });
+
+it.effect(
+  "acknowledges one attention version without changing its bucket or acknowledging newer evidence",
+  () => {
+    const calls = makeCalls();
+    const pr = makePrNode({ number: 601 });
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      const initial = yield* service.refreshNow({ mode: "force" });
+      const tracked = initial.pullRequests[0]!;
+      const accountGeneration = initial.account!.generation;
+      yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL, last_notified_fingerprint = NULL`;
+      const acknowledged = yield* service.acknowledgeAttention({
+        key: tracked.key,
+        accountGeneration,
+        attentionFingerprint: tracked.attentionFingerprint,
+      });
+      assert.isNotNull(acknowledged.pullRequests[0]!.acknowledgedAt);
+      assert.equal(acknowledged.pullRequests[0]!.attentionBucket, tracked.attentionBucket);
+      const batch = yield* service.claimNotifications({
+        accountGeneration,
+        clientId: "one",
+        maxItems: 20,
+      });
+      assert.equal(batch.pullRequests.length, 0);
+      const refreshed = yield* service.refreshNow({ mode: "force" });
+      assert.isNotNull(refreshed.pullRequests[0]!.acknowledgedAt);
+      yield* sql`UPDATE pr_hub_viewer_state SET attention_fingerprint = 'new-version', last_seen_fingerprint = NULL`;
+      const stale = yield* service
+        .acknowledgeAttention({
+          key: tracked.key,
+          accountGeneration,
+          attentionFingerprint: tracked.attentionFingerprint,
+        })
+        .pipe(Effect.exit);
+      assert.equal(stale._tag, "Failure");
+      const newer = {
+        ...refreshed,
+        pullRequests: refreshed.pullRequests.map((item) => ({
+          ...item,
+          attentionFingerprint: "new-version",
+        })),
+      };
+      const next = yield* claimPrHubNotifications(newer, {
+        accountGeneration,
+        clientId: "two",
+        maxItems: 20,
+      });
+      assert.equal(next.pullRequests.length, 1);
+    }).pipe(
+      Effect.provide(
+        makeLayer({ calls, searchResponses: [searchResponse("review_requested", [pr])] }),
+      ),
+    );
+  },
+);
 
 it.effect(
   "validates live comparisons and submits the frozen review through the account-bound API",

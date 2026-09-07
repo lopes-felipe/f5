@@ -61,6 +61,7 @@ export const PrAttentionReason = Schema.Struct({
   ]),
   actor: Schema.Literals(["viewer", "author", "reviewer", "ci", "policy", "unknown"]),
   evidence: Schema.Array(Schema.Struct({ id: Schema.String, url: Schema.String })),
+  evidenceTruncated: Schema.optional(Schema.Boolean),
   firstObservedAt: IsoDateTime,
   action: Schema.Literals(["fix", "review", "merge", "wait", "finish", "none"]),
   verification: Schema.Literals(["verified", "unverified"]),
@@ -105,7 +106,24 @@ export const PrProviderDetails = Schema.Union([
 ]);
 export type PrProviderDetails = typeof PrProviderDetails.Type;
 
+export const PrHubMergeRequirements = Schema.Struct({
+  verification: Schema.Literals(["verified", "unknown"]),
+  mandatorySatisfied: Schema.Boolean,
+  explanation: Schema.String,
+  checks: Schema.Array(
+    Schema.Struct({
+      name: Schema.String,
+      appId: Schema.NullOr(Schema.Number),
+      state: Schema.Literals(["success", "failure", "pending", "missing", "unknown"]),
+      url: Schema.NullOr(Schema.String),
+    }),
+  ),
+  ruleTypes: Schema.Array(Schema.String),
+});
+export type PrHubMergeRequirements = typeof PrHubMergeRequirements.Type;
+
 export const TrackedPullRequest = Schema.Struct({
+  mergeRequirements: Schema.optional(PrHubMergeRequirements),
   repositoryArchived: Schema.optional(Schema.Boolean),
   key: PullRequestKey,
   provider: SourceControlProviderKind.pipe(Schema.withDecodingDefault(() => "github" as const)),
@@ -142,6 +160,7 @@ export const TrackedPullRequest = Schema.Struct({
   unresolvedThreadCount: NonNegativeInt,
   actionableUnresolvedThreadCount: NonNegativeInt,
   reviewFactsComplete: Schema.optional(Schema.Boolean),
+  reasonEvidenceTruncated: Schema.optional(Schema.Boolean),
   waitingSince: Schema.NullOr(IsoDateTime),
   lastVerifiedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   additions: NonNegativeInt,
@@ -157,6 +176,7 @@ export const TrackedPullRequest = Schema.Struct({
   snoozedUntil: Schema.NullOr(IsoDateTime),
   ignoredAt: Schema.NullOr(IsoDateTime),
   notificationPending: Schema.Boolean,
+  acknowledgedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   attentionFingerprint: Schema.String,
 });
 export type TrackedPullRequest = typeof TrackedPullRequest.Type;
@@ -326,6 +346,8 @@ export const PrHubTrackInput = Schema.Struct({
 export type PrHubTrackInput = typeof PrHubTrackInput.Type;
 
 export const PrHubReviewInput = Schema.Struct({
+  operationId: Schema.optional(Schema.String),
+  payloadHash: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   url: Schema.String,
   body: Schema.optional(Schema.String),
@@ -333,6 +355,8 @@ export const PrHubReviewInput = Schema.Struct({
 export type PrHubReviewInput = typeof PrHubReviewInput.Type;
 
 export const PrHubCommentInput = Schema.Struct({
+  operationId: Schema.optional(Schema.String),
+  payloadHash: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   url: Schema.String,
   body: Schema.String,
@@ -340,6 +364,8 @@ export const PrHubCommentInput = Schema.Struct({
 export type PrHubCommentInput = typeof PrHubCommentInput.Type;
 
 export const PrHubRequestChangesInput = Schema.Struct({
+  operationId: Schema.optional(Schema.String),
+  payloadHash: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   url: Schema.String,
   body: Schema.String,
@@ -385,6 +411,13 @@ export const PrHubIgnoreInput = Schema.Struct({
   key: PullRequestKey,
 });
 export type PrHubIgnoreInput = typeof PrHubIgnoreInput.Type;
+
+export const PrHubAcknowledgeAttentionInput = Schema.Struct({
+  accountGeneration: Schema.String,
+  key: PullRequestKey,
+  attentionFingerprint: Schema.String,
+});
+export type PrHubAcknowledgeAttentionInput = typeof PrHubAcknowledgeAttentionInput.Type;
 
 export const PrHubMarkSeenInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
@@ -798,6 +831,8 @@ export const PrHubRecoverReplyInput = Schema.Struct({
 });
 export type PrHubRecoverReplyInput = typeof PrHubRecoverReplyInput.Type;
 export const PrHubReplyOperation = Schema.Struct({
+  version: Schema.optional(Schema.Literal(2)),
+  source: Schema.optional(Schema.Literal("thread_reply")),
   id: Schema.String,
   threadId: Schema.String,
   body: Schema.String,
@@ -901,6 +936,8 @@ export const PrHubReviewOperation = Schema.Struct({
   ]),
   payloadHash: Schema.String,
   payload: Schema.Struct({
+    version: Schema.optional(Schema.Literal(2)),
+    source: Schema.optional(Schema.Literals(["editor_review", "quick_review"])),
     draft: PrHubReviewDraft,
     event: Schema.Literals(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
     body: Schema.String,
@@ -909,6 +946,16 @@ export const PrHubReviewOperation = Schema.Struct({
   correlationNonce: Schema.String,
 });
 export type PrHubReviewOperation = typeof PrHubReviewOperation.Type;
+export const PrHubPrepareQuickReviewInput = Schema.Struct({
+  accountGeneration: Schema.String,
+  key: PullRequestKey,
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  event: Schema.Literals(["APPROVE", "REQUEST_CHANGES"]),
+  body: Schema.String.check(Schema.isMaxLength(65_536)),
+  expectedComparison: PrHubComparisonIdentity,
+});
+export type PrHubPrepareQuickReviewInput = typeof PrHubPrepareQuickReviewInput.Type;
+
 export const PrHubPrepareReviewInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
   key: PullRequestKey,
@@ -918,6 +965,7 @@ export const PrHubPrepareReviewInput = Schema.Struct({
 });
 export type PrHubPrepareReviewInput = typeof PrHubPrepareReviewInput.Type;
 export const PrHubReviewOperationInput = Schema.Struct({
+  payloadHash: Schema.optional(Schema.String),
   accountGeneration: Schema.optional(Schema.String),
   key: PullRequestKey,
   id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
@@ -1001,6 +1049,7 @@ export const PR_HUB_WS_METHODS = {
   unsnooze: "prHub.unsnooze",
   ignore: "prHub.ignore",
   markSeen: "prHub.markSeen",
+  acknowledgeAttention: "prHub.acknowledgeAttention",
   markNotified: "prHub.markNotified",
   analyzeAdvisories: "prHub.analyzeAdvisories",
   getAdvisories: "prHub.getAdvisories",
@@ -1011,6 +1060,11 @@ export const PR_HUB_WS_METHODS = {
   getReviewDraft: "prHub.getReviewDraft",
   saveReviewDraft: "prHub.saveReviewDraft",
   prepareReview: "prHub.prepareReview",
+  prepareQuickReview: "prHub.prepareQuickReview",
+  prepareComment: "prHub.prepareComment",
+  submitComment: "prHub.submitComment",
+  getCommentOperation: "prHub.getCommentOperation",
+  recoverComment: "prHub.recoverComment",
   submitReview: "prHub.submitReview",
   getReviewOperation: "prHub.getReviewOperation",
   cancelReviewPreparation: "prHub.cancelReviewPreparation",
@@ -1035,3 +1089,51 @@ export const PR_HUB_WS_CHANNELS = {
   changed: "prHub.changed",
   advisoriesUpdated: "prHub.advisoriesUpdated",
 } as const;
+
+export const PrHubPrepareCommentInput = Schema.Struct({
+  accountGeneration: Schema.String,
+  key: PullRequestKey,
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(65_536)),
+});
+export type PrHubPrepareCommentInput = typeof PrHubPrepareCommentInput.Type;
+export const PrHubCommentOperationInput = Schema.Struct({
+  accountGeneration: Schema.String,
+  key: PullRequestKey,
+  id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128)),
+  payloadHash: Schema.String,
+});
+export type PrHubCommentOperationInput = typeof PrHubCommentOperationInput.Type;
+export const PrHubRecoverCommentInput = Schema.Struct({
+  ...PrHubCommentOperationInput.fields,
+  action: Schema.Literals(["cancel", "link", "abandon"]),
+  remoteId: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(128))),
+});
+export type PrHubRecoverCommentInput = typeof PrHubRecoverCommentInput.Type;
+export const PrHubCommentOperation = Schema.Struct({
+  id: Schema.String,
+  payloadHash: Schema.String,
+  remoteId: Schema.NullOr(Schema.String),
+  status: Schema.Literals([
+    "prepared",
+    "creating",
+    "succeeded",
+    "failed_before_send",
+    "rejected",
+    "outcome_unknown",
+    "abandoned",
+  ]),
+  payload: Schema.Struct({
+    version: Schema.Literal(2),
+    source: Schema.Literal("timeline_comment"),
+    body: Schema.String,
+    markedBody: Schema.String,
+  }),
+});
+export type PrHubCommentOperation = typeof PrHubCommentOperation.Type;
+
+export const PrHubCommentReadInput = Schema.Struct({
+  accountGeneration: Schema.String,
+  key: PullRequestKey,
+});
+export type PrHubCommentReadInput = typeof PrHubCommentReadInput.Type;

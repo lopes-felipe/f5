@@ -22,6 +22,13 @@ const basePr: RawPrFields = {
   mergeable: "mergeable",
   mergeStateStatus: "CLEAN",
   mergePermission: "allowed",
+  mergeRequirements: {
+    verification: "verified",
+    mandatorySatisfied: true,
+    checks: [],
+    ruleTypes: [],
+    explanation: "verified",
+  },
   reviewDecision: "none",
   viewerHasReviewed: false,
   viewerReviewRequested: false,

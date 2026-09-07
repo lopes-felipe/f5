@@ -1,3 +1,4 @@
+import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { isPrSnoozed } from "./prHubPresentation";
 import { useEffect, useMemo, useState } from "react";
 import type {
@@ -37,6 +38,7 @@ export interface PrActionFlags {
 
 /** Callbacks wired to {@link PrDetailActions} (and any other action surface). */
 export interface PrActionHandlers {
+  onAcknowledge: () => void;
   onApprove: () => void;
   onComment: () => void;
   onRequestChanges: () => void;
@@ -62,8 +64,6 @@ export interface PrActionDialogProps {
   pendingAction: PrPendingAction;
   setPendingAction: (action: PrPendingAction) => void;
   dialogTitle: string;
-  body: string;
-  setBody: (value: string) => void;
   reviewers: string;
   setReviewers: (value: string) => void;
   mergeMethod: PrMergeMethod;
@@ -104,7 +104,6 @@ export function usePrActions(
 ): UsePrActionsResult {
   const projects = useStore((store) => store.projects);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
-  const [body, setBody] = useState("");
   const [reviewers, setReviewers] = useState("");
   const [mergeMethod, setMergeMethod] = useState<PrMergeMethod>("squash");
   const [mergeComparison, setMergeComparison] = useState<PrHubComparisonIdentity | null>(null);
@@ -173,13 +172,13 @@ export function usePrActions(
     setIsRunning(true);
     try {
       const api = ensureNativeApi().prHub;
-      if (pendingAction === "approve") {
-        await api.approve({ url: pr.url, ...(body.trim() ? { body: body.trim() } : {}) });
-      } else if (pendingAction === "comment") {
-        await api.comment({ url: pr.url, body: body.trim() });
-      } else if (pendingAction === "requestChanges") {
-        await api.requestChanges({ url: pr.url, body: body.trim() });
-      } else if (pendingAction === "merge") {
+      if (
+        pendingAction === "approve" ||
+        pendingAction === "comment" ||
+        pendingAction === "requestChanges"
+      )
+        return;
+      if (pendingAction === "merge") {
         if (!mergeComparison) throw new Error("Load the merge comparison before confirming.");
         await api.merge({
           url: pr.url,
@@ -201,7 +200,6 @@ export function usePrActions(
       }
       toastManager.add({ type: "success", title: "Pull request updated" });
       setPendingAction(null);
-      setBody("");
       setReviewers("");
     } catch (error) {
       toastManager.add({
@@ -292,6 +290,24 @@ export function usePrActions(
     }
   };
 
+  const accountGeneration = getPrHubAccountGeneration();
+  const handleAcknowledge = async () => {
+    try {
+      if (!accountGeneration) throw new Error("Refresh PR Hub before acknowledging.");
+      await ensureNativeApi().prHub.acknowledgeAttention({
+        key: pr.key,
+        accountGeneration,
+        attentionFingerprint: pr.attentionFingerprint,
+      });
+    } catch (error) {
+      toastManager.add({
+        type: "error",
+        title: "Could not acknowledge pull request",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
   const handleUnsnooze = () => {
     void ensureNativeApi().prHub.unsnooze({ key: pr.key });
   };
@@ -299,6 +315,7 @@ export function usePrActions(
   return {
     flags: { isAuthor, isOpen, isIgnored, isSnoozed, isIgnoring },
     handlers: {
+      onAcknowledge: () => void handleAcknowledge(),
       onApprove: () => setPendingAction("approve"),
       onComment: () => setPendingAction("comment"),
       onRequestChanges: () => setPendingAction("requestChanges"),
@@ -322,8 +339,6 @@ export function usePrActions(
       pendingAction,
       setPendingAction,
       dialogTitle,
-      body,
-      setBody,
       reviewers,
       setReviewers,
       mergeMethod,

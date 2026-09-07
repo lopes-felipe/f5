@@ -1,3 +1,9 @@
+import { assertPrHubDiscoveryLease, withPrHubDiscoveryWork } from "./discoveryLease.ts";
+import {
+  appendPrConnectionFacts,
+  discardPrConnectionFacts,
+  readPrConnectionFacts,
+} from "./connectionFacts.ts";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { DiscoveryAccount } from "./discovery.ts";
@@ -14,11 +20,12 @@ interface Checkpoint {
   identity: string;
   cursor: string | null;
   complete: boolean;
-  nodes: unknown[];
+  fetched?: number;
+  nodes?: unknown[];
 }
 
 /** One page per connection per pass. Checkpoints survive budget exhaustion and restarts. */
-export function continuePrConnectionPagination<E, R>(
+function continueConnections<E, R>(
   account: DiscoveryAccount,
   initial: Record<string, unknown>,
   query: (document: string, variables: Record<string, string>) => Effect.Effect<unknown, E, R>,
@@ -41,7 +48,9 @@ export function continuePrConnectionPagination<E, R>(
         continue;
       }
       const key = `${String(initial.id)}:${name}`;
+      const owner = { ...account, kind: taskKind, key, identity };
       if (page?.hasNextPage !== true) {
+        yield* discardPrConnectionFacts(owner);
         if (page?.hasNextPage !== false) complete = false;
         if (
           typeof connection.totalCount === "number" &&
@@ -65,6 +74,23 @@ export function continuePrConnectionPagination<E, R>(
               complete: false,
               nodes: connection.nodes,
             };
+      if (checkpoint.nodes) {
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* assertPrHubDiscoveryLease;
+            yield* discardPrConnectionFacts(owner);
+            yield* appendPrConnectionFacts(owner, checkpoint.nodes!, 0);
+          }),
+        );
+        checkpoint = {
+          identity,
+          cursor: checkpoint.cursor,
+          complete: checkpoint.complete,
+          fetched: (yield* readPrConnectionFacts(owner, name)).fetched,
+        };
+      }
+      let pendingNodes: unknown[] = [];
+      let pendingOffset = 0;
       if (!checkpoint.complete && checkpoint.cursor) {
         const response = yield* query(
           `query PrHubAttentionPage($id:ID!,$cursor:String!) {
@@ -92,34 +118,63 @@ export function continuePrConnectionPagination<E, R>(
             typeof info?.hasNextPage === "boolean" &&
             (info.hasNextPage === false || (cursor && cursor !== checkpoint.cursor))
           ) {
-            const nodes = [...checkpoint.nodes, ...next.nodes];
+            const nodes = next.nodes;
             const ids = nodes.map((item) => record(item)?.id);
-            const terminalCountValid =
-              info.hasNextPage !== false ||
-              (typeof next.totalCount === "number" && nodes.length === next.totalCount);
-            // Persist compact evidence only; a pathological connection remains explicitly partial.
+            const known = yield* sql<{
+              count: number;
+            }>`SELECT count(*) AS count FROM pr_hub_connection_facts
+              WHERE provider_kind = 'github' AND host = ${owner.host} AND viewer_id = ${owner.viewerId}
+                AND task_kind = ${owner.kind} AND task_key = ${owner.key} AND comparison = ${identity}
+                AND node_id IN (SELECT value FROM json_each(${JSON.stringify(ids)}))`;
+            const fetched = (checkpoint.fetched ?? 0) + nodes.length;
             if (
-              terminalCountValid &&
               ids.every((id) => typeof id === "string") &&
               new Set(ids).size === ids.length &&
-              Buffer.byteLength(JSON.stringify(nodes), "utf8") <= 1024 * 1024
-            )
-              checkpoint = {
-                identity,
-                cursor,
-                nodes,
-                complete: info.hasNextPage === false,
-              };
+              known[0]?.count === 0 &&
+              (info.hasNextPage !== false ||
+                (typeof next.totalCount === "number" && fetched === next.totalCount))
+            ) {
+              pendingNodes = nodes;
+              pendingOffset = checkpoint.fetched ?? 0;
+              checkpoint = { identity, cursor, fetched, complete: info.hasNextPage === false };
+            }
           }
         }
       }
       const now = new Date().toISOString();
-      yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind, host, viewer_id, kind, task_key, payload_json, created_at, updated_at)
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* assertPrHubDiscoveryLease;
+          if (pendingNodes.length)
+            yield* appendPrConnectionFacts(owner, pendingNodes, pendingOffset);
+          yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind, host, viewer_id, kind, task_key, payload_json, created_at, updated_at)
         VALUES ('github', ${account.host}, ${account.viewerId}, ${taskKind}, ${key}, ${JSON.stringify(checkpoint)}, ${now}, ${now})
         ON CONFLICT(provider_kind, host, viewer_id, kind, task_key) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`;
-      node[name] = { ...connection, nodes: checkpoint.nodes };
+        }),
+      );
+      const facts = yield* readPrConnectionFacts(owner, name);
+      node[name] = { ...connection, ...facts };
       complete &&= checkpoint.complete;
     }
     return { node, complete };
   });
+}
+
+export function continuePrConnectionPagination<E, R>(
+  account: DiscoveryAccount,
+  initial: Record<string, unknown>,
+  query: (document: string, variables: Record<string, string>) => Effect.Effect<unknown, E, R>,
+  fields: Readonly<Record<string, string>> = ATTENTION_CONNECTION_FIELDS,
+  taskKind = "attention_page",
+) {
+  return withPrHubDiscoveryWork(
+    account,
+    taskKind,
+    String(initial.id),
+    continueConnections(account, initial, query, fields, taskKind),
+  ).pipe(
+    Effect.map((result) =>
+      result._tag === "Some" ? result.value : { node: initial, complete: false },
+    ),
+  );
 }

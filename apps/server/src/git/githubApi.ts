@@ -1,3 +1,8 @@
+import { enforceGitHubRequestPolicy } from "./githubRequestPolicy.ts";
+import {
+  makeGitHubConditionalCache,
+  type GitHubConditionalRead,
+} from "./githubConditionalCache.ts";
 import { githubRequestScheduler, type GitHubResource } from "./githubRequestScheduler.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { Effect, Semaphore, ServiceMap } from "effect";
@@ -37,8 +42,9 @@ export interface GitHubApiRequest {
   readonly endpoint: string;
   readonly body?: unknown;
   readonly query?: Readonly<Record<string, string | number | boolean>>;
-  readonly ifNoneMatch?: string;
-  readonly ifModifiedSince?: string;
+  readonly cache?: GitHubConditionalRead;
+  readonly ifNoneMatch?: string | undefined;
+  readonly ifModifiedSince?: string | undefined;
   readonly signal?: AbortSignal;
   readonly timeoutMs?: number;
   readonly maxResponseBytes?: number;
@@ -243,6 +249,15 @@ export function makeGitHubApi(
       const isGraphql = input.endpoint.replace(/^\//, "") === "graphql";
       const searchPages = document.match(/\bsearch\s*\(/g)?.length ?? 1;
       const perform = Effect.gen(function* () {
+        if (
+          rejectedCredentials.get(input.host) ===
+          createHash("sha256").update(input.token).digest("hex")
+        )
+          return yield* new GitHubCliError({
+            operation: "request",
+            kind: "unauthenticated",
+            detail: "The GitHub credential was rejected. Change credentials before retrying.",
+          });
         if (resource === "write" && input.expectedGeneration) {
           const current = yield* getCredentialContext({ cwd: input.cwd, host: input.host });
           if (current.generation !== input.expectedGeneration)
@@ -252,16 +267,19 @@ export function makeGitHubApi(
               detail: "The GitHub account changed before the write. Nothing was sent.",
             });
         }
-        const result = yield* execute({
-          cwd: input.cwd,
-          args: prepared.args,
-          timeoutMs: prepared.timeoutMs,
-          maxStdoutBytes: prepared.maxStdoutBytes,
-          allowNonZeroExit: true,
-          env: tokenEnvironment(input.host, input.token),
-          ...(prepared.body === undefined ? {} : { stdin: prepared.body }),
-          ...(input.signal ? { signal: input.signal } : {}),
-        });
+        const result = yield* enforceGitHubRequestPolicy(
+          execute({
+            cwd: input.cwd,
+            args: prepared.args,
+            timeoutMs: prepared.timeoutMs,
+            maxStdoutBytes: prepared.maxStdoutBytes,
+            allowNonZeroExit: true,
+            env: tokenEnvironment(input.host, input.token),
+            ...(prepared.body === undefined ? {} : { stdin: prepared.body }),
+            ...(input.signal ? { signal: input.signal } : {}),
+          }),
+          resource === "write",
+        );
         if (result.timedOut || result.aborted || result.stdoutTruncated || result.signal) {
           return yield* Effect.fail(
             new GitHubCliError({
@@ -284,6 +302,11 @@ export function makeGitHubApi(
       const recorded = perform.pipe(
         Effect.tap((response) =>
           Effect.sync(() => {
+            if (response.status === 401)
+              rejectedCredentials.set(
+                input.host,
+                createHash("sha256").update(input.token).digest("hex"),
+              );
             const body = response.body as { data?: { rateLimit?: { cost?: number } } } | null;
             scheduler.record(
               input.host,
@@ -307,7 +330,10 @@ export function makeGitHubApi(
       });
     });
 
-  const request = (input: GitHubApiRequest): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
+  const conditionalCache = makeGitHubConditionalCache();
+  const requestUncached = (
+    input: GitHubApiRequest,
+  ): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
     Effect.suspend(() => {
       const credential = credentials.get(input.context);
       return credential
@@ -325,6 +351,8 @@ export function makeGitHubApi(
             }),
           );
     });
+
+  const request = (input: GitHubApiRequest) => conditionalCache(input, requestUncached);
 
   const getCredentialContext = (input: {
     cwd: string;

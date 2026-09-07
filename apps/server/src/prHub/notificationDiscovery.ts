@@ -1,4 +1,5 @@
-import { Effect } from "effect";
+import { assertPrHubDiscoveryLease, withPrHubDiscoveryWork } from "./discoveryLease.ts";
+import { Effect, Exit } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import type { GitHubApiResponse } from "../git/githubApi.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
@@ -36,7 +37,7 @@ export function notificationPullRequest(value: unknown, host: string) {
 }
 
 /** One bounded page per poll. A failed page retains its checkpoint; notification read state is untouched. */
-export function discoverNotificationSubjects(
+function discoverSubjects(
   account: DiscoveryAccount,
   excluded: ReadonlySet<string>,
   read: (
@@ -86,21 +87,36 @@ export function discoverNotificationSubjects(
         kind: "invalid_response",
         detail: "Notification discovery returned an incomplete page.",
       });
+    const retries = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM pr_hub_sync_tasks WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND kind='notification_subject_retry' ORDER BY updated_at LIMIT 5`;
+    const subjects = [
+      ...response.body.map((raw) => notificationPullRequest(raw, account.host)),
+      ...retries.map(
+        (row) => JSON.parse(row.payload_json) as ReturnType<typeof notificationPullRequest>,
+      ),
+    ];
     const visited = new Set<string>();
-    for (const raw of response.body) {
-      const subject = notificationPullRequest(raw, account.host);
+    for (const subject of subjects) {
       if (!subject || excluded.has(subject.repository.toLowerCase())) continue;
       if (visited.has(subject.endpoint)) continue;
       visited.add(subject.endpoint);
-      const response = yield* read(subject.endpoint);
-      const pr = record(response.body);
-      if (typeof pr?.node_id !== "string")
-        return yield* new SourceControlProviderError({
-          provider: "github",
-          operation: "prHub.notifications",
-          kind: "invalid_response",
-          detail: "A notification subject could not be verified as a pull request.",
-        });
+      const subjectResult = yield* Effect.exit(read(subject.endpoint));
+      const pr =
+        Exit.isSuccess(subjectResult) && subjectResult.value.status === 200
+          ? record(subjectResult.value.body)
+          : null;
+      if (typeof pr?.node_id !== "string") {
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* assertPrHubDiscoveryLease;
+            const timestamp = new Date(now).toISOString();
+            yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+            VALUES('github',${account.host},${account.viewerId},'notification_subject_retry',${subject.endpoint},${JSON.stringify(subject)},${timestamp},${timestamp}) ON CONFLICT(provider_kind,host,viewer_id,kind,task_key) DO UPDATE SET updated_at=excluded.updated_at`;
+          }),
+        );
+        continue;
+      }
       yield* ingestPrHubSearch(
         account,
         {
@@ -122,6 +138,12 @@ export function discoverNotificationSubjects(
         excluded,
         now,
       );
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          yield* assertPrHubDiscoveryLease;
+          yield* sql`DELETE FROM pr_hub_sync_tasks WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND kind='notification_subject_retry' AND task_key=${subject.endpoint}`;
+        }),
+      );
     }
     const complete = !response.links.next;
     const next = {
@@ -131,9 +153,26 @@ export function discoverNotificationSubjects(
       repairedAt: complete && state.since === null ? now : state.repairedAt,
     };
     const timestamp = new Date(now).toISOString();
-    yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind, host, viewer_id, kind, task_key, payload_json, created_at, updated_at)
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* assertPrHubDiscoveryLease;
+        yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind, host, viewer_id, kind, task_key, payload_json, created_at, updated_at)
       VALUES ('github', ${account.host}, ${account.viewerId}, 'notification_scope', 'subjects', ${JSON.stringify(next)}, ${timestamp}, ${timestamp})
       ON CONFLICT(provider_kind, host, viewer_id, kind, task_key) DO UPDATE SET payload_json = excluded.payload_json, updated_at = excluded.updated_at`;
-    return complete;
+      }),
+    );
+    const pending = yield* sql<{
+      count: number;
+    }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND kind='notification_subject_retry'`;
+    return complete && pending[0]?.count === 0;
   });
+}
+
+export function discoverNotificationSubjects(...args: Parameters<typeof discoverSubjects>) {
+  return withPrHubDiscoveryWork(
+    args[0],
+    "notification_scope",
+    "subjects",
+    discoverSubjects(...args),
+  ).pipe(Effect.map((result) => result._tag === "Some" && result.value));
 }

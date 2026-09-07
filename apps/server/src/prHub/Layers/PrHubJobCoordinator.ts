@@ -1,3 +1,5 @@
+import { createPrHubRefresh } from "../coordination.ts";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { Cause, Deferred, Duration, Effect, Layer, Ref, Stream } from "effect";
 import type { PrHubSnapshot } from "@t3tools/contracts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -15,8 +17,10 @@ export const PrHubJobCoordinatorLive = Layer.effect(
   Effect.gen(function* () {
     const scope = yield* Effect.scope;
     const settings = yield* ServerSettingsService;
+    const sql = yield* SqlClient.SqlClient;
     let monitoringStarted = false;
     return {
+      createWorkflow: (context) => createPrHubRefresh({ ...context, settings, sql }),
       createRefresh: (run: PrHubRefresh) =>
         Effect.gen(function* () {
           const active = yield* Ref.make<Flight | null>(null);

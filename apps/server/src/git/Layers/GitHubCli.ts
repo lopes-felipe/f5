@@ -1,3 +1,4 @@
+import { enforceGitHubRequestPolicy } from "../githubRequestPolicy.ts";
 import { githubRequestScheduler } from "../githubRequestScheduler.ts";
 import { makeGitHubApi, GitHubCredentialScope, githubCredentialEnvironment } from "../githubApi.ts";
 import { Effect, Layer, Schema, Option } from "effect";
@@ -313,9 +314,9 @@ const makeGitHubCli = Effect.sync(() => {
                 kind: "forbidden",
                 detail: "The GitHub account changed before the write. Nothing was sent.",
               });
-            return yield* command;
+            return yield* enforceGitHubRequestPolicy(command, true);
           })
-        : command;
+        : enforceGitHubRequestPolicy(command, false);
       return yield* githubRequestScheduler.run(
         context.host,
         writes ? "write" : args[0] === "search" ? "search" : "rest",

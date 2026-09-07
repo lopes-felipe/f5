@@ -179,10 +179,6 @@ function numberValue(value: unknown): number | null {
     : null;
 }
 
-function booleanValue(value: unknown): boolean {
-  return value === true;
-}
-
 function nodeArray(connection: unknown): Record<string, unknown>[] {
   return asArray(asRecord(connection)?.nodes)
     .map(asRecord)

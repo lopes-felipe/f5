@@ -120,3 +120,32 @@ it.layer(SqliteClient.layerMemory())("notification discovery", (it) => {
     }),
   );
 });
+
+it.layer(SqliteClient.layerMemory())("inaccessible notification subjects", (it) => {
+  it.effect("continues accessible subjects, reports partial coverage and retries failures", () =>
+    Effect.gen(function* () {
+      yield* Migration081;
+      let accessible = false;
+      const read = (endpoint: string) =>
+        Effect.succeed(
+          endpoint === "notifications"
+            ? response([subject("org/private"), subject("org/public")])
+            : endpoint.includes("/private/") && !accessible
+              ? { ...response({ message: "not found" }), status: 404 }
+              : response({ node_id: endpoint, updated_at: "2026-01-01T00:00:00Z" }),
+        );
+      assert.isFalse(yield* discoverNotificationSubjects(account, new Set(), read, 1000));
+      const sql = yield* SqlClient.SqlClient;
+      const hydrated = yield* sql<{
+        task_key: string;
+      }>`SELECT task_key FROM pr_hub_sync_tasks WHERE kind='hydrate'`;
+      assert.equal(hydrated.length, 1);
+      assert.ok(hydrated[0]?.task_key.includes("/public/"));
+      accessible = true;
+      assert.isTrue(yield* discoverNotificationSubjects(account, new Set(), read, 2000));
+      const remaining =
+        yield* sql`SELECT task_key FROM pr_hub_sync_tasks WHERE kind='notification_subject_retry'`;
+      assert.equal(remaining.length, 0);
+    }),
+  );
+});

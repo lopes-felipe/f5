@@ -36,6 +36,7 @@ export function claimPrHubNotifications(
           WHERE provider_kind = ${pr.provider} AND host = ${pr.host} AND viewer_id = ${String(snapshot.account!.viewerId)}
             AND repo = ${pr.repository.nameWithOwner} AND number = ${pr.number}
             AND attention_fingerprint = ${pr.attentionFingerprint} AND attention_bucket = 'needs_you'
+            AND (last_acknowledged_fingerprint IS NULL OR last_acknowledged_fingerprint <> attention_fingerprint)
             AND (last_seen_fingerprint IS NULL OR last_seen_fingerprint <> attention_fingerprint)
             AND (last_notified_fingerprint IS NULL OR last_notified_fingerprint <> attention_fingerprint)
             AND ignored_at IS NULL AND (snoozed_until IS NULL OR snoozed_until <= ${new Date(now).toISOString()})

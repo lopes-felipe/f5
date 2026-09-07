@@ -196,6 +196,12 @@ import type {
   PrHubReviewThread,
   PrHubSaveReviewDraftInput,
   PrHubPrepareReviewInput,
+  PrHubPrepareQuickReviewInput,
+  PrHubPrepareCommentInput,
+  PrHubCommentOperationInput,
+  PrHubCommentReadInput,
+  PrHubRecoverCommentInput,
+  PrHubCommentOperation,
   PrHubReviewOperationInput,
   PrHubRecoverReviewInput,
   PrHubReviewOperation,
@@ -208,6 +214,7 @@ import type {
   PrHubMarkNotifiedInput,
   PrHubMarkReadyInput,
   PrHubMarkSeenInput,
+  PrHubAcknowledgeAttentionInput,
   PrHubMergeInput,
   PrHubRefreshInput,
   PrHubRequestChangesInput,
@@ -612,6 +619,7 @@ export interface NativeApi {
     snooze: (input: PrHubSnoozeInput) => Promise<PrHubOverview>;
     unsnooze: (input: PrHubUnsnoozeInput) => Promise<PrHubOverview>;
     ignore: (input: PrHubIgnoreInput) => Promise<PrHubOverview>;
+    acknowledgeAttention: (input: PrHubAcknowledgeAttentionInput) => Promise<PrHubOverview>;
     markSeen: (input: PrHubMarkSeenInput) => Promise<PrHubOverview>;
     markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;
     analyzeAdvisories: (input?: PrHubAnalyzeAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
@@ -631,6 +639,11 @@ export interface NativeApi {
     getReviewThreads: (input: PrHubThreadsInput) => Promise<PrHubThreadsPage>;
     setReviewThreadState: (input: PrHubThreadStateInput) => Promise<PrHubReviewThread>;
     getReviewDraft: (input: PrHubDetailInput) => Promise<PrHubReviewDraftResult>;
+    prepareComment: (input: PrHubPrepareCommentInput) => Promise<PrHubCommentOperation>;
+    submitComment: (input: PrHubCommentOperationInput) => Promise<PrHubCommentOperation>;
+    getCommentOperation: (input: PrHubCommentReadInput) => Promise<PrHubCommentOperation | null>;
+    recoverComment: (input: PrHubRecoverCommentInput) => Promise<PrHubCommentOperation>;
+    prepareQuickReview: (input: PrHubPrepareQuickReviewInput) => Promise<PrHubReviewOperation>;
     prepareReview: (input: PrHubPrepareReviewInput) => Promise<PrHubReviewOperation>;
     track: (input: PrHubTrackInput) => Promise<TrackedPullRequest>;
     recoverReview: (input: PrHubRecoverReviewInput) => Promise<PrHubReviewOperation>;

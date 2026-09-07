@@ -69,7 +69,7 @@ export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", Read
       right.add(newLine++);
       newRemaining--;
     }
-    if (!/^[ +\-]/.test(line) || left.size + right.size > 200_000) return empty;
+    if (!/^[ +-]/.test(line) || left.size + right.size > 200_000) return empty;
   }
   if (!inHunk || oldRemaining || newRemaining) return empty;
   return new Map([

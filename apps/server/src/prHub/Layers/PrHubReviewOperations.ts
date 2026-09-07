@@ -1,3 +1,13 @@
+import { withGitHubWritePrecondition } from "../../git/githubRequestPolicy.ts";
+import { GitHubCliError } from "../../git/Errors.ts";
+import { createPrHubRemoteActions } from "../remoteActions.ts";
+import {
+  prepareCommentOperation,
+  submitCommentOperation,
+  reconcileCommentOperation,
+  recoverCommentOperation,
+} from "../timelineComments.ts";
+import { canViewerReview } from "@t3tools/shared/prHub";
 import { prComparisonsEqual } from "@t3tools/shared/prReview";
 import { readReplyDraft, saveReplyDraft as persistReplyDraft } from "../replyDrafts.ts";
 import { GitHubCli, type GitHubCliShape } from "../../git/Services/GitHubCli.ts";
@@ -178,8 +188,9 @@ function create(
       const capture = yield* Effect.serviceOption(GitHubCredentialScope);
       if (Option.isNone(capture)) return yield* prHubActionError("A verified account is required.");
       const context = capture.value;
-      const request: ReviewSubmissionDependencies["request"] = (method, endpoint, body, query) =>
-        githubCli
+      let expectedOperation: PrHubReviewOperation | undefined;
+      const request: ReviewSubmissionDependencies["request"] = (method, endpoint, body, query) => {
+        const work = githubCli
           .request({
             cwd,
             context,
@@ -189,8 +200,29 @@ function create(
             ...(query ? { query } : {}),
           })
           .pipe(Effect.mapError(mapGitHubCliError));
+        return method === "POST" && expectedOperation
+          ? withGitHubWritePrecondition(
+              work,
+              verify(expectedOperation).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new GitHubCliError({
+                      operation: "prHub.reviewPrecondition",
+                      kind: "forbidden",
+                      detail: cause.detail,
+                    }),
+                ),
+              ),
+            ).pipe(
+              Effect.mapError((cause) =>
+                Schema.is(GitHubCliError)(cause) ? mapGitHubCliError(cause) : cause,
+              ),
+            )
+          : work;
+      };
       const verify: ReviewSubmissionDependencies["verify"] = (operation) =>
         Effect.gen(function* () {
+          expectedOperation = operation;
           const expected = operation.payload.draft.comparison;
           yield* validateDraftComparison(key, expected, operation.payload.draft.content);
           const response = yield* request(
@@ -254,6 +286,96 @@ function create(
           detail: "The review operation could not be completed. Its saved state is retained.",
           cause,
         });
+  const commentDependencies = (key: PullRequestKey) =>
+    Effect.gen(function* () {
+      const { owner, dependencies } = yield* reviewDependencies(key);
+      const verify = Effect.gen(function* () {
+        const pr = yield* trackedPrByKey(key);
+        const provider = yield* sourceControlProviders.get(pr.provider);
+        const result = yield* provider.query({
+          cwd,
+          host: pr.host,
+          document: `query F5CommentPermission($owner:String!,$name:String!,$number:Int!) { repository(owner:$owner,name:$name) { isArchived pullRequest(number:$number) { state viewerCanComment } } }`,
+          variables: {
+            owner: owner.repo.split("/")[0]!,
+            name: owner.repo.split("/")[1]!,
+            number: owner.number,
+          },
+        });
+        const decoded = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            data: Schema.Struct({
+              repository: Schema.Struct({
+                isArchived: Schema.Boolean,
+                pullRequest: Schema.Struct({
+                  state: Schema.String,
+                  viewerCanComment: Schema.Boolean,
+                }),
+              }),
+            }),
+          }),
+        )(result).pipe(
+          Effect.mapError(() => prHubActionError("Comment permissions could not be verified.")),
+        );
+        const repo = decoded.data.repository;
+        if (
+          repo.isArchived ||
+          repo.pullRequest.state !== "OPEN" ||
+          !repo.pullRequest.viewerCanComment
+        )
+          return yield* prHubActionError("You cannot comment on this PR in its current state.");
+      });
+      return { owner, request: dependencies.request, verify };
+    });
+  const prepareComment: PrHubServiceShape["prepareComment"] = (input) =>
+    Effect.gen(function* () {
+      const { owner, verify } = yield* commentDependencies(input.key);
+      yield* verify;
+      return yield* prepareCommentOperation(owner, input);
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
+  const submitComment: PrHubServiceShape["submitComment"] = (input) =>
+    Effect.gen(function* () {
+      const { owner, request, verify } = yield* commentDependencies(input.key);
+      return yield* exclusive(
+        JSON.stringify(owner),
+        submitCommentOperation(owner, input, request, verify),
+      );
+    }).pipe(
+      Effect.tap((result) => (result.status === "succeeded" ? requestRefresh : Effect.void)),
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(reviewError),
+    );
+  const getCommentOperation: PrHubServiceShape["getCommentOperation"] = (input) =>
+    Effect.gen(function* () {
+      const { owner, request } = yield* commentDependencies(input.key);
+      return yield* reconcileCommentOperation(owner, request);
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
+  const recoverComment: PrHubServiceShape["recoverComment"] = (input) =>
+    Effect.gen(function* () {
+      const { owner, request } = yield* commentDependencies(input.key);
+      return yield* exclusive(
+        JSON.stringify(owner),
+        recoverCommentOperation(owner, input, request),
+      );
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
+  const prepareQuickReview: PrHubServiceShape["prepareQuickReview"] = (input) =>
+    Effect.gen(function* () {
+      const pr = yield* trackedPrByKey(input.key);
+      if (!canViewerReview(pr))
+        return yield* prHubActionError("This PR is not eligible for your review.");
+      const owner = yield* draftOwner(input.key);
+      yield* validateDraftComparison(input.key, input.expectedComparison, {
+        body: input.body,
+        comments: [],
+        viewedFiles: [],
+      });
+      return yield* prepareReviewOperation(owner, {
+        id: input.id,
+        event: input.event,
+        expectedVersion: 0,
+        quick: { body: input.body, comparison: input.expectedComparison },
+      });
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
   const prepareReview: PrHubServiceShape["prepareReview"] = (input) =>
     draftOwner(input.key).pipe(
       Effect.flatMap((owner) => prepareReviewOperation(owner, input)),
@@ -282,7 +404,22 @@ function create(
   const submitReview: PrHubServiceShape["submitReview"] = (input) =>
     reviewDependencies(input.key).pipe(
       Effect.flatMap(({ owner, dependencies }) =>
-        exclusive(JSON.stringify(owner), submitPreparedReview(owner, input.id, dependencies)),
+        exclusive(
+          JSON.stringify(owner),
+          Effect.gen(function* () {
+            const prepared = yield* readReviewOperation(owner, input.id);
+            if (
+              !prepared ||
+              (prepared.payload.source === "quick_review" &&
+                input.payloadHash !== prepared.payloadHash) ||
+              (input.payloadHash !== undefined && input.payloadHash !== prepared.payloadHash)
+            )
+              return yield* prHubActionError(
+                "The prepared review identity or payload changed. Reload its preview.",
+              );
+            return yield* submitPreparedReview(owner, input.id, dependencies);
+          }),
+        ),
       ),
       Effect.flatMap((result) => annotateSubmittedComparison(input.key, result)),
       Effect.tap((result) => (result.status === "succeeded" ? requestRefresh : Effect.void)),
@@ -430,8 +567,14 @@ function create(
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
 
   return {
+    ...createPrHubRemoteActions(context, { submitReview, getReviewOperation, submitComment }),
     getReviewDraft,
     saveReviewDraft,
+    prepareComment,
+    submitComment,
+    getCommentOperation,
+    recoverComment,
+    prepareQuickReview,
     prepareReview,
     submitReview,
     getReviewOperation,

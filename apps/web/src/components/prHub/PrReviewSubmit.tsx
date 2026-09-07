@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubReviewDraft, PrHubReviewOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
 
 export function PrReviewSubmit({
@@ -12,9 +13,11 @@ export function PrReviewSubmit({
   draft,
   disabled,
   onBusyChange,
+  quickEvent,
 }: {
   prKey: PullRequestKey;
   prUrl: string;
+  quickEvent?: "APPROVE" | "REQUEST_CHANGES";
   draft: PrHubReviewDraft | null;
   disabled: boolean;
   onBusyChange: (busy: boolean) => void;
@@ -25,10 +28,11 @@ export function PrReviewSubmit({
   const query = useQuery({
     queryKey,
     queryFn: () => ensureNativeApi().prHub.getReviewOperation({ key: prKey, accountGeneration }),
-    enabled: Boolean(draft?.frozen),
+    enabled: Boolean(quickEvent || draft?.frozen),
     retry: false,
   });
   const [event, setEvent] = useState<PrHubReviewOperation["payload"]["event"]>("COMMENT");
+  const [quickBody, setQuickBody] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operation = query.data;
@@ -57,6 +61,15 @@ export function PrReviewSubmit({
   const active =
     operation &&
     !["succeeded", "failed_before_send", "rejected", "abandoned"].includes(operation.status);
+  const differentEntry =
+    active && Boolean(quickEvent) !== (operation.payload.source === "quick_review");
+  if (differentEntry)
+    return (
+      <p role="status" className="text-sm">
+        A review from another editor is still active. Finish or recover it in its original review
+        editor before preparing another review.
+      </p>
+    );
   return (
     <div className="space-y-2 border-t border-border pt-3">
       {error || query.error ? (
@@ -116,6 +129,7 @@ export function PrReviewSubmit({
                       key: prKey,
                       accountGeneration,
                       id: operation.id,
+                      payloadHash: operation.payloadHash,
                     }),
                   )
                 }
@@ -127,15 +141,16 @@ export function PrReviewSubmit({
                   size="sm"
                   variant="outline"
                   disabled={busy}
-                  onClick={() =>
+                  onClick={() => {
+                    if (quickEvent) setQuickBody(operation.payload.draft.content.body);
                     void run(() =>
                       ensureNativeApi().prHub.cancelReviewPreparation({
                         key: prKey,
                         accountGeneration,
                         id: operation.id,
                       }),
-                    )
-                  }
+                    );
+                  }}
                 >
                   Back to draft
                 </Button>
@@ -144,8 +159,8 @@ export function PrReviewSubmit({
           ) : (
             <>
               <p className="text-sm">
-                GitHub may have accepted this review. Automatic retry is disabled and the draft
-                remains frozen.
+                GitHub may have accepted this review. Automatic retry is disabled. The saved
+                submission remains available for recovery.
               </p>
               <Button
                 size="sm"
@@ -199,25 +214,65 @@ export function PrReviewSubmit({
               GitHub rejected review creation. Your draft is preserved.
             </p>
           ) : null}
-          <label className="flex items-center gap-2 text-sm">
-            Review outcome
-            <select
-              aria-label="Review outcome"
-              className="rounded border border-border bg-background p-1"
-              value={event}
-              disabled={busy || draft?.frozen}
-              onChange={(e) => setEvent(e.target.value as typeof event)}
-            >
-              <option value="COMMENT">Comment</option>
-              <option value="APPROVE">Approve</option>
-              <option value="REQUEST_CHANGES">Request changes</option>
-            </select>
-          </label>
+          {quickEvent ? (
+            <Textarea
+              aria-label="Quick review note"
+              value={quickBody}
+              onChange={(e) => setQuickBody(e.currentTarget.value)}
+              placeholder={
+                quickEvent === "APPROVE" ? "Optional review note" : "Describe the requested changes"
+              }
+              disabled={busy || query.isFetching}
+            />
+          ) : (
+            <label className="flex items-center gap-2 text-sm">
+              Review outcome
+              <select
+                aria-label="Review outcome"
+                className="rounded border border-border bg-background p-1"
+                value={event}
+                disabled={busy || draft?.frozen}
+                onChange={(e) => setEvent(e.target.value as typeof event)}
+              >
+                <option value="COMMENT">Comment</option>
+                <option value="APPROVE">Approve</option>
+                <option value="REQUEST_CHANGES">Request changes</option>
+              </select>
+            </label>
+          )}
           <Button
             size="sm"
-            disabled={disabled || busy || !draft || draft.frozen}
+            disabled={
+              disabled ||
+              busy ||
+              query.isFetching ||
+              Boolean(query.error) ||
+              (quickEvent
+                ? quickEvent === "REQUEST_CHANGES" && !quickBody.trim()
+                : !draft || draft.frozen)
+            }
             onClick={() => {
-              if (draft)
+              if (quickEvent) {
+                void run(async () => {
+                  const files = await ensureNativeApi().prHub.getFiles({
+                    key: prKey,
+                    accountGeneration,
+                    mode: "force",
+                  });
+                  if (!files.comparison || !accountGeneration)
+                    throw new Error(
+                      "The account and current PR comparison must be verified before preparing a review.",
+                    );
+                  return ensureNativeApi().prHub.prepareQuickReview({
+                    key: prKey,
+                    accountGeneration: accountGeneration!,
+                    id: crypto.randomUUID(),
+                    event: quickEvent,
+                    body: quickBody,
+                    expectedComparison: files.comparison,
+                  });
+                });
+              } else if (draft)
                 void run(() =>
                   ensureNativeApi().prHub.prepareReview({
                     key: prKey,

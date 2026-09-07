@@ -45,6 +45,35 @@ function harness() {
 }
 
 describe("credential-bound GitHub requests", () => {
+  it("suspends credentials rejected by ordinary reads without treating repository permission failures as auth failures", async () => {
+    const h = harness();
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
+    );
+    const read = () =>
+      h.api.request({ cwd: "/repo", context, method: "GET", endpoint: "repos/o/r" });
+    h.respond(wire({ message: "forbidden" }, 403));
+    expect((await Effect.runPromise(read())).status).toBe(403);
+    h.respond(wire({}, 200));
+    expect((await Effect.runPromise(read())).status).toBe(200);
+    h.respond(wire({}, 401));
+    expect((await Effect.runPromise(read())).status).toBe(401);
+    const sent = h.execute.mock.calls.length;
+    expect((await Effect.runPromise(read().pipe(Effect.flip))).kind).toBe("unauthenticated");
+    expect(h.execute.mock.calls.length).toBe(sent);
+    h.switchAccount();
+    const next = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: "/repo", host: "github.com" }),
+    );
+    h.respond(wire({}, 200));
+    expect(
+      (
+        await Effect.runPromise(
+          h.api.request({ cwd: "/repo", context: next, method: "GET", endpoint: "repos/o/r" }),
+        )
+      ).status,
+    ).toBe(200);
+  });
   it.each([
     [429, "", "rate_limited"],
     [403, "Retry-After: 30\r\n", "rate_limited"],

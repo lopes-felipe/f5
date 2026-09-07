@@ -144,6 +144,8 @@ export function replyToReviewThread(
       return yield* error("The thread changed or you cannot reply. Reload it before sending.");
     yield* context.verifyAccount;
     const payload = JSON.stringify({
+      version: 2,
+      source: "thread_reply",
       threadId: input.threadId,
       body: input.body,
       comparisonVersion: input.comparisonVersion,
@@ -152,7 +154,7 @@ export function replyToReviewThread(
     yield* sql`INSERT INTO pr_hub_operations(provider_kind, host, viewer_id, repo, number, operation_id, kind, status,
       payload_hash, payload_json, draft_version, correlation_nonce, created_at, updated_at)
       VALUES (${owner.provider}, ${owner.host}, ${owner.viewerId}, ${owner.repo}, ${owner.number}, ${input.id}, 'reply', 'creating',
-        ${hash(payload)}, ${payload}, 0, ${input.id}, ${now}, ${now})`;
+        ${hash(payload)}, ${payload}, NULL, ${input.id}, ${now}, ${now})`;
     const sent = yield* Effect.exit(
       context.query(
         `mutation F5ThreadReply($id:ID!,$body:String!) {

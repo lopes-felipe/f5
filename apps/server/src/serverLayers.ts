@@ -1,3 +1,4 @@
+import { PrHubRepositoryLive } from "./prHub/Layers/PrHubRepository.ts";
 import { PrHubJobCoordinatorLive } from "./prHub/Layers/PrHubJobCoordinator.ts";
 import { PrHubDiscoveryLive } from "./prHub/Layers/PrHubDiscovery.ts";
 import { PrHubReviewOperationsLive } from "./prHub/Layers/PrHubReviewOperations.ts";
@@ -287,6 +288,7 @@ export function makeServerRuntimeServicesLayer() {
   const prHubLayer = PrHubServiceLive.pipe(
     Layer.provide(PrHubReviewOperationsLive),
     Layer.provide(PrHubDiscoveryLive),
+    Layer.provide(PrHubRepositoryLive),
     Layer.provide(PrHubJobCoordinatorLive),
     Layer.provideMerge(gitCoreLayer),
     Layer.provideMerge(githubCliLayer),

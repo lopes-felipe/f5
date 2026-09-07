@@ -12,6 +12,7 @@ import type {
 } from "@t3tools/contracts";
 
 export interface RawPrFields {
+  readonly mergeRequirements?: TrackedPullRequest["mergeRequirements"] | undefined;
   readonly repositoryArchived?: boolean | undefined;
   readonly actionableUnresolvedThreadCount: number;
   readonly headRefOid: string | null;
@@ -122,6 +123,8 @@ function attentionCodes(input: RawPrFields): PrAttentionState[] {
     if (isBehindMergeState(input.mergeStateStatus)) codes.push("branch_behind");
     if (input.reviewDecision === "changes_requested") codes.push("changes_requested");
     if (
+      input.mergeRequirements?.verification === "verified" &&
+      input.mergeRequirements.mandatorySatisfied &&
       input.reviewDecision === "approved" &&
       isPassingOrNoChecks(input.checkRollup) &&
       input.mergeable === "mergeable" &&
@@ -184,6 +187,11 @@ export function derivePrAttentionReasons(
     if (input.checkRollup === "pending") extra.push("ci_pending");
     if (input.reviewDecision === "approved") {
       if (
+        input.mergeRequirements?.verification !== "verified" ||
+        !input.mergeRequirements.mandatorySatisfied
+      )
+        extra.push("merge_blocked");
+      if (
         input.mergeable === "unknown" ||
         !input.mergeStateStatus ||
         input.mergeStateStatus === "UNKNOWN"
@@ -195,8 +203,9 @@ export function derivePrAttentionReasons(
     }
     if (extra.length && codes[0] === "awaiting_review" && input.reviewDecision === "approved")
       codes.shift();
-    codes.push(...extra);
+    codes.push(...new Set(extra));
   }
+  let evidenceBudget = 50;
   return codes.map((code) => {
     const actor: PrAttentionReason["actor"] =
       code === "ci_pending"
@@ -232,9 +241,11 @@ export function derivePrAttentionReasons(
                 ? "fix"
                 : "none";
     const supplied = observation.evidence?.[code];
-    const evidence = supplied?.length
+    const allEvidence = supplied?.length
       ? [...supplied].sort((a, b) => a.id.localeCompare(b.id))
       : [{ id: `${code}:${input.headRefOid ?? "unknown"}`, url: observation.url }];
+    const evidence = allEvidence.slice(0, evidenceBudget);
+    evidenceBudget -= evidence.length;
     const previous = observation.previous?.find(
       (reason) =>
         reason.code === code &&
@@ -246,6 +257,7 @@ export function derivePrAttentionReasons(
       actor,
       action,
       evidence,
+      evidenceTruncated: allEvidence.length > evidence.length,
       firstObservedAt: previous?.firstObservedAt ?? observation.at,
       verification:
         observation.verified &&

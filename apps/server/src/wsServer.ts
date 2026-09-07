@@ -2853,6 +2853,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* prHub.getOverview({});
       }
 
+      case PR_HUB_WS_METHODS.acknowledgeAttention:
+        yield* prHub.acknowledgeAttention(stripRequestTag(request.body));
+        return yield* prHub.getOverview({});
+
       case PR_HUB_WS_METHODS.markSeen: {
         const body = stripRequestTag(request.body);
         yield* prHub.markSeen(body);
@@ -2894,6 +2898,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         const body = stripRequestTag(request.body);
         return yield* prHub.getUnresolvedThreads(body);
       }
+      case PR_HUB_WS_METHODS.prepareComment:
+        return yield* prHub.prepareComment(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.submitComment:
+        return yield* prHub.submitComment(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.getCommentOperation:
+        return yield* prHub.getCommentOperation(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.recoverComment:
+        return yield* prHub.recoverComment(stripRequestTag(request.body));
+      case PR_HUB_WS_METHODS.prepareQuickReview:
+        return yield* prHub.prepareQuickReview(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.prepareReview:
         return yield* prHub.prepareReview(stripRequestTag(request.body));
       case PR_HUB_WS_METHODS.submitReview:

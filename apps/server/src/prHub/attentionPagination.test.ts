@@ -1,3 +1,4 @@
+import Migration089 from "../persistence/Migrations/089_PrHubConnectionFacts.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
@@ -33,9 +34,69 @@ const response = (id: string, more: boolean, updatedAt = "t1") => ({
 });
 
 it.layer(SqliteClient.layerMemory())("attention pagination", (it) => {
+  it.effect(
+    "completes connections larger than the old checkpoint limit while bounding evidence and preserving exact counts",
+    () =>
+      Effect.gen(function* () {
+        yield* Migration081;
+        yield* Migration089;
+        const thread = (id: number) => ({
+          id: `thread-${id}`,
+          isResolved: false,
+          isOutdated: false,
+          comments: {
+            nodes: [
+              {
+                id: `comment-${id}`,
+                url: `https://github.com/${"a".repeat(9000)}`,
+                author: { login: "other" },
+              },
+            ],
+          },
+        });
+        const large = {
+          ...initial,
+          id: "large",
+          reviewThreads: {
+            totalCount: 150,
+            nodes: Array.from({ length: 50 }, (_, i) => thread(i)),
+            pageInfo: { hasNextPage: true, endCursor: "page1" },
+          },
+        };
+        const result = yield* continuePrConnectionPagination(
+          { ...account, viewerLogin: "me" },
+          large,
+          () =>
+            Effect.succeed({
+              data: {
+                node: {
+                  ...large,
+                  reviewThreads: {
+                    totalCount: 150,
+                    nodes: Array.from({ length: 100 }, (_, i) => thread(i + 50)),
+                    pageInfo: { hasNextPage: false, endCursor: "end" },
+                  },
+                },
+              },
+            }),
+        );
+        assert.isTrue(result.complete);
+        const facts = result.node.reviewThreads as {
+          nodes: unknown[];
+          actionableCount: number;
+          unresolvedCount: number;
+          evidenceTruncated: boolean;
+        };
+        assert.equal(facts.nodes.length, 50);
+        assert.equal(facts.actionableCount, 150);
+        assert.equal(facts.unresolvedCount, 150);
+        assert.isTrue(facts.evidenceTruncated);
+      }),
+  );
   it.effect("never reports a missing page boundary as complete", () =>
     Effect.gen(function* () {
       yield* Migration081;
+      yield* Migration089;
       const result = yield* continuePrConnectionPagination(
         account,
         {
@@ -50,6 +111,7 @@ it.layer(SqliteClient.layerMemory())("attention pagination", (it) => {
   it.effect("resumes after interruption, caches completion and resets changed comparisons", () =>
     Effect.gen(function* () {
       yield* Migration081;
+      yield* Migration089;
       const first = yield* continuePrConnectionPagination(
         account,
         initial,
@@ -92,6 +154,7 @@ it.layer(SqliteClient.layerMemory())("attention pagination", (it) => {
   it.effect("isolates viewers and rejects repeated cursors and incomplete terminal pages", () =>
     Effect.gen(function* () {
       yield* Migration081;
+      yield* Migration089;
       yield* continuePrConnectionPagination(account, initial, () =>
         Effect.succeed(response("page2", true)),
       );

@@ -3,6 +3,11 @@ import { PrHubReplyInput, PrHubSaveReplyDraftInput, PrHubRecoverReplyInput } fro
 import { PrHubThreadsInput, PrHubThreadStateInput } from "./prHub";
 import {
   PrHubPrepareReviewInput,
+  PrHubPrepareQuickReviewInput,
+  PrHubPrepareCommentInput,
+  PrHubCommentOperationInput,
+  PrHubCommentReadInput,
+  PrHubRecoverCommentInput,
   PrHubReviewOperationInput,
   PrHubRecoverReviewInput,
 } from "./prHub";
@@ -149,6 +154,7 @@ import {
   PrHubMarkNotifiedInput,
   PrHubMarkReadyInput,
   PrHubMarkSeenInput,
+  PrHubAcknowledgeAttentionInput,
   PrHubMergeInput,
   PrHubRefreshInput,
   PrHubRequestChangesInput,
@@ -564,6 +570,7 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.unsnooze, PrHubUnsnoozeInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.ignore, PrHubIgnoreInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.markSeen, PrHubMarkSeenInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.acknowledgeAttention, PrHubAcknowledgeAttentionInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.markNotified, PrHubMarkNotifiedInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.analyzeAdvisories, PrHubAnalyzeAdvisoriesInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.getAdvisories, PrHubGetAdvisoriesInput),
@@ -580,6 +587,12 @@ const WebSocketRequestBody = Schema.Union([
   tagPrHubRequestBody(PR_HUB_WS_METHODS.replyReviewThread, PrHubReplyInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.setReviewThreadState, PrHubThreadStateInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareReview, PrHubPrepareReviewInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareQuickReview, PrHubPrepareQuickReviewInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.prepareComment, PrHubPrepareCommentInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.submitComment, PrHubCommentOperationInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.getCommentOperation, PrHubCommentReadInput),
+  tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverComment, PrHubRecoverCommentInput),
+
   tagPrHubRequestBody(PR_HUB_WS_METHODS.track, PrHubTrackInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.recoverReview, PrHubRecoverReviewInput),
   tagPrHubRequestBody(PR_HUB_WS_METHODS.submitReview, PrHubReviewOperationInput),

@@ -1,3 +1,4 @@
+import * as SqliteClient from "../../persistence/NodeSqliteClient.ts";
 import { assert, it } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
@@ -15,6 +16,7 @@ const snapshot: PrHubSnapshot = {
   lastPolledAt: null,
 };
 const layer = PrHubJobCoordinatorLive.pipe(
+  Layer.provide(SqliteClient.layerMemory()),
   Layer.provideMerge(ServerSettingsService.layerTest({ prHub: { pollIntervalSeconds: 0 } })),
 );
 

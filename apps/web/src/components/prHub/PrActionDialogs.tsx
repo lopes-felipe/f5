@@ -1,3 +1,5 @@
+import { PrCommentSubmit } from "./PrCommentSubmit";
+import { PrReviewSubmit } from "./PrReviewSubmit";
 import { Button } from "../ui/button";
 import {
   Dialog,
@@ -25,8 +27,6 @@ export function PrActionDialogs({
   pendingAction,
   setPendingAction,
   dialogTitle,
-  body,
-  setBody,
   reviewers,
   setReviewers,
   mergeMethod,
@@ -57,13 +57,16 @@ export function PrActionDialogs({
             </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-3">
-            {pendingAction === "approve" ||
-            pendingAction === "comment" ||
-            pendingAction === "requestChanges" ? (
-              <Textarea
-                value={body}
-                onChange={(event) => setBody(event.currentTarget.value)}
-                placeholder={pendingAction === "approve" ? "Optional review note" : "Comment"}
+            {pendingAction === "comment" ? <PrCommentSubmit key={pr.key} prKey={pr.key} /> : null}
+            {pendingAction === "approve" || pendingAction === "requestChanges" ? (
+              <PrReviewSubmit
+                key={`${pr.key}:${pendingAction}`}
+                prKey={pr.key}
+                prUrl={pr.url}
+                draft={null}
+                disabled={isRunning}
+                onBusyChange={() => {}}
+                quickEvent={pendingAction === "approve" ? "APPROVE" : "REQUEST_CHANGES"}
               />
             ) : null}
             {pendingAction === "merge" ? (
@@ -111,16 +114,20 @@ export function PrActionDialogs({
           </DialogPanel>
           <DialogFooter>
             <DialogClose render={<Button variant="outline" />}>Cancel</DialogClose>
-            <Button
-              onClick={() => void runAction()}
-              disabled={
-                isRunning ||
-                (pendingAction === "merge" && !mergeComparison) ||
-                (pendingAction === "reRequestReview" && reviewers.trim().length === 0)
-              }
-            >
-              {isRunning ? "Working..." : "Confirm"}
-            </Button>
+            {pendingAction !== "approve" &&
+            pendingAction !== "requestChanges" &&
+            pendingAction !== "comment" ? (
+              <Button
+                onClick={() => void runAction()}
+                disabled={
+                  isRunning ||
+                  (pendingAction === "merge" && !mergeComparison) ||
+                  (pendingAction === "reRequestReview" && reviewers.trim().length === 0)
+                }
+              >
+                {isRunning ? "Working..." : "Confirm"}
+              </Button>
+            ) : null}
           </DialogFooter>
         </DialogPopup>
       </Dialog>

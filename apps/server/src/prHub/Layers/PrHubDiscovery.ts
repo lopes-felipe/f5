@@ -1,3 +1,4 @@
+import { createPrHubDiscovery } from "../discoveryRuntime.ts";
 import { discoverNotificationSubjects } from "../notificationDiscovery.ts";
 import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -17,7 +18,7 @@ export const PrHubDiscoveryLive = Layer.effect(
   PrHubDiscovery,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    return {
+    const methods = {
       recordPrHubMembership: (...args: Parameters<typeof recordPrHubMembership>) =>
         recordPrHubMembership(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       discoverNotificationSubjects: (...args: Parameters<typeof discoverNotificationSubjects>) =>
@@ -36,6 +37,10 @@ export const PrHubDiscoveryLive = Layer.effect(
         finishPrHubHydration(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       syncPrHubRepositories: (...args: Parameters<typeof syncPrHubRepositories>) =>
         syncPrHubRepositories(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+    };
+    return {
+      ...methods,
+      create: (context) => createPrHubDiscovery({ ...context, sql, discovery: methods }),
     };
   }),
 );

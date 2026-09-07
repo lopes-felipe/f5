@@ -1,3 +1,4 @@
+import Migration090 from "../persistence/Migrations/090_PrHubIndependentOperations.ts";
 import Migration086 from "../persistence/Migrations/086_PrHubAbandonedReviews.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
@@ -125,6 +126,81 @@ it.layer(SqliteClient.layerMemory())("durable review operations", (it) => {
         expectedVersion: fresh.version,
       });
       assert.equal(next.status, "prepared");
+      const beforeMigration = yield* readPrHubReviewDraft(owner);
+      yield* Migration090;
+      assert.equal((yield* readReviewOperation(owner, next.id))?.payloadHash, next.payloadHash);
+      assert.deepStrictEqual(yield* readPrHubReviewDraft(owner), beforeMigration);
+    }),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("independent quick reviews", (it) => {
+  it.effect("preserves editor drafts through preparation, success and cancellation", () =>
+    Effect.gen(function* () {
+      yield* Migration083;
+      yield* Migration084;
+      yield* Migration090;
+      const owner = {
+        provider: "github",
+        host: "github.com",
+        viewerId: "1",
+        repo: "org/repo",
+        number: 1,
+      };
+      const comparison = {
+        baseRepository: "org/repo",
+        baseRef: "main",
+        baseOid: "base",
+        headRepository: "org/repo",
+        headRef: "topic",
+        headOid: "head",
+        mergeBaseOid: "base",
+        mode: "current_pr" as const,
+      };
+      yield* savePrHubReviewDraft(owner, {
+        key: PullRequestKey.makeUnsafe("github:github.com/org/repo#1"),
+        expectedVersion: 0,
+        comparison,
+        content: { body: "Unfinished inline review", comments: [], viewedFiles: [] },
+      });
+      const draft = yield* readPrHubReviewDraft(owner);
+      const input = {
+        id: "quick",
+        expectedVersion: 0,
+        event: "APPROVE" as const,
+        quick: { comparison, body: "Looks good" },
+      };
+      const operation = yield* prepareReviewOperation(owner, input);
+      assert.equal(operation.payload.source, "quick_review");
+      assert.deepStrictEqual(yield* readPrHubReviewDraft(owner), draft);
+      assert.deepStrictEqual(yield* prepareReviewOperation(owner, input), operation);
+      assert.equal(
+        (yield* Effect.exit(
+          prepareReviewOperation(owner, { ...input, quick: { comparison, body: "different" } }),
+        ))._tag,
+        "Failure",
+      );
+      assert.equal(
+        (yield* Effect.exit(prepareReviewOperation(owner, { ...input, id: "concurrent" })))._tag,
+        "Failure",
+      );
+      yield* transitionReviewOperation(owner, { id: "quick", from: "prepared", to: "creating" });
+      yield* transitionReviewOperation(owner, {
+        id: "quick",
+        from: "creating",
+        to: "created",
+        remoteId: "42",
+      });
+      yield* transitionReviewOperation(owner, { id: "quick", from: "created", to: "submitting" });
+      yield* transitionReviewOperation(owner, { id: "quick", from: "submitting", to: "succeeded" });
+      assert.deepStrictEqual(yield* readPrHubReviewDraft(owner), draft);
+      yield* prepareReviewOperation(owner, { ...input, id: "cancel" });
+      yield* transitionReviewOperation(owner, {
+        id: "cancel",
+        from: "prepared",
+        to: "failed_before_send",
+      });
+      assert.deepStrictEqual(yield* readPrHubReviewDraft(owner), draft);
     }),
   );
 });

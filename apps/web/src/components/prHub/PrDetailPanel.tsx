@@ -297,6 +297,22 @@ export const PrDetailPanel = forwardRef<PrDetailHandle, PrDetailPanelProps>(func
                   </ul>
                 </Fact>
               ) : null}
+              {pr.reasonEvidenceTruncated ? (
+                <Fact label="Evidence">
+                  Some references are omitted; counts include every scanned thread.
+                </Fact>
+              ) : null}
+              <Fact label="Merge requirements">
+                <span>
+                  {pr.mergeRequirements?.explanation ??
+                    "Effective branch rules have not been verified."}
+                </span>
+                {pr.mergeRequirements?.checks.map((check) => (
+                  <span className="block" key={`${check.name}:${check.appId}`}>
+                    {check.name}: {check.state}
+                  </span>
+                ))}
+              </Fact>
               <Fact label="Verified">
                 {pr.lastVerifiedAt ? (
                   <span title={formatAbsoluteTimeLabel(pr.lastVerifiedAt)}>

@@ -29,6 +29,12 @@ import type {
   PrHubReviewThread,
   PrHubSaveReviewDraftInput,
   PrHubPrepareReviewInput,
+  PrHubPrepareQuickReviewInput,
+  PrHubPrepareCommentInput,
+  PrHubCommentOperationInput,
+  PrHubCommentReadInput,
+  PrHubRecoverCommentInput,
+  PrHubCommentOperation,
   PrHubReviewOperationInput,
   PrHubRecoverReviewInput,
   PrHubReviewOperation,
@@ -40,6 +46,7 @@ import type {
   PrHubMarkNotifiedInput,
   PrHubMarkReadyInput,
   PrHubMarkSeenInput,
+  PrHubAcknowledgeAttentionInput,
   PrHubMergeInput,
   PrHubRefreshInput,
   PrHubRequestChangesInput,
@@ -99,6 +106,9 @@ export interface PrHubServiceShape {
   readonly ignore: (
     input: PrHubIgnoreInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly acknowledgeAttention: (
+    input: PrHubAcknowledgeAttentionInput,
+  ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
   readonly markSeen: (
     input: PrHubMarkSeenInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
@@ -141,6 +151,21 @@ export interface PrHubServiceShape {
   readonly getReviewDraft: (
     input: PrHubDetailInput,
   ) => Effect.Effect<PrHubReviewDraftResult, SourceControlProviderError>;
+  readonly prepareComment: (
+    input: PrHubPrepareCommentInput,
+  ) => Effect.Effect<PrHubCommentOperation, SourceControlProviderError>;
+  readonly submitComment: (
+    input: PrHubCommentOperationInput,
+  ) => Effect.Effect<PrHubCommentOperation, SourceControlProviderError>;
+  readonly getCommentOperation: (
+    input: PrHubCommentReadInput,
+  ) => Effect.Effect<PrHubCommentOperation | null, SourceControlProviderError>;
+  readonly recoverComment: (
+    input: PrHubRecoverCommentInput,
+  ) => Effect.Effect<PrHubCommentOperation, SourceControlProviderError>;
+  readonly prepareQuickReview: (
+    input: PrHubPrepareQuickReviewInput,
+  ) => Effect.Effect<PrHubReviewOperation, SourceControlProviderError>;
   readonly prepareReview: (
     input: PrHubPrepareReviewInput,
   ) => Effect.Effect<PrHubReviewOperation, SourceControlProviderError>;

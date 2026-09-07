@@ -1,3 +1,4 @@
+import type { PrHubDiscoveryContext, createPrHubDiscovery } from "../discoveryRuntime.ts";
 import type { discoverNotificationSubjects } from "../notificationDiscovery.ts";
 import { ServiceMap, type Effect } from "effect";
 import type * as Discovery from "../discovery.ts";
@@ -6,7 +7,7 @@ type Provided<F extends (...args: never[]) => Effect.Effect<unknown, unknown, un
   ...args: Parameters<F>
 ) => Effect.Effect<Effect.Success<ReturnType<F>>, Effect.Error<ReturnType<F>>>;
 
-export interface PrHubDiscoveryShape {
+export interface PrHubDiscoveryMethods {
   readonly recordPrHubMembership: Provided<typeof Discovery.recordPrHubMembership>;
   readonly discoverNotificationSubjects: Provided<typeof discoverNotificationSubjects>;
   readonly enqueuePrHubTracked: Provided<typeof Discovery.enqueuePrHubTracked>;
@@ -16,6 +17,9 @@ export interface PrHubDiscoveryShape {
   readonly selectPrHubHydration: Provided<typeof Discovery.selectPrHubHydration>;
   readonly finishPrHubHydration: Provided<typeof Discovery.finishPrHubHydration>;
   readonly syncPrHubRepositories: Provided<typeof Discovery.syncPrHubRepositories>;
+}
+export interface PrHubDiscoveryShape extends PrHubDiscoveryMethods {
+  readonly create: (context: PrHubDiscoveryContext) => ReturnType<typeof createPrHubDiscovery>;
 }
 export class PrHubDiscovery extends ServiceMap.Service<PrHubDiscovery, PrHubDiscoveryShape>()(
   "t3/prHub/Services/PrHubDiscovery",

@@ -1,3 +1,4 @@
+import Migration090 from "../persistence/Migrations/090_PrHubIndependentOperations.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import { PullRequestKey } from "@t3tools/contracts";
@@ -12,6 +13,7 @@ it.layer(SqliteClient.layerMemory())("durable thread replies", (it) => {
   it.effect("holds an uncertain reply and verifies the exact marker and numeric actor", () =>
     Effect.gen(function* () {
       yield* Migration084;
+      yield* Migration090;
       yield* Migration085;
       const key = PullRequestKey.makeUnsafe("github:github.com/org/repo#1");
       let writes = 0;

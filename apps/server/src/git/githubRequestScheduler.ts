@@ -1,10 +1,11 @@
-import { Effect, Option, Semaphore, ServiceMap } from "effect";
+import { makeGitHubRequestQueue, type GitHubPriority } from "./githubRequestQueue.ts";
+import { Effect, Option, ServiceMap } from "effect";
 import type { SourceControlRateLimit, PrHubSchedulerState } from "@t3tools/contracts";
 import { GitHubCliError } from "./Errors.ts";
 
 export class GitHubRequestPriority extends ServiceMap.Service<
   GitHubRequestPriority,
-  "interactive" | "background"
+  GitHubPriority
 >()("t3/git/githubRequestScheduler/GitHubRequestPriority") {}
 export type GitHubResource = "rest" | "search" | "graphql" | "write";
 interface Budget {
@@ -17,9 +18,7 @@ interface Budget {
   blockedUntil: number;
   failures: number;
   queued: number;
-  reads: ReturnType<typeof Semaphore.makeUnsafe>;
-  writes: ReturnType<typeof Semaphore.makeUnsafe>;
-  background: ReturnType<typeof Semaphore.makeUnsafe>;
+  schedule: ReturnType<typeof makeGitHubRequestQueue>;
 }
 
 /** No retries: admission failure leaves resumable work for the next poll. */
@@ -38,9 +37,7 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
         blockedUntil: 0,
         failures: 0,
         queued: 0,
-        reads: Semaphore.makeUnsafe(2),
-        writes: Semaphore.makeUnsafe(1),
-        background: Semaphore.makeUnsafe(1),
+        schedule: makeGitHubRequestQueue(),
       };
       hosts.set(host, budget);
     }
@@ -65,7 +62,8 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
   ): Effect.Effect<A, E | GitHubCliError, R> =>
     Effect.gen(function* () {
       const priority = yield* Effect.serviceOption(GitHubRequestPriority);
-      const background = Option.getOrElse(priority, () => "interactive") === "background";
+      const urgency = Option.getOrElse(priority, () => "interactive" as const);
+      const background = urgency !== "interactive";
       const budget = budgetFor(host);
       if (budget.queued >= 128)
         return yield* deferred(now() + 30_000, "GitHub request queue is full; retry shortly.");
@@ -131,13 +129,7 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
         }
         return yield* effect;
       });
-      const limited = (resource === "write" ? budget.writes : budget.reads).withPermits(1)(
-        admitted,
-      );
-      // One background reader leaves the second read slot available to selected PRs.
-      return yield* (
-        background && resource !== "write" ? budget.background.withPermits(1)(limited) : limited
-      ).pipe(
+      return yield* budget.schedule(urgency, resource === "write", admitted).pipe(
         Effect.ensuring(
           Effect.sync(() => {
             budget.queued--;

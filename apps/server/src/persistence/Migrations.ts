@@ -1,3 +1,7 @@
+import Migration0091 from "./Migrations/091_PrHubRepositoryProvenance.ts";
+import Migration0090 from "./Migrations/090_PrHubIndependentOperations.ts";
+import Migration0089 from "./Migrations/089_PrHubConnectionFacts.ts";
+import Migration0088 from "./Migrations/088_PrHubAttentionAcknowledgment.ts";
 import Migration0087 from "./Migrations/087_PrHubReplyDrafts.ts";
 import Migration0086 from "./Migrations/086_PrHubAbandonedReviews.ts";
 import Migration0085 from "./Migrations/085_PrHubActiveReplies.ts";
@@ -199,6 +203,10 @@ export const MIGRATIONS = {
   "85_PrHubActiveReplies": Migration0085,
   "86_PrHubAbandonedReviews": Migration0086,
   "87_PrHubReplyDrafts": Migration0087,
+  "88_PrHubAttentionAcknowledgment": Migration0088,
+  "89_PrHubConnectionFacts": Migration0089,
+  "90_PrHubIndependentOperations": Migration0090,
+  "91_PrHubRepositoryProvenance": Migration0091,
 } as const;
 
 export const LATEST_MIGRATION_ID = Math.max(

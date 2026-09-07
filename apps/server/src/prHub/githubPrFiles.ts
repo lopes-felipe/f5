@@ -1,3 +1,4 @@
+import type { GitHubConditionalRead } from "../git/githubConditionalCache.ts";
 import { prComparisonsEqual } from "@t3tools/shared/prReview";
 import { Schema, Effect } from "effect";
 import {
@@ -87,6 +88,7 @@ export function fetchGitHubPrFiles(input: {
   readonly request: (
     endpoint: string,
     query?: Readonly<Record<string, string | number | boolean>>,
+    cache?: GitHubConditionalRead,
   ) => Effect.Effect<GitHubApiResponse, SourceControlProviderError>;
 }): Effect.Effect<PrHubFilesPage, SourceControlProviderError> {
   const fail = (detail: string) =>
@@ -103,9 +105,13 @@ export function fetchGitHubPrFiles(input: {
       catch: (error) =>
         fail(error instanceof Error ? error.message : "Invalid GitHub file response."),
     });
-  const request = (endpoint: string, query?: Readonly<Record<string, string | number | boolean>>) =>
+  const request = (
+    endpoint: string,
+    query?: Readonly<Record<string, string | number | boolean>>,
+    cache?: GitHubConditionalRead,
+  ) =>
     input
-      .request(endpoint, query)
+      .request(endpoint, query, cache)
       .pipe(
         Effect.flatMap((response) =>
           response.status === 200
@@ -125,12 +131,16 @@ export function fetchGitHubPrFiles(input: {
       return yield* fail("The file cursor belongs to a different account or PR. Reload the files.");
     const prefix = `repos/${input.repository.split("/").map(encodeURIComponent).join("/")}`;
     const pullEndpoint = `${prefix}/pulls/${input.number}`;
-    const beforeResponse = yield* request(pullEndpoint);
+    const beforeResponse = yield* request(pullEndpoint, undefined, {
+      identity: "pull-v1",
+      validate: Schema.is(Pull),
+    });
     const before = yield* decode(() => Schema.decodeUnknownSync(Pull)(beforeResponse.body));
     const refs = refsIdentity(before);
     const compareResponse = yield* request(
       `${prefix}/compare/${encodeURIComponent(input.reviewedHeadOid ?? before.base.sha)}...${encodeURIComponent(before.head.sha)}`,
       { per_page: 1 },
+      { identity: "comparison-v1", validate: Schema.is(Comparison) },
     );
     const compare = yield* decode(() => Schema.decodeUnknownSync(Comparison)(compareResponse.body));
     const comparison: PrHubComparisonIdentity = {
@@ -144,7 +154,11 @@ export function fetchGitHubPrFiles(input: {
     const page = cursor?.page ?? 1;
     const response = input.reviewedHeadOid
       ? compareResponse
-      : yield* request(`${pullEndpoint}/files`, { per_page: 100, page });
+      : yield* request(
+          `${pullEndpoint}/files`,
+          { per_page: 100, page },
+          { identity: JSON.stringify(comparison), validate: Schema.is(Schema.Array(File)) },
+        );
     const files = yield* decode(() =>
       Schema.decodeUnknownSync(Schema.Array(File))(
         input.reviewedHeadOid
@@ -155,7 +169,10 @@ export function fetchGitHubPrFiles(input: {
     );
     if (files.length > (input.reviewedHeadOid ? 300 : 100))
       return yield* fail("GitHub returned an oversized file page.");
-    const afterResponse = yield* request(pullEndpoint);
+    const afterResponse = yield* request(pullEndpoint, undefined, {
+      identity: "pull-v1",
+      validate: Schema.is(Pull),
+    });
     const after = yield* decode(() => Schema.decodeUnknownSync(Pull)(afterResponse.body));
     if (JSON.stringify(refs) !== JSON.stringify(refsIdentity(after)))
       return yield* fail(

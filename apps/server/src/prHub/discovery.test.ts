@@ -1,3 +1,6 @@
+import { syncPrHubRepositories } from "./discovery.ts";
+import Migration091 from "../persistence/Migrations/091_PrHubRepositoryProvenance.ts";
+import Migration089 from "../persistence/Migrations/089_PrHubConnectionFacts.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -22,6 +25,8 @@ const node = (id: string, repository = "org/repo", updatedAt = "2026-01-01T00:00
 
 const reset = Effect.gen(function* () {
   yield* Migration081;
+  yield* Migration091;
+  yield* Migration089;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DELETE FROM pr_hub_sync_tasks`;
 });
@@ -390,6 +395,69 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
       assert.equal(second.size, 80);
       assert.equal([...second.keys()].filter((key) => key.startsWith("old-")).length, 20);
       assert.equal((yield* selectPrHubHydration({ ...account, viewerId: "2" }, new Set())).size, 0);
+    }),
+  );
+});
+
+it.layer(SqliteClient.layerMemory())("repository provenance", (it) => {
+  it.effect("retires affiliation-only repositories only after a complete traversal", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const sql = yield* SqlClient.SqlClient;
+      const page = (names: string[], next: string | null = null) =>
+        Effect.succeed({
+          data: {
+            viewer: {
+              repositories: {
+                nodes: names.map((name) => ({ id: name, nameWithOwner: name, isArchived: false })),
+                pageInfo: { hasNextPage: next !== null, endCursor: next },
+              },
+            },
+          },
+        });
+      yield* syncPrHubRepositories(
+        account,
+        ["org/project"],
+        [],
+        new Set(),
+        () => page(["org/old"]),
+        1000,
+        ["org/manual"],
+      );
+      yield* syncPrHubRepositories(
+        account,
+        ["org/project"],
+        [],
+        new Set(),
+        () => page(["org/new"], "next"),
+        1000000,
+        ["org/manual"],
+      );
+      const before = yield* sql<{
+        task_key: string;
+      }>`SELECT task_key FROM pr_hub_sync_tasks WHERE kind='known_repository'`;
+      assert.ok(before.some((row) => row.task_key === "org/old"));
+      yield* syncPrHubRepositories(
+        account,
+        ["org/project"],
+        [],
+        new Set(),
+        () => page([]),
+        1000001,
+        ["org/manual"],
+      );
+      const after = yield* sql<{
+        task_key: string;
+      }>`SELECT task_key FROM pr_hub_sync_tasks WHERE kind='known_repository'`;
+      assert.deepStrictEqual(after.map((row) => row.task_key).sort(), [
+        "org/manual",
+        "org/new",
+        "org/project",
+      ]);
+      const provenance = yield* sql<{
+        source: string;
+      }>`SELECT source FROM pr_hub_repository_provenance WHERE repo='org/manual'`;
+      assert.equal(provenance[0]?.source, "manual_tracking");
     }),
   );
 });

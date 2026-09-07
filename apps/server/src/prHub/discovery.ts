@@ -1,3 +1,5 @@
+import { withPrHubDiscoveryWork } from "./discoveryLease.ts";
+import { assertPrHubDiscoveryLease, withPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { continuePrConnectionPagination } from "./attentionPagination.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { Effect } from "effect";
@@ -162,6 +164,10 @@ export function ingestPrHubSearch(
     if (
       !connection ||
       !Array.isArray(connection.nodes) ||
+      connection.nodes.some(
+        (item) =>
+          !string(record(item)?.id) || !string(record(record(item)?.repository)?.nameWithOwner),
+      ) ||
       typeof page?.hasNextPage !== "boolean" ||
       (page.hasNextPage &&
         (typeof page.endCursor !== "string" || !page.endCursor || page.endCursor === task.cursor))
@@ -175,6 +181,7 @@ export function ingestPrHubSearch(
     const nodes = connection.nodes;
     yield* sql.withTransaction(
       Effect.gen(function* () {
+        yield* assertPrHubDiscoveryLease;
         for (const item of nodes) {
           const node = record(item);
           const nodeId = string(node?.id);
@@ -251,21 +258,23 @@ export function ingestPrHubSearch(
         } else if (page?.hasNextPage === true && typeof page.endCursor === "string") {
           yield* enqueue({ ...task, cursor: page.endCursor });
         }
-      }),
-    );
-    if (task.sourceKey) {
-      const pending = yield* sql<{ count: number }>`SELECT count(*) AS count FROM pr_hub_sync_tasks
+        if (task.sourceKey) {
+          const pending = yield* sql<{
+            count: number;
+          }>`SELECT count(*) AS count FROM pr_hub_sync_tasks
         WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId}
           AND kind = 'search' AND json_extract(payload_json, '$.sourceKey') = ${task.sourceKey}`;
-      if (pending[0]?.count === 0 && page?.hasNextPage === false) {
-        yield* sql`UPDATE pr_hub_sync_tasks SET payload_json = json_set(payload_json,
+          if (pending[0]?.count === 0 && page?.hasNextPage === false) {
+            yield* sql`UPDATE pr_hub_sync_tasks SET payload_json = json_set(payload_json,
           '$.watermark', ${task.intervalEnd ?? now}, '$.complete', json('true'),
           '$.repairedAt', CASE WHEN json_extract(payload_json, '$.repair') = 1 THEN ${task.intervalEnd ?? now} ELSE json_extract(payload_json, '$.repairedAt') END),
           updated_at = ${timestamp}
           WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId}
             AND kind = 'source_watermark' AND task_key = ${task.sourceKey}`;
-      }
-    }
+          }
+        }
+      }),
+    );
     return {
       partial:
         page?.hasNextPage === true ||
@@ -290,28 +299,35 @@ export function resumePrHubSearch(
       ORDER BY created_at, task_key LIMIT 19`;
     for (const row of tasks) {
       const task = JSON.parse(row.payload_json) as SearchTask;
-      const repository = task.query.match(/(?:^|\s)repo:([^\s]+)/)?.[1];
-      if (repository && excluded.has(repository.toLowerCase())) {
-        yield* sql`DELETE FROM pr_hub_sync_tasks WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId} AND kind = 'search' AND task_key = ${taskKey(task)}`;
-        continue;
-      }
+      yield* withPrHubDiscoveryLease(
+        account,
+        "search",
+        taskKey(task),
+        Effect.gen(function* () {
+          const repository = task.query.match(/(?:^|\s)repo:([^\s]+)/)?.[1];
+          if (repository && excluded.has(repository.toLowerCase())) {
+            yield* sql`DELETE FROM pr_hub_sync_tasks WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId} AND kind = 'search' AND task_key = ${taskKey(task)}`;
+            return;
+          }
 
-      if (task.enumerateRepository && repository) {
-        yield* enumeratePrHubRepository(account, task, repository, excluded, query);
-        continue;
-      }
+          if (task.enumerateRepository && repository) {
+            yield* enumeratePrHubRepository(account, task, repository, excluded, query);
+            return;
+          }
 
-      const bounds =
-        task.from === undefined || task.to === undefined
-          ? ""
-          : ` created:${new Date(task.from).toISOString()}..${new Date(task.to).toISOString()}`;
-      const response = yield* query(PR_HUB_CONTINUATION_QUERY, {
-        query: task.query + bounds,
-        cursor: task.cursor,
-      });
-      const result = record(record(response)?.data)?.result;
-      if (!record(result)) break;
-      yield* ingestPrHubSearch(account, task, result, excluded);
+          const bounds =
+            task.from === undefined || task.to === undefined
+              ? ""
+              : ` created:${new Date(task.from).toISOString()}..${new Date(task.to).toISOString()}`;
+          const response = yield* query(PR_HUB_CONTINUATION_QUERY, {
+            query: task.query + bounds,
+            cursor: task.cursor,
+          });
+          const result = record(record(response)?.data)?.result;
+          if (!record(result)) return;
+          yield* ingestPrHubSearch(account, task, result, excluded);
+        }),
+      );
     }
   });
 }
@@ -492,12 +508,12 @@ export function finishPrHubHydration(account: DiscoveryAccount, nodeIds: readonl
 
 export const PR_HUB_REPOSITORIES_QUERY = `query PrHubRepositories($cursor:String){
   viewer { repositories(first:100,after:$cursor,affiliations:[OWNER,COLLABORATOR,ORGANIZATION_MEMBER],orderBy:{field:UPDATED_AT,direction:DESC}) {
-    nodes { nameWithOwner isArchived } pageInfo { hasNextPage endCursor }
+    nodes { id nameWithOwner isArchived } pageInfo { hasNextPage endCursor }
   } }
   rateLimit { cost remaining limit resetAt }
 }`;
 
-export function syncPrHubRepositories(
+function syncRepositories(
   account: DiscoveryAccount,
   configured: readonly string[],
   relationshipQueries: readonly { alias: string; query: string }[],
@@ -507,6 +523,7 @@ export function syncPrHubRepositories(
     variables: Record<string, string | null>,
   ) => Effect.Effect<unknown, SourceControlProviderError>,
   now = Date.now(),
+  manual: readonly string[] = [],
 ) {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -519,10 +536,13 @@ export function syncPrHubRepositories(
           cursor: string | null;
           nextCheckAt: number;
           complete: boolean;
-          members?: string[];
+          generation?: string;
         })
       : null;
-    const repositories = new Map(configured.map((name) => [name, false]));
+    const repositories = new Map([...configured, ...manual].map((name) => [name, false]));
+    const affiliation: { name: string; archived: boolean; nodeId: string | null }[] = [];
+    const generation = scope?.cursor && scope.generation ? scope.generation : randomUUID();
+    let traversed = false;
     let nextScope = scope;
     let membershipChanged = false;
     if (!scope || scope.nextCheckAt <= now) {
@@ -533,7 +553,10 @@ export function syncPrHubRepositories(
       if (
         !Array.isArray(collection?.nodes) ||
         typeof page?.hasNextPage !== "boolean" ||
-        (page.hasNextPage && typeof page.endCursor !== "string")
+        (page.hasNextPage &&
+          (typeof page.endCursor !== "string" ||
+            !page.endCursor ||
+            page.endCursor === scope?.cursor))
       )
         return yield* new SourceControlProviderError({
           provider: "github",
@@ -544,26 +567,56 @@ export function syncPrHubRepositories(
       for (const raw of collection.nodes) {
         const repository = record(raw);
         const name = string(repository?.nameWithOwner);
-        if (name) repositories.set(name, repository?.isArchived === true);
+        if (!name || typeof repository?.isArchived !== "boolean")
+          return yield* new SourceControlProviderError({
+            provider: "github",
+            operation: "prHub.repositories",
+            kind: "invalid_response",
+            detail: "Repository membership was incomplete; previous membership is preserved.",
+          });
+        repositories.set(name, repository.isArchived);
+        affiliation.push({ name, archived: repository.isArchived, nodeId: string(repository.id) });
       }
       nextScope = {
         cursor: page.hasNextPage ? string(page.endCursor) : null,
         complete: !page.hasNextPage,
         nextCheckAt: page.hasNextPage ? now : now + 15 * 60_000,
-        members: [
-          ...new Set([...(scope?.cursor ? (scope.members ?? []) : []), ...repositories.keys()]),
-        ],
+        generation,
       };
-      if (nextScope.complete) {
-        membershipChanged = (yield* recordPrHubMembership(
-          account,
-          "repositories",
-          nextScope.members!,
-        )).changed;
-      }
+      traversed = true;
     }
     yield* sql.withTransaction(
       Effect.gen(function* () {
+        yield* assertPrHubDiscoveryLease;
+        for (const [source, names] of [
+          ["configured_project", configured],
+          ["manual_tracking", manual],
+        ] as const) {
+          yield* sql`DELETE FROM pr_hub_repository_provenance WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND source=${source}`;
+          for (const name of new Set(names))
+            yield* sql`INSERT INTO pr_hub_repository_provenance(provider_kind,host,viewer_id,repo,source,generation,archived) VALUES('github',${account.host},${account.viewerId},${name},${source},${generation},0)`;
+        }
+        if (traversed) {
+          for (const repo of affiliation)
+            yield* sql`INSERT INTO pr_hub_repository_provenance(provider_kind,host,viewer_id,repo,source,generation,node_id,archived)
+            VALUES('github',${account.host},${account.viewerId},${repo.name},'affiliation',${generation},${repo.nodeId},${repo.archived ? 1 : 0})
+            ON CONFLICT(provider_kind,host,viewer_id,repo,source) DO UPDATE SET generation=excluded.generation,node_id=excluded.node_id,archived=excluded.archived`;
+          if (nextScope?.complete) {
+            yield* sql`DELETE FROM pr_hub_repository_provenance WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND source='affiliation' AND generation<>${generation}`;
+            const members = yield* sql<{
+              repo: string;
+            }>`SELECT DISTINCT repo FROM pr_hub_repository_provenance WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId}`;
+            membershipChanged = (yield* recordPrHubMembership(
+              account,
+              "repositories",
+              members.map((row) => row.repo),
+            )).changed;
+          }
+        }
+        // Only fully traversed affiliation sets retire membership. Direct PR reconciliation is independent.
+        if (traversed && nextScope?.complete)
+          yield* sql`DELETE FROM pr_hub_sync_tasks WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND kind='known_repository'
+          AND task_key NOT IN (SELECT repo FROM pr_hub_repository_provenance WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId})`;
         for (const [name, archived] of repositories) {
           if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(name) || excluded.has(name.toLowerCase()))
             continue;
@@ -623,4 +676,13 @@ export function enqueuePrHubTracked(
         '$.priority', max(COALESCE(json_extract(pr_hub_sync_tasks.payload_json, '$.priority'), 0), json_extract(excluded.payload_json, '$.priority')))`;
     return timestamp;
   });
+}
+
+export function syncPrHubRepositories(...args: Parameters<typeof syncRepositories>) {
+  return withPrHubDiscoveryWork(
+    args[0],
+    "repositories_scope",
+    "affiliation",
+    syncRepositories(...args),
+  ).pipe(Effect.map((result) => result._tag === "Some" && result.value));
 }
