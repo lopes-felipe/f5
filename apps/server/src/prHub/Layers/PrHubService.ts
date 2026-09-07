@@ -1,3 +1,4 @@
+import { nextPrHubRefreshAt } from "../refreshSchedule.ts";
 import { GitHubCliError } from "../../git/Errors.ts";
 import { GitHubRequestPolicy } from "../../git/githubRequestPolicy.ts";
 import { PrHubRepository } from "../Services/PrHubRepository.ts";
@@ -706,10 +707,23 @@ const makePrHubService = Effect.gen(function* () {
     streamChanges: Stream.fromPubSub(changePubSub),
     getOverview: (input) =>
       getSnapshot.pipe(
-        Effect.map((snapshot) => ({
-          ...prHubOverview(snapshot, snapshot.revision ?? "0", input.stalledBefore),
-          scheduler: githubRequestScheduler.status(host),
-        })),
+        Effect.flatMap((snapshot) =>
+          settings.getSettings.pipe(
+            Effect.orDie,
+            Effect.map((current) => {
+              const scheduler = githubRequestScheduler.status(host);
+              return {
+                ...prHubOverview(snapshot, snapshot.revision ?? "0", input.stalledBefore),
+                scheduler,
+                nextRefreshAt: nextPrHubRefreshAt(
+                  snapshot,
+                  current.prHub.pollIntervalSeconds,
+                  scheduler,
+                ),
+              };
+            }),
+          ),
+        ),
       ),
     listPullRequests: (input) =>
       getSnapshot.pipe(

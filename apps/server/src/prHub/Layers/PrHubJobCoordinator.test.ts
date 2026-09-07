@@ -64,6 +64,35 @@ it.layer(layer)("PR background coordination", (it) => {
       assert.deepStrictEqual(yield* refresh({ mode: "force" }), snapshot);
     }),
   );
+  it.effect("wakes a degraded refresh at its recovery deadline instead of the normal poll", () =>
+    Effect.gen(function* () {
+      const coordinator = yield* PrHubJobCoordinator;
+      const settings = yield* ServerSettingsService;
+      yield* settings.updateSettings({ prHub: { pollIntervalSeconds: 300 } });
+      let calls = 0;
+      const refresh = () =>
+        Effect.sync(() => {
+          calls++;
+          const now = Date.now();
+          return {
+            ...snapshot,
+            status: calls === 1 ? ("degraded" as const) : ("ok" as const),
+            lastPolledAt: new Date(now).toISOString(),
+            nextRefreshAt: new Date(now + 30_000).toISOString(),
+          };
+        });
+      yield* coordinator.startMonitoring(refresh);
+      yield* TestClock.adjust("5 seconds");
+      assert.equal(calls, 1);
+      yield* TestClock.adjust("29 seconds");
+      assert.equal(calls, 1);
+      yield* TestClock.adjust("1 second");
+      assert.equal(calls, 2);
+      yield* settings.updateSettings({ prHub: { pollIntervalSeconds: 0 } });
+      yield* TestClock.adjust("10 minutes");
+      assert.equal(calls, 2);
+    }).pipe(Effect.provide(Layer.fresh(layer))),
+  );
   it.effect("monitors without a dashboard, starts once and honors disabled polling", () =>
     Effect.gen(function* () {
       const coordinator = yield* PrHubJobCoordinator;
@@ -87,3 +116,29 @@ it.layer(layer)("PR background coordination", (it) => {
     }),
   );
 });
+
+it.effect("bounds repeated stale error snapshots and ignores unrelated settings changes", () =>
+  Effect.gen(function* () {
+    const coordinator = yield* PrHubJobCoordinator;
+    const settings = yield* ServerSettingsService;
+    yield* settings.updateSettings({ prHub: { pollIntervalSeconds: 300 } });
+    let calls = 0;
+    yield* coordinator.startMonitoring(() =>
+      Effect.sync(() => {
+        calls++;
+        return {
+          ...snapshot,
+          status: "auth_required" as const,
+          lastPolledAt: new Date(0).toISOString(),
+        };
+      }),
+    );
+    yield* TestClock.adjust("5 seconds");
+    assert.equal(calls, 1);
+    yield* settings.updateSettings({ prHub: { excludeRepos: ["octo/other"] } });
+    yield* TestClock.adjust("29 seconds");
+    assert.equal(calls, 1);
+    yield* TestClock.adjust("1 second");
+    assert.equal(calls, 2);
+  }).pipe(Effect.provide(Layer.fresh(layer))),
+);

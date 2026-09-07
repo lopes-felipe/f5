@@ -6,7 +6,7 @@ import { PR_HUB_MERGE_STATE_QUERY, recheckUnknownMergeStates } from "./mergeStat
 
 import type { SearchTask } from "./discovery.ts";
 
-import { GitHubRequestPriority } from "../git/githubRequestScheduler.ts";
+import { githubRequestScheduler, GitHubRequestPriority } from "../git/githubRequestScheduler.ts";
 
 import { defaultPrHubCoverage } from "./readModel.ts";
 
@@ -24,7 +24,7 @@ import {
   PR_HUB_DETAILS_CHUNK_SIZE,
   PR_HUB_DETAILS_QUERY,
   PR_HUB_RECONCILE_QUERY,
-  PR_HUB_SEARCH_QUERY,
+  buildPrHubSearchQuery,
   PersistedPrRow,
   RECONCILE_NODE_CHUNK_SIZE,
   RECONCILE_REPO_NUMBER_CHUNK_SIZE,
@@ -35,6 +35,7 @@ import {
   asArray,
   asRecord,
   buildReconcileByNumberRequest,
+  buildTrackedByNumberRequest,
   buildSearchQueries,
   causeUserMessage,
   nodeArray,
@@ -79,12 +80,16 @@ export function createPrHubDiscovery(
     beginPrHubSearch,
     resumePrHubSearch,
     selectPrHubHydration,
+    finishPrHubHydration,
     syncPrHubRepositories,
     discoverNotificationSubjects,
   } = context.discovery;
   const fetchGraphqlDetails = (
     nodeIds: ReadonlyArray<string>,
-    priorities?: ReadonlyMap<string, { priority?: number }>,
+    priorities?: ReadonlyMap<
+      string,
+      { priority?: number; repository: string | null; number?: number }
+    >,
   ): Effect.Effect<
     {
       readonly nodesById: ReadonlyMap<string, Record<string, unknown>>;
@@ -114,7 +119,11 @@ export function createPrHubDiscovery(
               result.cause,
               "GitHub GraphQL PR detail request failed.",
             );
-            if (ids.length > 1 && shouldSplitDetailChunk(result.cause)) {
+            if (
+              ids.length > 1 &&
+              shouldSplitDetailChunk(result.cause) &&
+              !githubRequestScheduler.status(host).retryAt
+            ) {
               const mid = Math.ceil(ids.length / 2);
               yield* hydrateChunk(ids.slice(0, mid));
               yield* hydrateChunk(ids.slice(mid));
@@ -153,10 +162,85 @@ export function createPrHubDiscovery(
           }
         });
 
-      for (let index = 0; index < nodeIds.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
-        const ids = nodeIds.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
+      const knownIds: string[] = [];
+      const numbered: Array<{ key: string; repo: string; number: number; priority: number }> = [];
+      for (const key of nodeIds) {
+        const task = priorities?.get(key);
+        if (task?.number === undefined || !task.repository) knownIds.push(key);
+        else
+          numbered.push({
+            key,
+            repo: task.repository,
+            number: task.number,
+            priority: task.priority ?? 0,
+          });
+      }
+      const hydrateNumberChunk = (targets: typeof numbered): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const request = buildTrackedByNumberRequest(targets);
+          if (!request) return;
+          const response = yield* Effect.exit(
+            github.query({ cwd, document: request.query, variables: request.variables }),
+          );
+          if (
+            Exit.isFailure(response) &&
+            targets.length > 1 &&
+            shouldSplitDetailChunk(response.cause) &&
+            !githubRequestScheduler.status(host).retryAt
+          ) {
+            const mid = Math.ceil(targets.length / 2);
+            yield* hydrateNumberChunk(targets.slice(0, mid));
+            if (!githubRequestScheduler.status(host).retryAt)
+              yield* hydrateNumberChunk(targets.slice(mid));
+            return;
+          }
+          const body = Exit.isSuccess(response) ? asRecord(response.value) : null;
+          const data = asRecord(body?.data);
+          if (asArray(body?.errors).length > 0) {
+            degraded = true;
+            errorMessage ??= "GitHub GraphQL returned partial saved PR lookup errors.";
+          }
+          for (const { alias, key } of request.aliases) {
+            const task = targets.find((target) => `${target.repo}#${target.number}` === key)!;
+            const node = asRecord(asRecord(data?.[alias])?.pullRequest);
+            if (
+              node &&
+              stringValue(node.id) &&
+              stringValue(asRecord(node.repository)?.nameWithOwner)?.toLowerCase() ===
+                task.repo.toLowerCase() &&
+              node.number === task.number
+            ) {
+              nodesById.set(task.key, node);
+            } else {
+              degraded = true;
+              errorMessage ??= Exit.isFailure(response)
+                ? causeUserMessage(response.cause, "Saved PR lookup failed.")
+                : "Saved PR lookup returned no accessible data.";
+            }
+          }
+        });
+      for (let index = 0; index < numbered.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
+        if (githubRequestScheduler.status(host).retryAt) {
+          degraded = true;
+          break;
+        }
+        const targets = numbered.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
+        const rank = Math.max(...targets.map((target) => target.priority));
+        yield* hydrateNumberChunk(targets).pipe(
+          Effect.provideService(
+            GitHubRequestPriority,
+            rank >= 2 ? "attention" : rank === 1 ? "changed" : "cold",
+          ),
+        );
+      }
+      for (let index = 0; index < knownIds.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
+        const ids = knownIds.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
         if (ids.length === 0) continue;
         const rank = Math.max(...ids.map((id) => priorities?.get(id)?.priority ?? 0));
+        if (githubRequestScheduler.status(host).retryAt) {
+          degraded = true;
+          break;
+        }
         yield* hydrateChunk(ids).pipe(
           Effect.provideService(
             GitHubRequestPriority,
@@ -218,207 +302,19 @@ export function createPrHubDiscovery(
       };
     });
 
-  const discoveryGeneration = (viewerId: string) =>
-    sql<{
-      generation: string;
-    }>`SELECT json_extract(payload_json, '$.generation') AS generation FROM pr_hub_sync_tasks
-    WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${viewerId} AND kind = 'membership' ORDER BY task_key`.pipe(
-      Effect.map((rows) => rows.map((row) => row.generation).join(":")),
-      Effect.orDie,
-    );
-
-  const fetchGraphql = (
+  const hydrate = (
     viewer: ViewerIdentity,
-    bypassConditional = false,
-  ): Effect.Effect<FetchResult, never> =>
+    hydration: Map<
+      string,
+      { aliases: string[]; priority?: number; repository: string | null; number?: number }
+    >,
+    bypassConditional: boolean,
+  ) =>
     Effect.gen(function* () {
-      const queries = buildSearchQueries(viewer.login, viewer.teams);
-      const account = {
-        host,
-        viewerId: String(viewer.context.viewerId),
-        viewerLogin: viewer.login,
-        viewerTeams: viewer.teams,
-      };
-      const currentSettings = yield* settings.getSettings.pipe(Effect.orDie);
-      const generationBefore = yield* discoveryGeneration(account.viewerId);
-      const excluded = new Set(
-        currentSettings.prHub.excludeRepos.map((repo) => repo.toLowerCase()),
-      );
-      const teamListCapped = viewer.teams.length > TEAM_QUERY_CHUNK_SIZE * TEAM_QUERY_CHUNK_COUNT;
-      const queryByAlias: Record<string, string> = {
-        review_requested: queries.rr,
-        team_review_0: queries.tr0,
-        team_review_1: queries.tr1,
-        team_review_2: queries.tr2,
-        team_review_3: queries.tr3,
-        team_review_4: queries.tr4,
-        author: queries.au,
-        assignee: queries.as,
-        mentioned: queries.me,
-        involved: queries.inv,
-        recently_closed: queries.closed,
-      };
-      const searchScopes = new Map<string, SearchTask>();
-      const scopedQueries = { ...queries };
-      const variableByAlias = {
-        review_requested: "rr",
-        team_review_0: "tr0",
-        team_review_1: "tr1",
-        team_review_2: "tr2",
-        team_review_3: "tr3",
-        team_review_4: "tr4",
-        author: "au",
-        assignee: "as",
-        mentioned: "me",
-        involved: "inv",
-        recently_closed: "closed",
-      } as const;
-      for (const [alias, variable] of Object.entries(variableByAlias)) {
-        const scope = yield* beginPrHubSearch(account, alias, queryByAlias[alias]!).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.orDie,
-        );
-        searchScopes.set(alias, scope);
-        scopedQueries[variable] = scope.query;
-      }
-      const result = yield* Effect.exit(
-        github.query({
-          cwd,
-          document: PR_HUB_SEARCH_QUERY,
-          variables: scopedQueries,
-        }),
-      );
-      if (Exit.isFailure(result)) {
-        yield* Effect.logWarning("PR Hub GraphQL search failed; using fallback search", {
-          detail: causeUserMessage(result.cause, "GitHub GraphQL search request failed."),
-        });
-        return yield* fetchFallback(
-          viewer,
-          `${causeUserMessage(result.cause, "GitHub GraphQL search request failed.")} Showing fallback search results.`,
-        );
-      }
-
-      const response = asRecord(result.value);
-      const data = asRecord(response?.data);
-      if (!data) {
-        return yield* fetchFallback(viewer, "GitHub GraphQL response did not contain data.");
-      }
-      const graphQlErrors = asArray(response?.errors);
-      const graphQlErrorMessage =
-        graphQlErrors.length > 0
-          ? `GitHub GraphQL returned partial errors for ${graphQlErrors.length} bucket(s).`
-          : undefined;
-
-      const aliasNames = [
-        "review_requested",
-        "team_review_0",
-        "team_review_1",
-        "team_review_2",
-        "team_review_3",
-        "team_review_4",
-        "author",
-        "assignee",
-        "mentioned",
-        "involved",
-        "recently_closed",
-      ] as const;
-      const aliasesByNodeId = new Map<string, Set<string>>();
-      const cappedBuckets: string[] = [];
-      for (const alias of aliasNames) {
-        const connection = asRecord(data[alias]);
-        if (!connection) continue;
-        const nodes = nodeArray(connection);
-        if (numberValue(connection.issueCount) > nodes.length) cappedBuckets.push(alias);
-        for (const node of nodes) {
-          const id = stringValue(node.id);
-          if (!id) continue;
-          const aliases = aliasesByNodeId.get(id) ?? new Set<string>();
-          aliases.add(
-            alias === "recently_closed"
-              ? "author"
-              : alias.startsWith("team_review_")
-                ? "team_review"
-                : alias,
-          );
-          aliasesByNodeId.set(id, aliases);
-        }
-      }
-
-      for (const alias of aliasNames) {
-        yield* ingestPrHubSearch(account, searchScopes.get(alias)!, data[alias], excluded).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.orDie,
-        );
-      }
-      const configured = yield* getProjectRepositoryCandidates();
-      const manuallyTracked = yield* sql<{
-        repo: string;
-      }>`SELECT DISTINCT repo FROM pr_hub_viewer_state WHERE provider_kind = ${providerKind} AND host = ${host} AND viewer_id = ${account.viewerId} AND json_extract(viewer_payload_json, '$.manuallyTracked') = 1`.pipe(
-        Effect.orDie,
-      );
-      const knownRepos = yield* Effect.exit(
-        syncPrHubRepositories(
-          account,
-          configured.map((candidate) => candidate.repository.nameWithOwner),
-          [
-            { alias: "involved", query: queries.inv },
-            { alias: "review_requested", query: queries.rr },
-            ...[queries.tr0, queries.tr1, queries.tr2, queries.tr3, queries.tr4]
-              .filter((query) => query !== NO_MATCH_SEARCH_QUERY)
-              .map((query, index) => ({ alias: `team_review_${index}`, query })),
-          ],
-          excluded,
-          (document, variables) => github.query({ cwd, document, variables }),
-          Date.now(),
-          manuallyTracked.map((row) => row.repo),
-        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      );
-      if (Exit.isFailure(knownRepos)) cappedBuckets.push("known_repositories");
-      const continued = yield* Effect.exit(
-        resumePrHubSearch(account, excluded, (document, variables) =>
-          github.query({ cwd, document, variables }),
-        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-      );
-      if (Exit.isFailure(continued)) cappedBuckets.push("discovery_continuation");
-      const notificationDiscovery = currentSettings.prHub.discoverNotifications
-        ? yield* Effect.exit(
-            discoverNotificationSubjects(account, excluded, (endpoint, query) =>
-              githubCli
-                .request({
-                  cwd,
-                  context: viewer.context,
-                  method: "GET",
-                  endpoint,
-                  ...(query ? { query } : {}),
-                  ...(bypassConditional
-                    ? {}
-                    : {
-                        cache: {
-                          identity: "notification-discovery-v1",
-                          validate: (body: unknown) =>
-                            endpoint === "notifications"
-                              ? Array.isArray(body) &&
-                                body.every(
-                                  (item) =>
-                                    typeof asRecord(asRecord(item)?.subject)?.type === "string",
-                                )
-                              : typeof asRecord(body)?.node_id === "string",
-                        },
-                      }),
-                })
-                .pipe(Effect.mapError(mapGitHubCliError)),
-            ),
-          )
-        : null;
-      yield* enqueuePrHubTracked(account, excluded).pipe(Effect.orDie);
-      const hydration = yield* selectPrHubHydration(account, excluded).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.orDie,
-      );
-      aliasesByNodeId.clear();
-      for (const [nodeId, task] of hydration)
-        aliasesByNodeId.set(
-          nodeId,
+      const account = { host, viewerId: String(viewer.context.viewerId) };
+      const aliasesByNodeId = new Map(
+        [...hydration].map(([id, task]) => [
+          id,
           new Set(
             task.aliases.map((alias) =>
               alias === "recently_closed"
@@ -428,15 +324,9 @@ export function createPrHubDiscovery(
                   : alias,
             ),
           ),
-        );
+        ]),
+      );
       const details = yield* fetchGraphqlDetails([...aliasesByNodeId.keys()], hydration);
-      if (aliasesByNodeId.size > 0 && details.nodesById.size === 0) {
-        return yield* fetchFallback(
-          viewer,
-          `${details.errorMessage ?? "GitHub GraphQL PR detail request failed."} Showing fallback search results.`,
-        );
-      }
-
       let attentionIncomplete = false;
       const detailedNodes = new Map(details.nodesById);
       // Continue only hydrated, relevant PRs, using the same captured account and host budgets.
@@ -504,15 +394,250 @@ export function createPrHubDiscovery(
         })
         .filter((pr): pr is NormalizedPr => pr !== null);
 
+      return {
+        pullRequests,
+        details,
+        attentionIncomplete,
+        missingDetailCount: hydration.size - pullRequests.length,
+      };
+    });
+
+  const discoveryGeneration = (viewerId: string) =>
+    sql<{
+      generation: string;
+    }>`SELECT json_extract(payload_json, '$.generation') AS generation FROM pr_hub_sync_tasks
+    WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${viewerId} AND kind = 'membership' ORDER BY task_key`.pipe(
+      Effect.map((rows) => rows.map((row) => row.generation).join(":")),
+      Effect.orDie,
+    );
+
+  const loadGlobalSearchSources = (viewerId: string) =>
+    Effect.gen(function* () {
+      const rows = yield* sql<{
+        task_key: string;
+        payload_json: string;
+      }>`SELECT task_key, payload_json FROM pr_hub_sync_tasks
+      WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${viewerId} AND kind = 'source_watermark'
+        AND instr(json_extract(payload_json, '$.task.query'), ' repo:') = 0
+      ORDER BY updated_at DESC, task_key DESC`.pipe(Effect.orDie);
+      const sources = new Map<string, { complete: boolean; task: SearchTask }>();
+      for (const row of rows) {
+        const source = JSON.parse(row.payload_json) as { complete: boolean; task: SearchTask };
+        sources.set(row.task_key, source);
+      }
+      return sources;
+    });
+
+  const fetchGraphql = (
+    viewer: ViewerIdentity,
+    bypassConditional: boolean,
+    persistHydration: (prs: readonly NormalizedPr[]) => Effect.Effect<void>,
+  ): Effect.Effect<FetchResult, never> =>
+    Effect.gen(function* () {
+      const queries = buildSearchQueries(viewer.login, viewer.teams);
+      const account = {
+        host,
+        viewerId: String(viewer.context.viewerId),
+        viewerLogin: viewer.login,
+        viewerTeams: viewer.teams,
+      };
+      const currentSettings = yield* settings.getSettings.pipe(Effect.orDie);
+      const generationBefore = yield* discoveryGeneration(account.viewerId);
+      const excluded = new Set(
+        currentSettings.prHub.excludeRepos.map((repo) => repo.toLowerCase()),
+      );
+      const hydrateAndPersist = (tasks: Parameters<typeof hydrate>[1]) =>
+        Effect.gen(function* () {
+          const result = yield* hydrate(viewer, tasks, bypassConditional);
+          yield* persistHydration(result.pullRequests);
+          const completed = [...tasks]
+            .filter(([key, task]) =>
+              result.pullRequests.some(
+                (pr) =>
+                  pr.nodeId === key ||
+                  (pr.repository.nameWithOwner.toLowerCase() === task.repository?.toLowerCase() &&
+                    pr.number === task.number),
+              ),
+            )
+            .map(([key]) => key);
+          yield* finishPrHubHydration(account, completed).pipe(Effect.orDie);
+          return result;
+        });
+      let recoveredPullRequests: readonly NormalizedPr[] = [];
+      let recoveryError: string | undefined;
+      if (!githubRequestScheduler.status(host).retryAt) {
+        yield* enqueuePrHubTracked(account, excluded).pipe(Effect.orDie);
+        const recovery = yield* selectPrHubHydration(account, excluded).pipe(Effect.orDie);
+        if (recovery.size > 0) {
+          const recovered = yield* hydrateAndPersist(recovery);
+          recoveredPullRequests = recovered.pullRequests;
+          recoveryError =
+            recovered.details.errorMessage ??
+            (recovered.attentionIncomplete || recovered.missingDetailCount > 0
+              ? "Saved PR revalidation is incomplete; remaining work will resume."
+              : undefined);
+        }
+      }
+      const teamListCapped = viewer.teams.length > TEAM_QUERY_CHUNK_SIZE * TEAM_QUERY_CHUNK_COUNT;
+      const queryByAlias: Record<string, string> = {
+        review_requested: queries.rr,
+        team_review_0: queries.tr0,
+        team_review_1: queries.tr1,
+        team_review_2: queries.tr2,
+        team_review_3: queries.tr3,
+        team_review_4: queries.tr4,
+        author: queries.au,
+        assignee: queries.as,
+        mentioned: queries.me,
+        involved: queries.inv,
+        recently_closed: queries.closed,
+      };
+      const variableByAlias = {
+        review_requested: "rr",
+        team_review_0: "tr0",
+        team_review_1: "tr1",
+        team_review_2: "tr2",
+        team_review_3: "tr3",
+        team_review_4: "tr4",
+        author: "au",
+        assignee: "as",
+        mentioned: "me",
+        involved: "inv",
+        recently_closed: "closed",
+      } as const;
+      const activeAliases = Object.keys(queryByAlias).filter(
+        (alias) => queryByAlias[alias] !== NO_MATCH_SEARCH_QUERY,
+      );
+      const currentSources = new Map<string, string>();
+      const data: Record<string, unknown> = {};
+      const graphQlErrors: unknown[] = [];
+      let searchErrorMessage: string | undefined;
+      for (const [alias, variable] of Object.entries(variableByAlias)) {
+        if (queryByAlias[alias] === NO_MATCH_SEARCH_QUERY) continue;
+        const scope = yield* beginPrHubSearch(account, alias, queryByAlias[alias]!).pipe(
+          Effect.orDie,
+        );
+        if (scope.sourceKey) currentSources.set(alias, scope.sourceKey);
+        // An unfinished scope already has its exact next page durably queued.
+        if (scope.queued) continue;
+        const result = yield* Effect.exit(
+          github.query({
+            cwd,
+            document: buildPrHubSearchQuery(alias, variable),
+            variables: { [variable]: scope.query },
+          }),
+        );
+        if (Exit.isFailure(result)) {
+          searchErrorMessage ??= causeUserMessage(
+            result.cause,
+            "GitHub GraphQL search request failed.",
+          );
+          yield* ingestPrHubSearch(account, scope, null, excluded).pipe(Effect.orDie);
+          if (githubRequestScheduler.status(host).retryAt) break;
+          continue;
+        }
+        const response = asRecord(result.value);
+        graphQlErrors.push(...asArray(response?.errors));
+        data[alias] = asRecord(response?.data)?.[alias];
+        yield* ingestPrHubSearch(account, scope, data[alias], excluded).pipe(Effect.orDie);
+      }
+      const graphQlErrorMessage =
+        searchErrorMessage ??
+        (graphQlErrors.length > 0
+          ? `GitHub GraphQL returned partial errors for ${graphQlErrors.length} bucket(s).`
+          : undefined);
+      if (searchErrorMessage)
+        yield* Effect.logWarning("PR Hub search incomplete", { detail: searchErrorMessage });
+
+      const cappedBuckets: string[] = [];
+      for (const alias of activeAliases) {
+        const connection = asRecord(data[alias]);
+        if (connection && numberValue(connection.issueCount) > nodeArray(connection).length)
+          cappedBuckets.push(alias);
+      }
+
+      const configured = yield* getProjectRepositoryCandidates();
+      const manuallyTracked = yield* sql<{
+        repo: string;
+      }>`SELECT DISTINCT repo FROM pr_hub_viewer_state WHERE provider_kind = ${providerKind} AND host = ${host} AND viewer_id = ${account.viewerId} AND json_extract(viewer_payload_json, '$.manuallyTracked') = 1`.pipe(
+        Effect.orDie,
+      );
+      const knownRepos = yield* Effect.exit(
+        syncPrHubRepositories(
+          account,
+          configured.map((candidate) => candidate.repository.nameWithOwner),
+          [
+            { alias: "involved", query: queries.inv },
+            { alias: "review_requested", query: queries.rr },
+            ...[queries.tr0, queries.tr1, queries.tr2, queries.tr3, queries.tr4]
+              .filter((query) => query !== NO_MATCH_SEARCH_QUERY)
+              .map((query, index) => ({ alias: `team_review_${index}`, query })),
+          ],
+          excluded,
+          (document, variables) => github.query({ cwd, document, variables }),
+          Date.now(),
+          manuallyTracked.map((row) => row.repo),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+      if (Exit.isFailure(knownRepos)) cappedBuckets.push("known_repositories");
+      const continued = yield* Effect.exit(
+        resumePrHubSearch(account, excluded, (document, variables) =>
+          github.query({ cwd, document, variables }),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+      if (Exit.isFailure(continued)) {
+        cappedBuckets.push("discovery_continuation");
+        searchErrorMessage ??= causeUserMessage(
+          continued.cause,
+          "Search continuation is incomplete.",
+        );
+      }
+      const notificationDiscovery = currentSettings.prHub.discoverNotifications
+        ? yield* Effect.exit(
+            discoverNotificationSubjects(account, excluded, (endpoint, query) =>
+              githubCli
+                .request({
+                  cwd,
+                  context: viewer.context,
+                  method: "GET",
+                  endpoint,
+                  ...(query ? { query } : {}),
+                  ...(bypassConditional
+                    ? {}
+                    : {
+                        cache: {
+                          identity: "notification-discovery-v1",
+                          validate: (body: unknown) =>
+                            endpoint === "notifications"
+                              ? Array.isArray(body) &&
+                                body.every(
+                                  (item) =>
+                                    typeof asRecord(asRecord(item)?.subject)?.type === "string",
+                                )
+                              : typeof asRecord(body)?.node_id === "string",
+                        },
+                      }),
+                })
+                .pipe(Effect.mapError(mapGitHubCliError)),
+            ),
+          )
+        : null;
+      const hydration = githubRequestScheduler.status(host).retryAt
+        ? new Map()
+        : yield* selectPrHubHydration(account, excluded).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.orDie,
+          );
+      const { pullRequests, details, attentionIncomplete, missingDetailCount } =
+        yield* hydrateAndPersist(hydration);
+
       const pending = yield* sql<{
         count: number;
       }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${account.viewerId} AND kind IN ('search', 'hydrate')`.pipe(
         Effect.orDie,
       );
-      if ((pending[0]?.count ?? 0) > details.nodesById.size)
-        cappedBuckets.push("monitoring_backlog");
+      if ((pending[0]?.count ?? 0) > 0) cappedBuckets.push("monitoring_backlog");
       if (teamListCapped) cappedBuckets.push("team_review_teams");
-      const missingDetailCount = aliasesByNodeId.size - details.nodesById.size;
       const missingDetailMessage =
         missingDetailCount > 0
           ? `GitHub GraphQL returned incomplete PR detail data for ${missingDetailCount} PR(s).`
@@ -537,17 +662,19 @@ export function createPrHubDiscovery(
         FROM pr_hub_sync_tasks WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${account.viewerId}`.pipe(
         Effect.orDie,
       );
-      const remainingHydrations = Math.max(0, (work[0]?.hydrations ?? 0) - pullRequests.length);
+      const remainingHydrations = work[0]?.hydrations ?? 0;
+      const refreshedPullRequests = [
+        ...new Map([...recoveredPullRequests, ...pullRequests].map((pr) => [pr.url, pr])).values(),
+      ];
       const repoSearches = work[0]?.repo_searches ?? 0;
       const globalSearches = work[0]?.searches ?? 0;
-      const unknownSearch = aliasNames.some((alias) => {
-        const connection = asRecord(data[alias]);
-        return (
-          !connection ||
-          (numberValue(connection.issueCount) > nodeArray(connection).length &&
-            asRecord(connection.pageInfo)?.hasNextPage !== true)
-        );
-      });
+      const completedSources = yield* loadGlobalSearchSources(account.viewerId);
+      const unknownSearch = activeAliases.some(
+        (alias) => completedSources.get(currentSources.get(alias) ?? "")?.complete !== true,
+      );
+      // Incompleteness limits reconciliation, but is not itself a failed refresh.
+      if (unknownSearch && !cappedBuckets.includes("monitoring_backlog"))
+        cappedBuckets.push("incomplete_search");
       const generation = yield* discoveryGeneration(account.viewerId);
       const coverage: NonNullable<PrHubSnapshot["coverage"]> = [
         {
@@ -606,9 +733,10 @@ export function createPrHubDiscovery(
           status:
             !attentionIncomplete &&
             [...(yield* getSnapshot).pullRequests].every((previous) =>
-              pullRequests.some(
+              refreshedPullRequests.some(
                 (pr) =>
-                  pr.repository.nameWithOwner === previous.repository.nameWithOwner &&
+                  pr.repository.nameWithOwner.toLowerCase() ===
+                    previous.repository.nameWithOwner.toLowerCase() &&
                   pr.number === previous.number,
               ),
             )
@@ -617,12 +745,31 @@ export function createPrHubDiscovery(
         },
       ];
 
+      const fallback =
+        searchErrorMessage || (details.degraded && pullRequests.length === 0)
+          ? yield* fetchFallback(
+              viewer,
+              searchErrorMessage ?? details.errorMessage ?? "PR detail recovery is incomplete.",
+            )
+          : null;
       return {
         coverage: coverage.map((scope) => ({ ...scope, generation })),
-        pullRequests,
+        pullRequests: [
+          ...refreshedPullRequests,
+          ...(fallback?.pullRequests ?? []).filter(
+            (pr) => !refreshedPullRequests.some((current) => current.url === pr.url),
+          ),
+        ],
         cappedBuckets,
-        degraded: graphQlErrors.length > 0 || detailDegraded || viewer.teamLookupError !== null,
+        degraded:
+          !!recoveryError ||
+          !!searchErrorMessage ||
+          graphQlErrors.length > 0 ||
+          detailDegraded ||
+          viewer.teamLookupError !== null,
         errorMessage:
+          fallback?.errorMessage ??
+          recoveryError ??
           graphQlErrorMessage ??
           detailErrorMessage ??
           (viewer.teamLookupError
@@ -643,12 +790,30 @@ export function createPrHubDiscovery(
         { alias: "mentioned", args: ["--mentions", "@me", "--state", "open"] },
         { alias: "involved", args: ["--involves", "@me", "--state", "open"] },
       ] as const;
+      if (githubRequestScheduler.status(host).retryAt)
+        return {
+          pullRequests: [],
+          cappedBuckets: [],
+          degraded: true,
+          errorMessage: `${message} Fallback search deferred until the GitHub retry window.`,
+        };
+      let succeeded = 0;
+      let failed = 0;
+      let deferred = false;
       const nodesByUrl = new Map<string, { node: Record<string, unknown>; aliases: Set<string> }>();
       for (const bucket of buckets) {
+        if (githubRequestScheduler.status(host).retryAt) {
+          deferred = true;
+          break;
+        }
         const exit = yield* Effect.exit(
           github.searchPullRequests({ cwd, qualifiers: bucket.args, limit: 50 }),
         );
-        if (Exit.isFailure(exit)) continue;
+        if (Exit.isFailure(exit)) {
+          failed++;
+          continue;
+        }
+        succeeded++;
         for (const rawNode of asArray(exit.value)) {
           const node = asRecord(rawNode);
           const url = node ? stringValue(node.url) : null;
@@ -658,6 +823,12 @@ export function createPrHubDiscovery(
           nodesByUrl.set(url, entry);
         }
       }
+      const previous = yield* getSnapshot;
+      const verifiedUrls = new Set(
+        [...previous.pullRequests, ...previous.recentlyResolved]
+          .filter((pr) => pr.lastVerifiedAt !== null)
+          .map((pr) => pr.url),
+      );
       const pullRequests = [...nodesByUrl.values()]
         .map((entry) =>
           normalizeFallbackPr({
@@ -667,12 +838,12 @@ export function createPrHubDiscovery(
             viewerLogin: viewer.login,
           }),
         )
-        .filter((pr): pr is NormalizedPr => pr !== null);
+        .filter((pr): pr is NormalizedPr => pr !== null && !verifiedUrls.has(pr.url));
       return {
         pullRequests,
         cappedBuckets: [],
         degraded: true,
-        errorMessage: message,
+        errorMessage: `${message} ${succeeded ? `Fallback search completed ${succeeded} of ${buckets.length} scopes.` : "Fallback search failed; no fallback results were retrieved."}${failed ? ` ${failed} scopes failed.` : ""}${deferred ? " Remaining scopes are deferred until the GitHub retry window." : ""}`,
       };
     }).pipe(
       Effect.catchCause(() =>

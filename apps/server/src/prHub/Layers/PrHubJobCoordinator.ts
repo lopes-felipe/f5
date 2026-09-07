@@ -1,6 +1,8 @@
+import { nextPrHubRefreshAt } from "../refreshSchedule.ts";
+import { githubRequestScheduler } from "../../git/githubRequestScheduler.ts";
 import { createPrHubRefresh } from "../coordination.ts";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { Cause, Deferred, Duration, Effect, Layer, Ref, Stream } from "effect";
+import { Cause, Deferred, Duration, Effect, Layer, Option, Ref, Stream } from "effect";
 import type { PrHubSnapshot } from "@t3tools/contracts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { GitHubRequestPriority } from "../../git/githubRequestScheduler.ts";
@@ -101,7 +103,7 @@ export const PrHubJobCoordinatorLive = Layer.effect(
                     );
                     return;
                   }
-                  yield* refresh({ mode: "if_stale" }).pipe(
+                  const result = yield* refresh({ mode: "if_stale" }).pipe(
                     Effect.provideService(GitHubRequestPriority, "background"),
                     Effect.catchCause((cause) =>
                       Effect.logWarning("PR Hub refresh failed", {
@@ -109,7 +111,26 @@ export const PrHubJobCoordinatorLive = Layer.effect(
                       }),
                     ),
                   );
-                  yield* Effect.sleep(Duration.seconds(interval));
+                  const next = result
+                    ? nextPrHubRefreshAt(
+                        result,
+                        interval,
+                        githubRequestScheduler.status(result.host),
+                      )
+                    : null;
+                  const delay = next
+                    ? Math.max(30_000, Date.parse(next) - Date.now())
+                    : interval * 1000;
+                  yield* Effect.raceFirst(
+                    Effect.sleep(Duration.millis(delay)),
+                    settings.streamChanges.pipe(
+                      Stream.filter((next) => next.prHub.pollIntervalSeconds !== interval),
+                      Stream.runHead,
+                      Effect.flatMap((observed) =>
+                        Option.isSome(observed) ? Effect.void : Effect.never,
+                      ),
+                    ),
+                  );
                 }),
               ),
             ),

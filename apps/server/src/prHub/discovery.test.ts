@@ -256,7 +256,7 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
           start,
         );
         const resumed = yield* beginPrHubSearch(account, "author", task.query, start + 3600_000);
-        assert.deepStrictEqual(resumed, first);
+        assert.deepStrictEqual(resumed, { ...first, queued: true });
         yield* resumePrHubSearch(account, new Set(), (_, variables) => {
           assert.equal(variables.cursor, "next");
           assert.equal(variables.query, first.query);
@@ -282,6 +282,38 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
         const repair = yield* beginPrHubSearch(account, "author", task.query, start + 7 * 3600_000);
         assert.include(repair.query, "updated:<=2026-01-01T19:00:00.000Z");
       }),
+  );
+
+  it.effect("starts a changed base query while the old source is still queued", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const previous = yield* beginPrHubSearch(
+        account,
+        "team_review_0",
+        "is:pr team-review-requested:org/old",
+      );
+      yield* ingestPrHubSearch(
+        account,
+        previous,
+        { issueCount: 2, nodes: [], pageInfo: { hasNextPage: true, endCursor: "old-page" } },
+        new Set(),
+      );
+      const current = yield* beginPrHubSearch(
+        account,
+        "team_review_0",
+        "is:pr team-review-requested:org/new",
+      );
+      assert.notEqual(current.sourceKey, previous.sourceKey);
+      assert.notEqual(current.queued, true);
+      assert.include(current.query, "team-review-requested:org/new");
+      assert.equal(current.cursor, null);
+      const unchanged = yield* beginPrHubSearch(
+        account,
+        "team_review_0",
+        "is:pr team-review-requested:org/old",
+      );
+      assert.equal(unchanged.queued, true);
+    }),
   );
 
   it.effect("keeps a continuation cursor when a later poll repeats the first page", () =>

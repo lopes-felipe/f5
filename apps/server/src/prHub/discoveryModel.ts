@@ -964,35 +964,18 @@ export function buildSearchQueries(login: string, teams: ReadonlyArray<string>) 
   };
 }
 
-export const PR_HUB_SEARCH_QUERY = `
-query PrHubSearch($rr:String!,$tr0:String!,$tr1:String!,$tr2:String!,$tr3:String!,$tr4:String!,$au:String!,$as:String!,$me:String!,$inv:String!,$closed:String!){
-  review_requested: search(query:$rr,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_0: search(query:$tr0,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_1: search(query:$tr1,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_2: search(query:$tr2,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_3: search(query:$tr3,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_4: search(query:$tr4,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  author: search(query:$au,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  assignee: search(query:$as,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  mentioned: search(query:$me,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  involved: search(query:$inv,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  recently_closed: search(query:$closed,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  rateLimit { cost remaining limit resetAt }
-}
-fragment PrSearchFields on PullRequest {
-  id updatedAt repository { nameWithOwner }
-}
-`;
-
-export const PR_HUB_DETAILS_QUERY = `
-query PrHubDetails($ids:[ID!]!){
-  nodes(ids:$ids){
-    ... on PullRequest {
-      ...PrFields
+/** One independently checkpointed relationship scope per request. */
+export function buildPrHubSearchQuery(alias: string, variable: string) {
+  return `query PrHubSearch($${variable}:String!){
+    ${alias}: search(query:$${variable},type:ISSUE,first:100){
+      issueCount pageInfo { hasNextPage endCursor }
+      nodes { ... on PullRequest { id updatedAt repository { nameWithOwner } } }
     }
-  }
-  rateLimit { cost remaining limit resetAt }
+    rateLimit { cost remaining limit resetAt }
+  }`;
 }
+
+const PR_HUB_PR_FIELDS = `
 fragment PrFields on PullRequest {
   id
   number
@@ -1029,6 +1012,18 @@ fragment PrFields on PullRequest {
 }
 `;
 
+export const PR_HUB_DETAILS_QUERY = `
+query PrHubDetails($ids:[ID!]!){
+  nodes(ids:$ids){
+    ... on PullRequest {
+      ...PrFields
+    }
+  }
+  rateLimit { cost remaining limit resetAt }
+}
+${PR_HUB_PR_FIELDS}
+`;
+
 export const PR_HUB_RECONCILE_QUERY = `
 query PrHubReconcile($ids:[ID!]!){
   nodes(ids:$ids){
@@ -1046,6 +1041,28 @@ query PrHubReconcile($ids:[ID!]!){
 
 export function buildReconcileByNumberRequest(
   targets: ReadonlyArray<Pick<PersistedPrRow, "repo" | "number">>,
+): ReconcileByNumberRequest | null {
+  return buildByNumberRequest(
+    targets,
+    "PrHubReconcileByNumber",
+    "PrHubTerminalFields",
+    `fragment PrHubTerminalFields on PullRequest {
+  id state closedAt mergedAt updatedAt
+}`,
+  );
+}
+
+export function buildTrackedByNumberRequest(
+  targets: ReadonlyArray<Pick<PersistedPrRow, "repo" | "number">>,
+): ReconcileByNumberRequest | null {
+  return buildByNumberRequest(targets, "PrHubTrackedByNumber", "PrFields", PR_HUB_PR_FIELDS);
+}
+
+function buildByNumberRequest(
+  targets: ReadonlyArray<Pick<PersistedPrRow, "repo" | "number">>,
+  operation: string,
+  fragmentName: string,
+  fragment: string,
 ): ReconcileByNumberRequest | null {
   const variableDefinitions: string[] = [];
   const selections: string[] = [];
@@ -1066,7 +1083,7 @@ export function buildReconcileByNumberRequest(
     variables[`name${index}`] = repository.name;
     variables[`number${index}`] = target.number;
     selections.push(
-      `${alias}: repository(owner:$owner${index},name:$name${index}){ pullRequest(number:$number${index}){ ...PrHubTerminalFields } }`,
+      `${alias}: repository(owner:$owner${index},name:$name${index}){ pullRequest(number:$number${index}){ ...${fragmentName} } }`,
     );
     aliases.push({ alias, key: `${target.repo}#${target.number}` });
   }
@@ -1074,16 +1091,11 @@ export function buildReconcileByNumberRequest(
   if (aliases.length === 0) return null;
   return {
     query: `
-query PrHubReconcileByNumber(${variableDefinitions.join(",")}){
+query ${operation}(${variableDefinitions.join(",")}){
   ${selections.join("\n  ")}
+  rateLimit { cost remaining limit resetAt }
 }
-fragment PrHubTerminalFields on PullRequest {
-  id
-  state
-  closedAt
-  mergedAt
-  updatedAt
-}
+${fragment}
 `,
     variables,
     aliases,
