@@ -181,10 +181,14 @@ export function createPrHubRefresh(
                   scopeChanged(value) ? Effect.fail(changedScope()) : Effect.void,
                 ),
               ),
+            // Only an observed scope change invalidates a read. A settings stream that
+            // simply ends must not cancel in-flight work with a misleading reason.
             readInvalidated: settings.streamChanges.pipe(
               Stream.filter(scopeChanged),
               Stream.runHead,
-              Effect.andThen(Effect.fail(changedScope())),
+              Effect.flatMap((observed) =>
+                Option.isSome(observed) ? Effect.fail(changedScope()) : Effect.never,
+              ),
             ),
           }),
         ),

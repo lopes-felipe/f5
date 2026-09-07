@@ -166,13 +166,21 @@ export function submitCommentOperation(
     const outcome = classifyPrWrite(sent);
     if (status !== "succeeded")
       status = outcome.safeToRetry ? "prepared" : outcome.rejected ? "rejected" : "outcome_unknown";
-    yield* transition(
+    const settled = yield* transition(
       owner,
       creating,
       status,
       remoteId,
       status === "succeeded" ? undefined : outcome.message,
     );
+    // A concurrent reconciliation can move this row off `creating` while the POST is in
+    // flight. Proven acceptance outranks that guess: re-apply it from the unknown state
+    // rather than discarding evidence GitHub already gave us.
+    if (!settled && status === "succeeded") {
+      const current = yield* readCommentOperation(owner, input.id);
+      if (current?.status === "outcome_unknown")
+        yield* transition(owner, current, "succeeded", remoteId);
+    }
     return (yield* readCommentOperation(owner, input.id))!;
   });
 }

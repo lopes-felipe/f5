@@ -37,6 +37,16 @@ export function withPrHubDiscoveryLease<A, E, R>(
         detail:
           "The discovery lease expired or was superseded. Its work will resume with the current owner.",
       });
+    // A failing query is not a lost lease. Reporting one as the other hides real storage
+    // faults behind a message that invites an endless retry.
+    const unreadable = (cause: unknown) =>
+      new SourceControlProviderError({
+        provider: "github",
+        operation: "prHub.discoveryLease",
+        kind: "generic",
+        detail: "The discovery lease could not be read. Check local database health.",
+        cause,
+      });
     const acquire = sql<{
       task_key: string;
     }>`UPDATE pr_hub_sync_tasks SET lease_owner = ${owner}, lease_expires_at = ${expiry()}
@@ -46,7 +56,7 @@ export function withPrHubDiscoveryLease<A, E, R>(
       const rows = yield* sql<{ task_key: string }>`SELECT task_key FROM pr_hub_sync_tasks
         WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId} AND kind = ${kind} AND task_key = ${key}
         AND lease_owner = ${owner} AND lease_expires_at > ${timestamp()}`.pipe(
-        Effect.mapError(() => lost()),
+        Effect.mapError(unreadable),
       );
       if (!rows.length) return yield* lost();
     });
@@ -59,7 +69,7 @@ export function withPrHubDiscoveryLease<A, E, R>(
             }>`UPDATE pr_hub_sync_tasks SET lease_expires_at = ${expiry()}
         WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId} AND kind = ${kind} AND task_key = ${key}
         AND lease_owner = ${owner} AND lease_expires_at > ${timestamp()} RETURNING task_key`.pipe(
-              Effect.mapError(() => lost()),
+              Effect.mapError(unreadable),
             );
             if (!rows.length) return yield* lost();
           }),

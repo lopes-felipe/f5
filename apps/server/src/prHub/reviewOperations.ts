@@ -83,6 +83,17 @@ export function prepareReviewOperation(
             return yield* invalid("The operation ID already belongs to different review content.");
           return existing;
         }
+        // A partial unique index allows one active review submission per PR. Name the
+        // blocking operation rather than letting the INSERT raise a constraint error.
+        const active = yield* sql<{ operation_id: string; status: string }>`
+          SELECT operation_id, status FROM pr_hub_operations
+          WHERE provider_kind = ${owner.provider} AND host = ${owner.host} AND viewer_id = ${owner.viewerId}
+            AND repo = ${owner.repo} AND number = ${owner.number} AND kind = 'review'
+            AND status NOT IN ('succeeded', 'failed_before_send', 'rejected', 'abandoned') LIMIT 1`;
+        if (active[0])
+          return yield* invalid(
+            `Another review submission for this PR is still ${active[0].status}. Resolve or cancel it before preparing a new one.`,
+          );
         const draft: PrHubReviewDraft | null = input.quick
           ? {
               version: 0,

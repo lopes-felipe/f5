@@ -51,11 +51,21 @@ export interface GitHubApiRequest {
 }
 
 const credentials = new WeakMap<GitHubCredentialContext, { token: string; fingerprint: string }>();
-const TOKEN_VARIABLES = new Set([
+/**
+ * Variables that can re-authenticate or retarget a `gh` invocation, so an inherited
+ * value must never reach a credential-scoped call. Purely local configuration
+ * (GH_CONFIG_DIR, GH_PAGER, GH_EDITOR, …) is deliberately preserved: stripping it
+ * would break users who point `gh` at their own config.
+ */
+const OVERRIDDEN_VARIABLES = new Set([
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "GH_ENTERPRISE_TOKEN",
   "GITHUB_ENTERPRISE_TOKEN",
+  "GH_HOST",
+  "GH_DEBUG",
+  // Silently rewrites the target of `gh pr`/`gh repo` when no --repo is given.
+  "GH_REPO",
 ]);
 
 function normalizeHost(host: string): string {
@@ -72,11 +82,11 @@ function isCloudHost(host: string): boolean {
 
 function cleanEnvironment(): NodeJS.ProcessEnv {
   return Object.fromEntries(
-    Object.entries(process.env).filter(
-      ([key]) =>
-        !TOKEN_VARIABLES.has(key.toUpperCase()) &&
-        !["GH_HOST", "GH_DEBUG"].includes(key.toUpperCase()),
-    ),
+    Object.entries(process.env).filter(([key]) => {
+      const name = key.toUpperCase();
+      // The pattern also catches token variables this list has not learned about yet.
+      return !OVERRIDDEN_VARIABLES.has(name) && !/^(?:GH|GITHUB)_.*TOKEN$/.test(name);
+    }),
   );
 }
 

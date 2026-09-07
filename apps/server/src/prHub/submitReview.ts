@@ -194,67 +194,80 @@ export function submitPreparedReview(
           "You already have a pending review on GitHub. Finish it there before submitting this draft.",
         );
       yield* dependencies.verify(operation);
-      const claimed = yield* transitionReviewOperation(owner, {
-        id,
-        from: "prepared",
-        to: "creating",
-      });
-      if (!claimed) return (yield* readReviewOperation(owner, id))!;
-      const { draft, body } = operation.payload;
-      const creation = yield* Effect.exit(
-        dependencies.request("POST", endpoint(owner), {
-          commit_id: draft.comparison.headOid,
-          body,
-          comments: draft.content.comments.map((comment) => ({
-            path: comment.path,
-            side: comment.side,
-            line: comment.line,
-            body: comment.body,
-            ...(comment.startLine === undefined
-              ? {}
-              : { start_line: comment.startLine, start_side: comment.startSide }),
-          })),
+      const prepared = operation;
+      // Claiming the send commits us to recording its outcome, so this span resists
+      // interruption. Everything above is reads and stays cancellable.
+      const advanced = yield* Effect.uninterruptible(
+        Effect.gen(function* () {
+          const claimed = yield* transitionReviewOperation(owner, {
+            id,
+            from: "prepared",
+            to: "creating",
+          });
+          if (!claimed) return false;
+          const { draft, body } = prepared.payload;
+          const creation = yield* Effect.exit(
+            dependencies.request("POST", endpoint(owner), {
+              commit_id: draft.comparison.headOid,
+              body,
+              comments: draft.content.comments.map((comment) => ({
+                path: comment.path,
+                side: comment.side,
+                line: comment.line,
+                body: comment.body,
+                ...(comment.startLine === undefined
+                  ? {}
+                  : { start_line: comment.startLine, start_side: comment.startSide }),
+              })),
+            }),
+          );
+          if (Exit.isFailure(creation)) {
+            const outcome = classifyPrWrite(creation);
+            yield* transitionReviewOperation(owner, {
+              id,
+              from: "creating",
+              to: outcome.safeToRetry ? "prepared" : "outcome_unknown",
+              errorMessage: outcome.message,
+            });
+            return false;
+          }
+          const outcome = classifyPrWrite(creation);
+          if (outcome.safeToRetry || outcome.rejected) {
+            yield* transitionReviewOperation(owner, {
+              id,
+              from: "creating",
+              to: outcome.safeToRetry ? "prepared" : "rejected",
+              errorMessage: outcome.message,
+            });
+            return false;
+          }
+          const remote = yield* Effect.exit(
+            Schema.decodeUnknownEffect(RemoteReview)(creation.value.body),
+          );
+          if (
+            creation.value.status < 200 ||
+            creation.value.status >= 300 ||
+            Exit.isFailure(remote) ||
+            !matches(remote.value, owner, prepared) ||
+            remote.value.state !== "PENDING"
+          ) {
+            yield* transitionReviewOperation(owner, {
+              id,
+              from: "creating",
+              to: "outcome_unknown",
+            });
+            return false;
+          }
+          yield* transitionReviewOperation(owner, {
+            id,
+            from: "creating",
+            to: "created",
+            remoteId: String(remote.value.id),
+          });
+          return true;
         }),
       );
-      if (Exit.isFailure(creation)) {
-        const outcome = classifyPrWrite(creation);
-        yield* transitionReviewOperation(owner, {
-          id,
-          from: "creating",
-          to: outcome.safeToRetry ? "prepared" : "outcome_unknown",
-          errorMessage: outcome.message,
-        });
-        return (yield* readReviewOperation(owner, id))!;
-      }
-      const outcome = classifyPrWrite(creation);
-      if (outcome.safeToRetry || outcome.rejected) {
-        yield* transitionReviewOperation(owner, {
-          id,
-          from: "creating",
-          to: outcome.safeToRetry ? "prepared" : "rejected",
-          errorMessage: outcome.message,
-        });
-        return (yield* readReviewOperation(owner, id))!;
-      }
-      const remote = yield* Effect.exit(
-        Schema.decodeUnknownEffect(RemoteReview)(creation.value.body),
-      );
-      if (
-        creation.value.status < 200 ||
-        creation.value.status >= 300 ||
-        Exit.isFailure(remote) ||
-        !matches(remote.value, owner, operation) ||
-        remote.value.state !== "PENDING"
-      ) {
-        yield* transitionReviewOperation(owner, { id, from: "creating", to: "outcome_unknown" });
-        return (yield* readReviewOperation(owner, id))!;
-      }
-      yield* transitionReviewOperation(owner, {
-        id,
-        from: "creating",
-        to: "created",
-        remoteId: String(remote.value.id),
-      });
+      if (!advanced) return (yield* readReviewOperation(owner, id))!;
       operation = (yield* readReviewOperation(owner, id))!;
     }
     const verified = yield* Effect.exit(
@@ -349,35 +362,54 @@ export function submitPreparedReview(
       });
       return (yield* readReviewOperation(owner, id))!;
     }
-    if (!(yield* transitionReviewOperation(owner, { id, from: "created", to: "submitting" })))
-      return (yield* readReviewOperation(owner, id))!;
-    const result = yield* Effect.exit(
-      dependencies.request("POST", `${endpoint(owner)}/${operation.remoteId}/events`, {
-        event: operation.payload.event,
-        body: operation.payload.body,
+    const submitting = operation;
+    // As with creation, only the claim-through-record span is protected; the
+    // verification reads above remain interruptible.
+    yield* Effect.uninterruptible(
+      Effect.gen(function* () {
+        if (!(yield* transitionReviewOperation(owner, { id, from: "created", to: "submitting" })))
+          return;
+        const result = yield* Effect.exit(
+          dependencies.request("POST", `${endpoint(owner)}/${submitting.remoteId}/events`, {
+            event: submitting.payload.event,
+            body: submitting.payload.body,
+          }),
+        );
+        const remote =
+          Exit.isSuccess(result) && result.value.status === 200
+            ? yield* Effect.exit(Schema.decodeUnknownEffect(RemoteReview)(result.value.body))
+            : null;
+        const confirmed =
+          remote &&
+          Exit.isSuccess(remote) &&
+          matches(remote.value, owner, submitting) &&
+          submitted(remote.value, submitting);
+        const settled = yield* transitionReviewOperation(owner, {
+          id,
+          from: "submitting",
+          to: confirmed
+            ? "succeeded"
+            : classifyPrWrite(result).safeToRetry
+              ? "created"
+              : "outcome_unknown",
+          ...(confirmed
+            ? {}
+            : { remoteId: submitting.remoteId!, errorMessage: classifyPrWrite(result).message }),
+        });
+        // A concurrent reconciliation can move this row off `submitting` mid-flight.
+        // Proven acceptance outranks that guess rather than being discarded.
+        if (!settled && confirmed) {
+          const current = yield* readReviewOperation(owner, id);
+          if (current?.status === "outcome_unknown")
+            yield* transitionReviewOperation(owner, {
+              id,
+              from: "outcome_unknown",
+              to: "succeeded",
+              remoteId: submitting.remoteId!,
+            });
+        }
       }),
     );
-    const remote =
-      Exit.isSuccess(result) && result.value.status === 200
-        ? yield* Effect.exit(Schema.decodeUnknownEffect(RemoteReview)(result.value.body))
-        : null;
-    const confirmed =
-      remote &&
-      Exit.isSuccess(remote) &&
-      matches(remote.value, owner, operation) &&
-      submitted(remote.value, operation);
-    yield* transitionReviewOperation(owner, {
-      id,
-      from: "submitting",
-      to: confirmed
-        ? "succeeded"
-        : classifyPrWrite(result).safeToRetry
-          ? "created"
-          : "outcome_unknown",
-      ...(confirmed
-        ? {}
-        : { remoteId: operation.remoteId!, errorMessage: classifyPrWrite(result).message }),
-    });
     return (yield* readReviewOperation(owner, id))!;
-  }).pipe(Effect.uninterruptible);
+  });
 }

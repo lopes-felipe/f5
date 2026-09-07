@@ -6,6 +6,7 @@ import {
   submitCommentOperation,
   reconcileCommentOperation,
   recoverCommentOperation,
+  readCommentOperation,
 } from "../timelineComments.ts";
 import { canViewerReview } from "@t3tools/shared/prHub";
 import { prComparisonsEqual } from "@t3tools/shared/prReview";
@@ -58,22 +59,40 @@ function create(
     invalidateThreads,
   } = context;
   const activeSubmissions = new Set<string>();
-  const exclusive = <A, E, R>(key: string, effect: Effect.Effect<A, E, R>) =>
+  /** Claim and release are a single synchronous step, so no fiber can interleave between them. */
+  const withSubmissionLock = <A, E, R>(
+    key: string,
+    effect: Effect.Effect<A, E, R>,
+    onBusy: Effect.Effect<A, E, R>,
+  ) =>
     Effect.acquireUseRelease(
-      Effect.suspend(() => {
-        if (activeSubmissions.has(key))
-          return Effect.fail(
-            prHubActionError("A review submission or recovery is still running for this PR."),
-          );
+      Effect.sync(() => {
+        if (activeSubmissions.has(key)) return false;
         activeSubmissions.add(key);
-        return Effect.void;
+        return true;
       }),
-      () => effect,
-      () =>
+      (acquired) => (acquired ? effect : onBusy),
+      (acquired) =>
         Effect.sync(() => {
-          activeSubmissions.delete(key);
+          if (acquired) activeSubmissions.delete(key);
         }),
     );
+  const exclusive = <A, E, R>(key: string, effect: Effect.Effect<A, E, R>) =>
+    withSubmissionLock<A, E | SourceControlProviderError, R>(
+      key,
+      effect,
+      Effect.fail(
+        prHubActionError("A review submission or recovery is still running for this PR."),
+      ),
+    );
+  // Reconcile-on-read writes operation state, so it must never run beside a submission
+  // for the same PR: losing that race overwrites a proven outcome with a guess. While a
+  // submission holds the key there is nothing to heal, so report the persisted state.
+  const reconcileWhenIdle = <A, E, R>(
+    key: string,
+    reconcile: Effect.Effect<A, E, R>,
+    persisted: Effect.Effect<A, E, R>,
+  ) => withSubmissionLock(key, reconcile, persisted);
   const draftOwner = (key: Parameters<PrHubServiceShape["getReviewDraft"]>[0]["key"]) =>
     Effect.gen(function* () {
       const pr = yield* trackedPrByKey(key);
@@ -346,7 +365,11 @@ function create(
   const getCommentOperation: PrHubServiceShape["getCommentOperation"] = (input) =>
     Effect.gen(function* () {
       const { owner, request } = yield* commentDependencies(input.key);
-      return yield* reconcileCommentOperation(owner, request);
+      return yield* reconcileWhenIdle(
+        JSON.stringify(owner),
+        reconcileCommentOperation(owner, request),
+        readCommentOperation(owner),
+      );
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
   const recoverComment: PrHubServiceShape["recoverComment"] = (input) =>
     Effect.gen(function* () {
@@ -463,7 +486,11 @@ function create(
       ORDER BY CASE WHEN status IN ('prepared', 'creating', 'created', 'submitting', 'outcome_unknown') THEN 0 ELSE 1 END,
         draft_version DESC, created_at DESC, operation_id DESC LIMIT 1`;
       if (!rows[0]) return null;
-      const operation = yield* reconcileReviewSubmission(owner, rows[0].operation_id, dependencies);
+      const operation = yield* reconcileWhenIdle(
+        JSON.stringify(owner),
+        reconcileReviewSubmission(owner, rows[0].operation_id, dependencies),
+        readReviewOperation(owner, rows[0].operation_id),
+      );
       return operation ? yield* annotateSubmittedComparison(input.key, operation) : null;
     }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.mapError(reviewError));
   const cancelReviewPreparation: PrHubServiceShape["cancelReviewPreparation"] = (input) =>

@@ -275,7 +275,9 @@ const makeGitHubCli = Effect.sync(() => {
         return yield* new GitHubCliError({
           operation: "execute",
           kind: "forbidden",
-          detail: "Pull request host does not match the captured account.",
+          detail:
+            "A credential-scoped `gh pr` command must name its target explicitly: pass " +
+            `--repo <owner>/<name> or a full https://${context.host}/ pull request URL.`,
         });
       const command = Effect.tryPromise({
         try: (signal) => {
@@ -296,11 +298,23 @@ const makeGitHubCli = Effect.sync(() => {
         catch: (error) => normalizeGitHubCliError("execute", error),
       });
       if (!context) return yield* command;
+      // Classify by proving a read, never by failing to recognise a write: `gh api`
+      // defaults to POST as soon as a body is supplied, and `gh pr` keeps growing
+      // mutating subcommands. Anything unrecognised is treated as a write.
       const methodIndex = Math.max(args.indexOf("--method"), args.indexOf("-X"));
+      const method = methodIndex >= 0 ? args[methodIndex + 1]?.toUpperCase() : undefined;
+      const bodyFlags = ["--input", "--field", "--raw-field", "-F", "-f"];
+      const sendsBody = args.some(
+        (arg) => bodyFlags.includes(arg) || bodyFlags.some((flag) => arg.startsWith(`${flag}=`)),
+      );
       const writes =
-        (args[0] === "pr" &&
-          ["review", "comment", "merge", "ready", "edit"].includes(args[1] ?? "")) ||
-        (args[0] === "api" && methodIndex >= 0 && args[methodIndex + 1] !== "GET");
+        args[0] === "pr"
+          ? !["list", "view", "diff", "status", "checks"].includes(args[1] ?? "")
+          : args[0] === "api"
+            ? method === undefined
+              ? sendsBody
+              : method !== "GET" && method !== "HEAD"
+            : false;
       const checked = writes
         ? Effect.gen(function* () {
             const current = yield* api.getCredentialContext({ cwd: input.cwd, host: context.host });

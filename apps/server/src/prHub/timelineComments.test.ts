@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import Migration084 from "../persistence/Migrations/084_PrHubOperations.ts";
 import Migration090 from "../persistence/Migrations/090_PrHubIndependentOperations.ts";
@@ -147,5 +148,63 @@ it.layer(SqliteClient.layerMemory())("timeline comment operations", (it) => {
         assert.equal(cancelled.status, "failed_before_send");
         assert.equal(cancelled.payload.body, "Keep this text");
       }),
+  );
+  it.effect("records proven acceptance even when a reconcile lands mid-flight", () =>
+    Effect.gen(function* () {
+      yield* Migration084;
+      yield* Migration090;
+      const owner = {
+        provider: "github",
+        host: "github.com",
+        viewerId: "1",
+        repo: "org/repo",
+        number: 7,
+      };
+      const operation = yield* prepareCommentOperation(owner, {
+        id: "raced",
+        body: "Posted exactly once",
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const comments: unknown[] = [];
+      let writes = 0;
+      let raced = false;
+      // Reconcile-on-read is polled by the UI and moves `creating` to `outcome_unknown`.
+      // Drive it from inside the POST so it lands after the send is claimed but before
+      // the outcome is recorded - the exact interleaving that used to lose the result.
+      const request: ReviewSubmissionDependencies["request"] = (method, endpoint, body) => {
+        assert.equal(endpoint, "repos/org/repo/issues/7/comments");
+        if (method === "GET") return Effect.succeed(response(comments));
+        return Effect.gen(function* () {
+          writes++;
+          assert.deepStrictEqual(body, { body: operation.payload.markedBody });
+          if (!raced) {
+            raced = true;
+            const interleaved = yield* reconcileCommentOperation(owner, request, operation.id).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.orDie,
+            );
+            assert.equal(interleaved?.status, "outcome_unknown");
+          }
+          const created = { id: 77, user: { id: 1 }, body: operation.payload.markedBody };
+          comments.push(created);
+          return response(created, 201);
+        });
+      };
+      const result = yield* submitCommentOperation(
+        owner,
+        { id: operation.id, payloadHash: operation.payloadHash },
+        request,
+        Effect.void,
+      );
+      assert.equal(result.status, "succeeded");
+      assert.equal(result.remoteId, "77");
+      assert.equal(writes, 1);
+      // The settled operation stays settled: a later reconcile must not reopen it.
+      assert.equal(
+        (yield* reconcileCommentOperation(owner, request, operation.id))?.status,
+        "succeeded",
+      );
+      assert.equal(writes, 1);
+    }),
   );
 });

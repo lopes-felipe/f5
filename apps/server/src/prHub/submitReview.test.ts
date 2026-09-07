@@ -325,4 +325,40 @@ it.layer(SqliteClient.layerMemory())("review submission", (it) => {
       assert.equal((yield* readReviewOperation(owner, operation.id))?.status, "prepared");
     }),
   );
+  it.effect("keeps a confirmed submission when another actor moves the row mid-flight", () =>
+    Effect.gen(function* () {
+      const { owner, operation, remote } = yield* setup(6);
+      const sql = yield* SqlClient.SqlClient;
+      let submits = 0;
+      const dependencies: ReviewSubmissionDependencies = {
+        verify: () => Effect.void,
+        request: (method, path) => {
+          if (method === "GET") {
+            if (path.endsWith("/reviews")) return Effect.succeed(response([]));
+            return Effect.succeed(response(path.endsWith("/comments") ? [] : remote("PENDING")));
+          }
+          if (path.endsWith("/events"))
+            return Effect.gen(function* () {
+              submits++;
+              // `submitting -> outcome_unknown` is a legal transition, so a concurrent
+              // recovery or reconciliation can take it while the event POST is open.
+              // GitHub's confirmation must still win over that guess.
+              yield* transitionReviewOperation(owner, {
+                id: operation.id,
+                from: "submitting",
+                to: "outcome_unknown",
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
+              return response(remote("COMMENTED"));
+            });
+          return Effect.succeed(response(remote("PENDING")));
+        },
+      };
+      const result = yield* submitPreparedReview(owner, operation.id, dependencies);
+      assert.equal(result.status, "succeeded");
+      assert.equal(submits, 1);
+      // Settled for good: the draft is released and no resend is possible.
+      assert.equal((yield* readReviewOperation(owner, operation.id))?.status, "succeeded");
+      assert.equal((yield* readPrHubReviewDraft(owner))?.frozen, false);
+    }),
+  );
 });
