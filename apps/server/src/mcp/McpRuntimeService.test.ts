@@ -4,6 +4,7 @@ import { describe, it, assert } from "@effect/vitest";
 import { Effect, Layer, Sink, Stream } from "effect";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { vi } from "vitest";
 
 import { ProjectId, type McpProjectServersConfig, type ProviderSession } from "@t3tools/contracts";
 
@@ -19,6 +20,13 @@ import {
 import { McpRuntimeDiagnostics } from "./McpRuntimeDiagnostics.ts";
 import { McpRuntimeService, McpRuntimeServiceLive } from "./McpRuntimeService.ts";
 import { ProjectMcpConfigService } from "./ProjectMcpConfigService.ts";
+
+// The spawner is simulated, so command discovery must not depend on installed CLIs.
+vi.mock("../spawn/resolveCommand.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../spawn/resolveCommand.ts")>()),
+  resolveInvocationEffect: (file: string, args: ReadonlyArray<string>) =>
+    Effect.succeed({ file, args: [...args], kind: "native" as const }),
+}));
 
 const encoder = new TextEncoder();
 const projectId = ProjectId.makeUnsafe("mcp-runtime-service-test");

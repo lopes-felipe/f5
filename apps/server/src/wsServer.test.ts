@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { inspect } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -573,6 +574,7 @@ function connectWsOnce(
     channelsBySocket.set(ws, channels);
 
     ws.on("message", (raw) => {
+      if (vi.isMockFunction(console.log)) console.log("test websocket received", String(raw));
       const parsed = JSON.parse(String(raw));
       if (isWsPushEnvelope(parsed)) {
         enqueue(channels.push, parsed);
@@ -585,6 +587,10 @@ function connectWsOnce(
     });
 
     ws.once("open", () => resolve(ws));
+    ws.once("close", (code, reason) => {
+      if (vi.isMockFunction(console.log))
+        console.log("test websocket closed", code, String(reason));
+    });
     ws.once("error", () => reject(new Error("WebSocket connection failed")));
   });
 }
@@ -618,8 +624,21 @@ async function connectAndAwaitWelcome(
   headers?: Readonly<Record<string, string>>,
 ): Promise<[WebSocket, WsPushMessage<typeof WS_CHANNELS.serverWelcome>]> {
   const ws = await connectWs(port, token, 5, headers);
-  const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
-  return [ws, welcome];
+  try {
+    const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
+    return [ws, welcome];
+  } catch (cause) {
+    // Callers only register successful connections for teardown. A failed
+    // welcome must not leave a socket keeping server shutdown alive.
+    ws.terminate();
+    if (vi.isMockFunction(console.log)) {
+      throw new Error(
+        `${String(cause)}\nServer logs:\n${inspect(vi.mocked(console.log).mock.calls.slice(-40), { depth: 5 })}`,
+        { cause },
+      );
+    }
+    throw cause;
+  }
 }
 
 async function sendRequest(
@@ -1225,9 +1244,13 @@ describe("WebSocket Server", () => {
   });
 
   it("bootstraps the cwd project on startup when enabled", async () => {
+    vi.spyOn(console, "log");
+    const cwd = path.join(makeTempDir("t3code-bootstrap-"), "bootstrap-workspace");
+    fs.mkdirSync(cwd);
     server = await createTestServer({
-      cwd: "/test/bootstrap-workspace",
+      cwd,
       autoBootstrapProjectFromCwd: true,
+      logWebSocketEvents: true,
     });
     const addr = server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
@@ -1237,7 +1260,7 @@ describe("WebSocket Server", () => {
     connections.push(ws);
     expect(welcome.data).toEqual(
       expect.objectContaining({
-        cwd: "/test/bootstrap-workspace",
+        cwd,
         projectName: "bootstrap-workspace",
         bootstrapProjectId: expect.any(String),
         bootstrapThreadId: expect.any(String),
@@ -1271,7 +1294,7 @@ describe("WebSocket Server", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: bootstrapProjectId,
-          workspaceRoot: "/test/bootstrap-workspace",
+          workspaceRoot: cwd,
           title: "bootstrap-workspace",
           defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
         }),
@@ -1292,17 +1315,20 @@ describe("WebSocket Server", () => {
   });
 
   it("includes bootstrap ids in welcome when cwd project and thread already exist", async () => {
+    vi.spyOn(console, "log");
     const stateDir = makeTempDir("t3code-state-bootstrap-existing-");
     const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
       Layer.provide(NodeServices.layer),
     );
-    const cwd = "/test/bootstrap-existing";
+    const cwd = path.join(stateDir, "bootstrap-existing");
+    fs.mkdirSync(cwd);
 
     server = await createTestServer({
       cwd,
       stateDir,
       persistenceLayer,
       autoBootstrapProjectFromCwd: true,
+      logWebSocketEvents: true,
     });
     let addr = server.address();
     let port = typeof addr === "object" && addr !== null ? addr.port : 0;
@@ -3769,7 +3795,9 @@ describe("WebSocket Server", () => {
     );
 
     expect(resolved.relativePath).toBe("guide-link.md");
-    expect(resolved.absolutePath).toBe(fs.realpathSync(path.join(workspace, "guide-link.md")));
+    expect(resolved.absolutePath).toBe(
+      await fs.promises.realpath(path.join(workspace, "guide-link.md")),
+    );
   });
 
   it("rejects projects.readFile paths outside the workspace root", async () => {

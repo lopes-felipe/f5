@@ -1,3 +1,6 @@
+import { buildSearchQueries, buildPrHubSearchRequest } from "./discoveryModel.ts";
+import { PrHubDiscoveryLease } from "./discoveryLease.ts";
+import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import { syncPrHubRepositories } from "./discovery.ts";
 import Migration091 from "../persistence/Migrations/091_PrHubRepositoryProvenance.ts";
 import Migration089 from "../persistence/Migrations/089_PrHubConnectionFacts.ts";
@@ -7,6 +10,7 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import Migration081 from "../persistence/Migrations/081_PrHubSyncTasks.ts";
 import {
+  preparePrHubSearchFormat,
   finishPrHubHydration,
   beginPrHubSearch,
   ingestPrHubSearch,
@@ -32,6 +36,155 @@ const reset = Effect.gen(function* () {
 });
 
 it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
+  it.effect("retires legacy search work once per account and respects the discovery lease", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const sql = yield* SqlClient.SqlClient;
+      const broken = {
+        alias: "team_review_0",
+        query:
+          "is:pr is:open archived:false sort:updated-desc updated:<1970-01-02 updated:<=2026-09-07T13:03:51.258Z",
+        cursor: null,
+      };
+      const seed = (
+        kind: string,
+        host: string,
+        viewerId: string,
+      ) => sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+        VALUES('github',${host},${viewerId},${kind},'legacy',${JSON.stringify(kind === "source_watermark" ? { complete: false, task: broken } : broken)},'now','now')`;
+      for (const kind of [
+        "search",
+        "source_watermark",
+        "search_scope",
+        "hydrate",
+        "membership",
+        "known_repository",
+      ]) {
+        yield* seed(kind, account.host, account.viewerId);
+        yield* seed(kind, account.host, "other");
+        yield* seed(kind, "enterprise.example", account.viewerId);
+      }
+      const denied = yield* preparePrHubSearchFormat(account).pipe(
+        Effect.provideService(PrHubDiscoveryLease, {
+          assertCurrent: Effect.fail(
+            new SourceControlProviderError({
+              provider: "github",
+              operation: "test",
+              kind: "generic",
+              detail: "lease lost",
+            }),
+          ),
+        }),
+        Effect.flip,
+      );
+      if (denied._tag !== "SourceControlProviderError") throw denied;
+      assert.equal(denied.detail, "lease lost");
+      assert.equal(
+        (yield* sql<{ count: number }>`SELECT count(*) AS count FROM pr_hub_sync_tasks`)[0]?.count,
+        18,
+      );
+      yield* preparePrHubSearchFormat(account);
+      const rows = yield* sql<{
+        host: string;
+        viewer_id: string;
+        kind: string;
+      }>`SELECT host,viewer_id,kind FROM pr_hub_sync_tasks`;
+      assert.deepStrictEqual(
+        rows
+          .filter((row) => row.host === account.host && row.viewer_id === account.viewerId)
+          .map((row) => row.kind)
+          .sort(),
+        ["known_repository", "membership", "search_format"],
+      );
+      assert.equal(rows.filter((row) => row.viewer_id === "other").length, 6);
+      assert.equal(rows.filter((row) => row.host === "enterprise.example").length, 6);
+      const now = Date.parse("2026-09-07T14:00:00Z");
+      const buckets = buildSearchQueries("me", [], now);
+      const scopes = [];
+      for (const bucket of buckets)
+        scopes.push({
+          ...bucket,
+          query: (yield* beginPrHubSearch(
+            account,
+            bucket.alias,
+            bucket.query,
+            now,
+            bucket.updatedSince,
+          )).query,
+        });
+      const request = buildPrHubSearchRequest(scopes);
+      assert.equal(request.document.includes("team_review_"), false);
+      assert.equal(Object.keys(request.variables).length, 6);
+      for (const query of Object.values(request.variables))
+        assert.equal(query.match(/\bupdated:/g)?.length, 1);
+      assert.include(
+        request.variables.closed!,
+        "updated:2026-08-31T00:00:00.000Z..2026-09-07T14:00:00.000Z",
+      );
+      const first = yield* beginPrHubSearch(account, "author", task.query, now);
+      yield* preparePrHubSearchFormat(account);
+      assert.deepStrictEqual(
+        yield* beginPrHubSearch(account, "author", task.query, now + 3600_000),
+        first,
+      );
+    }),
+  );
+
+  it.effect("intersects the recently closed lower bound with polling and repair windows", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const now = Date.parse("2026-09-07T14:00:00Z");
+      const bucket = buildSearchQueries("me", [], now).find(
+        (item) => item.alias === "recently_closed",
+      )!;
+      const initial = yield* beginPrHubSearch(
+        account,
+        bucket.alias,
+        bucket.query,
+        now,
+        bucket.updatedSince,
+      );
+      assert.include(initial.query, "updated:2026-08-31T00:00:00.000Z..2026-09-07T14:00:00.000Z");
+      yield* ingestPrHubSearch(
+        account,
+        initial,
+        { issueCount: 0, nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        new Set(),
+        now,
+      );
+      const incremental = yield* beginPrHubSearch(
+        account,
+        bucket.alias,
+        bucket.query,
+        now + 3600_000,
+        bucket.updatedSince,
+      );
+      assert.include(
+        incremental.query,
+        "updated:2026-09-07T13:50:00.000Z..2026-09-07T15:00:00.000Z",
+      );
+      yield* ingestPrHubSearch(
+        account,
+        incremental,
+        { issueCount: 0, nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+        new Set(),
+        now + 3600_000,
+      );
+      const nextDay = now + 86_400_000;
+      const nextBucket = buildSearchQueries("me", [], nextDay).find(
+        (item) => item.alias === "recently_closed",
+      )!;
+      const repair = yield* beginPrHubSearch(
+        account,
+        nextBucket.alias,
+        nextBucket.query,
+        nextDay,
+        nextBucket.updatedSince,
+      );
+      assert.include(repair.query, "updated:2026-09-01T00:00:00.000Z..2026-09-08T14:00:00.000Z");
+    }),
+  );
+
   it.effect(
     "discovers a viewer beyond the first participant page and completes the repository scope",
     () =>

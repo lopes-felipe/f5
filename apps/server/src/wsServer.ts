@@ -4019,7 +4019,17 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     // cannot reach this client before the welcome arrives.
     void runPromise(
       (autoBootstrapProjectFromCwd ? readiness.awaitServerReady : readiness.awaitClientReady).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            if (logWebSocketEvents) logger.event("welcome readiness reached");
+          }),
+        ),
         Effect.flatMap(() => pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, welcomeData)),
+        Effect.tap((delivered) =>
+          Effect.sync(() => {
+            if (logWebSocketEvents) logger.event("welcome delivery settled", { delivered });
+          }),
+        ),
         Effect.flatMap((delivered) =>
           delivered ? Ref.update(clients, (clients) => clients.add(ws)) : Effect.void,
         ),

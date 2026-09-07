@@ -4,6 +4,7 @@ import { Effect, Fiber, FileSystem, Layer, Path, Sink, Stream } from "effect";
 import * as PlatformError from "effect/PlatformError";
 import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/unstable/process";
+import { vi } from "vitest";
 
 import {
   checkClaudeProviderPreflight,
@@ -16,6 +17,13 @@ import {
   readCodexConfigModelProvider,
 } from "./ProviderHealth";
 import { prependCodexCliTelemetryDisabledConfig } from "../codexCliConfig";
+
+// The spawner is simulated, so command discovery must not depend on installed CLIs.
+vi.mock("../../spawn/resolveCommand.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../spawn/resolveCommand.ts")>()),
+  resolveInvocationEffect: (file: string, args: ReadonlyArray<string>) =>
+    Effect.succeed({ file, args: [...args], kind: "native" as const }),
+}));
 
 // ── Test helpers ────────────────────────────────────────────────────
 

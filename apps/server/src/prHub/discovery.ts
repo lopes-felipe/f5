@@ -98,14 +98,44 @@ export function recordPrHubMembership(
   });
 }
 
+/** Reset only derived search work, once per account, under the refresh lease. */
+export function preparePrHubSearchFormat(account: DiscoveryAccount) {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* assertPrHubDiscoveryLease;
+        const rows = yield* sql<{ payload_json: string }>`SELECT payload_json FROM pr_hub_sync_tasks
+        WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId}
+        AND kind = 'search_format' AND task_key = 'current'`;
+        const revision = 1;
+        if (rows[0] && JSON.parse(rows[0].payload_json).revision === revision) return;
+        yield* sql`DELETE FROM pr_hub_sync_tasks WHERE provider_kind = 'github'
+        AND host = ${account.host} AND viewer_id = ${account.viewerId}
+        AND kind IN ('search', 'search_scope', 'source_watermark', 'hydrate')`;
+        // Repository searches whose queued work was reset must also be rediscovered.
+        yield* sql`UPDATE pr_hub_sync_tasks SET payload_json = json_set(payload_json, '$.searchedAt', 0)
+        WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId} AND kind = 'known_repository'`;
+        const now = new Date().toISOString();
+        yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+        VALUES('github',${account.host},${account.viewerId},'search_format','current',${JSON.stringify({ revision })},${now},${now})
+        ON CONFLICT(provider_kind,host,viewer_id,kind,task_key) DO UPDATE SET payload_json=excluded.payload_json, updated_at=excluded.updated_at`;
+      }),
+    );
+  });
+}
+
 /** An interval advances only when every page and partition has been durably ingested. */
 export function beginPrHubSearch(
   account: DiscoveryAccount,
   alias: string,
   query: string,
   now = Date.now(),
+  updatedSince?: number,
 ) {
   return Effect.gen(function* () {
+    if (/(?:^|\s)updated:/i.test(query))
+      throw new Error("Discovery owns the updated search qualifier.");
     const sql = yield* SqlClient.SqlClient;
     const sourceKey = createHash("sha256")
       .update(JSON.stringify([alias, query]))
@@ -120,10 +150,18 @@ export function beginPrHubSearch(
       return queued.length > 0 ? { ...previous.task, queued: true } : previous.task;
     }
     const repair = previous?.repairedAt == null || now - previous.repairedAt >= 6 * 60 * 60_000;
-    const bounds =
+    const pollingLower =
       !repair && previous?.watermark != null
-        ? ` updated:${new Date(Math.max(0, previous.watermark - 10 * 60_000)).toISOString()}..${new Date(now).toISOString()}`
-        : ` updated:<=${new Date(now).toISOString()}`;
+        ? Math.max(0, previous.watermark - 10 * 60_000)
+        : undefined;
+    const lower =
+      updatedSince === undefined
+        ? pollingLower
+        : Math.max(updatedSince, pollingLower ?? updatedSince);
+    const bounds =
+      lower === undefined
+        ? ` updated:<=${new Date(now).toISOString()}`
+        : ` updated:${new Date(lower).toISOString()}..${new Date(now).toISOString()}`;
     const task: SearchTask = {
       alias,
       query: query + bounds,

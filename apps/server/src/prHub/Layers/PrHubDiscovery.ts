@@ -4,6 +4,7 @@ import { Effect, Layer } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { PrHubDiscovery } from "../Services/PrHubDiscovery.ts";
 import {
+  preparePrHubSearchFormat,
   ingestPrHubSearch,
   recordPrHubMembership,
   enqueuePrHubTracked,
@@ -19,6 +20,8 @@ export const PrHubDiscoveryLive = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const methods = {
+      preparePrHubSearchFormat: (...args: Parameters<typeof preparePrHubSearchFormat>) =>
+        preparePrHubSearchFormat(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       recordPrHubMembership: (...args: Parameters<typeof recordPrHubMembership>) =>
         recordPrHubMembership(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       discoverNotificationSubjects: (...args: Parameters<typeof discoverNotificationSubjects>) =>
