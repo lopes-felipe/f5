@@ -574,6 +574,7 @@ function connectWsOnce(
     channelsBySocket.set(ws, channels);
 
     ws.on("message", (raw) => {
+      if (vi.isMockFunction(console.log)) console.log("test websocket received", String(raw));
       const parsed = JSON.parse(String(raw));
       if (isWsPushEnvelope(parsed)) {
         enqueue(channels.push, parsed);
@@ -586,6 +587,10 @@ function connectWsOnce(
     });
 
     ws.once("open", () => resolve(ws));
+    ws.once("close", (code, reason) => {
+      if (vi.isMockFunction(console.log))
+        console.log("test websocket closed", code, String(reason));
+    });
     ws.once("error", () => reject(new Error("WebSocket connection failed")));
   });
 }
@@ -1240,8 +1245,10 @@ describe("WebSocket Server", () => {
 
   it("bootstraps the cwd project on startup when enabled", async () => {
     vi.spyOn(console, "log");
+    const cwd = path.join(makeTempDir("t3code-bootstrap-"), "bootstrap-workspace");
+    fs.mkdirSync(cwd);
     server = await createTestServer({
-      cwd: "/test/bootstrap-workspace",
+      cwd,
       autoBootstrapProjectFromCwd: true,
       logWebSocketEvents: true,
     });
@@ -1253,7 +1260,7 @@ describe("WebSocket Server", () => {
     connections.push(ws);
     expect(welcome.data).toEqual(
       expect.objectContaining({
-        cwd: "/test/bootstrap-workspace",
+        cwd,
         projectName: "bootstrap-workspace",
         bootstrapProjectId: expect.any(String),
         bootstrapThreadId: expect.any(String),
@@ -1287,7 +1294,7 @@ describe("WebSocket Server", () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: bootstrapProjectId,
-          workspaceRoot: "/test/bootstrap-workspace",
+          workspaceRoot: cwd,
           title: "bootstrap-workspace",
           defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
         }),
@@ -1313,7 +1320,8 @@ describe("WebSocket Server", () => {
     const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
       Layer.provide(NodeServices.layer),
     );
-    const cwd = "/test/bootstrap-existing";
+    const cwd = path.join(stateDir, "bootstrap-existing");
+    fs.mkdirSync(cwd);
 
     server = await createTestServer({
       cwd,
