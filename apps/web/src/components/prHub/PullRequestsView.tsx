@@ -101,7 +101,7 @@ function statusMessage(status: string): string | null {
     case "gh_missing":
       return "GitHub CLI is missing. Install `gh` and restart F5.";
     case "degraded":
-      return "PR Hub is using degraded GitHub search data.";
+      return "PR Hub results may be incomplete or outdated.";
     case "error":
       return "PR Hub refresh failed.";
     default:
@@ -250,6 +250,11 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
     window.localStorage.setItem(PR_HUB_VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
 
+  const refreshIncomplete =
+    snapshot?.status === "degraded" ||
+    snapshot?.status === "error" ||
+    snapshotQuery.isError ||
+    listQuery.isError;
   const banner = snapshot ? statusMessage(snapshot.status) : null;
   const bannerDetail = compactStatusDetail(snapshot?.errorMessage);
   const analyzeKeys = async (keys?: readonly PullRequestKey[]) => {
@@ -563,6 +568,7 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
           <TooltipProvider delay={0}>
             {viewMode === "inbox" ? (
               <PrInboxView
+                refreshIncomplete={refreshIncomplete}
                 prs={visiblePullRequests}
                 advisoriesByKey={advisoriesByKey}
                 analyzingKeys={analyzingKeys}
@@ -575,6 +581,7 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
               />
             ) : (
               <PrFocusView
+                refreshIncomplete={refreshIncomplete}
                 prs={visiblePullRequests}
                 advisoriesByKey={advisoriesByKey}
                 analyzingKeys={analyzingKeys}

@@ -1,5 +1,5 @@
 import { makeGitHubRequestScheduler } from "./githubRequestScheduler.ts";
-import { Effect, Exit } from "effect";
+import { Effect, Exit, Logger } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitHubCliError } from "./Errors.ts";
 import { GitHubRequestPolicy } from "./githubRequestPolicy.ts";
@@ -12,12 +12,13 @@ function wire(body: unknown, status = 200, headers = "") {
   return `HTTP/2.0 ${status} Response\r\nContent-Type: application/json\r\n${headers}\r\n${JSON.stringify(body)}`;
 }
 
-function harness() {
+function harness(scheduler = makeGitHubRequestScheduler()) {
   for (const name of ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"])
     vi.stubEnv(name, "");
   let token = "credential-one";
   let response = wire({ ok: true });
   let code = 0;
+  let stderr = "";
   const execute = vi.fn<GitHubCliShape["execute"]>((input) =>
     Effect.sync(() => ({
       stdout:
@@ -26,19 +27,20 @@ function harness() {
           : input.args[1] === "user"
             ? wire({ id: token === "credential-one" ? 1 : 2, login: "same-login" })
             : response,
-      stderr: "",
+      stderr,
       code,
       signal: null,
       timedOut: false,
     })),
   );
   return {
-    api: makeGitHubApi(execute, makeGitHubRequestScheduler()),
+    api: makeGitHubApi(execute, scheduler),
     execute,
     switchAccount: () => {
       token = "credential-two";
     },
-    respond: (next: string, nextCode = 0) => {
+    respond: (next: string, nextCode = 0, nextStderr = "") => {
+      stderr = nextStderr;
       response = next;
       code = nextCode;
     },
@@ -364,5 +366,196 @@ describe("GitHub HTTP envelope", () => {
       parseGitHubApiResponse('HTTP/2.0 200 OK\nContent-Type: application/json\n\n{"data":'),
     ).toThrow();
     expect(() => parseGitHubApiResponse("{}")).toThrow();
+  });
+});
+
+describe("GitHub response failures", () => {
+  it.each(["upstream timeout", "<html>Gateway Timeout</html>", "", '{"message":"timeout"}'])(
+    "preserves HTTP errors and retry headers for body %j",
+    (body) => {
+      const response = parseGitHubApiResponse(
+        `HTTP/2.0 504 Gateway Timeout\r\nContent-Type: text/plain\r\nRetry-After: 30\r\nX-RateLimit-Remaining: 12\r\n\r\n${body}`,
+      );
+      expect(response.status).toBe(504);
+      expect(response.rateLimit).toMatchObject({ retryAfterSeconds: 30, remaining: 12 });
+      expect(response.body).toEqual(body.startsWith("{") ? { message: "timeout" } : null);
+    },
+  );
+
+  it("backs off on a plain-text 504 and recovers after the retry window", async () => {
+    let now = Date.parse("2026-09-07T13:00:00Z");
+    const scheduler = makeGitHubRequestScheduler(
+      () => now,
+      () => 0.5,
+    );
+    const h = harness(scheduler);
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: ".", host: "github.com" }),
+    );
+    const read = () =>
+      h.api.request({
+        cwd: ".",
+        context,
+        method: "POST",
+        endpoint: "graphql",
+        body: { query: "query { viewer { login } }" },
+      });
+    h.respond("HTTP/2.0 504 Gateway Timeout\nContent-Type: text/plain\n\nupstream timeout", 1);
+    expect((await Effect.runPromise(read())).status).toBe(504);
+    expect(scheduler.status("github.com").retryAt).toBe(new Date(now + 30_000).toISOString());
+    const sent = h.execute.mock.calls.length;
+    expect((await Effect.runPromise(read().pipe(Effect.flip))).requestDispatched).toBe(false);
+    expect(h.execute).toHaveBeenCalledTimes(sent);
+    now += 30_001;
+    h.respond(wire({ data: { viewer: { login: "me" } } }));
+    expect((await Effect.runPromise(read())).status).toBe(200);
+    expect(h.execute).toHaveBeenCalledTimes(sent + 1);
+    expect(scheduler.status("github.com").retryAt).toBeNull();
+  });
+
+  it("retains non-JSON rate-limit responses on nonzero exit", async () => {
+    const scheduler = makeGitHubRequestScheduler();
+    const h = harness(scheduler);
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: ".", host: "github.com" }),
+    );
+    h.respond("HTTP/2.0 429 Too Many Requests\nRetry-After: 60\n\nrate limited", 1);
+    const response = await Effect.runPromise(
+      h.api.request({ cwd: ".", context, method: "GET", endpoint: "repos/o/r" }),
+    );
+    expect(response).toMatchObject({
+      status: 429,
+      body: null,
+      rateLimit: { retryAfterSeconds: 60 },
+    });
+    expect(scheduler.status("github.com").retryAt).not.toBeNull();
+  });
+
+  it.each([
+    ["connection reset by peer", "network"],
+    ["To get started with GitHub CLI, please run: gh auth login", "unauthenticated"],
+    ["request timed out", "timeout"],
+    ["unexpected CLI failure", "generic"],
+  ])("classifies missing HTTP output: %s", async (stderr, kind) => {
+    const h = harness();
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: ".", host: "github.com" }),
+    );
+    h.respond("", 1, stderr);
+    const error = await Effect.runPromise(
+      h.api.request({ cwd: ".", context, method: "GET", endpoint: "repos/o/r" }).pipe(Effect.flip),
+    );
+    expect(error.kind).toBe(kind);
+    expect(error.cause).toBeUndefined();
+  });
+
+  it("preserves GraphQL partial data despite nonzero exit", async () => {
+    const h = harness();
+    const context = await Effect.runPromise(
+      h.api.getCredentialContext({ cwd: ".", host: "github.com" }),
+    );
+    const body = { data: { partial: true }, errors: [{ message: "unavailable" }] };
+    h.respond(wire(body), 1, "gh: unavailable");
+    const response = await Effect.runPromise(
+      h.api.request({
+        cwd: ".",
+        context,
+        method: "POST",
+        endpoint: "graphql",
+        body: { query: "query { viewer { login } }" },
+      }),
+    );
+    expect(response.body).toEqual(body);
+    expect(response.graphqlErrors).toEqual(body.errors);
+  });
+
+  it.each([
+    ["", "headers_missing_or_oversized", null],
+    ["HTTP/2.0 200 OK\nContent-Type: application/json", "headers_missing_or_oversized", 200],
+    ["not-http\nHeader: value\n\n{}", "invalid_status", null],
+    ["HTTP/2.0 200 OK\ninvalid-header\n\n{}", "invalid_header", 200],
+    [
+      'HTTP/2.0 200 OK\nContent-Type: application/json\n\n{"secret":"private-payload",',
+      "invalid_json",
+      200,
+    ],
+  ] as const)(
+    "logs bounded metadata for invalid responses (%s)",
+    async (stdout, category, status) => {
+      const h = harness();
+      const context = await Effect.runPromise(
+        h.api.getCredentialContext({ cwd: ".", host: "github.com" }),
+      );
+      const logs: unknown[] = [];
+      h.respond(stdout, 0, "private-stderr");
+      const error = await Effect.runPromise(
+        h.api
+          .request({
+            cwd: ".",
+            context,
+            method: "GET",
+            endpoint: "repos/o/r",
+            query: { secret: "private-query" },
+          })
+          .pipe(
+            Effect.flip,
+            Effect.provide(
+              Logger.layer([
+                Logger.make((options) => {
+                  logs.push(options.message);
+                }),
+              ]),
+            ),
+          ),
+      );
+      expect(error.kind).toBe("invalid_json");
+      expect(logs).toEqual([
+        [
+          "GitHub API response could not be parsed",
+          {
+            endpoint: "repos/o/r",
+            exitCode: 0,
+            stdoutBytes: Buffer.byteLength(stdout),
+            stderrBytes: Buffer.byteLength("private-stderr"),
+            status,
+            category,
+          },
+        ],
+      ]);
+      expect(JSON.stringify(logs)).not.toMatch(
+        /private-payload|private-stderr|private-query|credential-one/,
+      );
+    },
+  );
+
+  it.each(["timedOut", "aborted", "stdoutTruncated", "signal"] as const)(
+    "rejects interrupted output even with a complete HTTP error: %s",
+    async (flag) => {
+      const h = harness();
+      const context = await Effect.runPromise(
+        h.api.getCredentialContext({ cwd: ".", host: "github.com" }),
+      );
+      h.execute.mockImplementationOnce(() =>
+        Effect.succeed({
+          stdout: "HTTP/2.0 504 Gateway Timeout\nContent-Type: text/plain\n\ntimeout",
+          stderr: "",
+          code: 1,
+          signal: null,
+          timedOut: false,
+          [flag]: flag === "signal" ? "SIGTERM" : true,
+        }),
+      );
+      const error = await Effect.runPromise(
+        h.api
+          .request({ cwd: ".", context, method: "GET", endpoint: "repos/o/r" })
+          .pipe(Effect.flip),
+      );
+      expect(error.kind).toBe(flag === "timedOut" ? "timeout" : "invalid_json");
+    },
+  );
+
+  it("accepts a bodyless 204 but rejects an empty successful JSON response", () => {
+    expect(parseGitHubApiResponse("HTTP/2.0 204 No Content\n\n").body).toBeNull();
+    expect(() => parseGitHubApiResponse("HTTP/2.0 200 OK\n\n")).toThrow();
   });
 });

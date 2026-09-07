@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { GitPullRequestIcon } from "lucide-react";
 import type {
   PrHubAdvisory,
   PullRequestKey,
@@ -8,7 +7,7 @@ import type {
 } from "@t3tools/contracts";
 import { sourceControlPullRequestKeysEqual } from "@t3tools/shared/sourceControl";
 
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { PrEmptyState } from "./PrEmptyState";
 import { Kbd } from "../ui/kbd";
 import { PrDetailPanel } from "./PrDetailPanel";
 import { PrSpineList } from "./PrSpineList";
@@ -16,6 +15,7 @@ import { comparePrPriority } from "./prHubPresentation";
 import { isInteractiveTextTarget } from "./prHubKeyboard";
 
 export interface PrModeViewProps {
+  refreshIncomplete?: boolean;
   prs: readonly TrackedPullRequest[];
   advisoriesByKey: Map<PullRequestKey, PrHubAdvisory>;
   analyzingKeys: ReadonlySet<PullRequestKey>;
@@ -48,6 +48,7 @@ export function PrInboxView({
   onThreadCreated,
   focusedPrKey,
   onSelectionChange,
+  refreshIncomplete = false,
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
@@ -165,15 +166,7 @@ export function PrInboxView({
             onThreadCreated={onThreadCreated}
           />
         ) : (
-          <Empty>
-            <EmptyHeader>
-              <EmptyMedia variant="icon">
-                <GitPullRequestIcon />
-              </EmptyMedia>
-              <EmptyTitle>No pull requests</EmptyTitle>
-              <EmptyDescription>No entries match this filter.</EmptyDescription>
-            </EmptyHeader>
-          </Empty>
+          <PrEmptyState incomplete={refreshIncomplete} mode="inbox" />
         )}
       </div>
     </div>

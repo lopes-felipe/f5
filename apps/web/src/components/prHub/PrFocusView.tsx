@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CheckCheckIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
+import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { PrHubAdvisory, PullRequestKey, TrackedPullRequest } from "@t3tools/contracts";
 import { sourceControlPullRequestKeysEqual } from "@t3tools/shared/sourceControl";
 
 import { Button } from "../ui/button";
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
+import { PrEmptyState } from "./PrEmptyState";
 import { Kbd } from "../ui/kbd";
 import { PrDetailPanel, type PrDetailHandle } from "./PrDetailPanel";
 import type { PrModeViewProps } from "./PrInboxView";
@@ -35,6 +35,7 @@ export function PrFocusView({
   onThreadCreated,
   focusedPrKey,
   onSelectionChange,
+  refreshIncomplete = false,
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
@@ -121,15 +122,7 @@ export function PrFocusView({
   if (!currentPr) {
     return (
       <div className="flex min-h-0 flex-1 items-center justify-center">
-        <Empty>
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <CheckCheckIcon />
-            </EmptyMedia>
-            <EmptyTitle>You&apos;re all caught up</EmptyTitle>
-            <EmptyDescription>Nothing in this queue needs you right now.</EmptyDescription>
-          </EmptyHeader>
-        </Empty>
+        <PrEmptyState incomplete={refreshIncomplete} mode="focus" />
       </div>
     );
   }
