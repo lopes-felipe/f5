@@ -1,3 +1,4 @@
+import { FILESYSTEM_PATH_MAX_LENGTH } from "./filesystem";
 import { Schema, Struct } from "effect";
 import { IsoDateTime, makeEntityId, NonNegativeInt, ProjectId } from "./baseSchemas";
 import {
@@ -440,6 +441,18 @@ export const PrHubLocalCandidatesInput = Schema.Struct({
 });
 export type PrHubLocalCandidatesInput = typeof PrHubLocalCandidatesInput.Type;
 
+export const PrHubResolveCheckoutInput = Schema.Struct({
+  accountGeneration: Schema.optional(Schema.String),
+  key: PullRequestKey,
+  baseDirectory: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
+  ),
+  selectedPath: Schema.optional(
+    Schema.String.check(Schema.isMaxLength(FILESYSTEM_PATH_MAX_LENGTH)),
+  ),
+});
+export type PrHubResolveCheckoutInput = typeof PrHubResolveCheckoutInput.Type;
+
 export const PrHubClearDataInput = Schema.Struct({
   accountGeneration: Schema.optional(Schema.String),
 });
@@ -541,6 +554,12 @@ export const PrHubLocalCheckoutCandidate = Schema.Struct({
   repository: PrRepositoryRef,
 });
 export type PrHubLocalCheckoutCandidate = typeof PrHubLocalCheckoutCandidate.Type;
+
+export const PrHubResolvedCheckout = Schema.Struct({
+  ...PrHubLocalCheckoutCandidate.fields,
+  projectId: Schema.NullOr(ProjectId),
+});
+export type PrHubResolvedCheckout = typeof PrHubResolvedCheckout.Type;
 
 export const PrHubActor = Schema.Struct({
   login: Schema.String,
@@ -1055,7 +1074,9 @@ export const PR_HUB_WS_METHODS = {
   markNotified: "prHub.markNotified",
   analyzeAdvisories: "prHub.analyzeAdvisories",
   getAdvisories: "prHub.getAdvisories",
+  // Legacy wire compatibility for older clients; new actions use resolveLocalCheckout.
   listLocalCheckoutCandidates: "prHub.listLocalCheckoutCandidates",
+  resolveLocalCheckout: "prHub.resolveLocalCheckout",
   getDetail: "prHub.getDetail",
   getTimeline: "prHub.getTimeline",
   getFiles: "prHub.getFiles",

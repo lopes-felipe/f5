@@ -123,6 +123,7 @@ function makePrHubStub(snapshot: PrHubSnapshot): PrHubServiceShape {
     acknowledgeAttention: () => Effect.succeed(snapshot),
     markSeen: () => Effect.succeed(snapshot),
     markNotified: () => Effect.succeed(snapshot),
+    resolveLocalCheckout: () => Effect.succeed([]),
     listLocalCheckoutCandidates: () => Effect.succeed([]),
     getDetail: () => Effect.die("getDetail must not be called"),
     getTimeline: () => Effect.die("getTimeline must not be called"),

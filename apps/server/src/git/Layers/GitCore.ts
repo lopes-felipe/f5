@@ -1,3 +1,7 @@
+import {
+  parseRemoteFetchUrls,
+  NONINTERACTIVE_GIT_ENV as BACKGROUND_GIT_FETCH_ENV,
+} from "../remoteInspection.ts";
 import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
 
 import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref } from "effect";
@@ -17,12 +21,6 @@ const STATUS_UPSTREAM_REFRESH_GENERATION_CAPACITY = STATUS_UPSTREAM_REFRESH_CACH
 const STATUS_STATIC_METADATA_CACHE_TTL = Duration.seconds(15);
 const STATUS_STATIC_METADATA_FAILURE_CACHE_TTL = Duration.seconds(5);
 const DEFAULT_BASE_BRANCH_CANDIDATES = ["main", "master"] as const;
-const BACKGROUND_GIT_FETCH_ENV = {
-  GIT_TERMINAL_PROMPT: "0",
-  GIT_ASKPASS: "echo",
-  SSH_ASKPASS: "echo",
-  GCM_INTERACTIVE: "never",
-} satisfies NodeJS.ProcessEnv;
 
 class StatusUpstreamRefreshCacheKey extends Data.Class<{
   cwd: string;
@@ -144,22 +142,6 @@ function normalizeRemoteUrl(value: string): string {
     .replace(/\/+$/g, "")
     .replace(/\.git$/i, "")
     .toLowerCase();
-}
-
-function parseRemoteFetchUrls(stdout: string): Map<string, string> {
-  const remotes = new Map<string, string>();
-  for (const line of stdout.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    const match = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(trimmed);
-    if (!match) continue;
-    const [, remoteName = "", remoteUrl = "", direction = ""] = match;
-    if (direction !== "fetch" || remoteName.length === 0 || remoteUrl.length === 0) {
-      continue;
-    }
-    remotes.set(remoteName, remoteUrl);
-  }
-  return remotes;
 }
 
 function parseTrackingBranchByUpstreamRef(stdout: string, upstreamRef: string): string | null {

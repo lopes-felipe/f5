@@ -210,7 +210,9 @@ import type {
   PrHubGetAdvisoriesInput,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
+  PrHubResolveCheckoutInput,
   PrHubLocalCheckoutCandidate,
+  PrHubResolvedCheckout,
   PrHubMarkNotifiedInput,
   PrHubMarkReadyInput,
   PrHubMarkSeenInput,
@@ -624,6 +626,7 @@ export interface NativeApi {
     markNotified: (input: PrHubMarkNotifiedInput) => Promise<PrHubOverview>;
     analyzeAdvisories: (input?: PrHubAnalyzeAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
     getAdvisories: (input?: PrHubGetAdvisoriesInput) => Promise<PrHubAdvisorySnapshot>;
+    resolveLocalCheckout: (input: PrHubResolveCheckoutInput) => Promise<PrHubResolvedCheckout[]>;
     listLocalCheckoutCandidates: (
       input: PrHubLocalCandidatesInput,
     ) => Promise<PrHubLocalCheckoutCandidate[]>;

@@ -4,7 +4,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas";
 // Matches Linux PATH_MAX (4096) and aligns with the `addProjectBaseDirectory`
 // settings schema so values saved in settings can always be sent to the browse
 // endpoint without the payload decode rejecting them.
-const FILESYSTEM_PATH_MAX_LENGTH = 4096;
+export const FILESYSTEM_PATH_MAX_LENGTH = 4096;
 
 // NOTE: `TrimmedNonEmptyString` rejects empty / whitespace-only values with
 // Effect Schema's default error message, which isn't particularly friendly.

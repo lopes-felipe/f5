@@ -42,7 +42,9 @@ import type {
   PrHubUnresolvedThreadsResult,
   PrHubIgnoreInput,
   PrHubLocalCandidatesInput,
+  PrHubResolveCheckoutInput,
   PrHubLocalCheckoutCandidate,
+  PrHubResolvedCheckout,
   PrHubMarkNotifiedInput,
   PrHubMarkReadyInput,
   PrHubMarkSeenInput,
@@ -115,6 +117,9 @@ export interface PrHubServiceShape {
   readonly markNotified: (
     input: PrHubMarkNotifiedInput,
   ) => Effect.Effect<PrHubSnapshot, SourceControlProviderError>;
+  readonly resolveLocalCheckout: (
+    input: PrHubResolveCheckoutInput,
+  ) => Effect.Effect<ReadonlyArray<PrHubResolvedCheckout>, SourceControlProviderError>;
   readonly listLocalCheckoutCandidates: (
     input: PrHubLocalCandidatesInput,
   ) => Effect.Effect<ReadonlyArray<PrHubLocalCheckoutCandidate>>;

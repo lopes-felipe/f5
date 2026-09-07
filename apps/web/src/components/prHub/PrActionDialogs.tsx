@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { Input } from "../ui/input";
 import { PrCommentSubmit } from "./PrCommentSubmit";
 import { PrReviewSubmit } from "./PrReviewSubmit";
 import { Button } from "../ui/button";
@@ -42,7 +44,13 @@ export function PrActionDialogs({
   setCandidatePicker,
   isOpeningInF5,
   openInF5,
+  selectFolder,
 }: PrActionDialogProps) {
+  const [folderPath, setFolderPath] = useState("");
+  useEffect(() => {
+    setFolderPath("");
+  }, [candidatePicker === null, pr.key]);
+  const canPickFolder = typeof window !== "undefined" && Boolean(window.desktopBridge);
   return (
     <>
       <Dialog
@@ -134,18 +142,36 @@ export function PrActionDialogs({
 
       <Dialog
         open={candidatePicker !== null}
-        onOpenChange={(open) => !open && setCandidatePicker(null)}
+        onOpenChange={(open) => {
+          if (!open && !isOpeningInF5) {
+            setCandidatePicker(null);
+            setFolderPath("");
+          }
+        }}
       >
         <DialogPopup>
           <DialogHeader>
             <DialogTitle>
-              {candidatePicker?.intent === "open"
-                ? "Choose local clone"
-                : "Choose clone for F5 run"}
+              {candidatePicker?.error
+                ? "Could not resolve local repository"
+                : candidatePicker?.candidates.length === 0
+                  ? "No matching F5 project"
+                  : candidatePicker?.intent === "open"
+                    ? "Choose local clone"
+                    : "Choose clone for F5 run"}
             </DialogTitle>
-            <DialogDescription>{pr.repository.nameWithOwner}</DialogDescription>
+            <DialogDescription>
+              F5 checks registered projects and, when configured, the base directory for{" "}
+              {pr.repository.nameWithOwner}. Selecting a matching folder adds it as a project and
+              continues the requested action.
+            </DialogDescription>
           </DialogHeader>
           <DialogPanel className="space-y-2">
+            {candidatePicker?.error && (
+              <p role="alert" className="text-sm text-destructive">
+                {candidatePicker.error}
+              </p>
+            )}
             {(candidatePicker?.candidates ?? []).map((candidate) => (
               <button
                 key={`${candidate.projectId}:${candidate.cwd}`}
@@ -160,7 +186,34 @@ export function PrActionDialogs({
                 <span className="truncate text-xs text-muted-foreground">{candidate.cwd}</span>
               </button>
             ))}
+            {!canPickFolder && (
+              <Input
+                aria-label="Existing repository folder"
+                value={folderPath}
+                onChange={(event) => setFolderPath(event.target.value)}
+                placeholder="Path on the F5 server"
+                disabled={isOpeningInF5}
+              />
+            )}
           </DialogPanel>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              disabled={isOpeningInF5}
+              onClick={() => {
+                setCandidatePicker(null);
+                setFolderPath("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={isOpeningInF5 || (!canPickFolder && !folderPath.trim())}
+              onClick={() => void selectFolder(canPickFolder ? undefined : folderPath)}
+            >
+              Select existing folder
+            </Button>
+          </DialogFooter>
         </DialogPopup>
       </Dialog>
     </>
