@@ -1,3 +1,4 @@
+import { prHubRecoveryCandidates } from "./recovery.ts";
 import { withPrHubDiscoveryWork } from "./discoveryLease.ts";
 import { assertPrHubDiscoveryLease, withPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { continuePrConnectionPagination } from "./attentionPagination.ts";
@@ -24,6 +25,7 @@ export interface SearchTask {
   to?: number;
 }
 interface HydrationTask {
+  number?: number;
   priority?: number;
   nodeId: string;
   aliases: string[];
@@ -112,7 +114,11 @@ export function beginPrHubSearch(
       WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId}
         AND kind = 'source_watermark' AND task_key = ${sourceKey}`;
     const previous = rows[0] ? (JSON.parse(rows[0].payload_json) as SourceWatermark) : null;
-    if (previous && !previous.complete) return previous.task;
+    if (previous && !previous.complete) {
+      const queued =
+        yield* sql`SELECT 1 FROM pr_hub_sync_tasks WHERE provider_kind = 'github' AND host = ${account.host} AND viewer_id = ${account.viewerId} AND kind = 'search' AND json_extract(payload_json, '$.sourceKey') = ${sourceKey} LIMIT 1`;
+      return queued.length > 0 ? { ...previous.task, queued: true } : previous.task;
+    }
     const repair = previous?.repairedAt == null || now - previous.repairedAt >= 6 * 60 * 60_000;
     const bounds =
       !repair && previous?.watermark != null
@@ -484,6 +490,7 @@ export function selectPrHubHydration(
           );
           for (const row of rows) {
             const task = JSON.parse(row.payload_json) as HydrationTask;
+            if (task.number == null) delete task.number;
             if (task.repository && excluded.has(task.repository.toLowerCase())) continue;
             if (selected.size < available) selected.set(task.nodeId, task);
           }
@@ -653,7 +660,7 @@ function syncRepositories(
   });
 }
 
-/** Previously tracked open PRs enter the same fair hydration queue independently of search. */
+/** Retained unverified PRs and stale open PRs recover independently of search. */
 export function enqueuePrHubTracked(
   account: DiscoveryAccount,
   excluded: ReadonlySet<string>,
@@ -663,17 +670,18 @@ export function enqueuePrHubTracked(
     const sql = yield* SqlClient.SqlClient;
     const timestamp = new Date(now).toISOString();
     const before = new Date(now - 180_000).toISOString();
+    const candidates = prHubRecoveryCandidates(sql, account, excluded, now);
     yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind, host, viewer_id, kind, task_key, payload_json, created_at, updated_at)
-      SELECT p.provider_kind, p.host, v.viewer_id, 'hydrate', p.node_id,
-        json_object('nodeId', p.node_id, 'aliases', json_array('involved'), 'repository', p.repo, 'updatedAt', p.updated_at, 'priority', CASE WHEN v.attention_bucket = 'needs_you' THEN 2 ELSE 0 END),
-        COALESCE(json_extract(v.viewer_payload_json, '$.lastVerifiedAt'), p.created_at), p.updated_at
-      FROM pr_hub_prs p JOIN pr_hub_viewer_state v ON v.provider_kind = p.provider_kind AND v.host = p.host AND v.repo = p.repo AND v.number = p.number
-      WHERE p.provider_kind = 'github' AND p.host = ${account.host} AND v.viewer_id = ${account.viewerId}
-        AND p.state = 'open' AND p.node_id IS NOT NULL
-        AND (json_extract(v.viewer_payload_json, '$.lastVerifiedAt') IS NULL OR json_extract(v.viewer_payload_json, '$.lastVerifiedAt') <= ${before})
-        AND lower(p.repo) NOT IN (SELECT value FROM json_each(${JSON.stringify([...excluded])}))
+      SELECT p.provider_kind, p.host, p.viewer_id, 'hydrate', COALESCE(p.node_id, p.repo || '#' || p.number),
+        json_object('nodeId', COALESCE(p.node_id, p.repo || '#' || p.number), 'number', CASE WHEN p.node_id IS NULL THEN p.number ELSE NULL END,
+          'aliases', json_array('involved'), 'repository', p.repo, 'updatedAt', p.updated_at,
+          'priority', CASE WHEN p.attention_bucket = 'needs_you' THEN 2 ELSE 0 END),
+        COALESCE(json_extract(p.viewer_payload_json, '$.lastVerifiedAt'), p.created_at), p.updated_at
+      FROM (${candidates}) p
+      WHERE (p.facts_verified = 0 OR (p.state = 'open' AND
+        (json_extract(p.viewer_payload_json, '$.lastVerifiedAt') IS NULL OR json_extract(p.viewer_payload_json, '$.lastVerifiedAt') <= ${before})))
       ON CONFLICT(provider_kind, host, viewer_id, kind, task_key) DO UPDATE SET payload_json = json_set(pr_hub_sync_tasks.payload_json,
-        '$.priority', max(COALESCE(json_extract(pr_hub_sync_tasks.payload_json, '$.priority'), 0), json_extract(excluded.payload_json, '$.priority')))`;
+        '$.priority', max(COALESCE(json_extract(payload_json, '$.priority'), 0), json_extract(excluded.payload_json, '$.priority')))`;
     return timestamp;
   });
 }

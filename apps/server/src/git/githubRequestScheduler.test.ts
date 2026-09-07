@@ -129,6 +129,32 @@ describe("GitHub host scheduling", () => {
     expect(scheduler.status("github.com").resources[0]?.remaining).toBeNull();
     expect(scheduler.status("github.com").resources[0]?.resetAt).toBeNull();
   });
+  it("reports the host cooldown for every resource and rejects fallback without dispatch", async () => {
+    let now = 0;
+    const scheduler = makeGitHubRequestScheduler(
+      () => now,
+      () => 0.5,
+    );
+    scheduler.record("github.com", "search", { status: 502, rateLimit: {} }, 1, true);
+    let dispatched = 0;
+    const fallback = scheduler.run(
+      "github.com",
+      "search",
+      Effect.sync(() => ++dispatched),
+    );
+    expect((await Effect.runPromise(fallback.pipe(Effect.flip))).kind).toBe("rate_limited");
+    expect(dispatched).toBe(0);
+    expect(
+      scheduler
+        .status("github.com")
+        .resources.every((resource) => resource.resumeAt === new Date(30_000).toISOString()),
+    ).toBe(true);
+    now = 30_000;
+    expect(await Effect.runPromise(fallback)).toBe(1);
+    expect(
+      scheduler.status("github.com").resources.every((resource) => resource.resumeAt === null),
+    ).toBe(true);
+  });
   it("backs off network failures without retrying operations", async () => {
     let now = 0;
     let calls = 0;

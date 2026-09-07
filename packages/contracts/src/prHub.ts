@@ -228,6 +228,7 @@ export const PrHubSchedulerState = Schema.Struct({
 });
 export type PrHubSchedulerState = typeof PrHubSchedulerState.Type;
 export const PrHubSnapshot = Schema.Struct({
+  nextRefreshAt: Schema.optional(Schema.NullOr(IsoDateTime)),
   scheduler: Schema.optional(PrHubSchedulerState),
   coverage: Schema.optional(Schema.Array(PrHubCoverage)),
   revision: Schema.optional(Schema.String),

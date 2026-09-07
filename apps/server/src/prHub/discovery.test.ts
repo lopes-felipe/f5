@@ -256,7 +256,7 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
           start,
         );
         const resumed = yield* beginPrHubSearch(account, "author", task.query, start + 3600_000);
-        assert.deepStrictEqual(resumed, first);
+        assert.deepStrictEqual(resumed, { ...first, queued: true });
         yield* resumePrHubSearch(account, new Set(), (_, variables) => {
           assert.equal(variables.cursor, "next");
           assert.equal(variables.query, first.query);

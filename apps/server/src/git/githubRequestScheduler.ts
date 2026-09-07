@@ -191,7 +191,10 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
         const quota = budget.quota[resource];
         const used = currentWindow ? budget.used[resource] : 0;
         const windowLimit = { rest: 60, search: 30, graphql: 500 }[resource];
-        let resume = used >= windowLimit ? budget.windowStart + 180_000 : 0;
+        let resume = Math.max(
+          budget.blockedUntil,
+          used >= windowLimit ? budget.windowStart + 180_000 : 0,
+        );
         if (
           resource === "search" &&
           timestamp - budget.minuteStart < 60_000 &&

@@ -1,3 +1,8 @@
+import { vi } from "vitest";
+import {
+  githubRequestScheduler,
+  makeGitHubRequestScheduler,
+} from "../../git/githubRequestScheduler.ts";
 import { PrHubRepositoryLive } from "./PrHubRepository.ts";
 import type { TrackedPullRequest } from "@t3tools/contracts";
 import type { PrHubServiceShape } from "../Services/PrHubService.ts";
@@ -148,6 +153,10 @@ function isGitHubCliError(value: unknown): value is GitHubCliError {
 function makeGithubStub(input: {
   readonly login?: string;
   readonly apiRequest?: GitHubCliShape["request"];
+  readonly graphqlRequest?: (
+    request: Parameters<GitHubCliShape["runGraphql"]>[0],
+  ) => ReturnType<GitHubCliShape["runGraphql"]> | undefined;
+  readonly fallbackRequest?: GitHubCliShape["searchPullRequests"];
   readonly credentialContext?: () => GitHubCredentialContext;
   readonly teams?: ReadonlyArray<string>;
   readonly teamsError?: GitHubCliError;
@@ -177,6 +186,7 @@ function makeGithubStub(input: {
   >();
   const detailNodesById = new Map<string, Record<string, unknown>>();
   let searchRequestCount = 0;
+  let currentSearchResponse: unknown = emptySearchResponse();
   const nextResponse = (responses: unknown[], fallback: unknown) =>
     responses.length > 0 ? responses.shift() : fallback;
   const rememberDetailNodes = (response: unknown) => {
@@ -310,7 +320,10 @@ function makeGithubStub(input: {
         query: request.query,
         variables: request.variables,
       });
-      if (request.query.includes("PrHubSearch")) {
+      const overridden = input.graphqlRequest?.(request);
+      if (overridden) return overridden;
+      if (request.query.includes("PrHubSearch($rr:")) {
+        currentSearchResponse = nextResponse(searchResponses, emptySearchResponse());
         searchRequestCount += 1;
         if (input.stallSearchAfterFirst && searchRequestCount > 1) {
           return Effect.never;
@@ -338,7 +351,11 @@ function makeGithubStub(input: {
                     ? nextResponse(reconcileResponses, reconcileResponse([]))
                     : request.query.includes("PrHubDetails")
                       ? nextResponse(detailResponses, detailResponseFor(request))
-                      : nextResponse(searchResponses, emptySearchResponse());
+                      : request.query.includes("PrHubSearchContinuation")
+                        ? currentSearchResponse
+                        : request.query.includes("PrHubSearch(")
+                          ? currentSearchResponse
+                          : emptySearchResponse();
       if (!isGitHubCliError(response) && request.query.includes("PrHubSearch")) {
         rememberDetailNodes(response);
       }
@@ -351,7 +368,7 @@ function makeGithubStub(input: {
           ).pipe(Effect.andThen(responseEffect))
         : responseEffect;
     },
-    searchPullRequests: () => Effect.succeed([]),
+    searchPullRequests: input.fallbackRequest ?? (() => Effect.succeed([])),
     reviewPullRequest: (request) =>
       Effect.sync(() => {
         input.calls.approvals.push({ url: request.url, body: request.body });
@@ -407,10 +424,21 @@ function makeGithubStub(input: {
   };
 }
 
+const serviceLayer = PrHubServiceLive.pipe(
+  Layer.provide(PrHubReviewOperationsLive),
+  Layer.provide(PrHubDiscoveryLive),
+  Layer.provide(PrHubRepositoryLive),
+  Layer.provide(PrHubJobCoordinatorLive),
+);
+
 function makeLayer(input: {
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly login?: string;
   readonly apiRequest?: GitHubCliShape["request"];
+  readonly graphqlRequest?: (
+    request: Parameters<GitHubCliShape["runGraphql"]>[0],
+  ) => ReturnType<GitHubCliShape["runGraphql"]> | undefined;
+  readonly fallbackRequest?: GitHubCliShape["searchPullRequests"];
   readonly credentialContext?: () => GitHubCredentialContext;
   readonly teams?: ReadonlyArray<string>;
   readonly teamsError?: GitHubCliError;
@@ -438,11 +466,7 @@ function makeLayer(input: {
     deleteById: () => Effect.void,
   } satisfies ProjectionProjectRepositoryShape;
 
-  return PrHubServiceLive.pipe(
-    Layer.provide(PrHubReviewOperationsLive),
-    Layer.provide(PrHubDiscoveryLive),
-    Layer.provide(PrHubRepositoryLive),
-    Layer.provide(PrHubJobCoordinatorLive),
+  return serviceLayer.pipe(
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-pr-hub-test-" })),
     Layer.provideMerge(ServerSettingsService.layerTest(input.settings ?? {})),
@@ -730,7 +754,8 @@ it.effect("coalesces overlapping forced refreshes into one GitHub fetch", () => 
     );
 
     const searchCalls = calls.graphql.filter((call) => call.query.includes("PrHubSearch"));
-    assert.equal(searchCalls.length, 1);
+    assert.equal(searchCalls.length, 6);
+    assert.equal(searchCalls.filter((call) => call.query.includes("$rr:")).length, 1);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -816,7 +841,7 @@ it.effect("stores a concise degraded message when GraphQL falls back to gh searc
     assert.equal(snapshot.status, "degraded");
     assert.equal(
       snapshot.errorMessage,
-      "GitHub API returned HTTP 502. Showing fallback search results.",
+      "GitHub API returned HTTP 502. Fallback search completed 5 of 5 scopes.",
     );
     assert.equal(snapshot.errorMessage?.includes("query PrHub"), false);
   }).pipe(
@@ -865,7 +890,12 @@ it.effect("sorts search buckets by latest update", () => {
     const service = yield* PrHubService;
     yield* service.refreshNow({ mode: "force" });
 
-    const variables = calls.graphql[0]?.variables as Record<string, string> | undefined;
+    const variables = Object.assign(
+      {},
+      ...calls.graphql
+        .filter((call) => call.query.includes("PrHubSearch("))
+        .map((call) => call.variables),
+    ) as Record<string, string>;
     assert.ok(variables);
     const expectSorted = (value: string | undefined) => {
       if (typeof value !== "string") throw new Error("Expected search query variable.");
@@ -874,7 +904,7 @@ it.effect("sorts search buckets by latest update", () => {
     expectSorted(variables.rr);
     expectSorted(variables.au);
     expectSorted(variables.closed);
-    expectSorted(variables.tr0);
+    assert.equal(variables.tr0, undefined);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -925,7 +955,7 @@ it.effect("stores a concise degraded message when GraphQL details cannot be hydr
     assert.equal(snapshot.status, "degraded");
     assert.equal(
       snapshot.errorMessage,
-      "GitHub API returned HTTP 502. Showing fallback search results.",
+      "GitHub API returned HTTP 502. Fallback search completed 5 of 5 scopes.",
     );
     assert.equal(snapshot.errorMessage?.includes("query PrHub"), false);
   }).pipe(
@@ -1481,7 +1511,12 @@ it.effect("chunks team review queries and marks team lookup failures degraded", 
     const snapshot = yield* service.refreshNow({ mode: "force" });
     assert.equal(snapshot.status, "ok");
 
-    const variables = calls.graphql[0]?.variables as Record<string, string> | undefined;
+    const variables = Object.assign(
+      {},
+      ...calls.graphql
+        .filter((call) => call.query.includes("PrHubSearch("))
+        .map((call) => call.variables),
+    ) as Record<string, string>;
     assert.ok(variables);
     const { tr0, tr1 } = variables;
     if (typeof tr0 !== "string" || typeof tr1 !== "string") {
@@ -2554,6 +2589,206 @@ it.effect("keeps archived tracked PRs visible but blocks publishing actions", ()
   }).pipe(
     Effect.provide(
       makeLayer({ calls, searchResponses: [searchResponse("review_requested", [node])] }),
+    ),
+  );
+});
+
+it.effect(
+  "recovers migrated PRs by ID and number before a search 502, persists them across restart, and defers fallback",
+  () => {
+    const calls = makeCalls();
+    const first = makePrNode({ id: "PR_recover_id", number: 301, reviewRequests: ["me"] });
+    const second = makePrNode({ id: "PR_recover_number", number: 302, reviewRequests: ["me"] });
+    const scheduler = makeGitHubRequestScheduler();
+    let recovering = false;
+    let fallbackCalls = 0;
+    let verifiedBeforeSearch = 0;
+    let database: SqlClient.SqlClient;
+    const status = vi.spyOn(githubRequestScheduler, "status").mockImplementation(scheduler.status);
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      database = sql;
+      const seed = yield* service.refreshNow({ mode: "force" });
+      assert.equal(seed.pullRequests.length, 2);
+      yield* sql`UPDATE pr_hub_viewer_state SET facts_verified = 0, viewer_payload_json = '{}', snoozed_until = '2099-01-01T00:00:00.000Z'`;
+      yield* sql`UPDATE pr_hub_prs SET node_id = NULL WHERE number = 302`;
+      // Recreate the service to model startup after the viewer-isolation migration.
+      recovering = true;
+      yield* Effect.gen(function* () {
+        const restarted = yield* PrHubService;
+        const before = yield* restarted.getOverview({});
+        assert.equal(before.counts.all, 0);
+        assert.equal(
+          before.coverage.find((scope) => scope.scope === "previously_tracked")?.remainingTasks,
+          2,
+        );
+        const snapshot = yield* restarted.refreshNow({ mode: "force" });
+        assert.equal(snapshot.status, "degraded");
+        assert.equal(verifiedBeforeSearch, 2);
+        assert.equal(fallbackCalls, 0);
+        assert.include(snapshot.errorMessage!, "Fallback search deferred");
+        const rows = yield* sql<{
+          facts_verified: number;
+          snoozed_until: string;
+          number: number;
+        }>`SELECT facts_verified, snoozed_until, number FROM pr_hub_viewer_state ORDER BY number`;
+        assert.deepStrictEqual(
+          rows.map((row) => row.facts_verified),
+          [1, 1],
+        );
+        assert.ok(rows.every((row) => row.snoozed_until === "2099-01-01T00:00:00.000Z"));
+        const pending = yield* sql`SELECT 1 FROM pr_hub_sync_tasks WHERE kind = 'hydrate'`;
+        assert.equal(pending.length, 0);
+      }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
+      yield* Effect.gen(function* () {
+        const restartedAgain = yield* PrHubService;
+        const snapshot = yield* restartedAgain.getOverview({});
+        assert.equal(
+          snapshot.coverage.find((scope) => scope.scope === "previously_tracked")?.remainingTasks ??
+            0,
+          0,
+        );
+        const page = yield* restartedAgain.listPullRequests({ filter: "all", visibility: "any" });
+        assert.deepStrictEqual(page.pullRequests.map((pr) => pr.number).sort(), [301, 302]);
+      }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          searchResponses: [searchResponse("review_requested", [first, second])],
+          fallbackRequest: () => {
+            fallbackCalls++;
+            return Effect.succeed([]);
+          },
+          graphqlRequest: (request) => {
+            if (!recovering) return undefined;
+            if (request.query.includes("PrHubTrackedByNumber"))
+              return Effect.succeed({ data: { repository: { pullRequest: second } } });
+            if (request.query.includes("PrHubDetails"))
+              return Effect.succeed({ data: { nodes: [first] } });
+            if (request.query.includes("PrHubSearch"))
+              return Effect.gen(function* () {
+                const sql = database;
+                const rows = yield* sql<{
+                  count: number;
+                }>`SELECT count(*) AS count FROM pr_hub_viewer_state WHERE facts_verified = 1`.pipe(
+                  Effect.orDie,
+                );
+                verifiedBeforeSearch = rows[0]!.count;
+                scheduler.record("github.com", "search", { status: 502, rateLimit: {} }, 1, true);
+                return yield* ghError("GitHub API returned HTTP 502.");
+              });
+            return undefined;
+          },
+        }),
+      ),
+      Effect.ensuring(Effect.sync(() => status.mockRestore())),
+    );
+  },
+);
+
+it.effect(
+  "resumes only unfinished search scopes after restart and ignores unused legacy team scopes",
+  () => {
+    const calls = makeCalls();
+    let fail = true;
+    const pr = makePrNode({ number: 401 });
+    const connection = {
+      issueCount: 1,
+      nodes: [pr],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    };
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      const first = yield* service.refreshNow({ mode: "force" });
+      assert.equal(first.status, "degraded");
+      const initial = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
+      assert.equal(initial.length, 6);
+      assert.ok(initial.every((call) => !call.query.includes("team_review")));
+      const completed = yield* sql<{
+        count: number;
+      }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE kind = 'source_watermark' AND json_extract(payload_json, '$.complete') = 1`;
+      assert.equal(completed[0]!.count, 5);
+      // Old versions created watermarks for no-match team scopes; they must not stall the new cycle.
+      yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+      VALUES('github','github.com','1','source_watermark','unused-team','{"complete":false,"task":{"alias":"team_review_0"}}','2026-01-01','2026-01-01')`;
+      // Repository-scoped watermarks share aliases but must not replace global checkpoints.
+      yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+      VALUES('github','github.com','1','source_watermark','repo-author','{"complete":true,"task":{"alias":"author","query":"is:pr author:me repo:octo/other"}}','2099-01-01','2099-01-01')`;
+      fail = false;
+      yield* Effect.gen(function* () {
+        const restarted = yield* PrHubService;
+        const recovered = yield* restarted.refreshNow({ mode: "force" });
+        assert.equal(recovered.status, "ok");
+        assert.equal(recovered.pullRequests[0]?.number, 401);
+        assert.equal(
+          calls.graphql.filter((call) => call.query.includes("query PrHubSearch(")).length,
+          6,
+        );
+        assert.equal(
+          recovered.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,
+          "complete",
+        );
+      }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          graphqlRequest: (request) => {
+            if (request.query.includes("PrHubSearchContinuation"))
+              return fail
+                ? Effect.fail(ghError("Search temporarily unavailable."))
+                : Effect.succeed({ data: { result: connection } });
+            if (request.query.includes("query PrHubSearch(")) {
+              const alias = request.query.match(/(\w+): search\(/)![1]!;
+              return alias === "author" && fail
+                ? Effect.fail(ghError("Search temporarily unavailable."))
+                : Effect.succeed({ data: { [alias]: emptySearchData().author } });
+            }
+            if (request.query.includes("PrHubDetails"))
+              return Effect.succeed({ data: { nodes: [pr] } });
+            return undefined;
+          },
+        }),
+      ),
+    );
+  },
+);
+
+it.effect("does not count orphaned, expired or excluded legacy rows as pending recovery", () => {
+  const calls = makeCalls();
+  const nodes = [
+    makePrNode({ number: 501 }),
+    makePrNode({ number: 502, repo: "octo/excluded" }),
+    makePrNode({ number: 503 }),
+  ];
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    yield* service.refreshNow({ mode: "force" });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE pr_hub_viewer_state SET facts_verified = 0, viewer_payload_json = '{}'`;
+    yield* sql`UPDATE pr_hub_viewer_state SET number = 999 WHERE number = 501`;
+    yield* sql`UPDATE pr_hub_prs SET state = 'closed', closed_at = '2000-01-01T00:00:00.000Z' WHERE number = 503`;
+    const settings = yield* ServerSettingsService;
+    yield* settings.updateSettings({ prHub: { excludeRepos: ["octo/excluded"] } });
+    yield* Effect.gen(function* () {
+      const restarted = yield* PrHubService;
+      const overview = yield* restarted.getOverview({});
+      assert.equal(overview.status, "ok");
+      assert.equal(overview.counts.all, 0);
+      assert.equal(
+        overview.coverage.find((scope) => scope.scope === "previously_tracked")?.remainingTasks ??
+          0,
+        0,
+      );
+    }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
+    const rows = yield* sql`SELECT 1 FROM pr_hub_viewer_state WHERE facts_verified = 0`;
+    assert.equal(rows.length, 3);
+  }).pipe(
+    Effect.provide(
+      makeLayer({ calls, searchResponses: [searchResponse("review_requested", nodes)] }),
     ),
   );
 });

@@ -964,25 +964,16 @@ export function buildSearchQueries(login: string, teams: ReadonlyArray<string>) 
   };
 }
 
-export const PR_HUB_SEARCH_QUERY = `
-query PrHubSearch($rr:String!,$tr0:String!,$tr1:String!,$tr2:String!,$tr3:String!,$tr4:String!,$au:String!,$as:String!,$me:String!,$inv:String!,$closed:String!){
-  review_requested: search(query:$rr,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_0: search(query:$tr0,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_1: search(query:$tr1,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_2: search(query:$tr2,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_3: search(query:$tr3,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_4: search(query:$tr4,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  author: search(query:$au,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  assignee: search(query:$as,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  mentioned: search(query:$me,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  involved: search(query:$inv,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  recently_closed: search(query:$closed,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  rateLimit { cost remaining limit resetAt }
+/** One independently checkpointed relationship scope per request. */
+export function buildPrHubSearchQuery(alias: string, variable: string) {
+  return `query PrHubSearch($${variable}:String!){
+    ${alias}: search(query:$${variable},type:ISSUE,first:100){
+      issueCount pageInfo { hasNextPage endCursor }
+      nodes { ... on PullRequest { id updatedAt repository { nameWithOwner } } }
+    }
+    rateLimit { cost remaining limit resetAt }
+  }`;
 }
-fragment PrSearchFields on PullRequest {
-  id updatedAt repository { nameWithOwner }
-}
-`;
 
 export const PR_HUB_DETAILS_QUERY = `
 query PrHubDetails($ids:[ID!]!){

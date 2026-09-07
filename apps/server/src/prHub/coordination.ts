@@ -1,3 +1,5 @@
+import { nextPrHubRefreshAt } from "./refreshSchedule.ts";
+import { githubRequestScheduler } from "../git/githubRequestScheduler.ts";
 import { withPrHubDiscoveryWork } from "./discoveryLease.ts";
 
 import { GitHubCliError } from "../git/Errors.ts";
@@ -55,9 +57,21 @@ export function createPrHubRefresh(
     upsertRefreshState,
     hydrateSnapshot,
   } = context.repository;
+  const publishRefreshSnapshot = (snapshot: PrHubSnapshot) =>
+    Effect.gen(function* () {
+      const currentSettings = yield* settings.getSettings.pipe(Effect.orDie);
+      return yield* publishSnapshot({
+        ...snapshot,
+        nextRefreshAt: nextPrHubRefreshAt(
+          { ...snapshot, nextRefreshAt: null },
+          currentSettings.prHub.pollIntervalSeconds,
+          githubRequestScheduler.status(host),
+        ),
+      });
+    });
   const fetchAndPersist = (mode: PrHubRefreshInput["mode"]) =>
     Effect.gen(function* () {
-      const currentSettings = yield* settings.getSettings;
+      const currentSettings = yield* settings.getSettings.pipe(Effect.orDie);
       const intervalSeconds =
         currentSettings.prHub.pollIntervalSeconds === 0
           ? 0
@@ -66,10 +80,12 @@ export function createPrHubRefresh(
         if (intervalSeconds === 0) return yield* getSnapshot;
         const current = yield* getSnapshot;
         if (current.lastPolledAt) {
-          const elapsedMs = Date.now() - new Date(current.lastPolledAt).getTime();
-          if (Number.isFinite(elapsedMs) && elapsedMs < intervalSeconds * 1000) {
-            return current;
-          }
+          const next = nextPrHubRefreshAt(
+            current,
+            intervalSeconds,
+            githubRequestScheduler.status(host),
+          );
+          if (next && Date.parse(next) > Date.now()) return current;
         }
       }
 
@@ -102,7 +118,7 @@ export function createPrHubRefresh(
             }),
           ],
         } satisfies PrHubSnapshot;
-        return yield* publishSnapshot(snapshot);
+        return yield* publishRefreshSnapshot(snapshot);
       }
 
       const viewer = viewerExit.value;
@@ -126,9 +142,34 @@ export function createPrHubRefresh(
         "monitoring",
         Effect.gen(function* () {
           const previousState = yield* viewerStateMap(String(viewer.context.viewerId));
-          const fetched = yield* fetchGraphql(viewer, mode === "force").pipe(
-            Effect.provideService(GitHubCredentialScope, viewer.context),
-          );
+          const alreadyPersisted = new Set<string>();
+          const fetched = yield* fetchGraphql(viewer, mode === "force", (prs) =>
+            Effect.gen(function* () {
+              const latest = yield* settings.getSettings;
+              const excluded = new Set(
+                latest.prHub.excludeRepos.map((repo) => repo.trim().toLowerCase()),
+              );
+              const recovered = prs
+                .filter((pr) => !excluded.has(pr.repository.nameWithOwner.toLowerCase()))
+                .map((pr) =>
+                  buildTrackedPullRequest(
+                    pr,
+                    viewer.login,
+                    previousState.get(`${pr.repository.nameWithOwner}#${pr.number}`),
+                  ),
+                );
+              yield* persistPullRequests(viewer, recovered, {
+                reconcilePolicy: "terminal_only",
+                skipReconciliation: true,
+                excludedRepos: excluded,
+              });
+              for (const pr of recovered)
+                alreadyPersisted.add(`${pr.repository.nameWithOwner}#${pr.number}`);
+              const active = yield* Ref.get(viewerRef);
+              if (active?.context.generation === viewer.context.generation && recovered.length > 0)
+                yield* hydrateSnapshot(viewer).pipe(Effect.flatMap(publishSnapshot));
+            }).pipe(Effect.orDie),
+          ).pipe(Effect.provideService(GitHubCredentialScope, viewer.context));
           const latestSettings = yield* settings.getSettings;
           const excludeRepos = new Set(
             latestSettings.prHub.excludeRepos
@@ -150,6 +191,7 @@ export function createPrHubRefresh(
               : "authoritative";
           yield* persistPullRequests(viewer, tracked, {
             reconcilePolicy,
+            alreadyPersisted,
             excludedRepos: excludeRepos,
           }).pipe(Effect.provideService(GitHubCredentialScope, viewer.context));
           yield* finishPrHubHydration(
@@ -171,7 +213,7 @@ export function createPrHubRefresh(
           const currentViewer = yield* Ref.get(viewerRef);
           if (currentViewer?.context.generation !== viewer.context.generation)
             return yield* getSnapshot;
-          return yield* hydrateSnapshot(viewer).pipe(Effect.flatMap(publishSnapshot));
+          return yield* hydrateSnapshot(viewer).pipe(Effect.flatMap(publishRefreshSnapshot));
         }).pipe(
           Effect.provideService(GitHubRequestPolicy, {
             beforeSend: () =>
@@ -212,7 +254,7 @@ export function createPrHubRefresh(
           }
           const existing = yield* getSnapshot;
           const message = causeUserMessage(cause, "PR Hub refresh failed.");
-          return yield* publishSnapshot({
+          return yield* publishRefreshSnapshot({
             ...existing,
             status: "error",
             errorKind: "error",

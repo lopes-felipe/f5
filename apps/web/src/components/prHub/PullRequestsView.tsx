@@ -116,11 +116,11 @@ function compactStatusDetail(message: string | undefined): string | null {
 
   const httpStatus = normalized.match(/\bHTTP\s+(\d{3})\b/i)?.[1];
   if (httpStatus) {
-    return `GitHub API returned HTTP ${httpStatus}. Fallback results may be incomplete.`;
+    return normalized.length > 400 ? `${normalized.slice(0, 397)}...` : normalized;
   }
   const lower = normalized.toLowerCase();
   if (lower.includes("rate limit") || lower.includes("secondary rate")) {
-    return "GitHub API rate limit reached. Fallback results may be incomplete.";
+    return normalized.length > 400 ? `${normalized.slice(0, 397)}...` : normalized;
   }
   if (lower.includes("gh auth login") || lower.includes("not authenticated")) {
     return "GitHub authentication is required.";
@@ -352,6 +352,9 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
             <p>
               GitHub requests resume after {formatAbsoluteTimeLabel(snapshot.scheduler.retryAt)}.
             </p>
+          ) : null}
+          {snapshot.nextRefreshAt ? (
+            <p>Next monitoring refresh: {formatAbsoluteTimeLabel(snapshot.nextRefreshAt)}.</p>
           ) : null}
           <p>{snapshot.scheduler.activeOrQueuedRequests} active or queued requests</p>
           <table className="mt-2 w-full text-left">
