@@ -3769,7 +3769,9 @@ describe("WebSocket Server", () => {
     );
 
     expect(resolved.relativePath).toBe("guide-link.md");
-    expect(resolved.absolutePath).toBe(fs.realpathSync(path.join(workspace, "guide-link.md")));
+    expect(resolved.absolutePath).toBe(
+      await fs.promises.realpath(path.join(workspace, "guide-link.md")),
+    );
   });
 
   it("rejects projects.readFile paths outside the workspace root", async () => {
