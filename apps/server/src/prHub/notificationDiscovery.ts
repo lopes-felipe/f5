@@ -87,6 +87,16 @@ function discoverSubjects(
         kind: "invalid_response",
         detail: "Notification discovery returned an incomplete page.",
       });
+    // Exclusions remove queued work as well as preventing provider reads. Otherwise an
+    // inaccessible, now-excluded subject would keep this scope partial indefinitely.
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* assertPrHubDiscoveryLease;
+        for (const repository of excluded) {
+          yield* sql`DELETE FROM pr_hub_sync_tasks WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND kind='notification_subject_retry' AND lower(json_extract(payload_json, '$.repository'))=${repository.toLowerCase()}`;
+        }
+      }),
+    );
     const retries = yield* sql<{
       payload_json: string;
     }>`SELECT payload_json FROM pr_hub_sync_tasks WHERE provider_kind='github' AND host=${account.host} AND viewer_id=${account.viewerId} AND kind='notification_subject_retry' ORDER BY updated_at LIMIT 5`;

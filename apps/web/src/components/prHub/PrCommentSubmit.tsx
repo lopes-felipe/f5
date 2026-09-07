@@ -1,4 +1,6 @@
 import { useState } from "react";
+import * as Schema from "effect/Schema";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubCommentOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
@@ -21,7 +23,11 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
     enabled: Boolean(accountGeneration),
     retry: false,
   });
-  const [body, setBody] = useState("");
+  const [body, setBody] = useLocalStorage(
+    JSON.stringify(["prHub", "commentText", accountGeneration, prKey]),
+    "",
+    Schema.String,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operation = query.data;
@@ -98,7 +104,7 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
               </Button>
               <PrOperationRecovery
                 key={operation.id}
-                kind="reply"
+                kind="comment"
                 busy={busy}
                 onRecover={(action, remoteId) =>
                   void run(() =>

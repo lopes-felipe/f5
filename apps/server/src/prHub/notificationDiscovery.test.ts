@@ -122,6 +122,41 @@ it.layer(SqliteClient.layerMemory())("notification discovery", (it) => {
 });
 
 it.layer(SqliteClient.layerMemory())("inaccessible notification subjects", (it) => {
+  it.effect("retires excluded retries without reading the excluded repository", () =>
+    Effect.gen(function* () {
+      yield* Migration081;
+      assert.isFalse(
+        yield* discoverNotificationSubjects(
+          account,
+          new Set(),
+          (endpoint) =>
+            Effect.succeed(
+              endpoint === "notifications"
+                ? response([subject("org/private")])
+                : { ...response({ message: "not found" }), status: 404 },
+            ),
+          1000,
+        ),
+      );
+      const calls: string[] = [];
+      assert.isTrue(
+        yield* discoverNotificationSubjects(
+          account,
+          new Set(["org/private"]),
+          (endpoint) => {
+            calls.push(endpoint);
+            return Effect.succeed(response([]));
+          },
+          2000,
+        ),
+      );
+      assert.deepStrictEqual(calls, ["notifications"]);
+      const sql = yield* SqlClient.SqlClient;
+      const remaining =
+        yield* sql`SELECT task_key FROM pr_hub_sync_tasks WHERE kind='notification_subject_retry'`;
+      assert.equal(remaining.length, 0);
+    }),
+  );
   it.effect("continues accessible subjects, reports partial coverage and retries failures", () =>
     Effect.gen(function* () {
       yield* Migration081;

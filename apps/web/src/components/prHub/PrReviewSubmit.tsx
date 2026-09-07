@@ -1,5 +1,7 @@
 import { PrOperationRecovery } from "./PrOperationRecovery";
 import { useState } from "react";
+import * as Schema from "effect/Schema";
+import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubReviewDraft, PrHubReviewOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
@@ -32,7 +34,11 @@ export function PrReviewSubmit({
     retry: false,
   });
   const [event, setEvent] = useState<PrHubReviewOperation["payload"]["event"]>("COMMENT");
-  const [quickBody, setQuickBody] = useState("");
+  const [quickBody, setQuickBody] = useLocalStorage(
+    JSON.stringify(["prHub", "quickReviewText", accountGeneration, prKey, quickEvent]),
+    "",
+    Schema.String,
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const operation = query.data;
@@ -43,6 +49,7 @@ export function PrReviewSubmit({
     try {
       const result = await action();
       queryClient.setQueryData(queryKey, result);
+      if (quickEvent && result.status === "succeeded") setQuickBody("");
     } catch (cause) {
       setError(
         cause instanceof Error
@@ -62,12 +69,14 @@ export function PrReviewSubmit({
     operation &&
     !["succeeded", "failed_before_send", "rejected", "abandoned"].includes(operation.status);
   const differentEntry =
-    active && Boolean(quickEvent) !== (operation.payload.source === "quick_review");
+    active &&
+    (Boolean(quickEvent) !== (operation.payload.source === "quick_review") ||
+      (quickEvent && quickEvent !== operation.payload.event));
   if (differentEntry)
     return (
       <p role="status" className="text-sm">
-        A review from another editor is still active. Finish or recover it in its original review
-        editor before preparing another review.
+        A review from another editor or review outcome is still active. Finish or recover it in its
+        original review editor before preparing another review.
       </p>
     );
   return (

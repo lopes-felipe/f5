@@ -5,12 +5,14 @@ import { expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
 import { render } from "vitest-browser-react";
 import { PrReviewSubmit } from "./PrReviewSubmit";
+import { PrCommentSubmit } from "./PrCommentSubmit";
 const api = vi.hoisted(() => ({
   getReviewOperation: vi.fn(),
   getFiles: vi.fn(),
   prepareQuickReview: vi.fn(),
   submitReview: vi.fn(),
   cancelReviewPreparation: vi.fn(),
+  getCommentOperation: vi.fn(),
 }));
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
 vi.mock("../../lib/prHubAccount", () => ({ getPrHubAccountGeneration: () => "account" }));
@@ -44,6 +46,47 @@ const operation = (body: string): PrHubReviewOperation => ({
       content: { body, comments: [], viewedFiles: [] },
     },
   },
+});
+it("does not submit a saved request-changes operation from an Approve dialog", async () => {
+  api.getReviewOperation.mockResolvedValue({
+    ...operation("Please fix"),
+    payload: { ...operation("Please fix").payload, event: "REQUEST_CHANGES" },
+  });
+  await render(
+    <QueryClientProvider client={new QueryClient()}>
+      <PrReviewSubmit
+        prKey={key}
+        prUrl="https://github.com/org/repo/pull/1"
+        draft={null}
+        disabled={false}
+        onBusyChange={() => {}}
+        quickEvent="APPROVE"
+      />
+    </QueryClientProvider>,
+  );
+  await expect
+    .element(page.getByRole("status"))
+    .toHaveTextContent("another editor or review outcome");
+  await expect
+    .element(page.getByRole("button", { name: "Submit review to GitHub" }))
+    .not.toBeInTheDocument();
+});
+
+it("retains an unsubmitted timeline comment when the dialog is reopened", async () => {
+  api.getCommentOperation.mockResolvedValue(null);
+  const client = new QueryClient();
+  const editor = () => (
+    <QueryClientProvider client={client}>
+      <PrCommentSubmit prKey={key} />
+    </QueryClientProvider>
+  );
+  const first = await render(editor());
+  await page.getByRole("textbox", { name: "PR timeline comment" }).fill("Keep this unsent text");
+  await first.unmount();
+  await render(editor());
+  await expect
+    .element(page.getByRole("textbox", { name: "PR timeline comment" }))
+    .toHaveValue("Keep this unsent text");
 });
 it("requires an immutable preview and cancellation before editing a quick review", async () => {
   api.getReviewOperation.mockResolvedValue(null);

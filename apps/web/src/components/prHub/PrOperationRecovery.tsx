@@ -6,13 +6,18 @@ export function PrOperationRecovery({
   busy,
   onRecover,
 }: {
-  kind: "review" | "reply";
+  kind: "review" | "reply" | "comment";
   busy: boolean;
   onRecover: (action: "link" | "abandon", remoteId?: string) => void;
 }) {
   const [remoteId, setRemoteId] = useState("");
   const [confirmed, setConfirmed] = useState(false);
-  const label = kind === "review" ? "GitHub review ID" : "GitHub comment node ID";
+  const label =
+    kind === "review"
+      ? "GitHub review ID"
+      : kind === "comment"
+        ? "GitHub comment ID"
+        : "GitHub comment node ID";
   return (
     <div className="space-y-2 rounded border border-border p-2">
       <label className="flex gap-2 text-xs">
@@ -27,7 +32,7 @@ export function PrOperationRecovery({
       <Button
         size="xs"
         variant="outline"
-        disabled={busy || (kind === "review" ? !/^[0-9]+$/.test(remoteId) : !remoteId.trim())}
+        disabled={busy || (kind !== "reply" ? !/^[0-9]+$/.test(remoteId) : !remoteId.trim())}
         onClick={() => onRecover("link", remoteId.trim())}
       >
         Verify linked {kind}
