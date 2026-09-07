@@ -16,6 +16,7 @@ import {
   buildCodexThreadOpenRequestParams,
   codexRequestTimeoutMs,
   CodexAppServerManager,
+  CodexJsonRpcError,
   classifyCodexStderrLine,
   isRecoverableThreadResumeError,
   legacyCodexApprovalDecision,
@@ -213,6 +214,39 @@ function createPendingApprovalHarness(
 }
 
 describe("CodexAppServerManager protocol diagnostics", () => {
+  it.each(["Method not found", undefined])(
+    "retains JSON-RPC codes even without a message: %s",
+    (message) => {
+      const manager = new CodexAppServerManager();
+      const reject = vi.fn();
+      const resolve = vi.fn();
+      const context = {
+        pending: new Map([
+          [
+            "1",
+            {
+              method: "thread/turns/list",
+              timeout: setTimeout(() => {}, 60_000),
+              resolve,
+              reject,
+            },
+          ],
+        ]),
+      };
+      (
+        manager as unknown as { handleResponse: (context: unknown, response: unknown) => void }
+      ).handleResponse(context, {
+        id: 1,
+        error: { code: -32601, ...(message ? { message } : {}) },
+      });
+      expect(reject).toHaveBeenCalledWith(
+        new CodexJsonRpcError("thread/turns/list", -32601, message ?? "Unknown JSON-RPC error"),
+      );
+      expect(resolve).not.toHaveBeenCalled();
+      expect(context.pending.size).toBe(0);
+    },
+  );
+
   it("appends recovery guidance to unsupported-model response errors", () => {
     const manager = new CodexAppServerManager();
     const reject = vi.fn();
@@ -272,7 +306,9 @@ describe("CodexAppServerManager protocol diagnostics", () => {
       }
     ).handleResponse(context, { id: 1, error: { message: "method not supported" } });
 
-    expect(reject).toHaveBeenCalledWith(new Error("model/list failed: method not supported"));
+    expect(reject).toHaveBeenCalledWith(
+      new CodexJsonRpcError("model/list", undefined, "method not supported"),
+    );
   });
 
   it("records bounded diagnostics across malformed records without retaining their contents", () => {
@@ -495,6 +531,7 @@ describe("Codex runtime-mode thread configuration", () => {
       const expected = { approvalPolicy, sandbox, approvalsReviewer };
       expect(params.start).toMatchObject(expected);
       expect(params.resume).toMatchObject(expected);
+      expect(params.resume).toMatchObject({ excludeTurns: true });
     },
   );
 
@@ -511,6 +548,7 @@ describe("Codex runtime-mode thread configuration", () => {
     };
     expect(params.start).toMatchObject(expected);
     expect(params.resume).toMatchObject(expected);
+    expect(params.resume).toMatchObject({ excludeTurns: true });
   });
 });
 
@@ -1861,65 +1899,147 @@ describe("runOneOffPrompt", () => {
 });
 
 describe("thread checkpoint control", () => {
-  it("reads thread turns from thread/read", async () => {
+  it("reads all turn pages in order with full items and the provider thread id", async () => {
     const { manager, context, requireSession, sendRequest } = createThreadControlHarness();
-    sendRequest.mockResolvedValue({
-      thread: {
-        id: "thread_1",
-        turns: [
-          {
-            id: "turn_1",
-            items: [{ type: "userMessage", content: [{ type: "text", text: "hello" }] }],
-          },
-        ],
-      },
-    });
-
+    context.session.resumeCursor = { threadId: "provider-thread" };
+    const turns = Array.from({ length: 51 }, (_, index) => ({
+      id: `turn_${index}`,
+      itemsView: "full",
+      items: [
+        { type: "userMessage", content: [{ type: "text", text: `hello ${index}` }] },
+        { type: "agentMessage", id: `message_${index}`, text: "complete response" },
+        { type: "commandExecution", id: `command_${index}`, aggregatedOutput: "complete output" },
+      ],
+    }));
+    sendRequest
+      .mockResolvedValueOnce({ data: turns.slice(0, 50), nextCursor: "next" })
+      .mockResolvedValueOnce({ data: turns.slice(50), nextCursor: null });
     const result = await manager.readThread(asThreadId("thread_1"));
-
     expect(requireSession).toHaveBeenCalledWith("thread_1");
-    expect(sendRequest).toHaveBeenCalledWith(context, "thread/read", {
-      threadId: "thread_1",
-      includeTurns: true,
-    });
-    expect(result).toEqual({
-      threadId: "thread_1",
-      turns: [
+    expect(sendRequest.mock.calls).toEqual([
+      [
+        context,
+        "thread/turns/list",
+        { threadId: "provider-thread", limit: 50, sortDirection: "asc", itemsView: "full" },
+      ],
+      [
+        context,
+        "thread/turns/list",
         {
-          id: "turn_1",
-          items: [{ type: "userMessage", content: [{ type: "text", text: "hello" }] }],
+          threadId: "provider-thread",
+          limit: 50,
+          sortDirection: "asc",
+          itemsView: "full",
+          cursor: "next",
         },
       ],
+    ]);
+    expect(result).toEqual({
+      threadId: "provider-thread",
+      turns: turns.map(({ id, items }) => ({ id, items })),
     });
   });
 
-  it("reads thread turns from flat thread/read responses", async () => {
-    const { manager, context, sendRequest } = createThreadControlHarness();
-    sendRequest.mockResolvedValue({
+  it.each([{ data: [] }, { data: [{ id: "turn_1", items: [], itemsView: "full" }] }])(
+    "reads a terminal page without additional requests: %j",
+    async ({ data }) => {
+      const { manager, sendRequest } = createThreadControlHarness();
+      sendRequest.mockResolvedValue({ data, nextCursor: null });
+      const result = await manager.readThread(asThreadId("thread_1"));
+      expect(result.turns).toEqual(data.map(({ id, items }) => ({ id, items })));
+      expect(sendRequest).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([
+    null,
+    { data: [], nextCursor: 1 },
+    { data: [] },
+    { data: [], nextCursor: "" },
+    { data: [{}], nextCursor: null },
+    { data: [{ id: " ", items: [], itemsView: "full" }], nextCursor: null },
+    { data: [{ id: "turn_1", items: [], itemsView: "summary" }], nextCursor: null },
+    { data: [{ id: "turn_1", itemsView: "full" }], nextCursor: null },
+  ])("rejects malformed or incomplete pages without fallback: %j", async (page) => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockResolvedValue(page);
+    await expect(manager.readThread(asThreadId("thread_1"))).rejects.toThrow(
+      "thread/turns/list returned",
+    );
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects repeated cursors", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockResolvedValue({ data: [], nextCursor: "same" });
+    await expect(manager.readThread(asThreadId("thread_1"))).rejects.toThrow("repeated cursor");
+    expect(sendRequest).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects duplicate turn ids across pages", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    const data = [{ id: "turn_1", items: [], itemsView: "full" }];
+    sendRequest
+      .mockResolvedValueOnce({ data, nextCursor: "next" })
+      .mockResolvedValueOnce({ data, nextCursor: null });
+    await expect(manager.readThread(asThreadId("thread_1"))).rejects.toThrow(
+      "invalid or incomplete turn",
+    );
+  });
+
+  it.each([
+    new Error("Timed out waiting for thread/turns/list."),
+    new CodexJsonRpcError("thread/turns/list", -32602, "invalid params"),
+    new CodexJsonRpcError("thread/turns/list", -32603, "internal error"),
+    new Error("method not supported"),
+  ])("does not fall back on other errors: %s", async (error) => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest.mockRejectedValue(error);
+    await expect(manager.readThread(asThreadId("thread_1"))).rejects.toBe(error);
+    expect(sendRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects a failed later page without returning partial history or caching unsupported", async () => {
+    const { manager, sendRequest } = createThreadControlHarness();
+    sendRequest
+      .mockResolvedValueOnce({
+        data: [{ id: "turn_1", items: [], itemsView: "full" }],
+        nextCursor: "next",
+      })
+      .mockRejectedValueOnce(new CodexJsonRpcError("thread/turns/list", -32601, "method not found"))
+      .mockResolvedValueOnce({ data: [], nextCursor: null });
+    await expect(manager.readThread(asThreadId("thread_1"))).rejects.toThrow("while paging");
+    await expect(manager.readThread(asThreadId("thread_1"))).resolves.toEqual({
       threadId: "thread_1",
-      turns: [
-        {
-          id: "turn_1",
-          items: [{ type: "userMessage", content: [{ type: "text", text: "hello" }] }],
-        },
-      ],
+      turns: [],
     });
+    expect(sendRequest.mock.calls.every((call) => call[1] === "thread/turns/list")).toBe(true);
+  });
 
-    const result = await manager.readThread(asThreadId("thread_1"));
-
-    expect(sendRequest).toHaveBeenCalledWith(context, "thread/read", {
+  it.each([
+    { thread: { id: "thread_1", turns: [{ id: "turn_1", items: [] }] } },
+    { threadId: "thread_1", turns: [{ id: "turn_1", items: [] }] },
+  ])("caches unsupported pagination only for the current session: %j", async (legacy) => {
+    const { manager, context, requireSession, sendRequest } = createThreadControlHarness();
+    sendRequest
+      .mockRejectedValueOnce(new CodexJsonRpcError("thread/turns/list", -32601, "method not found"))
+      .mockResolvedValue(legacy);
+    const expected = { threadId: "thread_1", turns: [{ id: "turn_1", items: [] }] };
+    await expect(manager.readThread(asThreadId("thread_1"))).resolves.toEqual(expected);
+    await expect(manager.readThread(asThreadId("thread_1"))).resolves.toEqual(expected);
+    expect(sendRequest.mock.calls.map((call) => call[1])).toEqual([
+      "thread/turns/list",
+      "thread/read",
+      "thread/read",
+    ]);
+    expect(sendRequest).toHaveBeenLastCalledWith(context, "thread/read", {
       threadId: "thread_1",
       includeTurns: true,
     });
-    expect(result).toEqual({
-      threadId: "thread_1",
-      turns: [
-        {
-          id: "turn_1",
-          items: [{ type: "userMessage", content: [{ type: "text", text: "hello" }] }],
-        },
-      ],
-    });
+    requireSession.mockReturnValue({ session: context.session });
+    sendRequest.mockResolvedValueOnce({ data: [], nextCursor: null });
+    await manager.readThread(asThreadId("thread_1"));
+    expect(sendRequest.mock.calls.at(-1)?.[1]).toBe("thread/turns/list");
   });
 
   it("rolls back turns via thread/rollback and resets session running state", async () => {
@@ -2666,6 +2786,15 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
     writeFileSync(path.join(workspaceDir, "README.md"), "hello\n", "utf8");
 
     const manager = new CodexAppServerManager();
+    const hydrationWarnings: ProviderEvent[] = [];
+    manager.on("event", (event: ProviderEvent) => {
+      if (
+        event.method === "deprecationNotice" &&
+        JSON.stringify(event.payload).includes("Full-history hydration")
+      ) {
+        hydrationWarnings.push(event);
+      }
+    });
 
     try {
       const firstSession = await manager.startSession({
@@ -2701,6 +2830,9 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
       const originalTurnCount = firstSnapshot.turns.length;
 
       manager.stopSession(firstSession.threadId);
+      // Fresh-thread stores may reject pagination and require legacy hydration.
+      // After resume this CLI exposes a paginated store.
+      hydrationWarnings.length = 0;
 
       const resumedSession = await manager.startSession({
         threadId: firstSession.threadId,
@@ -2716,7 +2848,7 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
         },
       });
 
-      expect(resumedSession.threadId).toBe(originalThreadId);
+      expect(resumedSession.threadId).toBe(firstSession.threadId);
 
       const resumedSnapshotBeforeTurn = await manager.readThread(resumedSession.threadId);
       expect(resumedSnapshotBeforeTurn.threadId).toBe(originalThreadId);
@@ -2734,6 +2866,7 @@ describe.skipIf(!process.env.CODEX_BINARY_PATH)("startSession live Codex resume"
         },
         { timeout: 120_000, interval: 1_000 },
       );
+      expect(hydrationWarnings).toEqual([]);
     } finally {
       manager.stopAll();
       rmSync(workspaceDir, { recursive: true, force: true });

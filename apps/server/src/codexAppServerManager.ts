@@ -132,11 +132,22 @@ interface CodexSessionContext {
   protocolDecodeFailureCount: number;
   nextRequestId: number;
   stopping: boolean;
+  turnPaginationUnsupported?: boolean;
 }
 
 interface JsonRpcError {
   code?: number;
   message?: string;
+}
+
+export class CodexJsonRpcError extends Error {
+  constructor(
+    readonly method: string,
+    readonly code: number | undefined,
+    message: string,
+  ) {
+    super(`${method} failed: ${message}`);
+  }
 }
 
 interface JsonRpcRequest {
@@ -503,6 +514,7 @@ export function buildCodexThreadOpenRequestParams(input: {
           resume: {
             ...overrides,
             threadId: input.resumeThreadId,
+            excludeTurns: true,
           },
         }
       : {}),
@@ -1334,11 +1346,84 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       throw new Error("Session is missing a provider resume thread id.");
     }
 
+    if (!context.turnPaginationUnsupported) {
+      try {
+        return await this.readPaginatedThread(context, providerThreadId);
+      } catch (error) {
+        if (
+          !(error instanceof CodexJsonRpcError) ||
+          error.method !== "thread/turns/list" ||
+          error.code !== -32601
+        ) {
+          throw error;
+        }
+        context.turnPaginationUnsupported = true;
+      }
+    }
+
     const response = await this.sendRequest(context, "thread/read", {
       threadId: providerThreadId,
       includeTurns: true,
     });
     return this.parseThreadSnapshot("thread/read", response);
+  }
+
+  private async readPaginatedThread(
+    context: CodexSessionContext,
+    providerThreadId: string,
+  ): Promise<CodexThreadSnapshot> {
+    const turns: CodexThreadTurnSnapshot[] = [];
+    const cursors = new Set<string>();
+    const turnIds = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      const response = await this.sendRequest(context, "thread/turns/list", {
+        threadId: providerThreadId,
+        limit: 50,
+        sortDirection: "asc",
+        itemsView: "full",
+        ...(cursor !== undefined ? { cursor } : {}),
+      }).catch((error: unknown) => {
+        // Once pagination has succeeded, any subsequent failure invalidates this snapshot.
+        if (cursor !== undefined) {
+          throw new Error("thread/turns/list failed while paging thread history.", {
+            cause: error,
+          });
+        }
+        throw error;
+      });
+      const page = this.readObject(response);
+      if (
+        !Array.isArray(page?.data) ||
+        !(
+          page.nextCursor === null ||
+          (typeof page.nextCursor === "string" && page.nextCursor.length > 0)
+        )
+      ) {
+        throw new Error("thread/turns/list returned an invalid page.");
+      }
+      for (const value of page.data) {
+        const turn = this.readObject(value);
+        if (
+          typeof turn?.id !== "string" ||
+          turn.id.trim().length === 0 ||
+          turnIds.has(turn.id) ||
+          !Array.isArray(turn.items) ||
+          turn.itemsView !== "full"
+        ) {
+          throw new Error("thread/turns/list returned an invalid or incomplete turn.");
+        }
+        turnIds.add(turn.id);
+        turns.push({ id: TurnId.makeUnsafe(turn.id), items: turn.items });
+      }
+      if (page.nextCursor === null) break;
+      if (cursors.has(page.nextCursor)) {
+        throw new Error("thread/turns/list returned a repeated cursor.");
+      }
+      cursor = page.nextCursor;
+      cursors.add(cursor);
+    } while (cursor !== undefined);
+    return { threadId: providerThreadId, turns };
   }
 
   async rollbackThread(threadId: ThreadId, numTurns: number): Promise<CodexThreadSnapshot> {
@@ -2064,9 +2149,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     clearTimeout(pending.timeout);
     context.pending.delete(key);
 
-    if (response.error?.message) {
-      const providerMessage = formatCodexUnsupportedModelError(String(response.error.message));
-      pending.reject(new Error(`${pending.method} failed: ${providerMessage}`));
+    if (response.error) {
+      const providerMessage = formatCodexUnsupportedModelError(
+        response.error.message ?? "Unknown JSON-RPC error",
+      );
+      pending.reject(new CodexJsonRpcError(pending.method, response.error.code, providerMessage));
       return;
     }
 
