@@ -68,6 +68,7 @@ async function initRepository(service: GitServiceShape, core: GitCoreShape): Pro
   await Effect.runPromise(core.initRepo({ cwd }));
   await git(service, cwd, ["config", "user.email", "test@example.com"]);
   await git(service, cwd, ["config", "user.name", "Test User"]);
+  await git(service, cwd, ["config", "core.autocrlf", "false"]);
   fs.writeFileSync(path.join(cwd, "README.md"), "initial\n", "utf8");
   await git(service, cwd, ["add", "README.md"]);
   await git(service, cwd, ["commit", "-m", "Initial commit"]);
@@ -77,7 +78,7 @@ async function initRepository(service: GitServiceShape, core: GitCoreShape): Pro
 
 async function createBareRemote(service: GitServiceShape): Promise<string> {
   const remote = makeTempDirectory("f5-git-smoke-remote-");
-  await git(service, remote, ["init", "--bare"]);
+  await git(service, remote, ["init", "--bare", "--initial-branch=main"]);
   return remote;
 }
 

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Worker } from "node:worker_threads";
+import { spawn, type ChildProcess } from "node:child_process";
 
 import {
   PROJECT_SEARCH_CONTENTS_MAX_LIMIT,
@@ -98,10 +98,11 @@ function cancellationError(): ProjectContentSearchError {
   return new ProjectContentSearchError("cancelled", "Project content search was cancelled.");
 }
 
-function makeWorkerClient(worker: Worker): ContentWorkerClient {
+function makeWorkerClient(worker: ChildProcess): ContentWorkerClient {
   let nextId = 1;
   let terminated = false;
   const pending = new Map<number, PendingWorkerCall>();
+  const closed = new Promise<void>((resolve) => worker.once("close", () => resolve()));
 
   const rejectPending = (error: Error) => {
     for (const [id, call] of pending) {
@@ -155,23 +156,31 @@ function makeWorkerClient(worker: Worker): ContentWorkerClient {
           reject,
           timeout,
         });
-        worker.postMessage({ ...message, id });
+        worker.send({ ...message, id }, (error) => {
+          if (error) rejectPending(error);
+        });
       });
     },
     terminate: async (reason) => {
-      if (terminated) return;
-      terminated = true;
-      rejectPending(reason);
-      await worker.terminate();
+      if (!terminated) {
+        terminated = true;
+        rejectPending(reason);
+        // Native FFI calls cannot be interrupted reliably by worker_threads.
+        // Killing the process also stops the native library's threads.
+        worker.kill("SIGKILL");
+      }
+      await closed;
     },
   };
 }
 
 function defaultWorkerFactory(): ContentWorkerClient {
   return makeWorkerClient(
-    new Worker(PROJECT_CONTENT_SEARCH_WORKER_SOURCE, {
-      eval: true,
-      name: "f5-project-content-search",
+    spawn(process.execPath, ["--eval", PROJECT_CONTENT_SEARCH_WORKER_SOURCE], {
+      cwd: import.meta.dirname,
+      stdio: ["ignore", "ignore", "inherit", "ipc"],
+      serialization: "json",
+      windowsHide: true,
     }),
   );
 }

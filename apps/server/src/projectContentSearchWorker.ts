@@ -2,15 +2,14 @@
  * Source for the killable project-content worker.
  *
  * Keeping this closure self-contained lets both Bun's source runtime and the
- * bundled Node runtime start the exact same worker with `eval: true`. It also
- * means cancellation can terminate native grep work immediately without
- * requiring a second emitted build artifact.
+ * bundled Node runtime start the same child process with `--eval`, without
+ * requiring a second emitted build artifact. Process isolation lets cancellation
+ * stop native FFI work as well as JavaScript execution.
  */
 function projectContentSearchWorkerMain(): void {
   type FileFinder = import("@ff-labs/fff-node").FileFinder;
   type GrepCursor = import("@ff-labs/fff-node").GrepCursor;
   type GrepResult = import("@ff-labs/fff-node").GrepResult;
-  type ParentPort = import("node:worker_threads").MessagePort;
 
   type WorkerRequest =
     | { readonly id: number; readonly type: "initialize"; readonly rootPath: string }
@@ -26,14 +25,14 @@ function projectContentSearchWorkerMain(): void {
       }
     | { readonly id: number; readonly type: "dispose" };
 
-  const { parentPort } = require("node:worker_threads") as {
-    readonly parentPort: ParentPort | null;
-  };
   const fs = require("node:fs") as typeof import("node:fs");
   const path = require("node:path") as typeof import("node:path");
-  if (!parentPort) {
-    throw new Error("Project content search worker requires a parent port.");
+  if (!process.send) {
+    throw new Error("Project content search worker requires an IPC channel.");
   }
+  const postMessage = (message: unknown) => process.send!(message);
+  // Do not leave an idle native index behind if the server exits unexpectedly.
+  process.on("disconnect", () => process.exit(0));
 
   const MAX_INDEXED_PATHS = 25_000;
   const MAX_MATCHES_PER_FILE = 100;
@@ -55,7 +54,7 @@ function projectContentSearchWorkerMain(): void {
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
 
   function postError(id: number, cause: unknown): void {
-    parentPort!.postMessage({
+    postMessage({
       id,
       type: "error",
       error: cause instanceof Error ? cause.message : String(cause),
@@ -330,13 +329,13 @@ function projectContentSearchWorkerMain(): void {
     };
   }
 
-  parentPort.on("message", (message: WorkerRequest) => {
+  process.on("message", (message: WorkerRequest) => {
     void (async () => {
       try {
         switch (message.type) {
           case "initialize":
             await initialize(message.rootPath);
-            parentPort.postMessage({
+            postMessage({
               id: message.id,
               type: "result",
               value: { indexedPathCount, indexTruncated },
@@ -344,19 +343,19 @@ function projectContentSearchWorkerMain(): void {
             return;
           case "refresh":
             await refresh();
-            parentPort.postMessage({
+            postMessage({
               id: message.id,
               type: "result",
               value: { indexedPathCount, indexTruncated },
             });
             return;
           case "search":
-            parentPort.postMessage({ id: message.id, type: "result", value: search(message) });
+            postMessage({ id: message.id, type: "result", value: search(message) });
             return;
           case "dispose":
             finder?.destroy();
             finder = null;
-            parentPort.postMessage({ id: message.id, type: "result", value: null });
+            postMessage({ id: message.id, type: "result", value: null });
             return;
         }
       } catch (cause) {

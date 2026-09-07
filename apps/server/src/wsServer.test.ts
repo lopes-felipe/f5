@@ -618,8 +618,15 @@ async function connectAndAwaitWelcome(
   headers?: Readonly<Record<string, string>>,
 ): Promise<[WebSocket, WsPushMessage<typeof WS_CHANNELS.serverWelcome>]> {
   const ws = await connectWs(port, token, 5, headers);
-  const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
-  return [ws, welcome];
+  try {
+    const welcome = await waitForPush(ws, WS_CHANNELS.serverWelcome);
+    return [ws, welcome];
+  } catch (cause) {
+    // Callers only register successful connections for teardown. A failed
+    // welcome must not leave a socket keeping server shutdown alive.
+    ws.terminate();
+    throw cause;
+  }
 }
 
 async function sendRequest(
