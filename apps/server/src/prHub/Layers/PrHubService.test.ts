@@ -858,6 +858,50 @@ it.effect("keeps bucket search lightweight and hydrates PR details separately", 
   );
 });
 
+it.effect(
+  "refresh retires broken search checkpoints while retaining tracked PR preferences",
+  () => {
+    const calls = makeCalls();
+    const pr = makePrNode({ id: "PR_repair", number: 14 });
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* service.refreshNow({ mode: "force" });
+      yield* sql`UPDATE pr_hub_viewer_state SET snoozed_until='2099-01-01T00:00:00.000Z' WHERE number=14`;
+      yield* sql`UPDATE pr_hub_sync_tasks SET payload_json='{"revision":0}' WHERE kind='search_format'`;
+      const brokenTask = {
+        alias: "team_review_0",
+        query:
+          "is:pr is:open archived:false sort:updated-desc updated:<1970-01-02 updated:<=2026-09-07T13:03:51.258Z",
+        cursor: null,
+      };
+      yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+      SELECT provider_kind,host,viewer_id,'source_watermark','legacy-broken',${JSON.stringify({ complete: false, task: brokenTask })},created_at,updated_at FROM pr_hub_sync_tasks WHERE kind='search_format'`;
+      const refreshed = yield* service.refreshNow({ mode: "force" });
+      assert.equal(refreshed.status, "ok");
+      assert.equal(refreshed.pullRequests[0]?.number, 14);
+      assert.equal(refreshed.pullRequests[0]?.snoozedUntil, "2099-01-01T00:00:00.000Z");
+      const legacy = yield* sql<{
+        count: number;
+      }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE task_key='legacy-broken'`;
+      assert.equal(legacy[0]?.count, 0);
+      const searches = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
+      assert.equal(searches.length, 2);
+      for (const search of searches) {
+        assert.equal(search.query.includes("team_review_"), false);
+        assert.equal(JSON.stringify(search.variables).includes("1970"), false);
+      }
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          searchResponses: [searchResponse("author", [pr]), searchResponse("author", [pr])],
+        }),
+      ),
+    );
+  },
+);
+
 it.effect("sorts search buckets by latest update", () => {
   const calls = makeCalls();
 
@@ -874,7 +918,15 @@ it.effect("sorts search buckets by latest update", () => {
     expectSorted(variables.rr);
     expectSorted(variables.au);
     expectSorted(variables.closed);
-    expectSorted(variables.tr0);
+    assert.equal(variables.tr0, undefined);
+    assert.equal(calls.graphql[0]?.query.includes("team_review_"), false);
+    const sql = yield* SqlClient.SqlClient;
+    const teamTasks = yield* sql<{
+      count: number;
+    }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE kind IN ('search','source_watermark') AND payload_json LIKE '%team_review_%'`;
+    assert.equal(teamTasks[0]?.count, 0);
+    for (const value of Object.values(variables))
+      assert.equal(value.match(/\bupdated:/g)?.length, 1);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -1492,6 +1544,8 @@ it.effect("chunks team review queries and marks team lookup failures degraded", 
     assert.equal(/team-review-requested:wolt\/team-10/.test(tr0), false);
     assert.match(tr1, /team-review-requested:wolt\/team-10/);
     assert.match(tr1, /team-review-requested:wolt\/team-11/);
+    assert.equal(variables.tr2, undefined);
+    assert.equal(calls.graphql[0]?.query.includes("team_review_2"), false);
   }).pipe(
     Effect.provide(
       makeLayer({

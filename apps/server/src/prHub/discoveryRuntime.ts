@@ -19,12 +19,11 @@ import * as SqlClient from "effect/unstable/sql/SqlClient";
 
 import {
   FetchResult,
-  NO_MATCH_SEARCH_QUERY,
   NormalizedPr,
   PR_HUB_DETAILS_CHUNK_SIZE,
   PR_HUB_DETAILS_QUERY,
   PR_HUB_RECONCILE_QUERY,
-  PR_HUB_SEARCH_QUERY,
+  buildPrHubSearchRequest,
   PersistedPrRow,
   RECONCILE_NODE_CHUNK_SIZE,
   RECONCILE_REPO_NUMBER_CHUNK_SIZE,
@@ -76,6 +75,7 @@ export function createPrHubDiscovery(
   const {
     ingestPrHubSearch,
     enqueuePrHubTracked,
+    preparePrHubSearchFormat,
     beginPrHubSearch,
     resumePrHubSearch,
     selectPrHubHydration,
@@ -245,47 +245,24 @@ export function createPrHubDiscovery(
         currentSettings.prHub.excludeRepos.map((repo) => repo.toLowerCase()),
       );
       const teamListCapped = viewer.teams.length > TEAM_QUERY_CHUNK_SIZE * TEAM_QUERY_CHUNK_COUNT;
-      const queryByAlias: Record<string, string> = {
-        review_requested: queries.rr,
-        team_review_0: queries.tr0,
-        team_review_1: queries.tr1,
-        team_review_2: queries.tr2,
-        team_review_3: queries.tr3,
-        team_review_4: queries.tr4,
-        author: queries.au,
-        assignee: queries.as,
-        mentioned: queries.me,
-        involved: queries.inv,
-        recently_closed: queries.closed,
-      };
+      yield* preparePrHubSearchFormat(account).pipe(Effect.orDie);
       const searchScopes = new Map<string, SearchTask>();
-      const scopedQueries = { ...queries };
-      const variableByAlias = {
-        review_requested: "rr",
-        team_review_0: "tr0",
-        team_review_1: "tr1",
-        team_review_2: "tr2",
-        team_review_3: "tr3",
-        team_review_4: "tr4",
-        author: "au",
-        assignee: "as",
-        mentioned: "me",
-        involved: "inv",
-        recently_closed: "closed",
-      } as const;
-      for (const [alias, variable] of Object.entries(variableByAlias)) {
-        const scope = yield* beginPrHubSearch(account, alias, queryByAlias[alias]!).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.orDie,
-        );
-        searchScopes.set(alias, scope);
-        scopedQueries[variable] = scope.query;
+      const scopedQueries = [];
+      for (const bucket of queries) {
+        const scope = yield* beginPrHubSearch(
+          account,
+          bucket.alias,
+          bucket.query,
+          Date.now(),
+          bucket.updatedSince,
+        ).pipe(Effect.orDie);
+        searchScopes.set(bucket.alias, scope);
+        scopedQueries.push({ ...bucket, query: scope.query });
       }
       const result = yield* Effect.exit(
         github.query({
           cwd,
-          document: PR_HUB_SEARCH_QUERY,
-          variables: scopedQueries,
+          ...buildPrHubSearchRequest(scopedQueries),
         }),
       );
       if (Exit.isFailure(result)) {
@@ -309,19 +286,7 @@ export function createPrHubDiscovery(
           ? `GitHub GraphQL returned partial errors for ${graphQlErrors.length} bucket(s).`
           : undefined;
 
-      const aliasNames = [
-        "review_requested",
-        "team_review_0",
-        "team_review_1",
-        "team_review_2",
-        "team_review_3",
-        "team_review_4",
-        "author",
-        "assignee",
-        "mentioned",
-        "involved",
-        "recently_closed",
-      ] as const;
+      const aliasNames = queries.map((bucket) => bucket.alias);
       const aliasesByNodeId = new Map<string, Set<string>>();
       const cappedBuckets: string[] = [];
       for (const alias of aliasNames) {
@@ -360,13 +325,12 @@ export function createPrHubDiscovery(
         syncPrHubRepositories(
           account,
           configured.map((candidate) => candidate.repository.nameWithOwner),
-          [
-            { alias: "involved", query: queries.inv },
-            { alias: "review_requested", query: queries.rr },
-            ...[queries.tr0, queries.tr1, queries.tr2, queries.tr3, queries.tr4]
-              .filter((query) => query !== NO_MATCH_SEARCH_QUERY)
-              .map((query, index) => ({ alias: `team_review_${index}`, query })),
-          ],
+          queries.filter(
+            (bucket) =>
+              bucket.alias === "involved" ||
+              bucket.alias === "review_requested" ||
+              bucket.alias.startsWith("team_review_"),
+          ),
           excluded,
           (document, variables) => github.query({ cwd, document, variables }),
           Date.now(),

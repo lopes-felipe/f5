@@ -8,6 +8,7 @@ type Provided<F extends (...args: never[]) => Effect.Effect<unknown, unknown, un
 ) => Effect.Effect<Effect.Success<ReturnType<F>>, Effect.Error<ReturnType<F>>>;
 
 export interface PrHubDiscoveryMethods {
+  readonly preparePrHubSearchFormat: Provided<typeof Discovery.preparePrHubSearchFormat>;
   readonly recordPrHubMembership: Provided<typeof Discovery.recordPrHubMembership>;
   readonly discoverNotificationSubjects: Provided<typeof discoverNotificationSubjects>;
   readonly enqueuePrHubTracked: Provided<typeof Discovery.enqueuePrHubTracked>;

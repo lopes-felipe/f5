@@ -45,7 +45,6 @@ export const RECONCILE_NODE_CHUNK_SIZE = 50;
 export const RECONCILE_REPO_NUMBER_CHUNK_SIZE = 20;
 export const RESOLVED_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
 export const NO_LONGER_RELEVANT_RETENTION_MS = 48 * 60 * 60 * 1000;
-export const NO_MATCH_SEARCH_QUERY = `${SEARCH_OPEN_PREFIX} updated:<1970-01-02`;
 
 export interface ViewerIdentity {
   readonly context: GitHubCredentialContext;
@@ -929,60 +928,88 @@ export function normalizeFallbackPr(input: {
   };
 }
 
-function chunkedTeamReviewQueries(teams: ReadonlyArray<string>): string[] {
+const SEARCH_VARIABLES = {
+  review_requested: "rr",
+  team_review_0: "tr0",
+  team_review_1: "tr1",
+  team_review_2: "tr2",
+  team_review_3: "tr3",
+  team_review_4: "tr4",
+  author: "au",
+  assignee: "as",
+  mentioned: "me",
+  involved: "inv",
+  recently_closed: "closed",
+} as const;
+
+export interface PrHubSearchBucket {
+  alias: keyof typeof SEARCH_VARIABLES;
+  query: string;
+  updatedSince?: number;
+}
+
+export function buildSearchQueries(
+  login: string,
+  teams: ReadonlyArray<string>,
+  now = Date.now(),
+): PrHubSearchBucket[] {
+  const buckets: PrHubSearchBucket[] = [
+    { alias: "review_requested", query: `${SEARCH_OPEN_PREFIX} review-requested:${login}` },
+  ];
   const normalizedTeams = teams.map((team) => team.trim()).filter(Boolean);
-  const chunks: string[] = [];
-  for (let index = 0; index < TEAM_QUERY_CHUNK_COUNT; index += 1) {
+  const teamAliases = (Object.keys(SEARCH_VARIABLES) as PrHubSearchBucket["alias"][]).filter(
+    (alias) => alias.startsWith("team_review_"),
+  );
+  for (const [index, alias] of teamAliases.entries()) {
     const chunk = normalizedTeams.slice(
       index * TEAM_QUERY_CHUNK_SIZE,
       (index + 1) * TEAM_QUERY_CHUNK_SIZE,
     );
-    chunks.push(
-      chunk.length > 0
-        ? `${SEARCH_OPEN_PREFIX} (${chunk.map((team) => `team-review-requested:${team}`).join(" OR ")})`
-        : NO_MATCH_SEARCH_QUERY,
+    if (chunk.length)
+      buckets.push({
+        alias,
+        query: `${SEARCH_OPEN_PREFIX} (${chunk.map((team) => `team-review-requested:${team}`).join(" OR ")})`,
+      });
+  }
+  buckets.push(
+    { alias: "author", query: `${SEARCH_OPEN_PREFIX} author:${login}` },
+    { alias: "assignee", query: `${SEARCH_OPEN_PREFIX} assignee:${login}` },
+    { alias: "mentioned", query: `${SEARCH_OPEN_PREFIX} mentions:${login}` },
+    { alias: "involved", query: `${SEARCH_OPEN_PREFIX} involves:${login}` },
+    {
+      alias: "recently_closed",
+      query: `is:pr -is:open author:${login} archived:false ${SEARCH_SORT_QUALIFIER}`,
+      updatedSince: Math.floor(now / 86_400_000) * 86_400_000 - 7 * 86_400_000,
+    },
+  );
+  return buckets;
+}
+
+/** Only fixed internal aliases enter the document; search text stays in variables. */
+export function buildPrHubSearchRequest(buckets: readonly PrHubSearchBucket[]) {
+  const variables: Record<string, string> = {};
+  const fields: string[] = [];
+  for (const alias of Object.keys(SEARCH_VARIABLES) as PrHubSearchBucket["alias"][]) {
+    const bucket = buckets.find((candidate) => candidate.alias === alias);
+    if (!bucket) continue;
+    const variable = SEARCH_VARIABLES[alias];
+    variables[variable] = bucket.query;
+    fields.push(
+      `${alias}: search(query:$${variable},type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }`,
     );
   }
-  return chunks;
-}
-
-export function buildSearchQueries(login: string, teams: ReadonlyArray<string>) {
-  const updatedSince = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-  const teamQueries = chunkedTeamReviewQueries(teams);
+  if (!fields.length) throw new Error("PR Hub search requires an active bucket.");
   return {
-    rr: `${SEARCH_OPEN_PREFIX} review-requested:${login}`,
-    tr0: teamQueries[0] ?? NO_MATCH_SEARCH_QUERY,
-    tr1: teamQueries[1] ?? NO_MATCH_SEARCH_QUERY,
-    tr2: teamQueries[2] ?? NO_MATCH_SEARCH_QUERY,
-    tr3: teamQueries[3] ?? NO_MATCH_SEARCH_QUERY,
-    tr4: teamQueries[4] ?? NO_MATCH_SEARCH_QUERY,
-    au: `${SEARCH_OPEN_PREFIX} author:${login}`,
-    as: `${SEARCH_OPEN_PREFIX} assignee:${login}`,
-    me: `${SEARCH_OPEN_PREFIX} mentions:${login}`,
-    inv: `${SEARCH_OPEN_PREFIX} involves:${login}`,
-    closed: `is:pr -is:open author:${login} updated:>=${updatedSince} archived:false ${SEARCH_SORT_QUALIFIER}`,
+    document: `query PrHubSearch(${Object.keys(variables)
+      .map((name) => `$${name}:String!`)
+      .join(",")}) {
+      ${fields.join("\n")}
+      rateLimit { cost remaining limit resetAt }
+    }
+    fragment PrSearchFields on PullRequest { id updatedAt repository { nameWithOwner } }`,
+    variables,
   };
 }
-
-export const PR_HUB_SEARCH_QUERY = `
-query PrHubSearch($rr:String!,$tr0:String!,$tr1:String!,$tr2:String!,$tr3:String!,$tr4:String!,$au:String!,$as:String!,$me:String!,$inv:String!,$closed:String!){
-  review_requested: search(query:$rr,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_0: search(query:$tr0,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_1: search(query:$tr1,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_2: search(query:$tr2,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_3: search(query:$tr3,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  team_review_4: search(query:$tr4,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  author: search(query:$au,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  assignee: search(query:$as,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  mentioned: search(query:$me,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  involved: search(query:$inv,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  recently_closed: search(query:$closed,type:ISSUE,first:100){ issueCount pageInfo { hasNextPage endCursor } nodes{ ...PrSearchFields } }
-  rateLimit { cost remaining limit resetAt }
-}
-fragment PrSearchFields on PullRequest {
-  id updatedAt repository { nameWithOwner }
-}
-`;
 
 export const PR_HUB_DETAILS_QUERY = `
 query PrHubDetails($ids:[ID!]!){
