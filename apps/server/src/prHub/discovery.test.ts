@@ -284,6 +284,38 @@ it.layer(SqliteClient.layerMemory())("resumable PR discovery", (it) => {
       }),
   );
 
+  it.effect("starts a changed base query while the old source is still queued", () =>
+    Effect.gen(function* () {
+      yield* reset;
+      const previous = yield* beginPrHubSearch(
+        account,
+        "team_review_0",
+        "is:pr team-review-requested:org/old",
+      );
+      yield* ingestPrHubSearch(
+        account,
+        previous,
+        { issueCount: 2, nodes: [], pageInfo: { hasNextPage: true, endCursor: "old-page" } },
+        new Set(),
+      );
+      const current = yield* beginPrHubSearch(
+        account,
+        "team_review_0",
+        "is:pr team-review-requested:org/new",
+      );
+      assert.notEqual(current.sourceKey, previous.sourceKey);
+      assert.notEqual(current.queued, true);
+      assert.include(current.query, "team-review-requested:org/new");
+      assert.equal(current.cursor, null);
+      const unchanged = yield* beginPrHubSearch(
+        account,
+        "team_review_0",
+        "is:pr team-review-requested:org/old",
+      );
+      assert.equal(unchanged.queued, true);
+    }),
+  );
+
   it.effect("keeps a continuation cursor when a later poll repeats the first page", () =>
     Effect.gen(function* () {
       yield* reset;

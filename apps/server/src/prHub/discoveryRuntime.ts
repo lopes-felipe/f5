@@ -35,6 +35,7 @@ import {
   asArray,
   asRecord,
   buildReconcileByNumberRequest,
+  buildTrackedByNumberRequest,
   buildSearchQueries,
   causeUserMessage,
   nodeArray,
@@ -162,46 +163,75 @@ export function createPrHubDiscovery(
         });
 
       const knownIds: string[] = [];
+      const numbered: Array<{ key: string; repo: string; number: number; priority: number }> = [];
       for (const key of nodeIds) {
         const task = priorities?.get(key);
-        if (task?.number === undefined || !task.repository) {
-          knownIds.push(key);
-          continue;
-        }
-        const [owner, name] = task.repository.split("/");
-        const response = yield* Effect.exit(
-          github
-            .query({
-              cwd,
-              document: `query PrHubTrackedByNumber($owner:String!,$name:String!,$number:Int!){ repository(owner:$owner,name:$name){ pullRequest(number:$number){ ...PrFields } } rateLimit { cost remaining limit resetAt } }
-${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}`,
-              variables: { owner: owner!, name: name!, number: task.number },
-            })
-            .pipe(
-              Effect.provideService(
-                GitHubRequestPriority,
-                task.priority === 2 ? "attention" : "cold",
-              ),
-            ),
-        );
-        const node = Exit.isSuccess(response)
-          ? asRecord(asRecord(asRecord(asRecord(response.value)?.data)?.repository)?.pullRequest)
-          : null;
-        if (
-          node &&
-          stringValue(node.id) &&
-          stringValue(asRecord(node.repository)?.nameWithOwner)?.toLowerCase() ===
-            task.repository.toLowerCase() &&
-          node.number === task.number
-        )
-          nodesById.set(key, node);
-        else {
+        if (task?.number === undefined || !task.repository) knownIds.push(key);
+        else
+          numbered.push({
+            key,
+            repo: task.repository,
+            number: task.number,
+            priority: task.priority ?? 0,
+          });
+      }
+      const hydrateNumberChunk = (targets: typeof numbered): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const request = buildTrackedByNumberRequest(targets);
+          if (!request) return;
+          const response = yield* Effect.exit(
+            github.query({ cwd, document: request.query, variables: request.variables }),
+          );
+          if (
+            Exit.isFailure(response) &&
+            targets.length > 1 &&
+            shouldSplitDetailChunk(response.cause) &&
+            !githubRequestScheduler.status(host).retryAt
+          ) {
+            const mid = Math.ceil(targets.length / 2);
+            yield* hydrateNumberChunk(targets.slice(0, mid));
+            if (!githubRequestScheduler.status(host).retryAt)
+              yield* hydrateNumberChunk(targets.slice(mid));
+            return;
+          }
+          const body = Exit.isSuccess(response) ? asRecord(response.value) : null;
+          const data = asRecord(body?.data);
+          if (asArray(body?.errors).length > 0) {
+            degraded = true;
+            errorMessage ??= "GitHub GraphQL returned partial saved PR lookup errors.";
+          }
+          for (const { alias, key } of request.aliases) {
+            const task = targets.find((target) => `${target.repo}#${target.number}` === key)!;
+            const node = asRecord(asRecord(data?.[alias])?.pullRequest);
+            if (
+              node &&
+              stringValue(node.id) &&
+              stringValue(asRecord(node.repository)?.nameWithOwner)?.toLowerCase() ===
+                task.repo.toLowerCase() &&
+              node.number === task.number
+            ) {
+              nodesById.set(task.key, node);
+            } else {
+              degraded = true;
+              errorMessage ??= Exit.isFailure(response)
+                ? causeUserMessage(response.cause, "Saved PR lookup failed.")
+                : "Saved PR lookup returned no accessible data.";
+            }
+          }
+        });
+      for (let index = 0; index < numbered.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
+        if (githubRequestScheduler.status(host).retryAt) {
           degraded = true;
-          errorMessage ??= Exit.isFailure(response)
-            ? causeUserMessage(response.cause, "Saved PR lookup failed.")
-            : "Saved PR lookup returned no accessible data.";
+          break;
         }
-        if (githubRequestScheduler.status(host).retryAt) break;
+        const targets = numbered.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
+        const rank = Math.max(...targets.map((target) => target.priority));
+        yield* hydrateNumberChunk(targets).pipe(
+          Effect.provideService(
+            GitHubRequestPriority,
+            rank >= 2 ? "attention" : rank === 1 ? "changed" : "cold",
+          ),
+        );
       }
       for (let index = 0; index < knownIds.length; index += PR_HUB_DETAILS_CHUNK_SIZE) {
         const ids = knownIds.slice(index, index + PR_HUB_DETAILS_CHUNK_SIZE);
@@ -383,14 +413,17 @@ ${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}
 
   const loadGlobalSearchSources = (viewerId: string) =>
     Effect.gen(function* () {
-      const rows = yield* sql<{ payload_json: string }>`SELECT payload_json FROM pr_hub_sync_tasks
+      const rows = yield* sql<{
+        task_key: string;
+        payload_json: string;
+      }>`SELECT task_key, payload_json FROM pr_hub_sync_tasks
       WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${viewerId} AND kind = 'source_watermark'
         AND instr(json_extract(payload_json, '$.task.query'), ' repo:') = 0
       ORDER BY updated_at DESC, task_key DESC`.pipe(Effect.orDie);
       const sources = new Map<string, { complete: boolean; task: SearchTask }>();
       for (const row of rows) {
         const source = JSON.parse(row.payload_json) as { complete: boolean; task: SearchTask };
-        if (!sources.has(source.task.alias)) sources.set(source.task.alias, source);
+        sources.set(row.task_key, source);
       }
       return sources;
     });
@@ -422,7 +455,8 @@ ${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}
               result.pullRequests.some(
                 (pr) =>
                   pr.nodeId === key ||
-                  (pr.repository.nameWithOwner === task.repository && pr.number === task.number),
+                  (pr.repository.nameWithOwner.toLowerCase() === task.repository?.toLowerCase() &&
+                    pr.number === task.number),
               ),
             )
             .map(([key]) => key);
@@ -474,29 +508,16 @@ ${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}
       const activeAliases = Object.keys(queryByAlias).filter(
         (alias) => queryByAlias[alias] !== NO_MATCH_SEARCH_QUERY,
       );
-      const sources = yield* loadGlobalSearchSources(account.viewerId);
-      const resuming = activeAliases.some((alias) => sources.get(alias)?.complete === false);
-      const queuedSources = yield* sql<{
-        source_key: string;
-      }>`SELECT DISTINCT json_extract(payload_json, '$.sourceKey') AS source_key FROM pr_hub_sync_tasks
-        WHERE provider_kind = 'github' AND host = ${host} AND viewer_id = ${account.viewerId} AND kind = 'search'`.pipe(
-        Effect.orDie,
-      );
-      const queued = new Set(queuedSources.map((row) => row.source_key));
+      const currentSources = new Map<string, string>();
       const data: Record<string, unknown> = {};
       const graphQlErrors: unknown[] = [];
       let searchErrorMessage: string | undefined;
       for (const [alias, variable] of Object.entries(variableByAlias)) {
-        if (
-          queryByAlias[alias] === NO_MATCH_SEARCH_QUERY ||
-          (resuming && sources.get(alias)?.complete)
-        )
-          continue;
-        const previous = sources.get(alias);
-        const scope =
-          resuming && previous
-            ? { ...previous.task, queued: queued.has(previous.task.sourceKey!) }
-            : yield* beginPrHubSearch(account, alias, queryByAlias[alias]!).pipe(Effect.orDie);
+        if (queryByAlias[alias] === NO_MATCH_SEARCH_QUERY) continue;
+        const scope = yield* beginPrHubSearch(account, alias, queryByAlias[alias]!).pipe(
+          Effect.orDie,
+        );
+        if (scope.sourceKey) currentSources.set(alias, scope.sourceKey);
         // An unfinished scope already has its exact next page durably queued.
         if (scope.queued) continue;
         const result = yield* Effect.exit(
@@ -649,8 +670,11 @@ ${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}
       const globalSearches = work[0]?.searches ?? 0;
       const completedSources = yield* loadGlobalSearchSources(account.viewerId);
       const unknownSearch = activeAliases.some(
-        (alias) => completedSources.get(alias)?.complete !== true,
+        (alias) => completedSources.get(currentSources.get(alias) ?? "")?.complete !== true,
       );
+      // Incompleteness limits reconciliation, but is not itself a failed refresh.
+      if (unknownSearch && !cappedBuckets.includes("monitoring_backlog"))
+        cappedBuckets.push("incomplete_search");
       const generation = yield* discoveryGeneration(account.viewerId);
       const coverage: NonNullable<PrHubSnapshot["coverage"]> = [
         {
@@ -711,7 +735,8 @@ ${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}
             [...(yield* getSnapshot).pullRequests].every((previous) =>
               refreshedPullRequests.some(
                 (pr) =>
-                  pr.repository.nameWithOwner === previous.repository.nameWithOwner &&
+                  pr.repository.nameWithOwner.toLowerCase() ===
+                    previous.repository.nameWithOwner.toLowerCase() &&
                   pr.number === previous.number,
               ),
             )
@@ -739,7 +764,6 @@ ${PR_HUB_DETAILS_QUERY.slice(PR_HUB_DETAILS_QUERY.indexOf("fragment PrFields"))}
         degraded:
           !!recoveryError ||
           !!searchErrorMessage ||
-          unknownSearch ||
           graphQlErrors.length > 0 ||
           detailDegraded ||
           viewer.teamLookupError !== null,

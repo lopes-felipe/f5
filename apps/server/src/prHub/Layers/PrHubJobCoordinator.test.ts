@@ -116,3 +116,29 @@ it.layer(layer)("PR background coordination", (it) => {
     }),
   );
 });
+
+it.effect("bounds repeated stale error snapshots and ignores unrelated settings changes", () =>
+  Effect.gen(function* () {
+    const coordinator = yield* PrHubJobCoordinator;
+    const settings = yield* ServerSettingsService;
+    yield* settings.updateSettings({ prHub: { pollIntervalSeconds: 300 } });
+    let calls = 0;
+    yield* coordinator.startMonitoring(() =>
+      Effect.sync(() => {
+        calls++;
+        return {
+          ...snapshot,
+          status: "auth_required" as const,
+          lastPolledAt: new Date(0).toISOString(),
+        };
+      }),
+    );
+    yield* TestClock.adjust("5 seconds");
+    assert.equal(calls, 1);
+    yield* settings.updateSettings({ prHub: { excludeRepos: ["octo/other"] } });
+    yield* TestClock.adjust("29 seconds");
+    assert.equal(calls, 1);
+    yield* TestClock.adjust("1 second");
+    assert.equal(calls, 2);
+  }).pipe(Effect.provide(Layer.fresh(layer))),
+);

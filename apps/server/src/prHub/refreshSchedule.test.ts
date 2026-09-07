@@ -39,3 +39,19 @@ describe("PR recovery schedule", () => {
     );
   });
 });
+
+it.each(["error", "degraded", "auth_required", "gh_missing", "ok"] as const)(
+  "never returns a past deadline for %s",
+  (status) => {
+    const now = 900_000;
+    const scheduler = makeGitHubRequestScheduler(() => now);
+    expect(
+      nextPrHubRefreshAt(
+        { ...snapshot, status, nextRefreshAt: new Date(30_000).toISOString() },
+        300,
+        scheduler.status("github.com"),
+        now,
+      ),
+    ).toBe(new Date(now).toISOString());
+  },
+);

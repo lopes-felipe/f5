@@ -114,14 +114,7 @@ function compactStatusDetail(message: string | undefined): string | null {
   const normalized = message.replace(/\s+/g, " ").trim();
   if (!normalized) return null;
 
-  const httpStatus = normalized.match(/\bHTTP\s+(\d{3})\b/i)?.[1];
-  if (httpStatus) {
-    return normalized.length > 400 ? `${normalized.slice(0, 397)}...` : normalized;
-  }
   const lower = normalized.toLowerCase();
-  if (lower.includes("rate limit") || lower.includes("secondary rate")) {
-    return normalized.length > 400 ? `${normalized.slice(0, 397)}...` : normalized;
-  }
   if (lower.includes("gh auth login") || lower.includes("not authenticated")) {
     return "GitHub authentication is required.";
   }

@@ -102,8 +102,22 @@ export function createPrHubRefresh(
             : kind === "unauthenticated"
               ? "auth_required"
               : "error";
+        const lastPolledAt = new Date().toISOString();
+        const viewer = yield* Ref.get(viewerRef);
+        if (viewer) {
+          yield* upsertRefreshState({
+            viewerId: String(viewer.context.viewerId),
+            viewerLogin: viewer.login,
+            status,
+            lastPolledAt,
+            lastSuccessAt: null,
+            errorKind: kind,
+            errorMessage: message,
+          }).pipe(Effect.ignore);
+        }
         const snapshot = {
           ...existing,
+          lastPolledAt,
           status,
           host,
           errorKind: kind,
@@ -239,6 +253,7 @@ export function createPrHubRefresh(
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.gen(function* () {
+          const lastPolledAt = new Date().toISOString();
           const viewer = yield* Ref.get(viewerRef);
           if (viewer) {
             const message = causeUserMessage(cause, "PR Hub refresh failed.");
@@ -246,7 +261,7 @@ export function createPrHubRefresh(
               viewerId: String(viewer.context.viewerId),
               viewerLogin: viewer.login,
               status: "error",
-              lastPolledAt: new Date().toISOString(),
+              lastPolledAt,
               lastSuccessAt: null,
               errorKind: "error",
               errorMessage: message,
@@ -256,6 +271,7 @@ export function createPrHubRefresh(
           const message = causeUserMessage(cause, "PR Hub refresh failed.");
           return yield* publishRefreshSnapshot({
             ...existing,
+            lastPolledAt,
             status: "error",
             errorKind: "error",
             errorMessage: message,

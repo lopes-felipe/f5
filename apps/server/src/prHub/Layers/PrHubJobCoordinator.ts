@@ -119,11 +119,12 @@ export const PrHubJobCoordinatorLive = Layer.effect(
                       )
                     : null;
                   const delay = next
-                    ? Math.max(1000, Date.parse(next) - Date.now())
+                    ? Math.max(30_000, Date.parse(next) - Date.now())
                     : interval * 1000;
                   yield* Effect.raceFirst(
                     Effect.sleep(Duration.millis(delay)),
                     settings.streamChanges.pipe(
+                      Stream.filter((next) => next.prHub.pollIntervalSeconds !== interval),
                       Stream.runHead,
                       Effect.flatMap((observed) =>
                         Option.isSome(observed) ? Effect.void : Effect.never,

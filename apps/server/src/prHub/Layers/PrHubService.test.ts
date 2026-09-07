@@ -1,3 +1,4 @@
+import { enqueuePrHubTracked } from "../discovery.ts";
 import { vi } from "vitest";
 import {
   githubRequestScheduler,
@@ -158,6 +159,7 @@ function makeGithubStub(input: {
   ) => ReturnType<GitHubCliShape["runGraphql"]> | undefined;
   readonly fallbackRequest?: GitHubCliShape["searchPullRequests"];
   readonly credentialContext?: () => GitHubCredentialContext;
+  readonly credentialFailure?: () => GitHubCliError | undefined;
   readonly teams?: ReadonlyArray<string>;
   readonly teamsError?: GitHubCliError;
   readonly searchResponses?: unknown[];
@@ -295,15 +297,18 @@ function makeGithubStub(input: {
                     },
           });
     },
-    getCredentialContext: () =>
-      Effect.succeed(
+    getCredentialContext: () => {
+      const failure = input.credentialFailure?.();
+      if (failure) return Effect.fail(failure);
+      return Effect.succeed(
         input.credentialContext?.() ?? {
           host: "github.com",
           viewerId: input.login === "other-viewer" ? 2 : 1,
           login: input.login ?? "me",
           generation: input.login ?? "test-account",
         },
-      ),
+      );
+    },
     execute: () => unsupportedGh("execute"),
     listOpenPullRequests: () => unsupportedGh("listOpenPullRequests"),
     getPullRequest: () => unsupportedGh("getPullRequest"),
@@ -440,6 +445,7 @@ function makeLayer(input: {
   ) => ReturnType<GitHubCliShape["runGraphql"]> | undefined;
   readonly fallbackRequest?: GitHubCliShape["searchPullRequests"];
   readonly credentialContext?: () => GitHubCredentialContext;
+  readonly credentialFailure?: () => GitHubCliError | undefined;
   readonly teams?: ReadonlyArray<string>;
   readonly teamsError?: GitHubCliError;
   readonly searchResponses?: unknown[];
@@ -2599,6 +2605,7 @@ it.effect(
     const calls = makeCalls();
     const first = makePrNode({ id: "PR_recover_id", number: 301, reviewRequests: ["me"] });
     const second = makePrNode({ id: "PR_recover_number", number: 302, reviewRequests: ["me"] });
+    const third = makePrNode({ id: "PR_recover_number_2", number: 303, reviewRequests: ["me"] });
     const scheduler = makeGitHubRequestScheduler();
     let recovering = false;
     let fallbackCalls = 0;
@@ -2610,9 +2617,11 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       database = sql;
       const seed = yield* service.refreshNow({ mode: "force" });
-      assert.equal(seed.pullRequests.length, 2);
+      assert.equal(seed.pullRequests.length, 3);
       yield* sql`UPDATE pr_hub_viewer_state SET facts_verified = 0, viewer_payload_json = '{}', snoozed_until = '2099-01-01T00:00:00.000Z'`;
-      yield* sql`UPDATE pr_hub_prs SET node_id = NULL WHERE number = 302`;
+      yield* sql`UPDATE pr_hub_prs SET node_id = NULL WHERE number IN (302, 303)`;
+      yield* enqueuePrHubTracked({ host: "github.com", viewerId: "1" }, new Set());
+      yield* sql`UPDATE pr_hub_sync_tasks SET payload_json = json_set(payload_json, '$.repository', 'OCTO/REPO') WHERE kind = 'hydrate'`;
       // Recreate the service to model startup after the viewer-isolation migration.
       recovering = true;
       yield* Effect.gen(function* () {
@@ -2621,11 +2630,11 @@ it.effect(
         assert.equal(before.counts.all, 0);
         assert.equal(
           before.coverage.find((scope) => scope.scope === "previously_tracked")?.remainingTasks,
-          2,
+          3,
         );
         const snapshot = yield* restarted.refreshNow({ mode: "force" });
         assert.equal(snapshot.status, "degraded");
-        assert.equal(verifiedBeforeSearch, 2);
+        assert.equal(verifiedBeforeSearch, 3);
         assert.equal(fallbackCalls, 0);
         assert.include(snapshot.errorMessage!, "Fallback search deferred");
         const rows = yield* sql<{
@@ -2635,12 +2644,16 @@ it.effect(
         }>`SELECT facts_verified, snoozed_until, number FROM pr_hub_viewer_state ORDER BY number`;
         assert.deepStrictEqual(
           rows.map((row) => row.facts_verified),
-          [1, 1],
+          [1, 1, 1],
         );
         assert.ok(rows.every((row) => row.snoozed_until === "2099-01-01T00:00:00.000Z"));
         const pending = yield* sql`SELECT 1 FROM pr_hub_sync_tasks WHERE kind = 'hydrate'`;
         assert.equal(pending.length, 0);
       }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
+      assert.equal(
+        calls.graphql.filter((request) => request.query.includes("PrHubTrackedByNumber")).length,
+        1,
+      );
       yield* Effect.gen(function* () {
         const restartedAgain = yield* PrHubService;
         const snapshot = yield* restartedAgain.getOverview({});
@@ -2650,13 +2663,13 @@ it.effect(
           0,
         );
         const page = yield* restartedAgain.listPullRequests({ filter: "all", visibility: "any" });
-        assert.deepStrictEqual(page.pullRequests.map((pr) => pr.number).sort(), [301, 302]);
+        assert.deepStrictEqual(page.pullRequests.map((pr) => pr.number).sort(), [301, 302, 303]);
       }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
     }).pipe(
       Effect.provide(
         makeLayer({
           calls,
-          searchResponses: [searchResponse("review_requested", [first, second])],
+          searchResponses: [searchResponse("review_requested", [first, second, third])],
           fallbackRequest: () => {
             fallbackCalls++;
             return Effect.succeed([]);
@@ -2664,7 +2677,14 @@ it.effect(
           graphqlRequest: (request) => {
             if (!recovering) return undefined;
             if (request.query.includes("PrHubTrackedByNumber"))
-              return Effect.succeed({ data: { repository: { pullRequest: second } } });
+              return Effect.succeed({
+                data: Object.fromEntries(
+                  [second, third].map((_, index) => [
+                    `pr${index}`,
+                    { pullRequest: request.variables?.[`number${index}`] === 302 ? second : third },
+                  ]),
+                ),
+              });
             if (request.query.includes("PrHubDetails"))
               return Effect.succeed({ data: { nodes: [first] } });
             if (request.query.includes("PrHubSearch"))
@@ -2688,74 +2708,71 @@ it.effect(
   },
 );
 
-it.effect(
-  "resumes only unfinished search scopes after restart and ignores unused legacy team scopes",
-  () => {
-    const calls = makeCalls();
-    let fail = true;
-    const pr = makePrNode({ number: 401 });
-    const connection = {
-      issueCount: 1,
-      nodes: [pr],
-      pageInfo: { hasNextPage: false, endCursor: null },
-    };
-    return Effect.gen(function* () {
-      const service = yield* PrHubService;
-      const sql = yield* SqlClient.SqlClient;
-      const first = yield* service.refreshNow({ mode: "force" });
-      assert.equal(first.status, "degraded");
-      const initial = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
-      assert.equal(initial.length, 6);
-      assert.ok(initial.every((call) => !call.query.includes("team_review")));
-      const completed = yield* sql<{
-        count: number;
-      }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE kind = 'source_watermark' AND json_extract(payload_json, '$.complete') = 1`;
-      assert.equal(completed[0]!.count, 5);
-      // Old versions created watermarks for no-match team scopes; they must not stall the new cycle.
-      yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+it.effect("resumes unfinished scopes while refreshing healthy scopes after restart", () => {
+  const calls = makeCalls();
+  let fail = true;
+  const pr = makePrNode({ number: 401 });
+  const connection = {
+    issueCount: 1,
+    nodes: [pr],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  };
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    const first = yield* service.refreshNow({ mode: "force" });
+    assert.equal(first.status, "degraded");
+    const initial = calls.graphql.filter((call) => call.query.includes("query PrHubSearch("));
+    assert.equal(initial.length, 6);
+    assert.ok(initial.every((call) => !call.query.includes("team_review")));
+    const completed = yield* sql<{
+      count: number;
+    }>`SELECT count(*) AS count FROM pr_hub_sync_tasks WHERE kind = 'source_watermark' AND json_extract(payload_json, '$.complete') = 1`;
+    assert.equal(completed[0]!.count, 5);
+    // Old versions created watermarks for no-match team scopes; they must not stall the new cycle.
+    yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
       VALUES('github','github.com','1','source_watermark','unused-team','{"complete":false,"task":{"alias":"team_review_0"}}','2026-01-01','2026-01-01')`;
-      // Repository-scoped watermarks share aliases but must not replace global checkpoints.
-      yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
+    // Repository-scoped watermarks share aliases but must not replace global checkpoints.
+    yield* sql`INSERT INTO pr_hub_sync_tasks(provider_kind,host,viewer_id,kind,task_key,payload_json,created_at,updated_at)
       VALUES('github','github.com','1','source_watermark','repo-author','{"complete":true,"task":{"alias":"author","query":"is:pr author:me repo:octo/other"}}','2099-01-01','2099-01-01')`;
-      fail = false;
-      yield* Effect.gen(function* () {
-        const restarted = yield* PrHubService;
-        const recovered = yield* restarted.refreshNow({ mode: "force" });
-        assert.equal(recovered.status, "ok");
-        assert.equal(recovered.pullRequests[0]?.number, 401);
-        assert.equal(
-          calls.graphql.filter((call) => call.query.includes("query PrHubSearch(")).length,
-          6,
-        );
-        assert.equal(
-          recovered.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,
-          "complete",
-        );
-      }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
-    }).pipe(
-      Effect.provide(
-        makeLayer({
-          calls,
-          graphqlRequest: (request) => {
-            if (request.query.includes("PrHubSearchContinuation"))
-              return fail
-                ? Effect.fail(ghError("Search temporarily unavailable."))
-                : Effect.succeed({ data: { result: connection } });
-            if (request.query.includes("query PrHubSearch(")) {
-              const alias = request.query.match(/(\w+): search\(/)![1]!;
-              return alias === "author" && fail
-                ? Effect.fail(ghError("Search temporarily unavailable."))
-                : Effect.succeed({ data: { [alias]: emptySearchData().author } });
-            }
-            if (request.query.includes("PrHubDetails"))
-              return Effect.succeed({ data: { nodes: [pr] } });
-            return undefined;
-          },
-        }),
-      ),
-    );
-  },
-);
+    fail = false;
+    yield* Effect.gen(function* () {
+      const restarted = yield* PrHubService;
+      const recovered = yield* restarted.refreshNow({ mode: "force" });
+      assert.equal(recovered.status, "ok");
+      assert.equal(recovered.pullRequests[0]?.number, 401);
+      assert.equal(
+        calls.graphql.filter((call) => call.query.includes("query PrHubSearch(")).length,
+        11,
+      );
+      assert.equal(
+        recovered.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,
+        "complete",
+      );
+    }).pipe(Effect.provide(Layer.fresh(serviceLayer)));
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        graphqlRequest: (request) => {
+          if (request.query.includes("PrHubSearchContinuation"))
+            return fail
+              ? Effect.fail(ghError("Search temporarily unavailable."))
+              : Effect.succeed({ data: { result: connection } });
+          if (request.query.includes("query PrHubSearch(")) {
+            const alias = request.query.match(/(\w+): search\(/)![1]!;
+            return alias === "author" && fail
+              ? Effect.fail(ghError("Search temporarily unavailable."))
+              : Effect.succeed({ data: { [alias]: emptySearchData().author } });
+          }
+          if (request.query.includes("PrHubDetails"))
+            return Effect.succeed({ data: { nodes: [pr] } });
+          return undefined;
+        },
+      }),
+    ),
+  );
+});
 
 it.effect("does not count orphaned, expired or excluded legacy rows as pending recovery", () => {
   const calls = makeCalls();
@@ -2792,3 +2809,129 @@ it.effect("does not count orphaned, expired or excluded legacy rows as pending r
     ),
   );
 });
+
+for (const kind of ["unauthenticated", "binary_missing", "generic"] as const) {
+  it.effect(
+    `records failed viewer attempts in the cached snapshot and persisted state: ${kind}`,
+    () => {
+      const calls = makeCalls();
+      let failed = false;
+      let credentialReads = 0;
+      return Effect.gen(function* () {
+        const service = yield* PrHubService;
+        const sql = yield* SqlClient.SqlClient;
+        const seed = yield* service.refreshNow({ mode: "force" });
+        Object.assign(seed, { lastPolledAt: new Date(0).toISOString() });
+        failed = true;
+        const result = yield* service.refreshNow({ mode: "if_stale" });
+        assert.equal(
+          result.status,
+          kind === "unauthenticated"
+            ? "auth_required"
+            : kind === "binary_missing"
+              ? "gh_missing"
+              : "error",
+        );
+        assert.notEqual(result.lastPolledAt, seed.lastPolledAt);
+        assert.equal((yield* service.getSnapshot).lastPolledAt, result.lastPolledAt);
+        const rows = yield* sql<{
+          last_polled_at: string;
+        }>`SELECT last_polled_at FROM pr_hub_refresh_state`;
+        assert.equal(rows[0]?.last_polled_at, result.lastPolledAt);
+        const before = credentialReads;
+        yield* service.refreshNow({ mode: "if_stale" });
+        assert.equal(credentialReads, before);
+        assert.ok(Date.parse(result.nextRefreshAt!) > Date.now());
+      }).pipe(
+        Effect.provide(
+          makeLayer({
+            calls,
+            credentialFailure: () => {
+              credentialReads++;
+              return failed
+                ? new GitHubCliError({ operation: "test", kind, detail: "Viewer unavailable" })
+                : undefined;
+            },
+          }),
+        ),
+      );
+    },
+  );
+}
+
+it.effect("publishes the persisted attempt timestamp after a refresh persistence failure", () => {
+  const calls = makeCalls();
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    const seed = yield* service.refreshNow({ mode: "force" });
+    Object.assign(seed, { lastPolledAt: new Date(0).toISOString() });
+    yield* sql`CREATE TEMP TRIGGER fail_success BEFORE INSERT ON pr_hub_refresh_state WHEN NEW.status = 'ok' BEGIN SELECT RAISE(FAIL, 'simulated persistence failure'); END`;
+    const failed = yield* service.refreshNow({ mode: "if_stale" });
+    assert.equal(failed.status, "error");
+    assert.notEqual(failed.lastPolledAt, seed.lastPolledAt);
+    assert.equal((yield* service.getSnapshot).lastPolledAt, failed.lastPolledAt);
+    const rows = yield* sql<{
+      last_polled_at: string;
+    }>`SELECT last_polled_at FROM pr_hub_refresh_state`;
+    assert.equal(rows[0]?.last_polled_at, failed.lastPolledAt);
+    const requests = calls.graphql.length;
+    yield* service.refreshNow({ mode: "if_stale" });
+    assert.equal(calls.graphql.length, requests);
+  }).pipe(Effect.provide(makeLayer({ calls })));
+});
+
+it.effect(
+  "reports a successful partial refresh while pagination drains, then completes coverage",
+  () => {
+    const calls = makeCalls();
+    let pages = 0;
+    const connection = (more: boolean) => ({
+      issueCount: 21,
+      nodes: [],
+      pageInfo: { hasNextPage: more, endCursor: more ? `page-${pages}` : null },
+    });
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      const first = yield* service.refreshNow({ mode: "force" });
+      assert.equal(first.status, "ok");
+      assert.equal(
+        first.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,
+        "partial",
+      );
+      const rows = yield* sql<{
+        last_success_at: string | null;
+      }>`SELECT last_success_at FROM pr_hub_refresh_state`;
+      assert.ok(rows[0]?.last_success_at);
+      yield* service.refreshNow({ mode: "force" });
+      const next = yield* service.refreshNow({ mode: "force" });
+      assert.equal(next.status, "ok");
+      assert.equal(
+        next.coverage?.find((scope) => scope.scope === "global_relationship_search")?.status,
+        "complete",
+      );
+      assert.equal(next.cappedBuckets?.length ?? 0, 0);
+      assert.equal(pages, 3);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          graphqlRequest: (request) => {
+            if (request.query.includes("PrHubSearchContinuation")) {
+              pages++;
+              return Effect.succeed({ data: { result: connection(pages < 3) } });
+            }
+            if (request.query.includes("query PrHubSearch(")) {
+              const alias = request.query.match(/(\w+): search\(/)![1]!;
+              return Effect.succeed({
+                data: { [alias]: alias === "author" ? connection(true) : emptySearchData().author },
+              });
+            }
+            return undefined;
+          },
+        }),
+      ),
+    );
+  },
+);

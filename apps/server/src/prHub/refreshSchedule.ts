@@ -39,5 +39,5 @@ export function nextPrHubRefreshAt(
         ? retry
         : lastAttempt + 60_000
     : ordinary;
-  return new Date(Math.max(deadline, retry)).toISOString();
+  return new Date(Math.max(now, deadline, retry)).toISOString();
 }
