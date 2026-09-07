@@ -3951,8 +3951,9 @@ describe("ChatView timeline (full app)", () => {
         "Keep this active prompt",
       );
 
-      await page.getByRole("button", { name: "Saved prompts" }).click();
-      await expect.element(page.getByText("Save this prompt for later")).toBeInTheDocument();
+      await expect
+        .element(page.getByRole("button", { name: "Saved prompts" }))
+        .not.toBeInTheDocument();
     } finally {
       await mounted.cleanup();
     }

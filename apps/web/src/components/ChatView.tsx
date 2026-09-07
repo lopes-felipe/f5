@@ -271,7 +271,6 @@ import {
 } from "./chat/ClaudeTraitsPicker";
 import { CodexTraitsMenuContent, CodexTraitsPicker } from "./chat/CodexTraitsPicker";
 import { CompactComposerControlsMenu } from "./chat/CompactComposerControlsMenu";
-import { PromptStashMenu } from "./chat/PromptStashMenu";
 import { ComposerPendingApprovalPanel } from "./chat/ComposerPendingApprovalPanel";
 import { ComposerPendingUserInputPanel } from "./chat/ComposerPendingUserInputPanel";
 import { ComposerPlanFollowUpBanner } from "./chat/ComposerPlanFollowUpBanner";
@@ -2523,13 +2522,7 @@ export default function ChatView({
     },
     [scheduleComposerFocus],
   );
-  const {
-    remove: onDeletePromptStash,
-    restore: onRestorePromptStash,
-    shortcutLabel: promptStashShortcutLabel,
-    stash: onStashPrompt,
-    stashes: promptStashes,
-  } = usePromptStashController({
+  const { stash: onStashPrompt } = usePromptStashController({
     activeThread,
     activeProject,
     disabled: isPendingTurnDispatchBlocked,
@@ -6078,20 +6071,6 @@ export default function ChatView({
                             onOpenChange={setIsModelPickerOpen}
                             disabled={isPendingTurnDispatchBlocked}
                             onInstanceModelChange={onProviderModelSelect}
-                          />
-
-                          <PromptStashMenu
-                            stashes={promptStashes}
-                            canStash={composerSendState.hasSendableContent}
-                            disabled={isPendingTurnDispatchBlocked}
-                            stashShortcutLabel={promptStashShortcutLabel}
-                            onStash={() => {
-                              void onStashPrompt();
-                            }}
-                            onRestore={(stashId) => {
-                              void onRestorePromptStash(stashId);
-                            }}
-                            onDelete={onDeletePromptStash}
                           />
 
                           {isComposerFooterCompact ? (
