@@ -1,3 +1,4 @@
+import { resolveLocalCheckout as discoverLocalCheckout } from "../localCheckout.ts";
 import { nextPrHubRefreshAt } from "../refreshSchedule.ts";
 import { GitHubCliError } from "../../git/Errors.ts";
 import { GitHubRequestPolicy } from "../../git/githubRequestPolicy.ts";
@@ -601,6 +602,36 @@ const makePrHubService = Effect.gen(function* () {
       return candidates;
     });
 
+  const resolveLocalCheckout: PrHubServiceShape["resolveLocalCheckout"] = (input) =>
+    Effect.gen(function* () {
+      const snapshot = yield* getSnapshot;
+      const pr = [...snapshot.pullRequests, ...snapshot.recentlyResolved].find((candidate) =>
+        sourceControlPullRequestKeysEqual(candidate.key, input.key),
+      );
+      if (!pr)
+        return yield* prHubActionError(
+          "This pull request is no longer available. Refresh PR Hub and retry.",
+        );
+      const allProjects = yield* projects
+        .listAll()
+        .pipe(Effect.mapError(() => prHubActionError("Could not load F5 projects.")));
+      return yield* Effect.tryPromise({
+        try: (signal) =>
+          discoverLocalCheckout({
+            repository: pr.repository,
+            host: pr.host,
+            projects: allProjects.filter((project) => project.deletedAt === null),
+            ...(input.baseDirectory !== undefined ? { baseDirectory: input.baseDirectory } : {}),
+            ...(input.selectedPath !== undefined ? { selectedPath: input.selectedPath } : {}),
+            signal,
+          }),
+        catch: (error) =>
+          prHubActionError(
+            error instanceof Error ? error.message : "Could not inspect local repositories.",
+          ),
+      });
+    });
+
   const track: PrHubServiceShape["track"] = (input) =>
     Effect.gen(function* () {
       const ref = parseGitHubPullRequestUrl(input.url, host);
@@ -742,6 +773,7 @@ const makePrHubService = Effect.gen(function* () {
     markSeen,
     markNotified,
     listLocalCheckoutCandidates,
+    resolveLocalCheckout,
     getDetail,
     getTimeline,
     getFiles,

@@ -630,6 +630,7 @@ export function createWsNativeApi(): NativeApi {
       analyzeAdvisories: (input = {}) =>
         requestPrHub(PR_HUB_WS_METHODS.analyzeAdvisories, input, { timeoutMs: null }),
       getAdvisories: (input = {}) => requestPrHub(PR_HUB_WS_METHODS.getAdvisories, input),
+      resolveLocalCheckout: (input) => requestPrHub(PR_HUB_WS_METHODS.resolveLocalCheckout, input),
       listLocalCheckoutCandidates: (input) =>
         requestPrHub(PR_HUB_WS_METHODS.listLocalCheckoutCandidates, input),
       getDetail: (input) => requestPrHub(PR_HUB_WS_METHODS.getDetail, input),

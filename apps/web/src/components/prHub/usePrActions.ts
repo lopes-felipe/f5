@@ -1,16 +1,17 @@
+import { useAppSettings } from "../../appSettings";
+import { registerProjectFromPath, waitForRegisteredProject } from "../../lib/registerProject";
 import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
 import { isPrSnoozed } from "./prHubPresentation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import type {
   PrHubAdvisory,
   PrHubComparisonIdentity,
-  PrHubLocalCheckoutCandidate,
+  PrHubResolvedCheckout,
   ThreadId,
   TrackedPullRequest,
 } from "@t3tools/contracts";
 
 import { ensureNativeApi } from "../../nativeApi";
-import { useStore } from "../../store";
 import { toastManager } from "../ui/toast";
 import { createPrF5Thread, prF5RunLabel, resolvePrF5RunKind, type PrF5Intent } from "./prF5Thread";
 import { defaultSnoozeUntil, openExternalHttps } from "./prHubPresentation";
@@ -54,8 +55,9 @@ export interface PrActionHandlers {
 }
 
 export interface PrF5CandidatePicker {
-  candidates: PrHubLocalCheckoutCandidate[];
+  candidates: PrHubResolvedCheckout[];
   intent: PrF5Intent;
+  error?: string;
 }
 
 /** Everything {@link PrActionDialogs} needs to render and run the dialogs. */
@@ -78,7 +80,8 @@ export interface PrActionDialogProps {
   candidatePicker: PrF5CandidatePicker | null;
   setCandidatePicker: (picker: PrF5CandidatePicker | null) => void;
   isOpeningInF5: boolean;
-  openInF5: (candidate: PrHubLocalCheckoutCandidate, intent: PrF5Intent) => Promise<void>;
+  selectFolder: (path?: string) => Promise<void>;
+  openInF5: (candidate: PrHubResolvedCheckout, intent: PrF5Intent) => Promise<void>;
 }
 
 export interface UsePrActionsResult {
@@ -102,7 +105,8 @@ export function usePrActions(
     onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
   } = {},
 ): UsePrActionsResult {
-  const projects = useStore((store) => store.projects);
+  const { settings } = useAppSettings();
+  const busy = useRef(false);
   const [pendingAction, setPendingAction] = useState<PrPendingAction>(null);
   const [reviewers, setReviewers] = useState("");
   const [mergeMethod, setMergeMethod] = useState<PrMergeMethod>("squash");
@@ -212,18 +216,19 @@ export function usePrActions(
     }
   };
 
-  const openInF5 = async (candidate: PrHubLocalCheckoutCandidate, intent: PrF5Intent) => {
+  const openInF5 = async (candidate: PrHubResolvedCheckout, intent: PrF5Intent) => {
+    if (busy.current) return;
+    busy.current = true;
     setIsOpeningInF5(true);
     try {
       const api = ensureNativeApi();
-      const project = projects.find((entry) => entry.id === candidate.projectId);
-      if (!project) {
-        throw new Error("The selected F5 project no longer exists. Refresh PR Hub and retry.");
-      }
+      const project = candidate.projectId
+        ? await waitForRegisteredProject(candidate.projectId)
+        : await registerProjectFromPath(candidate.cwd, candidate.projectTitle);
       const serverConfig = await api.server.getConfig();
       const result = await createPrF5Thread({
         api,
-        candidate,
+        candidate: { ...candidate, projectId: project.id },
         pr,
         advisory: options.advisory,
         intent,
@@ -245,33 +250,55 @@ export function usePrActions(
         description: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      busy.current = false;
       setIsOpeningInF5(false);
     }
   };
 
-  const handleOpenInF5 = async (intent: PrF5Intent) => {
+  const findCheckout = async (intent: PrF5Intent, selectedPath?: string) => {
+    if (busy.current) return;
+    busy.current = true;
+    setIsOpeningInF5(true);
+    let resolved: PrHubResolvedCheckout | undefined;
     try {
-      const candidates = await ensureNativeApi().prHub.listLocalCheckoutCandidates({ key: pr.key });
-      if (candidates.length === 0) {
-        toastManager.add({
-          type: "info",
-          title: "No local clone",
-          description: `No local clone of ${pr.repository.nameWithOwner}.`,
-        });
-        return;
-      }
-      if (candidates.length === 1) {
-        await openInF5(candidates[0]!, intent);
-        return;
-      }
-      setCandidatePicker({ candidates, intent });
-    } catch (error) {
-      toastManager.add({
-        type: "error",
-        title: "Could not resolve local clones",
-        description: error instanceof Error ? error.message : String(error),
+      const candidates = await ensureNativeApi().prHub.resolveLocalCheckout({
+        key: pr.key,
+        ...(selectedPath ? { selectedPath } : { baseDirectory: settings.addProjectBaseDirectory }),
       });
+      if (candidates.length === 1) resolved = candidates[0];
+      else setCandidatePicker({ candidates, intent });
+    } catch (error) {
+      setCandidatePicker({
+        candidates: [],
+        intent,
+        error: error instanceof Error ? error.message : "Could not inspect local repositories.",
+      });
+    } finally {
+      busy.current = false;
+      setIsOpeningInF5(false);
     }
+    if (resolved) await openInF5(resolved, intent);
+  };
+  const handleOpenInF5 = (intent: PrF5Intent) => findCheckout(intent);
+  const selectFolder = async (path?: string) => {
+    if (!candidatePicker || busy.current) return;
+    const intent = candidatePicker.intent;
+    busy.current = true;
+    setIsOpeningInF5(true);
+    let selected: string | null | undefined;
+    try {
+      selected = path ?? (await ensureNativeApi().dialogs.pickFolder());
+    } catch (error) {
+      setCandidatePicker({
+        candidates: [],
+        intent,
+        error: error instanceof Error ? error.message : "Could not select a folder.",
+      });
+    } finally {
+      busy.current = false;
+      setIsOpeningInF5(false);
+    }
+    if (selected?.trim()) await findCheckout(intent, selected.trim());
   };
 
   const handleIgnore = async () => {
@@ -354,6 +381,7 @@ export function usePrActions(
       setCandidatePicker,
       isOpeningInF5,
       openInF5,
+      selectFolder,
     },
     runInF5Label,
   };

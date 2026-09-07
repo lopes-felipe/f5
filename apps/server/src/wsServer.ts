@@ -2879,6 +2879,10 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return yield* prHubAdvisory.getAdvisories(body);
       }
 
+      case PR_HUB_WS_METHODS.resolveLocalCheckout: {
+        const body = stripRequestTag(request.body);
+        return yield* prHub.resolveLocalCheckout(body);
+      }
       case PR_HUB_WS_METHODS.listLocalCheckoutCandidates: {
         const body = stripRequestTag(request.body);
         return yield* prHub.listLocalCheckoutCandidates(body);

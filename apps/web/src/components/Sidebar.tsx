@@ -1,3 +1,4 @@
+import { registerProjectFromPath } from "../lib/registerProject";
 import {
   ArchiveIcon,
   ArrowLeftIcon,
@@ -49,7 +50,6 @@ import {
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import { CSS } from "@dnd-kit/utilities";
 import {
-  DEFAULT_MODEL_BY_PROVIDER,
   type CodeReviewWorkflow,
   type InvestigationWorkflow,
   type DesktopUpdateState,
@@ -75,7 +75,7 @@ import { isElectron } from "../env";
 import { APP_STAGE_LABEL, APP_VERSION } from "../branding";
 import { formatRelativeTimeLabel } from "../lib/relativeTime";
 import { useStartupReady } from "../lib/startupReady";
-import { cn, isMacPlatform, newCommandId, newProjectId } from "../lib/utils";
+import { cn, isMacPlatform, newCommandId } from "../lib/utils";
 import { WORKFLOW_TYPE_BADGE_CLASS } from "../lib/workflowType";
 import {
   getMostRecentProject,
@@ -150,7 +150,6 @@ import {
 import { useThreadSelectionStore } from "../threadSelectionStore";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { setWorkflowArchived } from "../archiveActions";
-import { isNonEmpty as isNonEmptyString } from "effect/String";
 import {
   reconcileFrozenOrder,
   resolveSidebarNewThreadIntent,
@@ -1133,19 +1132,9 @@ export default function Sidebar() {
         return;
       }
 
-      const projectId = newProjectId();
-      const createdAt = new Date().toISOString();
-      const title = cwd.split(/[/\\]/).findLast(isNonEmptyString) ?? cwd;
       try {
-        await api.orchestration.dispatchCommand({
-          type: "project.create",
-          commandId: newCommandId(),
-          projectId,
-          title,
-          workspaceRoot: cwd,
-          defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
-          createdAt,
-        });
+        const project = await registerProjectFromPath(cwd);
+        const projectId = project.id;
         await handleNewThread(projectId).catch((error) => {
           console.warn("Failed to open the new thread after creating a project", error);
         });

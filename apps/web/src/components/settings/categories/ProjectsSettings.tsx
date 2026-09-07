@@ -379,9 +379,11 @@ export function ProjectsSettings() {
         <div className="mb-4">
           <h2 className="text-sm font-medium text-foreground">Add project</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            The command palette opens this directory when you start adding a project. Leave blank to
-            start from the server&rsquo;s home directory (when running remotely, this is the server
-            account&rsquo;s home, not your local machine&rsquo;s).
+            PR Hub looks for existing repositories directly inside this directory before asking you
+            to select a folder. The command palette also starts here when adding a project. Leave
+            blank to disable repository discovery and start from the server&rsquo;s home directory
+            (when running remotely, this is the server account&rsquo;s home, not your local
+            machine&rsquo;s).
           </p>
         </div>
         <div className="space-y-3">
