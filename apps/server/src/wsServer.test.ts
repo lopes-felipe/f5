@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { inspect } from "node:util";
 import { DatabaseSync } from "node:sqlite";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -625,6 +626,12 @@ async function connectAndAwaitWelcome(
     // Callers only register successful connections for teardown. A failed
     // welcome must not leave a socket keeping server shutdown alive.
     ws.terminate();
+    if (vi.isMockFunction(console.log)) {
+      throw new Error(
+        `${String(cause)}\nServer logs:\n${inspect(vi.mocked(console.log).mock.calls.slice(-40), { depth: 5 })}`,
+        { cause },
+      );
+    }
     throw cause;
   }
 }
@@ -1232,9 +1239,11 @@ describe("WebSocket Server", () => {
   });
 
   it("bootstraps the cwd project on startup when enabled", async () => {
+    vi.spyOn(console, "log");
     server = await createTestServer({
       cwd: "/test/bootstrap-workspace",
       autoBootstrapProjectFromCwd: true,
+      logWebSocketEvents: true,
     });
     const addr = server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
@@ -1299,6 +1308,7 @@ describe("WebSocket Server", () => {
   });
 
   it("includes bootstrap ids in welcome when cwd project and thread already exist", async () => {
+    vi.spyOn(console, "log");
     const stateDir = makeTempDir("t3code-state-bootstrap-existing-");
     const persistenceLayer = makeSqlitePersistenceLive(path.join(stateDir, "state.sqlite")).pipe(
       Layer.provide(NodeServices.layer),
@@ -1310,6 +1320,7 @@ describe("WebSocket Server", () => {
       stateDir,
       persistenceLayer,
       autoBootstrapProjectFromCwd: true,
+      logWebSocketEvents: true,
     });
     let addr = server.address();
     let port = typeof addr === "object" && addr !== null ? addr.port : 0;
