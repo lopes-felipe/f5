@@ -1,3 +1,4 @@
+import { waitForRegisteredProject } from "../../lib/registerProject";
 import "../../index.css";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { page } from "vitest/browser";
@@ -17,6 +18,7 @@ const api = vi.hoisted(() => ({
   dispatch: vi.fn(),
   start: vi.fn(),
   pick: vi.fn(),
+  baseDirectory: "C:\\dev",
 }));
 vi.mock("../../nativeApi", () => ({
   ensureNativeApi: () => ({
@@ -27,7 +29,7 @@ vi.mock("../../nativeApi", () => ({
   }),
 }));
 vi.mock("../../appSettings", () => ({
-  useAppSettings: () => ({ settings: { addProjectBaseDirectory: "C:\\dev" } }),
+  useAppSettings: () => ({ settings: { addProjectBaseDirectory: api.baseDirectory } }),
 }));
 vi.mock("./prF5Thread", async (original) => ({
   ...(await original<typeof import("./prF5Thread")>()),
@@ -126,6 +128,7 @@ function publishProject(command: OrchestrationCommand) {
 }
 beforeEach(() => {
   vi.clearAllMocks();
+  api.baseDirectory = "C:\\dev";
   useStore.setState({ projects: [] });
   api.resolve.mockResolvedValue([candidate]);
   api.dispatch.mockImplementation(async (command) => publishProject(command));
@@ -239,4 +242,26 @@ it("does nothing when the native folder picker is canceled", async () => {
     if (previous) Object.defineProperty(window, "desktopBridge", previous);
     else Reflect.deleteProperty(window, "desktopBridge");
   }
+});
+
+it("keeps blank-base discovery disabled and clears manual text after success", async () => {
+  api.baseDirectory = "";
+  api.resolve.mockResolvedValueOnce([]).mockResolvedValueOnce([candidate]).mockResolvedValue([]);
+  active = await render(<Harness />);
+  await page.getByRole("button", { name: "Open in F5", exact: true }).click();
+  expect(api.resolve.mock.calls[0]?.[0].baseDirectory).toBe("");
+  await page.getByRole("textbox", { name: "Existing repository folder" }).fill("C:\\manual");
+  await page.getByRole("button", { name: "Select existing folder" }).click();
+  await expect.poll(() => api.start.mock.calls.length).toBe(1);
+  await page.getByRole("button", { name: "Open in F5", exact: true }).click();
+  await expect
+    .element(page.getByRole("textbox", { name: "Existing repository folder" }))
+    .toHaveValue("");
+  await expect.element(page.getByRole("button", { name: "Select existing folder" })).toBeDisabled();
+});
+
+it("fails immediately when a registered project disappeared from the store", async () => {
+  await expect(waitForRegisteredProject(ProjectId.makeUnsafe("deleted"))).rejects.toThrow(
+    "no longer exists",
+  );
 });

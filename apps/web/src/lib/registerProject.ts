@@ -8,11 +8,19 @@ const pathKey = (cwd: string) => {
   return /^(?:[a-z]:|\/\/)/i.test(normalized) ? normalized.toLowerCase() : normalized;
 };
 type Project = ReturnType<typeof useStore.getState>["projects"][number];
+const pendingProjectIds = new Set<ProjectId>();
 const registrations = new Map<string, Promise<Project>>();
 
-export function waitForRegisteredProject(projectId: ProjectId): Promise<Project> {
+export function waitForRegisteredProject(
+  projectId: ProjectId,
+  newlyRegistered = false,
+): Promise<Project> {
   const current = useStore.getState().projects.find((project) => project.id === projectId);
   if (current) return Promise.resolve(current);
+  if (!newlyRegistered && !pendingProjectIds.has(projectId))
+    return Promise.reject(
+      new Error("The selected F5 project no longer exists. Refresh PR Hub and retry."),
+    );
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       unsubscribe();
@@ -42,16 +50,21 @@ export function registerProjectFromPath(cwd: string, title?: string): Promise<Pr
   if (pending) return pending;
   const work = (async () => {
     const projectId = newProjectId();
-    await ensureNativeApi().orchestration.dispatchCommand({
-      type: "project.create",
-      commandId: newCommandId(),
-      projectId,
-      title: title ?? cwd.split(/[/\\]/).filter(Boolean).at(-1) ?? cwd,
-      workspaceRoot: cwd,
-      defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
-      createdAt: new Date().toISOString(),
-    });
-    return waitForRegisteredProject(projectId);
+    pendingProjectIds.add(projectId);
+    try {
+      await ensureNativeApi().orchestration.dispatchCommand({
+        type: "project.create",
+        commandId: newCommandId(),
+        projectId,
+        title: title ?? cwd.split(/[/\\]/).filter(Boolean).at(-1) ?? cwd,
+        workspaceRoot: cwd,
+        defaultModel: DEFAULT_MODEL_BY_PROVIDER.codex,
+        createdAt: new Date().toISOString(),
+      });
+      return await waitForRegisteredProject(projectId, true);
+    } finally {
+      pendingProjectIds.delete(projectId);
+    }
   })();
   registrations.set(key, work);
   void work

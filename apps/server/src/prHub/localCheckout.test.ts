@@ -1,18 +1,24 @@
+import * as fs from "node:fs/promises";
+import { CHECKOUT_DISCOVERY_TIMEOUT_MS, CHECKOUT_INSPECTION_LIMIT } from "./localCheckout.ts";
 import * as processRunner from "../processRunner.ts";
 import { afterEach, expect, it, vi } from "vitest";
-import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ProjectId } from "@t3tools/contracts";
 import { runProcess } from "../processRunner.ts";
 import { resolveLocalCheckout } from "./localCheckout.ts";
 
+vi.mock("node:fs/promises", async (original) => ({
+  ...(await original<typeof import("node:fs/promises")>()),
+}));
+
 const roots: string[] = [];
 afterEach(async () => {
   for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
 });
 async function base() {
-  const root = await mkdtemp(path.join(tmpdir(), "f5-local-checkout-"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "f5-local-checkout-")));
   roots.push(root);
   return root;
 }
@@ -164,3 +170,104 @@ it("rechecks registered remotes rather than keeping a stale negative result", as
   );
   expect((await resolveLocalCheckout({ ...input, projects }))[0]?.projectId).toBe("registered");
 });
+
+it("ignores missing registered projects on misses and still discovers valid siblings", async () => {
+  const directory = await base();
+  const projects = [
+    {
+      projectId: ProjectId.makeUnsafe("stale"),
+      title: "Stale",
+      workspaceRoot: path.join(directory, "gone"),
+    },
+  ];
+  expect(await resolveLocalCheckout({ ...input, projects })).toEqual([]);
+  expect(await resolveLocalCheckout({ ...input, projects, baseDirectory: directory })).toEqual([]);
+  const cwd = await repo(directory, "renamed");
+  expect(
+    (await resolveLocalCheckout({ ...input, projects, baseDirectory: directory }))[0]?.cwd,
+  ).toBe(cwd);
+});
+it("contains a disappearing child and localized or ownership failures", async () => {
+  const directory = await base();
+  await mkdir(path.join(directory, "t3code"));
+  await mkdir(path.join(directory, "ordinary"));
+  await mkdir(path.join(directory, "foreign"));
+  const cwd = await repo(directory, "renamed");
+  const originalStat = fs.lstat;
+  const stat = vi.spyOn(fs, "lstat").mockImplementation((...args) => {
+    if (String(args[0]).endsWith("t3code")) return Promise.reject(new Error("ENOENT"));
+    return originalStat(...args);
+  });
+  const originalRun = processRunner.runProcess;
+  const run = vi.spyOn(processRunner, "runProcess").mockImplementation(async (...args) => {
+    if (["ordinary", "foreign"].includes(path.basename(args[2]?.cwd ?? "")))
+      return {
+        stdout: "",
+        stderr: "fatal: kein Git-Repository / dubious ownership",
+        code: 128,
+        signal: null,
+        timedOut: false,
+      };
+    return originalRun(...args);
+  });
+  try {
+    expect((await resolveLocalCheckout({ ...input, baseDirectory: directory }))[0]?.cwd).toBe(cwd);
+  } finally {
+    stat.mockRestore();
+    run.mockRestore();
+  }
+});
+it("cancels slow inspections before the RPC deadline and schedules no more work", async () => {
+  const directory = await base();
+  for (let i = 0; i < 8; i++) await mkdir(path.join(directory, `folder${i}`));
+  const signals: AbortSignal[] = [];
+  const spy = vi
+    .spyOn(processRunner, "runProcess")
+    .mockImplementation(async (_command, _args, options) => {
+      signals.push(options!.signal!);
+      return new Promise((_, reject) =>
+        options!.signal!.addEventListener("abort", () => reject(options!.signal!.reason), {
+          once: true,
+        }),
+      );
+    });
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const result = resolveLocalCheckout({ ...input, baseDirectory: directory });
+    const rejected = expect(result).rejects.toThrow("timed out");
+    await vi.waitFor(() => expect(signals).toHaveLength(4));
+    await vi.advanceTimersByTimeAsync(CHECKOUT_DISCOVERY_TIMEOUT_MS);
+    await rejected;
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(spy).toHaveBeenCalledTimes(4);
+  } finally {
+    vi.useRealTimers();
+    spy.mockRestore();
+  }
+});
+it("bounds inspection work and reports the limit instead of an authoritative miss", async () => {
+  const directory = await base();
+  for (let i = 0; i <= CHECKOUT_INSPECTION_LIMIT; i++)
+    await mkdir(path.join(directory, `folder${i}`));
+  const spy = vi.spyOn(processRunner, "runProcess").mockResolvedValue({
+    stdout: "",
+    stderr: "not a git repository",
+    code: 128,
+    signal: null,
+    timedOut: false,
+  });
+  try {
+    await expect(resolveLocalCheckout({ ...input, baseDirectory: directory })).rejects.toThrow(
+      "inspection limit",
+    );
+    expect(spy.mock.calls.length).toBeLessThanOrEqual(CHECKOUT_INSPECTION_LIMIT);
+  } finally {
+    spy.mockRestore();
+  }
+});
+it.skipIf(process.platform === "win32")(
+  "ignores a Windows base directory saved on another server platform",
+  async () => {
+    expect(await resolveLocalCheckout({ ...input, baseDirectory: "C:\\dev" })).toEqual([]);
+  },
+);

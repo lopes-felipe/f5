@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Input } from "../ui/input";
 import { PrCommentSubmit } from "./PrCommentSubmit";
 import { PrReviewSubmit } from "./PrReviewSubmit";
@@ -47,6 +47,9 @@ export function PrActionDialogs({
   selectFolder,
 }: PrActionDialogProps) {
   const [folderPath, setFolderPath] = useState("");
+  useEffect(() => {
+    setFolderPath("");
+  }, [candidatePicker === null, pr.key]);
   const canPickFolder = typeof window !== "undefined" && Boolean(window.desktopBridge);
   return (
     <>
@@ -158,7 +161,7 @@ export function PrActionDialogs({
                     : "Choose clone for F5 run"}
             </DialogTitle>
             <DialogDescription>
-              F5 checks registered projects and your configured base directory for{" "}
+              F5 checks registered projects and, when configured, the base directory for{" "}
               {pr.repository.nameWithOwner}. Selecting a matching folder adds it as a project and
               continues the requested action.
             </DialogDescription>
