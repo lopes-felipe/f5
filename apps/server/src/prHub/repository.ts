@@ -1,3 +1,4 @@
+import { prHubRecoveryCandidates } from "./recovery.ts";
 import { assertPrHubDiscoveryLease } from "./discoveryLease.ts";
 import { unknownMergeRequirements } from "./mergeRequirements.ts";
 import { createPrHubViewerActions, type PrHubViewerActionsContext } from "./viewerActions.ts";
@@ -142,11 +143,17 @@ export function createPrHubRepository(
         ? Schema.decodeUnknownSync(Schema.Array(PrHubCoverage))(JSON.parse(refresh.coverage_json))
         : undefined;
       const resolvedViewer = viewer.login;
+      const recoverySettings = yield* settings.getSettings;
+      const candidates = prHubRecoveryCandidates(
+        sql,
+        { host, viewerId: String(viewer.context.viewerId) },
+        new Set(recoverySettings.prHub.excludeRepos.map((repo) => repo.trim().toLowerCase())),
+      );
       const unverified = yield* sql<{
         count: number;
-      }>`SELECT count(*) AS count FROM pr_hub_viewer_state
-        WHERE provider_kind = ${providerKind} AND host = ${host} AND viewer_id = ${String(viewer.context.viewerId)} AND facts_verified = 0`;
-      const hasUnverifiedFacts = (unverified[0]?.count ?? 0) > 0;
+      }>`SELECT count(*) AS count FROM (${candidates}) WHERE facts_verified = 0`;
+      const unverifiedCount = unverified[0]?.count ?? 0;
+      const hasUnverifiedFacts = unverifiedCount > 0;
 
       const rows = yield* sql<PrDbRow>`
         SELECT
@@ -287,6 +294,21 @@ export function createPrHubRepository(
       const recentlyResolved = tracked.filter(
         (pr) => pr.state === "closed" || pr.state === "merged" || pr.ignoredAt !== null,
       );
+      const recoveryMessage = hasUnverifiedFacts
+        ? `${unverifiedCount} saved pull requests are awaiting account-scoped revalidation.`
+        : null;
+      const effectiveCoverage = (
+        coverage?.length ? coverage : defaultPrHubCoverage(refresh?.last_polled_at ?? null)
+      ).map((scope) =>
+        scope.scope === "previously_tracked" && recoveryMessage
+          ? {
+              ...scope,
+              status: "partial" as const,
+              remainingTasks: unverifiedCount,
+              description: recoveryMessage,
+            }
+          : scope,
+      );
       return {
         status: hasUnverifiedFacts ? "degraded" : (refresh?.status ?? "ok"),
         account: viewer.context,
@@ -304,17 +326,12 @@ export function createPrHubRepository(
         pullRequests: sortTrackedPrs(pullRequests),
         recentlyResolved: sortTrackedPrs(recentlyResolved),
         lastPolledAt: refresh?.last_polled_at ?? null,
-        ...(hasUnverifiedFacts
-          ? {
-              errorMessage:
-                "Saved pull requests are awaiting account verification. Refresh to complete monitoring.",
-            }
-          : {}),
         ...(refresh?.error_kind ? { errorKind: refresh.error_kind } : {}),
-        ...(refresh?.error_message ? { errorMessage: refresh.error_message } : {}),
-        ...(coverage
-          ? { coverage, cappedBuckets: coverage.flatMap((scope) => scope.limits ?? []) }
+        ...(refresh?.error_message || recoveryMessage
+          ? { errorMessage: [refresh?.error_message, recoveryMessage].filter(Boolean).join(" ") }
           : {}),
+        coverage: effectiveCoverage,
+        cappedBuckets: effectiveCoverage.flatMap((scope) => scope.limits ?? []),
       } satisfies PrHubSnapshot;
     }).pipe(
       Effect.catch((error) =>
@@ -386,6 +403,7 @@ export function createPrHubRepository(
     pullRequests: ReadonlyArray<TrackedPullRequest>,
     options: {
       readonly skipReconciliation?: boolean;
+      readonly alreadyPersisted?: ReadonlySet<string>;
       readonly reconcilePolicy: ReconcilePolicy;
       readonly excludedRepos: ReadonlySet<string>;
     },
@@ -397,6 +415,7 @@ export function createPrHubRepository(
       );
       const initialDiscovery = (yield* loadRefreshState(String(viewer.context.viewerId))) === null;
       for (const pr of pullRequests) {
+        if (options.alreadyPersisted?.has(`${pr.repository.nameWithOwner}#${pr.number}`)) continue;
         yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* assertPrHubDiscoveryLease.pipe(Effect.provideService(SqlClient.SqlClient, sql));

@@ -1011,15 +1011,7 @@ export function buildPrHubSearchRequest(buckets: readonly PrHubSearchBucket[]) {
   };
 }
 
-export const PR_HUB_DETAILS_QUERY = `
-query PrHubDetails($ids:[ID!]!){
-  nodes(ids:$ids){
-    ... on PullRequest {
-      ...PrFields
-    }
-  }
-  rateLimit { cost remaining limit resetAt }
-}
+const PR_HUB_PR_FIELDS = `
 fragment PrFields on PullRequest {
   id
   number
@@ -1056,6 +1048,18 @@ fragment PrFields on PullRequest {
 }
 `;
 
+export const PR_HUB_DETAILS_QUERY = `
+query PrHubDetails($ids:[ID!]!){
+  nodes(ids:$ids){
+    ... on PullRequest {
+      ...PrFields
+    }
+  }
+  rateLimit { cost remaining limit resetAt }
+}
+${PR_HUB_PR_FIELDS}
+`;
+
 export const PR_HUB_RECONCILE_QUERY = `
 query PrHubReconcile($ids:[ID!]!){
   nodes(ids:$ids){
@@ -1073,6 +1077,28 @@ query PrHubReconcile($ids:[ID!]!){
 
 export function buildReconcileByNumberRequest(
   targets: ReadonlyArray<Pick<PersistedPrRow, "repo" | "number">>,
+): ReconcileByNumberRequest | null {
+  return buildByNumberRequest(
+    targets,
+    "PrHubReconcileByNumber",
+    "PrHubTerminalFields",
+    `fragment PrHubTerminalFields on PullRequest {
+  id state closedAt mergedAt updatedAt
+}`,
+  );
+}
+
+export function buildTrackedByNumberRequest(
+  targets: ReadonlyArray<Pick<PersistedPrRow, "repo" | "number">>,
+): ReconcileByNumberRequest | null {
+  return buildByNumberRequest(targets, "PrHubTrackedByNumber", "PrFields", PR_HUB_PR_FIELDS);
+}
+
+function buildByNumberRequest(
+  targets: ReadonlyArray<Pick<PersistedPrRow, "repo" | "number">>,
+  operation: string,
+  fragmentName: string,
+  fragment: string,
 ): ReconcileByNumberRequest | null {
   const variableDefinitions: string[] = [];
   const selections: string[] = [];
@@ -1093,7 +1119,7 @@ export function buildReconcileByNumberRequest(
     variables[`name${index}`] = repository.name;
     variables[`number${index}`] = target.number;
     selections.push(
-      `${alias}: repository(owner:$owner${index},name:$name${index}){ pullRequest(number:$number${index}){ ...PrHubTerminalFields } }`,
+      `${alias}: repository(owner:$owner${index},name:$name${index}){ pullRequest(number:$number${index}){ ...${fragmentName} } }`,
     );
     aliases.push({ alias, key: `${target.repo}#${target.number}` });
   }
@@ -1101,16 +1127,11 @@ export function buildReconcileByNumberRequest(
   if (aliases.length === 0) return null;
   return {
     query: `
-query PrHubReconcileByNumber(${variableDefinitions.join(",")}){
+query ${operation}(${variableDefinitions.join(",")}){
   ${selections.join("\n  ")}
+  rateLimit { cost remaining limit resetAt }
 }
-fragment PrHubTerminalFields on PullRequest {
-  id
-  state
-  closedAt
-  mergedAt
-  updatedAt
-}
+${fragment}
 `,
     variables,
     aliases,
