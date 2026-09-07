@@ -325,6 +325,35 @@ it.layer(SqliteClient.layerMemory())("review submission", (it) => {
       assert.equal((yield* readReviewOperation(owner, operation.id))?.status, "prepared");
     }),
   );
+  it.effect("verifies once per remote write rather than repeating the comparison walk", () =>
+    Effect.gen(function* () {
+      const { owner, operation, remote } = yield* setup(7);
+      let verifies = 0;
+      const dependencies: ReviewSubmissionDependencies = {
+        verify: () =>
+          Effect.sync(() => {
+            verifies++;
+          }),
+        request: (method, path) => {
+          if (method === "GET") {
+            if (path.endsWith("/reviews")) return Effect.succeed(response([]));
+            return Effect.succeed(response(path.endsWith("/comments") ? [] : remote("PENDING")));
+          }
+          return Effect.succeed(
+            response(remote(path.endsWith("/events") ? "COMMENTED" : "PENDING")),
+          );
+        },
+      };
+      assert.equal(
+        (yield* submitPreparedReview(owner, operation.id, dependencies)).status,
+        "succeeded",
+      );
+      // One pre-claim check before creation, one before the submit event. Each walks
+      // every file page, so a third call is real GitHub traffic for no extra evidence;
+      // the dispatch precondition re-verifies at the actual point of no return.
+      assert.equal(verifies, 2);
+    }),
+  );
   it.effect("keeps a confirmed submission when another actor moves the row mid-flight", () =>
     Effect.gen(function* () {
       const { owner, operation, remote } = yield* setup(6);

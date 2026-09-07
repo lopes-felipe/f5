@@ -206,6 +206,26 @@ function create(
       if (Option.isNone(capture)) return yield* prHubActionError("A verified account is required.");
       const context = capture.value;
       let expectedOperation: PrHubReviewOperation | undefined;
+      // A single submission validates the same comparison repeatedly: once before
+      // claiming the send, and again as a dispatch precondition on every POST. Each
+      // walk force-refreshes every file page, which is four GitHub calls per page.
+      // The walk is a pure function of the comparison identity and draft content, and
+      // `verify` still re-reads the live base/head OIDs on every call, so a revision
+      // change is caught there rather than by repeating the walk.
+      const walked = new Set<string>();
+      const validateComparisonOnce = (
+        expected: PrHubReviewDraft["comparison"],
+        content: PrHubReviewDraft["content"],
+      ) =>
+        Effect.suspend(() => {
+          const memoKey = JSON.stringify([expected, content]);
+          return walked.has(memoKey)
+            ? Effect.void
+            : validateDraftComparison(key, expected, content).pipe(
+                Effect.tap(() => Effect.sync(() => walked.add(memoKey))),
+                Effect.asVoid,
+              );
+        });
       const request: ReviewSubmissionDependencies["request"] = (method, endpoint, body, query) => {
         const work = githubCli
           .request({
@@ -241,7 +261,7 @@ function create(
         Effect.gen(function* () {
           expectedOperation = operation;
           const expected = operation.payload.draft.comparison;
-          yield* validateDraftComparison(key, expected, operation.payload.draft.content);
+          yield* validateComparisonOnce(expected, operation.payload.draft.content);
           const response = yield* request(
             "GET",
             `repos/${owner.repo.split("/").map(encodeURIComponent).join("/")}/pulls/${owner.number}`,

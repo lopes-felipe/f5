@@ -183,8 +183,6 @@ export function submitPreparedReview(
       return yield* reconcileReviewSubmission(owner, id, dependencies);
     if (operation.status !== "prepared" && operation.status !== "created") return operation;
     if (operation.status === "prepared") {
-      // These reads happen before claiming a send, so failures leave the preview editable by cancelling it.
-      yield* dependencies.verify(operation);
       if (
         (yield* reviews(owner, dependencies)).some(
           (review) => String(review.user.id) === owner.viewerId && review.state === "PENDING",
@@ -193,6 +191,9 @@ export function submitPreparedReview(
         return yield* failure(
           "You already have a pending review on GitHub. Finish it there before submitting this draft.",
         );
+      // This read happens before claiming a send, so a failure leaves the preview
+      // editable by cancelling it. The dispatch precondition verifies again at the
+      // point of no return, so verifying either side of the scan above adds nothing.
       yield* dependencies.verify(operation);
       const prepared = operation;
       // Claiming the send commits us to recording its outcome, so this span resists
