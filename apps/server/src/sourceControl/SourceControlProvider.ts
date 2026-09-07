@@ -1,5 +1,6 @@
 import {
   SourceControlProviderKind,
+  SourceControlRateLimit,
   SourceControlPullRequestAction,
   type SourceControlCapability,
   type SourceControlProviderIdentity,
@@ -26,6 +27,8 @@ export class SourceControlProviderError extends Schema.TaggedErrorClass<SourceCo
   "SourceControlProviderError",
   {
     provider: SourceControlProviderKind,
+    requestDispatched: Schema.optional(Schema.Boolean),
+    rateLimit: Schema.optional(SourceControlRateLimit),
     operation: Schema.String,
     detail: Schema.String,
     kind: SourceControlProviderErrorKind,

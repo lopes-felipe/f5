@@ -1,6 +1,7 @@
 import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription.ts";
 import {
   type ClaudeSettings,
+  type ClaudeBuiltInModelSlug,
   type ModelCapabilities,
   type ModelSelection,
   ProviderDriverKind,
@@ -53,12 +54,18 @@ const CLAUDE_PRESENTATION = {
   displayName: "Claude",
   showInteractionModeToggle: true,
 } as const;
-const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
+const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel & { slug: ClaudeBuiltInModelSlug }> = [
   {
     slug: "claude-opus-5",
     name: "Claude Opus 5",
     isCustom: false,
     capabilities: createClaudeModelCapabilities("claude-opus-5"),
+  },
+  {
+    slug: "claude-fable-5-1",
+    name: "Claude Fable 5.1",
+    isCustom: false,
+    capabilities: createClaudeModelCapabilities("claude-fable-5-1"),
   },
   {
     slug: "claude-fable-5",
@@ -110,19 +117,21 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
   },
 ];
 
-const VERSION_GATED_CLAUDE_MODELS = [
+export const VERSION_GATED_CLAUDE_MODELS = [
+  { slug: "claude-fable-5-1", name: "Claude Fable 5.1", minVersion: "2.1.257" },
   { slug: "claude-opus-5", name: "Claude Opus 5", minVersion: "2.1.220" },
   { slug: "claude-fable-5", name: "Claude Fable 5", minVersion: "2.1.170" },
   { slug: "claude-sonnet-5", name: "Claude Sonnet 5", minVersion: "2.1.170" },
   { slug: "claude-opus-4-8", name: "Claude Opus 4.8", minVersion: "2.1.154" },
   { slug: "claude-opus-4-7", name: "Claude Opus 4.7", minVersion: "2.1.111" },
-] as const;
+] as const satisfies ReadonlyArray<{
+  readonly slug: ClaudeBuiltInModelSlug;
+  readonly name: string;
+  readonly minVersion: string;
+}>;
 
-function isClaudeModelSupportedAtVersion(
-  minVersion: string,
-  version: string | null | undefined,
-): boolean {
-  return version ? compareCliVersions(version, minVersion) >= 0 : false;
+function isClaudeModelSupportedAtVersion(minVersion: string, version: string): boolean {
+  return compareCliVersions(version, minVersion) >= 0;
 }
 
 function getBuiltInClaudeModelsForVersion(
@@ -200,18 +209,13 @@ export function resolveClaudeEffort(
  * Normalize a resolved Claude effort value into one suitable for the Claude
  * CLI's `--effort` flag.
  *
- * Mirrors the mapping used when invoking the Claude Agent SDK
- * ({@link getEffectiveClaudeAgentEffort} in ClaudeAdapter): the Opus 4.7
- * capability `"xhigh"` is rewritten to the accepted CLI value `"max"`, and
- * `"ultrathink"` is filtered out because it is a prompt-prefix mode rather
- * than a CLI-effort value. Returns `undefined` when no flag should be passed.
+ * Like getEffectiveClaudeCodeEffort in @t3tools/shared/model, preserves wire
+ * effort values (including xhigh) and omits ultrathink, which is applied to
+ * the prompt by applyClaudePromptEffortPrefix. An absent effort omits the flag.
  */
 export function normalizeClaudeCliEffort(effort: string | null | undefined): string | undefined {
   if (!effort || effort === "ultrathink") {
     return undefined;
-  }
-  if (effort === "xhigh") {
-    return "max";
   }
   return effort;
 }

@@ -20,6 +20,9 @@ type WorkflowTurnStartCommand = Extract<
  * persisting or dispatching them. A known older Claude CLI omits gated models
  * from this snapshot, so stale built-ins and aliases fall back to the first
  * supported built-in instead of bypassing version gating.
+ * Explicit sub-agent overrides deliberately remain unchanged: an unavailable
+ * selection must fail visibly until corrected, rather than silently inheriting
+ * a different model. Only the parent selection uses this fallback policy.
  */
 export function resolveAvailableWorkflowModelSlot(
   slot: WorkflowModelSlot,

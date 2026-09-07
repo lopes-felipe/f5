@@ -32,6 +32,10 @@
       "types": "./src/git.ts",
       "import": "./src/git.ts"
     },
+    "./prReview": {
+      "types": "./src/prReview.ts",
+      "import": "./src/prReview.ts"
+    },
     "./prHub": {
       "types": "./src/prHub.ts",
       "import": "./src/prHub.ts"

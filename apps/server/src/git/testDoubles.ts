@@ -235,6 +235,8 @@ export function makeFakeGitHubCli(options: FakeGitHubCliOptions = {}): {
   const processResult = { code: 0, stdout: "[]\n", stderr: "", signal: null, timedOut: false };
 
   const service: GitHubCliShape = {
+    request: () => Effect.die("Unexpected request"),
+    getCredentialContext: () => Effect.die("Unexpected credentials"),
     execute: (input) => {
       calls.push(`execute:${input.args.join(" ")}`);
       const pullRequests = (options.pullRequests ?? []).map((pullRequest) => ({

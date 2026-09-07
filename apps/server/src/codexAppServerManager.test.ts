@@ -1675,6 +1675,7 @@ describe("runOneOffPrompt", () => {
       prompt: "Summarize the thread",
       cwd: "/tmp/project",
       model: "gpt-5.3-codex",
+      effort: "low",
       timeoutMs: 1_000,
     });
 
@@ -1691,6 +1692,7 @@ describe("runOneOffPrompt", () => {
       expect.objectContaining({
         threadId: expect.stringMatching(/^one-off:/),
         input: "Summarize the thread",
+        effort: "low",
       }),
     );
     expect(stopSession).toHaveBeenCalledWith(expect.stringMatching(/^one-off:/));

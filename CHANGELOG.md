@@ -6,6 +6,20 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 
 ### Added
 
+- Independent thread summary settings, defaulting new and existing installations to
+  Codex/OpenAI with GPT-5.6 Luna and low reasoning effort. Summary inputs (messages,
+  activities, plans, tasks, and checkpoints) from **all providers** are sent to the
+  selected summary account. Choose a different account/model in Settings > Providers >
+  Thread summaries. If that instance is missing, disabled, or deleted, existing notes
+  are retained until a working summary instance is selected; no provider fallback occurs.
+
+- Claude Fable 5.1 support across Claude model pickers (requires Claude Code v2.1.257+),
+  with native 1M context and the bundled runtime upgraded to v2.1.261.
+  Bare `fable` and `claude-fable` aliases now select 5.1; `fable-5` remains pinned to 5.
+  Older custom CLIs omit 5.1 from pickers. Persisted bare aliases in threads or sub-agent
+  overrides may fail at runtime; select a supported model or upgrade the executable to recover.
+  Fable 5's default effort is now `high` (previously `max`); explicit effort is preserved.
+  Auxiliary Claude generation now preserves `xhigh` and applies the `ultrathink` prompt prefix.
 - GPT-6 Astra support as the new Codex default model.
 - Four runtime safety modes: Supervised, Auto-accept edits, Codex Auto review, and Full access,
   with provider-specific capability gating.

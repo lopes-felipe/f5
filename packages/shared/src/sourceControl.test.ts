@@ -1,3 +1,4 @@
+import { parseGitHubPullRequestUrl } from "./sourceControl";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -156,4 +157,25 @@ describe("resolveChangeRequestWebUrl", () => {
       }),
     ).toBeNull();
   });
+});
+
+it("restricts manually tracked PR URLs to the selected host", () => {
+  expect(parseGitHubPullRequestUrl("https://github.com/org/repo/pull/42/files#diff")).toEqual({
+    provider: "github",
+    host: "github.com",
+    repository: "org/repo",
+    number: 42,
+  });
+  for (const url of [
+    "http://github.com/org/repo/pull/42",
+    "https://github.com.evil/org/repo/pull/42",
+    "https://secret@github.com/org/repo/pull/42",
+    "https://github.com/org/repo/pull/0",
+    "https://github.com/org/repo/pull/9007199254740992",
+  ])
+    expect(parseGitHubPullRequestUrl(url)).toBeNull();
+  expect(
+    parseGitHubPullRequestUrl("https://enterprise.example/org/repo/pull/1", "enterprise.example")
+      ?.number,
+  ).toBe(1);
 });

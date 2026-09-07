@@ -23,6 +23,10 @@ import {
 } from "@t3tools/contracts";
 import { extractProposedPlanMarkdown } from "@t3tools/shared/proposedPlan";
 import {
+  getModelSelectionStringOptionValue,
+  getProviderOptionBooleanSelectionValue,
+} from "@t3tools/shared/model";
+import {
   readCodexMcpOAuthCallbackConfig,
   translateMcpForCodex,
 } from "@t3tools/shared/mcpTranslation";
@@ -57,6 +61,10 @@ import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogg
 import { appendProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 
 const PROVIDER = "codex" as const;
+
+function codexServiceTierOptions(fastMode: boolean | undefined): { readonly serviceTier?: "fast" } {
+  return fastMode ? { serviceTier: "fast" } : {};
+}
 
 export interface CodexAdapterLiveOptions {
   readonly manager?: CodexAppServerManager;
@@ -2210,7 +2218,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
             : {}),
           runtimeMode: input.runtimeMode,
           ...(input.model !== undefined ? { model: input.model } : {}),
-          ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+          ...codexServiceTierOptions(input.modelOptions?.codex?.fastMode),
           ...(providerMcpServers
             ? { mcpServers: translateMcpForCodex(providerMcpServers) ?? {} }
             : {}),
@@ -2301,7 +2309,7 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
               ...(input.modelOptions?.codex?.reasoningEffort !== undefined
                 ? { effort: input.modelOptions.codex.reasoningEffort }
                 : {}),
-              ...(input.modelOptions?.codex?.fastMode ? { serviceTier: "fast" } : {}),
+              ...codexServiceTierOptions(input.modelOptions?.codex?.fastMode),
               ...(input.interactionMode !== undefined
                 ? { interactionMode: input.interactionMode }
                 : {}),
@@ -2373,10 +2381,33 @@ export const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
           manager.runOneOffPrompt({
             prompt: input.prompt,
             ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-            ...(input.model !== undefined ? { model: input.model } : {}),
+            ...(input.modelSelection
+              ? {
+                  model: input.modelSelection.model,
+                  effort: getModelSelectionStringOptionValue(
+                    input.modelSelection,
+                    "reasoningEffort",
+                  ),
+                  ...codexServiceTierOptions(
+                    getProviderOptionBooleanSelectionValue(
+                      input.modelSelection.options,
+                      "fastMode",
+                    ),
+                  ),
+                }
+              : input.model !== undefined
+                ? { model: input.model }
+                : {}),
             ...(input.runtimeMode !== undefined ? { runtimeMode: input.runtimeMode } : {}),
-            ...(input.providerOptions !== undefined
-              ? { providerOptions: input.providerOptions }
+            ...(input.providerOptions !== undefined || input.modelSelection !== undefined
+              ? {
+                  providerOptions: input.modelSelection
+                    ? mergeCodexProviderOptions(
+                        options?.defaultProviderOptions,
+                        input.providerOptions,
+                      )
+                    : input.providerOptions,
+                }
               : {}),
             ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
           }),

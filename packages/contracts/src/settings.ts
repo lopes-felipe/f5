@@ -154,6 +154,7 @@ const PrHubPollIntervalSeconds = Schema.Union([
 ]);
 
 export const PrHubSettings = Schema.Struct({
+  discoverNotifications: Schema.optional(Schema.Boolean),
   pollIntervalSeconds: PrHubPollIntervalSeconds.pipe(Schema.withDecodingDefault(() => 180)),
   excludeRepos: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
 });
@@ -185,6 +186,13 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(() => ({
       instanceId: ProviderInstanceId.make("codex"),
       model: DEFAULT_GIT_TEXT_GENERATION_MODEL,
+    })),
+  ),
+  sessionNotesModelSelection: ModelSelection.pipe(
+    Schema.withDecodingDefault(() => ({
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.6-luna",
+      options: [{ id: "reasoningEffort", value: "low" }],
     })),
   ),
   sourceControlWriting: SourceControlWritingSettings.pipe(Schema.withDecodingDefault(() => ({}))),
@@ -306,6 +314,7 @@ export const ServerSettingsPatch = Schema.Struct({
   defaultThreadEnvMode: Schema.optionalKey(ThreadEnvMode),
   addProjectBaseDirectory: Schema.optionalKey(Schema.String),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
+  sessionNotesModelSelection: Schema.optionalKey(ModelSelectionPatch),
   sourceControlWriting: Schema.optionalKey(SourceControlWritingSettingsPatch),
   observability: Schema.optionalKey(
     Schema.Struct({

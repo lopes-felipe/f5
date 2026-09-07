@@ -8,6 +8,7 @@
  * @module ProviderAdapter
  */
 import type {
+  ModelSelection,
   ApprovalRequestId,
   ChatAttachment,
   ProviderApprovalDecision,
@@ -47,10 +48,13 @@ export interface ProviderThreadSnapshot {
 
 export interface ProviderOneOffPromptInput {
   readonly threadId: ThreadId;
-  readonly provider: ProviderKind;
+  /** Required when modelSelection is absent. */
+  readonly provider?: ProviderKind;
   readonly prompt: string;
   readonly cwd?: string;
   readonly model?: string;
+  /** Explicit instance/model/options; overrides legacy routing and skips source-thread configuration. */
+  readonly modelSelection?: ModelSelection;
   readonly runtimeMode?: ProviderSessionStartInput["runtimeMode"];
   readonly providerOptions?: ProviderStartOptions;
   readonly timeoutMs?: number;
@@ -60,7 +64,9 @@ export interface ProviderOneOffPromptResult {
   readonly text: string;
 }
 
-export interface ProviderConversationCompactionInput extends ProviderOneOffPromptInput {}
+export interface ProviderConversationCompactionInput extends ProviderOneOffPromptInput {
+  readonly provider: ProviderKind;
+}
 
 export interface ProviderConversationCompactionResult {
   readonly summary: string;

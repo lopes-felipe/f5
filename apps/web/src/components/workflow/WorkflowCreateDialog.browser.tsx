@@ -662,6 +662,44 @@ describe("WorkflowCreateDialog", () => {
     }
   });
 
+  it("submits persisted Fable 5.1 aliases with supported effort only", async () => {
+    await seedModelPreferences({
+      lastProvider: "claudeAgent",
+      lastModelByProvider: { claudeAgent: "fable[200k]" },
+      lastModelOptions: {
+        claudeAgent: { effort: "xhigh", fastMode: true, contextWindow: "200k", thinking: false },
+      },
+      lastWorkflowProviderBySlot: { branchB: "claudeAgent" },
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const screen = await renderWithQueryClient(
+      <WorkflowCreateDialog open projectId={"project-1" as ProjectId} onOpenChange={() => {}} />,
+      {
+        container: host,
+        providers: [
+          claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"]),
+        ],
+      },
+    );
+    try {
+      await page
+        .getByPlaceholder("Describe the feature or requirement to plan.")
+        .fill("Plan Fable support");
+      await page.getByRole("button", { name: /Start workflow/ }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.createWorkflow).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.createWorkflow.mock.calls[0]?.[0].branchB).toEqual({
+        provider: "claudeAgent",
+        model: "claude-fable-5-1",
+        modelOptions: { claudeAgent: { effort: "xhigh" } },
+        providerOptions: { claudeAgent: { subagentsEnabled: true, subagentModel: "inherit" } },
+      });
+    } finally {
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("remembers the merge provider when reopening the workflow dialog", async () => {
     const firstHost = document.createElement("div");
     document.body.append(firstHost);

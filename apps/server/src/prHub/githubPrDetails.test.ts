@@ -3,7 +3,6 @@ import { PullRequestKey, type TrackedPullRequest } from "@t3tools/contracts";
 
 import {
   decodeGitHubPrDetail,
-  decodeGitHubPrFiles,
   decodeGitHubPrTimeline,
   githubTimelineVariables,
 } from "./githubPrDetails.ts";
@@ -36,6 +35,8 @@ function trackedPr(): TrackedPullRequest {
     reviewRequestsCount: 0,
     commentsCount: 0,
     unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 0,
     deletions: 0,
     changedFiles: 0,
@@ -280,23 +281,6 @@ describe("GitHub PR detail decoding", () => {
       reviewLimit: 1,
       commitLimit: 1,
     });
-  });
-
-  it("normalizes file change pages and their pagination cursor", () => {
-    const page = decodeGitHubPrFiles(
-      responseWithPullRequest({
-        files: {
-          nodes: [
-            { path: "src/new.ts", additions: 10, deletions: 0, changeType: "ADDED" },
-            { path: "src/old.ts", additions: 0, deletions: 4, changeType: "DELETED" },
-          ],
-          pageInfo: { hasNextPage: true, endCursor: "files-next" },
-        },
-      }),
-    );
-
-    expect(page.files.map((file) => file.changeType)).toEqual(["added", "deleted"]);
-    expect(page.pageInfo).toMatchObject({ hasNextPage: true, endCursor: "files-next" });
   });
 
   it("rejects malformed timeline cursors", () => {

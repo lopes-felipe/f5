@@ -39,6 +39,7 @@ import { Textarea } from "../../ui/textarea";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../../ui/select";
 import { AddProviderInstanceDialog } from "../AddProviderInstanceDialog";
 import { ProviderInstanceCard } from "../ProviderInstanceCard";
+import { SessionNotesSettings } from "../SessionNotesSettings";
 import { getDriverOption } from "../providerDriverMeta";
 import { buildProviderInstanceUpdatePatch } from "../SettingsPanels.logic";
 
@@ -1013,6 +1014,7 @@ export function ProvidersSettings() {
         open={isAddInstanceDialogOpen}
         onOpenChange={setIsAddInstanceDialogOpen}
       />
+      <SessionNotesSettings providers={liveProviders} />
     </>
   );
 }

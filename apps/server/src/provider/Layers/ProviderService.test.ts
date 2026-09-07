@@ -16,6 +16,7 @@ import {
   PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
   type ProviderKind,
   ProviderSessionStartInput,
+  ProviderInstanceId,
   ThreadId,
   TurnId,
 } from "@t3tools/contracts";
@@ -29,9 +30,15 @@ import {
   ProviderAdapterSessionNotFoundError,
   type ProviderAdapterError,
 } from "../Errors.ts";
-import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
+import type {
+  ProviderAdapterShape,
+  ProviderOneOffPromptInput,
+} from "../Services/ProviderAdapter.ts";
 import type { ProviderAdapterSendTurnInput } from "../Services/ProviderAdapter.ts";
-import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
+import {
+  ProviderAdapterRegistry,
+  type ProviderAdapterRegistryShape,
+} from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 import { makeProviderServiceLive, type ProviderServiceLiveOptions } from "./ProviderService.ts";
@@ -365,10 +372,12 @@ function makeProviderServiceLayer(options?: ProviderServiceLiveOptions) {
 
 function makeProviderServiceLayerForAdapters(
   adaptersByProvider: ReadonlyMap<ProviderKind, ProviderAdapterShape<ProviderAdapterError>>,
+  overrides: Partial<ProviderAdapterRegistryShape> = {},
 ) {
-  const registry = makeAdapterRegistryMock(
-    Object.fromEntries(adaptersByProvider) as KindAdapterMap,
-  );
+  const registry = {
+    ...makeAdapterRegistryMock(Object.fromEntries(adaptersByProvider) as KindAdapterMap),
+    ...overrides,
+  };
 
   const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
     Layer.provide(SqlitePersistenceMemory),
@@ -390,6 +399,156 @@ function makeProviderServiceLayerForAdapters(
 }
 
 const routing = makeProviderServiceLayer();
+it.effect("does not fall back to compaction for explicitly selected unsupported adapters", () => {
+  const codex = makeFakeCodexAdapter();
+  const compactConversation = vi.fn(() => Effect.succeed({ summary: "unexpected" }));
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const failure = yield* service
+      .runOneOffPrompt({
+        threadId: asThreadId("summary"),
+        provider: "codex",
+        prompt: "Summarize",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-luna" },
+      })
+      .pipe(Effect.flip);
+    assert.equal(failure._tag, "ProviderValidationError");
+    assert.equal(compactConversation.mock.calls.length, 0);
+  }).pipe(
+    Effect.provide(
+      makeProviderServiceLayerForAdapters(
+        new Map([["codex", { ...codex.adapter, compactConversation }]]),
+      ),
+    ),
+  );
+});
+it.effect("rejects disabled explicit summary instances", () => {
+  const codex = makeFakeCodexAdapter();
+  const registry = makeAdapterRegistryMock({ codex: codex.adapter });
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const failure = yield* service
+      .runOneOffPrompt({
+        threadId: asThreadId("summary"),
+        provider: "codex",
+        prompt: "Summarize",
+        modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-luna" },
+      })
+      .pipe(Effect.flip);
+    assert.equal(failure._tag, "ProviderValidationError");
+    assert.match(failure.message, /disabled or unsupported/);
+  }).pipe(
+    Effect.provide(
+      makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]), {
+        getInstanceInfo: (instanceId) =>
+          registry
+            .getInstanceInfo(instanceId)
+            .pipe(Effect.map((info) => ({ ...info, enabled: false }))),
+      }),
+    ),
+  );
+});
+for (const driver of ["codex", "claudeAgent"] as const) {
+  it.effect(
+    `routes explicit ${driver} one-off selections by instance without source account options`,
+    () => {
+      const source = makeFakeCodexAdapter("claudeAgent");
+      const selected = makeFakeCodexAdapter(driver);
+      const requests: Array<ProviderOneOffPromptInput> = [];
+      const selectedAdapter = {
+        ...selected.adapter,
+        runOneOffPrompt: (input: ProviderOneOffPromptInput) =>
+          Effect.sync(() => {
+            requests.push(input);
+            return { text: "notes" };
+          }),
+      };
+      return Effect.gen(function* () {
+        const service = yield* ProviderService;
+        const directory = yield* ProviderSessionDirectory;
+        const threadId = asThreadId("summary-source");
+        yield* directory.upsert({
+          threadId,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          runtimePayload: {
+            providerOptions: {
+              claudeAgent: { binaryPath: "/source/claude" },
+              codex: { homePath: "/wrong-account" },
+            },
+          },
+        });
+        const modelSelection = {
+          instanceId: ProviderInstanceId.make(`${driver}-work`),
+          model: driver === "codex" ? "gpt-5.6-luna" : "claude-sonnet-4-6",
+          options: [{ id: driver === "codex" ? "reasoningEffort" : "effort", value: "low" }],
+        };
+        const result = yield* service.runOneOffPrompt({
+          threadId,
+          ...(driver === "codex" ? { provider: "claudeAgent" as const } : {}),
+          model: "gpt-6-astra",
+          prompt: "Summarize",
+          modelSelection,
+        });
+        assert.deepStrictEqual(result, { text: "notes" });
+        assert.deepStrictEqual(requests, [
+          {
+            threadId,
+            provider: driver,
+            prompt: "Summarize",
+            model: driver === "codex" ? "gpt-5.6-luna" : "claude-sonnet-4-6",
+            modelSelection,
+          },
+        ]);
+        const failure = yield* service
+          .runOneOffPrompt({
+            threadId,
+            provider: driver,
+            prompt: "Summarize",
+            modelSelection: { ...modelSelection, instanceId: ProviderInstanceId.make("missing") },
+          })
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderUnsupportedError");
+        assert.equal(requests.length, 1);
+        const missingRoute = yield* service
+          .runOneOffPrompt({ threadId, prompt: "Summarize" })
+          .pipe(Effect.flip);
+        assert.equal(missingRoute._tag, "ProviderValidationError");
+      }).pipe(
+        Effect.provide(
+          makeProviderServiceLayerForAdapters(
+            new Map([
+              ["claudeAgent", source.adapter],
+              [`${driver}-work` as ProviderKind, selectedAdapter],
+            ]),
+          ),
+        ),
+      );
+    },
+  );
+}
+
+it.effect("keeps legacy one-off provider options from the source binding", () => {
+  const selected = makeFakeCodexAdapter();
+  const requests: Array<ProviderOneOffPromptInput> = [];
+  const adapter = {
+    ...selected.adapter,
+    runOneOffPrompt: (input: ProviderOneOffPromptInput) =>
+      Effect.sync(() => {
+        requests.push(input);
+        return { text: "notes" };
+      }),
+  };
+  return Effect.gen(function* () {
+    const service = yield* ProviderService;
+    const directory = yield* ProviderSessionDirectory;
+    const threadId = asThreadId("legacy-summary");
+    const providerOptions = { codex: { homePath: "/source-account" } };
+    yield* directory.upsert({ threadId, provider: "codex", runtimePayload: { providerOptions } });
+    yield* service.runOneOffPrompt({ threadId, provider: "codex", prompt: "Summarize" });
+    assert.deepStrictEqual(requests[0]?.providerOptions, providerOptions);
+  }).pipe(Effect.provide(makeProviderServiceLayerForAdapters(new Map([["codex", adapter]]))));
+});
 it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", () =>
   Effect.gen(function* () {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-provider-service-"));

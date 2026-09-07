@@ -238,6 +238,38 @@ describe("WorkflowImplementDialog", () => {
     }
   });
 
+  it("implements with the canonical persisted Fable 5.1 selection", async () => {
+    const host = document.createElement("div");
+    document.body.append(host);
+    const workflow = makeWorkflow({
+      provider: "claudeAgent",
+      model: "fable",
+      modelOptions: { claudeAgent: { effort: "xhigh" } },
+    });
+    const client = makeQueryClient([
+      claudeProvider("2.1.257", ["claude-opus-5", "claude-fable-5-1"]),
+    ]);
+    const screen = await render(
+      <QueryClientProvider client={client}>
+        <WorkflowImplementDialog open workflow={workflow} onOpenChange={() => {}} />
+      </QueryClientProvider>,
+      { container: host },
+    );
+    try {
+      await page.getByRole("button", { name: "Start implementation" }).click();
+      await vi.waitFor(() => expect(nativeApiMocks.startImplementation).toHaveBeenCalledTimes(1));
+      expect(nativeApiMocks.startImplementation.mock.calls[0]?.[0]).toMatchObject({
+        provider: "claudeAgent",
+        model: "claude-fable-5-1",
+        modelOptions: { claudeAgent: { effort: "xhigh" } },
+      });
+    } finally {
+      client.clear();
+      await screen.unmount();
+      host.remove();
+    }
+  });
+
   it("starts from the persisted per-project workspace mode", async () => {
     useStore.setState((state) => ({
       projects: state.projects.map((project) => ({ ...project, defaultEnvMode: "worktree" })),

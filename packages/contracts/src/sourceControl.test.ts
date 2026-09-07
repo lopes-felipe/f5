@@ -30,6 +30,8 @@ const legacyTrackedPullRequest = {
   reviewRequestsCount: 0,
   commentsCount: 0,
   unresolvedThreadCount: 0,
+  actionableUnresolvedThreadCount: 0,
+  waitingSince: null,
   additions: 10,
   deletions: 2,
   changedFiles: 1,

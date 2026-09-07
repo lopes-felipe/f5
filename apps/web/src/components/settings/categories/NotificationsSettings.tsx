@@ -6,7 +6,6 @@ import {
 } from "../../../appSettings";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { prHubQueryKeys } from "../../../lib/prHubReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "../../../lib/serverReactQuery";
 import { ensureNativeApi } from "../../../nativeApi";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
@@ -123,6 +122,32 @@ export function NotificationsSettings() {
                 })
               }
               aria-label="PR attention notifications"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-background px-3 py-2">
+            <div>
+              <p className="text-sm font-medium text-foreground">Flag my PRs as stalled after</p>
+              <p className="text-xs text-muted-foreground">
+                Hours waiting; 0 disables. Filters and sorts only, without notifications.
+              </p>
+            </div>
+            <Input
+              className="h-8 w-20"
+              type="number"
+              min={0}
+              max={720}
+              step={1}
+              aria-label="Flag my PRs as stalled after"
+              value={settings.prHubStalledAfterHours}
+              onChange={(event) =>
+                void updateSettings({
+                  prHubStalledAfterHours: Math.max(
+                    0,
+                    Math.min(720, Math.round(Number(event.currentTarget.value) || 0)),
+                  ),
+                })
+              }
             />
           </div>
 
@@ -299,6 +324,25 @@ export function NotificationsSettings() {
             </div>
           </div>
 
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-3">
+            <div>
+              <p className="text-sm font-medium text-foreground">
+                Discover PRs from GitHub notifications
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Include notification subjects, including mentions. Never marks GitHub notifications
+                as read.
+              </p>
+            </div>
+            <Switch
+              aria-label="Discover PRs from GitHub notifications"
+              checked={prHubSettings.discoverNotifications ?? false}
+              onCheckedChange={(checked) =>
+                void updatePrHubSettings({ discoverNotifications: checked })
+              }
+            />
+          </div>
+
           <div className="rounded-lg border border-border bg-background px-3 py-3">
             <div className="mb-2">
               <p className="text-sm font-medium text-foreground">Excluded repositories</p>
@@ -319,18 +363,24 @@ export function NotificationsSettings() {
             <div>
               <p className="text-sm font-medium text-foreground">Clear PR Hub data</p>
               <p className="text-xs text-muted-foreground">
-                Removes persisted PR Hub rows, snoozes, and notification fingerprints.
+                Clears monitoring records for the selected GitHub account. Drafts, operations and
+                manually tracked PRs are retained.
               </p>
             </div>
             <Button
               size="xs"
               variant="destructive-outline"
               onClick={() => {
-                if (!window.confirm("Clear all persisted PR Hub data?")) return;
+                if (
+                  !window.confirm(
+                    "Clear monitoring data for the selected GitHub account? Saved review work and manually tracked PRs will remain.",
+                  )
+                )
+                  return;
                 void ensureNativeApi()
                   .prHub.clearData({})
-                  .then((snapshot) => {
-                    queryClient.setQueryData(prHubQueryKeys.snapshot, snapshot);
+                  .then(() => {
+                    void queryClient.invalidateQueries({ queryKey: ["prHub"] });
                     toastManager.add({ type: "success", title: "PR Hub data cleared" });
                   })
                   .catch((error) => {

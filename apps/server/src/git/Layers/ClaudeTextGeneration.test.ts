@@ -28,8 +28,9 @@ const env = process.env;
 const args = process.argv.slice(2).join(" ");
 const input = fs.readFileSync(0, "utf8");
 function fail(message, code) { console.error(message); process.exit(code); }
+if (input.startsWith("Ultrathink:\\nUltrathink:")) fail("duplicated effort prefix", 6);
 if (env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN && !args.includes(env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN)) fail("args missing expected content", 2);
-if (env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN && args.includes(env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN)) fail("args contained forbidden content", 3);
+if (env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN && JSON.parse(env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN).some(value => args.includes(value))) fail("args contained forbidden content", 3);
 if (env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN && !input.includes(env.T3_FAKE_CLAUDE_STDIN_MUST_CONTAIN)) fail("stdin missing expected content", 4);
 if (env.T3_FAKE_CLAUDE_HOME_MUST_BE && env.HOME !== env.T3_FAKE_CLAUDE_HOME_MUST_BE) fail("HOME was " + env.HOME, 5);
 if (env.T3_FAKE_CLAUDE_STDERR) console.error(env.T3_FAKE_CLAUDE_STDERR);
@@ -47,7 +48,7 @@ function withFakeClaudeEnv<A, E, R>(
     exitCode?: number;
     stderr?: string;
     argsMustContain?: string;
-    argsMustNotContain?: string;
+    argsMustNotContain?: string | ReadonlyArray<string>;
     stdinMustContain?: string;
     homeMustBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
@@ -91,7 +92,11 @@ function withFakeClaudeEnv<A, E, R>(
         }
 
         if (input.argsMustNotContain !== undefined) {
-          process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = input.argsMustNotContain;
+          process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN = JSON.stringify(
+            typeof input.argsMustNotContain === "string"
+              ? [input.argsMustNotContain]
+              : input.argsMustNotContain,
+          );
         } else {
           delete process.env.T3_FAKE_CLAUDE_ARGS_MUST_NOT_CONTAIN;
         }
@@ -166,6 +171,62 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
+  for (const effort of ["high", "xhigh", "ultrathink"] as const) {
+    for (const prefixed of [false, true]) {
+      it.effect(`forwards Fable 5.1 ${effort} with prefixed=${prefixed}`, () =>
+        withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { ok: true } }),
+            argsMustContain: `--model claude-fable-5-1${effort === "ultrathink" ? "" : ` --effort ${effort}`}`,
+            argsMustNotContain: effort === "ultrathink" ? ["--effort", "--settings"] : "--settings",
+            stdinMustContain: `${effort === "ultrathink" || prefixed ? "Ultrathink:\n" : ""}Return JSON`,
+          },
+          (generation) =>
+            Effect.gen(function* () {
+              const result = yield* generation.generateStructuredJson({
+                cwd: process.cwd(),
+                operation: "fable-smoke",
+                prompt: `${prefixed ? "Ultrathink:\n" : ""}Return JSON`,
+                outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  "fable[200k]",
+                  [
+                    ...(effort === "high" ? [] : [{ id: "effort", value: effort }]),
+                    { id: "contextWindow", value: "1m" },
+                    { id: "fastMode", value: true },
+                    { id: "thinking", value: false },
+                  ],
+                ),
+              });
+              expect(result).toEqual({ ok: true });
+            }),
+        ),
+      );
+    }
+  }
+  it.effect("ignores unsupported Haiku ultrathink and preserves prompt whitespace", () =>
+    withFakeClaudeEnv(
+      {
+        output: JSON.stringify({ structured_output: { ok: true } }),
+        argsMustContain: "--model claude-haiku-4-5",
+        argsMustNotContain: "--effort",
+        stdinMustContain: "  Return JSON  ",
+      },
+      (generation) =>
+        generation.generateStructuredJson({
+          cwd: process.cwd(),
+          operation: "unsupported-effort",
+          prompt: "  Return JSON  ",
+          outputSchema: Schema.Struct({ ok: Schema.Boolean }),
+          modelSelection: createModelSelection(
+            ProviderInstanceId.make("claudeAgent"),
+            "claude-haiku-4-5",
+            [{ id: "effort", value: "ultrathink" }],
+          ),
+        }),
+    ),
+  );
   it.effect("forwards Claude thinking settings for Haiku without passing effort", () =>
     withFakeClaudeEnv(
       {
@@ -275,6 +336,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
         }),
         argsMustContain: "--model claude-fable-5",
         argsMustNotContain: "--effort",
+        stdinMustContain: "Ultrathink:\n",
       },
       (textGeneration) =>
         Effect.gen(function* () {

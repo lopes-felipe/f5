@@ -22,6 +22,7 @@ export interface PrModeViewProps {
   onAnalyzeAdvisory: (key: PullRequestKey) => void;
   onThreadCreated?: ((threadId: ThreadId) => Promise<void> | void) | undefined;
   focusedPrKey: string | null;
+  onSelectionChange?: ((key: PullRequestKey) => void) | undefined;
 }
 
 function isAnalyzing(
@@ -46,6 +47,7 @@ export function PrInboxView({
   onAnalyzeAdvisory,
   onThreadCreated,
   focusedPrKey,
+  onSelectionChange,
 }: PrModeViewProps) {
   const ordered = useMemo(() => [...prs].sort(comparePrPriority), [prs]);
   const [selectedKey, setSelectedKey] = useState<PullRequestKey | null>(null);
@@ -53,6 +55,10 @@ export function PrInboxView({
   // The deep-link is honoured exactly once per distinct `focusedPrKey` value, so
   // that subsequent keyboard/mouse selection isn't snapped back to it.
   const honoredDeepLinkRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (selectedKey) onSelectionChange?.(selectedKey);
+  }, [selectedKey, onSelectionChange]);
 
   const selectedIndex = ordered.findIndex((pr) => pr.key === selectedKey);
 

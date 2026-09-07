@@ -37,6 +37,23 @@ function claudeProvider(models: ReadonlyArray<string>): ServerProvider {
 }
 
 describe("resolveAvailableWorkflowModelSlot", () => {
+  it("revalidates persisted Fable aliases against the dispatch instance", () => {
+    const slot = {
+      provider: "claudeAgent",
+      model: "fable",
+      providerOptions: { claudeAgent: { subagentModel: "fable-5-1" } },
+    } as const;
+    expect(
+      resolveAvailableWorkflowModelSlot(slot, [
+        claudeProvider(["claude-opus-5", "claude-fable-5-1"]),
+      ]),
+    ).toEqual({ ...slot, model: "claude-fable-5-1" });
+    expect(
+      resolveAvailableWorkflowModelSlot(slot, [
+        claudeProvider(["claude-opus-5", "claude-fable-5"]),
+      ]),
+    ).toEqual({ ...slot, model: "claude-opus-5" });
+  });
   it("falls back before dispatch when Opus 5 is absent from a known-version snapshot", () => {
     expect(
       resolveAvailableWorkflowModelSlot(

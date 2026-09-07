@@ -1,10 +1,10 @@
-export function formatRelativeTimeLabel(iso: string): string {
+export function formatRelativeTimeLabel(iso: string, now = Date.now()): string {
   const timestamp = new Date(iso).getTime();
   if (!Number.isFinite(timestamp)) {
     return "";
   }
 
-  const diff = Date.now() - timestamp;
+  const diff = now - timestamp;
   const minutes = Math.floor(diff / 60_000);
   if (minutes < 1) return "just now";
   if (minutes < 60) return `${minutes}m ago`;

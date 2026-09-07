@@ -55,6 +55,84 @@ function settingsWithProviderInstances(): UnifiedSettings {
 }
 
 describe("instance-scoped model selection", () => {
+  it("honors Fable 5.1 visibility and order without restoring hidden aliases as custom models", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"],
+      }),
+    ];
+    const instanceId = ProviderInstanceId.make("claudeAgent");
+    const entry = deriveProviderInstanceEntries(providers)[0]!;
+    const settings: UnifiedSettings = {
+      ...DEFAULT_UNIFIED_SETTINGS,
+      providerInstances: {
+        [instanceId]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { customModels: ["fable", "fable-5.1"] },
+        },
+      },
+      providerModelPreferences: {
+        [instanceId]: { hiddenModels: [], modelOrder: ["claude-fable-5-1", "claude-fable-5"] },
+      },
+    };
+    expect(getAppModelOptionsForInstance(settings, entry).map((option) => option.slug)).toEqual([
+      "claude-fable-5-1",
+      "claude-fable-5",
+      "claude-opus-5",
+    ]);
+    const hidden = {
+      ...settings,
+      providerModelPreferences: {
+        [instanceId]: { hiddenModels: ["claude-fable-5-1"], modelOrder: [] },
+      },
+    };
+    expect(getAppModelOptionsForInstance(hidden, entry).map((option) => option.slug)).toEqual([
+      "claude-opus-5",
+      "claude-fable-5",
+    ]);
+    expect(resolveAppModelSelectionForInstance(instanceId, hidden, providers, "fable")).toBe(
+      "claude-opus-5",
+    );
+  });
+  it("keeps Fable 5.1 gated per instance and falls back for persisted bare aliases", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"],
+      }),
+      provider({ instanceId: "claude_old", models: ["claude-opus-5", "claude-fable-5"] }),
+    ];
+    const entries = deriveProviderInstanceEntries(providers);
+    expect(
+      getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entries[0]!).map(
+        (option) => option.slug,
+      ),
+    ).toContain("claude-fable-5-1");
+    expect(
+      getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entries[1]!).map(
+        (option) => option.slug,
+      ),
+    ).not.toContain("claude-fable-5-1");
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("claudeAgent"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        "fable",
+      ),
+    ).toBe("claude-fable-5-1");
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("claude_old"),
+        DEFAULT_UNIFIED_SETTINGS,
+        providers,
+        "fable",
+      ),
+    ).toBe("claude-opus-5");
+  });
   it("uses GPT-6 Astra from the live Codex provider snapshot", () => {
     const providers = [
       provider({

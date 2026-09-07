@@ -275,8 +275,9 @@ export const TraitsPicker = memo(function TraitsPicker({
   modelOptions,
   triggerVariant,
   triggerClassName,
+  disabled = false,
   ...persistence
-}: TraitsMenuContentProps & TraitsPersistence) {
+}: TraitsMenuContentProps & TraitsPersistence & { disabled?: boolean }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const { descriptors, fastModeEnabled } = getTraitsSectionVisibility({
     provider,
@@ -313,15 +314,16 @@ export const TraitsPicker = memo(function TraitsPicker({
 
   return (
     <Menu
-      open={isMenuOpen}
+      open={isMenuOpen && !disabled}
       onOpenChange={(open) => {
-        setIsMenuOpen(open);
+        setIsMenuOpen(open && !disabled);
       }}
     >
       <MenuTrigger
         render={
           <Button
             size="sm"
+            disabled={disabled}
             variant={triggerVariant ?? "ghost"}
             className={cn(
               isCodexStyle

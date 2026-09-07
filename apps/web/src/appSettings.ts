@@ -338,6 +338,13 @@ export const AppSettingsSchema = Schema.Struct({
     Schema.withConstructorDefault(() => Option.some(true)),
   ),
   gitStatusAutoRefreshIntervalSeconds: GitStatusAutoRefreshIntervalSecondsSchema,
+  prHubStalledAfterHours: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 0, maximum: 720 }),
+  ).pipe(
+    Schema.withConstructorDefault(() => Option.some(24)),
+    Schema.withDecodingDefault(() => 24),
+  ),
   enableThreadStatusNotifications: Schema.Boolean.pipe(
     Schema.withConstructorDefault(() => Option.some(true)),
   ),

@@ -1,3 +1,7 @@
+import { PrHubRepositoryLive } from "./prHub/Layers/PrHubRepository.ts";
+import { PrHubJobCoordinatorLive } from "./prHub/Layers/PrHubJobCoordinator.ts";
+import { PrHubDiscoveryLive } from "./prHub/Layers/PrHubDiscovery.ts";
+import { PrHubReviewOperationsLive } from "./prHub/Layers/PrHubReviewOperations.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Layer, Path, PlatformError } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
@@ -282,6 +286,10 @@ export function makeServerRuntimeServicesLayer() {
     Layer.provideMerge(textGenerationLayer),
   );
   const prHubLayer = PrHubServiceLive.pipe(
+    Layer.provide(PrHubReviewOperationsLive),
+    Layer.provide(PrHubDiscoveryLive),
+    Layer.provide(PrHubRepositoryLive),
+    Layer.provide(PrHubJobCoordinatorLive),
     Layer.provideMerge(gitCoreLayer),
     Layer.provideMerge(githubCliLayer),
     Layer.provideMerge(ProjectionProjectRepositoryLive),

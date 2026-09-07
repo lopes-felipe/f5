@@ -8,14 +8,17 @@ export function formatPrNotificationTitle(pr: TrackedPullRequest): string {
 export function showPrAttentionNotification(input: {
   NotificationConstructor: AppNotificationConstructor;
   pullRequest: TrackedPullRequest;
+  batch?: { id: string; count: number };
   focusWindow: () => void;
   navigateToPrHub: (focusedPrKey?: string) => void | Promise<void>;
 }): AppNotificationInstance {
   const notification = new input.NotificationConstructor(
-    formatPrNotificationTitle(input.pullRequest),
+    input.batch && input.batch.count > 1
+      ? `${input.batch.count} pull requests need your attention`
+      : formatPrNotificationTitle(input.pullRequest),
     {
       body: input.pullRequest.nextAction,
-      tag: input.pullRequest.key,
+      tag: input.batch?.id ?? input.pullRequest.key,
       data: { key: input.pullRequest.key },
     },
   );
@@ -23,7 +26,9 @@ export function showPrAttentionNotification(input: {
   notification.addEventListener("click", () => {
     notification.close();
     input.focusWindow();
-    void input.navigateToPrHub(input.pullRequest.key);
+    void input.navigateToPrHub(
+      input.batch && input.batch.count > 1 ? undefined : input.pullRequest.key,
+    );
   });
 
   return notification;

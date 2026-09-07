@@ -29,6 +29,7 @@ const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "openai/gpt-oss-120b", name: "openai/gpt-oss-120b", subProvider: "OpenAI" },
   ],
   claudeAgent: [
+    { slug: "claude-fable-5-1", name: "Claude Fable 5.1", shortName: "Fable 5.1" },
     { slug: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", shortName: "Sonnet 4.6" },
     { slug: "claude-haiku-4-5", name: "Claude Haiku 4.5", shortName: "Haiku 4.5" },
   ],
@@ -141,6 +142,24 @@ describe("ProviderModelPicker", () => {
       await vi.waitFor(() => {
         expect(readStoredFavoriteModels()).toEqual([]);
       });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("finds, favorites, and selects Fable 5.1 by its display label", async () => {
+    const mounted = await mountPicker();
+    try {
+      await page.getByRole("button", { name: /GPT-5.5/ }).click();
+      await page.getByPlaceholder("Search models...").fill("Fable 5.1");
+      await page.getByRole("button", { name: "Add to favorites" }).click();
+      await vi.waitFor(() =>
+        expect(readStoredFavoriteModels()).toEqual([
+          { providerKind: "claudeAgent", modelId: "claude-fable-5-1" },
+        ]),
+      );
+      await page.getByText("Fable 5.1", { exact: true }).last().click();
+      expect(mounted.onProviderModelChange).toHaveBeenCalledWith("claudeAgent", "claude-fable-5-1");
     } finally {
       await mounted.cleanup();
     }
