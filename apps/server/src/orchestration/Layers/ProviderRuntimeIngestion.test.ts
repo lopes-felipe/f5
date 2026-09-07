@@ -2874,6 +2874,10 @@ describe("ProviderRuntimeIngestion", () => {
     harness.setThreadSnapshot({
       threadId: asThreadId("thread-1"),
       turns: [
+        ...Array.from({ length: 50 }, (_, index) => ({
+          id: asTurnId(`older-turn-${index}`),
+          items: [],
+        })),
         {
           id: asTurnId("turn-restart-reconcile"),
           items: [

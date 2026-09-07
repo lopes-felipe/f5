@@ -1,4 +1,4 @@
-import { CommandId, MessageId, ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Option, Stream } from "effect";
 
@@ -23,6 +23,7 @@ let state: ProviderTurnDelivery;
 let requeueCount = 0;
 let outcomeProjected = false;
 let providerReadFails = false;
+let providerTurns: Array<{ id: TurnId; items: unknown[] }> = [];
 
 function resetDelivery() {
   state = {
@@ -49,6 +50,7 @@ function resetDelivery() {
   requeueCount = 0;
   outcomeProjected = false;
   providerReadFails = false;
+  providerTurns = [];
 }
 
 const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
@@ -74,7 +76,10 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
       };
       return state;
     }),
-  markAccepted: () => Effect.void,
+  markAccepted: (input: { readonly providerTurnId: TurnId }) =>
+    Effect.sync(() => {
+      state = { ...state, state: "accepted", providerTurnId: input.providerTurnId };
+    }),
   markRejected: (input: {
     readonly errorCode: string;
     readonly errorDetail: string;
@@ -111,7 +116,7 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
       readThread: () =>
         providerReadFails
           ? Effect.fail(new Error("provider unavailable"))
-          : Effect.succeed({ threadId, turns: [] }),
+          : Effect.succeed({ threadId, turns: providerTurns }),
     } as never),
   ),
   Layer.provideMerge(
@@ -130,6 +135,29 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
       streamDomainEvents: Stream.empty,
     } as never),
   ),
+);
+
+it.effect(
+  "ProviderTurnDeliveryWorker recovers an accepted turn beyond the first history page",
+  () =>
+    Effect.gen(function* () {
+      resetDelivery();
+      providerTurns = Array.from({ length: 51 }, (_, index) => ({
+        id: TurnId.makeUnsafe(`turn-${index}`),
+        items: [],
+      }));
+      state = {
+        ...state,
+        state: "sending",
+        preSendTurnIds: providerTurns.slice(0, 50).map((turn) => turn.id),
+      };
+      const worker = yield* ProviderTurnDeliveryWorker;
+      yield* worker.start;
+      yield* worker.drain;
+      assert.equal(state.state, "accepted");
+      assert.equal(state.providerTurnId, "turn-50");
+      assert.equal(requeueCount, 0);
+    }).pipe(Effect.provide(testLayer)),
 );
 
 it.effect(
