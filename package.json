@@ -37,7 +37,7 @@
     "repair:stuck-turns": "bun apps/server/scripts/repair-stuck-turns.ts",
     "typecheck": "node node_modules/turbo/bin/turbo run typecheck",
     "lint": "node node_modules/oxlint/bin/oxlint --report-unused-disable-directives",
-    "test": "node node_modules/turbo/bin/turbo run test",
+    "test": "node node_modules/turbo/bin/turbo run test --concurrency=2",
     "test:full": "bun run test && bun run test:server:git:extended",
     "test:server:unit": "bun run --cwd apps/server test:unit",
     "test:server:git": "bun run --cwd apps/server test:git",

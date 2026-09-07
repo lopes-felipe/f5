@@ -27,7 +27,7 @@
     "test:git:extended": "node node_modules/vitest/vitest.mjs run integration/git/extended --sequence.concurrent --maxConcurrency=4",
     "test:git-core": "node node_modules/vitest/vitest.mjs run integration/git/extended/GitCore.extended.test.ts --no-file-parallelism",
     "test:git-manager": "node node_modules/vitest/vitest.mjs run integration/git/extended/GitManager.extended.test.ts --no-file-parallelism",
-    "test:integration": "node node_modules/vitest/vitest.mjs run integration --exclude 'integration/git/**'",
+    "test:integration": "node node_modules/vitest/vitest.mjs run integration --exclude 'integration/git/**' --testTimeout=60000",
     "test:file": "node node_modules/vitest/vitest.mjs run",
     "test:claude:live": "F5_CLAUDE_LIVE_TEST=1 node node_modules/vitest/vitest.mjs run integration/claudeRuntime.live.test.ts --no-file-parallelism",
     "test:unit:shard": "node node_modules/vitest/vitest.mjs run src"

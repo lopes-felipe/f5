@@ -61,7 +61,7 @@
       "cache": false
     },
     "test": {
-      "passThroughEnv": ["F5_TEST_MAX_WORKERS", "F5_TEST_LOGS"],
+      "passThroughEnv": ["F5_TEST_MAX_WORKERS", "F5_TEST_LOGS", "VITEST_MAX_WORKERS"],
       "cache": false,
       "outputs": []
     }
