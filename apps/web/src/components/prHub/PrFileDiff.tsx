@@ -11,9 +11,9 @@ import { useTheme } from "../../hooks/useTheme";
 import {
   buildFileDiffRenderKey,
   DIFF_PANEL_UNSAFE_CSS,
-  getRenderablePatch,
   resolveFileDiffPath,
 } from "../../lib/diffPatch";
+import { getRenderablePrFilePatch } from "../../lib/prFilePatch";
 import { resolveDiffThemeName } from "../../lib/diffRendering";
 import { DiffSurfaceBoundary } from "../DiffSurfaceBoundary";
 
@@ -36,8 +36,8 @@ export function PrFileDiff({
     [file.patch, settings.diffIgnoreWhitespace],
   );
   const patch = useMemo(
-    () => getRenderablePatch(displayPatch ?? undefined, scope),
-    [displayPatch, scope],
+    () => getRenderablePrFilePatch(file, displayPatch, scope),
+    [file, displayPatch, scope],
   );
   if (file.patchStatus === "available" && file.patch && displayPatch === null)
     return (
