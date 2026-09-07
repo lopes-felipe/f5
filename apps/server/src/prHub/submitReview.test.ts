@@ -74,6 +74,96 @@ const setup = (number: number) =>
   });
 
 it.layer(SqliteClient.layerMemory())("review submission", (it) => {
+  for (const mode of ["scheduler", "precondition", "rate_limit", "verification"] as const)
+    it.effect(`keeps an explicit retry usable after ${mode} failure`, () =>
+      Effect.gen(function* () {
+        const { owner, operation, remote } = yield* setup(
+          30 + ["scheduler", "precondition", "rate_limit", "verification"].indexOf(mode),
+        );
+        let fail = true;
+        let creates = 0;
+        let submits = 0;
+        const dependencies: ReviewSubmissionDependencies = {
+          verify: () => Effect.void,
+          request: (method, path) => {
+            if (method === "GET") {
+              if (path.endsWith("/reviews")) return Effect.succeed(response([]));
+              if (mode === "verification" && fail)
+                return Effect.fail(
+                  new SourceControlProviderError({
+                    provider: "github",
+                    operation: "verify",
+                    kind: "timeout",
+                    detail: "Verification read timed out",
+                  }),
+                );
+              return Effect.succeed(response(path.endsWith("/comments") ? [] : remote("PENDING")));
+            }
+            if (path.endsWith("/events")) {
+              submits++;
+              return Effect.succeed(response(remote("COMMENTED")));
+            }
+            if (fail && mode !== "verification") {
+              if (mode === "rate_limit")
+                return Effect.succeed({
+                  ...response({}),
+                  status: 403,
+                  rateLimit: { retryAfterSeconds: 30 },
+                });
+              return Effect.fail(
+                new SourceControlProviderError({
+                  provider: "github",
+                  operation: mode,
+                  kind: mode === "scheduler" ? "rate_limited" : "forbidden",
+                  detail: "Not dispatched",
+                  requestDispatched: false,
+                }),
+              );
+            }
+            creates++;
+            return Effect.succeed(response(remote("PENDING")));
+          },
+        };
+        const first = yield* submitPreparedReview(owner, operation.id, dependencies);
+        assert.equal(first.status, mode === "verification" ? "created" : "prepared");
+        assert.ok(first.errorMessage);
+        assert.equal(submits, 0);
+        fail = false;
+        assert.equal(
+          (yield* submitPreparedReview(owner, operation.id, dependencies)).status,
+          "succeeded",
+        );
+        assert.equal(creates, 1);
+        assert.equal(submits, 1);
+      }),
+    );
+
+  it.effect(
+    "recovers a lost creation response as an owned pending review without recreating it",
+    () =>
+      Effect.gen(function* () {
+        const { owner, operation, remote } = yield* setup(21);
+        yield* transitionReviewOperation(owner, {
+          id: operation.id,
+          from: "prepared",
+          to: "creating",
+        });
+        yield* transitionReviewOperation(owner, {
+          id: operation.id,
+          from: "creating",
+          to: "outcome_unknown",
+        });
+        const recovered = yield* reconcileReviewSubmission(owner, operation.id, {
+          verify: () => Effect.void,
+          request: (method) => {
+            assert.equal(method, "GET");
+            return Effect.succeed(response([remote("PENDING")]));
+          },
+        });
+        assert.equal(recovered.status, "created");
+        assert.equal(recovered.remoteId, "123");
+      }),
+  );
   it.effect("links only an exactly verified review and never sends a write", () =>
     Effect.gen(function* () {
       const { owner, operation, remote } = yield* setup(5);
@@ -128,10 +218,18 @@ it.layer(SqliteClient.layerMemory())("review submission", (it) => {
         "Failure",
       );
       assert.equal((yield* readReviewOperation(owner, operation.id))?.status, "creating");
-      yield* submitPreparedReview(owner, operation.id, dependencies);
+      assert.equal(
+        (yield* Effect.exit(submitPreparedReview(owner, operation.id, dependencies)))._tag,
+        "Failure",
+      );
       assert.equal(writes, 1);
       assert.equal((yield* readPrHubReviewDraft(owner))?.frozen, true);
       yield* sql`DROP TRIGGER fail_review_id`;
+      assert.equal(
+        (yield* submitPreparedReview(owner, operation.id, dependencies)).status,
+        "created",
+      );
+      assert.equal(writes, 1);
     }),
   );
   it.effect(

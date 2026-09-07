@@ -1,8 +1,19 @@
-import { Effect } from "effect";
+import { Effect, Fiber } from "effect";
 import { describe, expect, it } from "vitest";
 import { GitHubRequestPriority, makeGitHubRequestScheduler } from "./githubRequestScheduler.ts";
 
 describe("GitHub host scheduling", () => {
+  it("releases queue accounting across repeated interruption", async () => {
+    const scheduler = makeGitHubRequestScheduler();
+    for (let i = 0; i < 150; i++) {
+      const fiber = Effect.runFork(scheduler.run("github.com", "rest", Effect.never));
+      await Effect.runPromise(Fiber.interrupt(fiber));
+    }
+    expect(scheduler.status("github.com").activeOrQueuedRequests).toBe(0);
+    expect(await Effect.runPromise(scheduler.run("github.com", "rest", Effect.succeed("ok")))).toBe(
+      "ok",
+    );
+  });
   it("charges every batched search page and accounts for GraphQL search cost", async () => {
     const scheduler = makeGitHubRequestScheduler(() => 0);
     const search = scheduler

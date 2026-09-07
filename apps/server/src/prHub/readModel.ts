@@ -97,6 +97,8 @@ export function listPrHubPullRequests(
     return empty;
   let offset = 0;
   if (cursor) {
+    // Cursors are navigation hints, not capabilities: all reads are independently
+    // scoped to the verified account and validated filter/revision below.
     try {
       const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
       if (

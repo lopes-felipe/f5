@@ -205,7 +205,9 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
   useEffect(() => {
     if (listQuery.error?.message === "cursor_stale") {
       void queryClient.invalidateQueries({ queryKey: ["prHub", "overview"] });
-      void queryClient.resetQueries({ queryKey: listOptions.queryKey, exact: true });
+      // Infinite-query refetch rebuilds every loaded page from a fresh first
+      // cursor; resetting would discard pagination depth and the scroll anchor.
+      void queryClient.invalidateQueries({ queryKey: listOptions.queryKey, exact: true });
     }
   }, [listQuery.error, queryClient, listOptions.queryKey]);
   const visiblePullRequests = useMemo(

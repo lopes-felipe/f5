@@ -5,6 +5,7 @@ import { PrHubCommentOperation } from "@t3tools/contracts";
 import type { PrHubDraftOwner } from "./reviewDrafts.ts";
 import type { ReviewSubmissionDependencies } from "./submitReview.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
+import { classifyPrWrite } from "./writeOutcome.ts";
 
 const fail = (detail: string) =>
   new SourceControlProviderError({
@@ -31,7 +32,8 @@ export function readCommentOperation(owner: PrHubDraftOwner, id?: string) {
       payload_hash: string;
       payload_json: string;
       remote_id: string | null;
-    }>`SELECT operation_id,status,payload_hash,payload_json,remote_id FROM pr_hub_operations
+      error_message: string | null;
+    }>`SELECT operation_id,status,payload_hash,payload_json,remote_id,error_message FROM pr_hub_operations
       WHERE provider_kind=${owner.provider} AND host=${owner.host} AND viewer_id=${owner.viewerId} AND repo=${owner.repo} AND number=${owner.number} AND kind='comment' AND (${id ?? null} IS NULL OR operation_id=${id ?? null})
       ORDER BY CASE WHEN status IN ('prepared','creating','outcome_unknown') THEN 0 ELSE 1 END,created_at DESC LIMIT 1`;
     const row = rows[0];
@@ -46,6 +48,7 @@ export function readCommentOperation(owner: PrHubDraftOwner, id?: string) {
           payloadHash: row.payload_hash,
           payload: JSON.parse(row.payload_json),
           remoteId: row.remote_id,
+          errorMessage: row.error_message,
         }),
       catch: () => fail("The saved comment operation is invalid."),
     });
@@ -86,11 +89,12 @@ function transition(
   operation: PrHubCommentOperation,
   status: PrHubCommentOperation["status"],
   remoteId?: string,
+  errorMessage?: string,
 ) {
   return Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const rows =
-      yield* sql`UPDATE pr_hub_operations SET status=${status}, remote_id=COALESCE(${remoteId ?? null},remote_id), updated_at=${new Date().toISOString()}
+      yield* sql`UPDATE pr_hub_operations SET status=${status}, remote_id=COALESCE(${remoteId ?? null},remote_id), error_message=${errorMessage ?? null}, updated_at=${new Date().toISOString()}
       WHERE provider_kind=${owner.provider} AND host=${owner.host} AND viewer_id=${owner.viewerId} AND repo=${owner.repo} AND number=${owner.number} AND operation_id=${operation.id} AND kind='comment' AND status=${operation.status} RETURNING operation_id`;
     return rows.length === 1;
   });
@@ -157,9 +161,18 @@ export function submitCommentOperation(
       ) {
         status = "succeeded";
         remoteId = String(response.body.id);
-      } else if ([400, 401, 403, 404, 410, 422].includes(response.status)) status = "rejected";
+      }
     }
-    yield* transition(owner, creating, status, remoteId);
+    const outcome = classifyPrWrite(sent);
+    if (status !== "succeeded")
+      status = outcome.safeToRetry ? "prepared" : outcome.rejected ? "rejected" : "outcome_unknown";
+    yield* transition(
+      owner,
+      creating,
+      status,
+      remoteId,
+      status === "succeeded" ? undefined : outcome.message,
+    );
     return (yield* readCommentOperation(owner, input.id))!;
   });
 }

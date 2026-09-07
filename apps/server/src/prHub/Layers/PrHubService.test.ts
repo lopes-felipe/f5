@@ -38,6 +38,53 @@ const SEARCH_ALIASES = [
   "recently_closed",
 ] as const;
 
+it.effect("saves and reads local drafts without credential or provider requests", () => {
+  const calls = makeCalls();
+  let credentialReads = 0;
+  let apiReads = 0;
+  const context = { host: "github.com", viewerId: 1, login: "me", generation: "local-account" };
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const key = snapshot.pullRequests[0]!.key;
+    const before = [credentialReads, apiReads, calls.graphql.length];
+    yield* service.saveReplyDraft({
+      key,
+      accountGeneration: context.generation,
+      threadId: "thread",
+      expectedVersion: 0,
+      comparisonVersion: "comparison",
+      body: "Unsent reply",
+    });
+    yield* service.getReplyDraft({
+      key,
+      accountGeneration: context.generation,
+      threadId: "thread",
+    });
+    yield* service.getReviewDraft({ key, accountGeneration: context.generation });
+    assert.deepStrictEqual([credentialReads, apiReads, calls.graphql.length], before);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        credentialContext: () => {
+          credentialReads++;
+          return context;
+        },
+        apiRequest: () => {
+          apiReads++;
+          return Effect.fail(ghError("Unexpected API read"));
+        },
+        searchResponses: [
+          searchResponse("review_requested", [
+            makePrNode({ id: "PR_local", number: 95, author: "alice" }),
+          ]),
+        ],
+      }),
+    ),
+  );
+});
+
 type SearchAlias = (typeof SEARCH_ALIASES)[number];
 
 interface HarnessCalls {

@@ -21,6 +21,7 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
  * GitHubCliError - GitHub CLI execution or authentication failed.
  */
 export class GitHubCliError extends Schema.TaggedErrorClass<GitHubCliError>()("GitHubCliError", {
+  requestDispatched: Schema.optional(Schema.Boolean),
   rateLimit: Schema.optional(SourceControlRateLimit),
   operation: Schema.String,
   detail: Schema.String,

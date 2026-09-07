@@ -2,6 +2,7 @@ import { makeGitHubRequestScheduler } from "./githubRequestScheduler.ts";
 import { Effect, Exit } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GitHubCliError } from "./Errors.ts";
+import { GitHubRequestPolicy } from "./githubRequestPolicy.ts";
 import type { GitHubCliShape } from "./Services/GitHubCli.ts";
 import { makeGitHubApi, parseGitHubApiResponse } from "./githubApi.ts";
 
@@ -45,6 +46,59 @@ function harness() {
 }
 
 describe("credential-bound GitHub requests", () => {
+  it("reports a policy rejection as undispatched through the real request primitive", async () => {
+    const { api, execute } = harness();
+    const context = await Effect.runPromise(
+      api.getCredentialContext({ cwd: ".", host: "github.com" }),
+    );
+    const error = await Effect.runPromise(
+      api
+        .request({
+          cwd: ".",
+          context,
+          method: "POST",
+          endpoint: "repos/org/repo/issues/1/comments",
+          body: { body: "text" },
+        })
+        .pipe(
+          Effect.provideService(GitHubRequestPolicy, {
+            beforeSend: (write) =>
+              write
+                ? Effect.fail(
+                    new GitHubCliError({
+                      operation: "policy",
+                      kind: "forbidden",
+                      detail: "Excluded while queued",
+                    }),
+                  )
+                : Effect.void,
+            readInvalidated: Effect.never,
+          }),
+          Effect.flip,
+        ),
+    );
+    expect(error.requestDispatched).toBe(false);
+    expect(
+      execute.mock.calls.filter(([input]) => input.args[1]?.startsWith("repos/")),
+    ).toHaveLength(0);
+  });
+  it("reuses verified identity for an unchanged token and immediately verifies replacements", async () => {
+    const { api, execute, switchAccount } = harness();
+    const first = await Effect.runPromise(
+      api.getCredentialContext({ cwd: ".", host: "github.com" }),
+    );
+    for (let i = 0; i < 10; i++)
+      expect(
+        await Effect.runPromise(api.getCredentialContext({ cwd: ".", host: "github.com" })),
+      ).toBe(first);
+    expect(execute.mock.calls.filter(([input]) => input.args[1] === "user")).toHaveLength(1);
+    switchAccount();
+    expect(
+      (await Effect.runPromise(api.getCredentialContext({ cwd: ".", host: "github.com" })))
+        .generation,
+    ).not.toBe(first.generation);
+    expect(execute.mock.calls.filter(([input]) => input.args[1] === "user")).toHaveLength(2);
+  });
   it("suspends credentials rejected by ordinary reads without treating repository permission failures as auth failures", async () => {
     const h = harness();
     const context = await Effect.runPromise(

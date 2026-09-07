@@ -29,6 +29,28 @@ export function PrAttentionNotificationControllerContent({
   const { settings } = useAppSettings();
   const permission = useNotificationPermissionState();
   const [appFocused, setAppFocused] = useState(() => isAppWindowFocused());
+  const delivery = useRef({
+    appFocused,
+    permission,
+    enabled: settings.enablePrAttentionNotifications,
+    navigateToPrHub,
+  });
+  useEffect(() => {
+    delivery.current = {
+      appFocused,
+      permission,
+      enabled: settings.enablePrAttentionNotifications,
+      navigateToPrHub,
+    };
+  }, [appFocused, permission, settings.enablePrAttentionNotifications, navigateToPrHub]);
+  const mounted = useRef(false);
+  const claimAgain = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -73,20 +95,18 @@ export function PrAttentionNotificationControllerContent({
   }, []);
 
   useEffect(() => {
-    if (
-      !accountGeneration ||
-      claimingRef.current ||
-      accountGeneration !== getPrHubAccountGeneration()
-    )
+    if (!accountGeneration || accountGeneration !== getPrHubAccountGeneration()) return;
+    if (claimingRef.current) {
+      claimAgain.current = true;
       return;
+    }
     claimingRef.current = true;
-    let active = true;
     const api = ensureNativeApi().prHub;
     void api
       .claimNotifications({ accountGeneration, clientId, maxItems: 20 })
       .then(async (batch) => {
         if (
-          !active ||
+          !mounted.current ||
           batch.accountGeneration !== getPrHubAccountGeneration() ||
           batch.pullRequests.length === 0
         )
@@ -106,14 +126,14 @@ export function PrAttentionNotificationControllerContent({
           actionProps: {
             children: "View",
             onClick: () => {
-              void navigateToPrHub(grouped ? undefined : pr.key);
+              void delivery.current.navigateToPrHub(grouped ? undefined : pr.key);
             },
           },
         });
         if (
-          settings.enablePrAttentionNotifications &&
-          permission === "granted" &&
-          !appFocused &&
+          delivery.current.enabled &&
+          delivery.current.permission === "granted" &&
+          !delivery.current.appFocused &&
           typeof window.Notification !== "undefined"
         ) {
           showPrAttentionNotification({
@@ -121,7 +141,7 @@ export function PrAttentionNotificationControllerContent({
             pullRequest: pr,
             batch: { id: batch.batchId, count: batch.pullRequests.length },
             focusWindow: () => window.focus(),
-            navigateToPrHub,
+            navigateToPrHub: (key) => delivery.current.navigateToPrHub(key),
           });
         }
         await api.acknowledgeNotifications({ accountGeneration, clientId, batchId: batch.batchId });
@@ -132,20 +152,12 @@ export function PrAttentionNotificationControllerContent({
       })
       .finally(() => {
         claimingRef.current = false;
+        if (mounted.current && claimAgain.current) {
+          claimAgain.current = false;
+          setLeaseTick((tick) => tick + 1);
+        }
       });
-    return () => {
-      active = false;
-    };
-  }, [
-    accountGeneration,
-    clientId,
-    leaseTick,
-    overviewQuery.data?.revision,
-    appFocused,
-    navigateToPrHub,
-    permission,
-    settings.enablePrAttentionNotifications,
-  ]);
+  }, [accountGeneration, clientId, leaseTick, overviewQuery.data?.revision]);
 
   return null;
 }

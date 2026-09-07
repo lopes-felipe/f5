@@ -1,4 +1,5 @@
 import { enforceGitHubRequestPolicy } from "../githubRequestPolicy.ts";
+import { isCapturedPrTarget } from "../githubPrTarget.ts";
 import { githubRequestScheduler } from "../githubRequestScheduler.ts";
 import { makeGitHubApi, GitHubCredentialScope, githubCredentialEnvironment } from "../githubApi.ts";
 import { Effect, Layer, Schema, Option } from "effect";
@@ -270,12 +271,7 @@ const makeGitHubCli = Effect.sync(() => {
         }
         if (hostIndex < 0) args.push("--hostname", context.host);
       }
-      if (
-        context &&
-        args[0] === "pr" &&
-        args[2]?.startsWith("https://") &&
-        new URL(args[2]).hostname !== context.host
-      )
+      if (context && !isCapturedPrTarget(args, context.host))
         return yield* new GitHubCliError({
           operation: "execute",
           kind: "forbidden",

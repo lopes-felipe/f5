@@ -28,8 +28,9 @@ export function readReviewOperation(owner: PrHubDraftOwner, id: string) {
       payload_json: string;
       remote_id: string | null;
       correlation_nonce: string;
+      error_message: string | null;
     }>`
-      SELECT operation_id, status, payload_hash, payload_json, remote_id, correlation_nonce
+      SELECT operation_id, status, payload_hash, payload_json, remote_id, correlation_nonce, error_message
       FROM pr_hub_operations WHERE provider_kind = ${owner.provider} AND host = ${owner.host}
         AND viewer_id = ${owner.viewerId} AND repo = ${owner.repo} AND number = ${owner.number} AND operation_id = ${id} AND kind = 'review'`;
     const row = rows[0];
@@ -47,6 +48,7 @@ export function readReviewOperation(owner: PrHubDraftOwner, id: string) {
           payload: JSON.parse(row.payload_json),
           remoteId: row.remote_id,
           correlationNonce: row.correlation_nonce,
+          errorMessage: row.error_message,
         }),
       catch: () => invalid("The stored review operation is invalid. It cannot be retried."),
     });
@@ -135,6 +137,7 @@ export function prepareReviewOperation(
         return {
           id: input.id,
           status: "prepared",
+          errorMessage: null,
           payloadHash: hash,
           payload,
           remoteId: null,
@@ -147,11 +150,11 @@ export function prepareReviewOperation(
 
 const transitions: Readonly<Record<OperationStatus, readonly OperationStatus[]>> = {
   prepared: ["creating", "failed_before_send"],
-  creating: ["created", "rejected", "outcome_unknown", "abandoned"],
-  created: ["submitting", "outcome_unknown", "abandoned"],
-  submitting: ["succeeded", "outcome_unknown", "abandoned"],
+  creating: ["prepared", "created", "rejected", "outcome_unknown", "abandoned"],
+  created: ["created", "submitting", "outcome_unknown", "abandoned"],
+  submitting: ["created", "succeeded", "outcome_unknown", "abandoned"],
   // Unknown acceptance requires explicit, verified reconciliation, never a retry.
-  outcome_unknown: ["succeeded", "abandoned"],
+  outcome_unknown: ["created", "succeeded", "abandoned"],
   abandoned: [],
   succeeded: [],
   failed_before_send: [],
@@ -166,6 +169,7 @@ export function transitionReviewOperation(
     from: OperationStatus;
     to: OperationStatus;
     remoteId?: string;
+    errorMessage?: string;
   },
 ) {
   return Effect.gen(function* () {
@@ -177,7 +181,7 @@ export function transitionReviewOperation(
     return yield* sql.withTransaction(
       Effect.gen(function* () {
         const rows = yield* sql<{ draft_version: number | null }>`UPDATE pr_hub_operations
-        SET status = ${input.to}, remote_id = COALESCE(${input.remoteId ?? null}, remote_id), updated_at = ${new Date().toISOString()}
+        SET status = ${input.to}, remote_id = COALESCE(${input.remoteId ?? null}, remote_id), error_message = ${input.errorMessage ?? null}, updated_at = ${new Date().toISOString()}
         WHERE provider_kind = ${owner.provider} AND host = ${owner.host} AND viewer_id = ${owner.viewerId}
           AND repo = ${owner.repo} AND number = ${owner.number} AND operation_id = ${input.id} AND kind = 'review' AND status = ${input.from}
         RETURNING draft_version`;

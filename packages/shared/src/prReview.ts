@@ -40,8 +40,12 @@ export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", Read
   let oldRemaining = 0;
   let newRemaining = 0;
   let inHunk = false;
-  for (const raw of patch.split("\n")) {
-    const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+  const patchLines = patch.split("\n");
+  for (const [index, raw] of patchLines.entries()) {
+    let line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+    // A trailing delimiter is not a provider context line. Hunk counts must
+    // still reject a truncated patch, even when it happens to end in a newline.
+    if (line === "" && index === patchLines.length - 1) continue;
     const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (header) {
       if (oldRemaining || newRemaining) return empty;
@@ -59,6 +63,7 @@ export function prReviewLines(patch: string): ReadonlyMap<"LEFT" | "RIGHT", Read
       if (line === "") continue;
       return empty;
     }
+    if (line === "") line = " ";
     if (line.startsWith(" ") || line.startsWith("-")) {
       if (oldRemaining <= 0 || oldLine < 1) return empty;
       left.add(oldLine++);

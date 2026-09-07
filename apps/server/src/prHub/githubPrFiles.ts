@@ -120,6 +120,8 @@ export function fetchGitHubPrFiles(input: {
         ),
       );
   return Effect.gen(function* () {
+    // Unsigned cursors only select a page. Account, PR and full comparison are
+    // independently validated before returning any provider data.
     const cursor = input.cursor
       ? yield* decode(() =>
           Schema.decodeUnknownSync(Cursor)(

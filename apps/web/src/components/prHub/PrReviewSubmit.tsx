@@ -5,7 +5,7 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubReviewDraft, PrHubReviewOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
-import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { Textarea } from "../ui/textarea";
 import { Button } from "../ui/button";
 
@@ -35,7 +35,7 @@ export function PrReviewSubmit({
   });
   const [event, setEvent] = useState<PrHubReviewOperation["payload"]["event"]>("COMMENT");
   const [quickBody, setQuickBody] = useLocalStorage(
-    JSON.stringify(["prHub", "quickReviewText", accountGeneration, prKey, quickEvent]),
+    JSON.stringify(["prHub", "quickReviewText", getPrHubDraftIdentity(), prKey, quickEvent]),
     "",
     Schema.String,
   );
@@ -81,6 +81,7 @@ export function PrReviewSubmit({
     );
   return (
     <div className="space-y-2 border-t border-border pt-3">
+      {operation?.errorMessage ? <p role="status">{operation.errorMessage}</p> : null}
       {error || query.error ? (
         <p role="alert" className="text-sm">
           {error ?? query.error?.message}
@@ -231,7 +232,7 @@ export function PrReviewSubmit({
               placeholder={
                 quickEvent === "APPROVE" ? "Optional review note" : "Describe the requested changes"
               }
-              disabled={busy || query.isFetching}
+              disabled={busy || query.isFetching || !getPrHubDraftIdentity()}
             />
           ) : (
             <label className="flex items-center gap-2 text-sm">

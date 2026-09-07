@@ -921,6 +921,7 @@ export const PrHubReviewDraftResult = Schema.Struct({
 export type PrHubReviewDraftResult = typeof PrHubReviewDraftResult.Type;
 
 export const PrHubReviewOperation = Schema.Struct({
+  errorMessage: Schema.optional(Schema.NullOr(Schema.String)),
   comparisonStatus: Schema.optional(Schema.Literals(["current", "outdated", "unverified"])),
   id: Schema.String,
   status: Schema.Literals([
@@ -1111,6 +1112,7 @@ export const PrHubRecoverCommentInput = Schema.Struct({
 });
 export type PrHubRecoverCommentInput = typeof PrHubRecoverCommentInput.Type;
 export const PrHubCommentOperation = Schema.Struct({
+  errorMessage: Schema.optional(Schema.NullOr(Schema.String)),
   id: Schema.String,
   payloadHash: Schema.String,
   remoteId: Schema.NullOr(Schema.String),

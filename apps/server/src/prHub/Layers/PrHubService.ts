@@ -10,6 +10,7 @@ import { PrHubJobCoordinator } from "../Services/PrHubJobCoordinator.ts";
 import { PrHubReviewOperations } from "../Services/PrHubReviewOperations.ts";
 import { readPrDetailCache, type CachedPrDetailRead } from "../detailCache.ts";
 import { fetchGitHubPrFiles } from "../githubPrFiles.ts";
+import { readViewerReviewedHead } from "../viewerReviewedHead.ts";
 
 import { GitHubCredentialScope } from "../../git/githubApi.ts";
 import { GitHubRequestPriority, githubRequestScheduler } from "../../git/githubRequestScheduler.ts";
@@ -71,7 +72,6 @@ import {
   repositoryFromNameWithOwner,
   stringValue,
   ViewerIdentity,
-  viewerLatestReview,
 } from "../discoveryModel.ts";
 
 const makePrHubService = Effect.gen(function* () {
@@ -493,15 +493,17 @@ const makePrHubService = Effect.gen(function* () {
           if (input.comparisonMode === "changes_since_review") {
             if (!pr.nodeId)
               return yield* prHubActionError("The reviewed revision is not available for this PR.");
-            const response = yield* github.query({
-              cwd,
-              document: PR_HUB_DETAILS_QUERY,
-              variables: { ids: [pr.nodeId] },
-            });
-            const node = asRecord(asArray(asRecord(asRecord(response)?.data)?.nodes)[0]);
-            const oid = node
-              ? stringValue(asRecord(viewerLatestReview(node, context.login)?.commit)?.oid)
-              : null;
+            const oid = yield* readViewerReviewedHead(context.viewerId, (page) =>
+              githubCli
+                .request({
+                  cwd,
+                  context,
+                  method: "GET",
+                  endpoint: `repos/${pr.repository.owner}/${pr.repository.repo}/pulls/${pr.number}/reviews`,
+                  query: { per_page: 100, page },
+                })
+                .pipe(Effect.mapError(mapGitHubCliError)),
+            );
             if (!oid)
               return yield* prHubActionError(
                 "No completed review revision is available for this account.",
@@ -854,7 +856,7 @@ const makePrHubService = Effect.gen(function* () {
                     return yield* denied();
                   const expected = input.expectedComparison;
                   if (
-                    (action === "review" || action === "merge") &&
+                    (action === "merge" || (action === "review" && expected !== undefined)) &&
                     (live.headRefOid !== (expected?.headOid ?? pr.headRefOid) ||
                       live.baseRefName !== (expected?.baseRef ?? pr.baseRefName) ||
                       (expected && live.baseRefOid !== expected.baseOid))
@@ -915,15 +917,15 @@ const makePrHubService = Effect.gen(function* () {
     );
   const withLocalAccount = <A, E>(
     effect: Effect.Effect<A, E>,
-    generation: string,
+    generation: string | undefined,
   ): Effect.Effect<A, E | SourceControlProviderError> =>
     Effect.gen(function* () {
       const viewer = yield* Ref.get(viewerRef);
-      if (viewer?.context.generation !== generation)
+      if (!viewer || (generation !== undefined && viewer.context.generation !== generation))
         return yield* prHubActionError(
           "The GitHub account changed. Refresh PR Hub before continuing.",
         );
-      return yield* effect;
+      return yield* effect.pipe(Effect.provideService(GitHubCredentialScope, viewer.context));
     });
   return {
     ...operations,
@@ -934,12 +936,13 @@ const makePrHubService = Effect.gen(function* () {
     clearData: (input) => withAccount(operations.clearData(input), input?.accountGeneration),
     track: (input) => withAccount(operations.track(input), input.accountGeneration),
     acknowledgeAttention: (input) =>
-      withAccount(operations.acknowledgeAttention(input), input.accountGeneration),
-    markSeen: (input) => withAccount(operations.markSeen(input), input.accountGeneration),
-    markNotified: (input) => withAccount(operations.markNotified(input), input.accountGeneration),
-    snooze: (input) => withAccount(operations.snooze(input), input.accountGeneration),
-    unsnooze: (input) => withAccount(operations.unsnooze(input), input.accountGeneration),
-    ignore: (input) => withAccount(operations.ignore(input), input.accountGeneration),
+      withLocalAccount(operations.acknowledgeAttention(input), input.accountGeneration),
+    markSeen: (input) => withLocalAccount(operations.markSeen(input), input.accountGeneration),
+    markNotified: (input) =>
+      withLocalAccount(operations.markNotified(input), input.accountGeneration),
+    snooze: (input) => withLocalAccount(operations.snooze(input), input.accountGeneration),
+    unsnooze: (input) => withLocalAccount(operations.unsnooze(input), input.accountGeneration),
+    ignore: (input) => withLocalAccount(operations.ignore(input), input.accountGeneration),
     approve: (input) => withPrAccount(operations.approve(input), input, true, "review"),
     requestChanges: (input) =>
       withPrAccount(operations.requestChanges(input), input, true, "review"),
@@ -962,16 +965,22 @@ const makePrHubService = Effect.gen(function* () {
       withPrAccount(operations.getReviewOperation(input), input, false),
     recoverReview: (input) => withPrAccount(operations.recoverReview(input), input, false),
     cancelReviewPreparation: (input) =>
-      withPrAccount(operations.cancelReviewPreparation(input), input, false),
+      withLocalAccount(operations.cancelReviewPreparation(input), input.accountGeneration),
     replyReviewThread: (input) => withPrAccount(operations.replyReviewThread(input), input),
     recoverReply: (input) => withPrAccount(operations.recoverReply(input), input, false),
-    getReplyDraft: (input) => withPrAccount(operations.getReplyDraft(input), input, false),
-    saveReplyDraft: (input) => withPrAccount(operations.saveReplyDraft(input), input, false),
+    getReplyDraft: (input) =>
+      withLocalAccount(operations.getReplyDraft(input), input.accountGeneration),
+    saveReplyDraft: (input) =>
+      withLocalAccount(operations.saveReplyDraft(input), input.accountGeneration),
     getReplyOperation: (input) => withPrAccount(operations.getReplyOperation(input), input, false),
     getReviewThreads: (input) => withPrAccount(operations.getReviewThreads(input), input, false),
     setReviewThreadState: (input) => withPrAccount(operations.setReviewThreadState(input), input),
-    getReviewDraft: (input) => withPrAccount(operations.getReviewDraft(input), input, false),
-    saveReviewDraft: (input) => withPrAccount(operations.saveReviewDraft(input), input, false),
+    getReviewDraft: (input) =>
+      withLocalAccount(operations.getReviewDraft(input), input.accountGeneration),
+    saveReviewDraft: (input) =>
+      input.revalidate
+        ? withPrAccount(operations.saveReviewDraft(input), input, false)
+        : withLocalAccount(operations.saveReviewDraft(input), input.accountGeneration),
     getFiles: (input) => withPrAccount(operations.getFiles(input), input, false),
     getUnresolvedThreads: (input) =>
       withPrAccount(operations.getUnresolvedThreads(input), input, false),

@@ -7,6 +7,10 @@ import {
 } from "./prReview";
 
 describe("PR review anchors", () => {
+  it("accepts bare empty context lines while rejecting a missing trailing context line", () => {
+    expect([...prReviewLines("@@ -1,2 +1,2 @@\n\n-old\n+new\n").get("RIGHT")!]).toEqual([1, 2]);
+    expect(prReviewLines("@@ -1,2 +1,2 @@\n same\n").size).toBe(0);
+  });
   const patch =
     "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -5,2 +8,3 @@\n context\n-old\n+new\n+extra\n";
   it("distinguishes old and new line numbers", () => {

@@ -27,6 +27,9 @@ export function claimPrHubNotifications(
     yield* sql.withTransaction(
       Effect.gen(function* () {
         for (const pr of snapshot.pullRequests) {
+          // This account is verified by GitHub; never borrow it for another
+          // provider or host, even if a future mixed snapshot contains both.
+          if (pr.provider !== "github" || pr.host !== snapshot.host) continue;
           if (pr.repositoryArchived) continue;
           if (selected.length >= Math.min(20, input.maxItems)) break;
           if (!matchesPrHubFilter(pr, "needs_you", undefined, now)) continue;
@@ -63,7 +66,7 @@ export function acknowledgePrHubNotifications(
     yield* sql`UPDATE pr_hub_viewer_state SET last_notified_fingerprint = notification_claimed_version,
       last_notified_at = ${new Date(now).toISOString()}, notification_lease_owner = NULL,
       notification_lease_expires_at = NULL, notification_claimed_version = NULL, notification_batch_id = NULL
-      WHERE host = ${snapshot.host} AND viewer_id = ${String(snapshot.account.viewerId)}
+      WHERE provider_kind = 'github' AND host = ${snapshot.host} AND viewer_id = ${String(snapshot.account.viewerId)}
         AND notification_lease_owner = ${input.clientId} AND notification_batch_id = ${input.batchId}
         AND notification_lease_expires_at > ${new Date(now).toISOString()}`;
   });

@@ -14,8 +14,12 @@ const api = vi.hoisted(() => ({
   cancelReviewPreparation: vi.fn(),
   getCommentOperation: vi.fn(),
 }));
+const auth = vi.hoisted(() => ({ generation: "account" }));
 vi.mock("../../nativeApi", () => ({ ensureNativeApi: () => ({ prHub: api }) }));
-vi.mock("../../lib/prHubAccount", () => ({ getPrHubAccountGeneration: () => "account" }));
+vi.mock("../../lib/prHubAccount", () => ({
+  getPrHubAccountGeneration: () => auth.generation,
+  getPrHubDraftIdentity: () => ["github.com", 1],
+}));
 const key = PullRequestKey.makeUnsafe("github:github.com/org/repo#1");
 const comparison = {
   baseRepository: "org/repo",
@@ -72,7 +76,7 @@ it("does not submit a saved request-changes operation from an Approve dialog", a
     .not.toBeInTheDocument();
 });
 
-it("retains an unsubmitted timeline comment when the dialog is reopened", async () => {
+it("retains unsubmitted comment text after a server restart under the same numeric account", async () => {
   api.getCommentOperation.mockResolvedValue(null);
   const client = new QueryClient();
   const editor = () => (
@@ -83,10 +87,12 @@ it("retains an unsubmitted timeline comment when the dialog is reopened", async 
   const first = await render(editor());
   await page.getByRole("textbox", { name: "PR timeline comment" }).fill("Keep this unsent text");
   await first.unmount();
+  auth.generation = "after-server-restart";
   await render(editor());
   await expect
     .element(page.getByRole("textbox", { name: "PR timeline comment" }))
     .toHaveValue("Keep this unsent text");
+  auth.generation = "account";
 });
 it("requires an immutable preview and cancellation before editing a quick review", async () => {
   api.getReviewOperation.mockResolvedValue(null);

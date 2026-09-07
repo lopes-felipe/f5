@@ -178,6 +178,7 @@ export function makeGitHubApi(
 ) {
   const rejectedCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
+  const verifiedAt = new Map<string, number>();
   const identityLock = Semaphore.makeUnsafe(1);
   const requestCaptured = (
     input: Omit<GitHubApiRequest, "context"> & {
@@ -186,148 +187,170 @@ export function makeGitHubApi(
       expectedGeneration?: string;
     },
   ): Effect.Effect<GitHubApiResponse, GitHubCliError> =>
-    Effect.gen(function* () {
-      const prepared = yield* Effect.try({
-        try: () => {
-          const host = normalizeHost(input.host);
-          const endpoint = requestEndpoint(input);
-          const body = input.body === undefined ? undefined : JSON.stringify(input.body);
-          if (body !== undefined && Buffer.byteLength(body, "utf8") > 1024 * 1024)
-            throw new Error("GitHub request exceeds the 1 MiB body limit.");
-          if (input.method === "GET" && body !== undefined)
-            throw new Error("GET requests must use query parameters.");
-          const args = ["api", endpoint, "--hostname", host, "--method", input.method, "--include"];
-          for (const [name, value] of [
-            ["If-None-Match", input.ifNoneMatch],
-            ["If-Modified-Since", input.ifModifiedSince],
-          ] as const) {
-            if (value === undefined) continue;
-            if (/[\r\n]/.test(value) || value.length > 4096)
-              throw new Error("Invalid conditional request header.");
-            args.push("--header", `${name}: ${value}`);
-          }
-          if (body !== undefined) args.push("--input", "-");
-          const timeoutMs = input.timeoutMs ?? 45_000;
-          const maxStdoutBytes = input.maxResponseBytes ?? 8 * 1024 * 1024;
-          if (
-            !Number.isSafeInteger(timeoutMs) ||
-            timeoutMs <= 0 ||
-            timeoutMs > 45_000 ||
-            !Number.isSafeInteger(maxStdoutBytes) ||
-            maxStdoutBytes <= 0 ||
-            maxStdoutBytes > 8 * 1024 * 1024
-          )
-            throw new Error("Invalid GitHub request limits.");
-          return { args, body, timeoutMs, maxStdoutBytes };
-        },
-        catch: (cause) =>
-          new GitHubCliError({
-            operation: "request",
-            kind: "generic",
-            detail: cause instanceof Error ? cause.message : "Invalid GitHub request.",
-          }),
-      });
-      const document =
-        typeof input.body === "object" &&
-        input.body !== null &&
-        "query" in input.body &&
-        typeof input.body.query === "string"
-          ? input.body.query
-          : "";
-      const resource: GitHubResource =
-        input.endpoint.replace(/^\//, "") === "graphql"
-          ? /(^|\n)\s*mutation\b/.test(document)
-            ? "write"
-            : /\bsearch\s*\(/.test(document)
-              ? "search"
-              : "graphql"
-          : input.method !== "GET"
-            ? "write"
-            : input.endpoint.replace(/^\//, "").startsWith("search/")
-              ? "search"
-              : "rest";
-      const isGraphql = input.endpoint.replace(/^\//, "") === "graphql";
-      const searchPages = document.match(/\bsearch\s*\(/g)?.length ?? 1;
-      const perform = Effect.gen(function* () {
-        if (
-          rejectedCredentials.get(input.host) ===
-          createHash("sha256").update(input.token).digest("hex")
-        )
-          return yield* new GitHubCliError({
-            operation: "request",
-            kind: "unauthenticated",
-            detail: "The GitHub credential was rejected. Change credentials before retrying.",
-          });
-        if (resource === "write" && input.expectedGeneration) {
-          const current = yield* getCredentialContext({ cwd: input.cwd, host: input.host });
-          if (current.generation !== input.expectedGeneration)
-            return yield* new GitHubCliError({
-              operation: "request",
-              kind: "forbidden",
-              detail: "The GitHub account changed before the write. Nothing was sent.",
-            });
-        }
-        const result = yield* enforceGitHubRequestPolicy(
-          execute({
-            cwd: input.cwd,
-            args: prepared.args,
-            timeoutMs: prepared.timeoutMs,
-            maxStdoutBytes: prepared.maxStdoutBytes,
-            allowNonZeroExit: true,
-            env: tokenEnvironment(input.host, input.token),
-            ...(prepared.body === undefined ? {} : { stdin: prepared.body }),
-            ...(input.signal ? { signal: input.signal } : {}),
-          }),
-          resource === "write",
-        );
-        if (result.timedOut || result.aborted || result.stdoutTruncated || result.signal) {
-          return yield* Effect.fail(
+    Effect.suspend(() => {
+      let dispatched = false;
+      return Effect.gen(function* () {
+        const prepared = yield* Effect.try({
+          try: () => {
+            const host = normalizeHost(input.host);
+            const endpoint = requestEndpoint(input);
+            const body = input.body === undefined ? undefined : JSON.stringify(input.body);
+            if (body !== undefined && Buffer.byteLength(body, "utf8") > 1024 * 1024)
+              throw new Error("GitHub request exceeds the 1 MiB body limit.");
+            if (input.method === "GET" && body !== undefined)
+              throw new Error("GET requests must use query parameters.");
+            const args = [
+              "api",
+              endpoint,
+              "--hostname",
+              host,
+              "--method",
+              input.method,
+              "--include",
+            ];
+            for (const [name, value] of [
+              ["If-None-Match", input.ifNoneMatch],
+              ["If-Modified-Since", input.ifModifiedSince],
+            ] as const) {
+              if (value === undefined) continue;
+              if (/[\r\n]/.test(value) || value.length > 4096)
+                throw new Error("Invalid conditional request header.");
+              args.push("--header", `${name}: ${value}`);
+            }
+            if (body !== undefined) args.push("--input", "-");
+            const timeoutMs = input.timeoutMs ?? 45_000;
+            const maxStdoutBytes = input.maxResponseBytes ?? 8 * 1024 * 1024;
+            if (
+              !Number.isSafeInteger(timeoutMs) ||
+              timeoutMs <= 0 ||
+              timeoutMs > 45_000 ||
+              !Number.isSafeInteger(maxStdoutBytes) ||
+              maxStdoutBytes <= 0 ||
+              maxStdoutBytes > 8 * 1024 * 1024
+            )
+              throw new Error("Invalid GitHub request limits.");
+            return { args, body, timeoutMs, maxStdoutBytes };
+          },
+          catch: (cause) =>
             new GitHubCliError({
               operation: "request",
-              kind: result.timedOut ? "timeout" : "invalid_json",
-              detail: "GitHub response was interrupted or truncated.",
-            }),
-          );
-        }
-        return yield* Effect.try({
-          try: () => parseGitHubApiResponse(result.stdout),
-          catch: () =>
-            new GitHubCliError({
-              operation: "request",
-              kind: "invalid_json",
-              detail: "GitHub returned an incomplete or invalid HTTP response.",
+              kind: "generic",
+              detail: cause instanceof Error ? cause.message : "Invalid GitHub request.",
             }),
         });
-      });
-      const recorded = perform.pipe(
-        Effect.tap((response) =>
-          Effect.sync(() => {
-            if (response.status === 401)
-              rejectedCredentials.set(
-                input.host,
-                createHash("sha256").update(input.token).digest("hex"),
-              );
-            const body = response.body as { data?: { rateLimit?: { cost?: number } } } | null;
-            scheduler.record(
-              input.host,
-              resource,
-              response,
-              body?.data?.rateLimit?.cost ?? 1,
-              isGraphql,
+        const document =
+          typeof input.body === "object" &&
+          input.body !== null &&
+          "query" in input.body &&
+          typeof input.body.query === "string"
+            ? input.body.query
+            : "";
+        const resource: GitHubResource =
+          input.endpoint.replace(/^\//, "") === "graphql"
+            ? /(^|\n)\s*mutation\b/.test(document)
+              ? "write"
+              : /\bsearch\s*\(/.test(document)
+                ? "search"
+                : "graphql"
+            : input.method !== "GET"
+              ? "write"
+              : input.endpoint.replace(/^\//, "").startsWith("search/")
+                ? "search"
+                : "rest";
+        const isGraphql = input.endpoint.replace(/^\//, "") === "graphql";
+        const searchPages = document.match(/\bsearch\s*\(/g)?.length ?? 1;
+        const perform = Effect.gen(function* () {
+          if (
+            rejectedCredentials.get(input.host) ===
+            createHash("sha256").update(input.token).digest("hex")
+          )
+            return yield* new GitHubCliError({
+              operation: "request",
+              kind: "unauthenticated",
+              detail: "The GitHub credential was rejected. Change credentials before retrying.",
+            });
+          if (resource === "write" && input.expectedGeneration) {
+            const current = yield* getCredentialContext({ cwd: input.cwd, host: input.host });
+            if (current.generation !== input.expectedGeneration)
+              return yield* new GitHubCliError({
+                operation: "request",
+                kind: "forbidden",
+                detail: "The GitHub account changed before the write. Nothing was sent.",
+              });
+          }
+          const result = yield* enforceGitHubRequestPolicy(
+            Effect.suspend(() => {
+              dispatched = true;
+              return execute({
+                cwd: input.cwd,
+                args: prepared.args,
+                timeoutMs: prepared.timeoutMs,
+                maxStdoutBytes: prepared.maxStdoutBytes,
+                allowNonZeroExit: true,
+                env: tokenEnvironment(input.host, input.token),
+                ...(prepared.body === undefined ? {} : { stdin: prepared.body }),
+                ...(input.signal ? { signal: input.signal } : {}),
+              });
+            }),
+            resource === "write",
+          );
+          if (result.timedOut || result.aborted || result.stdoutTruncated || result.signal) {
+            return yield* Effect.fail(
+              new GitHubCliError({
+                operation: "request",
+                kind: result.timedOut ? "timeout" : "invalid_json",
+                detail: "GitHub response was interrupted or truncated.",
+              }),
             );
-          }),
-        ),
-        Effect.tapError((error) =>
-          Effect.sync(() => {
-            if (error.kind === "network" || error.kind === "timeout")
-              scheduler.networkFailure(input.host);
-          }),
+          }
+          return yield* Effect.try({
+            try: () => parseGitHubApiResponse(result.stdout),
+            catch: () =>
+              new GitHubCliError({
+                operation: "request",
+                kind: "invalid_json",
+                detail: "GitHub returned an incomplete or invalid HTTP response.",
+              }),
+          });
+        });
+        const recorded = perform.pipe(
+          Effect.tap((response) =>
+            Effect.sync(() => {
+              if (response.status === 401)
+                rejectedCredentials.set(
+                  input.host,
+                  createHash("sha256").update(input.token).digest("hex"),
+                );
+              const body = response.body as { data?: { rateLimit?: { cost?: number } } } | null;
+              scheduler.record(
+                input.host,
+                resource,
+                response,
+                body?.data?.rateLimit?.cost ?? 1,
+                isGraphql,
+              );
+            }),
+          ),
+          Effect.tapError((error) =>
+            Effect.sync(() => {
+              if (error.kind === "network" || error.kind === "timeout")
+                scheduler.networkFailure(input.host);
+            }),
+          ),
+        );
+        return yield* scheduler.run(input.host, resource, recorded, {
+          searchPages,
+          graphql: isGraphql,
+        });
+      }).pipe(
+        Effect.mapError(
+          (error) =>
+            new GitHubCliError({
+              ...error,
+              requestDispatched: dispatched && error.kind !== "binary_missing",
+            }),
         ),
       );
-      return yield* scheduler.run(input.host, resource, recorded, {
-        searchPages,
-        graphql: isGraphql,
-      });
     });
 
   const conditionalCache = makeGitHubConditionalCache();
@@ -348,6 +371,7 @@ export function makeGitHubApi(
               operation: "request",
               kind: "unauthenticated",
               detail: "Unverified GitHub credential context.",
+              requestDispatched: false,
             }),
           );
     });
@@ -406,6 +430,15 @@ export function makeGitHubApi(
           kind: "unauthenticated",
           detail: "The GitHub credential was rejected. Change credentials before retrying.",
         });
+      // Always resolve the current token, including before writes, but a matching
+      // credential need not spend another REST request proving the same identity.
+      const cached = accounts.get(host);
+      if (
+        cached &&
+        credentials.get(cached)?.fingerprint === fingerprint &&
+        Date.now() - (verifiedAt.get(host) ?? 0) < 60_000
+      )
+        return cached;
       const verified = yield* requestCaptured({
         cwd: input.cwd,
         host,
@@ -467,6 +500,7 @@ export function makeGitHubApi(
       const context = Object.freeze({ host, viewerId: viewer.id, login: viewer.login, generation });
       credentials.set(context, { token, fingerprint });
       accounts.set(host, context);
+      verifiedAt.set(host, Date.now());
       return context;
     });
   return {

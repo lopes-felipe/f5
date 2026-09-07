@@ -38,6 +38,7 @@ import {
   assertPrHubAccountGeneration,
   getPrHubAccountGeneration,
   setPrHubAccountGeneration,
+  setPrHubAccount,
 } from "./lib/prHubAccount";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
@@ -195,7 +196,7 @@ export function createWsNativeApi(): NativeApi {
     ) {
       throw new Error("Discarded a PR Hub response from a previous GitHub account.");
     }
-    setPrHubAccountGeneration(snapshot.account?.generation);
+    setPrHubAccount(snapshot.account ?? undefined);
     return snapshot;
   };
 

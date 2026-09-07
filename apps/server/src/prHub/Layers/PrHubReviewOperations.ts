@@ -118,6 +118,7 @@ function create(
       if (expected.mode !== "current_pr")
         return yield* prHubActionError("Only the current PR comparison supports review comments.");
       const remaining = new Map(content.comments.map((comment) => [comment.id, comment]));
+      const remainingViewed = new Map(content.viewedFiles.map((file) => [file.path, file.blobOid]));
       const viewedFiles: (typeof content.viewedFiles)[number][] = [];
       let cursor: string | undefined;
       do {
@@ -127,12 +128,9 @@ function create(
             "The PR comparison changed. Revalidate your draft before submitting.",
           );
         for (const file of page.files) {
-          if (
-            content.viewedFiles.some(
-              (viewed) => viewed.path === file.path && viewed.blobOid === file.blobOid,
-            )
-          )
-            viewedFiles.push({ path: file.path, blobOid: file.blobOid! });
+          if (file.blobOid != null && remainingViewed.get(file.path) === file.blobOid)
+            viewedFiles.push({ path: file.path, blobOid: file.blobOid });
+          remainingViewed.delete(file.path);
           for (const [id, comment] of remaining) {
             if (file.path !== comment.path) continue;
             if (
@@ -157,7 +155,7 @@ function create(
           }
         }
         cursor =
-          (remaining.size || content.viewedFiles.length) && page.pageInfo.hasNextPage
+          (remaining.size || remainingViewed.size) && page.pageInfo.hasNextPage
             ? (page.pageInfo.endCursor ?? undefined)
             : undefined;
       } while (cursor);

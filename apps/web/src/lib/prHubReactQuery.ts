@@ -91,12 +91,14 @@ export function prHubListQueryOptions(input: PrHubListInput, revision: string | 
     readonly unknown[],
     string | undefined
   >({
-    queryKey: ["prHub", "list", accountGeneration, revision, input] as const,
+    // Revision fences cursors, not query identity. Refetch all loaded pages in
+    // sequence so a background publication does not collapse the list to page one.
+    queryKey: ["prHub", "list", accountGeneration, { ...input, anchorKey: undefined }] as const,
     initialPageParam: undefined as string | undefined,
     placeholderData: (previous, query) =>
       query &&
       query.queryKey[2] === accountGeneration &&
-      JSON.stringify({ ...(query.queryKey[4] as PrHubListInput), anchorKey: undefined }) ===
+      JSON.stringify({ ...(query.queryKey[3] as PrHubListInput), anchorKey: undefined }) ===
         JSON.stringify({ ...input, anchorKey: undefined })
         ? previous
         : undefined,

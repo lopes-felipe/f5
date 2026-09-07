@@ -65,10 +65,6 @@ jobs:
         run: bun run upstream-ports:check
 
       - name: Run full test suite
-        # Every workspace owns a worker pool; serialize packages on hosted runners
-        # without skipping coverage or extending assertion deadlines.
-        env:
-          TURBO_CONCURRENCY: "1"
         run: bun run test:full
 
       - name: Install Chromium for browser tests
@@ -107,8 +103,6 @@ jobs:
         run: bun run typecheck
 
       - name: Run Windows unit and integration tests
-        env:
-          TURBO_CONCURRENCY: "1"
         run: bun run test
 
       - name: Build desktop bundles

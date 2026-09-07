@@ -23,6 +23,47 @@ const response = (body: unknown, status = 200): GitHubApiResponse => ({
   rateLimitResource: "core",
 });
 it.layer(SqliteClient.layerMemory())("timeline comment operations", (it) => {
+  it.effect("keeps a rate-limited comment prepared and retries only on explicit submission", () =>
+    Effect.gen(function* () {
+      yield* Migration084;
+      yield* Migration090;
+      const owner = {
+        provider: "github",
+        host: "github.com",
+        viewerId: "1",
+        repo: "org/repo",
+        number: 2,
+      };
+      const operation = yield* prepareCommentOperation(owner, { id: "limited", body: "Keep me" });
+      let calls = 0;
+      const input = { id: operation.id, payloadHash: operation.payloadHash };
+      const limited = yield* submitCommentOperation(
+        owner,
+        input,
+        () => {
+          calls++;
+          return Effect.succeed({ ...response({}, 403), rateLimit: { retryAfterSeconds: 45 } });
+        },
+        Effect.void,
+      );
+      assert.equal(limited.status, "prepared");
+      assert.ok(limited.errorMessage?.includes("45"));
+      assert.equal(calls, 1);
+      const result = yield* submitCommentOperation(
+        owner,
+        input,
+        () => {
+          calls++;
+          return Effect.succeed(
+            response({ id: 42, user: { id: 1 }, body: operation.payload.markedBody }, 201),
+          );
+        },
+        Effect.void,
+      );
+      assert.equal(result.status, "succeeded");
+      assert.equal(calls, 2);
+    }),
+  );
   it.effect(
     "retains unknown acceptance, never resends and reconciles only the exact actor/body",
     () =>

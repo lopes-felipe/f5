@@ -1,6 +1,7 @@
 import Migration090 from "../persistence/Migrations/090_PrHubIndependentOperations.ts";
 import { assert, it } from "@effect/vitest";
 import { Effect } from "effect";
+import * as SqlClient from "effect/unstable/sql/SqlClient";
 import { PullRequestKey } from "@t3tools/contracts";
 import * as SqliteClient from "../persistence/NodeSqliteClient.ts";
 import Migration084 from "../persistence/Migrations/084_PrHubOperations.ts";
@@ -15,6 +16,8 @@ it.layer(SqliteClient.layerMemory())("durable thread replies", (it) => {
       yield* Migration084;
       yield* Migration090;
       yield* Migration085;
+      const sql = yield* SqlClient.SqlClient;
+      let reconcileDuringWrite = false;
       const key = PullRequestKey.makeUnsafe("github:github.com/org/repo#1");
       let writes = 0;
       let body = "";
@@ -30,6 +33,11 @@ it.layer(SqliteClient.layerMemory())("durable thread replies", (it) => {
           if (document.includes("mutation F5ThreadReply")) {
             writes++;
             body = String(variables.body);
+            if (reconcileDuringWrite)
+              return Effect.gen(function* () {
+                yield* reconcileThreadReply(owner, context, "thread", "racing-operation");
+                return {}; // The original POST response is malformed after reconciliation won.
+              }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
             return Effect.fail(
               new SourceControlProviderError({
                 provider: "github",
@@ -113,6 +121,13 @@ it.layer(SqliteClient.layerMemory())("durable thread replies", (it) => {
       );
       assert.equal((yield* replyToReviewThread(owner, context, second)).status, "abandoned");
       assert.equal(writes, 2);
+      reconcileDuringWrite = true;
+      const raced = yield* replyToReviewThread(owner, context, {
+        ...input,
+        id: "racing-operation",
+      });
+      assert.equal(raced.status, "succeeded");
+      assert.equal(raced.remoteId, "reply");
     }),
   );
 });

@@ -189,7 +189,7 @@ export function createPrHubRemoteActions(
       ),
     );
 
-  const validReviewerPattern = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)?$/;
+  const validReviewerPattern = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?$/;
   const normalizeReviewerInputs = (reviewers: ReadonlyArray<string>) =>
     reviewers.map((reviewer) => reviewer.trim()).filter(Boolean);
 

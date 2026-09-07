@@ -4,7 +4,7 @@ import { useLocalStorage } from "../../hooks/useLocalStorage";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { PrHubCommentOperation, PullRequestKey } from "@t3tools/contracts";
 import { ensureNativeApi } from "../../nativeApi";
-import { getPrHubAccountGeneration } from "../../lib/prHubAccount";
+import { getPrHubAccountGeneration, getPrHubDraftIdentity } from "../../lib/prHubAccount";
 import { Button } from "../ui/button";
 import { Textarea } from "../ui/textarea";
 import { PrOperationRecovery } from "./PrOperationRecovery";
@@ -24,7 +24,7 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
     retry: false,
   });
   const [body, setBody] = useLocalStorage(
-    JSON.stringify(["prHub", "commentText", accountGeneration, prKey]),
+    JSON.stringify(["prHub", "commentText", getPrHubDraftIdentity(), prKey]),
     "",
     Schema.String,
   );
@@ -55,6 +55,7 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
   }
   return (
     <div className="space-y-3">
+      {operation?.errorMessage ? <p role="status">{operation.errorMessage}</p> : null}
       {error || query.error ? <p role="alert">{error ?? query.error?.message}</p> : null}
       {active && identity ? (
         <>
@@ -134,7 +135,7 @@ export function PrCommentSubmit({ prKey }: { prKey: PullRequestKey }) {
             aria-label="PR timeline comment"
             value={body}
             onChange={(e) => setBody(e.currentTarget.value)}
-            disabled={busy}
+            disabled={busy || !getPrHubDraftIdentity()}
           />
           <Button
             disabled={

@@ -1,4 +1,5 @@
-import { Effect, Exit, Schema } from "effect";
+import { Cause, Effect, Exit, Schema } from "effect";
+import { classifyPrWrite } from "./writeOutcome.ts";
 import type { GitHubApiResponse } from "../git/githubApi.ts";
 import { SourceControlProviderError } from "../sourceControl/SourceControlProvider.ts";
 import {
@@ -151,6 +152,20 @@ export function reconcileReviewSubmission(
     );
     if (candidates.length === 1 && submitted(candidates[0]!, operation))
       yield* acceptReviewResult(owner, operation, candidates[0]!);
+    // A remote ID is durably stored before any submit-event POST. Without one,
+    // an exact owned PENDING review proves creation, not an uncertain submission.
+    else if (
+      candidates.length === 1 &&
+      operation.remoteId === null &&
+      candidates[0]!.state === "PENDING" &&
+      candidates[0]!.body === operation.payload.body
+    )
+      yield* transitionReviewOperation(owner, {
+        id,
+        from: operation.status,
+        to: "created",
+        remoteId: String(candidates[0]!.id),
+      });
     return (yield* readReviewOperation(owner, id))!;
   });
 }
@@ -202,11 +217,23 @@ export function submitPreparedReview(
         }),
       );
       if (Exit.isFailure(creation)) {
-        yield* transitionReviewOperation(owner, { id, from: "creating", to: "outcome_unknown" });
+        const outcome = classifyPrWrite(creation);
+        yield* transitionReviewOperation(owner, {
+          id,
+          from: "creating",
+          to: outcome.safeToRetry ? "prepared" : "outcome_unknown",
+          errorMessage: outcome.message,
+        });
         return (yield* readReviewOperation(owner, id))!;
       }
-      if ([400, 401, 403, 404, 422].includes(creation.value.status)) {
-        yield* transitionReviewOperation(owner, { id, from: "creating", to: "rejected" });
+      const outcome = classifyPrWrite(creation);
+      if (outcome.safeToRetry || outcome.rejected) {
+        yield* transitionReviewOperation(owner, {
+          id,
+          from: "creating",
+          to: outcome.safeToRetry ? "prepared" : "rejected",
+          errorMessage: outcome.message,
+        });
         return (yield* readReviewOperation(owner, id))!;
       }
       const remote = yield* Effect.exit(
@@ -307,7 +334,19 @@ export function submitPreparedReview(
       }),
     );
     if (Exit.isFailure(verified)) {
-      yield* transitionReviewOperation(owner, { id, from: "created", to: "outcome_unknown" });
+      // Only reads occurred. Keep the known pending review usable; another
+      // explicit submit must re-verify the complete immutable payload again.
+      const error = Cause.squash(verified.cause);
+      yield* transitionReviewOperation(owner, {
+        id,
+        from: "created",
+        to: "created",
+        remoteId: operation.remoteId!,
+        errorMessage:
+          error instanceof Error
+            ? error.message
+            : "Pending-review verification failed. Check GitHub and retry verification.",
+      });
       return (yield* readReviewOperation(owner, id))!;
     }
     if (!(yield* transitionReviewOperation(owner, { id, from: "created", to: "submitting" })))
@@ -330,7 +369,14 @@ export function submitPreparedReview(
     yield* transitionReviewOperation(owner, {
       id,
       from: "submitting",
-      to: confirmed ? "succeeded" : "outcome_unknown",
+      to: confirmed
+        ? "succeeded"
+        : classifyPrWrite(result).safeToRetry
+          ? "created"
+          : "outcome_unknown",
+      ...(confirmed
+        ? {}
+        : { remoteId: operation.remoteId!, errorMessage: classifyPrWrite(result).message }),
     });
     return (yield* readReviewOperation(owner, id))!;
   }).pipe(Effect.uninterruptible);

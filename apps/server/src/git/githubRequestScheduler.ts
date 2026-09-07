@@ -65,9 +65,6 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
       const urgency = Option.getOrElse(priority, () => "interactive" as const);
       const background = urgency !== "interactive";
       const budget = budgetFor(host);
-      if (budget.queued >= 128)
-        return yield* deferred(now() + 30_000, "GitHub request queue is full; retry shortly.");
-      budget.queued++;
       const admitted = Effect.gen(function* () {
         const timestamp = now();
         if (timestamp - budget.windowStart >= 180_000) {
@@ -129,12 +126,20 @@ export function makeGitHubRequestScheduler(now = Date.now, random = Math.random)
         }
         return yield* effect;
       });
-      return yield* budget.schedule(urgency, resource === "write", admitted).pipe(
-        Effect.ensuring(
+      return yield* Effect.acquireUseRelease(
+        Effect.suspend(() => {
+          if (budget.queued >= 128)
+            return Effect.fail(
+              deferred(now() + 30_000, "GitHub request queue is full; retry shortly."),
+            );
+          budget.queued++;
+          return Effect.void;
+        }),
+        () => budget.schedule(urgency, resource === "write", admitted),
+        () =>
           Effect.sync(() => {
             budget.queued--;
           }),
-        ),
       );
     });
   const record = (

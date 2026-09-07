@@ -188,8 +188,8 @@ export function replyToReviewThread(
       comment &&
       String(comment.author.databaseId) === owner.viewerId &&
       comment.body === prReplyBody(input.body, input.id);
-    yield* sql`UPDATE pr_hub_operations SET status = ${confirmed ? "succeeded" : "outcome_unknown"}, remote_id = ${confirmed ? comment.id : null}, updated_at = ${new Date().toISOString()}
-      WHERE provider_kind = ${owner.provider} AND host = ${owner.host} AND viewer_id = ${owner.viewerId} AND operation_id = ${input.id} AND kind = 'reply'`;
+    yield* sql`UPDATE pr_hub_operations SET status = ${confirmed ? "succeeded" : "outcome_unknown"}, remote_id = COALESCE(${confirmed ? comment.id : null}, remote_id), updated_at = ${new Date().toISOString()}
+      WHERE provider_kind = ${owner.provider} AND host = ${owner.host} AND viewer_id = ${owner.viewerId} AND repo = ${owner.repo} AND number = ${owner.number} AND operation_id = ${input.id} AND kind = 'reply' AND status = 'creating'`;
     return (yield* readReplyOperation(owner, input.threadId, input.id))!;
   }).pipe(Effect.uninterruptible);
 }

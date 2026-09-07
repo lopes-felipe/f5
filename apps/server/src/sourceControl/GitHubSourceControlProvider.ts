@@ -62,6 +62,9 @@ export function mapGitHubCliError(error: GitHubCliError): SourceControlProviderE
     operation: error.operation,
     detail: error.detail,
     kind: mapErrorKind(error.kind),
+    ...(error.requestDispatched === undefined
+      ? {}
+      : { requestDispatched: error.requestDispatched }),
     ...(error.rateLimit === undefined ? {} : { rateLimit: error.rateLimit }),
     ...(error.cause === undefined ? {} : { cause: error.cause }),
   });
