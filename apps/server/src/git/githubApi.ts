@@ -1,3 +1,4 @@
+import { normalizeGitHubCliError } from "./githubCliError.ts";
 import { enforceGitHubRequestPolicy } from "./githubRequestPolicy.ts";
 import {
   makeGitHubConditionalCache,
@@ -112,25 +113,51 @@ function nonNegativeHeader(headers: Map<string, string>, name: string): number |
   return Number.isSafeInteger(number) ? number : null;
 }
 
+class GitHubResponseParseError extends Error {
+  constructor(
+    readonly category:
+      | "headers_missing_or_oversized"
+      | "invalid_status"
+      | "invalid_header"
+      | "invalid_json",
+    readonly status: number | null = null,
+  ) {
+    super(`Invalid GitHub response: ${category}.`);
+  }
+}
+
 /** Parse exactly one --include response. Incomplete bodies are never empty successes. */
 export function parseGitHubApiResponse(output: string, now = Date.now()): GitHubApiResponse {
+  const statusMatch = /^HTTP\/\S+\s+(\d{3})(?:\s|$)/.exec(output.slice(0, 256));
   const separator = /\r?\n\r?\n/.exec(output);
   if (!separator || separator.index > 64 * 1024)
-    throw new Error("Missing or oversized GitHub response headers.");
+    throw new GitHubResponseParseError(
+      "headers_missing_or_oversized",
+      statusMatch ? Number(statusMatch[1]) : null,
+    );
   const lines = output.slice(0, separator.index).split(/\r?\n/);
   const match = /^HTTP\/\S+\s+(\d{3})(?:\s|$)/.exec(lines.shift() ?? "");
-  if (!match) throw new Error("Invalid GitHub response status.");
+  if (!match) throw new GitHubResponseParseError("invalid_status");
   const status = Number(match[1]);
   const headers = new Map<string, string>();
   for (const line of lines) {
     const colon = line.indexOf(":");
-    if (colon <= 0) throw new Error("Invalid GitHub response header.");
+    if (colon <= 0) throw new GitHubResponseParseError("invalid_header", status);
     const name = line.slice(0, colon).trim().toLowerCase();
     const value = line.slice(colon + 1).trim();
     headers.set(name, headers.has(name) ? `${headers.get(name)}, ${value}` : value);
   }
   const rawBody = output.slice(separator.index + separator[0].length).trim();
-  const body: unknown = status === 204 || status === 304 ? null : JSON.parse(rawBody);
+  let body: unknown = null;
+  if (status !== 204 && status !== 304) {
+    try {
+      body = JSON.parse(rawBody);
+    } catch {
+      // Gateways can return text/HTML errors. Preserve their HTTP status and
+      // retry headers so callers and the scheduler can handle the failure.
+      if (status < 400 || status > 599) throw new GitHubResponseParseError("invalid_json", status);
+    }
+  }
   const root = typeof body === "object" && body !== null ? (body as Record<string, unknown>) : null;
   const links: Record<string, string> = {};
   for (const link of (headers.get("link") ?? "").matchAll(/<([^>]+)>\s*;\s*rel="([^"]+)"/g)) {
@@ -315,13 +342,42 @@ export function makeGitHubApi(
           }
           return yield* Effect.try({
             try: () => parseGitHubApiResponse(result.stdout),
-            catch: () =>
-              new GitHubCliError({
-                operation: "request",
-                kind: "invalid_json",
-                detail: "GitHub returned an incomplete or invalid HTTP response.",
+            catch: (cause) =>
+              cause instanceof GitHubResponseParseError
+                ? cause
+                : new GitHubResponseParseError("invalid_json"),
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.gen(function* () {
+                yield* Effect.logWarning("GitHub API response could not be parsed", {
+                  endpoint: input.endpoint,
+                  exitCode: result.code,
+                  stdoutBytes: Buffer.byteLength(result.stdout, "utf8"),
+                  stderrBytes: Buffer.byteLength(result.stderr, "utf8"),
+                  status: error.status,
+                  category: error.category,
+                });
+                if (result.code !== 0) {
+                  const normalized = normalizeGitHubCliError(
+                    "request",
+                    new Error(result.stderr.trim() || "GitHub CLI command failed."),
+                  );
+                  // Do not retain raw stderr as a cause: it may contain request
+                  // data. The shared normalizer supplies safe, fixed messages.
+                  return yield* new GitHubCliError({
+                    operation: "request",
+                    kind: normalized.kind,
+                    detail: normalized.detail,
+                  });
+                }
+                return yield* new GitHubCliError({
+                  operation: "request",
+                  kind: "invalid_json",
+                  detail: "GitHub returned an incomplete or invalid HTTP response.",
+                });
               }),
-          });
+            ),
+          );
         });
         const recorded = perform.pipe(
           Effect.tap((response) =>

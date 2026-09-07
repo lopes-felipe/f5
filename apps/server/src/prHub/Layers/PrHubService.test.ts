@@ -774,6 +774,38 @@ it.effect("marks partial GraphQL responses degraded without hiding previously tr
   );
 });
 
+it.effect("retains tracked PRs when an HTTP 504 forces an empty fallback", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ id: "PR_partial", number: 10 });
+
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const first = yield* service.refreshNow({ mode: "force" });
+    assert.equal(first.status, "ok");
+    assert.deepStrictEqual(
+      first.pullRequests.map((tracked) => tracked.number),
+      [10],
+    );
+
+    const second = yield* service.refreshNow({ mode: "force" });
+    assert.equal(second.status, "degraded");
+    assert.deepStrictEqual(
+      second.pullRequests.map((tracked) => tracked.number),
+      [10],
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [
+          searchResponse("review_requested", [pr]),
+          ghError("GitHub API returned HTTP 504."),
+        ],
+      }),
+    ),
+  );
+});
+
 it.effect("stores a concise degraded message when GraphQL falls back to gh search", () => {
   const calls = makeCalls();
 

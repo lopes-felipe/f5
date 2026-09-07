@@ -75,6 +75,7 @@ afterEach(async () => {
 async function renderInbox(
   focusedPrKey: string | null = null,
   prs: readonly TrackedPullRequest[] = PRS,
+  refreshIncomplete = false,
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   active = await render(
@@ -82,6 +83,7 @@ async function renderInbox(
       <TooltipProvider delay={0}>
         <PrInboxView
           prs={prs}
+          refreshIncomplete={refreshIncomplete}
           advisoriesByKey={new Map()}
           analyzingKeys={new Set()}
           onAnalyzeAdvisory={() => {}}
@@ -148,4 +150,21 @@ describe("PrInboxView navigation", () => {
     await expect.element(second).toHaveAttribute("aria-selected", "true");
     await expect.element(first).toHaveAttribute("aria-selected", "false");
   });
+});
+
+it("distinguishes incomplete refreshes from a healthy empty queue", async () => {
+  await renderInbox(null, [], true);
+  await expect.element(page.getByText("No results available", { exact: true })).toBeVisible();
+  await expect
+    .element(page.getByText("The latest refresh was incomplete. Pull requests may be missing."))
+    .toBeVisible();
+  await active?.unmount();
+  active = undefined;
+  await renderInbox(null, []);
+  await expect
+    .element(page.getByText("No entries match this filter.", { exact: true }))
+    .toBeVisible();
+  await expect
+    .element(page.getByText("No results available", { exact: true }))
+    .not.toBeInTheDocument();
 });
