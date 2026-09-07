@@ -18,6 +18,67 @@ afterEach(() => {
 });
 
 layer("GitHubCliLive", (it) => {
+  it.effect("sends long multiline non-ASCII review bodies only through stdin", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValue({
+        stdout: "",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+      const gh = yield* GitHubCli;
+      const body = "Review: caf\u00e9\n" + "x".repeat(65_536);
+      yield* gh.reviewPullRequest({
+        cwd: "/repo",
+        url: "https://github.com/octo/repo/pull/1",
+        body,
+      });
+      const [, args, options] = mockedRunProcess.mock.calls[0]!;
+      expect(args).toContain("--body-file");
+      expect(args.join(" ")).not.toContain(body);
+      expect(options?.stdin).toBe(body);
+    }),
+  );
+
+  it.effect("rejects oversized request bodies before spawning", () =>
+    Effect.gen(function* () {
+      const gh = yield* GitHubCli;
+      const result = yield* Effect.exit(
+        gh.runGraphql({ cwd: "/repo", query: "x".repeat(1_048_577) }),
+      );
+      expect(Exit.isFailure(result)).toBe(true);
+      expect(mockedRunProcess).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect("never decodes truncated or interrupted responses as success", () =>
+    Effect.gen(function* () {
+      const gh = yield* GitHubCli;
+      for (const extra of [
+        { stdoutTruncated: true },
+        { aborted: true },
+        { signal: "SIGTERM" as const },
+      ]) {
+        mockedRunProcess.mockResolvedValueOnce({
+          stdout: '{"data":{}}',
+          stderr: "",
+          code: 0,
+          signal: null,
+          timedOut: false,
+          ...extra,
+        });
+        expect(
+          Exit.isFailure(
+            yield* Effect.exit(
+              gh.runGraphql({ cwd: "/repo", query: "query { viewer { login } }" }),
+            ),
+          ),
+        ).toBe(true);
+      }
+    }),
+  );
+
   it.effect("parses pull request view output", () =>
     Effect.gen(function* () {
       mockedRunProcess.mockResolvedValueOnce({
@@ -132,22 +193,41 @@ layer("GitHubCliLive", (it) => {
     }),
   );
 
-  it.effect(
-    "passes GraphQL string variables with raw flags and typed variables with typed flags",
-    () =>
-      Effect.gen(function* () {
-        mockedRunProcess.mockResolvedValueOnce({
-          stdout: JSON.stringify({ data: { ok: true } }),
-          stderr: "",
-          code: 0,
-          signal: null,
-          timedOut: false,
-        });
+  it.effect("passes GraphQL documents and typed variables through JSON stdin", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: JSON.stringify({ data: { ok: true } }),
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
 
-        const result = yield* Effect.gen(function* () {
-          const gh = yield* GitHubCli;
-          return yield* gh.runGraphql({
-            cwd: "/home/me",
+      const result = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.runGraphql({
+          cwd: "/home/me",
+          query:
+            "query($q:String!,$ids:[ID!]!,$number:Int!,$flag:Boolean!,$empty:String){viewer{login}}",
+          variables: {
+            q: "is:pr is:open author:me",
+            ids: ["PR_kw1", "PR_kw2"],
+            number: 123,
+            flag: true,
+            empty: null,
+          },
+        });
+      });
+
+      assert.deepStrictEqual(result, { data: { ok: true } });
+      expect(mockedRunProcess).toHaveBeenCalledWith(
+        "gh",
+        ["api", "graphql", "--hostname", "github.com", "--input", "-"],
+        expect.objectContaining({
+          cwd: "/home/me",
+          timeoutMs: 45_000,
+          allowNonZeroExit: true,
+          stdin: JSON.stringify({
             query:
               "query($q:String!,$ids:[ID!]!,$number:Int!,$flag:Boolean!,$empty:String){viewer{login}}",
             variables: {
@@ -157,37 +237,10 @@ layer("GitHubCliLive", (it) => {
               flag: true,
               empty: null,
             },
-          });
-        });
-
-        assert.deepStrictEqual(result, { data: { ok: true } });
-        expect(mockedRunProcess).toHaveBeenCalledWith(
-          "gh",
-          [
-            "api",
-            "graphql",
-            "-f",
-            "query=query($q:String!,$ids:[ID!]!,$number:Int!,$flag:Boolean!,$empty:String){viewer{login}}",
-            "-f",
-            "q=is:pr is:open author:me",
-            "-f",
-            "ids[]=PR_kw1",
-            "-f",
-            "ids[]=PR_kw2",
-            "-F",
-            "number=123",
-            "-F",
-            "flag=true",
-            "-F",
-            "empty=null",
-          ],
-          expect.objectContaining({
-            cwd: "/home/me",
-            timeoutMs: 45_000,
-            allowNonZeroExit: true,
           }),
-        );
-      }),
+        }),
+      );
+    }),
   );
 
   it.effect(
@@ -239,14 +292,7 @@ layer("GitHubCliLive", (it) => {
         expect(mockedRunProcess).toHaveBeenNthCalledWith(
           1,
           "gh",
-          [
-            "api",
-            "graphql",
-            "--hostname",
-            "github.example.com",
-            "-f",
-            "query=query { viewer { login } }",
-          ],
+          ["api", "graphql", "--hostname", "github.example.com", "--input", "-"],
           expect.objectContaining({ cwd: "/repo" }),
         );
         expect(mockedRunProcess).toHaveBeenNthCalledWith(
@@ -279,8 +325,8 @@ layer("GitHubCliLive", (it) => {
             "github.example.com",
             "--method",
             "PATCH",
-            "-f",
-            "body=Updated",
+            "--input",
+            "-",
           ],
           expect.objectContaining({ cwd: "/repo" }),
         );

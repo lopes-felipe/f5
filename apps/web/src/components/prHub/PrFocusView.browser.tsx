@@ -44,6 +44,8 @@ function makePr(number: number, title: string): TrackedPullRequest {
     reviewRequestsCount: 0,
     commentsCount: 0,
     unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 0,
     deletions: 0,
     changedFiles: 0,
@@ -70,13 +72,13 @@ afterEach(async () => {
   active = undefined;
 });
 
-async function renderFocus(focusedPrKey: string | null = null) {
+async function renderFocus(focusedPrKey: string | null = null, prs = PRS) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   active = await render(
     <QueryClientProvider client={queryClient}>
       <TooltipProvider delay={0}>
         <PrFocusView
-          prs={PRS}
+          prs={prs}
           advisoriesByKey={new Map()}
           analyzingKeys={new Set()}
           onAnalyzeAdvisory={() => {}}
@@ -92,6 +94,22 @@ function cardHeading(title: string) {
 }
 
 describe("PrFocusView navigation", () => {
+  it("opens the in-app files view from the Review action", async () => {
+    await renderFocus(null, [
+      {
+        ...makePr(11, "Review me"),
+        roles: ["review_requested"],
+        attentionState: "review_requested",
+        viewerReviewRequested: true,
+      },
+    ]);
+    await page.getByRole("button", { name: "Review", exact: true }).click();
+    await expect
+      .element(page.getByRole("tab", { name: "Files (0)" }))
+      .toHaveAttribute("aria-selected", "true");
+    await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("steps through the queue with n/p", async () => {
     await renderFocus();
     await expect.element(cardHeading("Alpha PR")).toBeInTheDocument();

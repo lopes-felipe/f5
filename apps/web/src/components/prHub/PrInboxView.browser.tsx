@@ -44,6 +44,8 @@ function makePr(number: number, title: string): TrackedPullRequest {
     reviewRequestsCount: 0,
     commentsCount: 0,
     unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 0,
     deletions: 0,
     changedFiles: 0,

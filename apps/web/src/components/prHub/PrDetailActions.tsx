@@ -1,5 +1,6 @@
 import {
   ArchiveIcon,
+  CheckIcon,
   EllipsisIcon,
   GithubIcon,
   MessageSquareIcon,
@@ -25,6 +26,8 @@ export interface PrDetailActionsProps {
   isAnalyzingAdvisory: boolean;
   isOpeningInF5: boolean;
   runInF5Label: string | null;
+  onReview: () => void;
+  onAcknowledge?: (() => void) | undefined;
   onApprove: () => void;
   onComment: () => void;
   onRequestChanges: () => void;
@@ -56,6 +59,8 @@ export function PrDetailActions({
   isAnalyzingAdvisory,
   isOpeningInF5,
   runInF5Label,
+  onReview,
+  onAcknowledge,
   onApprove,
   onComment,
   onRequestChanges,
@@ -77,8 +82,8 @@ export function PrDetailActions({
   });
 
   const onPrimary =
-    primary?.kind === "approve"
-      ? onApprove
+    primary?.kind === "review"
+      ? onReview
       : primary?.kind === "merge"
         ? onMerge
         : primary?.kind === "markReady"
@@ -99,6 +104,9 @@ export function PrDetailActions({
 
       {canReview ? (
         <>
+          <Button size="sm" variant="outline" onClick={onApprove}>
+            <CheckIcon /> Approve
+          </Button>
           <Button size="sm" variant="outline" onClick={onComment}>
             <MessageSquareIcon /> Comment
           </Button>
@@ -143,6 +151,17 @@ export function PrDetailActions({
         </Button>
       ) : null}
 
+      {pr.attentionBucket === "needs_you" && onAcknowledge ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={Boolean(pr.acknowledgedAt)}
+          onClick={onAcknowledge}
+          title="Quiet notifications for this event; keep this PR in Needs you"
+        >
+          {pr.acknowledgedAt ? "Acknowledged" : "Acknowledge"}
+        </Button>
+      ) : null}
       {canIgnore ? (
         <Menu>
           <MenuTrigger

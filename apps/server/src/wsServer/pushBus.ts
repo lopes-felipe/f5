@@ -190,7 +190,7 @@ const COALESCIBLE_BROADCAST_CHANNELS = new Set<WsPushChannel>([
   WS_CHANNELS.storageCleanupProgress,
   WS_CHANNELS.nextTurnQueueUpdated,
   WS_CHANNELS.nextTurnQueueSummaryUpdated,
-  PR_HUB_WS_CHANNELS.snapshotUpdated,
+  PR_HUB_WS_CHANNELS.changed,
   PR_HUB_WS_CHANNELS.advisoriesUpdated,
 ]);
 

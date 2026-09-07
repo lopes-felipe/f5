@@ -1,3 +1,11 @@
+import { PrHubRepositoryLive } from "./PrHubRepository.ts";
+import type { TrackedPullRequest } from "@t3tools/contracts";
+import type { PrHubServiceShape } from "../Services/PrHubService.ts";
+import { PrHubJobCoordinatorLive } from "./PrHubJobCoordinator.ts";
+import { PrHubDiscoveryLive } from "./PrHubDiscovery.ts";
+import { PrHubReviewOperationsLive } from "./PrHubReviewOperations.ts";
+import { claimPrHubNotifications, acknowledgePrHubNotifications } from "../notificationLeases.ts";
+import type { GitHubCredentialContext } from "../../git/githubApi.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { Effect, Exit, Layer, Option } from "effect";
@@ -29,6 +37,53 @@ const SEARCH_ALIASES = [
   "involved",
   "recently_closed",
 ] as const;
+
+it.effect("saves and reads local drafts without credential or provider requests", () => {
+  const calls = makeCalls();
+  let credentialReads = 0;
+  let apiReads = 0;
+  const context = { host: "github.com", viewerId: 1, login: "me", generation: "local-account" };
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const key = snapshot.pullRequests[0]!.key;
+    const before = [credentialReads, apiReads, calls.graphql.length];
+    yield* service.saveReplyDraft({
+      key,
+      accountGeneration: context.generation,
+      threadId: "thread",
+      expectedVersion: 0,
+      comparisonVersion: "comparison",
+      body: "Unsent reply",
+    });
+    yield* service.getReplyDraft({
+      key,
+      accountGeneration: context.generation,
+      threadId: "thread",
+    });
+    yield* service.getReviewDraft({ key, accountGeneration: context.generation });
+    assert.deepStrictEqual([credentialReads, apiReads, calls.graphql.length], before);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        credentialContext: () => {
+          credentialReads++;
+          return context;
+        },
+        apiRequest: () => {
+          apiReads++;
+          return Effect.fail(ghError("Unexpected API read"));
+        },
+        searchResponses: [
+          searchResponse("review_requested", [
+            makePrNode({ id: "PR_local", number: 95, author: "alice" }),
+          ]),
+        ],
+      }),
+    ),
+  );
+});
 
 type SearchAlias = (typeof SEARCH_ALIASES)[number];
 
@@ -92,6 +147,8 @@ function isGitHubCliError(value: unknown): value is GitHubCliError {
 
 function makeGithubStub(input: {
   readonly login?: string;
+  readonly apiRequest?: GitHubCliShape["request"];
+  readonly credentialContext?: () => GitHubCredentialContext;
   readonly teams?: ReadonlyArray<string>;
   readonly teamsError?: GitHubCliError;
   readonly searchResponses?: unknown[];
@@ -114,6 +171,10 @@ function makeGithubStub(input: {
   const mutationResponses = [...(input.mutationResponses ?? [])];
   const reconcileResponses = [...(input.reconcileResponses ?? [])];
   const reconcileByNumberResponses = [...(input.reconcileByNumberResponses ?? [])];
+  const remoteReviews = new Map<
+    string,
+    { id: number; user: { id: number }; body: string; state: string; commit_id: string }
+  >();
   const detailNodesById = new Map<string, Record<string, unknown>>();
   let searchRequestCount = 0;
   const nextResponse = (responses: unknown[], fallback: unknown) =>
@@ -145,6 +206,94 @@ function makeGithubStub(input: {
   };
 
   return {
+    request: (request) => {
+      if (
+        !input.apiRequest &&
+        /\/reviews(?:\/\d+(?:\/(?:events|comments))?)?$/.test(request.endpoint)
+      ) {
+        const root = request.endpoint.replace(/\/\d+(?:\/(?:events|comments))?$/, "");
+        const body = request.body as
+          | { body?: string; commit_id?: string; event?: string }
+          | undefined;
+        if (request.method === "POST") {
+          if (request.endpoint.endsWith("/events")) {
+            const previous = remoteReviews.get(root)!;
+            const event = body!.event!;
+            remoteReviews.set(root, {
+              ...previous,
+              state:
+                event === "APPROVE"
+                  ? "APPROVED"
+                  : event === "REQUEST_CHANGES"
+                    ? "CHANGES_REQUESTED"
+                    : "COMMENTED",
+            });
+            const url = `https://github.com/${root.split("/").slice(1, 3).join("/")}/pull/${root.split("/")[4]}`;
+            (event === "APPROVE" ? input.calls.approvals : input.calls.changeRequests).push({
+              url,
+              body: previous.body,
+            });
+          } else
+            remoteReviews.set(root, {
+              id: 101,
+              user: { id: 1 },
+              body: body!.body!,
+              state: "PENDING",
+              commit_id: body!.commit_id!,
+            });
+        }
+        return Effect.succeed({
+          status: request.method === "POST" && !request.endpoint.endsWith("/events") ? 201 : 200,
+          graphqlErrors: [],
+          links: {},
+          etag: null,
+          lastModified: null,
+          rateLimit: {},
+          rateLimitResource: null,
+          body: request.endpoint.endsWith("/comments")
+            ? []
+            : request.method === "GET" && request.endpoint.endsWith("/reviews")
+              ? remoteReviews.has(root)
+                ? [remoteReviews.get(root)!]
+                : []
+              : remoteReviews.get(root)!,
+        });
+      }
+      return input.apiRequest
+        ? input.apiRequest(request)
+        : Effect.succeed({
+            status: 200,
+            graphqlErrors: [],
+            links: {},
+            etag: null,
+            lastModified: null,
+            rateLimit: { remaining: 100, limit: 5000, resetAt: null },
+            rateLimitResource: "core",
+            body: request.endpoint.includes("/rules/branches/")
+              ? []
+              : request.endpoint.endsWith("/files")
+                ? nextResponse(fileResponses, [])
+                : request.endpoint.includes("/compare/")
+                  ? { merge_base_commit: { sha: "base" } }
+                  : {
+                      state: "open",
+                      locked: false,
+                      user: { id: 2 },
+                      base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
+                      head: { ref: "feature", sha: "head", repo: { full_name: "octo/repo" } },
+                      changed_files: 1,
+                    },
+          });
+    },
+    getCredentialContext: () =>
+      Effect.succeed(
+        input.credentialContext?.() ?? {
+          host: "github.com",
+          viewerId: input.login === "other-viewer" ? 2 : 1,
+          login: input.login ?? "me",
+          generation: input.login ?? "test-account",
+        },
+      ),
     execute: () => unsupportedGh("execute"),
     listOpenPullRequests: () => unsupportedGh("listOpenPullRequests"),
     getPullRequest: () => unsupportedGh("getPullRequest"),
@@ -167,21 +316,29 @@ function makeGithubStub(input: {
           return Effect.never;
         }
       }
-      const response = request.query.includes("F5PrDetail(")
-        ? nextResponse(prDetailResponses, emptySearchResponse())
-        : request.query.includes("F5PrTimeline(")
-          ? nextResponse(timelineResponses, emptySearchResponse())
-          : request.query.includes("F5PrFiles(")
-            ? nextResponse(fileResponses, emptySearchResponse())
-            : request.query.includes("mutation F5")
-              ? nextResponse(mutationResponses, { data: {} })
-              : request.query.includes("PrHubReconcileByNumber")
-                ? nextResponse(reconcileByNumberResponses, reconcileByNumberResponse([]))
-                : request.query.includes("PrHubReconcile")
-                  ? nextResponse(reconcileResponses, reconcileResponse([]))
-                  : request.query.includes("PrHubDetails")
-                    ? nextResponse(detailResponses, detailResponseFor(request))
-                    : nextResponse(searchResponses, emptySearchResponse());
+      const response = request.query.includes("PrHubRepositories")
+        ? {
+            data: {
+              viewer: {
+                repositories: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+              },
+            },
+          }
+        : request.query.includes("F5PrDetail(") || request.query.includes("PrHubReviewThreads(")
+          ? nextResponse(prDetailResponses, emptySearchResponse())
+          : request.query.includes("F5PrTimeline(")
+            ? nextResponse(timelineResponses, emptySearchResponse())
+            : request.query.includes("F5PrFiles(")
+              ? nextResponse(fileResponses, emptySearchResponse())
+              : request.query.includes("mutation F5")
+                ? nextResponse(mutationResponses, { data: {} })
+                : request.query.includes("PrHubReconcileByNumber")
+                  ? nextResponse(reconcileByNumberResponses, reconcileByNumberResponse([]))
+                  : request.query.includes("PrHubReconcile")
+                    ? nextResponse(reconcileResponses, reconcileResponse([]))
+                    : request.query.includes("PrHubDetails")
+                      ? nextResponse(detailResponses, detailResponseFor(request))
+                      : nextResponse(searchResponses, emptySearchResponse());
       if (!isGitHubCliError(response) && request.query.includes("PrHubSearch")) {
         rememberDetailNodes(response);
       }
@@ -253,6 +410,8 @@ function makeGithubStub(input: {
 function makeLayer(input: {
   readonly settings?: Parameters<typeof ServerSettingsService.layerTest>[0];
   readonly login?: string;
+  readonly apiRequest?: GitHubCliShape["request"];
+  readonly credentialContext?: () => GitHubCredentialContext;
   readonly teams?: ReadonlyArray<string>;
   readonly teamsError?: GitHubCliError;
   readonly searchResponses?: unknown[];
@@ -280,6 +439,10 @@ function makeLayer(input: {
   } satisfies ProjectionProjectRepositoryShape;
 
   return PrHubServiceLive.pipe(
+    Layer.provide(PrHubReviewOperationsLive),
+    Layer.provide(PrHubDiscoveryLive),
+    Layer.provide(PrHubRepositoryLive),
+    Layer.provide(PrHubJobCoordinatorLive),
     Layer.provideMerge(SqlitePersistenceMemory),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "t3-pr-hub-test-" })),
     Layer.provideMerge(ServerSettingsService.layerTest(input.settings ?? {})),
@@ -306,9 +469,16 @@ function makeCalls(): HarnessCalls {
 }
 
 function emptySearchData() {
-  const data = {} as Record<SearchAlias, { issueCount: number; nodes: unknown[] }>;
+  const data = {} as Record<
+    SearchAlias,
+    {
+      issueCount: number;
+      nodes: unknown[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    }
+  >;
   for (const alias of SEARCH_ALIASES) {
-    data[alias] = { issueCount: 0, nodes: [] };
+    data[alias] = { issueCount: 0, nodes: [], pageInfo: { hasNextPage: false, endCursor: null } };
   }
   return data;
 }
@@ -326,7 +496,11 @@ function searchResponse(
   extra?: Record<string, unknown>,
 ) {
   const data = emptySearchData();
-  data[alias] = { issueCount: nodes.length, nodes: [...nodes] };
+  data[alias] = {
+    issueCount: nodes.length,
+    nodes: [...nodes],
+    pageInfo: { hasNextPage: false, endCursor: null },
+  };
   return {
     data,
     ...extra,
@@ -338,7 +512,11 @@ function multiSearchResponse(entries: Partial<Record<SearchAlias, ReadonlyArray<
   for (const [alias, nodes] of Object.entries(entries) as Array<
     readonly [SearchAlias, ReadonlyArray<unknown>]
   >) {
-    data[alias] = { issueCount: nodes.length, nodes: [...nodes] };
+    data[alias] = {
+      issueCount: nodes.length,
+      nodes: [...nodes],
+      pageInfo: { hasNextPage: false, endCursor: null },
+    };
   }
   return { data };
 }
@@ -403,17 +581,18 @@ function makePrNode(input: {
     updatedAt: input.updatedAt ?? "2026-01-02T00:00:00.000Z",
     closedAt: null,
     baseRefName: "main",
+    baseRef: { branchProtectionRule: null },
     headRefName: `feature-${number}`,
     headRefOid: input.headRefOid === undefined ? `head-${number}` : input.headRefOid,
     additions: 10,
     deletions: 2,
     changedFiles: 3,
     author: { login: input.author ?? "teammate" },
-    repository: { nameWithOwner: repo, isPrivate: false },
+    repository: { nameWithOwner: repo, isPrivate: false, viewerPermission: "WRITE" },
     labels: { nodes: [] },
     assignees: { nodes: [] },
     comments: { totalCount: 1 },
-    reviewThreads: { nodes: [] },
+    reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
     reviewRequests: {
       nodes: (input.reviewRequests ?? ["me"]).map((reviewer) => ({
         requestedReviewer: reviewer.includes("/")
@@ -421,17 +600,49 @@ function makePrNode(input: {
           : { login: reviewer },
       })),
     },
-    latestReviews: { nodes: [] },
+    latestReviews: { nodes: [], pageInfo: { hasNextPage: false } },
     commits: {
       nodes: [
         {
           commit: {
-            statusCheckRollup: { state: input.checkState ?? "SUCCESS" },
+            statusCheckRollup: {
+              state: input.checkState ?? "SUCCESS",
+              contexts: { totalCount: 0, nodes: [], pageInfo: { hasNextPage: false } },
+            },
           },
         },
       ],
     },
   };
+}
+
+function quickReview(
+  service: PrHubServiceShape,
+  pr: TrackedPullRequest,
+  event: "APPROVE" | "REQUEST_CHANGES",
+  body = "",
+) {
+  return Effect.gen(function* () {
+    const accountGeneration = "test-account";
+    const files = yield* service.getFiles({ key: pr.key, accountGeneration, mode: "force" });
+    assert.ok(files.comparison);
+    const operation = yield* service.prepareQuickReview({
+      key: pr.key,
+      accountGeneration,
+      id: crypto.randomUUID(),
+      expectedComparison: files.comparison,
+      event,
+      body,
+    });
+    const input = {
+      url: pr.url,
+      accountGeneration,
+      body,
+      operationId: operation.id,
+      payloadHash: operation.payloadHash,
+    };
+    return yield* event === "APPROVE" ? service.approve(input) : service.requestChanges(input);
+  });
 }
 
 function prDetailResponse(input: { readonly title?: string } = {}) {
@@ -463,7 +674,7 @@ function prDetailResponse(input: { readonly title?: string } = {}) {
           author: { login: "me" },
           labels: { nodes: [] },
           reviewRequests: { nodes: [] },
-          latestReviews: { nodes: [] },
+          latestReviews: { nodes: [], pageInfo: { hasNextPage: false } },
           reactionGroups: [],
           commits: { nodes: [] },
         },
@@ -494,19 +705,16 @@ function prTimelineResponse(input?: {
 }
 
 function prFilesResponse() {
-  return {
-    data: {
-      repository: {
-        pullRequest: {
-          files: {
-            nodes: [{ path: "src/a.ts", additions: 2, deletions: 1, changeType: "CHANGED" }],
-            pageInfo: { hasNextPage: false, endCursor: null },
-          },
-        },
-      },
-      rateLimit: { remaining: 100, limit: 5_000, resetAt: null },
+  return [
+    {
+      filename: "src/a.ts",
+      additions: 2,
+      deletions: 1,
+      status: "modified",
+      sha: "blob",
+      patch: "@@ -1 +1,2 @@\n-old\n+new\n+line",
     },
-  };
+  ];
 }
 
 it.effect("coalesces overlapping forced refreshes into one GitHub fetch", () => {
@@ -868,7 +1076,7 @@ it.effect("does not count capped omissions as inaccessible misses", () => {
   );
 });
 
-it.effect("requires three inaccessible misses before hiding a tracked PR", () => {
+it.effect("retains tracked PRs after repeated inaccessible search misses", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_inaccessible", number: 12 });
 
@@ -883,7 +1091,7 @@ it.effect("requires three inaccessible misses before hiding a tracked PR", () =>
 
     assert.equal(firstMiss.pullRequests.length, 1);
     assert.equal(secondMiss.pullRequests.length, 1);
-    assert.equal(thirdMiss.pullRequests.length, 0);
+    assert.equal(thirdMiss.pullRequests.length, 1);
     const rows = yield* sql<{
       readonly stale_inaccessible_count: number;
       readonly no_longer_relevant_at: string | null;
@@ -895,7 +1103,7 @@ it.effect("requires three inaccessible misses before hiding a tracked PR", () =>
         AND number = ${12}
     `;
     assert.equal(rows[0]?.stale_inaccessible_count, 3);
-    assert.notEqual(rows[0]?.no_longer_relevant_at, null);
+    assert.equal(rows[0]?.no_longer_relevant_at, null);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -930,6 +1138,7 @@ it.effect("scopes mark-seen and snooze updates to the active viewer", () => {
     yield* sql`
       INSERT INTO pr_hub_viewer_state (
         host,
+        viewer_id,
         viewer_login,
         repo,
         number,
@@ -951,6 +1160,7 @@ it.effect("scopes mark-seen and snooze updates to the active viewer", () => {
       )
       SELECT
         host,
+        ${"2"},
         ${"other-viewer"},
         repo,
         number,
@@ -1022,6 +1232,7 @@ it.effect("moves ignored pull requests to resolved history for the active viewer
     yield* sql`
       INSERT INTO pr_hub_viewer_state (
         host,
+        viewer_id,
         viewer_login,
         repo,
         number,
@@ -1043,6 +1254,7 @@ it.effect("moves ignored pull requests to resolved history for the active viewer
       )
       SELECT
         host,
+        ${"2"},
         ${"other-viewer"},
         repo,
         number,
@@ -1100,7 +1312,7 @@ it.effect("moves ignored pull requests to resolved history for the active viewer
   );
 });
 
-it.effect("clearData deletes PR Hub advisory rows", () => {
+it.effect("clearData isolates the selected account and rejects an old generation", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_clear_advisory", number: 19 });
 
@@ -1111,9 +1323,11 @@ it.effect("clearData deletes PR Hub advisory rows", () => {
     const tracked = snapshot.pullRequests[0];
     assert.ok(tracked);
 
-    yield* sql`
+    for (const viewerId of ["1", "2"])
+      yield* sql`
       INSERT INTO pr_hub_advisories (
         host,
+        viewer_id,
         viewer_login,
         repo,
         number,
@@ -1135,6 +1349,7 @@ it.effect("clearData deletes PR Hub advisory rows", () => {
       )
       VALUES (
         ${tracked.host},
+        ${viewerId},
         ${"me"},
         ${tracked.repository.nameWithOwner},
         ${tracked.number},
@@ -1156,13 +1371,19 @@ it.effect("clearData deletes PR Hub advisory rows", () => {
       )
     `;
 
+    assert.equal(
+      (yield* Effect.exit(service.clearData({ accountGeneration: "old-account" })))._tag,
+      "Failure",
+    );
     yield* service.clearData();
 
     const rows = yield* sql<{ readonly count: number }>`
       SELECT COUNT(*) AS count
       FROM pr_hub_advisories
     `;
-    assert.equal(rows[0]?.count, 0);
+    assert.equal(rows[0]?.count, 1);
+    const remaining = yield* sql<{ viewer_id: string }>`SELECT viewer_id FROM pr_hub_advisories`;
+    assert.equal(remaining[0]?.viewer_id, "2");
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -1173,7 +1394,7 @@ it.effect("clearData deletes PR Hub advisory rows", () => {
   );
 });
 
-it.effect("purges persisted rows for newly excluded repositories", () => {
+it.effect("hides excluded repositories while retaining shared facts and preferences", () => {
   const calls = makeCalls();
   const pr = makePrNode({ id: "PR_excluded", number: 14, repo: "octo/private" });
 
@@ -1188,6 +1409,11 @@ it.effect("purges persisted rows for newly excluded repositories", () => {
       prHub: { excludeRepos: ["octo/private"] },
     });
 
+    const excluded = yield* service.getSnapshot;
+    assert.equal(excluded.pullRequests.length, 0);
+    assert.notEqual(excluded.revision, first.revision);
+    assert.equal(Exit.isFailure(yield* Effect.exit(service.approve({ url: pr.url }))), true);
+    assert.equal(calls.approvals.length, 0);
     const second = yield* service.refreshNow({ mode: "force" });
     assert.deepStrictEqual(second.pullRequests, []);
     const rows = yield* sql<{ readonly count: number }>`
@@ -1195,7 +1421,12 @@ it.effect("purges persisted rows for newly excluded repositories", () => {
       FROM pr_hub_prs
       WHERE repo = ${"octo/private"}
     `;
-    assert.equal(rows[0]?.count, 0);
+    assert.equal(rows[0]?.count, 1);
+    const viewerRows = yield* sql<{ readonly no_longer_relevant_at: string | null }>`
+      SELECT no_longer_relevant_at FROM pr_hub_viewer_state WHERE repo = ${"octo/private"}
+    `;
+    assert.equal(viewerRows.length, 1);
+    assert.equal(viewerRows[0]?.no_longer_relevant_at, null);
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -1294,14 +1525,15 @@ it.effect("enforces tracked-state predicates before mutating PRs", () => {
     assert.equal(authorDraft.attentionState, "draft");
     assert.equal(authorWaiting.attentionState, "awaiting_review");
 
-    yield* service.approve({ url: reviewRequested.url, body: "looks good" });
-    yield* service.requestChanges({ url: reviewRequested.url, body: "please fix" });
+    yield* quickReview(service, reviewRequested, "APPROVE", "looks good");
+    yield* quickReview(service, reviewRequested, "REQUEST_CHANGES", "please fix");
     yield* service.markReady({ url: authorDraft.url });
 
-    assert.deepStrictEqual(calls.approvals, [{ url: reviewRequested.url, body: "looks good" }]);
-    assert.deepStrictEqual(calls.changeRequests, [
-      { url: reviewRequested.url, body: "please fix" },
-    ]);
+    assert.equal(calls.approvals.length, 1);
+    assert.equal(calls.approvals[0]?.url, reviewRequested.url);
+    assert.ok(calls.approvals[0]?.body?.startsWith("looks good\n\n<!-- F5 review "));
+    assert.equal(calls.changeRequests.length, 1);
+    assert.ok(calls.changeRequests[0]?.body?.startsWith("please fix\n\n<!-- F5 review "));
     assert.deepStrictEqual(calls.markReady, [{ url: authorDraft.url }]);
 
     const deniedApprove = yield* Effect.exit(service.approve({ url: authorWaiting.url }));
@@ -1358,12 +1590,14 @@ it.effect("returns a successful review action without waiting for post-action re
     const reviewRequested = snapshot.pullRequests.find((pr) => pr.number === 25);
     assert.ok(reviewRequested);
 
-    const result = yield* service
-      .approve({ url: reviewRequested.url, body: "looks good" })
-      .pipe(Effect.timeoutOption(100));
+    const result = yield* quickReview(service, reviewRequested, "APPROVE", "looks good").pipe(
+      Effect.timeoutOption(100),
+    );
 
     assert.equal(Option.isSome(result), true);
-    assert.deepStrictEqual(calls.approvals, [{ url: reviewRequested.url, body: "looks good" }]);
+    assert.equal(calls.approvals.length, 1);
+    assert.equal(calls.approvals[0]?.url, reviewRequested.url);
+    assert.ok(calls.approvals[0]?.body?.startsWith("looks good\n\n<!-- F5 review "));
   }).pipe(
     Effect.provide(
       makeLayer({
@@ -1455,8 +1689,27 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
       url: tracked.url,
       method: "squash",
       expectedHeadOid: "stale-client-head",
+      expectedComparison: {
+        baseRepository: "octo/repo",
+        baseRef: "main",
+        baseOid: "base",
+        headRepository: "octo/repo",
+        headRef: "feature",
+        headOid: "tracked-head",
+        mergeBaseOid: "base",
+        mode: "current_pr",
+      },
     } as Parameters<typeof service.merge>[0] & { readonly expectedHeadOid: string };
     yield* service.merge(staleClientInput);
+    assert.equal(
+      (yield* Effect.exit(
+        service.merge({
+          ...staleClientInput,
+          expectedComparison: { ...staleClientInput.expectedComparison!, baseOid: "old-base" },
+        }),
+      ))._tag,
+      "Failure",
+    );
 
     assert.deepStrictEqual(calls.merges, [
       {
@@ -1469,6 +1722,31 @@ it.effect("uses the tracked head oid for merge instead of trusting client input"
     Effect.provide(
       makeLayer({
         calls,
+        apiRequest: (input) =>
+          Effect.succeed({
+            status: 200,
+            graphqlErrors: [],
+            links: {},
+            etag: null,
+            lastModified: null,
+            rateLimit: {},
+            rateLimitResource: "core",
+            body: input.endpoint.includes("/rules/branches/")
+              ? []
+              : input.endpoint.endsWith("/files")
+                ? []
+                : input.endpoint.includes("/compare/")
+                  ? { merge_base_commit: { sha: "base" } }
+                  : {
+                      base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
+                      head: {
+                        ref: "feature",
+                        sha: "tracked-head",
+                        repo: { full_name: "octo/repo" },
+                      },
+                      changed_files: 1,
+                    },
+          }),
         searchResponses: [searchResponse("author", [readyPr]), searchResponse("author", [readyPr])],
       }),
     ),
@@ -1715,6 +1993,535 @@ it.effect("rejects comment and reaction object ids that are not bound to the tra
         prDetailResponses: [prDetailResponse()],
         timelineResponses: [prTimelineResponse(), prTimelineResponse()],
       }),
+    ),
+  );
+});
+
+it.effect("uses reviewed commit identity even when pushed commits have old timestamps", () => {
+  const calls = makeCalls();
+  const node = {
+    ...makePrNode({ number: 501, reviewRequests: [], headRefOid: "new-head" }),
+    latestReviews: {
+      nodes: [{ author: { login: "me" }, state: "COMMENTED", commit: { oid: "old-head" } }],
+    },
+    commits: {
+      nodes: [
+        {
+          commit: {
+            committedDate: "2025-01-01T00:00:00.000Z",
+            statusCheckRollup: { state: "SUCCESS" },
+          },
+        },
+      ],
+    },
+  };
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const pr = snapshot.pullRequests[0]!;
+    assert.equal(pr.attentionState, "changes_pushed");
+    assert.equal(pr.viewerReviewRequested, false);
+    assert.equal(pr.waitingSince, "2025-01-01T00:00:00.000Z");
+    yield* quickReview(service, pr, "APPROVE");
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("involved", [node]), searchResponse("involved", [node])],
+      }),
+    ),
+  );
+});
+
+it.effect(
+  "persists actionable feedback, excludes author replies and avoids count-change notifications",
+  () => {
+    const calls = makeCalls();
+    const thread = (author: string, isOutdated = false, isResolved = false) => ({
+      isResolved,
+      isOutdated,
+      comments: { nodes: [{ author: { login: author } }] },
+    });
+    const node = (count: number) => ({
+      ...makePrNode({ number: 502, author: "me", reviewRequests: ["alice"] }),
+      reviewThreads: {
+        nodes: [
+          ...Array.from({ length: count }, () => thread("alice")),
+          thread("ME"),
+          thread("alice", true),
+          thread("alice", false, true),
+        ],
+      },
+    });
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      const baseline = yield* service.refreshNow({ mode: "force" });
+      assert.equal(baseline.pullRequests[0]!.notificationPending, false);
+      const first = (yield* service.refreshNow({ mode: "force" })).pullRequests[0]!;
+      assert.equal(first.attentionState, "unresolved_comments");
+      assert.equal(first.actionableUnresolvedThreadCount, 5);
+      assert.equal(first.notificationPending, true);
+      yield* service.markSeen({ key: first.key, attentionFingerprint: first.attentionFingerprint });
+      const second = (yield* service.refreshNow({ mode: "force" })).pullRequests[0]!;
+      assert.equal(second.actionableUnresolvedThreadCount, 4);
+      assert.equal(second.attentionFingerprint, first.attentionFingerprint);
+      assert.equal(second.notificationPending, false);
+      const rows = yield* sql<{
+        payload_json: string;
+      }>`SELECT viewer_payload_json AS payload_json FROM pr_hub_viewer_state WHERE number = 502`;
+      const payload = JSON.parse(rows[0]!.payload_json);
+      assert.equal(payload.waitingSince, first.createdAt);
+      assert.equal(payload.actionableUnresolvedThreadCount, 4);
+      yield* service.reRequestReview({ url: first.url });
+      let replied = (yield* service.getSnapshot).pullRequests[0]!;
+      // Mutations enqueue reconciliation; wait for the published result rather than
+      // relying on the refresh fiber winning the race with the next local read.
+      for (
+        let attempt = 0;
+        attempt < 100 && replied.attentionState !== "awaiting_review";
+        attempt++
+      ) {
+        yield* Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 10)));
+        replied = (yield* service.getSnapshot).pullRequests[0]!;
+      }
+      assert.equal(replied.attentionState, "awaiting_review");
+      assert.equal(replied.actionableUnresolvedThreadCount, 0);
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          searchResponses: [
+            searchResponse("author", [node(0)]),
+            searchResponse("author", [node(5)]),
+            searchResponse("author", [node(4)]),
+            searchResponse("author", [node(0)]),
+          ],
+        }),
+      ),
+    );
+  },
+);
+
+it.effect("rebaselines upgraded fingerprints without suppressing already pending attention", () => {
+  const calls = makeCalls();
+  const node = makePrNode({ number: 503 });
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    yield* service.refreshNow({ mode: "force" });
+    yield* sql`UPDATE pr_hub_viewer_state SET attention_model_version = 1, attention_bucket = 'waiting_on_others', attention_fingerprint = 'legacy'`;
+    const upgraded = (yield* service.refreshNow({ mode: "force" })).pullRequests[0]!;
+    assert.equal(upgraded.notificationPending, false);
+    yield* sql`UPDATE pr_hub_viewer_state SET attention_model_version = 1, attention_bucket = 'needs_you', attention_fingerprint = 'legacy', last_seen_fingerprint = NULL, last_notified_fingerprint = NULL`;
+    const pending = (yield* service.refreshNow({ mode: "force" })).pullRequests[0]!;
+    assert.equal(pending.notificationPending, true);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: Array.from({ length: 3 }, () =>
+          searchResponse("review_requested", [node]),
+        ),
+      }),
+    ),
+  );
+});
+
+it.effect("loads verbatim threads through the shared detail cache with honest coverage", () => {
+  const calls = makeCalls();
+  const node = makePrNode({ number: 504 });
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const pr = (yield* service.refreshNow({ mode: "force" })).pullRequests[0]!;
+    const first = yield* service.getUnresolvedThreads({ key: pr.key });
+    assert.equal(first.truncated, true);
+    assert.equal(first.omittedCount, 1);
+    assert.equal(first.threads[0]?.comments[0]?.bodyText, "Please handle this race.");
+    const cached = yield* service.getUnresolvedThreads({ key: pr.key });
+    assert.deepStrictEqual(cached, first);
+    assert.equal(
+      calls.graphql.filter((call) => call.query.includes("PrHubReviewThreads(")).length,
+      1,
+    );
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        searchResponses: [searchResponse("review_requested", [node])],
+        prDetailResponses: [
+          {
+            data: {
+              repository: {
+                pullRequest: {
+                  reviewThreads: {
+                    totalCount: 2,
+                    nodes: [
+                      {
+                        id: "thread",
+                        isResolved: false,
+                        path: "src/a.ts",
+                        line: 5,
+                        comments: {
+                          totalCount: 1,
+                          nodes: [
+                            {
+                              id: "c",
+                              bodyText: "Please handle this race.",
+                              author: { login: "alice" },
+                            },
+                          ],
+                        },
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    ),
+  );
+});
+
+it.effect("rejects a write after an account switch even if the display login is unchanged", () => {
+  const calls = makeCalls();
+  let context: GitHubCredentialContext = {
+    host: "github.com",
+    viewerId: 1,
+    login: "me",
+    generation: "first",
+  };
+  const pr = makePrNode({ number: 505 });
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const first = yield* service.refreshNow({ mode: "force" });
+    assert.equal(first.account?.viewerId, 1);
+    context = { ...context, viewerId: 2, generation: "second" };
+    const result = yield* Effect.exit(service.approve({ url: pr.url }));
+    assert.equal(Exit.isFailure(result), true);
+    assert.equal(calls.approvals.length, 0);
+    const changed = yield* service.getSnapshot;
+    assert.equal(changed.account?.viewerId, 2);
+    assert.equal(changed.pullRequests.length, 0);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        credentialContext: () => context,
+        searchResponses: [searchResponse("review_requested", [pr])],
+      }),
+    ),
+  );
+});
+
+it.effect("keeps viewer facts out of the shared provider payload", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ number: 506 });
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    yield* service.refreshNow({ mode: "force" });
+    const rows = yield* sql<{
+      payload_json: string;
+    }>`SELECT payload_json FROM pr_hub_prs WHERE number = 506`;
+    const payload = JSON.parse(rows[0]!.payload_json);
+    assert.equal("viewerHasReviewed" in payload, false);
+    assert.equal("viewerReviewRequested" in payload, false);
+    assert.equal("waitingSince" in payload, false);
+    const viewer = yield* sql<{
+      viewer_id: string;
+      viewer_payload_json: string;
+    }>`SELECT viewer_id, viewer_payload_json FROM pr_hub_viewer_state WHERE number = 506`;
+    assert.equal(viewer[0]?.viewer_id, "1");
+    assert.equal(JSON.parse(viewer[0]!.viewer_payload_json).viewerReviewRequested, true);
+  }).pipe(
+    Effect.provide(
+      makeLayer({ calls, searchResponses: [searchResponse("review_requested", [pr])] }),
+    ),
+  );
+});
+
+it.effect("leases notifications across clients and acknowledges only captured versions", () => {
+  const calls = makeCalls();
+  const pr = makePrNode({ number: 600 });
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const sql = yield* SqlClient.SqlClient;
+    const baseline = yield* service.refreshNow({ mode: "force" });
+    assert.equal(baseline.pullRequests[0]!.notificationPending, false);
+    const snapshot = {
+      ...baseline,
+      pullRequests: baseline.pullRequests.map((pr) => ({ ...pr, notificationPending: true })),
+    };
+    yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL`;
+    const accountGeneration = snapshot.account!.generation;
+    const now = Date.now();
+    const first = yield* claimPrHubNotifications(
+      snapshot,
+      { accountGeneration, clientId: "one", maxItems: 20 },
+      now,
+    );
+    assert.equal(first.pullRequests.length, 1);
+    const other = yield* claimPrHubNotifications(
+      snapshot,
+      { accountGeneration, clientId: "two", maxItems: 20 },
+      now,
+    );
+    assert.equal(other.pullRequests.length, 0);
+    yield* sql`UPDATE pr_hub_viewer_state SET attention_fingerprint = 'newer'`;
+    yield* acknowledgePrHubNotifications(
+      snapshot,
+      { accountGeneration, clientId: "one", batchId: first.batchId },
+      now + 1,
+    );
+    const rows = yield* sql<{
+      last_notified_fingerprint: string;
+    }>`SELECT last_notified_fingerprint FROM pr_hub_viewer_state`;
+    assert.equal(rows[0]!.last_notified_fingerprint, first.pullRequests[0]!.attentionFingerprint);
+    const newerSnapshot = {
+      ...snapshot,
+      pullRequests: snapshot.pullRequests.map((pr) => ({ ...pr, attentionFingerprint: "newer" })),
+    };
+    const newer = yield* claimPrHubNotifications(
+      newerSnapshot,
+      { accountGeneration, clientId: "two", maxItems: 20 },
+      now + 2,
+    );
+    assert.equal(newer.pullRequests.length, 1);
+    const expired = yield* claimPrHubNotifications(
+      newerSnapshot,
+      { accountGeneration, clientId: "three", maxItems: 20 },
+      now + 30_003,
+    );
+    assert.equal(expired.pullRequests.length, 1);
+    yield* acknowledgePrHubNotifications(
+      newerSnapshot,
+      { accountGeneration, clientId: "two", batchId: newer.batchId },
+      now + 30_004,
+    );
+    const lease = yield* sql<{
+      notification_lease_owner: string;
+    }>`SELECT notification_lease_owner FROM pr_hub_viewer_state`;
+    assert.equal(lease[0]!.notification_lease_owner, "three");
+  }).pipe(
+    Effect.provide(
+      makeLayer({ calls, searchResponses: [searchResponse("review_requested", [pr])] }),
+    ),
+  );
+});
+
+it.effect(
+  "acknowledges one attention version without changing its bucket or acknowledging newer evidence",
+  () => {
+    const calls = makeCalls();
+    const pr = makePrNode({ number: 601 });
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const sql = yield* SqlClient.SqlClient;
+      const initial = yield* service.refreshNow({ mode: "force" });
+      const tracked = initial.pullRequests[0]!;
+      const accountGeneration = initial.account!.generation;
+      yield* sql`UPDATE pr_hub_viewer_state SET last_seen_fingerprint = NULL, last_notified_fingerprint = NULL`;
+      const acknowledged = yield* service.acknowledgeAttention({
+        key: tracked.key,
+        accountGeneration,
+        attentionFingerprint: tracked.attentionFingerprint,
+      });
+      assert.isNotNull(acknowledged.pullRequests[0]!.acknowledgedAt);
+      assert.equal(acknowledged.pullRequests[0]!.attentionBucket, tracked.attentionBucket);
+      const batch = yield* service.claimNotifications({
+        accountGeneration,
+        clientId: "one",
+        maxItems: 20,
+      });
+      assert.equal(batch.pullRequests.length, 0);
+      const refreshed = yield* service.refreshNow({ mode: "force" });
+      assert.isNotNull(refreshed.pullRequests[0]!.acknowledgedAt);
+      yield* sql`UPDATE pr_hub_viewer_state SET attention_fingerprint = 'new-version', last_seen_fingerprint = NULL`;
+      const stale = yield* service
+        .acknowledgeAttention({
+          key: tracked.key,
+          accountGeneration,
+          attentionFingerprint: tracked.attentionFingerprint,
+        })
+        .pipe(Effect.exit);
+      assert.equal(stale._tag, "Failure");
+      const newer = {
+        ...refreshed,
+        pullRequests: refreshed.pullRequests.map((item) => ({
+          ...item,
+          attentionFingerprint: "new-version",
+        })),
+      };
+      const next = yield* claimPrHubNotifications(newer, {
+        accountGeneration,
+        clientId: "two",
+        maxItems: 20,
+      });
+      assert.equal(next.pullRequests.length, 1);
+    }).pipe(
+      Effect.provide(
+        makeLayer({ calls, searchResponses: [searchResponse("review_requested", [pr])] }),
+      ),
+    );
+  },
+);
+
+it.effect(
+  "validates live comparisons and submits the frozen review through the account-bound API",
+  () => {
+    const calls = makeCalls();
+    const pr = makePrNode({ id: "PR_submission", number: 90, author: "alice" });
+    let head = "head";
+    let remoteBody = "";
+    let writes = 0;
+    const apiRequest: GitHubCliShape["request"] = (request) => {
+      let body: unknown;
+      if (request.method === "POST") {
+        writes++;
+        remoteBody = String((request.body as Record<string, unknown>).body);
+        body = {
+          id: 123,
+          user: { id: 1 },
+          body: remoteBody,
+          state: request.endpoint.endsWith("/events") ? "APPROVED" : "PENDING",
+          commit_id: "head",
+        };
+        if (request.endpoint.endsWith("/events")) head = "racing-head";
+      } else if (request.endpoint.endsWith("/123")) {
+        body = { id: 123, user: { id: 1 }, body: remoteBody, state: "PENDING", commit_id: "head" };
+      } else if (request.endpoint.includes("/compare/"))
+        body = { merge_base_commit: { sha: "base" } };
+      else if (/\/(files|reviews|comments)$/.test(request.endpoint)) body = [];
+      else
+        body = {
+          state: "open",
+          locked: false,
+          user: { id: 2 },
+          changed_files: 0,
+          base: { ref: "main", sha: "base", repo: { full_name: "octo/repo" } },
+          head: { ref: "feature", sha: head, repo: { full_name: "octo/repo" } },
+        };
+      return Effect.succeed({
+        status: 200,
+        body,
+        graphqlErrors: [],
+        links: {},
+        etag: null,
+        lastModified: null,
+        rateLimit: { remaining: 100, limit: 5000, resetAt: null },
+        rateLimitResource: "core",
+      });
+    };
+    return Effect.gen(function* () {
+      const service = yield* PrHubService;
+      const snapshot = yield* service.refreshNow({ mode: "force" });
+      const key = snapshot.pullRequests[0]!.key;
+      const files = yield* service.getFiles({ key });
+      yield* service.saveReviewDraft({
+        key,
+        expectedVersion: 0,
+        comparison: files.comparison!,
+        content: { body: "Looks good", comments: [], viewedFiles: [] },
+      });
+      yield* service.prepareReview({ key, id: "first", expectedVersion: 1, event: "APPROVE" });
+      head = "new-head";
+      assert.equal(
+        (yield* Effect.exit(service.submitReview({ key, id: "first" })))._tag,
+        "Failure",
+      );
+      assert.equal(writes, 0);
+      yield* service.cancelReviewPreparation({ key, id: "first" });
+      head = "head";
+      const prepared = yield* service.prepareReview({
+        key,
+        id: "second",
+        expectedVersion: 1,
+        event: "APPROVE",
+      });
+      assert.equal(prepared.status, "prepared");
+      const submitted = yield* service.submitReview({ key, id: "second" });
+      assert.equal(submitted.status, "succeeded");
+      assert.equal(submitted.comparisonStatus, "outdated");
+      assert.equal(submitted.payload.draft.comparison.headOid, "head");
+      assert.equal(writes, 2);
+      assert.equal((yield* service.getReviewDraft({ key })).draft?.content.body, "");
+    }).pipe(
+      Effect.provide(
+        makeLayer({
+          calls,
+          apiRequest,
+          searchResponses: [searchResponse("review_requested", [pr])],
+        }),
+      ),
+    );
+  },
+);
+
+it.effect("manually tracks a verified PR and applies exclusions before any remote read", () => {
+  const calls = makeCalls();
+  const node = makePrNode({ number: 777, author: "someone", reviewRequests: [] });
+  let reads = 0;
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    yield* service.refreshNow({ mode: "force" });
+    const pr = yield* service.track({ url: "https://github.com/octo/repo/pull/777/files" });
+    assert.equal(pr.manuallyTracked, true);
+    assert.equal(pr.attentionState, "mentioned");
+    assert.equal((yield* service.getSnapshot).pullRequests[0]?.manuallyTracked, true);
+    const settings = yield* ServerSettingsService;
+    yield* settings.updateSettings({ prHub: { excludeRepos: ["octo/repo"] } });
+    assert.equal((yield* Effect.exit(service.track({ url: pr.url })))._tag, "Failure");
+    assert.equal(reads, 1);
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql<{
+      payload: string;
+    }>`SELECT viewer_payload_json AS payload FROM pr_hub_viewer_state WHERE number = 777`;
+    assert.equal(JSON.parse(rows[0]!.payload).manuallyTracked, true);
+  }).pipe(
+    Effect.provide(
+      makeLayer({
+        calls,
+        detailResponses: [{ data: { nodes: [node] } }],
+        apiRequest: (input) => {
+          reads++;
+          assert.equal(input.endpoint, "repos/octo/repo/pulls/777");
+          return Effect.succeed({
+            status: 200,
+            body: { node_id: "PR_777" },
+            graphqlErrors: [],
+            links: {},
+            etag: null,
+            lastModified: null,
+            rateLimitResource: "core",
+            rateLimit: { remaining: 100 },
+          });
+        },
+      }),
+    ),
+  );
+});
+
+it.effect("keeps archived tracked PRs visible but blocks publishing actions", () => {
+  const calls = makeCalls();
+  const original = makePrNode({ number: 991 });
+  const node = { ...original, repository: { ...original.repository, isArchived: true } };
+  return Effect.gen(function* () {
+    const service = yield* PrHubService;
+    const snapshot = yield* service.refreshNow({ mode: "force" });
+    const pr = snapshot.pullRequests[0]!;
+    assert.equal(pr.repositoryArchived, true);
+    assert.equal(pr.attentionBucket, "informational");
+    assert.equal(pr.reasons?.[0]?.code, "repository_archived");
+    assert.equal(pr.notificationPending, false);
+    assert.equal((yield* Effect.exit(service.approve({ url: pr.url })))._tag, "Failure");
+    assert.equal(calls.approvals.length, 0);
+    assert.equal((yield* service.getSnapshot).pullRequests[0]?.repositoryArchived, true);
+  }).pipe(
+    Effect.provide(
+      makeLayer({ calls, searchResponses: [searchResponse("review_requested", [node])] }),
     ),
   );
 });

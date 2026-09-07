@@ -31,6 +31,8 @@ function makePr(overrides: Partial<TrackedPullRequest> = {}): TrackedPullRequest
     reviewRequestsCount: 0,
     commentsCount: 0,
     unresolvedThreadCount: 0,
+    actionableUnresolvedThreadCount: 0,
+    waitingSince: null,
     additions: 1,
     deletions: 0,
     changedFiles: 1,

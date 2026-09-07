@@ -414,6 +414,8 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
 
   return {
     service: {
+      request: () => Effect.die("Unexpected request"),
+      getCredentialContext: () => Effect.die("Unexpected credentials"),
       execute,
       getAuthenticatedLogin: () => Effect.succeed("test-user"),
       getViewerTeams: () => Effect.succeed([]),
