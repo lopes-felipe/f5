@@ -123,7 +123,12 @@ export interface BackupManifestFile {
 
 export interface BackupManifest {
   readonly format: "f5-backup";
-  readonly version: 1;
+  readonly version: 1 | 2;
+  readonly source?: {
+    readonly installationId: string;
+    readonly profileId: string;
+    readonly providerHomesDir: string;
+  };
   readonly createdAt: string;
   readonly appVersion: string;
   readonly files: ReadonlyArray<BackupManifestFile>;
@@ -254,6 +259,7 @@ async function writeEncryptedFile(
 }
 
 export async function writeBackupArchive(input: {
+  readonly source?: BackupManifest["source"];
   readonly output: Writable;
   readonly entries: ReadonlyArray<BackupArchiveEntry>;
   readonly appVersion: string;
@@ -325,7 +331,8 @@ export async function writeBackupArchive(input: {
 
     const manifest: BackupManifest = {
       format: "f5-backup",
-      version: 1,
+      version: input.source ? 2 : 1,
+      ...(input.source ? { source: input.source } : {}),
       createdAt: new Date().toISOString(),
       appVersion: input.appVersion,
       files,
@@ -467,7 +474,12 @@ function decodeManifest(bytes: Buffer): BackupManifest {
   const parsed = JSON.parse(bytes.toString("utf8")) as Partial<BackupManifest>;
   if (
     parsed.format !== "f5-backup" ||
-    parsed.version !== 1 ||
+    (parsed.version !== 1 && parsed.version !== 2) ||
+    (parsed.version === 2 &&
+      (!parsed.source ||
+        typeof parsed.source.installationId !== "string" ||
+        !/^[0-9a-f]{32}$/.test(parsed.source.profileId) ||
+        typeof parsed.source.providerHomesDir !== "string")) ||
     typeof parsed.createdAt !== "string" ||
     typeof parsed.appVersion !== "string" ||
     !Array.isArray(parsed.files)

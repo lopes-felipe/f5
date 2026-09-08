@@ -809,6 +809,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       const codexBinaryPath = codexOptions.binaryPath ?? "codex";
       const codexHomePath = resolveCodexHome({ homePath: codexOptions.homePath });
       this.assertSupportedCodexCliVersion({
+        processEnvironment: input.processEnvironment ?? process.env,
         binaryPath: codexBinaryPath,
         cwd: resolvedCwd,
         ...(codexHomePath ? { homePath: codexHomePath } : {}),
@@ -2397,6 +2398,7 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
   }
 
   private assertSupportedCodexCliVersion(input: {
+    readonly processEnvironment: NodeJS.ProcessEnv;
     readonly binaryPath: string;
     readonly cwd: string;
     readonly homePath?: string;
@@ -2607,18 +2609,21 @@ function readCodexProviderOptions(input: CodexAppServerStartSessionInput): {
 }
 
 export function assertSupportedCodexCliVersion(input: {
+  readonly processEnvironment: NodeJS.ProcessEnv;
   readonly binaryPath: string;
   readonly cwd: string;
   readonly homePath?: string;
 }): void {
   const codexHomePath = resolveCodexHome(input);
   const environment = buildProviderChildProcessEnv(
-    process.env,
+    input.processEnvironment,
     codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
   );
   const invocation = resolveInvocation(
     input.binaryPath,
-    prependCodexCliTelemetryDisabledConfig(["--version"]),
+    prependCodexCliTelemetryDisabledConfig(["--version"], {
+      managedCredentials: environment.F5_PROFILE_ISOLATED === "1",
+    }),
     environment,
     { cwd: input.cwd },
   );

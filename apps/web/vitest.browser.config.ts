@@ -16,6 +16,7 @@ export default mergeConfig(
     },
     test: {
       include: [
+        "src/components/ProfileSwitcher.browser.tsx",
         "src/components/ChatView.browser.tsx",
         "src/components/AgentsPanel.browser.tsx",
         "src/components/ThreadSidebar.browser.tsx",

@@ -1,3 +1,11 @@
+import { makeClaudeEnvironment } from "../provider/Drivers/ClaudeHome";
+import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
+import { ServerSettingsService } from "../serverSettings";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { ServerConfig } from "../config";
+import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
+import { instanceLock } from "../profiles/InstanceLock";
+import * as NodePath from "node:path";
 import {
   type McpGetLoginStatusRequest,
   type McpGetProviderStatusRequest,
@@ -414,6 +422,44 @@ export class McpRuntimeService extends ServiceMap.Service<
 >()("t3/mcp/McpRuntimeService") {}
 
 const makeMcpRuntimeService = Effect.gen(function* () {
+  const accountConfig = yield* Effect.serviceOption(ServerConfig);
+  const accountEnvironment = Option.isSome(accountConfig)
+    ? buildAccountExecutionEnvironment({
+        purpose: "account",
+        profile: accountConfig.value.profile,
+        stateDir: accountConfig.value.stateDir,
+        baseEnv: process.env,
+      })
+    : { ...process.env };
+  const accountSettings = yield* Effect.serviceOption(ServerSettingsService);
+  const environmentFor = (input: {
+    instanceId?: ProviderInstanceId | undefined;
+    provider: string;
+    homePath?: string | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const settings = Option.isSome(accountSettings)
+        ? yield* accountSettings.value.getSettings.pipe(Effect.orDie)
+        : undefined;
+      const instance = input.instanceId
+        ? settings?.providerInstances[input.instanceId]
+        : input.homePath
+          ? Object.values(settings?.providerInstances ?? {}).find(
+              (value) =>
+                value.driver === input.provider &&
+                (value.config as { homePath?: string } | undefined)?.homePath === input.homePath,
+            )
+          : settings?.providerInstances[ProviderInstanceId.make(input.provider)];
+      return Option.isSome(accountConfig)
+        ? buildAccountExecutionEnvironment({
+            purpose: "account",
+            profile: accountConfig.value.profile,
+            stateDir: accountConfig.value.stateDir,
+            baseEnv: process.env,
+            instance: instance?.environment,
+          })
+        : accountEnvironment;
+    });
   const projectMcpConfigService = yield* ProjectMcpConfigService;
   const codexMcpSyncService = yield* CodexMcpSyncService;
   const codexControlClientRegistry = yield* CodexControlClientRegistry;
@@ -445,20 +491,29 @@ const makeMcpRuntimeService = Effect.gen(function* () {
     }),
   );
 
-  const readProviderPreflight = (input: McpGetProviderStatusRequest) => {
-    const providerOptions = readProviderOptions(input);
-    if (input.provider === "codex") {
-      return checkCodexProviderPreflight(providerOptions ? { providerOptions } : undefined).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-      );
-    }
+  const readProviderPreflight = (input: McpGetProviderStatusRequest) =>
+    Effect.gen(function* () {
+      const accountEnvironment = yield* environmentFor(input);
+      const providerOptions = readProviderOptions(input);
+      if (input.provider === "codex") {
+        return yield* checkCodexProviderPreflight({
+          ...(providerOptions ? { providerOptions } : {}),
+          processEnvironment: accountEnvironment,
+        }).pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
+        );
+      }
 
-    return checkClaudeProviderPreflight(providerOptions ? { providerOptions } : undefined).pipe(
-      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-    );
-  };
+      return yield* checkClaudeProviderPreflight({
+        ...(providerOptions ? { providerOptions } : {}),
+        processEnvironment: yield* makeClaudeEnvironment(
+          { homePath: input.homePath ?? "" },
+          accountEnvironment,
+        ).pipe(Effect.provideService(Path.Path, path)),
+      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner));
+    });
 
   const publishLoginCompletion = (input: {
     readonly provider: McpStartLoginRequest["provider"];
@@ -755,8 +810,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
 
       if (input.provider === "claudeAgent") {
         return yield* new McpRuntimeServiceError({
-          message:
-            "Integrated Claude login is not available yet. Run `claude auth login` in a terminal, then refresh this page.",
+          message: "Sign this Claude account in from Settings > Profiles, then refresh this page.",
         });
       }
 
@@ -814,6 +868,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
       }
       const translatedServers = translateMcpForCodex(stored.servers) ?? {};
       const oauthCallbackConfig = yield* readCodexMcpOAuthCallbackConfigOrError(stored.servers);
+      const resolvedAccountEnvironment = yield* environmentFor(input);
       const execute = runCodexCliCommand(
         [
           "mcp",
@@ -824,6 +879,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
           input.serverName!,
         ],
         {
+          baseEnvironment: resolvedAccountEnvironment,
           ...(binaryPath ? { binaryPath } : {}),
           ...(homePath ? { envOverrides: buildCodexCliEnvOverrides({ homePath }) } : {}),
           mcpServers: translatedServers,
@@ -918,7 +974,40 @@ const makeMcpRuntimeService = Effect.gen(function* () {
 
       return yield* startCliLogin(input, {
         mode: "cli",
-        effect: execute,
+        effect: Option.isSome(accountConfig)
+          ? Effect.scoped(
+              Effect.gen(function* () {
+                const config = accountConfig.value;
+                yield* instanceLock(
+                  NodePath.join(
+                    config.profilesRoot ?? `${config.stateDir}-profiles`,
+                    "locks",
+                    "provider-oauth.lock.sqlite",
+                  ),
+                );
+                if (server.oauthCallbackPort)
+                  yield* Effect.tryPromise({
+                    try: () => assertOAuthPortAvailable(server.oauthCallbackPort!),
+                    catch: (cause) => new McpRuntimeServiceError({ message: String(cause) }),
+                  });
+                yield* execute;
+              }).pipe(
+                Effect.catch((cause) =>
+                  Effect.sync(() =>
+                    setLoginStatus(input, {
+                      target: "server",
+                      mode: "cli",
+                      provider: input.provider,
+                      projectId: input.projectId,
+                      serverName: input.serverName!,
+                      status: "failed",
+                      error: `Another profile is signing in right now, or the OAuth callback is unavailable. ${String(cause)}`,
+                    }),
+                  ),
+                ),
+              ),
+            )
+          : execute,
       });
     });
 

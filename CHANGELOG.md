@@ -1,5 +1,12 @@
 # Changelog
 
+## Profiles
+
+- Add separate profile state, provider homes, browser origins and desktop partitions with in-app account setup. Default data remains in place.
+- Strip ambient provider credentials for non-default profiles; explicit instance API tokens remain supported.
+- Managed GitHub requests now use profile-saved tokens instead of ambient tokens or machine gh logins.
+- Fix Claude instance environments, Windows home overrides, instance model-catalog credentials, configured worktree roots, and explicit-state-dir backup settings/secrets.
+
 All notable changes to F5 are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for the published CLI (`t3`) and the desktop app.
 
 ## [Unreleased]

@@ -54,6 +54,7 @@ export function buildCodexCliMcpConfigArgs(
 export function prependCodexCliTelemetryDisabledConfig(
   args: ReadonlyArray<string>,
   options?: {
+    readonly managedCredentials?: boolean;
     readonly mcpServers?: Record<string, CodexMcpServerEntry> | null;
     readonly mcpOAuthCallbackPort?: number | null;
     readonly mcpOAuthCallbackUrl?: string | null;
@@ -61,6 +62,7 @@ export function prependCodexCliTelemetryDisabledConfig(
 ): ReadonlyArray<string> {
   return [
     ...CODEX_TELEMETRY_DISABLED_CONFIG_ARGS,
+    ...(options?.managedCredentials ? ["-c", 'cli_auth_credentials_store="file"'] : []),
     ...buildCodexCliMcpConfigArgs(
       options?.mcpServers,
       options?.mcpOAuthCallbackPort || options?.mcpOAuthCallbackUrl

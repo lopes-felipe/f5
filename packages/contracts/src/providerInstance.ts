@@ -34,7 +34,7 @@
  * @module providerInstance
  */
 import { Schema } from "effect";
-import { TrimmedNonEmptyString } from "./baseSchemas";
+import { makeSlugSchema, TrimmedNonEmptyString } from "./baseSchemas";
 
 const PROVIDER_SLUG_MAX_CHARS = 64;
 /**
@@ -49,10 +49,10 @@ const PROVIDER_SLUG_PATTERN = /^[a-zA-Z][a-zA-Z0-9_-]*$/;
 const ENVIRONMENT_VARIABLE_NAME_MAX_CHARS = 128;
 const ENVIRONMENT_VARIABLE_NAME_PATTERN = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
 
-const slugSchema = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(PROVIDER_SLUG_MAX_CHARS),
-  Schema.isPattern(PROVIDER_SLUG_PATTERN),
-);
+const slugSchema = makeSlugSchema({
+  maxChars: PROVIDER_SLUG_MAX_CHARS,
+  pattern: PROVIDER_SLUG_PATTERN,
+});
 
 /**
  * `ProviderDriverKind` — open branded slug naming a driver implementation.

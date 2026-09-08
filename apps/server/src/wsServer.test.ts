@@ -956,9 +956,10 @@ describe("WebSocket Server", () => {
     connections.push(ws);
 
     expect(welcome.type).toBe("push");
-    expect(welcome.data).toEqual({
+    expect(welcome.data).toMatchObject({
       cwd: "/test/project",
       projectName: "project",
+      profile: { isDefault: true, slug: "default", isActive: true },
     });
   });
 
@@ -1792,6 +1793,7 @@ describe("WebSocket Server", () => {
     const { createServer: createServerWithMockedRuntime } = await import("./wsServer");
 
     const providerLayer = Layer.succeed(ProviderService, {
+      ...defaultProviderService,
       readThread: () =>
         Effect.sync(() => {
           readThreadStarted = true;

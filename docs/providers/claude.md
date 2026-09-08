@@ -293,3 +293,7 @@ not avoid that work. On 2026-09-05, a prompt-free OAuth Pro read took approximat
 183 files (30 MB) under the local Claude projects history. A process inventory after completion showed
 no additional Claude process. Larger histories still need representative latency checks if usage
 refresh feels slow.
+
+### Isolated profiles
+
+Use [Profiles](../profiles.md) for independent managed Claude accounts and in-app login. Isolated profiles use the certified bundled executable and a complete home environment on Windows. The real-provider release gate includes macOS keychain separation.

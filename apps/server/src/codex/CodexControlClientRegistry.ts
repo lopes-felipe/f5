@@ -1,3 +1,9 @@
+import { ServerSettingsService } from "../serverSettings";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import * as NodePath from "node:path";
+import { acquireInstanceLock } from "../profiles/InstanceLock";
+import { validateManagedHome, certifyProvider } from "../profiles/providerIsolation";
+import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
 import {
   type CodexMcpServerEntry,
   type ProjectId,
@@ -36,6 +42,7 @@ interface CachedAdminClient {
 }
 
 interface OauthLease {
+  releaseInstallationLock?: () => void;
   promise: Promise<CodexControlClient>;
   client: CodexControlClient | null;
   timer: ReturnType<typeof setTimeout> | null;
@@ -105,6 +112,7 @@ export class CodexControlClientRegistry extends ServiceMap.Service<
 
 const makeCodexControlClientRegistry = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig;
+  const settingsService = yield* Effect.serviceOption(ServerSettingsService);
   const adminClients = new Map<string, CachedAdminClient>();
   const oauthClients = new Map<string, OauthLease>();
 
@@ -124,36 +132,54 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
     }, ADMIN_CLIENT_TTL_MS);
   };
 
-  const releaseOauthLease = (leaseKey: string) => {
+  const releaseOauthLease = async (leaseKey: string): Promise<void> => {
     const lease = oauthClients.get(leaseKey);
-    if (!lease) {
-      return;
-    }
+    if (!lease) return;
     oauthClients.delete(leaseKey);
     clearTimer(lease.timer);
-    if (lease.client) {
-      lease.client.close();
-    } else {
-      void lease.promise.then(
-        (client) => client.close(),
-        () => undefined,
-      );
+    try {
+      const client = lease.client ?? (await lease.promise);
+      await client.closeAndWait();
+    } finally {
+      lease.releaseInstallationLock?.();
     }
   };
-
   yield* Effect.addFinalizer(() =>
-    Effect.sync(() => {
-      for (const [poolKey, entry] of adminClients.entries()) {
-        disposeAdminEntry(poolKey, entry);
-      }
-      for (const leaseKey of oauthClients.keys()) {
-        releaseOauthLease(leaseKey);
-      }
+    Effect.promise(async () => {
+      for (const [poolKey, entry] of adminClients.entries()) disposeAdminEntry(poolKey, entry);
+      await Promise.all([...oauthClients.keys()].map(releaseOauthLease));
     }),
   );
 
-  const createClient = (input: CodexControlClientAccessInput) =>
-    CodexControlClient.create(readCodexControlEnvironmentConfig(input, serverConfig.cwd));
+  const createClient = async (input: CodexControlClientAccessInput) => {
+    const config = readCodexControlEnvironmentConfig(input, serverConfig.cwd);
+    const settings =
+      settingsService._tag === "Some"
+        ? await Effect.runPromise(settingsService.value.getSettings)
+        : undefined;
+    const account = config.homePath
+      ? Object.values(settings?.providerInstances ?? {}).find(
+          (instance) =>
+            instance.driver === "codex" &&
+            (instance.config as { homePath?: string } | undefined)?.homePath === config.homePath,
+        )
+      : settings?.providerInstances[ProviderInstanceId.make("codex")];
+    const environment = buildAccountExecutionEnvironment({
+      instance: account?.environment,
+      purpose: "account",
+      profile: serverConfig.profile,
+      stateDir: serverConfig.stateDir,
+      baseEnv: process.env,
+    });
+    const homePath = config.homePath ?? environment.CODEX_HOME;
+    if (homePath) await validateManagedHome(serverConfig, homePath);
+    await certifyProvider(serverConfig, "codex", config.binaryPath ?? "codex", environment);
+    return CodexControlClient.create({
+      ...config,
+      ...(homePath ? { homePath } : {}),
+      processEnvironment: environment,
+    });
+  };
 
   const getOrCreateAdminEntry = (input: CodexControlClientAccessInput) => {
     const poolKey = readCodexControlPoolKey(input);
@@ -221,7 +247,15 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
             });
           }
 
+          const installationLock = await acquireInstanceLock(
+            NodePath.join(
+              serverConfig.profilesRoot ?? `${serverConfig.stateDir}-profiles`,
+              "locks",
+              "provider-oauth.lock.sqlite",
+            ),
+          );
           const lease: OauthLease = {
+            releaseInstallationLock: installationLock.release,
             promise: createClient(input),
             client: null,
             timer: null,
@@ -235,6 +269,7 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
             if (oauthClients.get(leaseKey) === lease) {
               oauthClients.delete(leaseKey);
             }
+            installationLock.release();
             throw error;
           }
           if (oauthClients.get(leaseKey) !== lease) {
@@ -245,14 +280,12 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
           }
           lease.client = client;
           lease.timer = setTimeout(() => {
-            releaseOauthLease(leaseKey);
+            void releaseOauthLease(leaseKey);
           }, CODEX_MCP_OAUTH_CLIENT_TTL_MS);
 
           return {
             client,
-            release: Effect.sync(() => {
-              releaseOauthLease(leaseKey);
-            }),
+            release: Effect.promise(() => releaseOauthLease(leaseKey)),
           };
         },
         catch: (cause) =>

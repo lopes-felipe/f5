@@ -292,24 +292,27 @@ export const makeCodexTextGeneration = (
               dropped: launchArgs.dropped,
             });
           }
-          const args = prependCodexCliTelemetryDisabledConfig([
-            ...launchArgs.argv,
-            "exec",
-            "--ephemeral",
-            "--skip-git-repo-check",
-            "-s",
-            "read-only",
-            "--model",
-            selectedModel,
-            "--config",
-            `model_reasoning_effort="${selectedReasoningEffort}"`,
-            "--output-schema",
-            schemaPath,
-            "--output-last-message",
-            outputPath,
-            ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
-            "-",
-          ]);
+          const args = prependCodexCliTelemetryDisabledConfig(
+            [
+              ...launchArgs.argv,
+              "exec",
+              "--ephemeral",
+              "--skip-git-repo-check",
+              "-s",
+              "read-only",
+              "--model",
+              selectedModel,
+              "--config",
+              `model_reasoning_effort="${selectedReasoningEffort}"`,
+              "--output-schema",
+              schemaPath,
+              "--output-last-message",
+              outputPath,
+              ...imagePaths.flatMap((imagePath) => ["--image", imagePath]),
+              "-",
+            ],
+            { managedCredentials: environment.F5_PROFILE_ISOLATED === "1" },
+          );
           const invocation = yield* resolveInvocationEffect(
             codexSettings?.binaryPath || "codex",
             args,

@@ -57,7 +57,17 @@ export interface TerminalStartInput extends TerminalOpenInput {
 /**
  * TerminalManagerShape - Service API for terminal session lifecycle operations.
  */
+export type TerminalOwner =
+  | { readonly kind: "thread"; readonly threadId: string }
+  | { readonly kind: "account"; readonly instanceId: string };
+export const terminalOwnerKey = (owner: TerminalOwner) =>
+  owner.kind === "thread" ? `thread:${owner.threadId}` : `account:${owner.instanceId}`;
+
 export interface TerminalManagerShape {
+  /** Internal account PTYs never enter thread history or logging queues. */
+  readonly createAccountProcess?: (
+    input: import("./PTY").PtySpawnInput,
+  ) => Effect.Effect<PtyProcess, TerminalError>;
   /**
    * Open or attach to a terminal session.
    *

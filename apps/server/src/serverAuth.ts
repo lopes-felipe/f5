@@ -400,6 +400,4 @@ export function makeServerAuth(
   };
 }
 
-export function isPrivateHttpPath(pathname: string): boolean {
-  return pathname.startsWith("/attachments/") || pathname.startsWith("/api/");
-}
+export { isPrivateHttpPath } from "@t3tools/shared/backendPaths";

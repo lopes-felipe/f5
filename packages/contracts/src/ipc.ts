@@ -1,4 +1,11 @@
 import type {
+  ProfileId,
+  ProfileSummary,
+  ProfileCreateInput,
+  ProfileUpdateInput,
+  ProfileListResult,
+} from "./profile";
+import type {
   GitActionProgressEvent,
   GitCheckoutInput,
   GitCreateBranchInput,
@@ -383,6 +390,10 @@ export interface DesktopImageDownloadResult {
 }
 
 export interface DesktopBridge {
+  getProfileId?: () => string | null;
+  switchProfile?: (profileId: string) => Promise<boolean>;
+  stopProfile?: (profileId: string) => Promise<boolean>;
+  onProfilesChanged?: (listener: () => void) => () => void;
   getWsUrl: () => string | null;
   getPathForFile?: (file: File) => string | null;
   resolveRealPath?: (pathValue: string) => string | null;
@@ -442,6 +453,26 @@ export interface DesktopPreviewBridge {
 }
 
 export interface NativeApi {
+  profiles?: {
+    githubSet: (input: { host: string; token: string }) => Promise<{ login: string }>;
+    githubRemove: (input: { host: string }) => Promise<void>;
+    githubStatus: (input: { host: string }) => Promise<{ login: string | null }>;
+    list: () => Promise<typeof ProfileListResult.Type>;
+    create: (input: ProfileCreateInput) => Promise<ProfileSummary>;
+    update: (input: ProfileUpdateInput) => Promise<ProfileSummary>;
+    remove: (input: { profileId: ProfileId }) => Promise<void>;
+    loginStart: (input: {
+      instanceId: import("./providerInstance").ProviderInstanceId;
+    }) => Promise<{ handle: string }>;
+    input: (input: { handle: string; data: string }) => Promise<void>;
+    cancel: (input: { handle: string }) => Promise<void>;
+    logout: (input: {
+      instanceId: import("./providerInstance").ProviderInstanceId;
+    }) => Promise<void>;
+    accountStatus: (input: {
+      instanceId: import("./providerInstance").ProviderInstanceId;
+    }) => Promise<unknown>;
+  };
   dialogs: {
     pickFolder: () => Promise<string | null>;
     confirm: (message: string) => Promise<boolean>;

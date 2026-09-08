@@ -1,3 +1,4 @@
+import { ServerConfig } from "../../config";
 /**
  * ProviderInstanceRegistryLive — runtime implementation of
  * `ProviderInstanceRegistry` plus its sibling mutator.
@@ -152,6 +153,22 @@ const buildEntry = <R>(input: {
 > =>
   Effect.gen(function* () {
     const { driversById, parentScope, instanceId, rawInstanceId, entry } = input;
+    const profileConfig = yield* Effect.serviceOption(ServerConfig);
+    if (
+      profileConfig._tag === "Some" &&
+      profileConfig.value.profile?.isDefault === false &&
+      !["codex", "claudeAgent"].includes(entry.driver)
+    )
+      return {
+        kind: "unavailable" as const,
+        snapshot: buildUnavailableProviderSnapshot({
+          driverKind: entry.driver,
+          instanceId,
+          displayName: entry.displayName,
+          accentColor: entry.accentColor,
+          reason: `unsupported-isolation: ${entry.driver} is not certified for isolated profiles.`,
+        }),
+      };
     const driver = driversById.get(entry.driver);
     if (!driver) {
       return {

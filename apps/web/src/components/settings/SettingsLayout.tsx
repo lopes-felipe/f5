@@ -1,3 +1,4 @@
+import { ProfilesSettings } from "./categories/ProfilesSettings";
 import { SearchIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -39,6 +40,8 @@ function CategoryContent({
   readonly active: boolean;
 }) {
   switch (category) {
+    case "profiles":
+      return active ? <ProfilesSettings /> : null;
     case "general":
       return <GeneralSettings />;
     case "appearance":

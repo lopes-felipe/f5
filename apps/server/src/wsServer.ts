@@ -1,3 +1,13 @@
+import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
+import { profileProviderAccounts } from "@t3tools/shared/profileProviderAccounts";
+import {
+  repositorySharingWarnings,
+  invalidExecutionDirectories,
+} from "./profiles/RepositorySharing";
+import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
+import { profileStateDir } from "@t3tools/shared/profilePaths";
+import { ProfileRegistryStore, fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
+import { ProviderAccountService } from "./profiles/ProviderAccountService";
 /**
  * Server - HTTP/WebSocket server service interface.
  *
@@ -195,7 +205,7 @@ import { reconcileCodexThreadSnapshots } from "./orchestration/codexSnapshotReco
 import { redactServerSettingsForClient, ServerSettingsService } from "./serverSettings.ts";
 import { StorageMaintenance, type StorageMaintenanceShape } from "./storage/StorageMaintenance.ts";
 import { makePreviewManager } from "./preview/Manager.ts";
-import { scanLocalServers } from "./preview/PortScanner.ts";
+import { scanLocalServers, OwnedPreviewUrls } from "./preview/PortScanner.ts";
 import { PreviewAutomationBroker } from "./mcp/PreviewAutomationBroker.ts";
 import { PrHubAdvisoryService } from "./prHub/Services/PrHubAdvisoryService.ts";
 import { PrHubService } from "./prHub/Services/PrHubService.ts";
@@ -795,7 +805,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       process.env.T3CODE_LOG_THREAD_OPEN_TIMINGS === "true");
 
   function logOutgoingPush(push: WsPushEnvelopeBase, recipients: number) {
-    if (!logWebSocketEvents) return;
+    if (!logWebSocketEvents || push.channel === WS_CHANNELS.providerAccountEvent) return;
     logger.event("outgoing push", {
       channel: push.channel,
       sequence: push.sequence,
@@ -841,6 +851,82 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     logOutgoingPush,
     sendClient: webSocketSendController.send,
   });
+  const defaultProfileStateDir =
+    serverConfig.profilesRoot?.slice(0, -"-profiles".length) ?? serverConfig.stateDir;
+  const profilesStore = new ProfileRegistryStore(
+    defaultProfileStateDir,
+    3773 + (devUrl ? 1000 : 0),
+  );
+  const profileSecrets = yield* makeServerSecretStore.pipe(
+    Effect.mapError((cause) => new ServerLifecycleError({ operation: "profiles.secrets", cause })),
+  );
+  const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
+  const profileCall = <A>(operation: () => Promise<A>) =>
+    Effect.tryPromise({
+      try: operation,
+      catch: (cause) =>
+        new RouteRequestError({ message: cause instanceof Error ? cause.message : String(cause) }),
+    });
+  const readProfiles = async () => {
+    const snapshot = await profilesStore.list(activeProfile.id);
+    const providers = await Effect.runPromise(providerRegistry.getProviders);
+    const sharedRepositories = await repositorySharingWarnings(snapshot.profiles, activeProfile.id);
+    const invalidDirectories = await invalidExecutionDirectories(serverConfig.stateDir).catch(
+      () => [],
+    );
+    return {
+      ...snapshot,
+      profiles: snapshot.profiles.map((profile) =>
+        profile.isActive
+          ? {
+              ...profile,
+              sharedRepositories,
+              invalidDirectories,
+              providerAccounts: profileProviderAccounts(providers),
+            }
+          : profile,
+      ),
+    };
+  };
+  if (serverConfig.profilesRoot) {
+    yield* Effect.tryPromise({
+      try: () => profilesStore.init(),
+      catch: (cause) => new ServerLifecycleError({ operation: "profiles.init", cause }),
+    }).pipe(Effect.ignore);
+    yield* Effect.acquireRelease(
+      Effect.sync(() =>
+        profilesStore.watch(() => {
+          void readProfiles()
+            .then((snapshot) =>
+              Effect.runPromise(pushBus.publishAll(WS_CHANNELS.profilesUpdated, snapshot)),
+            )
+            .catch((cause) =>
+              Effect.runPromise(Effect.logError("Failed to refresh profiles", cause)),
+            );
+        }),
+      ),
+      (close) => Effect.sync(close),
+    );
+  }
+  const accountService = new ProviderAccountService(
+    serverConfig,
+    serverSettings,
+    terminalManager,
+    (event) => {
+      void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.providerAccountEvent, event));
+    },
+    async (instanceId) => {
+      await Effect.runPromise(providerRegistry.refreshInstance(instanceId));
+      await Effect.runPromise(
+        pushBus.publishAll(WS_CHANNELS.profilesUpdated, await readProfiles()),
+      );
+    },
+    async (instanceId) =>
+      (await Effect.runPromise(providerService.listSessions())).some(
+        (session) => session.providerInstanceId === instanceId && session.activeTurnId != null,
+      ),
+  );
+  yield* Effect.addFinalizer(() => Effect.promise(() => accountService.dispose()));
   const previewManager = makePreviewManager();
   const previewAutomationClientIdsByWs = new WeakMap<WebSocket, Map<string, string>>();
 
@@ -1822,9 +1908,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     );
 
-  const unsubscribeTerminalEvents = yield* terminalManager.subscribe(
-    (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event)),
-  );
+  const ownedPreviewUrls = new OwnedPreviewUrls();
+  const unsubscribeTerminalEvents = yield* terminalManager.subscribe((event) => {
+    if (event.type === "output")
+      ownedPreviewUrls.append(`terminal:${event.threadId}:${event.terminalId}`, event.data);
+    void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.terminalEvent, event));
+  });
+  yield* Stream.runForEach(providerService.streamEvents, (event) =>
+    Effect.sync(() => {
+      if (event.type === "content.delta" && event.payload.streamKind === "command_output")
+        ownedPreviewUrls.append(`provider:${event.threadId}:${event.itemId}`, event.payload.delta);
+    }),
+  ).pipe(Effect.forkIn(subscriptionsScope));
   yield* Effect.addFinalizer(() => Effect.sync(() => unsubscribeTerminalEvents()));
   const unsubscribePreviewEvents = previewManager.subscribe(
     (event) => void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.previewEvent, event)),
@@ -1833,6 +1928,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   yield* readiness.markTerminalSubscriptionsReady;
 
   yield* NodeHttpServer.make(() => httpServer, listenOptions).pipe(
+    Effect.tapError((cause) => {
+      if (!serverConfig.profilesRoot) return Effect.void;
+      process.exitCode = 78;
+      return fileSystem
+        .writeFileString(
+          path.join(serverConfig.profilesRoot, `last-startup-error-${activeProfile.id}.json`),
+          JSON.stringify({
+            message: `Could not listen on port ${port}. Another F5 profile or program may own it. Change this profile's port in Settings > Profiles.`,
+            detail: String(cause),
+          }),
+        )
+        .pipe(Effect.ignoreCause({ log: true }));
+    }),
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "httpServerListen", cause })),
   );
   yield* readiness.markHttpListening;
@@ -1885,8 +1993,102 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       });
     });
 
+  const resolveMcpAccount = async <
+    T extends {
+      binaryPath?: string | undefined;
+      homePath?: string | undefined;
+      instanceId?: import("@t3tools/contracts").ProviderInstanceId | undefined;
+      provider?: string | undefined;
+    },
+  >(
+    body: T,
+  ): Promise<T> => {
+    if (body.binaryPath !== undefined || body.homePath !== undefined)
+      throw new Error(
+        "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
+      );
+    const { ProviderInstanceId } = await import("@t3tools/contracts");
+    const account = await accountService.resolve(
+      body.instanceId ??
+        ProviderInstanceId.make(body.provider === "claudeAgent" ? "claudeAgent" : "codex"),
+    );
+    if (body.provider && body.provider !== account.instance.driver)
+      throw new Error("Provider instance does not match the requested provider.");
+    return {
+      ...body,
+      ...(account.config.binaryPath ? { binaryPath: account.config.binaryPath } : {}),
+      ...(account.config.homePath ? { homePath: account.config.homePath } : {}),
+    };
+  };
+
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
+      case WS_METHODS.githubAccountSet: {
+        const { host, token } = request.body;
+        return yield* profileCall(() => new ProfileGithubAccount(profileSecrets).set(host, token));
+      }
+      case WS_METHODS.githubAccountRemove: {
+        const { host } = request.body;
+        return yield* profileCall(() => new ProfileGithubAccount(profileSecrets).remove(host));
+      }
+      case WS_METHODS.githubAccountStatus: {
+        const { host } = request.body;
+        return yield* profileCall(() => new ProfileGithubAccount(profileSecrets).status(host));
+      }
+      case WS_METHODS.profilesList:
+        return yield* profileCall(readProfiles);
+      case WS_METHODS.profilesCreate: {
+        const profile = yield* profileCall(() =>
+          profilesStore.create(
+            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileCreateInput,
+          ),
+        );
+        return {
+          ...profile,
+          stateDir: profileStateDir(defaultProfileStateDir, profile),
+          isActive: false,
+          providerAccounts: [],
+        };
+      }
+      case WS_METHODS.profilesUpdate: {
+        const profile = yield* profileCall(() =>
+          profilesStore.update(
+            stripRequestTag(request.body) as import("@t3tools/contracts").ProfileUpdateInput,
+          ),
+        );
+        return {
+          ...profile,
+          stateDir: profileStateDir(defaultProfileStateDir, profile),
+          isActive: profile.id === activeProfile.id,
+          providerAccounts: [],
+        };
+      }
+      case WS_METHODS.profilesDelete: {
+        const id = request.body.profileId;
+        return yield* profileCall(() => profilesStore.remove(id));
+      }
+      case WS_METHODS.providerAccountLoginStart: {
+        const id = request.body.instanceId;
+        return yield* profileCall(() => accountService.start(id));
+      }
+      case WS_METHODS.providerAccountLogout: {
+        const id = request.body.instanceId;
+        yield* profileCall(() => accountService.start(id, true));
+        return;
+      }
+      case WS_METHODS.providerAccountInput: {
+        const { handle, data } = request.body;
+        return yield* profileCall(async () => accountService.input(handle, data));
+      }
+      case WS_METHODS.providerAccountCancel: {
+        const { handle } = request.body;
+        return yield* profileCall(() => accountService.cancel(handle));
+      }
+      case WS_METHODS.providerAccountStatus: {
+        const id = request.body.instanceId;
+        return yield* profileCall(() => accountService.status(id));
+      }
+
       case AGENTS_WS_METHODS.getSnapshot: {
         const { threadBackgroundWork } = yield* awaitOrchestrationRuntimeForRoute;
         return yield* threadBackgroundWork.getSnapshot.pipe(
@@ -3077,7 +3279,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       case WS_METHODS.previewListLocalServers: {
         const servers = yield* Effect.tryPromise({
-          try: () => scanLocalServers(),
+          try: () => scanLocalServers(ownedPreviewUrls.urls),
           catch: (cause) =>
             new RouteRequestError({
               message: `Failed to discover local servers: ${String(cause)}`,
@@ -3793,7 +3995,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpGetProviderStatus: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* mcpRuntimeService.getProviderStatus(body).pipe(
           Effect.mapError(
             (error) =>
@@ -3805,7 +4008,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpGetServerStatuses: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* mcpRuntimeService.getServerStatuses(body).pipe(
           Effect.mapError(
             (error) =>
@@ -3817,7 +4021,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpStartLogin: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* mcpRuntimeService.startLogin(body).pipe(
           Effect.mapError(
             (error) =>
@@ -3829,12 +4034,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpGetLoginStatus: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* mcpRuntimeService.getLoginStatus(body);
       }
 
       case WS_METHODS.mcpGetCodexStatus: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         const providerOptions = toCodexProviderStartOptions({
           binaryPath: body.binaryPath,
           homePath: body.homePath,
@@ -3846,7 +4053,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpReloadProject: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         const providerOptions = toCodexProviderStartOptions({
           binaryPath: body.binaryPath,
           homePath: body.homePath,
@@ -3871,7 +4079,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpApplyToLiveSessions: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         const { providerCommandReactor } = yield* awaitOrchestrationRuntimeForRoute;
         const result = yield* providerCommandReactor.applyMcpConfigToLiveSessions(body).pipe(
           Effect.mapError(
@@ -3891,7 +4100,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpStartOAuthLogin: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* codexOAuthManager.startLogin(body).pipe(
           Effect.mapError(
             (error) =>
@@ -3903,7 +4113,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
 
       case WS_METHODS.mcpGetOAuthStatus: {
-        const body = stripRequestTag(request.body);
+        const requestBody = stripRequestTag(request.body);
+        const body = yield* profileCall(() => resolveMcpAccount(requestBody));
         return yield* codexOAuthManager.getStatus(body);
       }
 
@@ -4024,7 +4235,21 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             if (logWebSocketEvents) logger.event("welcome readiness reached");
           }),
         ),
-        Effect.flatMap(() => pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, welcomeData)),
+        Effect.flatMap(() => profileCall(readProfiles)),
+        Effect.flatMap((snapshot) =>
+          pushBus.publishClient(ws, WS_CHANNELS.serverWelcome, {
+            ...welcomeData,
+            profile: snapshot.profiles.find((profile) => profile.isActive) ?? {
+              ...fallbackDefaultProfile(defaultProfileStateDir),
+              ...activeProfile,
+              port,
+              stateDir: serverConfig.stateDir,
+              isActive: true,
+              providerAccounts: [],
+            },
+            ...(snapshot.diagnostic ? { profileDiagnostic: snapshot.diagnostic } : {}),
+          }),
+        ),
         Effect.tap((delivered) =>
           Effect.sync(() => {
             if (logWebSocketEvents) logger.event("welcome delivery settled", { delivered });

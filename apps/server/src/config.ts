@@ -1,3 +1,6 @@
+import type { ActiveProfile } from "@t3tools/contracts";
+import { profileStateDir, profilesRootDir } from "@t3tools/shared/profilePaths";
+import { fallbackDefaultProfile } from "@t3tools/shared/profileIdentity";
 /**
  * ServerConfig - Runtime configuration services.
  *
@@ -13,6 +16,7 @@ export const DEFAULT_PORT = 3773;
 export type RuntimeMode = "web" | "desktop";
 
 export interface ServerDerivedPaths {
+  readonly providerHomesDir?: string;
   readonly stateDir: string;
   readonly dbPath: string;
   readonly keybindingsConfigPath: string;
@@ -33,6 +37,8 @@ export interface ServerDerivedPaths {
  * ServerConfigShape - Process/runtime configuration required by the server.
  */
 export interface ServerConfigShape extends ServerDerivedPaths {
+  readonly profile?: ActiveProfile;
+  readonly profilesRoot?: string;
   readonly mode: RuntimeMode;
   readonly port: number;
   readonly host: string | undefined;
@@ -48,12 +54,17 @@ export interface ServerConfigShape extends ServerDerivedPaths {
   readonly acpHardeningEnabled: boolean;
 }
 
-export const deriveServerPaths = Effect.fn(function* (
-  baseDir: ServerConfigShape["baseDir"],
-  devUrl: ServerConfigShape["devUrl"],
-): Effect.fn.Return<ServerDerivedPaths, never, Path.Path> {
+export const deriveServerPaths = Effect.fn(function* ({
+  baseDir,
+  defaultStateDir,
+  profile = fallbackDefaultProfile(defaultStateDir),
+}: {
+  readonly baseDir: string;
+  readonly defaultStateDir: string;
+  readonly profile?: ActiveProfile;
+}): Effect.fn.Return<ServerDerivedPaths, never, Path.Path> {
   const { join } = yield* Path.Path;
-  const stateDir = join(baseDir, devUrl !== undefined ? "dev" : "userdata");
+  const stateDir = profileStateDir(defaultStateDir, profile);
   const dbPath = join(stateDir, "state.sqlite");
   const attachmentsDir = join(stateDir, "attachments");
   const logsDir = join(stateDir, "logs");
@@ -61,11 +72,12 @@ export const deriveServerPaths = Effect.fn(function* (
   const providerStatusCacheDir = join(stateDir, "provider-status-cache");
   return {
     stateDir,
+    providerHomesDir: join(stateDir, "provider-homes"),
     dbPath,
     keybindingsConfigPath: join(stateDir, "keybindings.json"),
     settingsPath: join(stateDir, "settings.json"),
     secretsDir: join(stateDir, "secrets"),
-    worktreesDir: join(baseDir, "worktrees"),
+    worktreesDir: join(profile.isDefault ? baseDir : stateDir, "worktrees"),
     attachmentsDir,
     logsDir,
     serverLogPath: join(logsDir, "server.log"),
@@ -75,6 +87,14 @@ export const deriveServerPaths = Effect.fn(function* (
     terminalLogsDir: join(logsDir, "terminals"),
     anonymousIdPath: join(stateDir, "anonymous-id"),
   };
+});
+
+/** Create state directories only after migration and pending restore have completed. */
+export const ensureStateDirectories = Effect.fn(function* (paths: ServerDerivedPaths) {
+  const fs = yield* FileSystem.FileSystem;
+  for (const directory of [paths.stateDir, paths.logsDir, paths.attachmentsDir, paths.secretsDir]) {
+    if (directory) yield* fs.makeDirectory(directory, { recursive: true });
+  }
 });
 
 /**
@@ -99,39 +119,22 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
         if (typeof stateDirOrPrefix === "string") {
           const stateDir = stateDirOrPrefix;
           baseDir = path.dirname(stateDir);
-          const logsDir = path.join(stateDir, "logs");
-          const providerLogsDir = path.join(logsDir, "provider");
-          paths = {
-            stateDir,
-            dbPath: path.join(stateDir, "state.sqlite"),
-            keybindingsConfigPath: path.join(stateDir, "keybindings.json"),
-            settingsPath: path.join(stateDir, "settings.json"),
-            secretsDir: path.join(stateDir, "secrets"),
-            worktreesDir: path.join(baseDir, "worktrees"),
-            attachmentsDir: path.join(stateDir, "attachments"),
-            logsDir,
-            serverLogPath: path.join(logsDir, "server.log"),
-            providerLogsDir,
-            providerEventLogPath: path.join(providerLogsDir, "events.log"),
-            providerStatusCacheDir: path.join(stateDir, "provider-status-cache"),
-            terminalLogsDir: path.join(logsDir, "terminals"),
-            anonymousIdPath: path.join(stateDir, "anonymous-id"),
-          };
+          paths = yield* deriveServerPaths({ baseDir, defaultStateDir: stateDir });
         } else {
           baseDir = yield* fs.makeTempDirectoryScoped({ prefix: stateDirOrPrefix.prefix });
-          paths = yield* deriveServerPaths(baseDir, devUrl);
+          paths = yield* deriveServerPaths({
+            baseDir,
+            defaultStateDir: path.join(baseDir, "userdata"),
+          });
         }
 
-        yield* fs.makeDirectory(paths.stateDir, { recursive: true });
-        yield* fs.makeDirectory(paths.logsDir, { recursive: true });
-        yield* fs.makeDirectory(paths.attachmentsDir, { recursive: true });
-        yield* fs.makeDirectory(paths.secretsDir ?? path.join(paths.stateDir, "secrets"), {
-          recursive: true,
-        });
+        yield* ensureStateDirectories(paths);
 
         return {
           cwd,
           baseDir,
+          profile: fallbackDefaultProfile(paths.stateDir),
+          profilesRoot: profilesRootDir(paths.stateDir),
           ...paths,
           mode: "web",
           autoBootstrapProjectFromCwd: false,

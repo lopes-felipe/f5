@@ -1,3 +1,4 @@
+import { ServerSecretStoreLive } from "./auth/Layers/ServerSecretStore";
 import { PrHubRepositoryLive } from "./prHub/Layers/PrHubRepository.ts";
 import { PrHubJobCoordinatorLive } from "./prHub/Layers/PrHubJobCoordinator.ts";
 import { PrHubDiscoveryLive } from "./prHub/Layers/PrHubDiscovery.ts";
@@ -205,7 +206,9 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(providerUpdateAdvisorLayer),
     );
     const codexMcpEventBusLayer = CodexMcpEventBusLive;
-    const codexControlClientRegistryLayer = CodexControlClientRegistryLive;
+    const codexControlClientRegistryLayer = CodexControlClientRegistryLive.pipe(
+      Layer.provide(serverSettingsLayer),
+    );
     const codexMcpSyncServiceLayer = CodexMcpSyncServiceLive.pipe(
       Layer.provide(codexControlClientRegistryLayer),
       Layer.provide(projectMcpConfigServiceLayer),
@@ -231,6 +234,7 @@ export function makeServerProviderLayer(): Layer.Layer<
       Layer.provide(projectMcpConfigServiceLayer),
     );
     const mcpRuntimeServiceLayer = McpRuntimeServiceLive.pipe(
+      Layer.provide(serverSettingsLayer),
       Layer.provide(McpRuntimeDiagnosticsLive),
       Layer.provide(providerServiceLayer),
       Layer.provide(codexControlClientRegistryLayer),
@@ -261,8 +265,10 @@ export function makeServerProviderLayer(): Layer.Layer<
 }
 
 export function makeServerRuntimeServicesLayer() {
-  const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
-  const githubCliLayer = GitHubCliLive;
+  const gitCoreLayer = GitCoreLive.pipe(
+    Layer.provideMerge(GitServiceLive.pipe(Layer.provideMerge(ServerSecretStoreLive))),
+  );
+  const githubCliLayer = GitHubCliLive.pipe(Layer.provideMerge(ServerSecretStoreLive));
   const textGenerationLayer = TextGenerationLive;
 
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
@@ -328,7 +334,9 @@ export function makeServerOrchestrationRuntimeLayer() {
     Layer.provideMerge(providerSessionDirectoryLayer),
   );
   const usageServiceLayer = UsageServiceLive;
-  const gitCoreLayer = GitCoreLive.pipe(Layer.provideMerge(GitServiceLive));
+  const gitCoreLayer = GitCoreLive.pipe(
+    Layer.provideMerge(GitServiceLive.pipe(Layer.provideMerge(ServerSecretStoreLive))),
+  );
   const checkpointDiffQueryLayer = CheckpointDiffQueryLive.pipe(
     Layer.provideMerge(ProjectionThreadRepositoryLive),
     Layer.provideMerge(ProjectionProjectRepositoryLive),

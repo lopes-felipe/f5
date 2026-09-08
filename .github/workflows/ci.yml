@@ -73,6 +73,12 @@ jobs:
       - name: Run browser tests
         run: bun run --cwd apps/web test:browser
 
+      - name: Run desktop smoke tests
+        run: xvfb-run --auto-servernum bun run test:desktop-smoke
+
+      - name: Run real profile backend lifecycle checks
+        run: node scripts/profile-lifecycle-smoke.cjs
+
   windows:
     name: Windows build and integration suite
     runs-on: windows-latest
@@ -108,5 +114,29 @@ jobs:
       - name: Build desktop bundles
         run: bun run build:desktop
 
+      - name: Run desktop smoke tests
+        run: bun run test:desktop-smoke
+
+      - name: Run real profile backend lifecycle checks
+        run: node scripts/profile-lifecycle-smoke.cjs
+
       # The hosted runner does not have real codex/cursor/grok/opencode installs.
       # Provider end-to-end spawning and authenticated Claude sessions remain a manual Windows pass.
+
+  macos-profiles:
+    name: macOS profile storage and lifecycle checks
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24.13.1
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.9
+      - run: bun install --frozen-lockfile
+      - name: Check profile locks, provisioning, homes and account lifecycle
+        run: bun run --cwd apps/server test:file src/profiles src/provider/Drivers/ClaudeHome.test.ts src/provider/Drivers/CodexHomeLayout.test.ts
+      # Native account/keychain certification requires dedicated accounts and is
+      # recorded separately before release; no credentials are exposed to PR jobs.

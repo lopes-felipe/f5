@@ -1,3 +1,5 @@
+import { ProfileRegistryStore } from "./profiles/ProfileRegistryStore";
+import { acquireInstanceLock } from "./profiles/InstanceLock";
 import * as Http from "node:http";
 import * as FS from "node:fs";
 import * as OS from "node:os";
@@ -10,7 +12,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Command from "effect/unstable/cli/Command";
 import { FetchHttpClient } from "effect/unstable/http";
-import { beforeEach } from "vitest";
+import { beforeEach, afterEach } from "vitest";
+afterEach(() => {
+  process.exitCode = undefined;
+});
 import { NetService } from "@t3tools/shared/Net";
 import { legacyT3BaseDir, legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 
@@ -592,6 +597,63 @@ it.layer(testLayer)("server CLI command", (it) => {
       // effect/unstable/cli renders help/errors for parse failures and returns success.
       assert.equal(start.mock.calls.length, 0);
       assert.equal(stop.mock.calls.length, 0);
+    }),
+  );
+});
+
+it.layer(testLayer)("profile startup selection", (it) => {
+  it.effect("selects isolated state from a slug and its exact recorded port", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-start-"));
+      try {
+        const stateDir = Path.join(root, "state");
+        const store = new ProfileRegistryStore(stateDir);
+        yield* Effect.promise(() => store.init());
+        const work = yield* Effect.promise(() => store.create({ name: "Work" }));
+        yield* runCli(["--state-dir", stateDir, "--profile", "work"]);
+        assert.equal(resolvedConfig?.profile?.id, work.id);
+        assert.equal(resolvedConfig?.port, work.port);
+        assert.equal(resolvedConfig?.stateDir, Path.join(store.root, work.id));
+        assert.equal(resolvedConfig?.worktreesDir, Path.join(store.root, work.id, "worktrees"));
+        assert.equal(findAvailablePort.mock.calls.length, 0);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
+  it.effect("fails closed for a busy profile, unknown selection, and corrupted registry", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-profile-fail-"));
+      try {
+        const stateDir = Path.join(root, "state");
+        const store = new ProfileRegistryStore(stateDir);
+        yield* Effect.promise(() => store.init());
+        const work = yield* Effect.promise(() => store.create({ name: "Work" }));
+        const lock = yield* Effect.promise(() => acquireInstanceLock(store.instanceLockPath(work)));
+        try {
+          const result = yield* Effect.result(
+            runCli(["--state-dir", stateDir, "--profile", "work"]),
+          );
+          assert.equal(result._tag, "Failure");
+          assert.equal(start.mock.calls.length, 0);
+        } finally {
+          lock.release();
+        }
+        assert.ok(FS.existsSync(Path.join(store.root, `last-startup-error-${work.id}.json`)));
+        const unknown = yield* Effect.result(
+          runCli(["--state-dir", stateDir, "--profile", "nope"]),
+        );
+        assert.equal(unknown._tag, "Failure");
+        FS.writeFileSync(store.path, "{");
+        const corrupt = yield* Effect.result(
+          runCli(["--state-dir", stateDir], { F5_PROFILE: "work", T3CODE_NO_BROWSER: "true" }),
+        );
+        assert.equal(corrupt._tag, "Failure");
+        assert.equal(FS.readFileSync(store.path, "utf8"), "{");
+        assert.equal(start.mock.calls.length, 0);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
     }),
   );
 });

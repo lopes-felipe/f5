@@ -1,3 +1,17 @@
+import {
+  GithubAccountInput,
+  GithubAccountHostInput,
+  ProfileSummary,
+  ProfileRegistryDiagnostic,
+  ProfileCreateInput,
+  ProfileUpdateInput,
+  ProfileDeleteInput,
+  ProfileListResult,
+  ProviderAccountStartInput,
+  ProviderAccountHandleInput,
+  ProviderAccountInput,
+  ProviderAccountEvent,
+} from "./profile";
 import { PrHubTrackInput } from "./prHub";
 import { PrHubReplyInput, PrHubSaveReplyDraftInput, PrHubRecoverReplyInput } from "./prHub";
 import { PrHubThreadsInput, PrHubThreadStateInput } from "./prHub";
@@ -209,6 +223,18 @@ import {
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
 export const WS_METHODS = {
+  githubAccountSet: "githubAccount.set",
+  githubAccountRemove: "githubAccount.remove",
+  githubAccountStatus: "githubAccount.status",
+  profilesList: "profiles.list",
+  profilesCreate: "profiles.create",
+  profilesUpdate: "profiles.update",
+  profilesDelete: "profiles.delete",
+  providerAccountLoginStart: "providerAccount.loginStart",
+  providerAccountInput: "providerAccount.input",
+  providerAccountCancel: "providerAccount.cancel",
+  providerAccountLogout: "providerAccount.logout",
+  providerAccountStatus: "providerAccount.status",
   // Project registry methods
   projectsList: "projects.list",
   projectsAdd: "projects.add",
@@ -326,6 +352,8 @@ export const WS_METHODS = {
 // ── Push Event Channels ──────────────────────────────────────────────
 
 export const WS_CHANNELS = {
+  profilesUpdated: "profiles.updated",
+  providerAccountEvent: "providerAccount.event",
   gitActionProgress: "git.actionProgress",
   gitStatusInvalidated: "git.status.invalidate",
   terminalEvent: "terminal.event",
@@ -361,7 +389,38 @@ const tagPrHubRequestBody = <const Tag extends string, const Fields extends Sche
   schema: Schema.Struct<Fields>,
 ) => tagRequestBody(tag, schema.mapFields(Struct.assign({ accountGeneration: Schema.String })));
 
+// Wire callers identify an account, never its executable or credential directory.
+// Internal MCP services retain resolved path fields, but receiving them over WS is an error.
+const tagMcpAccountRequestBody = <
+  const Tag extends string,
+  const Fields extends Schema.Struct.Fields,
+>(
+  tag: Tag,
+  schema: Schema.Struct<Fields>,
+) =>
+  tagRequestBody(
+    tag,
+    schema.mapFields(
+      Struct.assign({
+        binaryPath: Schema.optional(Schema.Never),
+        homePath: Schema.optional(Schema.Never),
+      }),
+    ),
+  );
+
 const WebSocketRequestBody = Schema.Union([
+  tagRequestBody(WS_METHODS.githubAccountSet, GithubAccountInput),
+  tagRequestBody(WS_METHODS.githubAccountRemove, GithubAccountHostInput),
+  tagRequestBody(WS_METHODS.githubAccountStatus, GithubAccountHostInput),
+  tagRequestBody(WS_METHODS.profilesList, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.profilesCreate, ProfileCreateInput),
+  tagRequestBody(WS_METHODS.profilesUpdate, ProfileUpdateInput),
+  tagRequestBody(WS_METHODS.profilesDelete, ProfileDeleteInput),
+  tagRequestBody(WS_METHODS.providerAccountLoginStart, ProviderAccountStartInput),
+  tagRequestBody(WS_METHODS.providerAccountInput, ProviderAccountInput),
+  tagRequestBody(WS_METHODS.providerAccountCancel, ProviderAccountHandleInput),
+  tagRequestBody(WS_METHODS.providerAccountLogout, ProviderAccountStartInput),
+  tagRequestBody(WS_METHODS.providerAccountStatus, ProviderAccountStartInput),
   tagRequestBody(AGENTS_WS_METHODS.getSnapshot, AgentsGetSnapshotInput),
   tagRequestBody(USAGE_WS_METHODS.getAccounts, UsageGetAccountsInput),
   tagRequestBody(USAGE_WS_METHODS.getSummary, UsageGetSummaryInput),
@@ -542,15 +601,15 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.mcpGetProjectConfig, McpGetProjectConfigRequest),
   tagRequestBody(WS_METHODS.mcpReplaceProjectConfig, McpReplaceProjectConfigRequest),
   tagRequestBody(WS_METHODS.mcpGetEffectiveConfig, McpGetEffectiveConfigRequest),
-  tagRequestBody(WS_METHODS.mcpGetProviderStatus, McpGetProviderStatusRequest),
-  tagRequestBody(WS_METHODS.mcpGetServerStatuses, McpGetServerStatusesRequest),
-  tagRequestBody(WS_METHODS.mcpStartLogin, McpStartLoginRequest),
-  tagRequestBody(WS_METHODS.mcpGetLoginStatus, McpGetLoginStatusRequest),
-  tagRequestBody(WS_METHODS.mcpGetCodexStatus, McpGetCodexStatusRequest),
-  tagRequestBody(WS_METHODS.mcpReloadProject, McpReloadProjectRequest),
-  tagRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
-  tagRequestBody(WS_METHODS.mcpStartOAuthLogin, McpStartOauthLoginRequest),
-  tagRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpGetProviderStatus, McpGetProviderStatusRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpGetServerStatuses, McpGetServerStatusesRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpStartLogin, McpStartLoginRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpGetLoginStatus, McpGetLoginStatusRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpGetCodexStatus, McpGetCodexStatusRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpReloadProject, McpReloadProjectRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpApplyToLiveSessions, McpApplyToLiveSessionsRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpStartOAuthLogin, McpStartOauthLoginRequest),
+  tagMcpAccountRequestBody(WS_METHODS.mcpGetOAuthStatus, McpOauthLoginStatusRequest),
 
   // PR Hub methods
   tagRequestBody(PR_HUB_WS_METHODS.getOverview, PrHubOverviewInput),
@@ -631,6 +690,8 @@ export const WsPushSequence = NonNegativeInt;
 export type WsPushSequence = typeof WsPushSequence.Type;
 
 export const WsWelcomePayload = Schema.Struct({
+  profile: Schema.optional(ProfileSummary),
+  profileDiagnostic: Schema.optional(ProfileRegistryDiagnostic),
   cwd: TrimmedNonEmptyString,
   projectName: TrimmedNonEmptyString,
   bootstrapProjectId: Schema.optional(ProjectId),
@@ -639,6 +700,8 @@ export const WsWelcomePayload = Schema.Struct({
 export type WsWelcomePayload = typeof WsWelcomePayload.Type;
 
 export interface WsPushPayloadByChannel {
+  readonly [WS_CHANNELS.profilesUpdated]: typeof ProfileListResult.Type;
+  readonly [WS_CHANNELS.providerAccountEvent]: typeof ProviderAccountEvent.Type;
   readonly [AGENTS_WS_CHANNELS.snapshotUpdated]: typeof AgentsSnapshot.Type;
   readonly [WS_CHANNELS.serverWelcome]: WsWelcomePayload;
   readonly [WS_CHANNELS.serverConfigUpdated]: typeof ServerConfigUpdatedPayload.Type;
@@ -673,6 +736,14 @@ const makeWsPushSchema = <const Channel extends string, Payload extends Schema.S
     data: payload,
   });
 
+export const WsPushProfilesUpdated = makeWsPushSchema(
+  WS_CHANNELS.profilesUpdated,
+  ProfileListResult,
+);
+export const WsPushProviderAccountEvent = makeWsPushSchema(
+  WS_CHANNELS.providerAccountEvent,
+  ProviderAccountEvent,
+);
 export const WsPushServerWelcome = makeWsPushSchema(WS_CHANNELS.serverWelcome, WsWelcomePayload);
 export const WsPushAgentsSnapshotUpdated = makeWsPushSchema(
   AGENTS_WS_CHANNELS.snapshotUpdated,
@@ -735,6 +806,8 @@ export const WsPushPrHubAdvisoriesUpdated = makeWsPushSchema(
 );
 
 export const WsPushChannelSchema = Schema.Literals([
+  WS_CHANNELS.profilesUpdated,
+  WS_CHANNELS.providerAccountEvent,
   AGENTS_WS_CHANNELS.snapshotUpdated,
   WS_CHANNELS.gitActionProgress,
   WS_CHANNELS.gitStatusInvalidated,
@@ -757,6 +830,8 @@ export const WsPushChannelSchema = Schema.Literals([
 export type WsPushChannelSchema = typeof WsPushChannelSchema.Type;
 
 export const WsPush = Schema.Union([
+  WsPushProfilesUpdated,
+  WsPushProviderAccountEvent,
   WsPushAgentsSnapshotUpdated,
   WsPushServerWelcome,
   WsPushServerConfigUpdated,

@@ -1,4 +1,10 @@
 import {
+  acceptProfileWelcome,
+  refreshProfiles,
+  useProfileState,
+  updateProfileAccounts,
+} from "../profileState";
+import {
   type ProviderInstanceId,
   type ServerProviderAdvisoriesUpdatedPayload,
   type ServerConfig,
@@ -1056,6 +1062,18 @@ function EventRouter() {
     };
 
     const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
+      if (event.type === "project.created" || event.type === "project.meta-updated")
+        void refreshProfiles()
+          .then(() => {
+            const warnings = useProfileState.getState().active?.sharedRepositories ?? [];
+            for (const warning of warnings)
+              toastManager.add({
+                type: "info",
+                title: "Repository shared with another profile",
+                description: `${warning.workspaceRoot} is also registered in ${warning.otherProfiles.join(", ")}. Linked worktrees share Git metadata.`,
+              });
+          })
+          .catch(() => {});
       if (event.sequence <= latestSequence) {
         return;
       }
@@ -1106,6 +1124,7 @@ function EventRouter() {
       applyTerminalEvent(event);
     });
     const unsubWelcome = onServerWelcome((payload) => {
+      if (!acceptProfileWelcome(payload)) return;
       pendingWelcomeRecovery = { id: ++nextWelcomeRecoveryId, payload };
       pendingCommandExecutionDetailInvalidation = true;
       latestWelcomeReceivedAtMs = performance.now();
@@ -1134,6 +1153,7 @@ function EventRouter() {
     // don't produce duplicate toasts.
     let subscribed = false;
     const unsubServerConfigUpdated = onServerConfigUpdated((payload) => {
+      updateProfileAccounts(payload.providers);
       void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
       if (!subscribed) return;
       if (payload.source !== "keybindings") return;

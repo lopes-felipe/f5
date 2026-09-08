@@ -43,10 +43,23 @@ const PREVIEW_RECORDING_STOP_CHANNEL = "desktop-preview:recording-stop";
 const PREVIEW_RECORDING_DISCARD_CHANNEL = "desktop-preview:recording-discard";
 const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
-const wsUrl = process.env.T3CODE_DESKTOP_WS_URL ?? null;
+const argument = (name: string) =>
+  process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
+const wsUrl = argument("f5-ws-url") ?? process.env.T3CODE_DESKTOP_WS_URL ?? null;
+const profileId = argument("f5-profile-id");
 
 contextBridge.exposeInMainWorld("desktopBridge", {
   getWsUrl: () => wsUrl,
+  getProfileId: () => profileId,
+  switchProfile: (id) => ipcRenderer.invoke("desktop:switch-profile", id),
+  stopProfile: (id) => ipcRenderer.invoke("desktop:stop-profile", id),
+  onProfilesChanged: (listener) => {
+    const wrapped = () => listener();
+    ipcRenderer.on("desktop:profiles-changed", wrapped);
+    return () => {
+      ipcRenderer.removeListener("desktop:profiles-changed", wrapped);
+    };
+  },
   getPathForFile: (file) => {
     const resolvedPath = webUtils.getPathForFile(file);
     return resolvedPath.length > 0 ? resolvedPath : null;

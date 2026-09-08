@@ -1,3 +1,9 @@
+import { ProfileGithubAccount } from "../ProfileGithubAccount";
+import { readFile } from "node:fs/promises";
+import { ServerConfig } from "../../config";
+import { ServerSettingsService } from "../../serverSettings";
+import { ServerSecretStore } from "../../auth/Services/ServerSecretStore";
+import { profileGitEnvironment } from "../profileGitEnvironment";
 /**
  * Git process helpers - Effect-native git execution with typed errors.
  *
@@ -69,6 +75,9 @@ const collectOutput = Effect.fn(function* <E>(
 
 const makeGitService = Effect.gen(function* () {
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const profileConfig = yield* Effect.serviceOption(ServerConfig);
+  const profileSettings = yield* Effect.serviceOption(ServerSettingsService);
+  const profileSecrets = yield* Effect.serviceOption(ServerSecretStore);
 
   const execute: GitServiceShape["execute"] = Effect.fnUntraced(function* (input) {
     const commandInput = {
@@ -79,11 +88,48 @@ const makeGitService = Effect.gen(function* () {
     const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
     const commandEffect = Effect.gen(function* () {
+      let settings = Option.isSome(profileSettings)
+        ? yield* profileSettings.value.getSettings.pipe(Effect.orElseSucceed(() => undefined))
+        : undefined;
+      if (!settings && Option.isSome(profileConfig) && profileConfig.value.settingsPath) {
+        settings = yield* Effect.tryPromise({
+          try: () =>
+            readFile(profileConfig.value.settingsPath!, "utf8").then(
+              (value) => JSON.parse(value),
+              (cause: NodeJS.ErrnoException) => {
+                if (cause.code === "ENOENT") return undefined;
+                throw cause;
+              },
+            ),
+          catch: toGitCommandError(commandInput, "Could not read profile Git identity settings."),
+        });
+      }
+      const environment = Option.isSome(profileConfig)
+        ? yield* Effect.tryPromise({
+            try: () =>
+              profileGitEnvironment({
+                config: profileConfig.value,
+                cwd: input.cwd,
+                args: input.args,
+                overrides: input.env,
+                authorName: settings?.gitAuthorName ?? "",
+                authorEmail: settings?.gitAuthorEmail ?? "",
+                tokenForHost: async (host) => {
+                  const value = Option.isSome(profileSecrets)
+                    ? await new ProfileGithubAccount(profileSecrets.value).token(host)
+                    : null;
+                  return value;
+                },
+              }),
+            catch: toGitCommandError(commandInput, "profile Git environment failed."),
+          })
+        : { ...process.env, ...input.env };
+
       const child = yield* commandSpawner
         .spawn(
           ChildProcess.make("git", commandInput.args, {
             cwd: commandInput.cwd,
-            ...(input.env ? { env: input.env } : {}),
+            env: environment,
           }),
         )
         .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));

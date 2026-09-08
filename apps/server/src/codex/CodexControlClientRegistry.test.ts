@@ -48,6 +48,7 @@ function makeFakeControlClient(label: string) {
       listMcpServerStatus: true,
     },
     close: vi.fn(),
+    closeAndWait: vi.fn(async () => {}),
   } as unknown as CodexControlClient;
 }
 
@@ -159,7 +160,7 @@ describe("CodexControlClientRegistry", () => {
     });
   });
 
-  it("limits OAuth leases per project/env/server while allowing different projects", async () => {
+  it("holds one installation OAuth lease until the owned client exits", async () => {
     const createSpy = vi
       .spyOn(CodexControlClient, "create")
       .mockResolvedValueOnce(makeFakeControlClient("lease-a"))
@@ -219,6 +220,15 @@ describe("CodexControlClientRegistry", () => {
           }
         }
 
+        const conflict = yield* Effect.exit(
+          registry.acquireOauthClient({
+            projectId: projectB,
+            serverName: "filesystem",
+            mcpServers: {},
+          }),
+        );
+        expect(conflict._tag).toBe("Failure");
+        yield* leaseA.release;
         const leaseB = yield* registry.acquireOauthClient({
           projectId: projectB,
           serverName: "filesystem",

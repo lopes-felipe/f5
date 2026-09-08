@@ -5,12 +5,16 @@ import { runProcess } from "./processRunner";
 describe("runProcess", () => {
   it("fails when output exceeds max buffer in default mode", async () => {
     await expect(
-      runProcess("node", ["-e", "process.stdout.write('x'.repeat(2048))"], { maxBufferBytes: 128 }),
+      runProcess("node", ["-e", "process.stdout.write('x'.repeat(2048))"], {
+        env: process.env,
+        maxBufferBytes: 128,
+      }),
     ).rejects.toThrow("exceeded stdout buffer limit");
   });
 
   it("truncates output when outputMode is truncate", async () => {
     const result = await runProcess("node", ["-e", "process.stdout.write('x'.repeat(2048))"], {
+      env: process.env,
       maxBufferBytes: 128,
       outputMode: "truncate",
     });
@@ -29,6 +33,7 @@ describe("runProcess", () => {
     const startedAt = Date.now();
 
     const result = await runProcess(process.execPath, ["-e", nestedProcess], {
+      env: process.env,
       timeoutMs: 100,
       allowNonZeroExit: true,
     });
@@ -41,6 +46,7 @@ describe("runProcess", () => {
     const controller = new AbortController();
     const startedAt = Date.now();
     const pending = runProcess(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      env: process.env,
       timeoutMs: 10_000,
       allowNonZeroExit: true,
       signal: controller.signal,

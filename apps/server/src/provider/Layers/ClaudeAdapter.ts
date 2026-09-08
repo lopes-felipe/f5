@@ -255,6 +255,7 @@ interface ClaudeSessionContext {
   readonly providerInstanceId: ProviderInstanceId;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
+  readonly processEnvironment: NodeJS.ProcessEnv;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
   readonly basePermissionMode: PermissionMode | undefined;
@@ -1005,9 +1006,9 @@ async function lookupClaudeReportedModelContextWindowTokens(
   }
 
   const fetchedCatalog = await fetchAnthropicModelContextWindowCatalog({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-    authToken: process.env.ANTHROPIC_AUTH_TOKEN,
-    baseUrl: process.env.ANTHROPIC_BASE_URL,
+    apiKey: context.processEnvironment.ANTHROPIC_API_KEY,
+    authToken: context.processEnvironment.ANTHROPIC_AUTH_TOKEN,
+    baseUrl: context.processEnvironment.ANTHROPIC_BASE_URL,
   });
   return lookupModelContextWindowTokens({
     provider: "claudeAgent",
@@ -1165,8 +1166,8 @@ const CLAUDE_SETTING_SOURCES = [
 ] as const satisfies ReadonlyArray<SettingSource>;
 
 export function buildClaudeQueryEnv(
-  providerOptions?: { readonly subagentModel?: string | undefined },
-  environment: NodeJS.ProcessEnv = process.env,
+  providerOptions: { readonly subagentModel?: string | undefined } | undefined,
+  environment: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
   // New models omit task tools by default. Keep the TodoWrite surface required
   // by sharedAssistantContract (ENABLE_TASKS=0 selects it over TaskCreate et al.).
@@ -4044,7 +4045,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         const permissionMode = toPermissionMode(providerOptions?.permissionMode);
         const queryEnvironment = buildClaudeQueryEnv(
           providerOptions,
-          input.modelSelection ? options?.processEnvironment : undefined,
+          options?.processEnvironment ?? process.env,
         );
         const selection = input.modelSelection
           ? resolveClaudeRuntimeModelSelection({
@@ -4801,7 +4802,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         // exception: the conversation is resumed and receives only the small
         // replacement contract for the new profile.
 
-        const queryEnvironment = buildClaudeQueryEnv(providerOptions);
+        const queryEnvironment = buildClaudeQueryEnv(
+          providerOptions,
+          options?.processEnvironment ?? process.env,
+        );
         const sdkExecutableOptions = yield* Effect.try({
           try: () =>
             resolveClaudeSdkExecutableOptions(
@@ -4903,6 +4907,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
           promptQueue,
           query: queryRuntime,
+          processEnvironment: queryEnvironment,
           streamFiber: undefined,
           startedAt,
           basePermissionMode: permissionMode,
