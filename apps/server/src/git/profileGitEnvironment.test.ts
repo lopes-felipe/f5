@@ -75,14 +75,17 @@ describe("profile Git identity", () => {
   });
   it("rejects SSH and embedded remote credentials before requesting a token", async () => {
     const tokenForHost = vi.fn(async () => "saved");
-    const stateDir = Path.resolve("profile-test");
+    const stateDir = process.cwd();
     for (const remote of [
       "git@github.com:org/repo.git",
       "https://user:password@github.com/org/repo.git",
     ]) {
       await expect(
         profileGitEnvironment({
-          config: { stateDir } as unknown as ServerConfigShape,
+          config: {
+            stateDir,
+            profile: { ...fallbackDefaultProfile(stateDir), isDefault: false },
+          } as unknown as ServerConfigShape,
           cwd: stateDir,
           args: ["fetch", remote],
           authorName: "",
@@ -93,4 +96,69 @@ describe("profile Git identity", () => {
     }
     expect(tokenForHost).not.toHaveBeenCalled();
   });
+});
+
+it("preserves Default Git configuration, SSH and repo-local author without setup", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-default-git-"));
+  try {
+    const globalConfig = Path.join(root, "global.gitconfig");
+    await FS.writeFile(
+      globalConfig,
+      "[core]\n longpaths = true\n[credential]\n helper = preserved-helper\n[commit]\n gpgsign = true\n",
+    );
+    const config = {
+      stateDir: root,
+      profile: fallbackDefaultProfile(root),
+    } as unknown as ServerConfigShape;
+    const tokenForHost = vi.fn(async () => null);
+    const env = await profileGitEnvironment({
+      config,
+      cwd: root,
+      args: ["commit"],
+      authorName: "",
+      authorEmail: "",
+      overrides: { GIT_CONFIG_GLOBAL: globalConfig, GIT_SSH_COMMAND: "custom-ssh" },
+      tokenForHost,
+    });
+    await runProcess("git", ["init", root], { env });
+    await runProcess("git", ["config", "user.name", "Existing Author"], { cwd: root, env });
+    await runProcess("git", ["config", "user.email", "existing@example.com"], { cwd: root, env });
+    await runProcess(
+      "git",
+      ["-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "Default"],
+      { cwd: root, env },
+    );
+    expect(
+      (await runProcess("git", ["log", "-1", "--format=%an"], { cwd: root, env })).stdout.trim(),
+    ).toBe("Existing Author");
+    expect(
+      (
+        await runProcess("git", ["config", "--get", "core.longpaths"], { cwd: root, env })
+      ).stdout.trim(),
+    ).toBe("true");
+    expect(
+      (
+        await runProcess("git", ["config", "--get", "credential.helper"], { cwd: root, env })
+      ).stdout.trim(),
+    ).toBe("preserved-helper");
+    expect(
+      (
+        await runProcess("git", ["config", "--get", "commit.gpgsign"], { cwd: root, env })
+      ).stdout.trim(),
+    ).toBe("true");
+    expect(env.GIT_SSH_COMMAND).toBe("custom-ssh");
+    await expect(
+      profileGitEnvironment({
+        config,
+        cwd: root,
+        args: ["fetch", "git@github.com:owner/repo.git"],
+        authorName: "",
+        authorEmail: "",
+        tokenForHost,
+      }),
+    ).resolves.toBeDefined();
+    expect(tokenForHost).not.toHaveBeenCalled();
+  } finally {
+    await FS.rm(root, { recursive: true, force: true });
+  }
 });

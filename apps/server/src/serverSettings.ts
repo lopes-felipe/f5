@@ -600,7 +600,7 @@ const makeServerSettings = Effect.gen(function* () {
           yield* Effect.try({
             try: () => {
               for (const instance of Object.values(patch.providerInstances ?? {})) {
-                if (instance?.environment)
+                if (serverConfig.profile?.isDefault === false && instance?.environment)
                   assertAccountEnvironmentOverrides(
                     Object.fromEntries(
                       instance.environment.map((variable) => [variable.name, variable.value]),

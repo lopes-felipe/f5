@@ -39,6 +39,7 @@ export interface ServerDerivedPaths {
 export interface ServerConfigShape extends ServerDerivedPaths {
   readonly profile?: ActiveProfile;
   readonly profilesRoot?: string;
+  readonly defaultStateDir?: string;
   readonly mode: RuntimeMode;
   readonly port: number;
   readonly host: string | undefined;
@@ -135,6 +136,7 @@ export class ServerConfig extends ServiceMap.Service<ServerConfig, ServerConfigS
           baseDir,
           profile: fallbackDefaultProfile(paths.stateDir),
           profilesRoot: profilesRootDir(paths.stateDir),
+          defaultStateDir: paths.stateDir,
           ...paths,
           mode: "web",
           autoBootstrapProjectFromCwd: false,

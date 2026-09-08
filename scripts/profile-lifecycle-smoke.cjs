@@ -12,6 +12,9 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
   const state = path.join(root, "state");
   const children = [];
   const sockets = [];
+  const authToken = require("node:crypto").randomBytes(24).toString("hex");
+  const cookies = new Map();
+  const cookieHeader = () => [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
   const env = {
     ...process.env,
     F5_HOME: root,
@@ -40,6 +43,8 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
         "--host",
         "127.0.0.1",
         "--no-browser",
+        "--auth-token",
+        authToken,
         ...args,
       ],
       { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] },
@@ -66,8 +71,19 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
       if (child.exitCode !== null)
         throw Error("Backend exited " + child.exitCode + " " + child.output);
       try {
+        const login = await fetch(`http://127.0.0.1:${port}/auth/session`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: authToken }),
+        });
+        if (login.status !== 204) throw Error("Authentication failed");
+        const cookie = login.headers.get("set-cookie").split(";")[0];
+        const separator = cookie.indexOf("=");
+        cookies.set(cookie.slice(0, separator), cookie.slice(separator + 1));
         return await new Promise((resolve, reject) => {
-          const ws = new WebSocket("ws://127.0.0.1:" + port);
+          const ws = new WebSocket("ws://127.0.0.1:" + port, {
+            headers: { Cookie: cookieHeader() },
+          });
           const timeout = setTimeout(() => {
             ws.terminate();
             reject(Error("welcome timeout"));
@@ -130,6 +146,41 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
     const secondChild = launch(["--profile", "work"]);
     const second = await connect(work.port, secondChild);
     check(second.welcome.profile.id === work.id, "Work welcome identity");
+    check(cookies.size === 2, "Profile authentication cookies must have distinct names");
+    const claudeStatus = await rpc(second.ws, "providerAccount.status", {
+      instanceId: "claudeAgent",
+    });
+    check(
+      !claudeStatus.error,
+      "Bundled isolated Claude account status failed: " + JSON.stringify(claudeStatus.error),
+    );
+    check(
+      claudeStatus.result.status === "unauthenticated",
+      "Fresh managed Claude home must not inherit host login",
+    );
+
+    for (const profilePort of [port, work.port]) {
+      const status = await fetch(`http://127.0.0.1:${profilePort}/auth/status`, {
+        headers: { Cookie: cookieHeader() },
+      });
+      check(
+        (await status.json()).authenticated,
+        "Signing into Work must preserve Default authentication",
+      );
+    }
+    const logout = await fetch(`http://127.0.0.1:${work.port}/auth/logout`, {
+      method: "POST",
+      headers: { Cookie: cookieHeader() },
+    });
+    check(logout.status === 204, "Work logout");
+    const defaultStatus = await fetch(`http://127.0.0.1:${port}/auth/status`, {
+      headers: { Cookie: cookieHeader() },
+    });
+    check(
+      (await defaultStatus.json()).authenticated,
+      "Work logout must preserve Default authentication",
+    );
+
     check(second.welcome.profile.stateDir !== state, "isolated state");
     const repo = path.join(root, "repo");
     await fs.mkdir(repo);
@@ -194,7 +245,7 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
       "Corrupt registry must not be rewritten",
     );
     console.log(
-      "PASS: configured author through real managed Git RPC, simultaneous isolated backends, occupied-port exit 78 without scan, duplicate-instance exit 78, live-delete exclusion, trash removal, explicit corrupt selection failure, Default diagnostic fallback, mutation refusal with byte-identical corrupt registry",
+      "PASS: independent same-host authentication cookies and logout, configured author through real managed Git RPC, simultaneous isolated backends, occupied-port exit 78 without scan, duplicate-instance exit 78, live-delete exclusion, trash removal, explicit corrupt selection failure, Default diagnostic fallback, mutation refusal with byte-identical corrupt registry",
     );
   } finally {
     for (const ws of sockets) ws.terminate();

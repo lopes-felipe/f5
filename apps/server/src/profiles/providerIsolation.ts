@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { dependencies } from "../../package.json" with { type: "json" };
 import { assertExecutionDirectory } from "./executionDirectory";
 import { Effect } from "effect";
 import type { ProviderStartOptions } from "@t3tools/contracts";
@@ -26,7 +28,7 @@ export async function validateManagedHome(config: ServerConfigShape, home: strin
   }
 }
 
-export async function certifyProvider(
+async function checkProviderCertification(
   config: ServerConfigShape,
   driver: string,
   binaryPath: string,
@@ -35,7 +37,6 @@ export async function certifyProvider(
   if (config.profile?.isDefault !== false) return;
   if (driver === "claudeAgent") {
     const { isDefaultClaudeBinary } = await import("../provider/claudeSdkExecutable");
-    const { dependencies } = await import("../../package.json", { with: { type: "json" } });
     if (
       !isDefaultClaudeBinary(binaryPath) ||
       dependencies["@anthropic-ai/claude-agent-sdk"] !== PROFILE_CERTIFIED_PROVIDERS.claudeAgent
@@ -64,7 +65,30 @@ export async function certifyProvider(
     );
 }
 
-/** The instance owns executable and credential storage, including per-turn and one-off calls. */
+const certifications = new Map<string, { expires: number; result: Promise<void> }>();
+export function certifyProvider(
+  config: ServerConfigShape,
+  driver: string,
+  binaryPath: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  if (config.profile?.isDefault !== false) return Promise.resolve();
+  const key = createHash("sha256")
+    .update(JSON.stringify([config.profile.id, driver, binaryPath, environment]))
+    .digest("hex");
+  const cached = certifications.get(key);
+  if (cached && cached.expires > Date.now()) return cached.result;
+  const result = checkProviderCertification(config, driver, binaryPath, environment);
+  if (certifications.size >= 128) certifications.delete(certifications.keys().next().value!);
+  certifications.set(key, { expires: Date.now() + 60000, result });
+  void result.catch(() => {
+    if (certifications.get(key)?.result === result) certifications.delete(key);
+  });
+  return result;
+}
+
+/** Spawning entry points are startSession, runOneOffPrompt and compactConversation.
+ * Other adapter methods operate on an already-owned session and cannot change its environment. */
 export function protectProfileAdapter(
   adapter: ProviderAdapterShape<ProviderAdapterError>,
   server: ServerConfigShape,
@@ -89,6 +113,13 @@ export function protectProfileAdapter(
             : input.providerOptions?.claudeAgent;
         if (requested?.binaryPath && requested.binaryPath !== config.binaryPath)
           throw new Error("A turn cannot change the instance's certified executable.");
+        // Claude's wire options contain no home field. Reject one defensively on
+        // internal calls too; its execution environment is owned by the instance.
+        const claudeHome = (
+          input.providerOptions?.claudeAgent as { homePath?: unknown } | undefined
+        )?.homePath;
+        if (claudeHome !== undefined)
+          throw new Error("A turn cannot change its profile account home.");
         if (
           input.providerOptions?.codex?.homePath &&
           Path.resolve(input.providerOptions.codex.homePath) !== Path.resolve(config.homePath)

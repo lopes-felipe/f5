@@ -256,3 +256,22 @@ it("reconciles interrupted provisioning and removal without resurrecting profile
     await FS.rm(root, { recursive: true, force: true });
   }
 });
+
+it("recovers provisioning interrupted after the settings write", async () => {
+  const { root, store } = await fixture();
+  try {
+    await store.init();
+    const record = await store.create({ name: "Interrupted" });
+    const registry = JSON.parse(await FS.readFile(store.path, "utf8"));
+    const pending = registry.profiles.find((p: { id: string }) => p.id === record.id);
+    pending.status = "provisioning";
+    pending.createdAt = new Date(Date.now() - 700000).toISOString();
+    await FS.writeFile(store.path, JSON.stringify(registry));
+    await store.init();
+    expect((await store.list("")).profiles.some((p) => p.id === record.id)).toBe(false);
+    const trash = await FS.readdir(Path.join(store.root, ".trash"));
+    expect(trash.some((name) => name.startsWith(record.id))).toBe(true);
+  } finally {
+    await FS.rm(root, { recursive: true, force: true });
+  }
+});

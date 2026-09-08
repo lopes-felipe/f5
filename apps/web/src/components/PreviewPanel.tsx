@@ -1835,7 +1835,8 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
                 ))}
                 {!localServersLoading && localServers.length === 0 && (
                   <div className="rounded-md border border-border/80 bg-card/40 px-3 py-6 text-center text-sm text-muted-foreground">
-                    No local servers found.
+                    No server URLs detected in this F5 session. Start a server in an F5 terminal or
+                    enter its URL above.
                   </div>
                 )}
               </div>

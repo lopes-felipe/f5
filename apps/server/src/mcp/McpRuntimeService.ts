@@ -4,7 +4,7 @@ import { ServerSettingsService } from "../serverSettings";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import { ServerConfig } from "../config";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
-import { instanceLock } from "../profiles/InstanceLock";
+import { instanceLock, ProfileBusyError } from "../profiles/InstanceLock";
 import * as NodePath from "node:path";
 import {
   type McpGetLoginStatusRequest,
@@ -980,9 +980,22 @@ const makeMcpRuntimeService = Effect.gen(function* () {
                 const config = accountConfig.value;
                 yield* instanceLock(
                   NodePath.join(
-                    config.profilesRoot ?? `${config.stateDir}-profiles`,
+                    config.profilesRoot ??
+                      (() => {
+                        throw new Error("MCP login requires the installation profilesRoot.");
+                      })(),
                     "locks",
                     "provider-oauth.lock.sqlite",
+                  ),
+                ).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new McpRuntimeServiceError({
+                        message:
+                          cause instanceof ProfileBusyError
+                            ? "Another profile is signing in right now."
+                            : `Cannot acquire the OAuth lease: ${String(cause)}`,
+                      }),
                   ),
                 );
                 if (server.oauthCallbackPort)
@@ -1001,7 +1014,7 @@ const makeMcpRuntimeService = Effect.gen(function* () {
                       projectId: input.projectId,
                       serverName: input.serverName!,
                       status: "failed",
-                      error: `Another profile is signing in right now, or the OAuth callback is unavailable. ${String(cause)}`,
+                      error: `MCP login failed: ${String(cause)}`,
                     }),
                   ),
                 ),

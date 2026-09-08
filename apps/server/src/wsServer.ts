@@ -1,3 +1,4 @@
+import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { profileProviderAccounts } from "@t3tools/shared/profileProviderAccounts";
 import {
@@ -744,6 +745,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     autoBootstrapProjectFromCwd,
   } = serverConfig;
   const serverAuth = makeServerAuth(authToken, {
+    ...(serverConfig.profile ? { profileId: serverConfig.profile.id } : {}),
     allowedWebSocketOrigins: [
       ...(mode === "desktop" ? [DESKTOP_RENDERER_ORIGIN] : []),
       ...(devUrl ? [devUrl.origin] : []),
@@ -852,7 +854,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     sendClient: webSocketSendController.send,
   });
   const defaultProfileStateDir =
-    serverConfig.profilesRoot?.slice(0, -"-profiles".length) ?? serverConfig.stateDir;
+    serverConfig.defaultStateDir ??
+    (serverConfig.profile?.isDefault === false
+      ? (() => {
+          throw new Error("Isolated profiles require defaultStateDir.");
+        })()
+      : serverConfig.stateDir);
   const profilesStore = new ProfileRegistryStore(
     defaultProfileStateDir,
     3773 + (devUrl ? 1000 : 0),
@@ -867,7 +874,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       catch: (cause) =>
         new RouteRequestError({ message: cause instanceof Error ? cause.message : String(cause) }),
     });
-  const readProfiles = async () => {
+  const computeProfiles = async () => {
     const snapshot = await profilesStore.list(activeProfile.id);
     const providers = await Effect.runPromise(providerRegistry.getProviders);
     const sharedRepositories = await repositorySharingWarnings(snapshot.profiles, activeProfile.id);
@@ -888,6 +895,16 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     };
   };
+  let profileReadCache: { expires: number; value: ReturnType<typeof computeProfiles> } | undefined;
+  const readProfiles = () => {
+    if (profileReadCache && profileReadCache.expires > Date.now()) return profileReadCache.value;
+    const value = computeProfiles();
+    profileReadCache = { expires: Date.now() + 2000, value };
+    void value.catch(() => {
+      if (profileReadCache?.value === value) profileReadCache = undefined;
+    });
+    return value;
+  };
   if (serverConfig.profilesRoot) {
     yield* Effect.tryPromise({
       try: () => profilesStore.init(),
@@ -896,6 +913,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     yield* Effect.acquireRelease(
       Effect.sync(() =>
         profilesStore.watch(() => {
+          profileReadCache = undefined;
           void readProfiles()
             .then((snapshot) =>
               Effect.runPromise(pushBus.publishAll(WS_CHANNELS.profilesUpdated, snapshot)),
@@ -912,11 +930,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     serverConfig,
     serverSettings,
     terminalManager,
-    (event) => {
-      void Effect.runPromise(pushBus.publishAll(WS_CHANNELS.providerAccountEvent, event));
+    (event, owner) => {
+      void Effect.runPromise(
+        pushBus.publishClient(owner as WebSocket, WS_CHANNELS.providerAccountEvent, event),
+      );
     },
     async (instanceId) => {
       await Effect.runPromise(providerRegistry.refreshInstance(instanceId));
+      profileReadCache = undefined;
       await Effect.runPromise(
         pushBus.publishAll(WS_CHANNELS.profilesUpdated, await readProfiles()),
       );
@@ -1674,6 +1695,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
       yield* Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) =>
         Effect.gen(function* () {
+          if (event.type.startsWith("project.")) profileReadCache = undefined;
           yield* pushBus.publishAll(ORCHESTRATION_WS_CHANNELS.domainEvent, event);
           const gitStatusInvalidation = resolveGitStatusInvalidation(event);
           if (gitStatusInvalidation.publish) {
@@ -2008,14 +2030,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         "Client-supplied provider executable and home paths are not accepted. Select a provider instance.",
       );
     const { ProviderInstanceId } = await import("@t3tools/contracts");
-    const account = await accountService.resolve(
-      body.instanceId ??
-        ProviderInstanceId.make(body.provider === "claudeAgent" ? "claudeAgent" : "codex"),
+    const configured = deriveProviderInstanceConfigMap(
+      await Effect.runPromise(serverSettings.getSettings),
     );
+    const candidates = Object.entries(configured).filter(
+      ([, instance]) => instance.driver === (body.provider ?? "codex"),
+    );
+    const defaultId = body.provider === "claudeAgent" ? "claudeAgent" : "codex";
+    const selected =
+      body.instanceId ??
+      (candidates.some(([id]) => id === defaultId)
+        ? defaultId
+        : candidates.length === 1
+          ? candidates[0]![0]
+          : undefined);
+    if (!selected) throw new Error("Select a provider instance for this MCP account operation.");
+    const account = await accountService.resolve(ProviderInstanceId.make(selected));
     if (body.provider && body.provider !== account.instance.driver)
       throw new Error("Provider instance does not match the requested provider.");
     return {
       ...body,
+      instanceId: ProviderInstanceId.make(selected),
       ...(account.config.binaryPath ? { binaryPath: account.config.binaryPath } : {}),
       ...(account.config.homePath ? { homePath: account.config.homePath } : {}),
     };
@@ -2069,20 +2104,19 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
       case WS_METHODS.providerAccountLoginStart: {
         const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.start(id));
+        return yield* profileCall(() => accountService.start(id, false, ws));
       }
       case WS_METHODS.providerAccountLogout: {
         const id = request.body.instanceId;
-        yield* profileCall(() => accountService.start(id, true));
-        return;
+        return yield* profileCall(() => accountService.start(id, true, ws));
       }
       case WS_METHODS.providerAccountInput: {
         const { handle, data } = request.body;
-        return yield* profileCall(async () => accountService.input(handle, data));
+        return yield* profileCall(async () => accountService.input(handle, data, ws));
       }
       case WS_METHODS.providerAccountCancel: {
         const { handle } = request.body;
-        return yield* profileCall(() => accountService.cancel(handle));
+        return yield* profileCall(() => accountService.cancel(handle, ws));
       }
       case WS_METHODS.providerAccountStatus: {
         const id = request.body.instanceId;
@@ -4304,6 +4338,9 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       );
     };
 
+    ws.on("close", () => {
+      void accountService.disconnect(ws).catch(() => {});
+    });
     ws.on("close", recordDisconnect);
     ws.on("error", recordDisconnect);
   });

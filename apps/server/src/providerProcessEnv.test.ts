@@ -109,3 +109,21 @@ describe("profile account execution", () => {
     expect(() => assertAccountEnvironmentOverrides({ [key]: "escape" })).toThrow(/reserved/);
   });
 });
+
+it("preserves Default reserved overrides and deliberate telemetry endpoints", () => {
+  const stateDir = Path.resolve("default-profile");
+  const env = buildAccountExecutionEnvironment({
+    purpose: "terminal",
+    stateDir,
+    profile: fallbackDefaultProfile(stateDir),
+    baseEnv: { HOME: "machine" },
+    instance: [
+      { name: "CODEX_HOME", value: "configured", sensitive: false },
+      { name: "OTEL_EXPORTER_OTLP_ENDPOINT", value: "explicit", sensitive: false },
+    ],
+    overrides: { HOME: "thread-home" },
+  });
+  expect(env.HOME).toBe("thread-home");
+  expect(env.CODEX_HOME).toBe("configured");
+  expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe("explicit");
+});

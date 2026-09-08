@@ -268,7 +268,10 @@ export const makeBackupService: Effect.Effect<
                     ? {
                         source: {
                           installationId: (
-                            await readFile(resolve(config.profilesRoot, "installation-id"), "utf8")
+                            await readFile(
+                              resolve(config.profilesRoot, "installation-id"),
+                              "utf8",
+                            ).catch(() => `unverified-${randomUUID()}`)
                           ).trim(),
                           profileId: config.profile.id,
                           providerHomesDir: resolve(config.stateDir, "provider-homes"),

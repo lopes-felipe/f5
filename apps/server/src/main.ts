@@ -261,12 +261,6 @@ const ServerConfigLive = (input: CliInput) => {
           ...(read.ok ? read.registry.retiredPorts : []),
         ]);
         while (reserved.has(port)) port = yield* findAvailablePort(port + 1);
-        if (read.ok && port !== profile.port && mode !== "desktop")
-          yield* Effect.tryPromise({
-            try: () => registryStore.update({ profileId: profile.id, port }),
-            catch: (cause) =>
-              new StartupError({ message: "Failed to reserve Default's browser origin", cause }),
-          });
       }
       if (explicitPort !== undefined && explicitPort !== profile.port)
         yield* Effect.logWarning(
@@ -326,6 +320,7 @@ const ServerConfigLive = (input: CliInput) => {
           ...(profile.accentColor ? { accentColor: profile.accentColor } : {}),
         },
         profilesRoot: registryStore.root,
+        defaultStateDir,
         mode,
         port,
         cwd: cliConfig.cwd,
@@ -415,6 +410,8 @@ const ServerConfigLive = (input: CliInput) => {
           (cause) => new StartupError({ message: "Failed to create state directories", cause }),
         ),
       );
+      if (startupErrorPath)
+        yield* Effect.promise(() => ProfileFS.unlink(startupErrorPath!).catch(() => {}));
       return config;
     }).pipe(
       Effect.tapError((error) =>

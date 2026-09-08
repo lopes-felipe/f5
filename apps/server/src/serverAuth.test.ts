@@ -129,3 +129,27 @@ describe("server authentication", () => {
     ).toBe(true);
   });
 });
+
+it("keeps two authenticated profiles on one hostname independent", async () => {
+  const a = await startAuthServer(makeServerAuth("shared-token", { profileId: "a".repeat(32) }));
+  const b = await startAuthServer(makeServerAuth("shared-token", { profileId: "b".repeat(32) }));
+  const login = async (origin: string) => {
+    const result = await fetch(`${origin}/auth/session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: "shared-token" }),
+    });
+    expect(result.status).toBe(204);
+    return result.headers.get("set-cookie")!.split(";")[0]!;
+  };
+  const aCookie = await login(a);
+  const bCookie = await login(b);
+  expect(aCookie.split("=")[0]).not.toBe(bCookie.split("=")[0]);
+  const cookie = `${aCookie}; ${bCookie}`;
+  expect((await fetch(`${a}/private`, { headers: { cookie } })).status).toBe(200);
+  expect((await fetch(`${b}/private`, { headers: { cookie } })).status).toBe(200);
+  const logout = await fetch(`${b}/auth/logout`, { method: "POST", headers: { cookie } });
+  expect(logout.headers.get("set-cookie")).toContain("f5_session_" + "b".repeat(32));
+  expect((await fetch(`${a}/private`, { headers: { cookie } })).status).toBe(200);
+  expect((await fetch(`${b}/private`, { headers: { cookie } })).status).toBe(401);
+});

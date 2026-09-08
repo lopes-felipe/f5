@@ -468,7 +468,7 @@ export interface NativeApi {
     cancel: (input: { handle: string }) => Promise<void>;
     logout: (input: {
       instanceId: import("./providerInstance").ProviderInstanceId;
-    }) => Promise<void>;
+    }) => Promise<{ handle: string }>;
     accountStatus: (input: {
       instanceId: import("./providerInstance").ProviderInstanceId;
     }) => Promise<unknown>;

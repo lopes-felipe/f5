@@ -80,8 +80,11 @@ describe("profile account terminals", () => {
       onData("private login output");
       expect(emit).toHaveBeenCalledWith(
         expect.objectContaining({ handle, data: "private login output" }),
+        service,
       );
       expect(await FS.readdir(stateDir)).toEqual([]);
+      expect(() => service.input(handle, "foreign", {})).toThrow(/Unknown/);
+      await expect(service.cancel(handle, {})).rejects.toThrow(/another connection/);
       service.input(handle, "verification-code\r");
       expect(process.write).toHaveBeenCalledWith("verification-code\r");
       const cancelled = service.cancel(handle);
@@ -94,7 +97,9 @@ describe("profile account terminals", () => {
       await cancelled;
       (await acquireInstanceLock(lockPath)).release();
       expect(refresh).toHaveBeenCalled();
-      await service.start(ProviderInstanceId.make("codex"), true);
+      const logout = await service.start(ProviderInstanceId.make("codex"), true);
+      service.input(logout.handle, "confirm-sign-out\r");
+      expect(process.write).toHaveBeenCalledWith("confirm-sign-out\r");
       onExit({ exitCode: 0, signal: null });
       await vi.waitFor(() => expect(updateSettings).toHaveBeenCalled());
       const patch = updateSettings.mock.calls[0]![0];

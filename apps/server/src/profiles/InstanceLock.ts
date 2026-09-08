@@ -43,7 +43,12 @@ export async function acquireInstanceLock(lockPath: string): Promise<{ release()
     };
   } catch (cause) {
     database?.close();
-    if (/SQLITE_BUSY|database is locked/i.test(String(cause))) {
+    const sqliteError = cause as { code?: unknown; errcode?: unknown };
+    if (
+      sqliteError?.code === "SQLITE_BUSY" ||
+      sqliteError?.errcode === 5 ||
+      /SQLITE_BUSY|database is locked/i.test(String(cause))
+    ) {
       const pid = Number(await FS.readFile(lockPath + ".owner", "utf8").catch(() => ""));
       throw new ProfileBusyError({
         message: `Profile is already running${pid ? ` in process ${pid}` : ""}. Stop it before continuing.`,

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ensureNativeApi } from "../../nativeApi";
+import { readNativeApi } from "../../nativeApi";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -24,18 +24,19 @@ export function GithubAccountPanel() {
       setPending(false);
     }
   };
-  const api = ensureNativeApi().profiles;
+  const api = readNativeApi()?.profiles;
   if (!api) return null;
   return (
     <section className="space-y-3 rounded border p-4">
       <h3 className="font-medium">GitHub account and Git author</h3>
       <p className="text-sm text-muted-foreground">
-        Credentials are saved only in this profile. Shell tokens and gh logins are not used.
+        Credentials are saved only in this profile. Non-default profiles do not use shell tokens or
+        gh logins. Verification sends the token to the hostname entered below.
       </p>
       <Input
-        aria-label="GitHub hostname"
+        aria-label="GitHub or GitHub Enterprise hostname"
         value={host}
-        onChange={(event) => setHost(event.target.value)}
+        onChange={(event) => setHost(event.target.value.toLowerCase())}
       />
       <Input
         aria-label="GitHub token"

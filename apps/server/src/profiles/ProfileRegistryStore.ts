@@ -217,12 +217,19 @@ export class ProfileRegistryStore {
       let registry = result.registry;
       for (const record of registry.profiles) {
         if (record.isDefault) continue;
-        const directory = await assertProfileDirectory(this.defaultStateDir, record);
+        await assertProfileDirectory(this.defaultStateDir, record);
         if (
           record.status === "provisioning" &&
-          Date.now() - Date.parse(record.createdAt) > 600000 &&
-          !(await safeLstat(Path.join(directory, "settings.json")))
+          Date.now() - Date.parse(record.createdAt) > 600000
         ) {
+          // A crash after writing settings is still incomplete provisioning. Preserve
+          // any partial state in trash and release its reservation without selecting it.
+          const lock = await acquireInstanceLock(this.instanceLockPath(record));
+          try {
+            await this.moveToTrash(record);
+          } finally {
+            lock.release();
+          }
           registry = {
             ...registry,
             profiles: registry.profiles.filter((p) => p.id !== record.id),

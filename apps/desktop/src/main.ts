@@ -4,6 +4,8 @@ import {
   profilePartition,
   profilePreviewPartition,
   profileWindowArguments,
+  singleProfileOpen,
+  ensureProfileConnection,
   MAX_ACTIVE_PROFILE_BACKENDS,
 } from "./profileRuntime";
 import { profilesRootDir } from "@t3tools/shared/profilePaths";
@@ -2281,7 +2283,16 @@ async function stopBackendAndWaitForExit(
   if (runtime.backendProcess === backendChild) runtime.backendProcess = null;
 }
 
-async function openProfile(profileId: string): Promise<boolean> {
+const openProfile = singleProfileOpen(async (id) => {
+  try {
+    return await openProfileOnce(id);
+  } catch (cause) {
+    const runtime = backends.get(id);
+    if (runtime && !runtime.backendProcess) runtime.stopped = true;
+    throw cause;
+  }
+});
+async function openProfileOnce(profileId: string): Promise<boolean> {
   const profile = readDesktopProfiles(STATE_DIR).find(
     (record) => record.id === profileId && record.status === "ready",
   );
@@ -2289,7 +2300,7 @@ async function openProfile(profileId: string): Promise<boolean> {
   const existingWindow = BrowserWindow.getAllWindows().find(
     (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
   );
-  if (existingWindow && !backends.get(profileId)?.stopped) {
+  if (existingWindow && backends.has(profileId) && !backends.get(profileId)!.stopped) {
     existingWindow.show();
     existingWindow.focus();
     return true;
@@ -2305,27 +2316,39 @@ async function openProfile(profileId: string): Promise<boolean> {
     runtime = runtime ?? makeBackendRuntime(profile);
     runtime.stopped = false;
     runtime.restartAttempt = 0;
-    runtime.backendPort = await Effect.runPromise(
-      Effect.service(NetService).pipe(
-        Effect.flatMap((net) => net.reserveLoopbackPort()),
-        Effect.provide(NetService.layer),
-      ),
-    );
-    runtime.backendAuthToken = Crypto.randomBytes(24).toString("hex");
-    runtime.backendWsUrl = getDesktopBackendWebSocketUrl(
-      runtime.backendPort,
-      runtime.backendAuthToken,
-    );
     backends.set(profileId, runtime);
+    await ensureProfileConnection(
+      runtime,
+      () =>
+        Effect.runPromise(
+          Effect.service(NetService).pipe(
+            Effect.flatMap((net) => net.reserveLoopbackPort()),
+            Effect.provide(NetService.layer),
+          ),
+        ),
+      () => Crypto.randomBytes(24).toString("hex"),
+      getDesktopBackendWebSocketUrl,
+    );
     configureBackendRequestAuthentication(runtime);
     startBackend(runtime);
   }
-  if (existingWindow) existingWindow.close();
-  createWindow(null, runtime);
+  if (existingWindow) {
+    existingWindow.show();
+    existingWindow.focus();
+  } else createWindow(null, runtime);
   return true;
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.on("desktop:get-ws-url", (event) => {
+    try {
+      if (event.senderFrame !== event.sender.mainFrame)
+        throw new Error("Only the owning main frame may bootstrap.");
+      event.returnValue = runtimeForRenderer(event.sender.id).backendWsUrl;
+    } catch {
+      event.returnValue = null;
+    }
+  });
   ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
     runtimeForRenderer(event.sender.id);
     if (typeof id !== "string") return false;
@@ -2654,7 +2677,7 @@ function createWindow(
     trafficLightPosition: { x: 16, y: 18 },
     webPreferences: {
       ...(partition ? { partition } : {}),
-      additionalArguments: profileWindowArguments(runtime.profile.id, runtime.backendWsUrl),
+      additionalArguments: profileWindowArguments(runtime.profile.id),
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,

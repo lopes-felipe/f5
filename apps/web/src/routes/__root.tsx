@@ -1062,11 +1062,16 @@ function EventRouter() {
     };
 
     const unsubDomainEvent = api.orchestration.onDomainEvent((event) => {
+      if (event.sequence <= latestSequence) {
+        return;
+      }
       if (event.type === "project.created" || event.type === "project.meta-updated")
         void refreshProfiles()
           .then(() => {
             const warnings = useProfileState.getState().active?.sharedRepositories ?? [];
-            for (const warning of warnings)
+            for (const warning of warnings.filter(
+              (warning) => warning.workspaceRoot === event.payload.workspaceRoot,
+            ))
               toastManager.add({
                 type: "info",
                 title: "Repository shared with another profile",
@@ -1074,9 +1079,6 @@ function EventRouter() {
               });
           })
           .catch(() => {});
-      if (event.sequence <= latestSequence) {
-        return;
-      }
       // This must run before the event enters any reducer path so unloaded
       // threads have a retained detail buffer when the same event is applied.
       // The scheduler only creates the buffer synchronously here; the actual

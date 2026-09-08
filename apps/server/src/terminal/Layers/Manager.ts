@@ -639,11 +639,21 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
                       .at(-1)
                       ?.toLowerCase()
                       .replace(/\.exe$/, "");
-                    if (name === "bash") return ["--noprofile", "--norc", "-i"];
-                    if (name === "zsh") return ["-f"];
-                    if (name === "powershell" || name === "pwsh") return ["-NoLogo", "-NoProfile"];
-                    if (name === "fish") return ["--no-config"];
-                    if (name === "cmd") return ["/d"];
+                    const args = (candidate.args ?? []).filter(
+                      (arg) => arg !== "-l" && arg !== "--login",
+                    );
+                    if (name === "bash")
+                      return [
+                        "--noprofile",
+                        "--norc",
+                        ...args,
+                        ...(args.includes("-i") ? [] : ["-i"]),
+                      ];
+                    if (name === "zsh") return ["-f", ...args];
+                    if (name === "powershell" || name === "pwsh")
+                      return ["-NoLogo", "-NoProfile", ...args];
+                    if (name === "fish") return ["--no-config", ...args];
+                    if (name === "cmd") return ["/d", ...args];
                     return candidate.args ?? [];
                   })(),
                 }

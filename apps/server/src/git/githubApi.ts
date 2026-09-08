@@ -212,7 +212,8 @@ function requestEndpoint(input: Pick<GitHubApiRequest, "endpoint" | "query">): s
 export function makeGitHubApi(
   execute: GitHubCliShape["execute"],
   scheduler = githubRequestScheduler,
-  resolveToken: (host: string) => Effect.Effect<string, GitHubCliError> = () => Effect.succeed(""),
+  resolveToken: (host: string, cwd: string) => Effect.Effect<string, GitHubCliError> = () =>
+    Effect.succeed(""),
 ) {
   const rejectedCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
@@ -459,7 +460,7 @@ export function makeGitHubApi(
             detail: "Invalid GitHub hostname.",
           }),
       });
-      const token = (yield* resolveToken(host)).trim();
+      const token = (yield* resolveToken(host, input.cwd)).trim();
       if (!token || /[\r\n]/.test(token))
         return yield* Effect.fail(
           new GitHubCliError({

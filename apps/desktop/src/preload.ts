@@ -45,7 +45,8 @@ const PREVIEW_RECORDING_FRAME_CHANNEL = "desktop-preview:recording-frame";
 const PREVIEW_STATE_CHANNEL = "desktop-preview:state";
 const argument = (name: string) =>
   process.argv.find((arg) => arg.startsWith(`--${name}=`))?.slice(name.length + 3) ?? null;
-const wsUrl = argument("f5-ws-url") ?? process.env.T3CODE_DESKTOP_WS_URL ?? null;
+// Keep the synchronous bridge contract; credentials are obtained only by the owning preload.
+const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
 const profileId = argument("f5-profile-id");
 
 contextBridge.exposeInMainWorld("desktopBridge", {

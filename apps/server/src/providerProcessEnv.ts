@@ -31,7 +31,6 @@ export function buildProviderChildProcessEnv(
   }
 
   for (const [key, value] of Object.entries(overrides)) {
-    if (isBlockedProviderEnvKey(key)) continue;
     if (process.platform === "win32") {
       for (const inherited of Object.keys(env))
         if (inherited.toUpperCase() === key.toUpperCase()) delete env[inherited];
@@ -97,8 +96,10 @@ export function buildAccountExecutionEnvironment(input: {
   const instance = Object.fromEntries(
     (input.instance ?? []).map((variable) => [variable.name, variable.value]),
   );
-  assertAccountEnvironmentOverrides(instance);
-  if (input.overrides) assertAccountEnvironmentOverrides(input.overrides);
+  if (isolated) {
+    assertAccountEnvironmentOverrides(instance);
+    if (input.overrides) assertAccountEnvironmentOverrides(input.overrides);
+  }
   const environment = buildProviderChildProcessEnv(base, { ...instance, ...input.overrides });
   if (!isolated) return environment;
   const home = Path.join(input.stateDir, "provider-homes", "claude");

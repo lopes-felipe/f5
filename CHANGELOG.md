@@ -4,7 +4,9 @@
 
 - Add separate profile state, provider homes, browser origins and desktop partitions with in-app account setup. Default data remains in place.
 - Strip ambient provider credentials for non-default profiles; explicit instance API tokens remain supported.
-- Managed GitHub requests now use profile-saved tokens instead of ambient tokens or machine gh logins.
+- Non-default profiles use saved GitHub tokens and managed Git identity; Default retains host Git configuration, SSH, ambient tokens and existing gh logins.
+- Preview discovery uses only URLs detected in owned output for all profiles; enter externally started servers manually.
+- MCP CLI login times out after nine minutes to leave teardown time within the shared ten-minute OAuth lease.
 - Fix Claude instance environments, Windows home overrides, instance model-catalog credentials, configured worktree roots, and explicit-state-dir backup settings/secrets.
 
 All notable changes to F5 are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for the published CLI (`t3`) and the desktop app.

@@ -748,20 +748,35 @@ export const ProviderHealthLive = Layer.effect(
 
     const computeStatuses = registry.getProviders.pipe(
       Effect.map((providers) =>
-        providers.flatMap((provider): ServerProviderStatus[] => {
-          if (!Schema.is(ProviderKind)(provider.driver)) return [];
-          return [
-            {
-              provider: provider.driver,
-              status: provider.status === "disabled" ? "warning" : provider.status,
-              available: provider.availability !== "unavailable" && provider.installed,
-              authStatus: provider.auth.status,
-              checkedAt: provider.checkedAt,
-              ...(provider.version ? { version: provider.version } : {}),
-              ...(provider.message ? { message: provider.message } : {}),
-            },
-          ];
-        }),
+        // The legacy health contract is driver-keyed. Prefer its conventional
+        // instance, otherwise select a stable ID; rich UI uses instance snapshots.
+        [...providers]
+          .sort((a, b) => {
+            const aDefault = String(a.instanceId) === String(a.driver);
+            const bDefault = String(b.instanceId) === String(b.driver);
+            return (
+              Number(bDefault) - Number(aDefault) ||
+              String(a.instanceId).localeCompare(String(b.instanceId))
+            );
+          })
+          .filter(
+            (provider, index, ordered) =>
+              ordered.findIndex((p) => p.driver === provider.driver) === index,
+          )
+          .flatMap((provider): ServerProviderStatus[] => {
+            if (!Schema.is(ProviderKind)(provider.driver)) return [];
+            return [
+              {
+                provider: provider.driver,
+                status: provider.status === "disabled" ? "warning" : provider.status,
+                available: provider.availability !== "unavailable" && provider.installed,
+                authStatus: provider.auth.status,
+                checkedAt: provider.checkedAt,
+                ...(provider.version ? { version: provider.version } : {}),
+                ...(provider.message ? { message: provider.message } : {}),
+              },
+            ];
+          }),
       ),
     );
 

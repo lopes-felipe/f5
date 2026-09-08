@@ -572,6 +572,24 @@ it.layer(testLayer)("server CLI command", (it) => {
     }),
   );
 
+  it.effect("does not persist a transient Default fallback port or retire its origin", () =>
+    Effect.gen(function* () {
+      const root = FS.mkdtempSync(Path.join(OS.tmpdir(), "f5-default-port-"));
+      try {
+        const stateDir = Path.join(root, "state");
+        const store = new ProfileRegistryStore(stateDir);
+        yield* Effect.promise(() => store.init());
+        const before = FS.readFileSync(store.path, "utf8");
+        findAvailablePort.mockImplementation((preferred: number) => Effect.succeed(preferred + 1));
+        yield* runCli(["--state-dir", stateDir]);
+        assert.equal(resolvedConfig?.port, 3774);
+        assert.equal(FS.readFileSync(store.path, "utf8"), before);
+      } finally {
+        FS.rmSync(root, { recursive: true, force: true });
+      }
+    }),
+  );
+
   it.effect("does not start server for invalid --mode values", () =>
     Effect.gen(function* () {
       yield* runCli(["--mode", "invalid"]);

@@ -9,7 +9,7 @@ This records checks against the current working tree, not a release certificatio
 | `bun fmt`                                        | Passed                                                                                                                                              |
 | `bun lint`                                       | Passed; six warnings, no errors                                                                                                                     |
 | `bun typecheck`                                  | Passed in all eight workspaces                                                                                                                      |
-| `bun run test:full`                              | Failed: ten Windows `EPERM` errors creating symlinks; 2,250 server tests passed, nine skipped; the other six workspace tasks passed                 |
+| `bun run test:full`                              | Failed: ten Windows `EPERM` errors creating symlinks; 2,259 server tests passed, nine skipped; the other six workspace tasks passed                 |
 | Web unit tests                                   | 1,565 passed                                                                                                                                        |
 | Desktop unit tests                               | 102 passed                                                                                                                                          |
 | Shared unit tests                                | 364 passed                                                                                                                                          |
@@ -36,3 +36,9 @@ Two safety adjustments differ from the original plan: retired ports remain reser
 ## Outstanding release evidence
 
 Dedicated Codex, Claude and GitHub accounts and Windows, macOS and Linux test environments are needed for the authenticated acceptance matrix. No authenticated acceptance result is claimed here. In particular, distinct Claude macOS keychain identities, credential refresh/logout independence, subscription versus API billing, untouched host credential stores, authenticated fetch/push identity, and the complete desktop manual workflow still require recorded runs. The macOS CI storage tests do not certify keychain isolation.
+
+## Review follow-up
+
+The review fixes and their rationale are recorded in [profiles-review.md](profiles-review.md). The latest runs pass formatting, lint, all eight typecheck workspaces, all 394 browser tests, 107 extended Git tests and 13 integration tests (five skipped). The full suite has the same ten Windows symlink-permission failures, with 2,259 server tests passing; no tests were disabled to hide these failures.
+
+The real backend lifecycle smoke now shares one cookie jar between two authenticated profiles on the same hostname, verifies independent logout, and invokes the bundled Claude account-status command in a fresh isolated home. That home reports unauthenticated. This exercises the packaged certification path; it does not replace the dedicated-account cross-platform release gate.

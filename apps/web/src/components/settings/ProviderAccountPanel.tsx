@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ProviderInstanceId } from "@t3tools/contracts";
-import { ensureNativeApi } from "../../nativeApi";
+import { readNativeApi } from "../../nativeApi";
 import { onProviderAccountEvent } from "../../wsNativeApi";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -12,7 +12,7 @@ export function ProviderAccountPanel({ instanceId }: { instanceId: ProviderInsta
   const [output, setOutput] = useState("");
   const [input, setInput] = useState("");
   const [error, setError] = useState("");
-  const api = ensureNativeApi().profiles;
+  const api = readNativeApi()?.profiles;
   useEffect(
     () =>
       onProviderAccountEvent((event) => {
@@ -61,7 +61,13 @@ export function ProviderAccountPanel({ instanceId }: { instanceId: ProviderInsta
         <Button
           size="sm"
           disabled={pending || handle !== null}
-          onClick={() => void run(() => api.logout({ instanceId }))}
+          onClick={() =>
+            void run(async () => {
+              setOutput("");
+              const result = await api.logout({ instanceId });
+              setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
+            })
+          }
         >
           Sign out
         </Button>

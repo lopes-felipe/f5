@@ -30,6 +30,7 @@ export async function assertOAuthPortAvailable(port: number): Promise<void> {
 }
 
 interface Job {
+  owner: object;
   instanceId: ProviderInstanceId;
   process: PtyProcess;
   done: Promise<void>;
@@ -37,11 +38,12 @@ interface Job {
 }
 export class ProviderAccountService {
   private readonly jobs = new Map<string, Job>();
+  private readonly disconnectedOwners = new WeakSet<object>();
   constructor(
     private readonly config: ServerConfigShape,
     private readonly settings: ServerSettingsShape,
     private readonly terminals: TerminalManagerShape,
-    private readonly emit: (event: typeof ProviderAccountEvent.Type) => void,
+    private readonly emit: (event: typeof ProviderAccountEvent.Type, owner: object) => void,
     private readonly refresh: (instanceId: ProviderInstanceId) => Promise<void>,
     private readonly isBusy: (instanceId: ProviderInstanceId) => Promise<boolean>,
   ) {}
@@ -121,13 +123,19 @@ export class ProviderAccountService {
       }),
     );
   }
-  async start(instanceId: ProviderInstanceId, logout = false): Promise<{ handle: string }> {
+  async start(
+    instanceId: ProviderInstanceId,
+    logout = false,
+    owner: object = this,
+  ): Promise<{ handle: string }> {
     if (logout && (await this.isBusy(instanceId)))
       throw new Error("Stop this instance's active turn before signing out.");
     const resolved = await this.resolve(instanceId);
+    if (this.disconnectedOwners.has(owner)) throw new Error("Account connection closed.");
     const createProcess = this.terminals.createAccountProcess;
     if (!createProcess) throw new Error("Account terminals are unavailable in this runtime.");
-    const root = this.config.profilesRoot ?? `${this.config.stateDir}-profiles`;
+    const root = this.config.profilesRoot;
+    if (!root) throw new Error("Account setup requires the installation profilesRoot.");
     const lease = await acquireInstanceLock(
       Path.join(root, "locks", "provider-oauth.lock.sqlite"),
     ).catch((error) => {
@@ -158,11 +166,11 @@ export class ProviderAccountService {
         finish = resolve;
       });
       const timeout = setTimeout(() => {
-        void this.cancel(handle);
+        void this.cancel(handle, owner);
       }, 600000);
-      this.jobs.set(handle, { instanceId, process: child, done, timeout });
+      this.jobs.set(handle, { instanceId, process: child, done, timeout, owner });
       const unsubscribe = child.onData((data) =>
-        this.emit({ handle, instanceId, type: "output", data }),
+        this.emit({ handle, instanceId, type: "output", data }, owner),
       );
       child.onExit((event) => {
         clearTimeout(timeout);
@@ -170,33 +178,41 @@ export class ProviderAccountService {
         this.jobs.delete(handle);
         lease.release();
         finish();
-        this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) });
+        this.emit({ handle, instanceId, type: "exited", data: String(event.exitCode) }, owner);
         void (async () => {
           if (logout && event.exitCode === 0) await this.clearConfiguredCredentials(instanceId);
           await this.refresh(instanceId);
         })().catch(() =>
-          this.emit({
-            handle,
-            instanceId,
-            type: "error",
-            data: "Account setup finished, but status refresh failed. Check account status to retry.",
-          }),
+          this.emit(
+            {
+              handle,
+              instanceId,
+              type: "error",
+              data: "Account setup finished, but status refresh failed. Check account status to retry.",
+            },
+            owner,
+          ),
         );
       });
+      if (this.disconnectedOwners.has(owner)) {
+        await this.cancel(handle, owner);
+        throw new Error("Account connection closed.");
+      }
       return { handle };
     } catch (error) {
       lease.release();
       throw error;
     }
   }
-  input(handle: string, data: string): void {
+  input(handle: string, data: string, owner: object = this): void {
     const job = this.jobs.get(handle);
-    if (!job) throw new Error("Unknown or expired account terminal.");
+    if (!job || job.owner !== owner) throw new Error("Unknown or expired account terminal.");
     job.process.write(data);
   }
-  async cancel(handle: string): Promise<void> {
+  async cancel(handle: string, owner: object = this): Promise<void> {
     const job = this.jobs.get(handle);
     if (!job) return;
+    if (job.owner !== owner) throw new Error("Account terminal belongs to another connection.");
     job.process.kill();
     const force = setTimeout(() => job.process.kill("SIGKILL"), 3000);
     try {
@@ -205,7 +221,15 @@ export class ProviderAccountService {
       clearTimeout(force);
     }
   }
+  async disconnect(owner: object): Promise<void> {
+    this.disconnectedOwners.add(owner);
+    await Promise.all(
+      [...this.jobs]
+        .filter(([, job]) => job.owner === owner)
+        .map(([handle]) => this.cancel(handle, owner)),
+    );
+  }
   async dispose(): Promise<void> {
-    await Promise.all([...this.jobs.keys()].map((handle) => this.cancel(handle)));
+    await Promise.all([...this.jobs].map(([handle, job]) => this.cancel(handle, job.owner)));
   }
 }

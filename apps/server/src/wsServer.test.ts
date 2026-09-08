@@ -4391,7 +4391,7 @@ describe("WebSocket Server", () => {
     });
     expect(sessionResponse.status).toBe(204);
     const setCookie = sessionResponse.headers.get("set-cookie");
-    expect(setCookie).toContain("f5_session=");
+    expect(setCookie).toMatch(/f5_session(?:_[0-9a-f]{32})?=/);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
     const cookie = setCookie?.split(";", 1)[0];
