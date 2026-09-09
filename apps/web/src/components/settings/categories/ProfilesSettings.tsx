@@ -1,230 +1,248 @@
+import type { ProfileSummary } from "@t3tools/contracts";
+import { PlusIcon, RotateCwIcon, TriangleAlertIcon, UsersIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { type ProfileSummary } from "@t3tools/contracts";
-import { ensureNativeApi } from "../../../nativeApi";
-import { useProfileState, refreshProfiles, profileBrowserUrl } from "../../../profileState";
-import { PROVIDER_ACCENT_SWATCHES } from "../../../providerInstances";
-import { Button } from "../../ui/button";
-import { Input } from "../../ui/input";
-import { ProviderAccountPanel } from "../ProviderAccountPanel";
-import { StorageActionConfirmDialog } from "../StorageActionConfirmDialog";
 
-function ProfileRow({ profile, disabled }: { profile: ProfileSummary; disabled: boolean }) {
-  const [name, setName] = useState(profile.name);
-  const [port, setPort] = useState(String(profile.port));
-  const [accentColor, setAccent] = useState(profile.accentColor ?? PROVIDER_ACCENT_SWATCHES[0]);
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
-  const [confirm, setConfirm] = useState(false);
-  const api = ensureNativeApi().profiles!;
-  const run = async (operation: () => Promise<unknown>) => {
-    setError("");
-    setPending(true);
-    try {
-      await operation();
-      await refreshProfiles();
-    } catch (cause) {
-      setError(String(cause));
-    } finally {
-      setPending(false);
-    }
-  };
-  return (
-    <section className="space-y-3 rounded-lg border p-4">
-      <h3 className="font-medium">
-        {profile.name}
-        {profile.isActive ? " (active)" : ""}
-      </h3>
-      <p className="break-all font-mono text-xs text-muted-foreground">{profile.stateDir}</p>
-      <p className="text-xs text-muted-foreground">
-        {profile.slug} / {profile.status} / port {profile.port}
-      </p>
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          aria-label={`Name for ${profile.name}`}
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <Input
-          aria-label={`Port for ${profile.name}`}
-          type="number"
-          min={1}
-          max={65535}
-          value={port}
-          onChange={(event) => setPort(event.target.value)}
-        />
-        <select
-          aria-label={`Accent for ${profile.name}`}
-          value={accentColor}
-          onChange={(event) => setAccent(event.target.value)}
-        >
-          {PROVIDER_ACCENT_SWATCHES.map((color) => (
-            <option key={color} value={color}>
-              {color}
-            </option>
-          ))}
-        </select>
-        <Button
-          disabled={disabled || pending}
-          onClick={() =>
-            void run(() =>
-              api.update({ profileId: profile.id, name, port: Number(port), accentColor }),
-            )
-          }
-        >
-          Save
-        </Button>
-        {!profile.isActive &&
-          (window.desktopBridge?.switchProfile ? (
-            <Button
-              onClick={() => void run(() => window.desktopBridge!.switchProfile!(profile.id))}
-            >
-              Open
-            </Button>
-          ) : (
-            <a href={profileBrowserUrl(profile)} target="_blank" rel="noreferrer">
-              Open
-            </a>
-          ))}
-        <Button onClick={() => void navigator.clipboard.writeText(`t3 --profile ${profile.slug}`)}>
-          Copy launch command
-        </Button>
-        {window.desktopBridge?.stopProfile && (
-          <Button
-            disabled={pending}
-            onClick={() => void run(() => window.desktopBridge!.stopProfile!(profile.id))}
-          >
-            Stop
-          </Button>
-        )}
-        {!profile.isDefault && (
-          <Button disabled={disabled || pending} onClick={() => setConfirm(true)}>
-            Remove
-          </Button>
-        )}
-      </div>
-      {profile.invalidDirectories?.map((entry) => (
-        <p key={entry.directory} role="alert" className="text-sm text-amber-600">
-          {entry.directory}: {entry.reason} Update the project folder or worktree before running
-          commands.
-        </p>
-      ))}
-      {profile.sharedRepositories?.map((repository) => (
-        <p key={repository.workspaceRoot} role="alert" className="text-sm text-amber-600">
-          {repository.workspaceRoot} shares Git metadata with {repository.otherProfiles.join(", ")}.
-          Changes to this checkout can affect both profiles.
-        </p>
-      ))}
-      {profile.isActive && (
-        <div className="space-y-3">
-          <p>Sign in to the accounts this profile should use.</p>
-          {profile.providerAccounts.map((account) => (
-            <div key={account.instanceId}>
-              <h4>
-                {account.displayName}: {account.status}
-                {account.identity ? ` (${account.identity})` : ""}
-              </h4>
-              {account.reason && <p>{account.reason}</p>}
-              {account.status !== "unsupported-isolation" && (
-                <ProviderAccountPanel instanceId={account.instanceId} />
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      {error && (
-        <p role="alert" className="text-destructive">
-          {error}
-        </p>
-      )}
-      <StorageActionConfirmDialog
-        action={
-          confirm
-            ? {
-                title: `${window.desktopBridge?.stopProfile && !profile.isActive ? "Stop and remove" : "Remove"} ${profile.name}`,
-                categories: [],
-                description:
-                  "Profile data and provider logins are moved to .trash, not deleted. Git worktrees stay registered until git worktree prune. Stop the profile before removing it.",
-              }
-            : null
-        }
-        open={confirm}
-        pending={pending}
-        lastResult={null}
-        onOpenChange={setConfirm}
-        onConfirm={() => {
-          void run(async () => {
-            if (window.desktopBridge?.stopProfile && !profile.isActive)
-              await window.desktopBridge.stopProfile(profile.id);
-            await api.remove({ profileId: profile.id });
-            setConfirm(false);
-          });
-        }}
-      />
-    </section>
-  );
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
+import { cn } from "../../../lib/utils";
+import { removeProfile } from "../../../profileActions";
+import { refreshProfiles, useProfileState } from "../../../profileState";
+import { ProfileAccountsSection } from "../../profiles/ProfileAccountsSection";
+import { ProfileCard } from "../../profiles/ProfileCard";
+import { ProfileCreateDialog } from "../../profiles/ProfileCreateDialog";
+import { ProfileRemoveDialog } from "../../profiles/ProfileRemoveDialog";
+import { orderProfiles } from "../../profiles/profileStatus";
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "../../ui/alert";
+import { Button } from "../../ui/button";
+import {
+  Empty,
+  EmptyContent,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "../../ui/empty";
+import { Skeleton } from "../../ui/skeleton";
+import { toastManager } from "../../ui/toast";
+
+export { PROFILES_SETTINGS_DESCRIPTORS } from "./ProfilesSettings.descriptors";
+
+/** The registry keeps removed profiles under `<profiles root>/.trash`. */
+function metadataRootFor(active: ProfileSummary | null): string | null {
+  if (!active) return null;
+  return active.isDefault
+    ? `${active.stateDir}-profiles`
+    : active.stateDir.replace(/[\\/][^\\/]+$/, "");
 }
+
 export function ProfilesSettings() {
-  const { profiles, diagnostic, active } = useProfileState();
-  const metadataRoot = active
-    ? active.isDefault
-      ? `${active.stateDir}-profiles`
-      : active.stateDir.replace(/[\\/][^\\/]+$/, "")
-    : null;
-  const [name, setName] = useState("");
-  const [error, setError] = useState("");
-  const [pending, setPending] = useState(false);
+  const { profiles, diagnostic, active, loadState, loadError, isRefreshing } = useProfileState();
+  const [createOpen, setCreateOpen] = useState(false);
+  const [removeTarget, setRemoveTarget] = useState<ProfileSummary | null>(null);
+  const [removePending, setRemovePending] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  const { copyToClipboard, isCopied } = useCopyToClipboard();
+
   useEffect(() => {
-    void refreshProfiles().catch((cause) => setError(String(cause)));
+    void refreshProfiles().catch(() => {});
   }, []);
+
+  const metadataRoot = metadataRootFor(active);
+  const ordered = orderProfiles(profiles);
+  const locked = Boolean(diagnostic);
+
+  const confirmRemove = () => {
+    if (!removeTarget) return;
+    setRemovePending(true);
+    setRemoveError(null);
+    void removeProfile(removeTarget)
+      .then(() => {
+        toastManager.add({ type: "success", title: "Profile removed" });
+        setRemoveTarget(null);
+      })
+      .catch((cause: unknown) =>
+        setRemoveError(cause instanceof Error ? cause.message : String(cause)),
+      )
+      .finally(() => setRemovePending(false));
+  };
+
   return (
-    <div data-settings-search-target="profiles.manage" className="space-y-4 p-4">
-      <h2 className="text-lg font-semibold">Profiles</h2>
-      <p className="text-sm text-muted-foreground">
-        Separate accounts, projects, chat history, and settings. Browser profiles each use their own
-        port. Start another profile with its copied launch command.
-      </p>
-      {diagnostic && (
-        <div role="alert" className="rounded border border-destructive p-3">
-          {diagnostic.message}
-          <p className="break-all">{diagnostic.path}</p>Registry changes are disabled until this is
-          fixed.
-        </div>
-      )}
-      <form
-        className="flex gap-2"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setPending(true);
-          setError("");
-          void ensureNativeApi()
-            .profiles!.create({ name })
-            .then(async () => {
-              setName("");
-              await refreshProfiles();
-            })
-            .catch((cause) => setError(String(cause)))
-            .finally(() => setPending(false));
-        }}
+    <>
+      {diagnostic ? (
+        <Alert variant="error">
+          <TriangleAlertIcon />
+          <AlertTitle>Profile registry unavailable</AlertTitle>
+          <AlertDescription>
+            <p>{diagnostic.message}</p>
+            <code className="break-all text-xs">{diagnostic.path}</code>
+            <p>
+              Creating, renaming, and removing profiles is disabled until this file is repaired.
+            </p>
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      <section
+        className="rounded-2xl border border-border bg-card"
+        data-settings-search-target="profiles.manage"
       >
-        <Input
-          aria-label="New profile name"
-          placeholder="Work or Personal"
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-        />
-        <Button type="submit" disabled={pending || !!diagnostic || !name.trim()}>
-          Create profile
-        </Button>
-      </form>
-      {error && <p role="alert">{error}</p>}
-      {metadataRoot && (
-        <p className="break-all text-xs text-muted-foreground">
-          Removed profiles are retained in {metadataRoot}/.trash
-        </p>
-      )}
-      {profiles.map((profile) => (
-        <ProfileRow key={profile.id} profile={profile} disabled={!!diagnostic} />
-      ))}
-    </div>
+        <div className="flex flex-col gap-3 border-b border-border px-5 py-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h2 className="text-sm font-medium text-foreground">Profiles</h2>
+            <p className="mt-1 max-w-2xl text-xs text-muted-foreground">
+              Each profile keeps its own accounts, projects, chat history, and settings, and serves
+              the app on its own port. Run another profile with its launch command.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={isRefreshing}
+              onClick={() => void refreshProfiles().catch(() => {})}
+            >
+              <RotateCwIcon className={cn("size-3", isRefreshing && "animate-spin")} />
+              Refresh
+            </Button>
+            <Button size="xs" disabled={locked} onClick={() => setCreateOpen(true)}>
+              <PlusIcon className="size-3" />
+              New profile
+            </Button>
+          </div>
+        </div>
+
+        {loadState === "unsupported" ? (
+          <Empty className="py-10">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <UsersIcon />
+              </EmptyMedia>
+              <EmptyTitle>Profiles are unavailable</EmptyTitle>
+              <EmptyDescription>
+                This server was started without a profiles directory.
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
+        ) : loadState === "error" && profiles.length === 0 ? (
+          <div className="p-5">
+            <Alert variant="error">
+              <TriangleAlertIcon />
+              <AlertTitle>Could not load profiles</AlertTitle>
+              <AlertDescription>{loadError}</AlertDescription>
+              <AlertAction>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => void refreshProfiles().catch(() => {})}
+                >
+                  Retry
+                </Button>
+              </AlertAction>
+            </Alert>
+          </div>
+        ) : loadState === "loading" ? (
+          <div>
+            {[0, 1, 2].map((row) => (
+              <div key={row} className="border-t border-border px-5 py-4 first:border-t-0">
+                <Skeleton className="h-4 w-40" />
+                <Skeleton className="mt-2 h-3 w-64" />
+              </div>
+            ))}
+          </div>
+        ) : profiles.length === 0 ? (
+          <Empty className="py-10">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <UsersIcon />
+              </EmptyMedia>
+              <EmptyTitle>No profiles yet</EmptyTitle>
+              <EmptyDescription>
+                Create a profile to keep separate accounts, projects, and chat history.
+              </EmptyDescription>
+            </EmptyHeader>
+            <EmptyContent>
+              <Button size="xs" disabled={locked} onClick={() => setCreateOpen(true)}>
+                <PlusIcon className="size-3" />
+                New profile
+              </Button>
+            </EmptyContent>
+          </Empty>
+        ) : (
+          <div>
+            {ordered.map((profile) => (
+              <ProfileCard
+                key={profile.id}
+                profile={profile}
+                profiles={profiles}
+                disabled={locked}
+                onRequestRemove={(target) => {
+                  setRemoveError(null);
+                  setRemoveTarget(target);
+                }}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {active ? <ProfileAccountsSection profile={active} /> : null}
+
+      {metadataRoot || active ? (
+        <section
+          className="rounded-2xl border border-border bg-card p-5"
+          data-settings-search-target="profiles.storage"
+        >
+          <div className="mb-4">
+            <h2 className="text-sm font-medium text-foreground">Profile storage</h2>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Where this device keeps profile data on disk.
+            </p>
+          </div>
+          <div className="space-y-3">
+            {metadataRoot ? (
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">Removed profiles</p>
+                  <p className="break-all font-mono text-[11px] text-muted-foreground">
+                    {metadataRoot}/.trash
+                  </p>
+                </div>
+              </div>
+            ) : null}
+            {active ? (
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-foreground">This profile's data</p>
+                  <p className="break-all font-mono text-[11px] text-muted-foreground">
+                    {active.stateDir}
+                  </p>
+                </div>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  className="shrink-0"
+                  onClick={() => copyToClipboard(active.stateDir, undefined)}
+                >
+                  {isCopied ? "Copied" : "Copy path"}
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </section>
+      ) : null}
+
+      <ProfileCreateDialog open={createOpen} onOpenChange={setCreateOpen} profiles={profiles} />
+      <ProfileRemoveDialog
+        profile={removeTarget}
+        pending={removePending}
+        error={removeError}
+        onOpenChange={(open) => {
+          if (!open) {
+            setRemoveTarget(null);
+            setRemoveError(null);
+          }
+        }}
+        onConfirm={confirmRemove}
+      />
+    </>
   );
 }

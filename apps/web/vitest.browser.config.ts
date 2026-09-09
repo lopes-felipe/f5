@@ -33,6 +33,8 @@ export default mergeConfig(
         "src/components/settings/ProviderInstanceCard.browser.tsx",
         "src/components/settings/SettingsRouteState.browser.tsx",
         "src/components/settings/categories/StorageSettings.browser.tsx",
+        "src/components/profiles/ProfileCard.browser.tsx",
+        "src/components/profiles/ProfilesSettingsPage.browser.tsx",
         "src/components/onboarding/HarnessValidationPanel.browser.tsx",
         "src/components/prHub/PrDetailsTabs.browser.tsx",
         "src/components/prHub/PrLocalCheckout.browser.tsx",

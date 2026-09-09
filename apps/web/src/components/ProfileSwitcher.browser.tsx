@@ -40,8 +40,8 @@ afterEach(() => {
   else delete window.desktopBridge;
   useProfileState.setState({ active: null, profiles: [], mismatch: false });
 });
-async function mount() {
-  useProfileState.setState({ active, profiles: [active, work], mismatch: false });
+async function mount(profiles: readonly ProfileSummary[] = [active, work]) {
+  useProfileState.setState({ active, profiles, mismatch: false });
   const router = createRouter({
     history: createMemoryHistory({ initialEntries: ["/"] }),
     routeTree: createRootRoute({ component: ProfileSwitcher }),
@@ -53,9 +53,9 @@ async function mount() {
 it("opens browser profiles on the current host with their own port", async () => {
   delete window.desktopBridge;
   await mount();
-  await expect.element(page.getByText("Default (active)")).toBeVisible();
+  await expect.element(page.getByLabelText("Active profile")).toBeVisible();
   await expect
-    .element(page.getByRole("link", { name: "Open", exact: true }))
+    .element(page.getByRole("link", { name: "Open Work" }))
     .toHaveAttribute("href", profileBrowserUrl(work));
   expect(profileBrowserUrl(work, { protocol: "https:", hostname: "remote.example" })).toBe(
     "https://remote.example:3774/",
@@ -71,6 +71,18 @@ it("asks desktop to open the selected profile by immutable id", async () => {
     typeof window.desktopBridge
   >;
   await mount();
-  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Open Work" }).click();
   expect(switchProfile).toHaveBeenCalledWith(work.id);
+});
+
+it("surfaces profiles that are not ready instead of hiding them", async () => {
+  delete window.desktopBridge;
+  const provisioning: ProfileSummary = { ...work, status: "provisioning", name: "Staging" };
+  await mount([active, provisioning]);
+
+  // The old switcher filtered these out entirely, so a profile mid-setup
+  // simply vanished from the list with no explanation.
+  await expect.element(page.getByText("Staging")).toBeVisible();
+  await expect.element(page.getByText("Setting up")).toBeVisible();
+  expect(page.getByRole("link", { name: "Open Staging" }).elements()).toHaveLength(0);
 });
