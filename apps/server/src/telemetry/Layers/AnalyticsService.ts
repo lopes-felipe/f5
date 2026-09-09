@@ -1,3 +1,6 @@
+import * as FS from "node:fs/promises";
+import * as NodePath from "node:path";
+import { acquireInstanceLock } from "../../profiles/InstanceLock";
 /**
  * AnalyticsServiceLive - Anonymous PostHog telemetry layer.
  *
@@ -40,6 +43,23 @@ const makeAnalyticsService = Effect.gen(function* () {
   const httpClient = yield* HttpClient.HttpClient;
   const serverConfig = yield* ServerConfig;
   const identifier = yield* getTelemetryIdentifier;
+  const installationId = serverConfig.profilesRoot
+    ? yield* Effect.promise(() =>
+        FS.readFile(NodePath.join(serverConfig.profilesRoot!, "installation-id"), "utf8").then(
+          (value) => value.trim(),
+          () => undefined,
+        ),
+      )
+    : undefined;
+  const heartbeatLease =
+    telemetryConfig.enabled && serverConfig.profilesRoot
+      ? yield* Effect.promise(() =>
+          acquireInstanceLock(
+            NodePath.join(serverConfig.profilesRoot!, "locks", "telemetry-heartbeat.lock.sqlite"),
+          ).catch(() => undefined),
+        )
+      : undefined;
+  if (heartbeatLease) yield* Effect.addFinalizer(() => Effect.sync(heartbeatLease.release));
   const bufferRef = yield* Ref.make<ReadonlyArray<BufferedAnalyticsEvent>>([]);
   const clientType = serverConfig.mode === "desktop" ? "desktop-app" : "cli-web-client";
 
@@ -78,7 +98,8 @@ const makeAnalyticsService = Effect.gen(function* () {
         api_key: telemetryConfig.posthogKey,
         batch: events.map((event) => ({
           event: event.event,
-          distinct_id: identifier,
+          distinct_id:
+            event.event === "server.boot.heartbeat" ? (installationId ?? identifier) : identifier,
           properties: {
             ...event.properties,
             $process_person_profile: false,
@@ -87,6 +108,7 @@ const makeAnalyticsService = Effect.gen(function* () {
             arch: process.arch,
             t3CodeVersion: version,
             clientType,
+            ...(installationId ? { installationId } : {}),
           },
           timestamp: event.capturedAt,
         })),
@@ -125,6 +147,7 @@ const makeAnalyticsService = Effect.gen(function* () {
   }).pipe(Effect.catch((cause) => Effect.logError("Failed to flush telemetry", { cause })));
 
   const record: AnalyticsServiceShape["record"] = Effect.fnUntraced(function* (event, properties) {
+    if (event === "server.boot.heartbeat" && serverConfig.profilesRoot && !heartbeatLease) return;
     if (!telemetryConfig.enabled || !identifier) return;
 
     const enqueueResult = yield* enqueueBufferedEvent(event, properties);

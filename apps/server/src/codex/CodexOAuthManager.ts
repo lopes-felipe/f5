@@ -1,3 +1,4 @@
+import { assertOAuthPortAvailable } from "../profiles/ProviderAccountService";
 import {
   type McpOauthLoginStatusRequest,
   McpOauthLoginStatusResult,
@@ -444,6 +445,7 @@ const makeCodexOAuthManager = Effect.gen(function* () {
                 : {}),
               ...(stored.oauthCallbackUrl ? { mcpOAuthCallbackUrl: stored.oauthCallbackUrl } : {}),
             });
+            if (stored.oauthCallbackPort) await assertOAuthPortAvailable(stored.oauthCallbackPort);
             const loginResult = await lease.client.startOAuthLogin({
               name: input.serverName,
               timeoutSecs: CODEX_MCP_OAUTH_LOGIN_TIMEOUT_SEC,

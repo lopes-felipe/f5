@@ -1,3 +1,8 @@
+import { ProfileGithubAccount } from "../ProfileGithubAccount";
+import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
+import * as NodePath from "node:path";
+import { ServerConfig } from "../../config";
+import { ServerSecretStore } from "../../auth/Services/ServerSecretStore";
 import { normalizeGitHubCliError } from "../githubCliError.ts";
 import { enforceGitHubRequestPolicy } from "../githubRequestPolicy.ts";
 import { isCapturedPrTarget } from "../githubPrTarget.ts";
@@ -136,7 +141,10 @@ function mergeArgsForMethod(method: GitHubMergePullRequestInput["method"]): stri
   }
 }
 
-const makeGitHubCli = Effect.sync(() => {
+const makeGitHubCli = Effect.gen(function* () {
+  const secretStore = yield* Effect.serviceOption(ServerSecretStore);
+  const serverConfig = yield* Effect.serviceOption(ServerConfig);
+  const isolated = Option.isSome(serverConfig) && serverConfig.value.profile?.isDefault === false;
   const execute: GitHubCliShape["execute"] = (input) =>
     Effect.gen(function* () {
       const capture = yield* Effect.serviceOption(GitHubCredentialScope);
@@ -166,9 +174,38 @@ const makeGitHubCli = Effect.sync(() => {
           if (input.stdin !== undefined && Buffer.byteLength(input.stdin, "utf8") > 1024 * 1024) {
             return Promise.reject(new Error("GitHub request exceeds the 1 MiB body limit."));
           }
+          const supplied = context ? githubCredentialEnvironment(context) : input.env;
+          const environment = Option.isSome(serverConfig)
+            ? buildAccountExecutionEnvironment({
+                purpose: "git",
+                profile: serverConfig.value.profile,
+                stateDir: serverConfig.value.stateDir,
+                baseEnv: supplied ?? process.env,
+              })
+            : { ...(supplied ?? process.env) };
+          // Only the explicit credential scope may restore tokens stripped from the inherited base.
+          for (const key of [
+            "GH_TOKEN",
+            "GITHUB_TOKEN",
+            "GH_ENTERPRISE_TOKEN",
+            "GITHUB_ENTERPRISE_TOKEN",
+          ]) {
+            if (isolated || supplied) delete environment[key];
+            if (supplied?.[key]) environment[key] = supplied[key];
+          }
+          if (isolated && !context && !input.env)
+            for (const key of Object.keys(environment))
+              if (
+                /^(?:GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_DEBUG)$/i.test(
+                  key,
+                )
+              )
+                if (isolated || supplied) delete environment[key];
+          if (isolated && Option.isSome(serverConfig))
+            environment.GH_CONFIG_DIR = NodePath.join(serverConfig.value.stateDir, "github");
           return runProcess("gh", args, {
             cwd: input.cwd,
-            env: context ? githubCredentialEnvironment(context) : input.env,
+            env: environment,
             timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
             allowNonZeroExit: input.allowNonZeroExit ?? false,
             stdin: input.stdin,
@@ -216,7 +253,35 @@ const makeGitHubCli = Effect.sync(() => {
       );
     });
 
-  const api = makeGitHubApi(execute);
+  const api = makeGitHubApi(execute, githubRequestScheduler, (host, cwd) =>
+    Effect.gen(function* () {
+      const saved = Option.isSome(secretStore)
+        ? yield* Effect.tryPromise({
+            try: () => new ProfileGithubAccount(secretStore.value).token(host),
+            catch: (cause) =>
+              new GitHubCliError({
+                operation: "credentials",
+                kind: "unauthenticated",
+                detail: String(cause),
+              }),
+          })
+        : null;
+      if (saved || isolated) return saved ?? "";
+      const names =
+        host === "github.com"
+          ? ["GH_TOKEN", "GITHUB_TOKEN"]
+          : ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
+      const ambient = names
+        .map((name) => Object.entries(process.env).find(([key]) => key.toUpperCase() === name)?.[1])
+        .find((value) => value?.trim());
+      if (ambient) return ambient.trim();
+      return (yield* execute({
+        cwd,
+        args: ["auth", "token", "--hostname", host],
+        maxStdoutBytes: 65536,
+      })).stdout.trim();
+    }),
+  );
   const service = {
     ...api,
     execute,

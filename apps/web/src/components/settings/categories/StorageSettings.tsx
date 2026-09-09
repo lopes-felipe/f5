@@ -528,11 +528,13 @@ export function StorageSettings() {
       const result = (await response.json()) as {
         fileCount: number;
         includesEncryptedSecrets: boolean;
+        crossProfile?: boolean;
+        sourceProfileId?: string;
       };
       toastManager.add({
         type: "success",
         title: "Restore validated and staged. Restart F5 to apply it.",
-        description: `${result.fileCount} files validated${result.includesEncryptedSecrets ? ", including encrypted credentials" : ""}.`,
+        description: `${result.fileCount} files validated${result.includesEncryptedSecrets ? ", including encrypted secrets" : ""}. ${result.crossProfile ? `This archive comes from another profile (${result.sourceProfileId}). ` : ""}Provider credential homes are not included; sign in again after restoring.`,
       });
     } catch (error) {
       toastManager.add({

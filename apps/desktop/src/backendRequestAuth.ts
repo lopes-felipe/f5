@@ -1,4 +1,4 @@
-const PRIVATE_BACKEND_PATH_PREFIXES = ["/attachments/", "/api/"] as const;
+import { isPrivateHttpPath } from "@t3tools/shared/backendPaths";
 
 export const DESKTOP_BACKEND_HOST = "127.0.0.1";
 export const DESKTOP_BACKEND_REQUEST_FILTER = `http://${DESKTOP_BACKEND_HOST}/*`;
@@ -27,7 +27,7 @@ function isPrivateDesktopBackendRequest(url: string, backendPort: number): boole
     const parsed = new URL(url);
     return (
       parsed.origin === getDesktopBackendHttpOrigin(backendPort) &&
-      PRIVATE_BACKEND_PATH_PREFIXES.some((prefix) => parsed.pathname.startsWith(prefix))
+      isPrivateHttpPath(parsed.pathname)
     );
   } catch {
     return false;

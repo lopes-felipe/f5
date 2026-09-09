@@ -165,3 +165,5 @@ sequenceDiagram
 [16]: ../packages/shared/src/DrainableWorker.ts
 [17]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueDispatcher.ts
 [18]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts
+
+Profiles isolate environments at the process boundary, with sibling registry/lock storage and separate state directories. See [Profiles](profiles.md).

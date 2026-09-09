@@ -1,3 +1,4 @@
+import { ServerConfig } from "../../config.ts";
 import { existsSync } from "node:fs";
 import path from "node:path";
 
@@ -20,6 +21,7 @@ const GitServiceTestLayer = makeLocalPushFriendlyGitServiceLayer(
   GitServiceLive.pipe(Layer.provide(NodeServices.layer)),
 );
 const GitCoreTestLayer = GitCoreLive.pipe(
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-" })),
   Layer.provide(GitServiceTestLayer),
   Layer.provide(NodeServices.layer),
 );
@@ -79,6 +81,7 @@ function runShellCommand(input: {
       process.platform === "win32" ? ["/d", "/s", "/c", input.command] : ["-lc", input.command];
 
     return runProcess(shellPath, args, {
+      env: process.env,
       cwd: input.cwd,
       timeoutMs: input.timeoutMs ?? 30_000,
       allowNonZeroExit: true,
@@ -92,6 +95,7 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
   Effect.promise(async () => {
     const gitServiceLayer = Layer.succeed(GitService, gitService);
     const coreLayer = GitCoreLive.pipe(
+      Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-" })),
       Layer.provide(gitServiceLayer),
       Layer.provide(NodeServices.layer),
     );

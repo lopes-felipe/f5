@@ -1,25 +1,18 @@
-import { execFile } from "node:child_process";
-import net from "node:net";
-import { promisify } from "node:util";
-
+import { stripVTControlCharacters } from "node:util";
 import type { DiscoveredLocalServer } from "@t3tools/contracts";
 import { LSOF_LOCAL_HOST_TOKENS } from "@t3tools/shared/preview";
-
-const execFileAsync = promisify(execFile);
 
 export const COMMON_DEV_PORTS: ReadonlyArray<number> = Object.freeze([
   3000, 3001, 3333, 4173, 4200, 4321, 5000, 5173, 5174, 5175, 5500, 8000, 8080, 8081, 8888, 9000,
 ]);
 
-const LSOF_TIMEOUT_MS = 5_000;
-const WINDOWS_LISTENER_TIMEOUT_MS = 5_000;
 export const PREVIEW_READINESS_PROBE_TIMEOUT_MS = 750;
 export const PREVIEW_READINESS_PROBE_CONCURRENCY = 8;
 
 type ReadinessFetch = (
   input: string,
   init: { readonly signal: AbortSignal; readonly redirect: "manual" },
-) => Promise<{ readonly body?: { cancel: () => Promise<void> } | null }>;
+) => Promise<{ readonly status?: number; readonly body?: { cancel: () => Promise<void> } | null }>;
 
 function serverForPort(input: {
   readonly port: number;
@@ -102,81 +95,6 @@ export function parseWindowsListenerOutput(raw: string): ReadonlyArray<Discovere
   return [...seen.values()].toSorted((left, right) => left.port - right.port);
 }
 
-function canListenOnHost(port: number, host: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    let settled = false;
-    const settle = (available: boolean) => {
-      if (settled) return;
-      settled = true;
-      try {
-        server.close();
-      } catch {
-        // Ignore close failures during cleanup.
-      }
-      resolve(available);
-    };
-    server.unref();
-    server.once("error", (cause) => {
-      const code =
-        typeof cause === "object" && cause !== null ? (cause as { code?: string }).code : null;
-      settle(code === "EADDRNOTAVAIL");
-    });
-    server.once("listening", () => settle(true));
-    server.listen({ host, port });
-  });
-}
-
-async function isPortAvailableOnLoopback(port: number): Promise<boolean> {
-  const [ipv4, ipv6] = await Promise.all([
-    canListenOnHost(port, "127.0.0.1"),
-    canListenOnHost(port, "::1"),
-  ]);
-  return ipv4 && ipv6;
-}
-
-async function probeCommonPorts(): Promise<ReadonlyArray<DiscoveredLocalServer>> {
-  const results = await Promise.all(
-    COMMON_DEV_PORTS.map(async (port) => ({
-      port,
-      listening: !(await isPortAvailableOnLoopback(port)),
-    })),
-  );
-  return results
-    .filter((result) => result.listening)
-    .map((result) => serverForPort({ port: result.port }));
-}
-
-async function scanWithLsof(): Promise<ReadonlyArray<DiscoveredLocalServer> | null> {
-  try {
-    const result = await execFileAsync("lsof", ["-iTCP", "-sTCP:LISTEN", "-P", "-n", "-F", "pcn"], {
-      timeout: LSOF_TIMEOUT_MS,
-      maxBuffer: 1024 * 1024,
-    });
-    return parseLsofOutput(result.stdout);
-  } catch {
-    return null;
-  }
-}
-
-async function scanWithPowerShell(): Promise<ReadonlyArray<DiscoveredLocalServer> | null> {
-  try {
-    const command =
-      'Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { $processName = (Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName; Write-Output "$($_.LocalAddress)|$($_.LocalPort)|$($_.OwningProcess)|$processName" }';
-    const result = await execFileAsync(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-Command", command],
-      {
-        timeout: WINDOWS_LISTENER_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024,
-      },
-    );
-    return parseWindowsListenerOutput(result.stdout);
-  } catch {
-    return null;
-  }
-}
-
 async function isReadyLocalServer(
   server: DiscoveredLocalServer,
   fetchImplementation: ReadinessFetch,
@@ -191,7 +109,7 @@ async function isReadyLocalServer(
       redirect: "manual",
     });
     await response.body?.cancel().catch(() => undefined);
-    return true;
+    return (response.status ?? 200) >= 200 && (response.status ?? 200) < 500;
   } catch {
     return false;
   } finally {
@@ -231,9 +149,45 @@ export async function filterReadyLocalServers(
   return servers.filter((_server, index) => ready[index]);
 }
 
-export async function scanLocalServers(): Promise<ReadonlyArray<DiscoveredLocalServer>> {
-  const platformResult =
-    process.platform === "win32" ? await scanWithPowerShell() : await scanWithLsof();
-  const candidates = platformResult ?? (await probeCommonPorts());
-  return filterReadyLocalServers(candidates);
+/** Only inspect URLs emitted by processes owned by this profile. */
+export async function scanLocalServers(
+  ownedUrls: Iterable<string> = [],
+): Promise<ReadonlyArray<DiscoveredLocalServer>> {
+  const candidates = new Map<string, DiscoveredLocalServer>();
+  for (const value of ownedUrls) {
+    try {
+      const url = new URL(value);
+      if (
+        !["http:", "https:"].includes(url.protocol) ||
+        !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)
+      )
+        continue;
+      candidates.set(url.origin, {
+        host: url.hostname,
+        port: Number(url.port || (url.protocol === "https:" ? 443 : 80)),
+        url: url.origin,
+        processName: null,
+        pid: null,
+      });
+    } catch {
+      /* Incomplete output URL. */
+    }
+  }
+  return filterReadyLocalServers([...candidates.values()]);
+}
+
+export class OwnedPreviewUrls {
+  readonly urls = new Set<string>();
+  private readonly tails = new Map<string, string>();
+  append(owner: string, output: string): void {
+    const text = stripVTControlCharacters((this.tails.get(owner) ?? "") + output);
+    this.tails.set(owner, text.slice(-2048));
+    if (this.tails.size > 128) this.tails.delete(this.tails.keys().next().value!);
+    for (const match of text.matchAll(
+      /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::[0-9]{1,5})?(?=[/\s])/g,
+    )) {
+      this.urls.add(match[0]);
+      if (this.urls.size > 256) this.urls.delete(this.urls.values().next().value!);
+    }
+  }
 }

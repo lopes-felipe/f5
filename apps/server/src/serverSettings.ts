@@ -1,3 +1,5 @@
+import { validateManagedHome } from "./profiles/providerIsolation";
+import { assertAccountEnvironmentOverrides } from "./providerProcessEnv";
 /**
  * ServerSettings - Server-authoritative settings service.
  *
@@ -595,6 +597,44 @@ const makeServerSettings = Effect.gen(function* () {
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
         Effect.gen(function* () {
+          yield* Effect.try({
+            try: () => {
+              for (const instance of Object.values(patch.providerInstances ?? {})) {
+                if (serverConfig.profile?.isDefault === false && instance?.environment)
+                  assertAccountEnvironmentOverrides(
+                    Object.fromEntries(
+                      instance.environment.map((variable) => [variable.name, variable.value]),
+                    ),
+                  );
+              }
+            },
+            catch: (cause) =>
+              new ServerSettingsError({
+                settingsPath: serverConfig.settingsPath ?? "<memory>",
+                detail: String(cause),
+                cause,
+              }),
+          });
+          if (serverConfig.profile?.isDefault === false) {
+            yield* Effect.tryPromise({
+              try: async () => {
+                for (const instance of Object.values(patch.providerInstances ?? {})) {
+                  const config = instance?.config as
+                    | { homePath?: unknown; shadowHomePath?: unknown }
+                    | undefined;
+                  for (const home of [config?.homePath, config?.shadowHomePath])
+                    if (typeof home === "string" && home)
+                      await validateManagedHome(serverConfig, home);
+                }
+              },
+              catch: (cause) =>
+                new ServerSettingsError({
+                  settingsPath: serverConfig.settingsPath ?? "<memory>",
+                  detail: String(cause),
+                  cause,
+                }),
+            });
+          }
           const current = yield* getSettingsFromCache;
           const nextPersisted = yield* persistProviderEnvironmentSecrets(
             current,

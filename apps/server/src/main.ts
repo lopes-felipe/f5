@@ -1,3 +1,11 @@
+import * as ProfileFS from "node:fs/promises";
+import {
+  ProfileRegistryStore,
+  fallbackDefaultProfile,
+  assertProfileDirectory,
+  isProfilePortBindable,
+} from "./profiles/ProfileRegistryStore";
+import { instanceLock } from "./profiles/InstanceLock";
 /**
  * CliConfig - CLI/runtime bootstrap service definitions.
  *
@@ -13,6 +21,7 @@ import { legacyT3UserdataStateDir } from "@t3tools/shared/appStatePaths";
 import {
   DEFAULT_PORT,
   deriveServerPaths,
+  ensureStateDirectories,
   resolveStaticDir,
   ServerConfig,
   type RuntimeMode,
@@ -47,6 +56,7 @@ interface CliInput {
   readonly host: Option.Option<string>;
   readonly t3Home: Option.Option<string>;
   readonly stateDir: Option.Option<string>;
+  readonly profile?: Option.Option<string>;
   readonly devUrl: Option.Option<URL>;
   readonly noBrowser: Option.Option<boolean>;
   readonly authToken: Option.Option<string>;
@@ -109,6 +119,7 @@ const CliEnvConfig = Config.all({
   ),
   port: Config.port("T3CODE_PORT").pipe(Config.option, Config.map(Option.getOrUndefined)),
   host: Config.string("T3CODE_HOST").pipe(Config.option, Config.map(Option.getOrUndefined)),
+  profile: Config.string("F5_PROFILE").pipe(Config.option, Config.map(Option.getOrUndefined)),
   f5Home: Config.string("F5_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   t3Home: Config.string("T3CODE_HOME").pipe(Config.option, Config.map(Option.getOrUndefined)),
   f5StateDir: Config.string("F5_STATE_DIR").pipe(Config.option, Config.map(Option.getOrUndefined)),
@@ -151,8 +162,9 @@ const trimToUndefined = (value: string | undefined): string | undefined => {
 const optionStringToTrimmedUndefined = (value: Option.Option<string>): string | undefined =>
   trimToUndefined(Option.getOrUndefined(value));
 
-const ServerConfigLive = (input: CliInput) =>
-  Layer.effect(
+const ServerConfigLive = (input: CliInput) => {
+  let startupErrorPath: string | undefined;
+  return Layer.effect(
     ServerConfig,
     Effect.gen(function* () {
       const cliConfig = yield* CliConfig;
@@ -169,18 +181,6 @@ const ServerConfigLive = (input: CliInput) =>
 
       const mode = Option.getOrElse(input.mode, () => env.mode);
 
-      const port = yield* Option.match(input.port, {
-        onSome: (value) => Effect.succeed(value),
-        onNone: () => {
-          if (env.port) {
-            return Effect.succeed(env.port);
-          }
-          if (mode === "desktop") {
-            return Effect.succeed(DEFAULT_PORT);
-          }
-          return findAvailablePort(DEFAULT_PORT);
-        },
-      });
       const devUrl = Option.getOrElse(input.devUrl, () => env.devUrl);
       const explicitStateDir =
         optionStringToTrimmedUndefined(input.stateDir) ??
@@ -197,27 +197,88 @@ const ServerConfigLive = (input: CliInput) =>
         resolvedExplicitStateDir !== undefined
           ? path.dirname(resolvedExplicitStateDir)
           : yield* resolveBaseDir(explicitHomeDir);
-      const derivedPaths =
-        resolvedExplicitStateDir !== undefined
-          ? {
-              stateDir: resolvedExplicitStateDir,
-              dbPath: path.join(resolvedExplicitStateDir, "state.sqlite"),
-              keybindingsConfigPath: path.join(resolvedExplicitStateDir, "keybindings.json"),
-              worktreesDir: path.join(baseDir, "worktrees"),
-              attachmentsDir: path.join(resolvedExplicitStateDir, "attachments"),
-              logsDir: path.join(resolvedExplicitStateDir, "logs"),
-              serverLogPath: path.join(resolvedExplicitStateDir, "logs", "server.log"),
-              providerLogsDir: path.join(resolvedExplicitStateDir, "logs", "provider"),
-              providerEventLogPath: path.join(
-                resolvedExplicitStateDir,
-                "logs",
-                "provider",
-                "events.log",
+      const defaultStateDir =
+        resolvedExplicitStateDir ?? path.join(baseDir, devUrl ? "dev" : "userdata");
+      const registryStore = new ProfileRegistryStore(
+        defaultStateDir,
+        DEFAULT_PORT + (devUrl ? 1000 : 0),
+      );
+      startupErrorPath = path.join(
+        registryStore.root,
+        `last-startup-error-${fallbackDefaultProfile(defaultStateDir).id}.json`,
+      );
+      const profileRef =
+        (input.profile ? optionStringToTrimmedUndefined(input.profile) : undefined) ??
+        trimToUndefined(env.profile);
+      const read = yield* Effect.tryPromise({
+        try: () => registryStore.init(),
+        catch: (cause) => new StartupError({ message: String(cause), cause }),
+      });
+      const startupFailure = (message: string, profileId: string) =>
+        Effect.gen(function* () {
+          yield* Effect.tryPromise({
+            try: () =>
+              ProfileFS.writeFile(
+                path.join(registryStore.root, `last-startup-error-${profileId}.json`),
+                JSON.stringify({ message, profileId, at: new Date().toISOString() }),
               ),
-              terminalLogsDir: path.join(resolvedExplicitStateDir, "logs", "terminals"),
-              anonymousIdPath: path.join(resolvedExplicitStateDir, "anonymous-id"),
-            }
-          : yield* deriveServerPaths(baseDir, devUrl);
+            catch: () => undefined,
+          }).pipe(Effect.ignore);
+          process.exitCode = 78;
+          return yield* new StartupError({ message });
+        });
+      if (!read.ok && profileRef)
+        return yield* startupFailure(
+          read.diagnostic.message,
+          fallbackDefaultProfile(defaultStateDir).id,
+        );
+      const records = read.ok ? read.registry.profiles : [fallbackDefaultProfile(defaultStateDir)];
+      const profile =
+        records.find((p) => p.slug === (profileRef ?? "default")) ??
+        records.find((p) => p.id === profileRef);
+      if (!profile || profile.status !== "ready")
+        return yield* startupFailure(
+          `Unknown or unavailable profile '${profileRef}'. Ready profiles: ${records
+            .filter((p) => p.status === "ready")
+            .map((p) => p.slug)
+            .join(", ")}`,
+          profile?.id ?? fallbackDefaultProfile(defaultStateDir).id,
+        );
+      startupErrorPath = path.join(registryStore.root, `last-startup-error-${profile.id}.json`);
+      yield* Effect.tryPromise({
+        try: () => assertProfileDirectory(defaultStateDir, profile),
+        catch: (cause) => new StartupError({ message: String(cause), cause }),
+      });
+      yield* instanceLock(registryStore.instanceLockPath(profile)).pipe(
+        Effect.catch((error) => startupFailure(error.message, profile.id)),
+      );
+      const explicitPort = Option.getOrUndefined(input.port) ?? env.port;
+      let port = explicitPort ?? profile.port;
+      if (explicitPort === undefined && profile.isDefault) {
+        port = mode === "desktop" ? DEFAULT_PORT : yield* findAvailablePort(profile.port);
+        const reserved = new Set([
+          ...records.filter((record) => record.id !== profile.id).map((record) => record.port),
+          ...(read.ok ? read.registry.retiredPorts : []),
+        ]);
+        while (reserved.has(port)) port = yield* findAvailablePort(port + 1);
+      }
+      if (explicitPort !== undefined && explicitPort !== profile.port)
+        yield* Effect.logWarning(
+          "Explicit port overrides profile origin ownership; browser isolation is the operator's responsibility",
+          { profile: profile.slug, recordedPort: profile.port, port },
+        );
+      if (
+        !profile.isDefault &&
+        explicitPort === undefined &&
+        !(yield* Effect.promise(() =>
+          isProfilePortBindable(port, Option.getOrUndefined(input.host) ?? env.host ?? "127.0.0.1"),
+        ))
+      )
+        return yield* startupFailure(
+          `Port ${port} is already in use. Another F5 profile or another program owns it. Change this profile's port in Settings > Profiles.`,
+          profile.id,
+        );
+      const derivedPaths = yield* deriveServerPaths({ baseDir, defaultStateDir, profile });
       const noBrowser = resolveBooleanFlag(input.noBrowser, env.noBrowser ?? mode === "desktop");
       const authToken = trimToUndefined(Option.getOrUndefined(input.authToken) ?? env.authToken);
       const autoBootstrapProjectFromCwd = resolveBooleanFlag(
@@ -251,6 +312,15 @@ const ServerConfigLive = (input: CliInput) =>
       }
 
       const config: ServerConfigShape = {
+        profile: {
+          id: profile.id,
+          slug: profile.slug,
+          name: profile.name,
+          isDefault: profile.isDefault,
+          ...(profile.accentColor ? { accentColor: profile.accentColor } : {}),
+        },
+        profilesRoot: registryStore.root,
+        defaultStateDir,
         mode,
         port,
         cwd: cliConfig.cwd,
@@ -278,6 +348,7 @@ const ServerConfigLive = (input: CliInput) =>
       }
 
       if (
+        profile.isDefault &&
         shouldMigrateLegacyT3State({
           stateDir: config.stateDir,
           baseDir: config.baseDir,
@@ -334,8 +405,25 @@ const ServerConfigLive = (input: CliInput) =>
         });
       }
 
+      yield* ensureStateDirectories(config).pipe(
+        Effect.mapError(
+          (cause) => new StartupError({ message: "Failed to create state directories", cause }),
+        ),
+      );
+      if (startupErrorPath)
+        yield* Effect.promise(() => ProfileFS.unlink(startupErrorPath!).catch(() => {}));
       return config;
     }).pipe(
+      Effect.tapError((error) =>
+        Effect.promise(async () => {
+          process.exitCode = 78;
+          if (startupErrorPath)
+            await ProfileFS.writeFile(
+              startupErrorPath,
+              JSON.stringify({ message: String(error), at: new Date().toISOString() }),
+            ).catch(() => {});
+        }),
+      ),
       Effect.withSpan("server.startup.config.resolve", {
         attributes: {
           "startup.phase": "config.resolve",
@@ -343,6 +431,7 @@ const ServerConfigLive = (input: CliInput) =>
       }),
     ),
   );
+};
 
 const isTestRuntime = () => process.env.NODE_ENV === "test" || process.env.VITEST === "true";
 
@@ -547,6 +636,10 @@ export const t3Cli = Command.make("t3", {
   host: hostFlag,
   t3Home: t3HomeFlag,
   stateDir: stateDirFlag,
+  profile: Flag.string("profile").pipe(
+    Flag.withDescription("Profile slug or id (equivalent to F5_PROFILE)."),
+    Flag.optional,
+  ),
   devUrl: devUrlFlag,
   noBrowser: noBrowserFlag,
   authToken: authTokenFlag,

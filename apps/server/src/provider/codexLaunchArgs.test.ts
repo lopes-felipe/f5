@@ -8,6 +8,18 @@ import {
 } from "./codexLaunchArgs.ts";
 
 describe("Codex launch arguments", () => {
+  it("forces managed file credentials after filtering conflicting user configuration", () => {
+    const result = buildCodexAppServerCommand({
+      environment: { F5_PROFILE_ISOLATED: "1" },
+      providerLaunchArgs: ["-c", 'cli_auth_credentials_store="keyring"'],
+    });
+    expect(result.dropped).toContain('cli_auth_credentials_store="keyring"');
+    expect(result.argv).toContain('cli_auth_credentials_store="file"');
+    expect(result.argv).not.toContain('cli_auth_credentials_store="keyring"');
+    expect(buildCodexAppServerCommand({ environment: {} }).argv).not.toContain(
+      'cli_auth_credentials_store="file"',
+    );
+  });
   it("combines F5 environment and instance arguments without a shell", () => {
     expect(
       resolveCodexLaunchArgv({

@@ -176,6 +176,8 @@ export const SourceControlWritingSettings = Schema.Struct({
 export type SourceControlWritingSettings = typeof SourceControlWritingSettings.Type;
 
 export const ServerSettings = Schema.Struct({
+  gitAuthorName: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
+  gitAuthorEmail: Schema.String.pipe(Schema.withDecodingDefault(() => "")),
   enableAssistantStreaming: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   defaultThreadEnvMode: ThreadEnvMode.pipe(
@@ -308,6 +310,8 @@ const SourceControlWritingSettingsPatch = Schema.Struct({
 });
 
 export const ServerSettingsPatch = Schema.Struct({
+  gitAuthorName: Schema.optionalKey(Schema.String),
+  gitAuthorEmail: Schema.optionalKey(Schema.String),
   // Server settings
   enableAssistantStreaming: Schema.optionalKey(Schema.Boolean),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),

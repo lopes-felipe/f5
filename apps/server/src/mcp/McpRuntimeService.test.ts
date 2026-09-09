@@ -490,7 +490,7 @@ describe("McpRuntimeService", () => {
       ),
   );
 
-  it.effect("rejects integrated Claude login with instructions to use a real terminal", () =>
+  it.effect("directs Claude account login to the profile account panel", () =>
     Effect.gen(function* () {
       const service = yield* McpRuntimeService;
       const error = yield* Effect.flip(
@@ -500,7 +500,7 @@ describe("McpRuntimeService", () => {
         }),
       );
 
-      assert.ok(error.message.includes("claude auth login"));
+      assert.ok(error.message.includes("Settings > Profiles"));
     }).pipe(Effect.provide(makeRuntimeLayer())),
   );
 

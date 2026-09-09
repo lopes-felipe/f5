@@ -144,3 +144,7 @@ Use a totally separate `CODEX_HOME path` only when you want a separate Codex wor
 
 That means separate sessions and less account switching inside old threads. Most dual-account users
 should use the shared-home plus shadow-home setup instead.
+
+### Isolated profiles
+
+[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require the certified version and file-backed credentials; legacy Default shadow-home behavior is unchanged.

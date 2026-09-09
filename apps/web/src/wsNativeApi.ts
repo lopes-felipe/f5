@@ -1,3 +1,4 @@
+import type { ProfileListResult, ProviderAccountEvent } from "@t3tools/contracts";
 import {
   AGENTS_WS_CHANNELS,
   AGENTS_WS_METHODS,
@@ -42,6 +43,22 @@ import {
 } from "./lib/prHubAccount";
 
 let instance: { api: NativeApi; transport: WsTransport } | null = null;
+const profilesListeners = new Set<(payload: typeof ProfileListResult.Type) => void>();
+const accountListeners = new Set<(payload: typeof ProviderAccountEvent.Type) => void>();
+export function onProfilesUpdated(listener: (payload: typeof ProfileListResult.Type) => void) {
+  profilesListeners.add(listener);
+  return () => {
+    profilesListeners.delete(listener);
+  };
+}
+export function onProviderAccountEvent(
+  listener: (payload: typeof ProviderAccountEvent.Type) => void,
+) {
+  accountListeners.add(listener);
+  return () => {
+    accountListeners.delete(listener);
+  };
+}
 const welcomeListeners = new Set<(payload: WsWelcomePayload) => void>();
 const serverConfigUpdatedListeners = new Set<(payload: ServerConfigUpdatedPayload) => void>();
 const providerAdvisoriesUpdatedListeners = new Set<
@@ -200,6 +217,12 @@ export function createWsNativeApi(): NativeApi {
     return snapshot;
   };
 
+  transport.subscribe(WS_CHANNELS.profilesUpdated, (message) => {
+    for (const listener of profilesListeners) listener(message.data);
+  });
+  transport.subscribe(WS_CHANNELS.providerAccountEvent, (message) => {
+    for (const listener of accountListeners) listener(message.data);
+  });
   transport.subscribe(WS_CHANNELS.serverWelcome, (message) => {
     const payload = message.data;
     for (const listener of welcomeListeners) {
@@ -364,6 +387,20 @@ export function createWsNativeApi(): NativeApi {
   });
 
   const api: NativeApi = {
+    profiles: {
+      githubSet: (input) => transport.request(WS_METHODS.githubAccountSet, input),
+      githubRemove: (input) => transport.request(WS_METHODS.githubAccountRemove, input),
+      githubStatus: (input) => transport.request(WS_METHODS.githubAccountStatus, input),
+      list: () => transport.request(WS_METHODS.profilesList),
+      create: (input) => transport.request(WS_METHODS.profilesCreate, input),
+      update: (input) => transport.request(WS_METHODS.profilesUpdate, input),
+      remove: (input) => transport.request(WS_METHODS.profilesDelete, input),
+      loginStart: (input) => transport.request(WS_METHODS.providerAccountLoginStart, input),
+      input: (input) => transport.request(WS_METHODS.providerAccountInput, input),
+      cancel: (input) => transport.request(WS_METHODS.providerAccountCancel, input),
+      logout: (input) => transport.request(WS_METHODS.providerAccountLogout, input),
+      accountStatus: (input) => transport.request(WS_METHODS.providerAccountStatus, input),
+    },
     dialogs: {
       pickFolder: async () => {
         if (!window.desktopBridge) return null;

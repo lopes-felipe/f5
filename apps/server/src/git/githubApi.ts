@@ -212,6 +212,8 @@ function requestEndpoint(input: Pick<GitHubApiRequest, "endpoint" | "query">): s
 export function makeGitHubApi(
   execute: GitHubCliShape["execute"],
   scheduler = githubRequestScheduler,
+  resolveToken: (host: string, cwd: string) => Effect.Effect<string, GitHubCliError> = () =>
+    Effect.succeed(""),
 ) {
   const rejectedCredentials = new Map<string, string>();
   const accounts = new Map<string, GitHubCredentialContext>();
@@ -458,29 +460,7 @@ export function makeGitHubApi(
             detail: "Invalid GitHub hostname.",
           }),
       });
-      const envNames = isCloudHost(host)
-        ? ["GH_TOKEN", "GITHUB_TOKEN"]
-        : ["GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"];
-      const tokenFromEnv = envNames
-        .map((name) => Object.entries(process.env).find(([key]) => key.toUpperCase() === name)?.[1])
-        .find((value) => value?.trim());
-      const token =
-        tokenFromEnv?.trim() ??
-        (yield* execute({
-          cwd: input.cwd,
-          args: ["auth", "token", "--hostname", host],
-          env: cleanEnvironment(),
-          maxStdoutBytes: 64 * 1024,
-        }).pipe(
-          Effect.mapError(
-            (error) =>
-              new GitHubCliError({
-                operation: "credentials",
-                kind: error.kind,
-                detail: "Could not resolve the GitHub credential.",
-              }),
-          ),
-        )).stdout.trim();
+      const token = (yield* resolveToken(host, input.cwd)).trim();
       if (!token || /[\r\n]/.test(token))
         return yield* Effect.fail(
           new GitHubCliError({

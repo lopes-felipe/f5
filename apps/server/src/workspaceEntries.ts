@@ -436,6 +436,7 @@ async function mapWithConcurrency<TInput, TOutput>(
 async function isInsideGitWorkTree(cwd: string): Promise<boolean> {
   const insideWorkTree = await runProcess("git", ["rev-parse", "--is-inside-work-tree"], {
     cwd,
+    env: process.env,
     allowNonZeroExit: true,
     timeoutMs: 5_000,
     maxBufferBytes: 4_096,
@@ -461,6 +462,7 @@ async function filterGitIgnoredPaths(cwd: string, relativePaths: string[]): Prom
 
     const checkIgnore = await runProcess("git", ["check-ignore", "--no-index", "-z", "--stdin"], {
       cwd,
+      env: process.env,
       allowNonZeroExit: true,
       timeoutMs: 20_000,
       maxBufferBytes: 16 * 1024 * 1024,
@@ -531,6 +533,7 @@ async function buildWorkspaceIndexFromGit(
     ["ls-files", "--cached", "--others", "--exclude-standard", "-z"],
     {
       cwd,
+      env: process.env,
       allowNonZeroExit: true,
       timeoutMs: 20_000,
       maxBufferBytes: 16 * 1024 * 1024,

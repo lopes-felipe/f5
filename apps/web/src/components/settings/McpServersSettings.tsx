@@ -1,3 +1,4 @@
+import { useProfileState } from "../../profileState";
 import {
   type McpConfigScope,
   type McpCommonConfigResult,
@@ -8,6 +9,7 @@ import {
   McpProjectServersConfig,
   type ProjectId,
   type ProviderKind,
+  ProviderInstanceId,
   type McpServerStatusEntry,
 } from "@t3tools/contracts";
 import { formatMcpServersAsJson } from "@t3tools/shared/mcpConfig";
@@ -917,6 +919,7 @@ function serverStatusBadge(
 
 function McpServerRow(props: {
   readonly selectedProvider: ProviderKind;
+  readonly instanceId: ProviderInstanceId;
   readonly projectId: ProjectId | null;
   readonly binaryPath: string | undefined;
   readonly homePath: string | undefined;
@@ -936,10 +939,10 @@ function McpServerRow(props: {
   const loginStatusQuery = useQuery(
     mcpLoginStatusQueryOptions({
       provider: props.selectedProvider,
+      instanceId: props.instanceId,
       projectId: props.projectId,
       serverName: props.selectedProvider === "codex" ? props.name : null,
-      ...(props.binaryPath ? { binaryPath: props.binaryPath } : {}),
-      ...(props.homePath ? { homePath: props.homePath } : {}),
+
       enabled:
         props.selectedProvider === "codex" && props.projectId !== null && !props.isOverridden,
       refetchInterval:
@@ -991,10 +994,9 @@ function McpServerRow(props: {
         void ensureNativeApi()
           .mcp.startLogin({
             provider: props.selectedProvider,
+            instanceId: props.instanceId,
             projectId: props.projectId,
             serverName: props.name,
-            ...(props.binaryPath ? { binaryPath: props.binaryPath } : {}),
-            ...(props.homePath ? { homePath: props.homePath } : {}),
           })
           .then(async (result) => {
             if (result.authorizationUrl) {
@@ -1108,6 +1110,14 @@ export function McpServersSettings(props: {
     props.selectedProject ? "project" : "common",
   );
   const [selectedProvider, setSelectedProvider] = useState<ProviderKind>("codex");
+  const accounts = useProfileState((state) => state.active?.providerAccounts);
+  const [accountSelection, setAccountSelection] = useState<string>("");
+  const matchingAccounts = accounts?.filter((account) => account.driver === selectedProvider) ?? [];
+  const selectedInstanceId = ProviderInstanceId.make(
+    matchingAccounts.find((account) => account.instanceId === accountSelection)?.instanceId ??
+      matchingAccounts[0]?.instanceId ??
+      selectedProvider,
+  );
   const [editingServerName, setEditingServerName] = useState<string | null>(null);
   const [draft, setDraft] = useState<ServerDraft>(createEmptyDraft());
   const [formError, setFormError] = useState<string | null>(null);
@@ -1142,18 +1152,18 @@ export function McpServersSettings(props: {
   const providerStatusQuery = useQuery(
     mcpProviderStatusQueryOptions({
       provider: selectedProvider,
+      instanceId: selectedInstanceId,
       projectId: selectedProjectId,
-      ...(selectedBinaryPath ? { binaryPath: selectedBinaryPath } : {}),
-      ...(selectedHomePath ? { homePath: selectedHomePath } : {}),
+
       enabled: selectedProject !== null,
     }),
   );
   const serverStatusesQuery = useQuery(
     mcpServerStatusesQueryOptions({
       provider: selectedProvider,
+      instanceId: selectedInstanceId,
       projectId: selectedProjectId,
-      ...(selectedBinaryPath ? { binaryPath: selectedBinaryPath } : {}),
-      ...(selectedHomePath ? { homePath: selectedHomePath } : {}),
+
       enabled: selectedProject !== null,
     }),
   );
@@ -1426,8 +1436,6 @@ export function McpServersSettings(props: {
                   ...(selectedScope === "project" && selectedProject?.id
                     ? { projectId: selectedProject.id }
                     : {}),
-                  ...(codexBinaryPath ? { binaryPath: codexBinaryPath } : {}),
-                  ...(codexHomePath ? { homePath: codexHomePath } : {}),
                 })
                 .then(async () => {
                   await queryClient.invalidateQueries({ queryKey: mcpQueryKeys.all });
@@ -1499,6 +1507,23 @@ export function McpServersSettings(props: {
             </ToggleGroup>
           </label>
 
+          {matchingAccounts.length > 1 && (
+            <label className="space-y-2">
+              <span className="text-xs font-medium">Provider account</span>
+              <select
+                aria-label="MCP provider account"
+                value={selectedInstanceId}
+                onChange={(event) => setAccountSelection(event.target.value)}
+                className="block rounded border bg-background p-2 text-sm"
+              >
+                {matchingAccounts.map((account) => (
+                  <option key={account.instanceId} value={account.instanceId}>
+                    {account.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {props.hasProjects ? (
             <div className="space-y-2">
               <span className="text-xs font-medium text-foreground">Selected project</span>
@@ -1593,6 +1618,7 @@ export function McpServersSettings(props: {
                     <McpServerRow
                       key={name}
                       selectedProvider={selectedProvider}
+                      instanceId={selectedInstanceId}
                       projectId={selectedProject?.id ?? null}
                       binaryPath={selectedBinaryPath}
                       homePath={selectedHomePath}

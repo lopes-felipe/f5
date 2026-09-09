@@ -15,14 +15,34 @@ export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function
 
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
   config: Pick<ClaudeSettings, "homePath">,
-  baseEnv: NodeJS.ProcessEnv = process.env,
+  baseEnv: NodeJS.ProcessEnv,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
   const homePath = config.homePath.trim();
   if (homePath.length === 0) return baseEnv;
   const resolvedHomePath = yield* resolveClaudeHomePath(config);
+  const path = yield* Path.Path;
+  const env = { ...baseEnv };
+  for (const key of Object.keys(env)) {
+    if (
+      [
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "CLAUDE_CONFIG_DIR",
+        "CLAUDE_SECURESTORAGE_CONFIG_DIR",
+      ].includes(key.toUpperCase())
+    )
+      delete env[key];
+  }
+  const drive = /^[a-z]:/i.exec(resolvedHomePath)?.[0];
   return {
-    ...baseEnv,
+    ...env,
     HOME: resolvedHomePath,
+    USERPROFILE: resolvedHomePath,
+    ...(drive ? { HOMEDRIVE: drive, HOMEPATH: resolvedHomePath.slice(2) } : {}),
+    CLAUDE_CONFIG_DIR: path.join(resolvedHomePath, ".claude"),
+    CLAUDE_SECURESTORAGE_CONFIG_DIR: path.join(resolvedHomePath, ".claude"),
   };
 });
 

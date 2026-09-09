@@ -1,3 +1,4 @@
+import { ProviderInstanceId } from "./providerInstance";
 import { Schema } from "effect";
 
 import { IsoDateTime, NonNegativeInt, ProjectId, TrimmedNonEmptyString } from "./baseSchemas";
@@ -62,6 +63,7 @@ export type McpProjectStatusSupport = typeof McpProjectStatusSupport.Type;
 export const McpGetProviderStatusRequest = Schema.Struct({
   provider: ProviderKind,
   projectId: ProjectId,
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -113,6 +115,7 @@ export const McpServerStatusesResult = Schema.Struct({
 export type McpServerStatusesResult = typeof McpServerStatusesResult.Type;
 
 export const McpCodexEnvironmentOptions = Schema.Struct({
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -120,6 +123,7 @@ export type McpCodexEnvironmentOptions = typeof McpCodexEnvironmentOptions.Type;
 
 export const McpGetCodexStatusRequest = Schema.Struct({
   projectId: ProjectId,
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -139,6 +143,7 @@ export type McpReloadProjectRequest = typeof McpReloadProjectRequest.Type;
 export const McpApplyToLiveSessionsRequest = Schema.Struct({
   scope: McpConfigScope,
   projectId: Schema.optional(ProjectId),
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -167,6 +172,7 @@ export const McpStartLoginRequest = Schema.Struct({
   provider: ProviderKind,
   projectId: ProjectId,
   serverName: Schema.optional(TrimmedNonEmptyString),
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -193,6 +199,7 @@ export type McpLoginStatusResult = typeof McpLoginStatusResult.Type;
 export const McpStartOauthLoginRequest = Schema.Struct({
   projectId: ProjectId,
   serverName: TrimmedNonEmptyString,
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });
@@ -201,6 +208,7 @@ export type McpStartOauthLoginRequest = typeof McpStartOauthLoginRequest.Type;
 export const McpOauthLoginStatusRequest = Schema.Struct({
   projectId: ProjectId,
   serverName: TrimmedNonEmptyString,
+  instanceId: Schema.optional(ProviderInstanceId),
   binaryPath: Schema.optional(TrimmedNonEmptyString),
   homePath: Schema.optional(TrimmedNonEmptyString),
 });

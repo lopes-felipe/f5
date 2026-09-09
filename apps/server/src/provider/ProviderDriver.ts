@@ -76,6 +76,7 @@ export interface ProviderInstance {
   readonly textGeneration: TextGenerationShape;
   /** Fourth, optional capability, consumed only by account usage; owned by this instance scope. */
   readonly accountUsage?: AccountUsageCapability;
+  readonly invalidateAccountStatus?: Effect.Effect<void>;
 }
 
 export interface ProviderContinuationIdentity {

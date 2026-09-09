@@ -21,6 +21,7 @@ import { Input } from "../ui/input";
 const TYPED_CONFIRM_THRESHOLD_BYTES = 1024 * 1024 * 1024;
 
 export interface StorageConfirmAction {
+  readonly description?: string;
   readonly categories: ReadonlyArray<StorageCleanupCategoryUsage>;
   readonly targetSelections?: ReadonlyArray<StorageCleanupTargetSelection>;
   readonly title: string;
@@ -68,7 +69,8 @@ export function StorageActionConfirmDialog({
         <DialogHeader>
           <DialogTitle>{action?.title ?? "Confirm cleanup"}</DialogTitle>
           <DialogDescription>
-            This will reclaim up to {formatByteSize(totalBytes)} from the selected storage targets.
+            {action?.description ??
+              `This will reclaim up to ${formatByteSize(totalBytes)} from the selected storage targets.`}
           </DialogDescription>
         </DialogHeader>
         <DialogPanel className="space-y-4">

@@ -49,5 +49,11 @@ export const makeClaudeInstanceProbes = (
           }),
       }).pipe(Effect.provideService(Path.Path, path)),
     );
-    return { capabilities: Cache.get(cache, key), usage };
+    return {
+      capabilities: Cache.get(cache, key),
+      usage,
+      invalidate: lock.withPermits(1)(
+        Ref.set(initialized, null).pipe(Effect.andThen(Cache.invalidateAll(cache))),
+      ),
+    };
   });

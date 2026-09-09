@@ -42,7 +42,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
           model: "claude-fable-5-1",
           persistSession: false,
           settingSources: [],
-          env: buildClaudeQueryEnv({ subagentModel: "inherit" }),
+          env: buildClaudeQueryEnv({ subagentModel: "inherit" }, process.env),
           abortController: abort,
           includePartialMessages: true,
           maxTurns: 10,

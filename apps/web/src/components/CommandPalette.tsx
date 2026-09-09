@@ -826,6 +826,24 @@ function OpenCommandPaletteDialog(props: {
     },
   });
 
+  for (const [value, title] of [
+    ["switch-profile", "Switch profile..."],
+    ["new-profile", "New profile..."],
+  ] as const)
+    actionItems.push({
+      kind: "action",
+      value: `action:${value}`,
+      searchTerms: ["profile", "account", "work", "personal"],
+      title,
+      icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        await navigate({
+          to: "/settings",
+          search: { ...resolveSettingsNavigationSearch(location), category: "profiles" },
+        });
+      },
+    });
+
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   const activeGroups = currentView ? currentView.groups : rootGroups;
 

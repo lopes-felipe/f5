@@ -956,9 +956,10 @@ describe("WebSocket Server", () => {
     connections.push(ws);
 
     expect(welcome.type).toBe("push");
-    expect(welcome.data).toEqual({
+    expect(welcome.data).toMatchObject({
       cwd: "/test/project",
       projectName: "project",
+      profile: { isDefault: true, slug: "default", isActive: true },
     });
   });
 
@@ -1792,6 +1793,7 @@ describe("WebSocket Server", () => {
     const { createServer: createServerWithMockedRuntime } = await import("./wsServer");
 
     const providerLayer = Layer.succeed(ProviderService, {
+      ...defaultProviderService,
       readThread: () =>
         Effect.sync(() => {
           readThreadStarted = true;
@@ -4389,7 +4391,7 @@ describe("WebSocket Server", () => {
     });
     expect(sessionResponse.status).toBe(204);
     const setCookie = sessionResponse.headers.get("set-cookie");
-    expect(setCookie).toContain("f5_session=");
+    expect(setCookie).toMatch(/f5_session(?:_[0-9a-f]{32})?=/);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
     const cookie = setCookie?.split(";", 1)[0];

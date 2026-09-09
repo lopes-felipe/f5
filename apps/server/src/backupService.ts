@@ -33,6 +33,7 @@ interface PendingRestore {
   readonly sourceCreatedAt: string;
   readonly stagingDir: string;
   readonly replaceSecrets: boolean;
+  readonly source?: BackupManifest["source"];
 }
 
 export interface BackupRestoreStageResult {
@@ -41,6 +42,8 @@ export interface BackupRestoreStageResult {
   readonly fileCount: number;
   readonly includesEncryptedSecrets: boolean;
   readonly restartRequired: true;
+  readonly sourceProfileId?: string;
+  readonly crossProfile?: boolean;
 }
 
 export interface PendingRestoreApplyResult {
@@ -261,6 +264,20 @@ export const makeBackupService: Effect.Effect<
                 const writtenManifest = await writeBackupArchive({
                   output: createWriteStream(archivePath, { flags: "wx", mode: 0o600 }),
                   entries,
+                  ...(config.profile && config.profilesRoot
+                    ? {
+                        source: {
+                          installationId: (
+                            await readFile(
+                              resolve(config.profilesRoot, "installation-id"),
+                              "utf8",
+                            ).catch(() => `unverified-${randomUUID()}`)
+                          ).trim(),
+                          profileId: config.profile.id,
+                          providerHomesDir: resolve(config.stateDir, "provider-homes"),
+                        },
+                      }
+                    : {}),
                   appVersion,
                   maxArchiveBytes,
                   ...(password ? { password } : {}),
@@ -307,10 +324,17 @@ export const makeBackupService: Effect.Effect<
               limits: restoreLimits,
               ...(password ? { password } : {}),
             });
+            if (!parsed.manifest.source && config.profile?.isDefault === false)
+              throw new Error(
+                "Legacy backups without profile identity can only be restored into Default.",
+              );
             await validateRestoredPayload(parsed.payloadDir);
-            const replaceSecrets = parsed.manifest.files.some((file) =>
-              file.path.startsWith("secrets/"),
-            );
+            const crossProfile =
+              parsed.manifest.source !== undefined &&
+              parsed.manifest.source.profileId !== config.profile?.id;
+            const replaceSecrets =
+              !crossProfile &&
+              parsed.manifest.files.some((file) => file.path.startsWith("secrets/"));
             const pending: PendingRestore = {
               version: 1,
               restoreId,
@@ -318,6 +342,7 @@ export const makeBackupService: Effect.Effect<
               sourceCreatedAt: parsed.manifest.createdAt,
               stagingDir,
               replaceSecrets,
+              ...(parsed.manifest.source ? { source: parsed.manifest.source } : {}),
             };
             await atomicWriteJson(pendingPath, pending);
             return {
@@ -326,6 +351,12 @@ export const makeBackupService: Effect.Effect<
               fileCount: parsed.manifest.files.length,
               includesEncryptedSecrets: replaceSecrets,
               restartRequired: true,
+              ...(parsed.manifest.source
+                ? {
+                    sourceProfileId: parsed.manifest.source.profileId,
+                    crossProfile: parsed.manifest.source.profileId !== config.profile?.id,
+                  }
+                : {}),
             };
           } catch (error) {
             await rm(stagingDir, { recursive: true, force: true });
@@ -363,6 +394,8 @@ async function parsePendingRestore(path: string): Promise<PendingRestore> {
 export async function applyPendingRestore(
   config: Pick<
     ServerConfigShape,
+    | "profile"
+    | "profilesRoot"
     | "stateDir"
     | "dbPath"
     | "settingsPath"
@@ -380,6 +413,15 @@ export async function applyPendingRestore(
   }
   const payloadDir = resolve(pending.stagingDir, "payload");
   await validateRestoredPayload(payloadDir);
+  if (!pending.source && config.profile?.isDefault === false)
+    throw new Error("Legacy backups can only be restored into Default.");
+  await rebindRestoredProviderHomes(
+    payloadDir,
+    config.stateDir,
+    config.profilesRoot,
+    pending.source?.providerHomesDir,
+    pending.source !== undefined && pending.source.profileId !== config.profile?.id,
+  );
 
   const rollbackDir = resolve(
     config.stateDir,
@@ -413,7 +455,9 @@ export async function applyPendingRestore(
       active: config.attachmentsDir,
       staged: resolve(payloadDir, "attachments"),
     },
-    ...(pending.replaceSecrets && config.secretsDir
+    ...(pending.replaceSecrets &&
+    (!pending.source || pending.source.profileId === config.profile?.id) &&
+    config.secretsDir
       ? [{ name: "secrets", active: config.secretsDir, staged: resolve(payloadDir, "secrets") }]
       : []),
   ];
@@ -469,4 +513,44 @@ export async function applyPendingRestore(
       },
     );
   }
+}
+
+/** Rebind only managed homes. Provider credential directories are never archived. */
+export async function rebindRestoredProviderHomes(
+  payloadDir: string,
+  stateDir: string,
+  profilesRoot?: string,
+  sourceHomesDir?: string,
+  crossProfile = false,
+): Promise<void> {
+  const settingsPath = resolve(payloadDir, "settings.json");
+  if (!(await exists(settingsPath))) return;
+  const settings = JSON.parse(await readFile(settingsPath, "utf8"));
+  const roots = [sourceHomesDir, resolve(stateDir, "provider-homes")].filter(
+    (value): value is string => Boolean(value),
+  );
+  if (profilesRoot) {
+    roots.push(resolve(profilesRoot.slice(0, -"-profiles".length), "provider-homes"));
+    for (const entry of await readdir(profilesRoot).catch(() => []))
+      if (/^[0-9a-f]{32}$/.test(entry)) roots.push(resolve(profilesRoot, entry, "provider-homes"));
+  }
+  for (const instance of Object.values(settings.providerInstances ?? {}) as {
+    config?: Record<string, unknown>;
+    environment?: { name: string; value: string; sensitive?: boolean; valueRedacted?: boolean }[];
+  }[]) {
+    if (crossProfile && instance.environment)
+      instance.environment = instance.environment.filter(
+        (variable) =>
+          !variable.sensitive &&
+          !/API_KEY|AUTH_TOKEN|OAUTH_TOKEN|GH_TOKEN|GITHUB_TOKEN/i.test(variable.name),
+      );
+    if (!instance.config) continue;
+    for (const key of ["homePath", "shadowHomePath"]) {
+      const value = instance.config[key];
+      if (typeof value !== "string" || !value) continue;
+      const root = roots.find((candidate) => isInside(candidate, value));
+      if (root) instance.config[key] = resolve(stateDir, "provider-homes", relative(root, value));
+    }
+  }
+  await atomicWriteJson(settingsPath, settings);
 }

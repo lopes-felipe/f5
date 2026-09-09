@@ -1,3 +1,8 @@
+import {
+  validateManagedHome,
+  certifyProvider,
+  protectProfileAdapter,
+} from "../../profiles/providerIsolation";
 /**
  * ClaudeDriver — `ProviderDriver` for the Claude Agent SDK runtime.
  *
@@ -34,7 +39,7 @@ import {
   type ProviderInstance,
 } from "../ProviderDriver.ts";
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import { makeClaudeContinuationGroupKey, makeClaudeEnvironment } from "./ClaudeHome.ts";
 import { parseClaudeLaunchArgs } from "@t3tools/shared/cliArgs";
 
@@ -89,9 +94,36 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
       const path = yield* Path.Path;
-      const serverCwd = (yield* ServerConfig).cwd;
+      const serverConfig = yield* ServerConfig;
+      yield* Effect.tryPromise({
+        try: () => validateManagedHome(serverConfig, config.homePath),
+        catch: (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: String(cause),
+            cause,
+          }),
+      });
+      const serverCwd = serverConfig.cwd;
       const eventLoggers = yield* ProviderEventLoggers;
-      const processEnv = mergeProviderInstanceEnvironment(environment);
+      const processEnv = buildAccountExecutionEnvironment({
+        purpose: "provider",
+        profile: serverConfig.profile,
+        stateDir: serverConfig.stateDir,
+        baseEnv: process.env,
+        instance: environment,
+      });
+      yield* Effect.tryPromise({
+        try: () => certifyProvider(serverConfig, DRIVER_KIND, config.binaryPath, processEnv),
+        catch: (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: String(cause),
+            cause,
+          }),
+      });
       const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
         driverKind: DRIVER_KIND,
         instanceId,
@@ -191,9 +223,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
-        adapter,
+        adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
         accountUsage,
+        invalidateAccountStatus: probes.invalidate,
       } satisfies ProviderInstance;
     }),
 };

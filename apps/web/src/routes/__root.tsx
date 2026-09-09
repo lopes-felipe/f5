@@ -1,4 +1,10 @@
 import {
+  acceptProfileWelcome,
+  refreshProfiles,
+  useProfileState,
+  updateProfileAccounts,
+} from "../profileState";
+import {
   type ProviderInstanceId,
   type ServerProviderAdvisoriesUpdatedPayload,
   type ServerConfig,
@@ -1059,6 +1065,20 @@ function EventRouter() {
       if (event.sequence <= latestSequence) {
         return;
       }
+      if (event.type === "project.created" || event.type === "project.meta-updated")
+        void refreshProfiles()
+          .then(() => {
+            const warnings = useProfileState.getState().active?.sharedRepositories ?? [];
+            for (const warning of warnings.filter(
+              (warning) => warning.workspaceRoot === event.payload.workspaceRoot,
+            ))
+              toastManager.add({
+                type: "info",
+                title: "Repository shared with another profile",
+                description: `${warning.workspaceRoot} is also registered in ${warning.otherProfiles.join(", ")}. Linked worktrees share Git metadata.`,
+              });
+          })
+          .catch(() => {});
       // This must run before the event enters any reducer path so unloaded
       // threads have a retained detail buffer when the same event is applied.
       // The scheduler only creates the buffer synchronously here; the actual
@@ -1106,6 +1126,7 @@ function EventRouter() {
       applyTerminalEvent(event);
     });
     const unsubWelcome = onServerWelcome((payload) => {
+      if (!acceptProfileWelcome(payload)) return;
       pendingWelcomeRecovery = { id: ++nextWelcomeRecoveryId, payload };
       pendingCommandExecutionDetailInvalidation = true;
       latestWelcomeReceivedAtMs = performance.now();
@@ -1134,6 +1155,7 @@ function EventRouter() {
     // don't produce duplicate toasts.
     let subscribed = false;
     const unsubServerConfigUpdated = onServerConfigUpdated((payload) => {
+      updateProfileAccounts(payload.providers);
       void queryClient.invalidateQueries({ queryKey: serverQueryKeys.config() });
       if (!subscribed) return;
       if (payload.source !== "keybindings") return;

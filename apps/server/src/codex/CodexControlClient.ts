@@ -43,6 +43,7 @@ interface JsonRpcNotification {
 }
 
 export interface CodexControlEnvironmentConfig {
+  readonly processEnvironment?: NodeJS.ProcessEnv;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly launchArgs?: ReadonlyArray<string>;
@@ -230,12 +231,13 @@ export class CodexControlClient extends EventEmitter<{
     const binaryPath = environment.binaryPath ?? "codex";
     const codexHomePath = resolveCodexHome({ homePath: environment.homePath });
     assertSupportedCodexCliVersion({
+      processEnvironment: environment.processEnvironment ?? process.env,
       binaryPath,
       cwd: environment.cwd,
       ...(codexHomePath ? { homePath: codexHomePath } : {}),
     });
     const childEnvironment = buildProviderChildProcessEnv(
-      process.env,
+      environment.processEnvironment ?? process.env,
       codexHomePath ? { CODEX_HOME: codexHomePath } : undefined,
     );
     const appServerCommand = buildCodexAppServerCommand({
@@ -289,7 +291,7 @@ export class CodexControlClient extends EventEmitter<{
       client.capabilities = await client.probeCapabilities();
       return client;
     } catch (error) {
-      client.close();
+      await client.closeAndWait();
       throw error;
     }
   }
@@ -565,6 +567,21 @@ export class CodexControlClient extends EventEmitter<{
     return {
       authorizationUrl,
     };
+  }
+
+  async closeAndWait(): Promise<void> {
+    if (this.child.exitCode !== null || this.child.signalCode !== null || !this.child.pid) {
+      this.close();
+      return;
+    }
+    const exited = new Promise<void>((resolve) => this.child.once("exit", () => resolve()));
+    this.close();
+    const timer = setTimeout(() => this.child.kill("SIGKILL"), 3000);
+    try {
+      await exited;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   close(): void {

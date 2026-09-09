@@ -10,7 +10,7 @@ import { writeFileStringAtomically } from "../../atomicWrite.ts";
 import { expandHomePath } from "../../pathExpansion.ts";
 
 export interface CodexHomeLayout {
-  readonly mode: "direct" | "authOverlay";
+  readonly mode: "direct" | "authOverlay" | "managed";
   readonly sharedHomePath: string;
   readonly effectiveHomePath: string | undefined;
   readonly continuationKey: string;
@@ -71,9 +71,17 @@ function resolveHomePath(path: Path.Path, value: string | undefined): string {
 
 export const resolveCodexHomeLayout = Effect.fn("resolveCodexHomeLayout")(function* (
   config: CodexSettings,
+  managed = false,
 ): Effect.fn.Return<CodexHomeLayout, never, Path.Path> {
   const path = yield* Path.Path;
   const sharedHomePath = resolveHomePath(path, config.homePath);
+  if (managed)
+    return {
+      mode: "managed",
+      sharedHomePath,
+      effectiveHomePath: sharedHomePath,
+      continuationKey: `codex:managed:${sharedHomePath}`,
+    };
   const shadowHomePath = config.shadowHomePath.trim();
   if (shadowHomePath.length === 0) {
     return {

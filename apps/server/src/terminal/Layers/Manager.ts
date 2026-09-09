@@ -1,3 +1,5 @@
+import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
+import type { ServerConfigShape } from "../../config";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -32,6 +34,7 @@ import { runProcess } from "../../processRunner";
 import { ServerConfig } from "../../config";
 import { resolveExecutable } from "../../spawn/resolveCommand.ts";
 import {
+  terminalOwnerKey,
   ShellCandidate,
   TerminalError,
   TerminalManager,
@@ -175,6 +178,7 @@ async function checkWindowsSubprocessActivity(terminalPid: number): Promise<bool
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", command],
       {
+        env: process.env,
         timeoutMs: 1_500,
         allowNonZeroExit: true,
         maxBufferBytes: 32_768,
@@ -190,6 +194,7 @@ async function checkWindowsSubprocessActivity(terminalPid: number): Promise<bool
 async function checkPosixSubprocessActivity(terminalPid: number): Promise<boolean> {
   try {
     const pgrepResult = await runProcess("pgrep", ["-P", String(terminalPid)], {
+      env: process.env,
       timeoutMs: 1_000,
       allowNonZeroExit: true,
       maxBufferBytes: 32_768,
@@ -207,6 +212,7 @@ async function checkPosixSubprocessActivity(terminalPid: number): Promise<boolea
 
   try {
     const psResult = await runProcess("ps", ["-eo", "pid=,ppid="], {
+      env: process.env,
       timeoutMs: 1_000,
       allowNonZeroExit: true,
       maxBufferBytes: 262_144,
@@ -266,7 +272,7 @@ function toSafeTerminalId(terminalId: string): string {
 }
 
 function toSessionKey(threadId: string, terminalId: string): string {
-  return `${threadId}\u0000${terminalId}`;
+  return `${terminalOwnerKey({ kind: "thread", threadId })}\u0000${terminalId}`;
 }
 
 function shouldExcludeTerminalEnvKey(key: string): boolean {
@@ -320,6 +326,7 @@ interface TerminalManagerEvents {
 }
 
 interface TerminalManagerOptions {
+  accountConfig?: ServerConfigShape;
   logsDir?: string;
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
@@ -332,6 +339,7 @@ interface TerminalManagerOptions {
 
 export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> {
   private readonly sessions = new Map<string, TerminalSessionState>();
+  private readonly accountConfig: ServerConfigShape | undefined;
   private readonly logsDir: string;
   private readonly historyLineLimit: number;
   private readonly ptyAdapter: PtyAdapterShape;
@@ -352,6 +360,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
   constructor(options: TerminalManagerOptions) {
     super();
+    this.accountConfig = options.accountConfig;
     this.logsDir = options.logsDir ?? path.resolve(process.cwd(), ".logs", "terminals");
     this.historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
     this.ptyAdapter = options.ptyAdapter;
@@ -604,14 +613,53 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
         }),
       );
       const shellCandidates = resolveShellCandidates(this.shellResolver);
-      const terminalEnv = createTerminalSpawnEnv(process.env, session.runtimeEnv);
+      const terminalEnv = createTerminalSpawnEnv(
+        this.accountConfig
+          ? buildAccountExecutionEnvironment({
+              purpose: "terminal",
+              profile: this.accountConfig.profile,
+              stateDir: this.accountConfig.stateDir,
+              baseEnv: process.env,
+              ...(session.runtimeEnv ? { overrides: session.runtimeEnv } : {}),
+            })
+          : process.env,
+        this.accountConfig ? null : session.runtimeEnv,
+      );
       let lastSpawnError: unknown = null;
 
       const spawnWithCandidate = (candidate: ShellCandidate) =>
         Effect.runPromise(
           this.ptyAdapter.spawn({
             shell: candidate.shell,
-            ...(candidate.args ? { args: candidate.args } : {}),
+            ...(this.accountConfig?.profile?.isDefault === false
+              ? {
+                  args: (() => {
+                    const name = candidate.shell
+                      .split(/[\\/]/)
+                      .at(-1)
+                      ?.toLowerCase()
+                      .replace(/\.exe$/, "");
+                    const args = (candidate.args ?? []).filter(
+                      (arg) => arg !== "-l" && arg !== "--login",
+                    );
+                    if (name === "bash")
+                      return [
+                        "--noprofile",
+                        "--norc",
+                        ...args,
+                        ...(args.includes("-i") ? [] : ["-i"]),
+                      ];
+                    if (name === "zsh") return ["-f", ...args];
+                    if (name === "powershell" || name === "pwsh")
+                      return ["-NoLogo", "-NoProfile", ...args];
+                    if (name === "fish") return ["--no-config", ...args];
+                    if (name === "cmd") return ["/d", ...args];
+                    return candidate.args ?? [];
+                  })(),
+                }
+              : candidate.args
+                ? { args: candidate.args }
+                : {}),
             cwd: session.cwd,
             cols: session.cols,
             rows: session.rows,
@@ -1065,6 +1113,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private async assertValidCwd(cwd: string): Promise<void> {
+    if (!path.isAbsolute(cwd)) throw new Error(`Terminal cwd must be absolute: ${cwd}`);
     let stats: fs.Stats;
     try {
       stats = await fs.promises.stat(cwd);
@@ -1163,19 +1212,20 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   }
 
   private async runWithThreadLock<T>(threadId: string, task: () => Promise<T>): Promise<T> {
-    const previous = this.threadLocks.get(threadId) ?? Promise.resolve();
+    const ownerKey = terminalOwnerKey({ kind: "thread", threadId });
+    const previous = this.threadLocks.get(ownerKey) ?? Promise.resolve();
     let release!: () => void;
     const current = new Promise<void>((resolve) => {
       release = resolve;
     });
-    this.threadLocks.set(threadId, current);
+    this.threadLocks.set(ownerKey, current);
     await previous.catch(() => undefined);
     try {
       return await task();
     } finally {
       release();
-      if (this.threadLocks.get(threadId) === current) {
-        this.threadLocks.delete(threadId);
+      if (this.threadLocks.get(ownerKey) === current) {
+        this.threadLocks.delete(ownerKey);
       }
     }
   }
@@ -1184,11 +1234,14 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 export const TerminalManagerLive = Layer.effect(
   TerminalManager,
   Effect.gen(function* () {
-    const { terminalLogsDir } = yield* ServerConfig;
+    const accountConfig = yield* ServerConfig;
+    const { terminalLogsDir } = accountConfig;
 
     const ptyAdapter = yield* PtyAdapter;
     const runtime = yield* Effect.acquireRelease(
-      Effect.sync(() => new TerminalManagerRuntime({ logsDir: terminalLogsDir, ptyAdapter })),
+      Effect.sync(
+        () => new TerminalManagerRuntime({ logsDir: terminalLogsDir, ptyAdapter, accountConfig }),
+      ),
       (r) => Effect.sync(() => r.dispose()),
     );
 
@@ -1254,6 +1307,14 @@ export const TerminalManagerLive = Layer.effect(
           try: () => runtime.close(input),
           catch: (cause) => new TerminalError({ message: "Failed to close terminal", cause }),
         }),
+      createAccountProcess: (input) =>
+        ptyAdapter
+          .spawn(input)
+          .pipe(
+            Effect.mapError(
+              (cause) => new TerminalError({ message: "Unable to start account setup", cause }),
+            ),
+          ),
       subscribe: (listener) =>
         Effect.sync(() => {
           runtime.on("event", listener);

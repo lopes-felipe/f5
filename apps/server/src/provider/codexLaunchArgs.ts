@@ -172,6 +172,7 @@ export function buildCodexAppServerCommand(
 ): FilteredCodexLaunchArgs {
   const resolved = resolveCodexLaunchArgv(input);
   const managedArgs = prependCodexCliTelemetryDisabledConfig([], {
+    managedCredentials: input.environment?.F5_PROFILE_ISOLATED === "1",
     mcpServers: input.mcpServers ?? null,
     mcpOAuthCallbackPort: input.mcpOAuthCallbackPort ?? null,
     mcpOAuthCallbackUrl: input.mcpOAuthCallbackUrl ?? null,

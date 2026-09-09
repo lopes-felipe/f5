@@ -48,6 +48,7 @@
     "upstream-ports:check": "bun scripts/check-upstream-ports.ts",
     "test:server:integration": "bun run --cwd apps/server test:integration",
     "test:server:shard": "bun run --cwd apps/server test:unit:shard",
+    "test:profiles-smoke": "bun run build:desktop && node scripts/profile-lifecycle-smoke.cjs",
     "test:desktop-smoke": "node node_modules/turbo/bin/turbo run smoke-test --filter=@t3tools/desktop",
     "fmt": "node node_modules/oxfmt/bin/oxfmt",
     "fmt:check": "node node_modules/oxfmt/bin/oxfmt --check",
