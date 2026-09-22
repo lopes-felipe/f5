@@ -195,7 +195,9 @@ const buildSnapshotSource = (instance: ProviderInstance): ProviderSnapshotSource
     ? { configurationFingerprint: instance.configurationFingerprint }
     : {}),
   getSnapshot: instance.snapshot.getSnapshot,
-  refresh: instance.snapshot.refresh,
+  refresh: (instance.invalidateAccountStatus ?? Effect.void).pipe(
+    Effect.andThen(instance.snapshot.refresh),
+  ),
   streamChanges: instance.snapshot.streamChanges,
 });
 

@@ -1,5 +1,21 @@
 # Changelog
 
+## Profiles
+
+- Read Codex account usage through each configured provider instance's home and environment instead of the machine-wide legacy configuration.
+
+- Preserve the real macOS home for managed Claude keychain access while retaining profile-specific Claude configuration and credential entry names.
+- Add a Codex device-code sign-in alternative and prevent incomplete or expired login links from being offered by the account panel.
+
+- Allow Codex 0.144.3 and newer in isolated profiles. Versions differing from the audited baseline show an informational notice without disabling sign-in or sessions; managed credential isolation remains required.
+
+- Add separate profile state, provider homes, browser origins and desktop partitions with in-app account setup. Default data remains in place.
+- Strip ambient provider credentials for non-default profiles; explicit instance API tokens remain supported.
+- Non-default profiles use saved GitHub tokens and managed Git identity; Default retains host Git configuration, SSH, ambient tokens and existing gh logins.
+- Preview discovery uses only URLs detected in owned output for all profiles; enter externally started servers manually.
+- MCP CLI login times out after nine minutes to leave teardown time within the shared ten-minute OAuth lease.
+- Fix Claude instance environments, Windows home overrides, instance model-catalog credentials, configured worktree roots, and explicit-state-dir backup settings/secrets.
+
 All notable changes to F5 are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) for the published CLI (`t3`) and the desktop app.
 
 ## [Unreleased]

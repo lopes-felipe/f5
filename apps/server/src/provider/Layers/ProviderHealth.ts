@@ -1,3 +1,6 @@
+import { ProviderRegistry } from "../Services/ProviderRegistry";
+import { ProviderKind } from "@t3tools/contracts";
+import { Schema } from "effect";
 /**
  * ProviderHealthLive - Provider health checks with short-lived caching.
  *
@@ -30,9 +33,7 @@ import {
   type ProviderCliCommandResult as CommandResult,
   runClaudeCliCommand as runClaudeCommand,
   runCodexCliCommand as runCodexCommand,
-  runProviderCliCommand,
 } from "../providerCli.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
 import { isDefaultClaudeBinary } from "../claudeSdkExecutable.ts";
 
 export const DEFAULT_TIMEOUT_MS = 4_000;
@@ -40,8 +41,6 @@ export const AUTH_TIMEOUT_MS = 10_000;
 const PROVIDER_HEALTH_CACHE_TTL_MS = 15_000;
 const CODEX_PROVIDER = "codex" as const;
 const CLAUDE_AGENT_PROVIDER = "claudeAgent" as const;
-const CURSOR_PROVIDER = "cursor" as const;
-const OPENCODE_PROVIDER = "opencode" as const;
 
 export type ProviderPreflightStatus = ServerProviderStatus & {
   readonly failureReason?: HarnessValidationFailureKind;
@@ -284,7 +283,9 @@ const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
  * Returns `undefined` when the file does not exist or does not set
  * `model_provider`.
  */
-export const readCodexConfigModelProviderWithOverrides = (input?: { readonly homePath?: string }) =>
+export const readCodexConfigModelProviderWithOverrides = (input?: {
+  readonly homePath?: string | undefined;
+}) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -319,7 +320,9 @@ export const readCodexConfigModelProviderWithOverrides = (input?: { readonly hom
     }
     return undefined;
   });
-export const readCodexConfigModelProvider = readCodexConfigModelProviderWithOverrides();
+export const readCodexConfigModelProvider = Effect.suspend(() =>
+  readCodexConfigModelProviderWithOverrides({ homePath: process.env.CODEX_HOME }),
+);
 
 /**
  * Returns `true` when the Codex CLI is configured with a custom
@@ -327,20 +330,23 @@ export const readCodexConfigModelProvider = readCodexConfigModelProviderWithOver
  * required because authentication is handled through provider-specific
  * environment variables.
  */
-export const hasCustomModelProviderWithOverrides = (input?: { readonly homePath?: string }) =>
+export const hasCustomModelProviderWithOverrides = (input?: {
+  readonly homePath?: string | undefined;
+}) =>
   Effect.map(
     readCodexConfigModelProviderWithOverrides(input),
     (provider) => provider !== undefined && !OPENAI_AUTH_PROVIDERS.has(provider),
   );
-export const hasCustomModelProvider = hasCustomModelProviderWithOverrides();
+export const hasCustomModelProvider = Effect.suspend(() =>
+  hasCustomModelProviderWithOverrides({ homePath: process.env.CODEX_HOME }),
+);
 
 // ── Health check ────────────────────────────────────────────────────
 
-function resolveConfiguredCodexHome(input?: { readonly homePath?: string }): string | undefined {
-  return (
-    buildCodexCliEnvOverrides(input)?.CODEX_HOME ??
-    buildCodexCliEnvOverrides({ homePath: process.env.CODEX_HOME })?.CODEX_HOME
-  );
+function resolveConfiguredCodexHome(input?: {
+  readonly homePath?: string | undefined;
+}): string | undefined {
+  return buildCodexCliEnvOverrides(input)?.CODEX_HOME;
 }
 
 function stripFailureReason(status: ProviderPreflightStatus): ServerProviderStatus {
@@ -374,6 +380,7 @@ function readClaudeProviderOptions(providerOptions?: ProviderStartOptions): {
 
 export const checkCodexProviderPreflight = (input?: {
   readonly providerOptions?: ProviderStartOptions;
+  readonly processEnvironment?: NodeJS.ProcessEnv;
 }): Effect.Effect<
   ProviderPreflightStatus,
   never,
@@ -381,7 +388,10 @@ export const checkCodexProviderPreflight = (input?: {
 > =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
-    const codexOptions = readCodexProviderOptions(input?.providerOptions);
+    const codexOptions = {
+      ...readCodexProviderOptions(input?.providerOptions),
+      baseEnvironment: input?.processEnvironment ?? process.env,
+    };
     const binaryPath = codexOptions.binaryPath ?? "codex";
 
     // Probe 1: `codex --version` — is the CLI reachable?
@@ -458,9 +468,9 @@ export const checkCodexProviderPreflight = (input?: {
     // login status` will report "not logged in" even when the CLI works
     // fine. Skip the auth probe entirely for non-OpenAI providers.
     if (
-      yield* hasCustomModelProviderWithOverrides(
-        codexOptions.homePath ? { homePath: codexOptions.homePath } : undefined,
-      )
+      yield* hasCustomModelProviderWithOverrides({
+        homePath: codexOptions.homePath ?? codexOptions.baseEnvironment.CODEX_HOME,
+      })
     ) {
       return {
         provider: CODEX_PROVIDER,
@@ -521,10 +531,14 @@ export const checkCodexProviderPreflight = (input?: {
 
 export const checkClaudeProviderPreflight = (input?: {
   readonly providerOptions?: ProviderStartOptions;
+  readonly processEnvironment?: NodeJS.ProcessEnv;
 }): Effect.Effect<ProviderPreflightStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
-    const claudeOptions = readClaudeProviderOptions(input?.providerOptions);
+    const claudeOptions = {
+      ...readClaudeProviderOptions(input?.providerOptions),
+      baseEnvironment: input?.processEnvironment ?? process.env,
+    };
     const binaryPath = claudeOptions.binaryPath ?? "claude";
 
     // Probe 1: `claude --version` — is the CLI reachable?
@@ -723,110 +737,46 @@ export const checkClaudeProviderStatus: Effect.Effect<
   ChildProcessSpawner.ChildProcessSpawner
 > = checkClaudeProviderPreflight().pipe(Effect.map(stripFailureReason));
 
-function checkGenericCliProviderStatus(input: {
-  readonly provider: typeof CURSOR_PROVIDER | typeof OPENCODE_PROVIDER;
-  readonly binaryPath: string;
-  readonly enabled: boolean;
-}): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> {
-  const checkedAt = new Date().toISOString();
-  if (!input.enabled) {
-    return Effect.succeed({
-      provider: input.provider,
-      status: "warning",
-      available: false,
-      authStatus: "unknown",
-      checkedAt,
-      message: "Provider is disabled in settings.",
-    });
-  }
-  return runProviderCliCommand(input.binaryPath, ["--version"], {
-    binaryPath: input.binaryPath,
-  }).pipe(
-    Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
-    Effect.map((result) => {
-      if (Option.isNone(result)) {
-        return {
-          provider: input.provider,
-          status: "error",
-          available: false,
-          authStatus: "unknown",
-          checkedAt,
-          message: `Timed out probing ${input.binaryPath}.`,
-        } satisfies ServerProviderStatus;
-      }
-      const processResult = result.value;
-      const version = parseSimpleCommandVersion(processResult.stdout, processResult.stderr);
-      return {
-        provider: input.provider,
-        status: processResult.code === 0 ? "ready" : "error",
-        available: processResult.code === 0,
-        authStatus: "unknown",
-        checkedAt,
-        ...(version ? { version } : {}),
-        ...(processResult.code === 0
-          ? {}
-          : { message: `${input.binaryPath} --version exited ${processResult.code}.` }),
-      } satisfies ServerProviderStatus;
-    }),
-    Effect.catch((cause) =>
-      Effect.succeed({
-        provider: input.provider,
-        status: "error",
-        available: false,
-        authStatus: "unknown",
-        checkedAt,
-        message: isCommandMissingCause(cause, input.binaryPath)
-          ? `${input.binaryPath} CLI not found.`
-          : `Failed to probe ${input.binaryPath}.`,
-      } satisfies ServerProviderStatus),
-    ),
-  );
-}
-
-// ── Layer ───────────────────────────────────────────────────────────
-
 export const ProviderHealthLive = Layer.effect(
   ProviderHealth,
   Effect.gen(function* () {
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const serverSettings = yield* ServerSettingsService;
+    const registry = yield* ProviderRegistry;
     const statusCache = yield* Effect.sync(() => ({
       value: null as ReadonlyArray<ServerProviderStatus> | null,
       checkedAtMs: 0,
     })).pipe(Effect.flatMap(Ref.make));
 
-    const computeStatuses = serverSettings.getSettings.pipe(
-      Effect.orDie,
-      Effect.flatMap((settings) =>
-        Effect.all(
-          [
-            checkCodexProviderStatus.pipe(
-              Effect.provideService(FileSystem.FileSystem, fileSystem),
-              Effect.provideService(Path.Path, path),
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-            ),
-            checkClaudeProviderStatus.pipe(
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-            ),
-            checkGenericCliProviderStatus({
-              provider: CURSOR_PROVIDER,
-              binaryPath: settings.providers.cursor.binaryPath,
-              enabled: settings.providers.cursor.enabled,
-            }).pipe(
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-            ),
-            checkGenericCliProviderStatus({
-              provider: OPENCODE_PROVIDER,
-              binaryPath: settings.providers.opencode.binaryPath,
-              enabled: settings.providers.opencode.enabled,
-            }).pipe(
-              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, childProcessSpawner),
-            ),
-          ],
-          { concurrency: 4 },
-        ),
+    const computeStatuses = registry.getProviders.pipe(
+      Effect.map((providers) =>
+        // The legacy health contract is driver-keyed. Prefer its conventional
+        // instance, otherwise select a stable ID; rich UI uses instance snapshots.
+        [...providers]
+          .sort((a, b) => {
+            const aDefault = String(a.instanceId) === String(a.driver);
+            const bDefault = String(b.instanceId) === String(b.driver);
+            return (
+              Number(bDefault) - Number(aDefault) ||
+              String(a.instanceId).localeCompare(String(b.instanceId))
+            );
+          })
+          .filter(
+            (provider, index, ordered) =>
+              ordered.findIndex((p) => p.driver === provider.driver) === index,
+          )
+          .flatMap((provider): ServerProviderStatus[] => {
+            if (!Schema.is(ProviderKind)(provider.driver)) return [];
+            return [
+              {
+                provider: provider.driver,
+                status: provider.status === "disabled" ? "warning" : provider.status,
+                available: provider.availability !== "unavailable" && provider.installed,
+                authStatus: provider.auth.status,
+                checkedAt: provider.checkedAt,
+                ...(provider.version ? { version: provider.version } : {}),
+                ...(provider.message ? { message: provider.message } : {}),
+              },
+            ];
+          }),
       ),
     );
 

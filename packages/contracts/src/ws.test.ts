@@ -1,17 +1,53 @@
+import * as FastCheck from "effect/testing/FastCheck";
 import { assert, it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 
 import { ORCHESTRATION_WS_CHANNELS, ORCHESTRATION_WS_METHODS } from "./orchestration";
 import { AGENTS_WS_CHANNELS, AGENTS_WS_METHODS } from "./backgroundWork";
-import { PR_HUB_WS_METHODS } from "./prHub";
+import { PR_HUB_WS_CHANNELS, PR_HUB_WS_METHODS } from "./prHub";
 import { ServerValidateHarnessesResult } from "./server";
-import { WebSocketRequest, WsResponse, WS_CHANNELS, WS_METHODS } from "./ws";
+import {
+  WebSocketRequest,
+  WsResponse,
+  WsPush,
+  WsPushChannelSchema,
+  WS_CHANNELS,
+  WS_METHODS,
+} from "./ws";
 
 const decodeWebSocketRequest = Schema.decodeUnknownEffect(WebSocketRequest);
 const decodeWsResponse = Schema.decodeUnknownEffect(WsResponse);
 const decodeServerValidateHarnessesResult = Schema.decodeUnknownEffect(
   ServerValidateHarnessesResult,
 );
+
+it("preserves profile Git identity in settings update requests", () => {
+  const body = {
+    _tag: WS_METHODS.serverUpdateSettings,
+    gitAuthorName: "Work Profile",
+    gitAuthorEmail: "work@example.com",
+  };
+  const parsed = Schema.decodeUnknownSync(WebSocketRequest)({ id: "identity", body });
+  assert.deepStrictEqual(parsed.body, body);
+});
+
+it("rejects client-owned MCP executable and home paths at the transport boundary", () => {
+  const body = {
+    _tag: WS_METHODS.mcpGetProviderStatus,
+    provider: "codex",
+    projectId: "project",
+    instanceId: "codex_work",
+  };
+  assert.doesNotThrow(() => Schema.decodeUnknownSync(WebSocketRequest)({ id: "account", body }));
+  for (const field of ["binaryPath", "homePath"]) {
+    assert.throws(() =>
+      Schema.decodeUnknownSync(WebSocketRequest)({
+        id: "escape",
+        body: { ...body, [field]: "/another-profile" },
+      }),
+    );
+  }
+});
 
 it.effect("accepts lightweight server probe requests", () =>
   Effect.gen(function* () {
@@ -571,3 +607,63 @@ it.effect("accepts global git status invalidation push envelopes", () =>
     assert.deepStrictEqual(parsed.data, { cwd: null });
   }),
 );
+
+it("registers every declared push channel in both transport schemas", () => {
+  const channels = Object.values({
+    ...WS_CHANNELS,
+    ...AGENTS_WS_CHANNELS,
+    ...ORCHESTRATION_WS_CHANNELS,
+    ...PR_HUB_WS_CHANNELS,
+  });
+  // Do not derive expectations from WsPush: an omitted union member must fail this test.
+  const registered = WsPush.members.map((member) => member.fields.channel.literal);
+  assert.deepEqual([...registered].sort(), [...channels].sort());
+  for (const channel of channels) {
+    assert.equal(Schema.decodeUnknownSync(WsPushChannelSchema)(channel), channel);
+    const member = WsPush.members.find(
+      (candidate) => candidate.fields.channel.literal === channel,
+    )!;
+    // Queue items include a refinement whose arbitrary uses unbounded rejection sampling.
+    // Use a real empty snapshot so this exhaustiveness check stays deterministic and bounded.
+    const message =
+      channel === WS_CHANNELS.nextTurnQueueUpdated
+        ? Schema.decodeUnknownSync(member)({
+            type: "push",
+            sequence: 0,
+            channel,
+            data: {
+              threadId: "thread",
+              items: [],
+              revision: 0,
+              paused: false,
+              blockedKind: null,
+              reasonCode: null,
+              reasonDetail: null,
+              maxItems: 20,
+              quarantinedCount: 0,
+            },
+          })
+        : channel === ORCHESTRATION_WS_CHANNELS.domainEvent
+          ? Schema.decodeUnknownSync(member)({
+              type: "push",
+              sequence: 0,
+              channel,
+              data: {
+                type: "project.deleted",
+                sequence: 0,
+                eventId: "event",
+                aggregateKind: "project",
+                aggregateId: "project",
+                occurredAt: "2026-01-01T00:00:00.000Z",
+                commandId: null,
+                causationEventId: null,
+                correlationId: null,
+                metadata: {},
+                payload: { projectId: "project", deletedAt: "2026-01-01T00:00:00.000Z" },
+              },
+            })
+          : FastCheck.sample(Schema.toArbitrary(member), { seed: 42, numRuns: 1 })[0];
+    const encoded = Schema.encodeSync(WsPush)(message!);
+    assert.equal(Schema.decodeUnknownSync(WsPush)(encoded).channel, channel);
+  }
+});

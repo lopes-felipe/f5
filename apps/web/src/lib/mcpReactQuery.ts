@@ -9,6 +9,7 @@ import type {
   McpServerStatusesResult,
   ProjectId,
   ProviderKind,
+  ProviderInstanceId,
 } from "@t3tools/contracts";
 import { queryOptions } from "@tanstack/react-query";
 import { ensureNativeApi } from "../nativeApi";
@@ -98,6 +99,7 @@ export function mcpEffectiveConfigQueryOptions(input: {
 
 export function mcpCodexStatusQueryOptions(input: {
   readonly projectId: ProjectId | null;
+  readonly instanceId?: ProviderInstanceId;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly enabled?: boolean;
@@ -105,7 +107,7 @@ export function mcpCodexStatusQueryOptions(input: {
   return queryOptions<McpCodexStatusResult>({
     queryKey: mcpQueryKeys.codexStatus(
       input.projectId,
-      input.binaryPath ?? null,
+      input.instanceId ?? input.binaryPath ?? null,
       input.homePath ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
@@ -115,8 +117,7 @@ export function mcpCodexStatusQueryOptions(input: {
       }
       return ensureNativeApi().mcp.getCodexStatus({
         projectId: input.projectId,
-        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-        ...(input.homePath ? { homePath: input.homePath } : {}),
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
       });
     },
   });
@@ -125,6 +126,7 @@ export function mcpCodexStatusQueryOptions(input: {
 export function mcpProviderStatusQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
+  readonly instanceId?: ProviderInstanceId;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly enabled?: boolean;
@@ -133,7 +135,7 @@ export function mcpProviderStatusQueryOptions(input: {
     queryKey: mcpQueryKeys.providerStatus(
       input.provider,
       input.projectId,
-      input.binaryPath ?? null,
+      input.instanceId ?? input.binaryPath ?? null,
       input.homePath ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
@@ -144,8 +146,7 @@ export function mcpProviderStatusQueryOptions(input: {
       return ensureNativeApi().mcp.getProviderStatus({
         provider: input.provider,
         projectId: input.projectId,
-        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-        ...(input.homePath ? { homePath: input.homePath } : {}),
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
       });
     },
   });
@@ -154,6 +155,7 @@ export function mcpProviderStatusQueryOptions(input: {
 export function mcpServerStatusesQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
+  readonly instanceId?: ProviderInstanceId;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly enabled?: boolean;
@@ -162,7 +164,7 @@ export function mcpServerStatusesQueryOptions(input: {
     queryKey: mcpQueryKeys.serverStatuses(
       input.provider,
       input.projectId,
-      input.binaryPath ?? null,
+      input.instanceId ?? input.binaryPath ?? null,
       input.homePath ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId),
@@ -173,8 +175,7 @@ export function mcpServerStatusesQueryOptions(input: {
       return ensureNativeApi().mcp.getServerStatuses({
         provider: input.provider,
         projectId: input.projectId,
-        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-        ...(input.homePath ? { homePath: input.homePath } : {}),
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
       });
     },
   });
@@ -184,6 +185,7 @@ export function mcpLoginStatusQueryOptions(input: {
   readonly provider: ProviderKind;
   readonly projectId: ProjectId | null;
   readonly serverName?: string | null;
+  readonly instanceId?: ProviderInstanceId;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly enabled?: boolean;
@@ -194,7 +196,7 @@ export function mcpLoginStatusQueryOptions(input: {
       input.provider,
       input.projectId,
       input.serverName ?? null,
-      input.binaryPath ?? null,
+      input.instanceId ?? input.binaryPath ?? null,
       input.homePath ?? null,
     ),
     enabled:
@@ -209,9 +211,8 @@ export function mcpLoginStatusQueryOptions(input: {
       return ensureNativeApi().mcp.getLoginStatus({
         provider: input.provider,
         projectId: input.projectId,
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         ...(input.serverName ? { serverName: input.serverName } : {}),
-        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-        ...(input.homePath ? { homePath: input.homePath } : {}),
       });
     },
   });
@@ -220,6 +221,7 @@ export function mcpLoginStatusQueryOptions(input: {
 export function mcpOAuthStatusQueryOptions(input: {
   readonly projectId: ProjectId | null;
   readonly serverName: string | null;
+  readonly instanceId?: ProviderInstanceId;
   readonly binaryPath?: string;
   readonly homePath?: string;
   readonly enabled?: boolean;
@@ -229,7 +231,7 @@ export function mcpOAuthStatusQueryOptions(input: {
     queryKey: mcpQueryKeys.oauthStatus(
       input.projectId,
       input.serverName,
-      input.binaryPath ?? null,
+      input.instanceId ?? input.binaryPath ?? null,
       input.homePath ?? null,
     ),
     enabled: (input.enabled ?? true) && Boolean(input.projectId) && Boolean(input.serverName),
@@ -240,9 +242,8 @@ export function mcpOAuthStatusQueryOptions(input: {
       }
       return ensureNativeApi().mcp.getOAuthStatus({
         projectId: input.projectId,
+        ...(input.instanceId ? { instanceId: input.instanceId } : {}),
         serverName: input.serverName,
-        ...(input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-        ...(input.homePath ? { homePath: input.homePath } : {}),
       });
     },
   });

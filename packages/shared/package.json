@@ -191,6 +191,22 @@
     "./checkedInProjectFile": {
       "types": "./src/checkedInProjectFile.ts",
       "import": "./src/checkedInProjectFile.ts"
+    },
+    "./backendPaths": {
+      "types": "./src/backendPaths.ts",
+      "import": "./src/backendPaths.ts"
+    },
+    "./profileProviderAccounts": {
+      "types": "./src/profileProviderAccounts.ts",
+      "import": "./src/profileProviderAccounts.ts"
+    },
+    "./profileIdentity": {
+      "types": "./src/profileIdentity.ts",
+      "import": "./src/profileIdentity.ts"
+    },
+    "./profilePaths": {
+      "types": "./src/profilePaths.ts",
+      "import": "./src/profilePaths.ts"
     }
   },
   "scripts": {

@@ -1,3 +1,14 @@
+import type { ProfileRecord } from "@t3tools/contracts";
+import { desktopDefaultProfile, readDesktopProfiles } from "./profileRegistryRead";
+import {
+  profilePartition,
+  profilePreviewPartition,
+  profileWindowArguments,
+  singleProfileOpen,
+  ensureProfileConnection,
+  MAX_ACTIVE_PROFILE_BACKENDS,
+} from "./profileRuntime";
+import { profilesRootDir } from "@t3tools/shared/profilePaths";
 import * as ChildProcess from "node:child_process";
 import * as Crypto from "node:crypto";
 import * as FS from "node:fs";
@@ -124,7 +135,6 @@ const AUTO_UPDATE_STARTUP_DELAY_MS = 15_000;
 const AUTO_UPDATE_POLL_INTERVAL_MS = 4 * 60 * 60 * 1000;
 const DESKTOP_UPDATE_CHANNEL = "latest";
 const DESKTOP_UPDATE_ALLOW_PRERELEASE = false;
-const PREVIEW_WEBVIEW_PARTITION = "persist:f5-preview";
 const PREVIEW_WEBVIEW_PREFERENCES = "contextIsolation=true,sandbox=true,nodeIntegration=false";
 const PREVIEW_DEFAULT_ZOOM_FACTOR = 1;
 const PREVIEW_CAPTURE_MAX_EDGE_PX = 1600;
@@ -170,14 +180,39 @@ const PREVIEW_AUTOMATION_SUPPORTED_NAMED_KEYS: ReadonlySet<string> = new Set([
 type DesktopUpdateErrorContext = DesktopUpdateState["errorContext"];
 
 let mainWindow: BrowserWindow | null = null;
-let backendProcess: ChildProcess.ChildProcess | null = null;
-let backendPort = 0;
-let backendAuthToken = "";
-let backendWsUrl = "";
-let restartAttempt = 0;
-let restartTimer: ReturnType<typeof setTimeout> | null = null;
+interface BackendRuntime {
+  profile: ProfileRecord;
+  backendProcess: ChildProcess.ChildProcess | null;
+  backendPort: number;
+  backendAuthToken: string;
+  backendWsUrl: string;
+  restartAttempt: number;
+  restartTimer: ReturnType<typeof setTimeout> | null;
+  stopped: boolean;
+}
+const makeBackendRuntime = (profile: ProfileRecord): BackendRuntime => ({
+  profile,
+  backendProcess: null,
+  backendPort: 0,
+  backendAuthToken: "",
+  backendWsUrl: "",
+  restartAttempt: 0,
+  restartTimer: null,
+  stopped: false,
+});
+const defaultBackend = makeBackendRuntime(desktopDefaultProfile(STATE_DIR));
+const backends = new Map<string, BackendRuntime>([[defaultBackend.profile.id, defaultBackend]]);
+const profileByWebContentsId = new Map<number, string>();
+const authenticatedSessions = new Set<Electron.Session>();
+const registeredDesktopSessions = new Set<Electron.Session>();
+function runtimeForRenderer(id: number): BackendRuntime {
+  const profileId = profileByWebContentsId.get(id);
+  const runtime = profileId ? backends.get(profileId) : undefined;
+  if (!runtime) throw new Error("Renderer does not own a profile.");
+  return runtime;
+}
 let isQuitting = false;
-let desktopProtocolRegistered = false;
+
 let aboutCommitHashCache: string | null | undefined;
 let desktopLogSink: RotatingFileSink | null = null;
 let backendLogSink: RotatingFileSink | null = null;
@@ -343,11 +378,15 @@ function isPreviewGuestWebContents(guest: Electron.WebContents): boolean {
   if (guest.isDestroyed() || guest.getType() !== "webview") {
     return false;
   }
-  if (guest.session !== electronSession.fromPartition(PREVIEW_WEBVIEW_PARTITION)) {
-    return false;
-  }
   const hostWebContents = guest.hostWebContents;
   if (!hostWebContents || hostWebContents.isDestroyed()) return false;
+  const profileId = profileByWebContentsId.get(hostWebContents.id);
+  const runtime = profileId ? backends.get(profileId) : undefined;
+  if (
+    !runtime ||
+    guest.session !== electronSession.fromPartition(profilePreviewPartition(runtime.profile))
+  )
+    return false;
   const owner = BrowserWindow.fromWebContents(hostWebContents);
   return owner !== null && !owner.isDestroyed();
 }
@@ -1315,12 +1354,12 @@ function initializePackagedLogging(): void {
   }
 }
 
-function captureBackendOutput(child: ChildProcess.ChildProcess): void {
+function captureBackendOutput(child: ChildProcess.ChildProcess, profileSlug: string): void {
   if (!app.isPackaged || backendLogSink === null) return;
   const writeChunk = (chunk: unknown): void => {
     if (!backendLogSink) return;
     const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), "utf8");
-    backendLogSink.write(buffer);
+    backendLogSink.write(Buffer.concat([Buffer.from(`[${profileSlug}] `), buffer]));
   };
   child.stdout?.on("data", writeChunk);
   child.stderr?.on("data", writeChunk);
@@ -1521,13 +1560,13 @@ function handleFatalStartupError(stage: string, error: unknown): void {
     isQuitting = true;
     dialog.showErrorBox("F5 failed to start", `Stage: ${stage}\n${message}${detail}`);
   }
-  stopBackend();
+  for (const runtime of backends.values()) stopBackend(runtime);
   restoreStdIoCapture?.();
   app.quit();
 }
 
-function registerDesktopProtocol(): void {
-  if (isDevelopment || desktopProtocolRegistered) return;
+function registerDesktopProtocol(profileSession = electronSession.defaultSession): void {
+  if (isDevelopment || registeredDesktopSessions.has(profileSession)) return;
 
   const staticRoot = resolveDesktopStaticDir();
   if (!staticRoot) {
@@ -1540,7 +1579,7 @@ function registerDesktopProtocol(): void {
   const staticRootPrefix = `${staticRootResolved}${Path.sep}`;
   const fallbackIndex = Path.join(staticRootResolved, "index.html");
 
-  protocol.registerFileProtocol(DESKTOP_SCHEME, (request, callback) => {
+  profileSession.protocol.registerFileProtocol(DESKTOP_SCHEME, (request, callback) => {
     try {
       const candidate = resolveDesktopStaticPath(staticRootResolved, request.url);
       const resolvedCandidate = Path.resolve(candidate);
@@ -1563,7 +1602,7 @@ function registerDesktopProtocol(): void {
     }
   });
 
-  desktopProtocolRegistered = true;
+  registeredDesktopSessions.add(profileSession);
 }
 
 function dispatchMenuAction(action: string): void {
@@ -1640,6 +1679,38 @@ async function checkForUpdatesFromMenu(): Promise<void> {
 
 function configureApplicationMenu(): void {
   const template: MenuItemConstructorOptions[] = [];
+  try {
+    template.push({
+      label: "Profiles",
+      submenu: readDesktopProfiles(STATE_DIR)
+        .filter((profile) => profile.status === "ready")
+        .map((profile) => ({
+          label: profile.name,
+          submenu: [
+            {
+              label: "Open",
+              click: () => {
+                void openProfile(profile.id).catch((error) =>
+                  dialog.showErrorBox("Cannot open profile", String(error)),
+                );
+              },
+            },
+            {
+              label: "Stop",
+              click: () => {
+                const runtime = backends.get(profile.id);
+                if (runtime)
+                  void stopBackendAndWaitForExit(5000, runtime).catch((error) =>
+                    dialog.showErrorBox("Cannot stop profile", String(error)),
+                  );
+              },
+            },
+          ],
+        })),
+    });
+  } catch {
+    /* The default backend will create or diagnose the registry. */
+  }
 
   if (process.platform === "darwin") {
     template.push({
@@ -1876,7 +1947,9 @@ async function installDownloadedUpdate(): Promise<{ accepted: boolean; completed
   isQuitting = true;
   clearUpdatePollTimer();
   try {
-    await stopBackendAndWaitForExit();
+    await Promise.all(
+      [...backends.values()].map((runtime) => stopBackendAndWaitForExit(5000, runtime)),
+    );
     autoUpdater.quitAndInstall();
     return { accepted: true, completed: true };
   } catch (error: unknown) {
@@ -2005,24 +2078,31 @@ function configureAutoUpdater(): void {
   }, AUTO_UPDATE_POLL_INTERVAL_MS);
   updatePollTimer.unref();
 }
-function backendEnv(): NodeJS.ProcessEnv {
+function backendEnv(runtime: BackendRuntime = defaultBackend): NodeJS.ProcessEnv {
   return buildDesktopBackendEnv(process.env, {
-    backendPort,
+    backendPort: runtime.backendPort,
+    profileSlug: runtime.profile.slug,
     stateDir: STATE_DIR,
     stateDirSource: STATE_DIR_CONFIG.source,
-    authToken: backendAuthToken,
+    authToken: runtime.backendAuthToken,
   });
 }
 
-function configureBackendRequestAuthentication(): void {
-  electronSession.defaultSession.webRequest.onBeforeSendHeaders(
+function configureBackendRequestAuthentication(runtime: BackendRuntime = defaultBackend): void {
+  const partition = profilePartition(runtime.profile);
+  const profileSession = partition
+    ? electronSession.fromPartition(partition)
+    : electronSession.defaultSession;
+  if (authenticatedSessions.has(profileSession)) return;
+  authenticatedSessions.add(profileSession);
+  profileSession.webRequest.onBeforeSendHeaders(
     { urls: [DESKTOP_BACKEND_REQUEST_FILTER] },
     (details, callback) => {
       callback({
         requestHeaders: authorizeDesktopBackendRequestHeaders({
           url: details.url,
-          backendPort,
-          authToken: backendAuthToken,
+          backendPort: runtime.backendPort,
+          authToken: runtime.backendAuthToken,
           requestHeaders: details.requestHeaders,
         }),
       });
@@ -2030,25 +2110,33 @@ function configureBackendRequestAuthentication(): void {
   );
 }
 
-function scheduleBackendRestart(reason: string): void {
-  if (isQuitting || restartTimer) return;
+function scheduleBackendRestart(reason: string, runtime: BackendRuntime = defaultBackend): void {
+  if (isQuitting || runtime.stopped || runtime.restartTimer) return;
+  if (runtime.restartAttempt >= 6) {
+    runtime.stopped = true;
+    dialog.showErrorBox(
+      "F5 profile failed to start",
+      `${runtime.profile.name}: ${reason}. Stop and reopen this profile after fixing the startup error.`,
+    );
+    return;
+  }
 
-  const delayMs = Math.min(500 * 2 ** restartAttempt, 10_000);
-  restartAttempt += 1;
+  const delayMs = Math.min(500 * 2 ** runtime.restartAttempt, 10_000);
+  runtime.restartAttempt += 1;
   console.error(`[desktop] backend exited unexpectedly (${reason}); restarting in ${delayMs}ms`);
 
-  restartTimer = setTimeout(() => {
-    restartTimer = null;
-    startBackend();
+  runtime.restartTimer = setTimeout(() => {
+    runtime.restartTimer = null;
+    startBackend(runtime);
   }, delayMs);
 }
 
-function startBackend(): void {
-  if (isQuitting || backendProcess) return;
+function startBackend(runtime: BackendRuntime = defaultBackend): void {
+  if (isQuitting || runtime.stopped || runtime.backendProcess) return;
 
   const backendEntry = resolveBackendEntry();
   if (!FS.existsSync(backendEntry)) {
-    scheduleBackendRestart(`missing server entry at ${backendEntry}`);
+    scheduleBackendRestart(`missing server entry at ${backendEntry}`, runtime);
     return;
   }
 
@@ -2058,12 +2146,12 @@ function startBackend(): void {
     // In Electron main, process.execPath points to the Electron binary.
     // Run the child in Node mode so this backend process does not become a GUI app instance.
     env: {
-      ...backendEnv(),
+      ...backendEnv(runtime),
       ELECTRON_RUN_AS_NODE: "1",
     },
     stdio: captureBackendLogs ? ["ignore", "pipe", "pipe"] : "inherit",
   });
-  backendProcess = child;
+  runtime.backendProcess = child;
   let backendSessionClosed = false;
   const closeBackendSession = (details: string) => {
     if (backendSessionClosed) return;
@@ -2072,43 +2160,55 @@ function startBackend(): void {
   };
   writeBackendSessionBoundary(
     "START",
-    `pid=${child.pid ?? "unknown"} port=${backendPort} cwd=${resolveBackendCwd()}`,
+    `pid=${child.pid ?? "unknown"} port=${runtime.backendPort} cwd=${resolveBackendCwd()}`,
   );
-  captureBackendOutput(child);
-
-  child.once("spawn", () => {
-    restartAttempt = 0;
-  });
+  captureBackendOutput(child, runtime.profile.slug);
 
   child.on("error", (error) => {
-    if (backendProcess === child) {
-      backendProcess = null;
+    if (runtime.backendProcess === child) {
+      runtime.backendProcess = null;
     }
     closeBackendSession(`pid=${child.pid ?? "unknown"} error=${error.message}`);
-    scheduleBackendRestart(error.message);
+    scheduleBackendRestart(error.message, runtime);
   });
 
   child.on("exit", (code, signal) => {
-    if (backendProcess === child) {
-      backendProcess = null;
+    if (runtime.backendProcess === child) {
+      runtime.backendProcess = null;
     }
     closeBackendSession(
       `pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
-    if (isQuitting) return;
+    if (isQuitting || runtime.stopped) return;
+    if (code === 78) {
+      runtime.stopped = true;
+      let message = "Profile startup failed. Check its registry, lock, and configured port.";
+      try {
+        message = JSON.parse(
+          FS.readFileSync(
+            Path.join(profilesRootDir(STATE_DIR), `last-startup-error-${runtime.profile.id}.json`),
+            "utf8",
+          ),
+        ).message;
+      } catch {
+        /* Startup may have failed before the diagnostic could be written. */
+      }
+      dialog.showErrorBox(`Unable to start ${runtime.profile.name}`, message);
+      return;
+    }
     const reason = `code=${code ?? "null"} signal=${signal ?? "null"}`;
-    scheduleBackendRestart(reason);
+    scheduleBackendRestart(reason, runtime);
   });
 }
 
-function stopBackend(): void {
-  if (restartTimer) {
-    clearTimeout(restartTimer);
-    restartTimer = null;
+function stopBackend(runtime: BackendRuntime = defaultBackend): void {
+  runtime.stopped = true;
+  if (runtime.restartTimer) {
+    clearTimeout(runtime.restartTimer);
+    runtime.restartTimer = null;
   }
 
-  const child = backendProcess;
-  backendProcess = null;
+  const child = runtime.backendProcess;
   if (!child) return;
 
   if (child.exitCode === null && child.signalCode === null) {
@@ -2121,17 +2221,23 @@ function stopBackend(): void {
   }
 }
 
-async function stopBackendAndWaitForExit(timeoutMs = 5_000): Promise<void> {
-  if (restartTimer) {
-    clearTimeout(restartTimer);
-    restartTimer = null;
+async function stopBackendAndWaitForExit(
+  timeoutMs = 5_000,
+  runtime: BackendRuntime = defaultBackend,
+): Promise<void> {
+  runtime.stopped = true;
+  if (runtime.restartTimer) {
+    clearTimeout(runtime.restartTimer);
+    runtime.restartTimer = null;
   }
 
-  const child = backendProcess;
-  backendProcess = null;
+  const child = runtime.backendProcess;
   if (!child) return;
   const backendChild = child;
-  if (backendChild.exitCode !== null || backendChild.signalCode !== null) return;
+  if (backendChild.exitCode !== null || backendChild.signalCode !== null) {
+    runtime.backendProcess = null;
+    return;
+  }
 
   await new Promise<void>((resolve) => {
     let settled = false;
@@ -2170,9 +2276,94 @@ async function stopBackendAndWaitForExit(timeoutMs = 5_000): Promise<void> {
     }, timeoutMs);
     exitTimeoutTimer.unref();
   });
+  if (backendChild.exitCode === null && backendChild.signalCode === null)
+    throw new Error(
+      `The ${runtime.profile.name} backend has not exited yet. Try Stop again before reopening or removing it.`,
+    );
+  if (runtime.backendProcess === backendChild) runtime.backendProcess = null;
+}
+
+const openProfile = singleProfileOpen(async (id) => {
+  try {
+    return await openProfileOnce(id);
+  } catch (cause) {
+    const runtime = backends.get(id);
+    if (runtime && !runtime.backendProcess) runtime.stopped = true;
+    throw cause;
+  }
+});
+async function openProfileOnce(profileId: string): Promise<boolean> {
+  const profile = readDesktopProfiles(STATE_DIR).find(
+    (record) => record.id === profileId && record.status === "ready",
+  );
+  if (!profile) throw new Error("Profile is unknown or not ready.");
+  const existingWindow = BrowserWindow.getAllWindows().find(
+    (window) => profileByWebContentsId.get(window.webContents.id) === profileId,
+  );
+  if (existingWindow && backends.has(profileId) && !backends.get(profileId)!.stopped) {
+    existingWindow.show();
+    existingWindow.focus();
+    return true;
+  }
+  let runtime = backends.get(profileId);
+  if (runtime?.stopped && runtime.backendProcess) await stopBackendAndWaitForExit(5000, runtime);
+  if (!runtime || runtime.stopped) {
+    if (
+      [...backends.values()].filter((entry) => !entry.stopped || entry.backendProcess !== null)
+        .length >= MAX_ACTIVE_PROFILE_BACKENDS
+    )
+      throw new Error("Six profiles are already running. Stop one before opening another.");
+    runtime = runtime ?? makeBackendRuntime(profile);
+    runtime.stopped = false;
+    runtime.restartAttempt = 0;
+    backends.set(profileId, runtime);
+    await ensureProfileConnection(
+      runtime,
+      () =>
+        Effect.runPromise(
+          Effect.service(NetService).pipe(
+            Effect.flatMap((net) => net.reserveLoopbackPort()),
+            Effect.provide(NetService.layer),
+          ),
+        ),
+      () => Crypto.randomBytes(24).toString("hex"),
+      getDesktopBackendWebSocketUrl,
+    );
+    configureBackendRequestAuthentication(runtime);
+    startBackend(runtime);
+  }
+  if (existingWindow) {
+    existingWindow.show();
+    existingWindow.focus();
+  } else createWindow(null, runtime);
+  return true;
 }
 
 function registerIpcHandlers(): void {
+  ipcMain.on("desktop:get-ws-url", (event) => {
+    try {
+      if (event.senderFrame !== event.sender.mainFrame)
+        throw new Error("Only the owning main frame may bootstrap.");
+      event.returnValue = runtimeForRenderer(event.sender.id).backendWsUrl;
+    } catch {
+      event.returnValue = null;
+    }
+  });
+  ipcMain.handle("desktop:switch-profile", async (event, id: unknown) => {
+    runtimeForRenderer(event.sender.id);
+    if (typeof id !== "string") return false;
+    return openProfile(id);
+  });
+  ipcMain.handle("desktop:stop-profile", async (event, id: unknown) => {
+    runtimeForRenderer(event.sender.id);
+    if (typeof id !== "string") return false;
+    const runtime = backends.get(id);
+    if (!runtime) return true;
+    await stopBackendAndWaitForExit(5000, runtime);
+    for (const window of BrowserWindow.getAllWindows())
+      if (profileByWebContentsId.get(window.webContents.id) === id) window.close();
+    return runtime.backendProcess === null;
+  });
   ipcMain.removeHandler(PICK_FOLDER_CHANNEL);
   ipcMain.handle(PICK_FOLDER_CHANNEL, async () => {
     const owner = BrowserWindow.getFocusedWindow() ?? mainWindow;
@@ -2314,7 +2505,7 @@ function registerIpcHandlers(): void {
     }
     lastOpenThreadWindowAtByRenderer.set(event.sender.id, now);
     try {
-      createWindow(threadId);
+      createWindow(threadId, runtimeForRenderer(event.sender.id));
       return true;
     } catch (error) {
       console.error(`[desktop] failed to open thread window: ${formatErrorMessage(error)}`);
@@ -2361,7 +2552,7 @@ function registerIpcHandlers(): void {
     };
     return {
       getConfig: () => ({
-        partition: PREVIEW_WEBVIEW_PARTITION,
+        partition: profilePreviewPartition(runtimeForRenderer(ownerWebContentsId).profile),
         webPreferences: PREVIEW_WEBVIEW_PREFERENCES,
       }),
       createTab: (tabId) => {
@@ -2464,7 +2655,14 @@ function mainRendererUrl(): string {
     : `${DESKTOP_SCHEME}://app/index.html`;
 }
 
-function createWindow(initialThreadId: string | null = null): BrowserWindow {
+function createWindow(
+  initialThreadId: string | null = null,
+  runtime: BackendRuntime = defaultBackend,
+): BrowserWindow {
+  const partition = profilePartition(runtime.profile);
+  registerDesktopProtocol(
+    partition ? electronSession.fromPartition(partition) : electronSession.defaultSession,
+  );
   const rendererUrl = rendererUrlForThread(mainRendererUrl(), initialThreadId);
   const window = new BrowserWindow({
     width: 1100,
@@ -2478,6 +2676,8 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
     titleBarStyle: "hiddenInset",
     trafficLightPosition: { x: 16, y: 18 },
     webPreferences: {
+      ...(partition ? { partition } : {}),
+      additionalArguments: profileWindowArguments(runtime.profile.id),
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
@@ -2486,9 +2686,10 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
     },
   });
 
+  profileByWebContentsId.set(window.webContents.id, runtime.profile.id);
   window.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const partition = typeof params.partition === "string" ? params.partition : "";
-    if (partition !== PREVIEW_WEBVIEW_PARTITION) {
+    if (partition !== profilePreviewPartition(runtime.profile)) {
       event.preventDefault();
       return;
     }
@@ -2576,10 +2777,10 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
 
   window.on("page-title-updated", (event) => {
     event.preventDefault();
-    window.setTitle(APP_DISPLAY_NAME);
+    window.setTitle(`${APP_DISPLAY_NAME} ? ${runtime.profile.name}`);
   });
   window.webContents.on("did-finish-load", () => {
-    window.setTitle(APP_DISPLAY_NAME);
+    window.setTitle(`${APP_DISPLAY_NAME} ? ${runtime.profile.name}`);
     emitUpdateState();
   });
   window.once("ready-to-show", () => {
@@ -2592,6 +2793,7 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
   }
 
   window.on("closed", () => {
+    profileByWebContentsId.delete(rendererWebContentsId);
     rendererCrashRecovery.dispose();
     lastOpenThreadWindowAtByRenderer.delete(rendererWebContentsId);
     void resetRendererOwnedPreviewResources(rendererWebContentsId);
@@ -2608,21 +2810,55 @@ function createWindow(initialThreadId: string | null = null): BrowserWindow {
 // Must be called synchronously at the top level — before `app.whenReady()`.
 app.setPath("userData", resolveUserDataPath());
 
+if (!app.requestSingleInstanceLock()) app.exit(0);
+app.on("second-instance", () => {
+  const window = BrowserWindow.getAllWindows()[0];
+  if (window) {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  } else if (app.isReady()) {
+    void openProfile(defaultBackend.profile.id).catch((error) =>
+      dialog.showErrorBox("Cannot open Default", String(error)),
+    );
+  }
+});
 configureAppIdentity();
 
 async function bootstrap(): Promise<void> {
   writeDesktopLogHeader("bootstrap start");
-  backendPort = await Effect.service(NetService).pipe(
+  defaultBackend.backendPort = await Effect.service(NetService).pipe(
     Effect.flatMap((net) => net.reserveLoopbackPort()),
     Effect.provide(NetService.layer),
     Effect.runPromise,
   );
-  writeDesktopLogHeader(`reserved backend port via NetService port=${backendPort}`);
-  backendAuthToken = Crypto.randomBytes(24).toString("hex");
-  backendWsUrl = getDesktopBackendWebSocketUrl(backendPort, backendAuthToken);
-  process.env.T3CODE_DESKTOP_WS_URL = backendWsUrl;
-  writeDesktopLogHeader(`bootstrap resolved websocket endpoint=ws://127.0.0.1:${backendPort}`);
+  writeDesktopLogHeader(`reserved backend port via NetService port=${defaultBackend.backendPort}`);
+  defaultBackend.backendAuthToken = Crypto.randomBytes(24).toString("hex");
+  defaultBackend.backendWsUrl = getDesktopBackendWebSocketUrl(
+    defaultBackend.backendPort,
+    defaultBackend.backendAuthToken,
+  );
+  process.env.T3CODE_DESKTOP_WS_URL = defaultBackend.backendWsUrl;
+  writeDesktopLogHeader(
+    `bootstrap resolved websocket endpoint=ws://127.0.0.1:${defaultBackend.backendPort}`,
+  );
 
+  const watchRoot = profilesRootDir(STATE_DIR);
+  FS.mkdirSync(watchRoot, { recursive: true });
+  let profileWatchTimer: ReturnType<typeof setTimeout> | undefined;
+  const registryWatcher = FS.watch(watchRoot, (_event, filename) => {
+    if (filename?.toString() !== "profiles.json") return;
+    if (profileWatchTimer) clearTimeout(profileWatchTimer);
+    profileWatchTimer = setTimeout(() => {
+      configureApplicationMenu();
+      for (const window of BrowserWindow.getAllWindows())
+        window.webContents.send("desktop:profiles-changed");
+    }, 100);
+  });
+  app.once("before-quit", () => {
+    registryWatcher.close();
+    if (profileWatchTimer) clearTimeout(profileWatchTimer);
+  });
   await previewRuntime.initialize();
   registerIpcHandlers();
   writeDesktopLogHeader("bootstrap ipc handlers registered");
@@ -2642,7 +2878,7 @@ app.on("before-quit", () => {
   isQuitting = true;
   writeDesktopLogHeader("before-quit received");
   clearUpdatePollTimer();
-  stopBackend();
+  for (const runtime of backends.values()) stopBackend(runtime);
   void previewRuntime.dispose();
   restoreStdIoCapture?.();
 });
@@ -2681,7 +2917,7 @@ if (process.platform !== "win32") {
     isQuitting = true;
     writeDesktopLogHeader("SIGINT received");
     clearUpdatePollTimer();
-    stopBackend();
+    for (const runtime of backends.values()) stopBackend(runtime);
     restoreStdIoCapture?.();
     app.quit();
   });
@@ -2691,7 +2927,7 @@ if (process.platform !== "win32") {
     isQuitting = true;
     writeDesktopLogHeader("SIGTERM received");
     clearUpdatePollTimer();
-    stopBackend();
+    for (const runtime of backends.values()) stopBackend(runtime);
     restoreStdIoCapture?.();
     app.quit();
   });

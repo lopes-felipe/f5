@@ -329,6 +329,7 @@ function checkCursorProviderPreflight(
 
   const binaryPath = cursorSettings.binaryPath;
   return runProviderCliCommand(binaryPath, ["about"], {
+    baseEnvironment: process.env,
     binaryPath,
   }).pipe(
     Effect.timeoutOption(CURSOR_HARNESS_ABOUT_TIMEOUT_MS),

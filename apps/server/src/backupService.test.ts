@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { applyPendingRestore } from "./backupService.ts";
+import { applyPendingRestore, rebindRestoredProviderHomes } from "./backupService.ts";
+import { fallbackDefaultProfile } from "./profiles/ProfileRegistryStore";
 
 const tempDirs: string[] = [];
 
@@ -44,6 +45,60 @@ afterEach(async () => {
 });
 
 describe("applyPendingRestore", () => {
+  it("rebinds cross-profile settings without publishing the source's encrypted secrets", async () => {
+    const stateDir = await tempDir();
+    const profile = { ...fallbackDefaultProfile(stateDir), isDefault: false };
+    const stagingDir = join(stateDir, "restore-staging", "cross-profile");
+    const payloadDir = join(stagingDir, "payload");
+    const sourceHomes = join(stateDir, "other-profile", "provider-homes");
+    await mkdir(join(payloadDir, "secrets"), { recursive: true });
+    await mkdir(join(stateDir, "secrets"));
+    createDatabase(join(payloadDir, "database.sqlite"), "source history");
+    await writeFile(join(payloadDir, "secrets", "token"), "source token");
+    await writeFile(join(stateDir, "secrets", "token"), "destination token");
+    await writeFile(
+      join(payloadDir, "settings.json"),
+      JSON.stringify({
+        providerInstances: {
+          codex: {
+            config: { homePath: join(sourceHomes, "codex") },
+            environment: [{ name: "OPENAI_API_KEY", value: "source key", sensitive: true }],
+          },
+        },
+      }),
+    );
+    await writeFile(
+      join(stateDir, "restore-pending.json"),
+      JSON.stringify({
+        version: 1,
+        restoreId: "cross-profile",
+        stagedAt: new Date().toISOString(),
+        sourceCreatedAt: new Date().toISOString(),
+        stagingDir,
+        replaceSecrets: true,
+        source: {
+          installationId: "source-installation",
+          profileId: "a".repeat(32),
+          providerHomesDir: sourceHomes,
+        },
+      }),
+    );
+    await applyPendingRestore({
+      profile,
+      stateDir,
+      dbPath: join(stateDir, "state.sqlite"),
+      settingsPath: join(stateDir, "settings.json"),
+      secretsDir: join(stateDir, "secrets"),
+      attachmentsDir: join(stateDir, "attachments"),
+      keybindingsConfigPath: join(stateDir, "keybindings.json"),
+    });
+    expect(await readFile(join(stateDir, "secrets", "token"), "utf8")).toBe("destination token");
+    const settings = JSON.parse(await readFile(join(stateDir, "settings.json"), "utf8"));
+    expect(settings.providerInstances.codex.config.homePath).toBe(
+      join(stateDir, "provider-homes", "codex"),
+    );
+    expect(JSON.stringify(settings)).not.toContain("source key");
+  });
   it("atomically replaces staged state, preserves credentials, and retains rollback data", async () => {
     const stateDir = await tempDir();
     const restoreId = "restore-test";
@@ -140,4 +195,28 @@ describe("applyPendingRestore", () => {
     );
     expect(await readFile(join(stateDir, "restore-pending.json"), "utf8")).toContain(restoreId);
   });
+});
+
+it("rebinds managed homes across profiles and keeps external paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "f5-rebind-"));
+  tempDirs.push(root);
+  const payload = join(root, "payload");
+  await mkdir(payload);
+  const source = join(root, "state-profiles", "a".repeat(32), "provider-homes");
+  const destination = join(root, "state-profiles", "b".repeat(32));
+  const external = join(root, "external-codex");
+  await writeFile(
+    join(payload, "settings.json"),
+    JSON.stringify({
+      providerInstances: {
+        work: { config: { homePath: join(source, "codex"), shadowHomePath: external } },
+      },
+    }),
+  );
+  await rebindRestoredProviderHomes(payload, destination, undefined, source);
+  const settings = JSON.parse(await readFile(join(payload, "settings.json"), "utf8"));
+  expect(settings.providerInstances.work.config.homePath).toBe(
+    join(destination, "provider-homes", "codex"),
+  );
+  expect(settings.providerInstances.work.config.shadowHomePath).toBe(external);
 });

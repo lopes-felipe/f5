@@ -17,6 +17,7 @@ export interface ProviderCliCommandResult {
 }
 
 export interface ProviderCliCommandOptions {
+  readonly baseEnvironment: NodeJS.ProcessEnv;
   readonly binaryPath?: string | undefined;
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
   readonly launchArgs?: ReadonlyArray<string> | undefined;
@@ -26,6 +27,7 @@ export interface ProviderCliCommandOptions {
 }
 
 export interface ClaudeCliCommandOptions {
+  readonly baseEnvironment: NodeJS.ProcessEnv;
   readonly binaryPath?: string | undefined;
   readonly envOverrides?: NodeJS.ProcessEnv | undefined;
   readonly cwd?: string | undefined;
@@ -48,12 +50,15 @@ export function buildCodexCliEnvOverrides(input?: {
 export function runProviderCliCommand(
   binary: string,
   args: ReadonlyArray<string>,
-  options?: ProviderCliCommandOptions,
+  options: ProviderCliCommandOptions,
 ) {
   return Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const resolvedBinary = options?.binaryPath ?? binary;
-    const environment = buildProviderChildProcessEnv(process.env, options?.envOverrides);
+    const environment = buildProviderChildProcessEnv(
+      options.baseEnvironment,
+      options?.envOverrides,
+    );
     const launchArgs =
       binary === "codex"
         ? yield* Effect.try({
@@ -76,6 +81,7 @@ export function runProviderCliCommand(
     const commandArgs =
       binary === "codex"
         ? prependCodexCliTelemetryDisabledConfig([...launchArgs.argv, ...args], {
+            managedCredentials: environment.F5_PROFILE_ISOLATED === "1",
             mcpServers: options?.mcpServers ?? null,
             mcpOAuthCallbackPort: options?.mcpOAuthCallbackPort ?? null,
             mcpOAuthCallbackUrl: options?.mcpOAuthCallbackUrl ?? null,
@@ -103,16 +109,19 @@ export function runProviderCliCommand(
 
 export const runCodexCliCommand = (
   args: ReadonlyArray<string>,
-  options?: ProviderCliCommandOptions,
+  options: ProviderCliCommandOptions,
 ) => runProviderCliCommand("codex", args, options);
 
 export const runClaudeCliCommand = (
   args: ReadonlyArray<string>,
-  options?: ClaudeCliCommandOptions,
+  options: ClaudeCliCommandOptions,
 ) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const environment = buildProviderChildProcessEnv(process.env, options?.envOverrides);
+    const environment = buildProviderChildProcessEnv(
+      options.baseEnvironment,
+      options?.envOverrides,
+    );
     const invocation = yield* Effect.try({
       try: () =>
         resolveClaudeCliInvocation(options?.binaryPath, args, environment, { cwd: options?.cwd }),

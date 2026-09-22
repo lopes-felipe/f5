@@ -7,7 +7,7 @@ import { resolveInvocation } from "./spawn/resolveCommand.ts";
 export interface ProcessRunOptions {
   cwd?: string | undefined;
   timeoutMs?: number | undefined;
-  env?: NodeJS.ProcessEnv | undefined;
+  env: NodeJS.ProcessEnv;
   stdin?: string | undefined;
   allowNonZeroExit?: boolean | undefined;
   maxBufferBytes?: number | undefined;
@@ -137,14 +137,14 @@ function appendChunkWithinLimit(
 export async function runProcess(
   command: string,
   args: readonly string[],
-  options: ProcessRunOptions = {},
+  options: ProcessRunOptions,
 ): Promise<ProcessRunResult> {
   const timeoutMs = options.timeoutMs ?? 60_000;
   const maxBufferBytes = options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES;
   const maxStdoutBytes = options.maxStdoutBytes ?? maxBufferBytes;
   const maxStderrBytes = options.maxStderrBytes ?? maxBufferBytes;
   const outputMode = options.outputMode ?? "error";
-  const environment = options.env ?? process.env;
+  const environment = options.env;
   await ensureWindowsPathHydrated(environment);
   const invocation = resolveInvocation(command, args, environment, { cwd: options.cwd });
 

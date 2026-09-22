@@ -566,6 +566,33 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("uses the instance environment for the primary streaming session", () => {
+    const environment = {
+      ...process.env,
+      HOME: "/isolated-account",
+      USERPROFILE: "/isolated-account",
+      ANTHROPIC_API_KEY: "instance-key",
+      ANTHROPIC_BASE_URL: "https://instance.example",
+    };
+    const harness = makeHarness({ processEnvironment: environment });
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      const env = harness.getLastCreateQueryInput()?.options.env;
+      assert.equal(env?.HOME, environment.HOME);
+      assert.equal(env?.USERPROFILE, environment.USERPROFILE);
+      assert.equal(env?.ANTHROPIC_API_KEY, environment.ANTHROPIC_API_KEY);
+      assert.equal(env?.ANTHROPIC_BASE_URL, environment.ANTHROPIC_BASE_URL);
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("derives bypass permission mode from full-access runtime policy", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -1475,15 +1502,24 @@ describe("ClaudeAdapterLive", () => {
   it.effect(
     "refreshes context window metadata from the Anthropic models API when credentials are available",
     () => {
-      const harness = makeHarness();
+      const harness = makeHarness({
+        processEnvironment: {
+          ...process.env,
+          ANTHROPIC_API_KEY: "instance-api-key",
+          ANTHROPIC_AUTH_TOKEN: "",
+          ANTHROPIC_BASE_URL: "https://instance.example",
+        },
+      });
       const originalApiKey = process.env.ANTHROPIC_API_KEY;
       const originalBaseUrl = process.env.ANTHROPIC_BASE_URL;
       const originalFetch = globalThis.fetch;
       clearAnthropicModelContextWindowCatalogCacheForTest();
       process.env.ANTHROPIC_API_KEY = "test-api-key";
       process.env.ANTHROPIC_BASE_URL = "https://anthropic.example";
-      globalThis.fetch = (async () =>
-        new Response(
+      globalThis.fetch = (async (url, init) => {
+        assert.equal(String(url).startsWith("https://instance.example/"), true);
+        assert.equal(new Headers(init?.headers).get("x-api-key"), "instance-api-key");
+        return new Response(
           JSON.stringify({
             data: [
               {
@@ -1498,7 +1534,8 @@ describe("ClaudeAdapterLive", () => {
               "content-type": "application/json",
             },
           },
-        )) as unknown as typeof fetch;
+        );
+      }) as typeof fetch;
 
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;

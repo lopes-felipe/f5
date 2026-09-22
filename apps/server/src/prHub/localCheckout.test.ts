@@ -29,8 +29,8 @@ async function repo(
 ) {
   const cwd = path.join(base, name);
   await mkdir(cwd, { recursive: true });
-  await runProcess("git", ["init", cwd]);
-  await runProcess("git", ["remote", "add", "origin", remote], { cwd });
+  await runProcess("git", ["init", cwd], { env: process.env });
+  await runProcess("git", ["remote", "add", "origin", remote], { cwd, env: process.env });
   return cwd;
 }
 const input = {
@@ -46,7 +46,9 @@ it("prefers an exact verified folder without registering or changing repositorie
   expect(result).toHaveLength(1);
   expect(result[0]?.cwd).toBe(exact);
   expect(result[0]?.projectId).toBeNull();
-  expect((await runProcess("git", ["status", "--porcelain"], { cwd: exact })).stdout).toBe("");
+  expect(
+    (await runProcess("git", ["status", "--porcelain"], { cwd: exact, env: process.env })).stdout,
+  ).toBe("");
 });
 it("finds renamed clones and supports SSH and multiple remotes", async () => {
   const directory = await base();
@@ -56,7 +58,7 @@ it("finds renamed clones and supports SSH and multiple remotes", async () => {
   await runProcess(
     "git",
     ["remote", "add", "upstream", "https://github.com/pingdotgg/t3code.git"],
-    { cwd: second },
+    { cwd: second, env: process.env },
   );
   expect(
     (await resolveLocalCheckout({ ...input, baseDirectory: directory }))
@@ -116,10 +118,10 @@ it("resolves linked worktrees and deduplicates canonical project roots", async (
       "-m",
       "initial",
     ],
-    { cwd },
+    { cwd, env: process.env },
   );
   const linked = path.join(directory, "t3code");
-  await runProcess("git", ["worktree", "add", "-b", "linked", linked], { cwd });
+  await runProcess("git", ["worktree", "add", "-b", "linked", linked], { cwd, env: process.env });
   expect((await resolveLocalCheckout({ ...input, baseDirectory: directory }))[0]?.cwd).toBe(linked);
   const projectId = ProjectId.makeUnsafe("existing");
   expect(
@@ -166,7 +168,7 @@ it("rechecks registered remotes rather than keeping a stale negative result", as
   await runProcess(
     "git",
     ["remote", "set-url", "origin", "https://github.com/pingdotgg/t3code.git"],
-    { cwd },
+    { cwd, env: process.env },
   );
   expect((await resolveLocalCheckout({ ...input, projects }))[0]?.projectId).toBe("registered");
 });

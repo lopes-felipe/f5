@@ -643,7 +643,7 @@ describe("TerminalManager", () => {
 
     const sessions = (manager as unknown as { sessions: Map<string, unknown> }).sessions;
     const keys = [...sessions.keys()];
-    expect(keys).toEqual(["thread-2\u0000default"]);
+    expect(keys).toEqual(["thread:thread-2\u0000default"]);
 
     manager.dispose();
   });

@@ -250,6 +250,7 @@ describe("resolveInvocation", () => {
 
       const effectResult = await Effect.runPromise(
         runProviderCliCommand(shim, args, {
+          baseEnvironment: environment,
           binaryPath: shim,
           envOverrides: { PATH: environment.PATH },
         }).pipe(Effect.provide(NodeServices.layer)),

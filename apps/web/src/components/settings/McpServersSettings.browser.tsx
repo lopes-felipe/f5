@@ -378,6 +378,7 @@ describe("McpServersSettings", () => {
       await vi.waitFor(() => {
         expect(mocks.startLogin).toHaveBeenCalledWith({
           provider: "codex",
+          instanceId: "codex",
           projectId: PROJECT_ID,
           serverName: "Observability",
         });

@@ -956,9 +956,10 @@ describe("WebSocket Server", () => {
     connections.push(ws);
 
     expect(welcome.type).toBe("push");
-    expect(welcome.data).toEqual({
+    expect(welcome.data).toMatchObject({
       cwd: "/test/project",
       projectName: "project",
+      profile: { isDefault: true, slug: "default", isActive: true },
     });
   });
 
@@ -987,15 +988,14 @@ describe("WebSocket Server", () => {
     expect((response.result as { buckets: unknown[] }).buckets).toHaveLength(24);
     const accounts = await sendRequest(ws, USAGE_WS_METHODS.getAccounts, { refresh: "none" });
     expect(accounts.error).toBeUndefined();
-    expect(accounts.result).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          provider: "codex",
-          refreshState: "idle",
-          sections: expect.any(Array),
-        }),
-      ]),
-    );
+    // This server has no registered instances. Never synthesize a legacy
+    // machine-account probe outside the active profile's provider registry.
+    expect(accounts.result).toEqual([]);
+    const refreshedAccounts = await sendRequest(ws, USAGE_WS_METHODS.getAccounts, {
+      refresh: "force",
+    });
+    expect(refreshedAccounts.error).toBeUndefined();
+    expect(refreshedAccounts.result).toEqual([]);
     expect(response.result).not.toHaveProperty("codexAccount");
   });
 
@@ -1792,6 +1792,7 @@ describe("WebSocket Server", () => {
     const { createServer: createServerWithMockedRuntime } = await import("./wsServer");
 
     const providerLayer = Layer.succeed(ProviderService, {
+      ...defaultProviderService,
       readThread: () =>
         Effect.sync(() => {
           readThreadStarted = true;
@@ -4389,7 +4390,7 @@ describe("WebSocket Server", () => {
     });
     expect(sessionResponse.status).toBe(204);
     const setCookie = sessionResponse.headers.get("set-cookie");
-    expect(setCookie).toContain("f5_session=");
+    expect(setCookie).toMatch(/f5_session(?:_[0-9a-f]{32})?=/);
     expect(setCookie).toContain("HttpOnly");
     expect(setCookie).toContain("SameSite=Strict");
     const cookie = setCookie?.split(";", 1)[0];

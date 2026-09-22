@@ -4,6 +4,7 @@ import * as Path from "node:path";
 import { USERDATA_STATE_DIR_NAME, defaultF5UserdataStateDir } from "@t3tools/shared/appStatePaths";
 
 export interface DesktopBackendEnvOptions {
+  readonly profileSlug?: string;
   readonly backendPort: number;
   readonly stateDir: string;
   readonly stateDirSource: DesktopStateDirSource;
@@ -70,6 +71,7 @@ export function buildDesktopBackendEnv(
 
   return {
     ...baseEnv,
+    F5_PROFILE: options.profileSlug ?? "default",
     T3CODE_MODE: "desktop",
     T3CODE_NO_BROWSER: "1",
     T3CODE_PORT: String(options.backendPort),

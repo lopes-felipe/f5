@@ -25,6 +25,7 @@ interface AuthFailureBucket {
 }
 
 export interface ServerAuthOptions {
+  readonly profileId?: string;
   readonly now?: () => number;
   readonly failureWindowMs?: number;
   readonly lockoutMs?: number;
@@ -78,12 +79,13 @@ function requestUsesTls(request: Http.IncomingMessage): boolean {
 }
 
 function sessionCookie(
+  cookieName: string,
   value: string,
   request: Http.IncomingMessage,
   maxAgeSeconds: number,
 ): string {
   return [
-    `${AUTH_COOKIE_NAME}=${value}`,
+    `${cookieName}=${value}`,
     "Path=/",
     "HttpOnly",
     "SameSite=Strict",
@@ -169,6 +171,11 @@ export function makeServerAuth(
   authToken: string | undefined,
   options: ServerAuthOptions = {},
 ): ServerAuth {
+  if (options.profileId && !/^[0-9a-f]{32}$/.test(options.profileId))
+    throw new Error("Invalid authentication profile identity.");
+  const cookieName = options.profileId
+    ? `${AUTH_COOKIE_NAME}_${options.profileId}`
+    : AUTH_COOKIE_NAME;
   const expectedToken = authToken?.trim() ?? "";
   const enabled = expectedToken.length > 0;
   const sessions = new Map<string, SessionRecord>();
@@ -263,7 +270,7 @@ export function makeServerAuth(
 
   const hasValidSession = (request: Http.IncomingMessage): boolean => {
     if (!enabled) return true;
-    const token = parseCookies(request.headers.cookie).get(AUTH_COOKIE_NAME);
+    const token = parseCookies(request.headers.cookie).get(cookieName);
     if (!token) return false;
     const timestamp = now();
     const session = sessions.get(token);
@@ -299,10 +306,10 @@ export function makeServerAuth(
         });
         return true;
       }
-      const token = parseCookies(request.headers.cookie).get(AUTH_COOKIE_NAME);
+      const token = parseCookies(request.headers.cookie).get(cookieName);
       if (token) sessions.delete(token);
       respond(response, 204, "", {
-        "Set-Cookie": sessionCookie("deleted", request, 0),
+        "Set-Cookie": sessionCookie(cookieName, "deleted", request, 0),
       });
       return true;
     }
@@ -346,7 +353,12 @@ export function makeServerAuth(
       const sessionToken = Crypto.randomBytes(32).toString("base64url");
       sessions.set(sessionToken, { expiresAt: now() + AUTH_SESSION_TTL_MS });
       respond(response, 204, "", {
-        "Set-Cookie": sessionCookie(sessionToken, request, Math.floor(AUTH_SESSION_TTL_MS / 1_000)),
+        "Set-Cookie": sessionCookie(
+          cookieName,
+          sessionToken,
+          request,
+          Math.floor(AUTH_SESSION_TTL_MS / 1_000),
+        ),
       });
     } catch {
       if (!response.writableEnded) {
@@ -400,6 +412,4 @@ export function makeServerAuth(
   };
 }
 
-export function isPrivateHttpPath(pathname: string): boolean {
-  return pathname.startsWith("/attachments/") || pathname.startsWith("/api/");
-}
+export { isPrivateHttpPath } from "@t3tools/shared/backendPaths";

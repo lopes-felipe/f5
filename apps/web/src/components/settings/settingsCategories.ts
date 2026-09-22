@@ -1,3 +1,4 @@
+import { PROFILES_SETTINGS_DESCRIPTORS } from "./categories/ProfilesSettings.descriptors";
 import { ProjectId } from "@t3tools/contracts";
 
 import { ABOUT_SETTINGS_DESCRIPTORS } from "./categories/AboutSettings.descriptors";
@@ -13,6 +14,7 @@ import { STORAGE_SETTINGS_DESCRIPTORS } from "./categories/StorageSettings.descr
 import { searchSettingsItems, type SettingsItemDescriptor } from "./settingsSearch";
 
 export const SETTINGS_CATEGORIES = [
+  "profiles",
   "general",
   "appearance",
   "display",
@@ -28,6 +30,7 @@ export const SETTINGS_CATEGORIES = [
 export type SettingsCategory = (typeof SETTINGS_CATEGORIES)[number];
 
 export const SETTINGS_CATEGORY_LABELS = {
+  profiles: "Profiles",
   general: "General",
   appearance: "Appearance",
   display: "Display",
@@ -41,6 +44,7 @@ export const SETTINGS_CATEGORY_LABELS = {
 } as const satisfies Record<SettingsCategory, string>;
 
 export const SETTINGS_ITEM_DESCRIPTORS = [
+  ...PROFILES_SETTINGS_DESCRIPTORS,
   ...GENERAL_SETTINGS_DESCRIPTORS,
   ...APPEARANCE_SETTINGS_DESCRIPTORS,
   ...DISPLAY_SETTINGS_DESCRIPTORS,

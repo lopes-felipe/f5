@@ -568,6 +568,7 @@ function makeManager(input?: {
     } satisfies ServerConfigShape;
 
     const gitCoreLayer = GitCoreLive.pipe(
+      Layer.provide(Layer.succeed(ServerConfig, serverConfig)),
       Layer.provideMerge(GitServiceTestLayer),
       Layer.provideMerge(NodeServices.layer),
     );

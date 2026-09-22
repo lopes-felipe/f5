@@ -34,6 +34,11 @@ describe("F5 backup archive", () => {
       output: createWriteStream(archive),
       appVersion: "test",
       password: "correct horse battery staple",
+      source: {
+        installationId: "source-installation",
+        profileId: "a".repeat(32),
+        providerHomesDir: join(source, "provider-homes"),
+      },
       entries: [
         {
           archivePath: "database.sqlite",
@@ -53,7 +58,8 @@ describe("F5 backup archive", () => {
       ],
     });
 
-    expect(manifest.version).toBe(1);
+    expect(manifest.version).toBe(2);
+    expect(manifest.source?.profileId).toBe("a".repeat(32));
     expect(manifest.encryption?.algorithm).toBe("aes-256-gcm");
     expect(gunzipSync(await readFile(archive)).includes("super-secret-credential")).toBe(false);
 

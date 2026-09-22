@@ -80,3 +80,7 @@ Open from any device in your tailnet:
 `http://<tailnet-ip>:3773/#token=<token>`
 
 You can also bind `--host 0.0.0.0` and connect through the Tailnet IP, but binding directly to the Tailnet IP limits exposure.
+
+## Multiple profiles
+
+Each [Profile](docs/profiles.md) runs on a separate port and browser origin. Expose each port separately, pass the shared `--auth-token` to each server, and perform the `#token=` exchange on each origin. Explicit port overrides make origin isolation the operator's responsibility.

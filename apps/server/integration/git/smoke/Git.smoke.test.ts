@@ -39,6 +39,7 @@ const GitServiceTestLayer = makeLocalPushFriendlyGitServiceLayer(
   GitServiceLive.pipe(Layer.provide(NodeServices.layer)),
 );
 const GitCoreTestLayer = GitCoreLive.pipe(
+  Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-smoke-" })),
   Layer.provide(GitServiceTestLayer),
   Layer.provide(NodeServices.layer),
 );

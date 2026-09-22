@@ -1,13 +1,6 @@
-import { Effect, FileSystem, Path, Random, Schema } from "effect";
+import { Effect, FileSystem, Random, Schema } from "effect";
 import * as Crypto from "node:crypto";
-import { homedir } from "node:os";
 import { ServerConfig } from "../config";
-
-const CodexAuthJsonSchema = Schema.Struct({
-  tokens: Schema.Struct({
-    account_id: Schema.String,
-  }),
-});
 
 class IdentifyUserError extends Schema.TaggedErrorClass<IdentifyUserError>()("IdentifyUserError", {
   message: Schema.String,
@@ -23,19 +16,6 @@ const hash = (value: string) =>
         cause: error,
       }),
   });
-
-const getCodexAccountId = Effect.gen(function* () {
-  const fileSystem = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-
-  const authJsonPath = path.join(homedir(), ".codex", "auth.json");
-  const authJson = yield* Effect.flatMap(
-    fileSystem.readFileString(authJsonPath),
-    Schema.decodeEffect(Schema.fromJsonString(CodexAuthJsonSchema)),
-  );
-
-  return authJson.tokens.account_id;
-});
 
 const upsertAnonymousId = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -54,17 +34,8 @@ const upsertAnonymousId = Effect.gen(function* () {
   return anonymousId;
 });
 
-/**
- * getTelemetryIdentifier - Users are "identified" by finding the first match of the following, then hashing the value.
- * 1. ~/.codex/auth.json tokens.account_id
- * 2. F5 state directory anonymous-id
- */
+/** Profile-local anonymous identity; account credentials are never read for telemetry. */
 export const getTelemetryIdentifier = Effect.gen(function* () {
-  const codexAccountId = yield* Effect.result(getCodexAccountId);
-  if (codexAccountId._tag === "Success") {
-    return yield* hash(codexAccountId.success);
-  }
-
   const anonymousId = yield* Effect.result(upsertAnonymousId);
   if (anonymousId._tag === "Success") {
     return yield* hash(anonymousId.success);

@@ -1,3 +1,4 @@
+import { ServerConfig } from "../../config.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Cause, Effect, Layer, Metric } from "effect";
 import { describe, expect, it } from "vitest";
@@ -39,11 +40,44 @@ function makeScriptedGitService(resolve: (input: ExecuteGitInput) => ScriptedRes
 
 async function makeCore(gitService: GitServiceShape) {
   const layer = GitCoreLive.pipe(
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "f5-git-core-" })),
     Layer.provide(Layer.succeed(GitService, gitService)),
     Layer.provide(NodeServices.layer),
   );
   return Effect.runPromise(Effect.service(GitCore).pipe(Effect.provide(layer)));
 }
+
+it("places generated worktrees under the configured server worktree root", async () => {
+  const scripted = makeScriptedGitService((input) => ({
+    stdout: input.args[0] === "rev-parse" ? "a".repeat(40) : "",
+  }));
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig;
+      const core = yield* GitCore;
+      const result = yield* core.createWorktree({
+        cwd: process.cwd(),
+        branch: "main",
+        newBranch: "profile-test",
+        path: null,
+      });
+      expect(result.worktree.path.startsWith(config.worktreesDir)).toBe(true);
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
+        result.worktree.path,
+      );
+    }).pipe(
+      Effect.provide(
+        GitCoreLive.pipe(
+          Layer.provide(Layer.succeed(GitService, scripted.service)),
+          Layer.provideMerge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "f5-worktree-root-" }),
+          ),
+          Layer.provide(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+});
 
 function counterValue(
   snapshots: ReadonlyArray<Metric.Metric.Snapshot>,

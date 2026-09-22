@@ -11,7 +11,8 @@ import { GitCommandError } from "../Errors.ts";
 import { GitService } from "../Services/GitService.ts";
 import { GitCore, type GitCoreShape } from "../Services/GitCore.ts";
 import { parseRemoteNamesInGitOrder, parseRemoteRefWithRemoteNames } from "../remoteRefs.ts";
-import { resolveDefaultWorktreePath, resolveDefaultWorktreesDir } from "../worktreePaths.ts";
+import { ServerConfig } from "../../config.ts";
+import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
 
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
@@ -209,6 +210,7 @@ function missingCwdErrorDetail(cwd: string): string {
 
 const makeGitCore = Effect.gen(function* () {
   const git = yield* GitService;
+  const { worktreesDir } = yield* ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
 
   // Fail-fast guard: if the working directory no longer exists on disk, short-circuit
@@ -1406,11 +1408,10 @@ const makeGitCore = Effect.gen(function* () {
   const createWorktree: GitCoreShape["createWorktree"] = (input) =>
     Effect.gen(function* () {
       const targetBranch = input.newBranch ?? input.branch;
-      const homeDir = process.env.HOME ?? process.env.USERPROFILE ?? "/tmp";
       const worktreePath =
         input.path ??
         resolveDefaultWorktreePath({
-          worktreesDir: resolveDefaultWorktreesDir(homeDir),
+          worktreesDir,
           cwd: input.cwd,
           branch: targetBranch,
         });

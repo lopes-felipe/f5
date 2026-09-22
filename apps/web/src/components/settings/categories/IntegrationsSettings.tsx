@@ -1,3 +1,4 @@
+import { GithubAccountPanel } from "../GithubAccountPanel";
 import { useMemo } from "react";
 
 import { formatShortcutLabel } from "../../../keybindings";
@@ -94,6 +95,7 @@ export function IntegrationsSettings() {
         </div>
       </section>
 
+      <GithubAccountPanel />
       <McpServersSettings
         selectedProject={selectedProjectSummary}
         hasProjects={hasProjects}

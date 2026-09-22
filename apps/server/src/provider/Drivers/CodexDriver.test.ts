@@ -2,7 +2,7 @@ import { DEFAULT_MODEL_BY_PROVIDER, CodexSettings } from "@t3tools/contracts";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { codexModels } from "./CodexDriver.ts";
+import { codexModels, withCodexIsolationCompatibility } from "./CodexDriver.ts";
 
 describe("codexModels", () => {
   it("keeps the shared Codex default as the first model", () => {
@@ -25,4 +25,38 @@ describe("codexModels", () => {
       optionDescriptors: [],
     });
   });
+});
+
+it("refreshes compatibility notices without disabling sessions or replacing authentication failures", () => {
+  const status = {
+    provider: "codex" as const,
+    available: true,
+    status: "ready" as const,
+    authStatus: "authenticated" as const,
+    version: "0.147.0",
+    checkedAt: new Date().toISOString(),
+  };
+  const newer = withCodexIsolationCompatibility(status, true);
+  expect(newer).toMatchObject({
+    available: true,
+    status: "ready",
+    authStatus: "authenticated",
+    message: expect.stringContaining("0.147.0"),
+  });
+  expect(
+    withCodexIsolationCompatibility({ ...status, version: "0.144.3" }, true).message,
+  ).toBeUndefined();
+  const signedOut = withCodexIsolationCompatibility(
+    { ...status, status: "error", authStatus: "unauthenticated", message: "Please sign in." },
+    true,
+  );
+  expect(signedOut).toMatchObject({
+    available: true,
+    authStatus: "unauthenticated",
+    message: expect.stringMatching(/^Please sign in\./),
+  });
+  expect(withCodexIsolationCompatibility(status, false)).toBe(status);
+  expect(withCodexIsolationCompatibility({ ...status, version: "0.144.2" }, true).available).toBe(
+    false,
+  );
 });

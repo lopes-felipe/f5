@@ -1,6 +1,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
+import * as Runtime from "effect/Runtime";
 import * as Layer from "effect/Layer";
 
 import { CliConfig, t3Cli } from "./main";
@@ -20,4 +21,10 @@ const RuntimeLayer = Layer.empty.pipe(
   Layer.provideMerge(FetchHttpClient.layer),
 );
 
-Command.run(t3Cli, { version }).pipe(Effect.provide(RuntimeLayer), NodeRuntime.runMain);
+Command.run(t3Cli, { version }).pipe(
+  Effect.provide(RuntimeLayer),
+  NodeRuntime.runMain({
+    teardown: (exit, onExit) =>
+      Runtime.defaultTeardown(exit, (code) => onExit(process.exitCode === 78 ? 78 : code)),
+  }),
+);

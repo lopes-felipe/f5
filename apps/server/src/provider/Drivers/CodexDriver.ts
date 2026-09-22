@@ -1,3 +1,10 @@
+import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
+import {
+  codexIsolationCompatibility,
+  validateManagedHome,
+  validateProviderCompatibility,
+  protectProfileAdapter,
+} from "../../profiles/providerIsolation";
 import { createHash } from "node:crypto";
 
 import {
@@ -22,7 +29,7 @@ import { ProviderDriverError } from "../Errors.ts";
 import { makeCodexAdapter } from "../Layers/CodexAdapter.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
 import { makeManagedServerProvider } from "../makeManagedServerProvider.ts";
-import { mergeProviderInstanceEnvironment } from "../ProviderInstanceEnvironment.ts";
+import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import type { ProviderDriver, ProviderInstance } from "../ProviderDriver.ts";
 import { fingerprintableProviderEnvironment } from "../sensitiveFingerprint.ts";
 import {
@@ -73,6 +80,25 @@ export function providerOptionsFromCodexSettings(settings: CodexSettings): Provi
       ...(settings.homePath.trim().length > 0 ? { homePath: settings.homePath } : {}),
       ...(launchArgs.argv.length > 0 ? { launchArgs: [...launchArgs.argv] } : {}),
     },
+  };
+}
+
+export function withCodexIsolationCompatibility(
+  status: ProviderPreflightStatus,
+  isolated: boolean,
+): ProviderPreflightStatus {
+  if (!isolated || !status.available) return status;
+  const compatibility = codexIsolationCompatibility(status.version);
+  const compatibilityMessage = compatibility.supported
+    ? compatibility.message
+    : `unsupported-isolation: ${compatibility.message}`;
+  const message = [status.message, compatibilityMessage].filter(Boolean).join(" ");
+  return {
+    ...status,
+    ...(!compatibility.supported
+      ? { available: false, status: "error" as const, failureReason: "unsupportedVersion" as const }
+      : {}),
+    ...(message ? { message } : {}),
   };
 }
 
@@ -135,7 +161,21 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       const path = yield* Path.Path;
       const eventLoggers = yield* ProviderEventLoggers;
       const previewMcpHttpServer = yield* PreviewMcpHttpServer;
-      const homeLayout = yield* resolveCodexHomeLayout(config);
+      const serverConfig = yield* ServerConfig;
+      yield* Effect.tryPromise({
+        try: () => validateManagedHome(serverConfig, config.homePath),
+        catch: (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: String(cause),
+            cause,
+          }),
+      });
+      const homeLayout = yield* resolveCodexHomeLayout(
+        config,
+        serverConfig.profile?.isDefault === false,
+      );
       yield* materializeCodexShadowHome(homeLayout).pipe(
         Effect.provideService(FileSystem.FileSystem, fileSystem),
         Effect.provideService(Path.Path, path),
@@ -155,7 +195,29 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         enabled,
         homePath: homeLayout.effectiveHomePath ?? config.homePath,
       } satisfies CodexSettings;
-      const processEnvironment = mergeProviderInstanceEnvironment(environment);
+      const processEnvironment = buildAccountExecutionEnvironment({
+        purpose: "provider",
+        profile: serverConfig.profile,
+        stateDir: serverConfig.stateDir,
+        baseEnv: process.env,
+        instance: environment,
+      });
+      yield* Effect.tryPromise({
+        try: () =>
+          validateProviderCompatibility(
+            serverConfig,
+            DRIVER_KIND,
+            config.binaryPath,
+            processEnvironment,
+          ),
+        catch: (cause) =>
+          new ProviderDriverError({
+            driver: DRIVER_KIND,
+            instanceId,
+            detail: String(cause),
+            cause,
+          }),
+      });
       const defaultProviderOptions = yield* Effect.try({
         try: () => providerOptionsFromCodexSettings(effectiveConfig),
         catch: (cause) =>
@@ -191,9 +253,26 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         defaultProviderOptions,
         processEnvironment,
       });
+      const accountUsage = yield* makeCodexAccountUsage(
+        { instanceId, displayName: displayName ?? "Codex", enabled },
+        {
+          cwd: serverConfig.cwd,
+          processEnvironment,
+          ...(defaultProviderOptions.codex?.binaryPath
+            ? { binaryPath: defaultProviderOptions.codex.binaryPath }
+            : {}),
+          ...(defaultProviderOptions.codex?.homePath
+            ? { homePath: defaultProviderOptions.codex.homePath }
+            : {}),
+          ...(defaultProviderOptions.codex?.launchArgs
+            ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+            : {}),
+        },
+      );
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnvironment);
       const checkProvider = checkCodexProviderPreflight({
         providerOptions: defaultProviderOptions,
+        processEnvironment,
       }).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
         Effect.provideService(FileSystem.FileSystem, fileSystem),
@@ -203,7 +282,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             instance: instanceIdentity,
             settings: effectiveConfig,
             continuationKey: homeLayout.continuationKey,
-            status,
+            status: withCodexIsolationCompatibility(
+              status,
+              serverConfig.profile?.isDefault === false,
+            ),
           }),
         ),
       );
@@ -241,8 +323,9 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         accentColor,
         enabled,
         snapshot,
-        adapter,
+        adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
+        accountUsage,
       } satisfies ProviderInstance;
     }),
 };

@@ -34,7 +34,9 @@ function harness(scheduler = makeGitHubRequestScheduler()) {
     })),
   );
   return {
-    api: makeGitHubApi(execute, scheduler),
+    api: makeGitHubApi(execute, scheduler, (host) =>
+      Effect.succeed(host === "github.com" ? token : "enterprise-credential"),
+    ),
     execute,
     switchAccount: () => {
       token = "credential-two";
@@ -150,7 +152,7 @@ describe("credential-bound GitHub requests", () => {
         }),
       );
       const result = await Effect.runPromise(
-        makeGitHubApi(execute, makeGitHubRequestScheduler())
+        makeGitHubApi(execute, makeGitHubRequestScheduler(), () => Effect.succeed("captured-token"))
           .getCredentialContext({ cwd: "/repo", host: "github.com" })
           .pipe(Effect.flip),
       );

@@ -1,5 +1,7 @@
+import { ServerConfig, type ServerConfigShape } from "../../config";
+import { fallbackDefaultProfile } from "../../profiles/ProfileRegistryStore";
 import { assert, it } from "@effect/vitest";
-import { Cause, Effect, Exit } from "effect";
+import { Cause, Effect, Exit, Layer } from "effect";
 import { afterEach, expect, vi } from "vitest";
 
 vi.mock("../../processRunner", () => ({
@@ -15,6 +17,7 @@ const layer = it.layer(GitHubCliLive);
 
 afterEach(() => {
   mockedRunProcess.mockReset();
+  vi.unstubAllEnvs();
 });
 
 layer("GitHubCliLive", (it) => {
@@ -426,3 +429,42 @@ layer("GitHubCliLive", (it) => {
     }),
   );
 });
+
+it.effect("Default keeps the host gh login and config directory", () =>
+  Effect.gen(function* () {
+    vi.stubEnv("GH_TOKEN", "");
+    vi.stubEnv("GITHUB_TOKEN", "");
+    vi.stubEnv("GH_CONFIG_DIR", "/host-gh");
+    mockedRunProcess.mockImplementation(async (_file, args) => ({
+      stdout:
+        args[0] === "auth"
+          ? "legacy-token"
+          : 'HTTP/2.0 200 Response\r\nContent-Type: application/json\r\n\r\n{"id":123,"login":"existing-user"}',
+      stderr: "",
+      code: 0,
+      signal: null,
+      timedOut: false,
+    }));
+    const gh = yield* GitHubCli;
+    const context = yield* gh.getCredentialContext({ cwd: process.cwd(), host: "github.com" });
+    expect(context.login).toBe("existing-user");
+    expect(mockedRunProcess.mock.calls[0]?.[1]).toEqual([
+      "auth",
+      "token",
+      "--hostname",
+      "github.com",
+    ]);
+    expect(mockedRunProcess.mock.calls[0]?.[2]?.env?.GH_CONFIG_DIR).toBe("/host-gh");
+  }).pipe(
+    Effect.provide(
+      GitHubCliLive.pipe(
+        Layer.provide(
+          Layer.succeed(ServerConfig, {
+            stateDir: process.cwd(),
+            profile: fallbackDefaultProfile(process.cwd()),
+          } as unknown as ServerConfigShape),
+        ),
+      ),
+    ),
+  ),
+);

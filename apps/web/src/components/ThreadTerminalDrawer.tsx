@@ -1,3 +1,4 @@
+import { useProfileState } from "../profileState";
 import { FitAddon } from "@xterm/addon-fit";
 import { Plus, SquareSplitHorizontal, TerminalSquare, Trash2, XIcon } from "lucide-react";
 import { type ThreadId } from "@t3tools/contracts";
@@ -828,6 +829,7 @@ export default function ThreadTerminalDrawer({
   resolvedTheme,
   themePaletteRevision,
 }: ThreadTerminalDrawerProps) {
+  const profileName = useProfileState((state) => state.active?.name);
   const appearance = useAppearanceSettings();
   const [drawerHeight, setDrawerHeight] = useState(() => clampDrawerHeight(height));
   const [resizeEpoch, setResizeEpoch] = useState(0);
@@ -1053,6 +1055,7 @@ export default function ThreadTerminalDrawer({
 
   return (
     <aside
+      aria-label={profileName ? `Terminal - ${profileName}` : "Terminal"}
       className="thread-terminal-drawer relative flex min-w-0 shrink-0 flex-col overflow-hidden border-t border-border/80 bg-background"
       style={{ height: `${drawerHeight}px` }}
     >
@@ -1064,6 +1067,11 @@ export default function ThreadTerminalDrawer({
         onPointerCancel={handleResizePointerEnd}
       />
 
+      {profileName && (
+        <span className="pointer-events-none absolute left-2 top-1 z-20 rounded bg-background/80 px-1 text-[10px] text-muted-foreground">
+          {profileName}
+        </span>
+      )}
       {!hasTerminalSidebar && (
         <div className="pointer-events-none absolute right-2 top-2 z-20">
           <div className="pointer-events-auto inline-flex items-center overflow-hidden rounded-md border border-border/80 bg-background/70">

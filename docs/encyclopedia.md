@@ -211,3 +211,7 @@ The file patch and changed-file summary for one turn. It is usually computed in 
 [25]: ../packages/contracts/src/nextTurnQueue.ts
 [26]: ../apps/server/src/nextTurnQueue/Layers/NextTurnQueueStore.ts
 [27]: ../apps/server/src/orchestration/Layers/ProviderTurnDeliveryWorker.ts
+
+## Profile
+
+A top-level isolated F5 environment with its own server, state and signed-in accounts. It differs from a project `workspaceRoot` (source directory), a Display profile (appearance density), and a Chromium partition (browser storage). See [Profiles](profiles.md).

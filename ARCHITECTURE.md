@@ -28,3 +28,5 @@ For the runtime event flow, startup readiness model, and orchestration layers, s
 - [docs/runtime-modes.md](./docs/runtime-modes.md) — Full-access vs supervised modes.
 - [docs/encyclopedia.md](./docs/encyclopedia.md) — Glossary of domain terms.
 - [docs/workspace-layout.md](./docs/workspace-layout.md) — One-line-per-package overview.
+
+Profiles isolate environments with one server process and state directory per profile. Desktop supervises up to six backends and uses per-profile Chromium partitions; browsers use separate origins. See [Profiles](docs/profiles.md).

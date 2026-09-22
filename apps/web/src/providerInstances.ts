@@ -249,3 +249,12 @@ export function resolveProviderDriverKindForInstanceSelection(
   }
   return undefined;
 }
+
+export const PROVIDER_ACCENT_SWATCHES = [
+  "#2563eb",
+  "#16a34a",
+  "#ea580c",
+  "#dc2626",
+  "#7c3aed",
+  "#0891b2",
+] as const;

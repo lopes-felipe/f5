@@ -13,13 +13,43 @@ import {
 
 it.layer(NodeServices.layer)("ClaudeHome", (it) => {
   describe("Claude home resolution", () => {
+    it.effect(
+      "keeps the macOS login keychain home while separating managed Claude config and keychain identities",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const first = yield* makeClaudeEnvironment(
+            { homePath: "/profiles/work/claude" },
+            { HOME: "/fake", F5_PROFILE_ISOLATED: "1" },
+            "darwin",
+          );
+          const second = yield* makeClaudeEnvironment(
+            { homePath: "/profiles/personal/claude" },
+            { HOME: "/fake", F5_PROFILE_ISOLATED: "1" },
+            "darwin",
+          );
+          expect(first.HOME).toBe(NodeOS.homedir());
+          expect(second.HOME).toBe(NodeOS.homedir());
+          expect(first.CLAUDE_CONFIG_DIR).toBe(path.resolve("/profiles/work/claude", ".claude"));
+          expect(first.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(first.CLAUDE_CONFIG_DIR);
+          expect(second.CLAUDE_CONFIG_DIR).not.toBe(first.CLAUDE_CONFIG_DIR);
+          const legacy = yield* makeClaudeEnvironment({ homePath: "/custom" }, {}, "darwin");
+          expect(legacy.HOME).toBe(path.resolve("/custom"));
+          const linux = yield* makeClaudeEnvironment(
+            { homePath: "/custom" },
+            { F5_PROFILE_ISOLATED: "1" },
+            "linux",
+          );
+          expect(linux.HOME).toBe(path.resolve("/custom"));
+        }),
+    );
     it.effect("uses the process home when no Claude home override is configured", () =>
       Effect.gen(function* () {
         const path = yield* Path.Path;
         const resolved = path.resolve(NodeOS.homedir());
 
         expect(yield* resolveClaudeHomePath({ homePath: "" })).toBe(resolved);
-        expect(yield* makeClaudeEnvironment({ homePath: "" })).toBe(process.env);
+        expect(yield* makeClaudeEnvironment({ homePath: "" }, process.env)).toBe(process.env);
       }),
     );
 
@@ -30,7 +60,28 @@ it.layer(NodeServices.layer)("ClaudeHome", (it) => {
         const resolved = path.resolve(NodeOS.homedir(), ".claude-work");
 
         expect(yield* resolveClaudeHomePath({ homePath })).toBe(resolved);
-        expect((yield* makeClaudeEnvironment({ homePath })).HOME).toBe(resolved);
+        const env = yield* makeClaudeEnvironment(
+          { homePath },
+          {
+            HOME: "/other",
+            USERPROFILE: "/other",
+            HOMEDRIVE: "Z:",
+            HOMEPATH: "\\other",
+            PATH: "executables",
+          },
+        );
+        expect(env.HOME).toBe(resolved);
+        expect(env.USERPROFILE).toBe(resolved);
+        expect(env.CLAUDE_CONFIG_DIR).toBe(path.join(resolved, ".claude"));
+        expect(env.CLAUDE_SECURESTORAGE_CONFIG_DIR).toBe(env.CLAUDE_CONFIG_DIR);
+        expect(env.PATH).toBe("executables");
+        if (/^[a-z]:/i.test(resolved)) {
+          expect(env.HOMEDRIVE).toBe(resolved.slice(0, 2));
+          expect(env.HOMEPATH).toBe(resolved.slice(2));
+        } else {
+          expect(env.HOMEDRIVE).toBeUndefined();
+          expect(env.HOMEPATH).toBeUndefined();
+        }
         expect(yield* makeClaudeContinuationGroupKey({ homePath })).toBe(`claude:home:${resolved}`);
         expect(yield* makeClaudeCapabilitiesCacheKey({ binaryPath: "claude", homePath })).toBe(
           `claude\0${resolved}`,
