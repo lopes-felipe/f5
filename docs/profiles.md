@@ -4,7 +4,7 @@ A Profile is an independent F5 environment with its own accounts, projects, conv
 
 Create a profile in **Settings → Profiles**, then open it and use its account panels to sign in. Account setup works before adding a project. Login output is streamed in memory and is never written to terminal history or server logs. Cancel terminates the owned login process. Only one provider or MCP OAuth login can run per installation at a time; another login receives a visible conflict. F5 never terminates an unrelated callback-port owner.
 
-Codex 0.144.3 supports subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.261. Other drivers and unrecognized executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
+Codex 0.144.3 and newer versions are allowed for subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.261. Other drivers and unsupported Claude executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
 
 ## Existing data and layout
 
@@ -67,3 +67,11 @@ Non-default terminals intentionally do not source machine shell startup files. F
 Trash has no automatic retention period. Removal preserves recovery data and does not reclaim its disk space; inspect the displayed `.trash` directory and remove unwanted recovery directories using the operating system when recovery is no longer needed. Small lock metadata files are deliberately retained so concurrent processes never acquire different lock inodes for the same identity. Successful startup clears its previous startup-error record. Ports are never automatically recycled into another profile's browser storage.
 
 Browser authentication cookies include the stable profile ID because cookies are shared across ports on the same hostname. Login output and input handles belong to the connection that started the operation, including sign-out. Disconnecting terminates its account terminal before releasing the OAuth lease. MCP's CLI login timeout is nine minutes, leaving teardown time within the installation-wide ten-minute login budget.
+
+### Codex version mismatch
+
+Isolated profiles require Codex 0.144.3 or newer. This minimum is independent of the protocol audit baseline: auditing a newer release does not automatically raise the minimum. Versions differing from the audited baseline show an informational notice, but sign-in and sessions remain available. Global Codex updates no longer require downgrading or installing a separate executable. Missing executables, failed or unreadable version probes, and versions below the minimum still produce actionable errors.
+
+Managed homes, file-backed credentials, environment filtering and protection against account-home overrides remain mandatory. Startup and protocol failures retain their cause; F5 never falls back to a host account. Version checks and successful startup do not prove credential isolation: the real-provider release gate above still applies.
+
+Claude's Signed in badge is determined by the instance's `auth status` result. SDK initialization and model discovery alone do not prove authentication. Recheck refreshes both account details and the provider snapshot.

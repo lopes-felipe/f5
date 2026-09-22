@@ -1,3 +1,4 @@
+import * as processRunner from "../processRunner";
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
 import * as OS from "node:os";
@@ -123,4 +124,34 @@ describe("profile account terminals", () => {
       /active turn/,
     );
   });
+});
+
+it("rechecks the snapshot and honors Claude loggedIn=false even with exit code zero", async () => {
+  const refresh = vi.fn(async () => {});
+  const service = new ProviderAccountService(
+    {} as ServerConfigShape,
+    {} as ServerSettingsShape,
+    {} as TerminalManagerShape,
+    () => {},
+    refresh,
+    async () => false,
+  );
+  const id = ProviderInstanceId.make("claudeAgent");
+  const resolved = vi.spyOn(service, "resolve").mockResolvedValue({
+    instance: { driver: "claudeAgent" },
+    environment: {},
+    invocation: () => ({ file: "claude", args: ["auth", "status"] }),
+  } as unknown as Awaited<ReturnType<typeof service.resolve>>);
+  const process = vi.spyOn(processRunner, "runProcess").mockResolvedValue({
+    stdout: '{"loggedIn":false,"authMethod":"none"}',
+    stderr: "",
+    code: 0,
+  } as Awaited<ReturnType<typeof processRunner.runProcess>>);
+  try {
+    expect(await service.status(id)).toMatchObject({ status: "unauthenticated" });
+    expect(refresh).toHaveBeenCalledWith(id);
+  } finally {
+    process.mockRestore();
+    resolved.mockRestore();
+  }
 });

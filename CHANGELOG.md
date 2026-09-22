@@ -2,6 +2,8 @@
 
 ## Profiles
 
+- Allow Codex 0.144.3 and newer in isolated profiles. Versions differing from the audited baseline show an informational notice without disabling sign-in or sessions; managed credential isolation remains required.
+
 - Add separate profile state, provider homes, browser origins and desktop partitions with in-app account setup. Default data remains in place.
 - Strip ambient provider credentials for non-default profiles; explicit instance API tokens remain supported.
 - Non-default profiles use saved GitHub tokens and managed Git identity; Default retains host Git configuration, SSH, ambient tokens and existing gh logins.

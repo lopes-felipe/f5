@@ -1,6 +1,7 @@
 import {
+  codexIsolationCompatibility,
   validateManagedHome,
-  certifyProvider,
+  validateProviderCompatibility,
   protectProfileAdapter,
 } from "../../profiles/providerIsolation";
 import { createHash } from "node:crypto";
@@ -78,6 +79,25 @@ export function providerOptionsFromCodexSettings(settings: CodexSettings): Provi
       ...(settings.homePath.trim().length > 0 ? { homePath: settings.homePath } : {}),
       ...(launchArgs.argv.length > 0 ? { launchArgs: [...launchArgs.argv] } : {}),
     },
+  };
+}
+
+export function withCodexIsolationCompatibility(
+  status: ProviderPreflightStatus,
+  isolated: boolean,
+): ProviderPreflightStatus {
+  if (!isolated || !status.available) return status;
+  const compatibility = codexIsolationCompatibility(status.version);
+  const compatibilityMessage = compatibility.supported
+    ? compatibility.message
+    : `unsupported-isolation: ${compatibility.message}`;
+  const message = [status.message, compatibilityMessage].filter(Boolean).join(" ");
+  return {
+    ...status,
+    ...(!compatibility.supported
+      ? { available: false, status: "error" as const, failureReason: "unsupportedVersion" as const }
+      : {}),
+    ...(message ? { message } : {}),
   };
 }
 
@@ -183,7 +203,12 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
       });
       yield* Effect.tryPromise({
         try: () =>
-          certifyProvider(serverConfig, DRIVER_KIND, config.binaryPath, processEnvironment),
+          validateProviderCompatibility(
+            serverConfig,
+            DRIVER_KIND,
+            config.binaryPath,
+            processEnvironment,
+          ),
         catch: (cause) =>
           new ProviderDriverError({
             driver: DRIVER_KIND,
@@ -240,7 +265,10 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
             instance: instanceIdentity,
             settings: effectiveConfig,
             continuationKey: homeLayout.continuationKey,
-            status,
+            status: withCodexIsolationCompatibility(
+              status,
+              serverConfig.profile?.isDefault === false,
+            ),
           }),
         ),
       );

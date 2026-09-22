@@ -43,6 +43,7 @@ export const ProfileProviderAccount = Schema.Struct({
   status: Schema.Literals(["authenticated", "unauthenticated", "unknown", "unsupported-isolation"]),
   identity: Schema.optional(Schema.String),
   reason: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.String),
 });
 export const ProfileSummary = Schema.Struct({
   ...ProfileRecord.fields,

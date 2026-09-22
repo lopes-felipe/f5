@@ -1,3 +1,7 @@
+import * as FS from "node:fs/promises";
+import * as Path from "node:path";
+import * as OS from "node:os";
+import { fallbackDefaultProfile } from "../profiles/ProfileRegistryStore";
 import { Cause, Effect, Layer } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -262,4 +266,61 @@ describe("CodexControlClientRegistry", () => {
       }),
     );
   });
+});
+
+it("runs a newer Codex MCP control client with a managed home and file credentials", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-new-codex-"));
+  const home = Path.join(root, "provider-homes", "codex");
+  const log = Path.join(root, "calls.jsonl");
+  const binary = Path.join(root, "codex.cjs");
+  await FS.mkdir(home, { recursive: true });
+  await FS.writeFile(
+    binary,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(log)}, JSON.stringify({args, home: process.env.CODEX_HOME}) + "\\n");
+if (args.includes("--version")) console.log("codex-cli 0.147.0");
+else require("node:readline").createInterface({input: process.stdin}).on("line", line => {
+  const request = JSON.parse(line);
+  if (request.id !== undefined) console.log(JSON.stringify({id: request.id, result: {}}));
+});
+`,
+    { mode: 0o700 },
+  );
+  const server = {
+    ...makeServerConfigStub(),
+    cwd: root,
+    stateDir: root,
+    profile: { ...fallbackDefaultProfile(root), isDefault: false },
+  };
+  const layer = CodexControlClientRegistryLive.pipe(
+    Layer.provideMerge(Layer.succeed(ServerConfig, server)),
+  );
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* CodexControlClientRegistry;
+          const client = yield* registry.getAdminClient({
+            projectId: ProjectId.makeUnsafe("newer-codex"),
+            providerOptions: { codex: { binaryPath: binary, homePath: home } },
+            mcpEffectiveConfigVersion: "v1",
+            mcpServers: {},
+          });
+          expect(client.capabilities).toEqual({ configRead: true, listMcpServerStatus: true });
+          yield* Effect.promise(() => client.closeAndWait());
+        }).pipe(Effect.provide(layer)),
+      ),
+    );
+    const calls = (await FS.readFile(log, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { args: string[]; home: string });
+    const session = calls.find((call) => call.args.includes("app-server"));
+    expect(session?.home).toBe(home);
+    expect(session?.args).toContain('cli_auth_credentials_store="file"');
+  } finally {
+    await FS.rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
 });

@@ -36,6 +36,9 @@ export function ProfileAccountRow({ account }: { readonly account: ProfileAccoun
           </span>
         ) : null}
       </div>
+      {account.message && account.message !== presentation.detail ? (
+        <p className="mt-1.5 text-xs text-muted-foreground">{account.message}</p>
+      ) : null}
       {presentation.canSignIn ? (
         <ProviderAccountPanel
           className="mt-2.5"

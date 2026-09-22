@@ -147,4 +147,4 @@ should use the shared-home plus shadow-home setup instead.
 
 ### Isolated profiles
 
-[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require the certified version and file-backed credentials; legacy Default shadow-home behavior is unchanged.
+[Profiles](../profiles.md) provide independent managed Codex homes and in-app login for work and personal accounts. Managed profiles require Codex 0.144.3 or newer and file-backed credentials; versions beyond the audited baseline show an informational notice; legacy Default shadow-home behavior is unchanged.

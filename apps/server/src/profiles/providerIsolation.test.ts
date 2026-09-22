@@ -7,7 +7,8 @@ import type { ServerConfigShape } from "../config";
 import type { ProviderAdapterShape } from "../provider/Services/ProviderAdapter";
 import { fallbackDefaultProfile } from "./ProfileRegistryStore";
 import {
-  certifyProvider,
+  codexIsolationCompatibility,
+  validateProviderCompatibility,
   PROFILE_CERTIFIED_PROVIDERS,
   protectProfileAdapter,
 } from "./providerIsolation";
@@ -27,7 +28,9 @@ it("requires deliberate recertification when the bundled Claude SDK changes", as
   expect(PROFILE_CERTIFIED_PROVIDERS.claudeAgent).toBe(
     dependencies["@anthropic-ai/claude-agent-sdk"],
   );
-  await expect(certifyProvider(config, "claudeAgent", "claude", {})).resolves.toBeUndefined();
+  await expect(
+    validateProviderCompatibility(config, "claudeAgent", "claude", {}),
+  ).resolves.toBeUndefined();
   expect(runProcess).not.toHaveBeenCalled();
 });
 
@@ -41,12 +44,12 @@ it("coalesces version probes and expires certification after a minute", async ()
     timedOut: false,
   });
   await Promise.all([
-    certifyProvider(config, "codex", process.execPath, {}),
-    certifyProvider(config, "codex", process.execPath, {}),
+    validateProviderCompatibility(config, "codex", process.execPath, {}),
+    validateProviderCompatibility(config, "codex", process.execPath, {}),
   ]);
   expect(runProcess).toHaveBeenCalledTimes(1);
   vi.advanceTimersByTime(60001);
-  await certifyProvider(config, "codex", process.execPath, {});
+  await validateProviderCompatibility(config, "codex", process.execPath, {});
   expect(runProcess).toHaveBeenCalledTimes(2);
 });
 
@@ -70,4 +73,108 @@ it("keeps Claude's home outside per-turn options and rejects internal path overr
     ),
   ).rejects.toThrow(/account home/);
   expect(spawn).not.toHaveBeenCalled();
+});
+
+it.each(["0.147.0", "0.148.0", "1.0.0", "0.147.0-alpha.1"])(
+  "allows forward-compatible Codex %s",
+  (version) => {
+    expect(codexIsolationCompatibility(version)).toEqual({
+      supported: true,
+      message: expect.stringContaining(`Codex ${version} differs from this build`),
+    });
+  },
+);
+it("accepts the baseline without a notice", () => {
+  expect(codexIsolationCompatibility("0.144.3")).toEqual({ supported: true });
+});
+it.each(["0.144.2", "0.144.3-alpha.1", "unknown", null])(
+  "rejects below-floor or unknown versions: %s",
+  (version) => {
+    expect(codexIsolationCompatibility(version).supported).toBe(false);
+  },
+);
+it("accepts a newer executable, caches probes, and rechecks an in-place update", async () => {
+  vi.useFakeTimers();
+  const environment = { CODEX_HOME: "/managed/newer", F5_PROFILE_ISOLATED: "1" };
+  vi.mocked(runProcess).mockResolvedValue({
+    stdout: "codex-cli 0.147.0",
+    stderr: "",
+    code: 0,
+    signal: null,
+    timedOut: false,
+  });
+  await validateProviderCompatibility(config, "codex", process.execPath, environment);
+  expect(runProcess).toHaveBeenCalledWith(
+    process.execPath,
+    ["--version"],
+    expect.objectContaining({ env: environment }),
+  );
+  vi.mocked(runProcess).mockResolvedValue({
+    stdout: "codex-cli 0.140.0",
+    stderr: "",
+    code: 0,
+    signal: null,
+    timedOut: false,
+  });
+  vi.advanceTimersByTime(60001);
+  await expect(
+    validateProviderCompatibility(config, "codex", process.execPath, environment),
+  ).rejects.toThrow(/minimum/);
+});
+it.each([
+  {
+    stdout: "garbage",
+    stderr: "",
+    code: 0,
+    timedOut: false,
+    expected: /determine the Codex version/,
+  },
+  {
+    stdout: "codex-cli 0.147.0",
+    stderr: "broken executable",
+    code: 1,
+    timedOut: false,
+    expected: /broken executable/,
+  },
+  { stdout: "", stderr: "", code: null, timedOut: true, expected: /timed out/ },
+])("preserves actionable probe failures: $expected", async (result) => {
+  vi.mocked(runProcess).mockResolvedValue({ ...result, signal: null });
+  await expect(
+    validateProviderCompatibility(config, "codex", process.execPath, {
+      TEST_CASE: String(result.expected),
+    }),
+  ).rejects.toThrow(result.expected);
+});
+it("preserves missing-executable failures and never probes Default", async () => {
+  vi.mocked(runProcess).mockRejectedValue(new Error("ENOENT: codex missing"));
+  await expect(
+    validateProviderCompatibility(config, "codex", process.execPath, { TEST_CASE: "missing" }),
+  ).rejects.toThrow(/ENOENT/);
+  vi.mocked(runProcess).mockClear();
+  await validateProviderCompatibility(
+    { ...config, profile: { ...config.profile!, isDefault: true } },
+    "codex",
+    "missing",
+    {},
+  );
+  expect(runProcess).not.toHaveBeenCalled();
+});
+
+it("does not cache a failed probe after the executable is repaired", async () => {
+  const environment = { TEST_CASE: "repaired" };
+  vi.mocked(runProcess).mockRejectedValueOnce(new Error("executable unavailable"));
+  await expect(
+    validateProviderCompatibility(config, "codex", process.execPath, environment),
+  ).rejects.toThrow(/unavailable/);
+  vi.mocked(runProcess).mockResolvedValueOnce({
+    stdout: "",
+    stderr: "codex-cli 0.147.0",
+    code: 0,
+    signal: null,
+    timedOut: false,
+  });
+  await expect(
+    validateProviderCompatibility(config, "codex", process.execPath, environment),
+  ).resolves.toBeUndefined();
+  expect(runProcess).toHaveBeenCalledTimes(2);
 });

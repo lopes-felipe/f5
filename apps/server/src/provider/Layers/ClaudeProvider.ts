@@ -1,3 +1,4 @@
+import { parseClaudeAuthStatusFromOutput, AUTH_TIMEOUT_MS } from "./ProviderHealth";
 import { toTitleCaseWords, claudeSubscriptionLabel } from "../claudeSubscription.ts";
 import {
   type ClaudeSettings,
@@ -635,9 +636,17 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   const slashCommands = capabilities?.slashCommands ?? [];
   const dedupedSlashCommands = dedupeSlashCommands(slashCommands);
 
-  if (!capabilities) {
-    const authenticationWarning =
-      "Could not verify Claude authentication status from initialization result.";
+  // SDK initialization and model discovery work without credentials. Only the
+  // account probe can establish whether this instance is signed in.
+  const authProbe = yield* runClaudeCommand(claudeSettings, ["auth", "status"], environment).pipe(
+    Effect.timeout(AUTH_TIMEOUT_MS),
+    Effect.map(parseClaudeAuthStatusFromOutput),
+    Effect.orElseSucceed(() => ({
+      authStatus: "unknown" as const,
+      message: "Could not verify Claude authentication status. Recheck the account.",
+    })),
+  );
+  if (authProbe.authStatus !== "authenticated") {
     return buildServerProvider({
       presentation: CLAUDE_PRESENTATION,
       enabled: claudeSettings.enabled,
@@ -647,16 +656,16 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       probe: {
         installed: true,
         version: parsedVersion,
-        status: "warning",
-        auth: { status: "unknown" },
-        message: [authenticationWarning, upgradeMessage].filter(Boolean).join(" "),
+        status: authProbe.authStatus === "unauthenticated" ? "error" : "warning",
+        auth: { status: authProbe.authStatus },
+        message: [authProbe.message, upgradeMessage].filter(Boolean).join(" "),
       },
     });
   }
 
   const authMetadata = claudeAuthMetadata({
-    subscriptionType: capabilities.subscriptionType,
-    authMethod: capabilities.tokenSource,
+    subscriptionType: capabilities?.subscriptionType,
+    authMethod: capabilities?.tokenSource,
   });
   return buildServerProvider({
     presentation: CLAUDE_PRESENTATION,
@@ -670,7 +679,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       status: "ready",
       auth: {
         status: "authenticated",
-        ...(capabilities.email ? { email: capabilities.email } : {}),
+        ...(capabilities?.email ? { email: capabilities.email } : {}),
         ...(authMetadata ? authMetadata : {}),
       },
       ...(upgradeMessage ? { message: upgradeMessage } : {}),

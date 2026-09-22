@@ -1,3 +1,4 @@
+import { parseClaudeAuthStatusFromOutput } from "../provider/Layers/ProviderHealth";
 import * as Path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
@@ -21,7 +22,7 @@ import { acquireInstanceLock } from "./InstanceLock";
 import { isProfilePortBindable } from "./ProfileRegistryStore";
 import { runProcess } from "../processRunner";
 
-import { validateManagedHome, certifyProvider } from "./providerIsolation";
+import { validateManagedHome, validateProviderCompatibility } from "./providerIsolation";
 export async function assertOAuthPortAvailable(port: number): Promise<void> {
   if (!(await isProfilePortBindable(port)))
     throw new Error(
@@ -71,7 +72,12 @@ export class ProviderAccountService {
         makeClaudeEnvironment(config, environment).pipe(Effect.provide(NodeServices.layer)),
       );
     else if (config.homePath) environment.CODEX_HOME = config.homePath;
-    await certifyProvider(this.config, instance.driver, config.binaryPath, environment);
+    await validateProviderCompatibility(
+      this.config,
+      instance.driver,
+      config.binaryPath,
+      environment,
+    );
     const invocation = (args: string[]) =>
       instance.driver === "claudeAgent"
         ? resolveClaudeCliInvocation(config.binaryPath, args, environment)
@@ -97,8 +103,16 @@ export class ProviderAccountService {
       timeoutMs: 15000,
       allowNonZeroExit: true,
     });
+    // Refresh the registry snapshot as well as the raw account details so the
+    // badge and available actions describe the same current account.
+    await this.refresh(instanceId);
     return {
-      status: result.code === 0 ? "authenticated" : "unauthenticated",
+      status:
+        resolved.instance.driver === "claudeAgent"
+          ? parseClaudeAuthStatusFromOutput({ ...result, code: result.code ?? -1 }).authStatus
+          : result.code === 0
+            ? "authenticated"
+            : "unauthenticated",
       detail: result.stdout || result.stderr,
     };
   }

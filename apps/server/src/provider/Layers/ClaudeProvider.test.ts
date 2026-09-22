@@ -38,11 +38,14 @@ function mockHandle(result: { stdout: string; stderr: string; code: number }) {
   });
 }
 
-function mockClaudeVersionLayer(version: string) {
+function mockClaudeVersionLayer(version: string, auth = '{"loggedIn":true}') {
   return Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) => {
       const cmd = command as unknown as { args: ReadonlyArray<string> };
+      if (cmd.args.join(" ") === "auth status") {
+        return Effect.succeed(mockHandle({ stdout: auth, stderr: "", code: 0 }));
+      }
       if (cmd.args.join(" ") !== "--version") {
         return Effect.succeed(
           mockHandle({
@@ -119,6 +122,19 @@ function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
 }
 
 describe("checkClaudeProviderStatus", () => {
+  it.each([
+    ['{"loggedIn":false,"authMethod":"none"}', "unauthenticated"],
+    ['{"unexpected":"response"}', "unknown"],
+  ])("does not treat SDK initialization as a login: %s", async (auth, expected) => {
+    const snapshot = await Effect.runPromise(
+      checkClaudeProviderStatus(claudeSettings, capabilitiesProbe).pipe(
+        Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.257", auth))),
+      ),
+    );
+    expect(snapshot.auth.status).toBe(expected);
+    expect(snapshot.auth.email).toBeUndefined();
+    expect(snapshot.status).not.toBe("ready");
+  });
   it.each(["2.1.256", "2.1.257"])("gates Fable 5.1 and custom aliases at %s", async (version) => {
     const snapshot = await runStatusForVersionWithSettings(version, {
       ...claudeSettings,
@@ -210,16 +226,17 @@ describe("checkClaudeProviderStatus", () => {
     ]);
   });
 
-  it("preserves the Fable 5.1 upgrade hint when capability probing fails", async () => {
+  it("preserves verified authentication and the upgrade hint when capability probing fails", async () => {
     const snapshot = await Effect.runPromise(
       checkClaudeProviderStatus(claudeSettings, () => Effect.sync(() => undefined)).pipe(
         Effect.provide(Layer.merge(NodeServices.layer, mockClaudeVersionLayer("2.1.219"))),
       ),
     );
 
-    expect(snapshot.status).toBe("warning");
+    expect(snapshot.status).toBe("ready");
+    expect(snapshot.auth.status).toBe("authenticated");
     expect(snapshot.message).toBe(
-      "Could not verify Claude authentication status from initialization result. Claude Code v2.1.219 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.219 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
   });

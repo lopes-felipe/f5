@@ -1,6 +1,6 @@
 import {
   validateManagedHome,
-  certifyProvider,
+  validateProviderCompatibility,
   protectProfileAdapter,
 } from "../../profiles/providerIsolation";
 /**
@@ -115,7 +115,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv> = {
         instance: environment,
       });
       yield* Effect.tryPromise({
-        try: () => certifyProvider(serverConfig, DRIVER_KIND, config.binaryPath, processEnv),
+        try: () =>
+          validateProviderCompatibility(serverConfig, DRIVER_KIND, config.binaryPath, processEnv),
         catch: (cause) =>
           new ProviderDriverError({
             driver: DRIVER_KIND,

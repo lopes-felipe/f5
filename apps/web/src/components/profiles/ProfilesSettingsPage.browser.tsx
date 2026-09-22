@@ -187,3 +187,38 @@ describe("accounts", () => {
     expect(page.getByRole("button", { name: "Sign in" }).elements()).toHaveLength(0);
   });
 });
+
+it.each(["authenticated", "unauthenticated"] as const)(
+  "keeps account actions enabled with a compatibility notice (%s)",
+  async (status) => {
+    const message =
+      "Codex 0.147.0 differs from this build's audited baseline 0.144.3. Newer versions are allowed; some behavior may be unverified.";
+    list.mockResolvedValue({
+      profiles: [
+        {
+          ...active,
+          providerAccounts: [
+            {
+              driver: "codex",
+              instanceId: ProviderInstanceId.make("codex"),
+              displayName: "Codex",
+              status,
+              message,
+            },
+          ],
+        },
+      ],
+    });
+    await mount();
+    await expect.element(page.getByText(message)).toBeVisible();
+    await expect
+      .element(
+        page.getByRole("button", {
+          name: status === "authenticated" ? "Sign out" : "Sign in",
+          exact: true,
+        }),
+      )
+      .toBeEnabled();
+    expect(page.getByText("Not isolated").elements()).toHaveLength(0);
+  },
+);

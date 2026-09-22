@@ -2,7 +2,7 @@ import { ServerSettingsService } from "../serverSettings";
 import { ProviderInstanceId } from "@t3tools/contracts";
 import * as NodePath from "node:path";
 import { acquireInstanceLock } from "../profiles/InstanceLock";
-import { validateManagedHome, certifyProvider } from "../profiles/providerIsolation";
+import { validateManagedHome, validateProviderCompatibility } from "../profiles/providerIsolation";
 import { buildAccountExecutionEnvironment } from "../providerProcessEnv";
 import {
   type CodexMcpServerEntry,
@@ -173,7 +173,12 @@ const makeCodexControlClientRegistry = Effect.gen(function* () {
     });
     const homePath = config.homePath ?? environment.CODEX_HOME;
     if (homePath) await validateManagedHome(serverConfig, homePath);
-    await certifyProvider(serverConfig, "codex", config.binaryPath ?? "codex", environment);
+    await validateProviderCompatibility(
+      serverConfig,
+      "codex",
+      config.binaryPath ?? "codex",
+      environment,
+    );
     return CodexControlClient.create({
       ...config,
       ...(homePath ? { homePath } : {}),

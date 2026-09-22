@@ -143,10 +143,56 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
     const [conflictExit] = await once(conflict, "exit");
     check(conflictExit === 78, "Occupied port must exit 78");
     await new Promise((r) => occupied.close(r));
+    // A newer CLI must reach startup/account operations with managed storage.
+    const fixtureLog = path.join(root, "codex-invocations.jsonl");
+    const fixture = path.join(root, "codex-fixture.cjs");
+    await fs.writeFile(
+      fixture,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const args = process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(fixtureLog)}, JSON.stringify({ args, home: process.env.CODEX_HOME, isolated: process.env.F5_PROFILE_ISOLATED }) + "\\n");
+if (args.includes("--version")) { console.log("codex-cli 0.147.0"); }
+else if (args.includes("status")) { console.error("Not logged in"); process.exitCode = 1; }
+else { console.error("Unexpected fixture command"); process.exitCode = 2; }
+`,
+      { mode: 0o700 },
+    );
+    const workSettingsPath = path.join(work.stateDir, "settings.json");
+    const workSettings = JSON.parse(await fs.readFile(workSettingsPath, "utf8"));
+    workSettings.providerInstances.codex.config.binaryPath = fixture;
+    await fs.writeFile(workSettingsPath, JSON.stringify(workSettings));
     const secondChild = launch(["--profile", "work"]);
     const second = await connect(work.port, secondChild);
     check(second.welcome.profile.id === work.id, "Work welcome identity");
     check(cookies.size === 2, "Profile authentication cookies must have distinct names");
+    const codexStatus = await rpc(second.ws, "providerAccount.status", { instanceId: "codex" });
+    check(
+      !codexStatus.error && codexStatus.result.status === "unauthenticated",
+      "Newer Codex account probe must be allowed: " + JSON.stringify(codexStatus),
+    );
+    const profileList = await rpc(second.ws, "profiles.list");
+    const codexAccount = profileList.result.profiles
+      .find((p) => p.id === work.id)
+      .providerAccounts.find((a) => a.driver === "codex");
+    check(
+      codexAccount.status === "unauthenticated" && codexAccount.message.includes("0.147.0"),
+      "Newer Codex startup must preserve auth status and expose the notice",
+    );
+    const invocations = (await fs.readFile(fixtureLog, "utf8")).trim().split("\n").map(JSON.parse);
+    const accountProbes = invocations.filter((entry) => entry.args.includes("login"));
+    check(accountProbes.length >= 2, "Startup and account probes must run");
+    for (const entry of accountProbes) {
+      check(
+        entry.home === path.join(work.stateDir, "provider-homes", "codex"),
+        "Managed Codex home",
+      );
+      check(
+        entry.args.includes('cli_auth_credentials_store="file"'),
+        "Managed file-backed credentials",
+      );
+    }
+
     const claudeStatus = await rpc(second.ws, "providerAccount.status", {
       instanceId: "claudeAgent",
     });

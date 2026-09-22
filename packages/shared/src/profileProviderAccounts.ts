@@ -13,6 +13,7 @@ export function profileProviderAccounts(
     ...(provider.auth.email || provider.auth.label
       ? { identity: provider.auth.email ?? provider.auth.label! }
       : {}),
+    ...(provider.message ? { message: provider.message } : {}),
     ...(provider.unavailableReason ? { reason: provider.unavailableReason } : {}),
   }));
 }

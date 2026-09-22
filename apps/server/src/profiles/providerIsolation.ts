@@ -1,3 +1,5 @@
+import { compareCodexCliVersions, parseCodexCliVersion } from "@t3tools/shared/codexCliVersion";
+import { CODEX_PROTOCOL_BASELINE_VERSION } from "@t3tools/shared/codexProtocolManifest";
 import { createHash } from "node:crypto";
 import { dependencies } from "../../package.json" with { type: "json" };
 import { assertExecutionDirectory } from "./executionDirectory";
@@ -8,7 +10,35 @@ import type { ProviderAdapterShape } from "../provider/Services/ProviderAdapter"
 import * as Path from "node:path";
 import type { ServerConfigShape } from "../config";
 import { isPathWithinRoot, safeLstat } from "../storage/storagePathSafety";
-export const PROFILE_CERTIFIED_PROVIDERS = { codex: "0.144.3", claudeAgent: "0.3.261" } as const;
+export const PROFILE_CERTIFIED_PROVIDERS = { claudeAgent: "0.3.261" } as const;
+// This floor is independent of the protocol audit baseline: auditing a newer
+// release must not automatically make older compatible installations unusable.
+export const MINIMUM_ISOLATED_CODEX_VERSION = "0.144.3";
+export function codexIsolationCompatibility(version: string | null | undefined): {
+  supported: boolean;
+  message?: string;
+} {
+  const parsed = version ? parseCodexCliVersion(version) : null;
+  if (!parsed)
+    return {
+      supported: false,
+      message:
+        "Cannot determine the Codex version for this isolated profile. Check the configured executable with --version in Settings > Providers & Models.",
+    };
+  if (compareCodexCliVersions(parsed, MINIMUM_ISOLATED_CODEX_VERSION) < 0)
+    return {
+      supported: false,
+      message: `Codex ${parsed} is below the isolated-profile minimum ${MINIMUM_ISOLATED_CODEX_VERSION}. Upgrade Codex or select a newer executable in Settings > Providers & Models.`,
+    };
+  return {
+    supported: true,
+    ...(compareCodexCliVersions(parsed, CODEX_PROTOCOL_BASELINE_VERSION) !== 0
+      ? {
+          message: `Codex ${parsed} differs from this build's audited baseline ${CODEX_PROTOCOL_BASELINE_VERSION}. Newer versions are allowed; some behavior may be unverified.`,
+        }
+      : {}),
+  };
+}
 export async function validateManagedHome(config: ServerConfigShape, home: string): Promise<void> {
   if (config.profile?.isDefault !== false) return;
   const root = Path.join(config.stateDir, "provider-homes");
@@ -28,7 +58,7 @@ export async function validateManagedHome(config: ServerConfigShape, home: strin
   }
 }
 
-async function checkProviderCertification(
+async function checkProviderCompatibility(
   config: ServerConfigShape,
   driver: string,
   binaryPath: string,
@@ -52,21 +82,32 @@ async function checkProviderCertification(
     throw new Error(`unsupported-isolation: ${driver} is not certified for isolated profiles.`);
   const { resolveInvocation } = await import("../spawn/resolveCommand");
   const { runProcess } = await import("../processRunner");
-  const command = resolveInvocation(binaryPath || "codex", ["--version"], environment);
-  const result = await runProcess(command.file, command.args, {
-    env: environment,
-    timeoutMs: 15000,
-    allowNonZeroExit: true,
-  });
-  const version = result.stdout.match(/\b(\d+\.\d+\.\d+)\b/)?.[1];
-  if (result.code !== 0 || version !== PROFILE_CERTIFIED_PROVIDERS.codex)
-    throw new Error(
-      `unsupported-isolation: Codex ${version ?? "unknown"} is not certified. Install ${PROFILE_CERTIFIED_PROVIDERS.codex}.`,
+  try {
+    const command = resolveInvocation(binaryPath || "codex", ["--version"], environment);
+    const result = await runProcess(command.file, command.args, {
+      env: environment,
+      timeoutMs: 15000,
+      allowNonZeroExit: true,
+    });
+    if (result.code !== 0 || result.timedOut) {
+      throw new Error(
+        `Codex --version ${result.timedOut ? "timed out" : `failed (exit ${result.code})`}. ${result.stderr.trim()}`,
+      );
+    }
+    const compatibility = codexIsolationCompatibility(
+      parseCodexCliVersion(`${result.stdout}\n${result.stderr}`),
     );
+    if (!compatibility.supported) throw new Error(compatibility.message);
+  } catch (cause) {
+    throw new Error(
+      `unsupported-isolation: ${cause instanceof Error ? cause.message : String(cause)} Check the Codex executable in Settings > Providers & Models.`,
+      { cause },
+    );
+  }
 }
 
-const certifications = new Map<string, { expires: number; result: Promise<void> }>();
-export function certifyProvider(
+const compatibilityChecks = new Map<string, { expires: number; result: Promise<void> }>();
+export function validateProviderCompatibility(
   config: ServerConfigShape,
   driver: string,
   binaryPath: string,
@@ -76,13 +117,14 @@ export function certifyProvider(
   const key = createHash("sha256")
     .update(JSON.stringify([config.profile.id, driver, binaryPath, environment]))
     .digest("hex");
-  const cached = certifications.get(key);
+  const cached = compatibilityChecks.get(key);
   if (cached && cached.expires > Date.now()) return cached.result;
-  const result = checkProviderCertification(config, driver, binaryPath, environment);
-  if (certifications.size >= 128) certifications.delete(certifications.keys().next().value!);
-  certifications.set(key, { expires: Date.now() + 60000, result });
+  const result = checkProviderCompatibility(config, driver, binaryPath, environment);
+  if (compatibilityChecks.size >= 128)
+    compatibilityChecks.delete(compatibilityChecks.keys().next().value!);
+  compatibilityChecks.set(key, { expires: Date.now() + 60000, result });
   void result.catch(() => {
-    if (certifications.get(key)?.result === result) certifications.delete(key);
+    if (compatibilityChecks.get(key)?.result === result) compatibilityChecks.delete(key);
   });
   return result;
 }
