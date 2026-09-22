@@ -1,6 +1,6 @@
 import {
   type ChatAttachment,
-  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   type ModelSelection,
@@ -197,7 +197,9 @@ export const resolveBestEffortGeneratedTitle = (input: {
 
     let generatedResult = yield* Effect.exit(generateTitle(requestedModel));
 
-    const fallbackModel = DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex;
+    // The lightweight text-generation default may be unavailable to ChatGPT
+    // accounts. Retry with the standard Codex model, not the same default.
+    const fallbackModel = DEFAULT_MODEL_BY_PROVIDER.codex;
     if (generatedResult._tag === "Failure" && requestedModel !== fallbackModel) {
       const reason = Cause.pretty(generatedResult.cause);
       if (isUnsupportedCodexChatGptModelError(reason)) {

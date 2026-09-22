@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
 import {
-  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
+  DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   MessageId,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
@@ -208,30 +209,90 @@ describe("resolveBestEffortGeneratedTitle", () => {
     );
   });
 
-  it("retries unsupported ChatGPT Codex title models with the fallback text-generation model", async () => {
-    const titleGenerationModelSelection = {
-      instanceId: ProviderInstanceId.make("codex_personal"),
-      model: "gpt-5.3-codex",
-    };
-    const generateThreadTitle = vi
-      .fn()
-      .mockImplementationOnce(() =>
-        Effect.fail(
-          new Error(
-            "The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+  it.each(["gpt-5.3-codex", DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex])(
+    "retries unsupported ChatGPT Codex title model %s with the standard Codex model",
+    async (model) => {
+      const titleGenerationModelSelection = {
+        instanceId: ProviderInstanceId.make("codex_personal"),
+        model,
+      };
+      const generateThreadTitle = vi
+        .fn()
+        .mockImplementationOnce(() =>
+          Effect.fail(
+            new Error(
+              `The '${model}' model is not supported when using Codex with a ChatGPT account.`,
+            ),
           ),
-        ),
-      )
-      .mockImplementationOnce(() => Effect.succeed({ title: "Retry succeeded" }));
+        )
+        .mockImplementationOnce(() => Effect.succeed({ title: "Retry succeeded" }));
 
+      const title = await Effect.runPromise(
+        resolveBestEffortGeneratedTitle({
+          cwd: "/tmp/project",
+          titleSourceText: "Plan the workflow",
+          attachments: [],
+          titleGenerationModel: "ignored-by-selection",
+          titleGenerationModelSelection,
+          defaultTitle: "New workflow",
+          textGeneration: {
+            generateCommitMessage: () => Effect.die("unsupported"),
+            generatePrContent: () => Effect.die("unsupported"),
+            generateBranchName: () => Effect.die("unsupported"),
+            generateThreadTitle,
+            generateStructuredJson: () => Effect.die("unsupported"),
+          },
+          logPrefix: "threadTitle test",
+          logContext: { workflowId: "workflow-1" },
+        }),
+      );
+
+      expect(title).toBe("Retry succeeded");
+      expect(generateThreadTitle).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({
+          cwd: "/tmp/project",
+          message: "Plan the workflow",
+          model,
+          modelSelection: titleGenerationModelSelection,
+        }),
+      );
+      const expectedFallbackSelection = {
+        ...titleGenerationModelSelection,
+        model: DEFAULT_MODEL_BY_PROVIDER.codex,
+      };
+      expect(generateThreadTitle).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({
+          cwd: "/tmp/project",
+          message: "Plan the workflow",
+          model: DEFAULT_MODEL_BY_PROVIDER.codex,
+          modelSelection: expectedFallbackSelection,
+        }),
+      );
+      expect(generateThreadTitle).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it.each([
+    { model: undefined, expectedAttempts: 2 },
+    { model: DEFAULT_MODEL_BY_PROVIDER.codex, expectedAttempts: 1 },
+  ])("bounds unsupported-model retries for $model", async ({ model, expectedAttempts }) => {
+    const generateThreadTitle = vi.fn(() =>
+      Effect.fail(
+        new TextGenerationError({
+          operation: "generateThreadTitle",
+          detail: "The model is not supported when using Codex with a ChatGPT account.",
+        }),
+      ),
+    );
     const title = await Effect.runPromise(
       resolveBestEffortGeneratedTitle({
         cwd: "/tmp/project",
-        titleSourceText: "Plan the workflow",
+        titleSourceText: "Fix title generation.",
         attachments: [],
-        titleGenerationModel: "ignored-by-selection",
-        titleGenerationModelSelection,
-        defaultTitle: "New workflow",
+        titleGenerationModel: model,
+        defaultTitle: "New thread",
         textGeneration: {
           generateCommitMessage: () => Effect.die("unsupported"),
           generatePrContent: () => Effect.die("unsupported"),
@@ -240,32 +301,13 @@ describe("resolveBestEffortGeneratedTitle", () => {
           generateStructuredJson: () => Effect.die("unsupported"),
         },
         logPrefix: "threadTitle test",
-        logContext: { workflowId: "workflow-1" },
       }),
     );
 
-    expect(title).toBe("Retry succeeded");
-    expect(generateThreadTitle).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({
-        cwd: "/tmp/project",
-        message: "Plan the workflow",
-        model: "gpt-5.3-codex",
-        modelSelection: titleGenerationModelSelection,
-      }),
-    );
-    const expectedFallbackSelection = {
-      ...titleGenerationModelSelection,
-      model: DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex,
-    };
-    expect(generateThreadTitle).toHaveBeenNthCalledWith(
-      2,
-      expect.objectContaining({
-        cwd: "/tmp/project",
-        message: "Plan the workflow",
-        model: DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex,
-        modelSelection: expectedFallbackSelection,
-      }),
+    expect(title).toBe("Fix title generation");
+    expect(generateThreadTitle).toHaveBeenCalledTimes(expectedAttempts);
+    expect(generateThreadTitle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ model: DEFAULT_MODEL_BY_PROVIDER.codex }),
     );
   });
 
