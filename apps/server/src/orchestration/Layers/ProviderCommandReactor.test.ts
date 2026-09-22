@@ -6,7 +6,7 @@ import type { ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
 import {
   ApprovalRequestId,
   CommandId,
-  DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER,
+  DEFAULT_MODEL_BY_PROVIDER,
   DEFAULT_NEW_THREAD_TITLE,
   DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -2781,7 +2781,7 @@ describe("ProviderCommandReactor", () => {
     });
   });
 
-  it("retries thread title generation with the fallback text-generation model when ChatGPT rejects the title model", async () => {
+  it("retries default thread title generation with the standard Codex model when ChatGPT rejects the title model", async () => {
     const harness = await createHarness({ threadTitle: DEFAULT_NEW_THREAD_TITLE });
     const now = new Date().toISOString();
     harness.generateThreadTitle
@@ -2789,8 +2789,7 @@ describe("ProviderCommandReactor", () => {
         Effect.fail(
           new TextGenerationError({
             operation: "generateThreadTitle",
-            detail:
-              "Codex CLI command failed: The 'gpt-5.3-codex' model is not supported when using Codex with a ChatGPT account.",
+            detail: `Codex CLI command failed: The '${DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex}' model is not supported when using Codex with a ChatGPT account.`,
           }),
         ),
       )
@@ -2807,7 +2806,6 @@ describe("ProviderCommandReactor", () => {
           text: "provider message text",
           attachments: [],
         },
-        titleGenerationModel: "gpt-5.3-codex",
         interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
         runtimeMode: "approval-required",
         createdAt: now,
@@ -2816,11 +2814,11 @@ describe("ProviderCommandReactor", () => {
 
     await waitFor(() => harness.generateThreadTitle.mock.calls.length === 2);
     expect(harness.generateThreadTitle.mock.calls[0]?.[0]).toMatchObject({
-      model: "gpt-5.3-codex",
+      model: DEFAULT_THREAD_TITLE_MODEL_BY_PROVIDER.codex,
       message: "provider message text",
     });
     expect(harness.generateThreadTitle.mock.calls[1]?.[0]).toMatchObject({
-      model: DEFAULT_GIT_TEXT_GENERATION_MODEL_BY_PROVIDER.codex,
+      model: DEFAULT_MODEL_BY_PROVIDER.codex,
       message: "provider message text",
     });
 
