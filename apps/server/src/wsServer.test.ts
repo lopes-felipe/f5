@@ -988,15 +988,14 @@ describe("WebSocket Server", () => {
     expect((response.result as { buckets: unknown[] }).buckets).toHaveLength(24);
     const accounts = await sendRequest(ws, USAGE_WS_METHODS.getAccounts, { refresh: "none" });
     expect(accounts.error).toBeUndefined();
-    expect(accounts.result).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          provider: "codex",
-          refreshState: "idle",
-          sections: expect.any(Array),
-        }),
-      ]),
-    );
+    // This server has no registered instances. Never synthesize a legacy
+    // machine-account probe outside the active profile's provider registry.
+    expect(accounts.result).toEqual([]);
+    const refreshedAccounts = await sendRequest(ws, USAGE_WS_METHODS.getAccounts, {
+      refresh: "force",
+    });
+    expect(refreshedAccounts.error).toBeUndefined();
+    expect(refreshedAccounts.result).toEqual([]);
     expect(response.result).not.toHaveProperty("codexAccount");
   });
 

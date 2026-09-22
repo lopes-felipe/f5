@@ -1,9 +1,7 @@
-import { ServerConfig } from "../../config.ts";
 import {
   type UsageTokenComposition,
   type UsageAccount,
   type IsoDateTime,
-  ProjectId,
   type ProviderKind,
   type UsageBucket,
   type UsageGetSummaryInput,
@@ -12,25 +10,16 @@ import {
   type UsageRange,
   type UsageSummary,
 } from "@t3tools/contracts";
-import { parseLaunchArgv } from "@t3tools/shared/cliArgs";
-import { Clock, Effect, Layer, Schema, Scope, Exit, Stream } from "effect";
+import { Clock, Effect, Layer, Schema } from "effect";
 
 import * as Semaphore from "effect/Semaphore";
 import { ProviderInstanceRegistry } from "../../provider/Services/ProviderInstanceRegistry.ts";
-import {
-  makeAccountUsageCapability,
-  emptyAccountSection,
-  type AccountUsageCapability,
-} from "./AccountUsageService.ts";
-import { readCodexControlEnvironmentConfig } from "../../codex/CodexControlClientRegistry.ts";
+import { emptyAccountSection } from "./AccountUsageService.ts";
 import { UsageFactRepositoryLive } from "../../persistence/Layers/UsageFacts.ts";
 import {
   UsageFactRepository,
   type HourlyUsageFactSummary,
 } from "../../persistence/Services/UsageFacts.ts";
-import { toCodexProviderStartOptions } from "../../provider/codexProviderOptions.ts";
-import { ServerSettingsService } from "../../serverSettings.ts";
-import { probeCodexAccountSections } from "../codexAccountUsage.ts";
 import { UsageQueryError, UsageService, type UsageServiceShape } from "../Services/UsageService.ts";
 
 interface MutableMetrics {
@@ -358,87 +347,32 @@ export function buildUsageSummary(input: {
 
 const make = Effect.gen(function* () {
   const repository = yield* UsageFactRepository;
-  const serverConfig = yield* ServerConfig;
-  const serverSettings = yield* ServerSettingsService;
-
   const registry = yield* ProviderInstanceRegistry;
   const permits = yield* Semaphore.make(2);
-  const parentScope = yield* Effect.scope;
-  const configurationLock = yield* Semaphore.make(1);
-  let codex:
-    | { key: string; scope: Scope.Closeable; capability: AccountUsageCapability }
-    | undefined;
-  const configureCodex = configurationLock.withPermits(1)(
-    Effect.gen(function* () {
-      const settings = (yield* serverSettings.getSettings).providers.codex;
-      const key = JSON.stringify(settings);
-      if (codex?.key === key) return codex.capability;
-      if (codex) yield* Scope.close(codex.scope, Exit.void);
-      const scope = yield* Scope.make();
-      yield* Scope.addFinalizer(parentScope, Scope.close(scope, Exit.void));
-      // Account data has its own five-minute cache. Each attempt owns a dedicated
-      // process so configuration retirement cannot leave pooled RPC work running.
-      const read = Effect.gen(function* () {
-        const parsed = parseLaunchArgv(settings.launchArgs);
-        if (!parsed.ok) return yield* Effect.fail(new Error("Invalid executable configuration"));
-        const providerOptions = toCodexProviderStartOptions({
-          binaryPath: settings.binaryPath,
-          homePath: settings.homePath || undefined,
-          launchArgs: parsed.argv,
-        });
-        return yield* probeCodexAccountSections(
-          readCodexControlEnvironmentConfig(
-            {
-              projectId: ProjectId.makeUnsafe("f5-account-usage"),
-              ...(providerOptions ? { providerOptions } : {}),
-            },
-            serverConfig.cwd,
-          ),
-        );
-      });
-      const capability = yield* makeAccountUsageCapability(
-        {
-          key: "codex:default",
-          provider: "codex",
-          providerInstanceId: null,
-          displayName: "Codex — default configuration",
-          enabled: settings.enabled,
-          refreshState: "idle",
-          sections: [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")],
-        },
-        read,
-        { readerOwnsTimeout: true },
-      ).pipe(Effect.provideService(Scope.Scope, scope));
-      codex = { key, scope, capability };
-      return capability;
-    }),
-  );
-  yield* Stream.runForEach(serverSettings.streamChanges, () =>
-    configureCodex.pipe(Effect.ignore),
-  ).pipe(Effect.forkScoped);
   const getAccounts: UsageServiceShape["getAccounts"] = (request) =>
     Effect.gen(function* () {
-      const defaultCodex = yield* configureCodex;
       const instances = yield* registry.listInstances;
-      const capabilities = [
-        defaultCodex,
-        ...instances.flatMap((instance) => (instance.accountUsage ? [instance.accountUsage] : [])),
-      ];
+      const capabilities = instances.flatMap((instance) =>
+        instance.accountUsage ? [instance.accountUsage] : [],
+      );
       yield* Effect.forEach(capabilities, (capability) =>
         capability.refresh(request.refresh, permits),
       );
       const snapshots = yield* Effect.forEach(capabilities, (capability) => capability.getSnapshot);
       const unavailable = yield* registry.listUnavailable;
       const shadows: Array<UsageAccount> = unavailable
-        .filter((entry) => entry.driver === "claudeAgent")
+        .filter((entry) => entry.driver === "claudeAgent" || entry.driver === "codex")
         .map((entry) => ({
-          key: `claude:${entry.instanceId}`,
-          provider: "claudeAgent",
+          key: `${entry.driver === "codex" ? "codex" : "claude"}:${entry.instanceId}`,
+          provider: entry.driver === "codex" ? "codex" : "claudeAgent",
           providerInstanceId: entry.instanceId,
-          displayName: entry.displayName ?? "Claude",
+          displayName: entry.displayName ?? (entry.driver === "codex" ? "Codex" : "Claude"),
           enabled: entry.enabled,
           refreshState: "idle",
-          sections: [{ ...emptyAccountSection("claude-usage"), errorCode: "temporary-failure" }],
+          sections: (entry.driver === "codex"
+            ? [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")]
+            : [emptyAccountSection("claude-usage")]
+          ).map((section) => ({ ...section, errorCode: "temporary-failure" as const })),
         }));
       return [...snapshots, ...shadows];
     }).pipe(

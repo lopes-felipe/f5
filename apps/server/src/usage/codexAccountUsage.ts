@@ -1,5 +1,7 @@
+import { makeAccountUsageCapability, emptyAccountSection } from "./Layers/AccountUsageService.ts";
 import { Clock, Effect } from "effect";
 import type {
+  ProviderInstanceId,
   CodexAccountCredits,
   CodexAccountDailyUsageBucket,
   CodexAccountRateLimit,
@@ -162,4 +164,25 @@ export function readCodexAccountSections(client: CodexControlClient, timeoutMs =
       ),
     );
   return Effect.all([read("codex-tokens"), read("codex-limits")], { concurrency: 2 });
+}
+
+// Owned by the provider instance scope: configuration changes retire both the
+// cached account data and any in-flight control process.
+export function makeCodexAccountUsage(
+  instance: { instanceId: ProviderInstanceId; displayName: string; enabled: boolean },
+  environment: CodexControlEnvironmentConfig & { processEnvironment: NodeJS.ProcessEnv },
+) {
+  return makeAccountUsageCapability(
+    {
+      key: `codex:${instance.instanceId}`,
+      provider: "codex",
+      providerInstanceId: instance.instanceId,
+      displayName: instance.displayName,
+      enabled: instance.enabled,
+      refreshState: "idle",
+      sections: [emptyAccountSection("codex-tokens"), emptyAccountSection("codex-limits")],
+    },
+    probeCodexAccountSections(environment),
+    { readerOwnsTimeout: true },
+  );
 }

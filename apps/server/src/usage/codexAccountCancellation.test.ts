@@ -7,7 +7,8 @@ import { it, expect } from "@effect/vitest";
 import { vi } from "vitest";
 import { Effect, Fiber, Scope, Exit } from "effect";
 import { TestClock } from "effect/testing";
-import { probeCodexAccountSections } from "./codexAccountUsage.ts";
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { makeCodexAccountUsage, probeCodexAccountSections } from "./codexAccountUsage.ts";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -20,10 +21,14 @@ vi.mock("../codexAppServerManager.ts", () => ({
   killChildTree: (child: ChildProcessWithoutNullStreams) => child.kill(),
 }));
 vi.mock("../spawn/resolveCommand.ts", () => ({
-  resolveInvocation: () => ({ command: "codex", args: [] }),
+  resolveInvocation: (command: string, args: string[]) => ({ command, args }),
 }));
 
-function processHarness(phase: "initialize" | "usage", tokensSucceed = false) {
+function processHarness(
+  phase: "initialize" | "usage" | "success",
+  tokensSucceed = false,
+  tokens = "0",
+) {
   const child = new EventEmitter() as EventEmitter & {
     stdin: PassThrough;
     stdout: PassThrough;
@@ -59,11 +64,15 @@ function processHarness(phase: "initialize" | "usage", tokensSucceed = false) {
       if (message.id === undefined) continue;
       const isUsage = message.method.startsWith("account/");
       if ((phase === "initialize" && message.method === "initialize") || isUsage) {
-        if (tokensSucceed && message.method === "account/usage/read") {
+        if ((tokensSucceed || phase === "success") && message.method === "account/usage/read") {
           child.stdout.write(
-            JSON.stringify({ id: message.id, result: { summary: {}, dailyUsageBuckets: [] } }) +
-              "\n",
+            JSON.stringify({
+              id: message.id,
+              result: { summary: { lifetimeTokens: tokens }, dailyUsageBuckets: [] },
+            }) + "\n",
           );
+        } else if (phase === "success") {
+          child.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\n");
         } else outstanding.add(message.id);
         if (phase === "initialize" || message.method === "account/rateLimits/read") ready();
       } else child.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\n");
@@ -155,4 +164,75 @@ it.effect("the startup deadline aborts initialization rather than leaving a pend
     expect(harness.child.kill).toHaveBeenCalledOnce();
     expect(harness.outstanding.size).toBe(0);
   }),
+);
+
+it.effect("instance usage keeps managed homes, credentials and cached totals separate", () =>
+  Effect.gen(function* () {
+    mocks.spawn.mockClear();
+    const permits = yield* Semaphore.make(2);
+    const capabilities = [];
+    for (const [name, tokens] of [
+      ["work", "111"],
+      ["personal", "222"],
+    ] as const) {
+      const homePath = process.cwd() + "/provider-homes/" + name;
+      const harness = processHarness("success", true, tokens);
+      const capability = yield* makeCodexAccountUsage(
+        { instanceId: ProviderInstanceId.make(name), displayName: name, enabled: true },
+        {
+          cwd: process.cwd(),
+          homePath,
+          processEnvironment: { F5_PROFILE_ISOLATED: "1", CODEX_HOME: homePath },
+        },
+      );
+      capabilities.push(capability);
+      yield* capability.refresh("force", permits);
+      yield* Effect.promise(() => harness.started);
+      for (let i = 0; i < 100; i++) yield* Effect.yieldNow;
+      expect(yield* capability.getSnapshot).toMatchObject({
+        key: `codex:${name}`,
+        providerInstanceId: name,
+        displayName: name,
+        sections: [
+          {
+            kind: "codex-tokens",
+            snapshot: { data: { tokenSummary: { lifetimeTokens: tokens } } },
+          },
+          { kind: "codex-limits" },
+        ],
+      });
+      const spawn = mocks.spawn.mock.lastCall!;
+      expect(spawn[2].env.CODEX_HOME).toBe(homePath);
+      expect(spawn[2].env.F5_PROFILE_ISOLATED).toBe("1");
+      expect(spawn[1].join(" ")).toContain('cli_auth_credentials_store="file"');
+      expect(harness.child.kill).toHaveBeenCalledOnce();
+    }
+    for (const capability of capabilities) yield* capability.refresh("if-stale", permits);
+    expect(mocks.spawn).toHaveBeenCalledTimes(2);
+  }).pipe(Effect.scoped),
+);
+
+it.effect("a failed managed usage probe never retries with the ambient account", () =>
+  Effect.gen(function* () {
+    mocks.spawn.mockReset();
+    mocks.spawn.mockImplementation(() => {
+      throw new Error("managed account unavailable");
+    });
+    const permits = yield* Semaphore.make(1);
+    const capability = yield* makeCodexAccountUsage(
+      { instanceId: ProviderInstanceId.make("personal"), displayName: "Personal", enabled: true },
+      {
+        cwd: process.cwd(),
+        homePath: process.cwd() + "/provider-homes/personal",
+        processEnvironment: { F5_PROFILE_ISOLATED: "1" },
+      },
+    );
+    yield* capability.refresh("force", permits);
+    for (let i = 0; i < 100; i++) yield* Effect.yieldNow;
+    const snapshot = yield* capability.getSnapshot;
+    expect(snapshot.sections.every((section) => section.snapshot === null)).toBe(true);
+    expect(snapshot.sections.every((section) => section.errorCode !== null)).toBe(true);
+    expect(mocks.spawn).toHaveBeenCalledTimes(1);
+    expect(mocks.spawn.mock.lastCall![2].env.CODEX_HOME).toContain("/provider-homes/personal");
+  }).pipe(Effect.scoped),
 );

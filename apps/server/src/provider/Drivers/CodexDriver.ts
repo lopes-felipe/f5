@@ -1,3 +1,4 @@
+import { makeCodexAccountUsage } from "../../usage/codexAccountUsage.ts";
 import {
   codexIsolationCompatibility,
   validateManagedHome,
@@ -252,6 +253,22 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         defaultProviderOptions,
         processEnvironment,
       });
+      const accountUsage = yield* makeCodexAccountUsage(
+        { instanceId, displayName: displayName ?? "Codex", enabled },
+        {
+          cwd: serverConfig.cwd,
+          processEnvironment,
+          ...(defaultProviderOptions.codex?.binaryPath
+            ? { binaryPath: defaultProviderOptions.codex.binaryPath }
+            : {}),
+          ...(defaultProviderOptions.codex?.homePath
+            ? { homePath: defaultProviderOptions.codex.homePath }
+            : {}),
+          ...(defaultProviderOptions.codex?.launchArgs
+            ? { launchArgs: defaultProviderOptions.codex.launchArgs }
+            : {}),
+        },
+      );
       const textGeneration = yield* makeCodexTextGeneration(effectiveConfig, processEnvironment);
       const checkProvider = checkCodexProviderPreflight({
         providerOptions: defaultProviderOptions,
@@ -308,6 +325,7 @@ export const CodexDriver: ProviderDriver<CodexSettings, CodexDriverEnv> = {
         snapshot,
         adapter: protectProfileAdapter(adapter, serverConfig, effectiveConfig),
         textGeneration,
+        accountUsage,
       } satisfies ProviderInstance;
     }),
 };

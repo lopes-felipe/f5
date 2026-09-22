@@ -2,6 +2,8 @@
 
 ## Profiles
 
+- Read Codex account usage through each configured provider instance's home and environment instead of the machine-wide legacy configuration.
+
 - Preserve the real macOS home for managed Claude keychain access while retaining profile-specific Claude configuration and credential entry names.
 - Add a Codex device-code sign-in alternative and prevent incomplete or expired login links from being offered by the account panel.
 

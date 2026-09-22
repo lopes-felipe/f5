@@ -6,6 +6,8 @@ Create a profile in **Settings → Profiles**, then open it and use its account 
 
 Codex 0.144.3 and newer versions are allowed for subscription and API-key accounts. Claude uses the bundled Agent SDK 0.3.261. Other drivers and unsupported Claude executables remain preserved but are unavailable in isolated profiles. Managed Codex homes use file-backed credentials and do not share shadow-home overlays. Profile isolation must pass the real-provider release gate below; environment-variable tests alone do not certify platform credential storage.
 
+Account usage is read through each configured provider instance, using the same home and environment as its sessions. Codex usage caches are instance-local; an unavailable instance never falls back to the machine account. Provider-reported subscription limits can still match when two profiles deliberately sign into the same upstream account.
+
 ## Existing data and layout
 
 Default keeps its existing paths and provider logins. No existing data moves. Default continues to inherit shell provider credentials. Other profiles discard ambient provider and GitHub credentials and use their managed homes; explicit API tokens configured on an instance still take precedence.
