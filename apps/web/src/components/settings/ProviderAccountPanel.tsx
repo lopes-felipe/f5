@@ -1,3 +1,4 @@
+import { accountLoginOutput } from "./accountLoginOutput";
 import { ChevronDownIcon, CopyIcon, ExternalLinkIcon, RotateCwIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ProfileSummary, ProviderInstanceId } from "@t3tools/contracts";
@@ -16,15 +17,14 @@ import { toastManager } from "../ui/toast";
 
 type AccountStatus = ProfileSummary["providerAccounts"][number]["status"];
 
-const ANSI_ESCAPE = /\x1b\[[0-9;]*[A-Za-z]/g;
-const URL_IN_OUTPUT = /https:\/\/[^\s\x1b<>]+/g;
-
 export function ProviderAccountPanel({
   instanceId,
+  driver,
   status,
   className,
 }: {
   readonly instanceId: ProviderInstanceId;
+  readonly driver?: string;
   /**
    * When the caller already knows the account state (the Profiles surface),
    * only the relevant primary action is offered. Omitted on the Providers
@@ -70,8 +70,8 @@ export function ProviderAccountPanel({
 
   if (!api) return null;
 
-  const urls = [...new Set(output.match(URL_IN_OUTPUT) ?? [])];
-  const cleanOutput = output.replace(ANSI_ESCAPE, "");
+  const { text: cleanOutput, urls: completeUrls } = accountLoginOutput(output);
+  const urls = handle ? completeUrls : [];
   const outputLines = cleanOutput ? cleanOutput.trimEnd().split("\n").length : 0;
   const isRunning = handle !== null;
 
@@ -100,12 +100,32 @@ export function ProviderAccountPanel({
             onClick={() =>
               void run(async () => {
                 setOutput("");
+                setDetails("");
                 const result = await api.loginStart({ instanceId });
                 setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
               })
             }
           >
             Sign in
+          </Button>
+        ) : null}
+        {showSignIn && driver === "codex" ? (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={pending}
+            onClick={() =>
+              void run(async () => {
+                if (handle) await api.cancel({ handle });
+                setHandle(null);
+                setOutput("");
+                setDetails("");
+                const result = await api.loginStart({ instanceId, method: "device-code" });
+                setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
+              })
+            }
+          >
+            Use device code
           </Button>
         ) : null}
         {showSignOut ? (
@@ -116,6 +136,7 @@ export function ProviderAccountPanel({
             onClick={() =>
               void run(async () => {
                 setOutput("");
+                setDetails("");
                 const result = await api.logout({ instanceId });
                 setHandle(finishedHandles.current.has(result.handle) ? null : result.handle);
               })
@@ -153,6 +174,12 @@ export function ProviderAccountPanel({
         ) : null}
       </div>
 
+      {showSignIn && driver === "codex" ? (
+        <p className="text-xs text-muted-foreground">
+          If browser sign-in fails, try a device code. Your account or workspace must allow
+          device-code login.
+        </p>
+      ) : null}
       {isRunning ? (
         <p className="flex items-center gap-2 text-xs text-muted-foreground">
           <Spinner className="size-3" />

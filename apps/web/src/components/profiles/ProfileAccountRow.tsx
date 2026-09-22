@@ -43,6 +43,7 @@ export function ProfileAccountRow({ account }: { readonly account: ProfileAccoun
         <ProviderAccountPanel
           className="mt-2.5"
           instanceId={account.instanceId}
+          driver={account.driver}
           status={account.status}
         />
       ) : presentation.detail ? null : (

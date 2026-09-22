@@ -77,7 +77,25 @@ describe("profile account terminals", () => {
       async () => false,
     );
     try {
-      const { handle } = await service.start(ProviderInstanceId.make("codex"));
+      const occupied = Net.createServer();
+      await new Promise<void>((resolve, reject) => {
+        occupied.once("error", reject);
+        occupied.listen(1455, "127.0.0.1", resolve);
+      });
+      let handle: string;
+      try {
+        ({ handle } = await service.start(
+          ProviderInstanceId.make("codex"),
+          false,
+          service,
+          "device-code",
+        ));
+        expect(spawn).toHaveBeenCalledWith(
+          expect.objectContaining({ args: ["login", "--device-auth"] }),
+        );
+      } finally {
+        await new Promise<void>((resolve) => occupied.close(() => resolve()));
+      }
       onData("private login output");
       expect(emit).toHaveBeenCalledWith(
         expect.objectContaining({ handle, data: "private login output" }),

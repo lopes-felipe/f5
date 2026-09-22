@@ -2104,7 +2104,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
       case WS_METHODS.providerAccountLoginStart: {
         const id = request.body.instanceId;
-        return yield* profileCall(() => accountService.start(id, false, ws));
+        const method = request.body.method;
+        return yield* profileCall(() => accountService.start(id, false, ws, method));
       }
       case WS_METHODS.providerAccountLogout: {
         const id = request.body.instanceId;

@@ -222,3 +222,43 @@ it.each(["authenticated", "unauthenticated"] as const)(
     expect(page.getByText("Not isolated").elements()).toHaveLength(0);
   },
 );
+
+it("cancels the current browser attempt before starting Codex device-code login", async () => {
+  const loginStart = vi
+    .fn()
+    .mockResolvedValueOnce({ handle: "browser-login" })
+    .mockResolvedValue({ handle: "device-login" });
+  let finishCancellation!: () => void;
+  const cancel = vi.fn(
+    () =>
+      new Promise<void>((resolve) => {
+        finishCancellation = resolve;
+      }),
+  );
+  nativeApiRef.current!.profiles!.cancel = cancel;
+  nativeApiRef.current!.profiles!.loginStart = loginStart;
+  list.mockResolvedValue({
+    profiles: [
+      {
+        ...active,
+        providerAccounts: [
+          {
+            driver: "codex",
+            instanceId: ProviderInstanceId.make("codex"),
+            displayName: "Codex",
+            status: "unauthenticated",
+          },
+        ],
+      },
+    ],
+  });
+  await mount();
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await page.getByRole("button", { name: "Use device code" }).click();
+  expect(cancel).toHaveBeenCalledWith({ handle: "browser-login" });
+  expect(loginStart).toHaveBeenCalledTimes(1);
+  finishCancellation();
+  await vi.waitFor(() => expect(loginStart).toHaveBeenCalledTimes(2));
+  expect(loginStart).toHaveBeenCalledWith({ instanceId: "codex", method: "device-code" });
+  await expect.element(page.getByRole("button", { name: "Cancel", exact: true })).toBeVisible();
+});

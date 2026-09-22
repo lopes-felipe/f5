@@ -826,7 +826,7 @@ export function ProviderInstanceCard({
             ))}
 
             {(driverKind === "codex" || driverKind === "claudeAgent") && (
-              <ProviderAccountPanel instanceId={instanceId} />
+              <ProviderAccountPanel instanceId={instanceId} driver={instance.driver} />
             )}
             {driverOption !== undefined ? (
               <ProviderModelsSection

@@ -75,3 +75,9 @@ Isolated profiles require Codex 0.144.3 or newer. This minimum is independent of
 Managed homes, file-backed credentials, environment filtering and protection against account-home overrides remain mandatory. Startup and protocol failures retain their cause; F5 never falls back to a host account. Version checks and successful startup do not prove credential isolation: the real-provider release gate above still applies.
 
 Claude's Signed in badge is determined by the instance's `auth status` result. SDK initialization and model discovery alone do not prove authentication. Recheck refreshes both account details and the provider snapshot.
+
+### Login troubleshooting
+
+On macOS, F5 keeps the real user HOME for managed Claude processes so the OS can access the existing login keychain. `CLAUDE_CONFIG_DIR` and `CLAUDE_SECURESTORAGE_CONFIG_DIR` remain profile-specific; Claude uses the config directory to distinguish keychain entries. F5 does not reset or create a system keychain. A successful browser page or CLI exit is not proof that credentials were saved: use Recheck and verify the profile's signed-in status. The cross-account macOS acceptance gate still requires a real-machine run.
+
+If Codex browser sign-in fails, select **Use device code**. F5 cancels the current attempt and starts `codex login --device-auth` using the same managed credential home. This flow does not bind the localhost callback port; it still holds the shared login lease until the process exits. Device-code login must be enabled for the ChatGPT account or allowed by its workspace administrator. See [Codex authentication](https://developers.openai.com/codex/auth). This alternative does not guarantee recovery from an upstream authentication outage.

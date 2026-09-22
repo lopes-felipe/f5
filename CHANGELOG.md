@@ -2,6 +2,9 @@
 
 ## Profiles
 
+- Preserve the real macOS home for managed Claude keychain access while retaining profile-specific Claude configuration and credential entry names.
+- Add a Codex device-code sign-in alternative and prevent incomplete or expired login links from being offered by the account panel.
+
 - Allow Codex 0.144.3 and newer in isolated profiles. Versions differing from the audited baseline show an informational notice without disabling sign-in or sessions; managed credential isolation remains required.
 
 - Add separate profile state, provider homes, browser origins and desktop partitions with in-app account setup. Default data remains in place.

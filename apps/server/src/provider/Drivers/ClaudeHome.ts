@@ -16,6 +16,7 @@ export const resolveClaudeHomePath = Effect.fn("resolveClaudeHomePath")(function
 export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function* (
   config: Pick<ClaudeSettings, "homePath">,
   baseEnv: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform = process.platform,
 ): Effect.fn.Return<NodeJS.ProcessEnv, never, Path.Path> {
   const homePath = config.homePath.trim();
   if (homePath.length === 0) return baseEnv;
@@ -38,7 +39,12 @@ export const makeClaudeEnvironment = Effect.fn("makeClaudeEnvironment")(function
   const drive = /^[a-z]:/i.exec(resolvedHomePath)?.[0];
   return {
     ...env,
-    HOME: resolvedHomePath,
+    // macOS locates the login keychain relative to the real user home.
+    // Claude isolates its keychain item using CLAUDE_CONFIG_DIR instead.
+    HOME:
+      platform === "darwin" && baseEnv.F5_PROFILE_ISOLATED === "1"
+        ? NodeOS.homedir()
+        : resolvedHomePath,
     USERPROFILE: resolvedHomePath,
     ...(drive ? { HOMEDRIVE: drive, HOMEPATH: resolvedHomePath.slice(2) } : {}),
     CLAUDE_CONFIG_DIR: path.join(resolvedHomePath, ".claude"),

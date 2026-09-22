@@ -141,6 +141,7 @@ export class ProviderAccountService {
     instanceId: ProviderInstanceId,
     logout = false,
     owner: object = this,
+    method: "browser" | "device-code" = "browser",
   ): Promise<{ handle: string }> {
     if (logout && (await this.isBusy(instanceId)))
       throw new Error("Stop this instance's active turn before signing out.");
@@ -148,6 +149,9 @@ export class ProviderAccountService {
     if (this.disconnectedOwners.has(owner)) throw new Error("Account connection closed.");
     const createProcess = this.terminals.createAccountProcess;
     if (!createProcess) throw new Error("Account terminals are unavailable in this runtime.");
+    if (method === "device-code" && (logout || resolved.instance.driver !== "codex")) {
+      throw new Error("Device-code login is supported only for Codex sign-in.");
+    }
     const root = this.config.profilesRoot;
     if (!root) throw new Error("Account setup requires the installation profilesRoot.");
     const lease = await acquireInstanceLock(
@@ -158,10 +162,14 @@ export class ProviderAccountService {
       );
     });
     try {
-      if (!logout && resolved.instance.driver === "codex") await assertOAuthPortAvailable(1455);
+      if (!logout && method === "browser" && resolved.instance.driver === "codex")
+        await assertOAuthPortAvailable(1455);
       const args =
         resolved.instance.driver === "codex"
-          ? [logout ? "logout" : "login"]
+          ? [
+              logout ? "logout" : "login",
+              ...(!logout && method === "device-code" ? ["--device-auth"] : []),
+            ]
           : ["auth", logout ? "logout" : "login"];
       const command = resolved.invocation(args);
       const child = await Effect.runPromise(
