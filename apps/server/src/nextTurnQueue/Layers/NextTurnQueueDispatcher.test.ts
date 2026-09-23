@@ -1,6 +1,7 @@
 import { CommandId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vitest";
 import { Effect, Layer, Option, Stream } from "effect";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
 
@@ -111,6 +112,42 @@ const insert = (index: number, threadId: ThreadId) =>
     });
   });
 
+const seedAcceptedPending = (threadId: ThreadId, withTurn: boolean) =>
+  Effect.gen(function* () {
+    const turns = yield* ProjectionTurnRepository;
+    const sql = yield* SqlClient.SqlClient;
+    const at = new Date().toISOString();
+    const turnId = TurnId.makeUnsafe(`${threadId}-turn`);
+    const messageId = MessageId.makeUnsafe(`${threadId}-message`);
+    yield* turns.replacePendingTurnStart({
+      threadId,
+      messageId,
+      requestedAt: at,
+      sourceProposedPlanThreadId: null,
+      sourceProposedPlanId: null,
+    });
+    yield* sql`INSERT INTO provider_turn_deliveries
+    (delivery_id, thread_id, command_id, message_id, state, provider_turn_id, event_json, created_at, updated_at)
+    VALUES (${threadId}, ${threadId}, ${threadId}, ${messageId}, 'accepted', ${turnId}, '{}', ${at}, ${at})`;
+    if (withTurn) {
+      yield* turns.upsertByTurnId({
+        threadId,
+        turnId,
+        pendingMessageId: MessageId.makeUnsafe("original-message"),
+        assistantMessageId: null,
+        state: "completed",
+        requestedAt: at,
+        startedAt: at,
+        completedAt: at,
+        processingQuiescedAt: at,
+        checkpointTurnCount: null,
+        checkpointRef: null,
+        checkpointStatus: null,
+        checkpointFiles: [],
+      });
+    }
+  });
+
 layer("NextTurnQueueDispatcher", (it) => {
   it.effect(
     "reconciles accepted feedback, waits for completion, then dispatches exactly once",
@@ -195,6 +232,78 @@ layer("NextTurnQueueDispatcher", (it) => {
           Option.getOrThrow(yield* turns.getByTurnId({ threadId, turnId })).pendingMessageId,
           turn.pendingMessageId,
         );
+      }),
+  );
+
+  it.effect(
+    "keeps snapshots available and the barrier intact when cleanup fails, then recovers",
+    () =>
+      Effect.gen(function* () {
+        dispatched.length = 0;
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        const turns = yield* ProjectionTurnRepository;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("cleanup-failure-thread");
+        yield* seedThread(threadId);
+        yield* insert(4, threadId);
+        yield* seedAcceptedPending(threadId, true);
+        yield* sql`CREATE TRIGGER reject_pending_cleanup BEFORE DELETE ON projection_turns
+        WHEN OLD.thread_id = 'cleanup-failure-thread' AND OLD.turn_id IS NULL
+        BEGIN SELECT RAISE(FAIL, 'simulated cleanup write failure'); END`;
+        try {
+          assert.equal((yield* dispatcher.getSnapshot(threadId)).reasonCode, "turn_starting");
+          yield* dispatcher.notify(threadId);
+          yield* dispatcher.drain;
+          assert.deepEqual(dispatched, []);
+          assert.equal(
+            Option.isSome(yield* turns.getPendingTurnStartByThreadId({ threadId })),
+            true,
+          );
+        } finally {
+          yield* sql`DROP TRIGGER reject_pending_cleanup`;
+        }
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.deepEqual(dispatched, [CommandId.makeUnsafe("dispatcher-command-4")]);
+      }),
+  );
+
+  it.effect("waits for turn projection even when the delivery is already accepted", () =>
+    Effect.gen(function* () {
+      dispatched.length = 0;
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const threadId = ThreadId.makeUnsafe("missing-turn-thread");
+      yield* seedThread(threadId);
+      yield* insert(5, threadId);
+      yield* seedAcceptedPending(threadId, false);
+      assert.equal((yield* dispatcher.getSnapshot(threadId)).reasonCode, "turn_starting");
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      assert.deepEqual(dispatched, []);
+      assert.equal((yield* dispatcher.getSnapshot(threadId)).paused, false);
+    }),
+  );
+
+  it.effect(
+    "does not attempt cleanup writes on snapshots or dispatch without a pending placeholder",
+    () =>
+      Effect.gen(function* () {
+        dispatched.length = 0;
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        const turns = yield* ProjectionTurnRepository;
+        const threadId = ThreadId.makeUnsafe("no-pending-thread");
+        yield* seedThread(threadId);
+        yield* insert(6, threadId);
+        const cleanup = vi.spyOn(turns, "reconcileAcceptedPendingTurnStarts");
+        try {
+          assert.equal((yield* dispatcher.getSnapshot(threadId)).reasonCode, null);
+          yield* dispatcher.notify(threadId);
+          yield* dispatcher.drain;
+          assert.deepEqual(dispatched, [CommandId.makeUnsafe("dispatcher-command-6")]);
+          assert.equal(cleanup.mock.calls.length, 0);
+        } finally {
+          cleanup.mockRestore();
+        }
       }),
   );
 

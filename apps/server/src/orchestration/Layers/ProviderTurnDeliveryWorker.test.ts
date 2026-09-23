@@ -2,6 +2,8 @@ import { CommandId, MessageId, ThreadId, TurnId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import { Effect, Fiber, Layer, Option, Stream } from "effect";
 
+import { PersistenceSqlError } from "../../persistence/Errors.ts";
+
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { OrchestrationEngineService } from "../Services/OrchestrationEngine.ts";
@@ -26,6 +28,8 @@ let providerReadFails = false;
 let pendingBarrier = true;
 let reconciliationCount = 0;
 let acceptSend = false;
+let reconciliationFails = false;
+let extraReplayDelivery: ProviderTurnDelivery | null = null;
 let providerTurns: Array<{ id: TurnId; items: unknown[] }> = [];
 
 function resetDelivery() {
@@ -56,8 +60,19 @@ function resetDelivery() {
   pendingBarrier = true;
   reconciliationCount = 0;
   acceptSend = false;
+  reconciliationFails = false;
+  extraReplayDelivery = null;
   providerTurns = [];
 }
+
+const reconcile = (target: ThreadId) =>
+  Effect.gen(function* () {
+    reconciliationCount += 1;
+    if (reconciliationFails && target === threadId) {
+      return yield* new PersistenceSqlError({ operation: "reconcile", detail: "database is busy" });
+    }
+    if (state.state === "accepted") pendingBarrier = false;
+  });
 
 const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
   listActionable: Effect.sync(() => (state.state === "pending" ? [state] : [])),
@@ -65,7 +80,7 @@ const repositoryLayer = Layer.succeed(ProviderTurnDeliveryRepository, {
   listUnprojectedTerminal: Effect.sync(() =>
     (state.state === "accepted" || state.state === "rejected" || state.state === "ambiguous") &&
     !outcomeProjected
-      ? [state]
+      ? [state, ...(extraReplayDelivery ? [extraReplayDelivery] : [])]
       : [],
   ),
   getByCommandId: () => Effect.succeed(state),
@@ -136,11 +151,9 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   ),
   Layer.provideMerge(
     Layer.succeed(ProjectionTurnRepository, {
-      reconcileAcceptedPendingTurnStarts: () =>
-        Effect.sync(() => {
-          reconciliationCount += 1;
-          if (state.state === "accepted") pendingBarrier = false;
-        }),
+      reconcileAcceptedPendingTurnStarts: ({ threadId: target }: { threadId: ThreadId }) =>
+        reconcile(target),
+      reconcileAllAcceptedPendingTurnStarts: Effect.suspend(() => reconcile(threadId)),
       deletePendingTurnStartByThreadId: () => Effect.void,
     } as never),
   ),
@@ -249,5 +262,64 @@ it.effect("reconciles acceptance before publishing an outcome that can be acknow
     yield* worker.start;
     assert.equal(pendingBarrier, false);
     assert.isAtLeast(reconciliationCount, 1);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("publishes and acknowledges acceptance even when cleanup fails", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    acceptSend = true;
+    reconciliationFails = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const outcomeFiber = yield* Effect.forkScoped(Stream.runHead(worker.outcomes));
+    yield* Effect.yieldNow;
+    yield* worker.start;
+    yield* worker.drain;
+    const outcome = Option.getOrThrow(yield* Fiber.join(outcomeFiber));
+    assert.equal(outcome.state, "accepted");
+    assert.equal(state.state, "accepted");
+    assert.equal(pendingBarrier, true);
+    yield* worker.acknowledgeOutcome(outcome.deliveryId);
+    assert.equal(outcomeProjected, true);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("replays later threads even when the first thread cleanup fails", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "accepted", providerTurnId: TurnId.makeUnsafe("accepted-turn") };
+    reconciliationFails = true;
+    extraReplayDelivery = {
+      ...state,
+      deliveryId: CommandId.makeUnsafe("second-delivery"),
+      commandId: CommandId.makeUnsafe("second-command"),
+      threadId: ThreadId.makeUnsafe("second-thread"),
+    };
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const outcomesFiber = yield* Effect.forkScoped(
+      Stream.runCollect(Stream.take(worker.outcomes, 2)),
+    );
+    yield* Effect.yieldNow;
+    yield* worker.start;
+    const outcomes = yield* Fiber.join(outcomesFiber);
+    assert.deepEqual(
+      Array.from(outcomes, (outcome) => outcome.deliveryId),
+      [deliveryId, extraReplayDelivery.deliveryId],
+    );
+    assert.isAtLeast(reconciliationCount, 3);
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("returns accepted from Recheck even when cleanup fails", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    state = { ...state, state: "ambiguous", certainty: "unknown" };
+    reconciliationFails = true;
+    providerTurns = [{ id: TurnId.makeUnsafe("rechecked-turn"), items: [] }];
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const delivery = yield* worker.recheck(threadId);
+    assert.equal(delivery?.state, "accepted");
+    assert.equal(state.state, "accepted");
+    assert.equal(pendingBarrier, true);
   }).pipe(Effect.provide(testLayer)),
 );

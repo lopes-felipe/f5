@@ -2,6 +2,7 @@ import { CommandId, TurnId } from "@t3tools/contracts";
 import { makeDrainableWorker, type DrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { Cause, Duration, Effect, Layer, PubSub, Schema, Stream } from "effect";
 
+import { reconcileAcceptedPendingTurnStartsBestEffort } from "../acceptedPendingTurnReconciliation.ts";
 import { ProviderTurnDeliveryError } from "../../provider/Errors.ts";
 import { ProviderService } from "../../provider/Services/ProviderService.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
@@ -30,7 +31,7 @@ const make = Effect.gen(function* () {
     readonly providerTurnId: TurnId;
   }) =>
     repository.markAccepted(input).pipe(
-      Effect.andThen(turns.reconcileAcceptedPendingTurnStarts({ threadId: input.threadId })),
+      Effect.andThen(reconcileAcceptedPendingTurnStartsBestEffort(turns, input.threadId)),
       Effect.andThen(
         PubSub.publish(outcomes, {
           deliveryId: input.deliveryId,
@@ -218,7 +219,7 @@ const make = Effect.gen(function* () {
       Effect.forEach(
         deliveries,
         (delivery) =>
-          turns.reconcileAcceptedPendingTurnStarts({ threadId: delivery.threadId }).pipe(
+          reconcileAcceptedPendingTurnStartsBestEffort(turns, delivery.threadId).pipe(
             Effect.andThen(
               PubSub.publish(outcomes, {
                 deliveryId: delivery.deliveryId,
@@ -235,7 +236,7 @@ const make = Effect.gen(function* () {
   );
 
   const start: ProviderTurnDeliveryWorkerShape["start"] = Effect.gen(function* () {
-    yield* turns.reconcileAcceptedPendingTurnStarts({}).pipe(
+    yield* turns.reconcileAllAcceptedPendingTurnStarts.pipe(
       Effect.catchCause((cause) =>
         Effect.logError("accepted pending turn startup reconciliation failed", {
           cause: Cause.pretty(cause),
