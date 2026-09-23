@@ -1,3 +1,5 @@
+import nodePath from "node:path";
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { Cause, Deferred, Effect, FileSystem, Layer, Ref } from "effect";
@@ -63,7 +65,7 @@ const RenameFailureFileSystemLayer = Layer.effect(
 
 const makeRenameFailureSecretStoreLayer = () =>
   ServerSecretStoreLive.pipe(
-    Layer.provide(makeServerConfigLayer()),
+    Layer.provideMerge(makeServerConfigLayer()),
     Layer.provideMerge(RenameFailureFileSystemLayer),
   );
 
@@ -181,6 +183,188 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
     }).pipe(Effect.provide(makeConcurrentCreateSecretStoreLayer())),
   );
 
+  it.effect(
+    "reads the winner and removes its temporary file after an AlreadyExists collision",
+    () =>
+      Effect.gen(function* () {
+        const winner = Uint8Array.from({ length: 32 }, (_, index) => index);
+        let linkAttempts = 0;
+        const concurrentWinnerFileSystem = Layer.effect(
+          FileSystem.FileSystem,
+          Effect.gen(function* () {
+            const fileSystem = yield* FileSystem.FileSystem;
+            return {
+              ...fileSystem,
+              link: (from, to) =>
+                Effect.gen(function* () {
+                  linkAttempts += 1;
+                  // The initial read has already missed. Publish another writer's
+                  // complete secret immediately before the real no-clobber link.
+                  yield* fileSystem.writeFile(to, winner, { flag: "wx", mode: 0o600 });
+                  return yield* fileSystem.link(from, to);
+                }),
+            } satisfies FileSystem.FileSystem;
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const secretStore = yield* ServerSecretStore;
+          expect(yield* secretStore.getOrCreateRandom("session-signing-key", 32)).toEqual(winner);
+          expect(yield* secretStore.get("session-signing-key")).toEqual(winner);
+          expect(linkAttempts).toBe(1);
+          const config = yield* ServerConfig;
+          const fileSystem = yield* FileSystem.FileSystem;
+          expect(
+            yield* fileSystem.readDirectory(
+              config.secretsDir ?? nodePath.join(config.stateDir, "secrets"),
+            ),
+          ).toEqual(["session-signing-key.bin"]);
+        }).pipe(
+          Effect.provide(
+            ServerSecretStoreLive.pipe(
+              Layer.provide(concurrentWinnerFileSystem),
+              Layer.provideMerge(makeServerConfigLayer()),
+            ),
+          ),
+        );
+      }),
+  );
+
+  it.effect("replaces an existing secret without leaving temporary files", () =>
+    Effect.gen(function* () {
+      const secretStore = yield* ServerSecretStore;
+      const original = Uint8Array.from([1, 2, 3]);
+      const replacement = Uint8Array.from([4, 5, 6, 7]);
+      yield* secretStore.set("session-signing-key", original);
+      yield* secretStore.set("session-signing-key", replacement);
+      expect(yield* secretStore.get("session-signing-key")).toEqual(replacement);
+      const config = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      expect(
+        yield* fileSystem.readDirectory(
+          config.secretsDir ?? nodePath.join(config.stateDir, "secrets"),
+        ),
+      ).toEqual(["session-signing-key.bin"]);
+    }).pipe(
+      Effect.provide(ServerSecretStoreLive.pipe(Layer.provideMerge(makeServerConfigLayer()))),
+    ),
+  );
+
+  it.effect("does not expose a secret before its bytes are written", () =>
+    Effect.gen(function* () {
+      const observed: Array<Uint8Array | null> = [];
+      const observingFileSystem = Layer.effect(
+        FileSystem.FileSystem,
+        Effect.gen(function* () {
+          const fileSystem = yield* FileSystem.FileSystem;
+          const config = yield* ServerConfig;
+          const secretPath = nodePath.join(
+            config.secretsDir ?? nodePath.join(config.stateDir, "secrets"),
+            "session-signing-key.bin",
+          );
+          return {
+            ...fileSystem,
+            open: (path, options) =>
+              fileSystem.open(path, options).pipe(
+                Effect.map((file) => ({
+                  ...file,
+                  sync: file.sync,
+                  writeAll: (bytes) =>
+                    Effect.gen(function* () {
+                      const visible = yield* fileSystem
+                        .readFile(secretPath)
+                        .pipe(
+                          Effect.catch((error) =>
+                            error.reason._tag === "NotFound"
+                              ? Effect.succeed(null)
+                              : Effect.fail(error),
+                          ),
+                        );
+                      observed.push(visible);
+                      return yield* file.writeAll(bytes);
+                    }),
+                })),
+              ),
+          } satisfies FileSystem.FileSystem;
+        }),
+      );
+      const configLayer = makeServerConfigLayer();
+      yield* Effect.gen(function* () {
+        const secretStore = yield* ServerSecretStore;
+        const created = yield* secretStore.getOrCreateRandom("session-signing-key", 32);
+        expect(created.byteLength).toBe(32);
+        expect(yield* secretStore.get("session-signing-key")).toEqual(created);
+        expect(observed).toEqual([null]);
+        const config = yield* ServerConfig;
+        const fileSystem = yield* FileSystem.FileSystem;
+        expect(
+          yield* fileSystem.readDirectory(
+            config.secretsDir ?? nodePath.join(config.stateDir, "secrets"),
+          ),
+        ).toEqual(["session-signing-key.bin"]);
+      }).pipe(
+        Effect.provide(
+          ServerSecretStoreLive.pipe(
+            Layer.provide(observingFileSystem),
+            Layer.provideMerge(configLayer),
+          ),
+        ),
+      );
+    }),
+  );
+
+  it.effect.each(["PermissionDenied", "Unknown"] as const)(
+    "cleans up unpublished files when secret publication fails with %s",
+    (reason) =>
+      Effect.gen(function* () {
+        const failingFileSystem = Layer.effect(
+          FileSystem.FileSystem,
+          Effect.gen(function* () {
+            const fileSystem = yield* FileSystem.FileSystem;
+            return {
+              ...fileSystem,
+              link: (from, _to) =>
+                Effect.fail(
+                  PlatformError.systemError({
+                    _tag: reason,
+                    module: "FileSystem",
+                    method: "link",
+                    pathOrDescriptor: String(from),
+                    description: "Publication failed.",
+                    ...(reason === "Unknown" ? { cause: { code: "ENOTSUP" } } : {}),
+                  }),
+                ),
+            } satisfies FileSystem.FileSystem;
+          }),
+        );
+        yield* Effect.gen(function* () {
+          const secretStore = yield* ServerSecretStore;
+          const error = yield* Effect.flip(
+            secretStore.getOrCreateRandom("session-signing-key", 32),
+          );
+          expect(error).toBeInstanceOf(SecretStoreError);
+          expect((error.cause as PlatformError.PlatformError).reason._tag).toBe(reason);
+          if (reason === "Unknown") {
+            expect((error.cause as PlatformError.PlatformError).cause).toEqual({ code: "ENOTSUP" });
+          }
+          expect(yield* secretStore.get("session-signing-key")).toBeNull();
+          const config = yield* ServerConfig;
+          const fileSystem = yield* FileSystem.FileSystem;
+          expect(
+            yield* fileSystem.readDirectory(
+              config.secretsDir ?? nodePath.join(config.stateDir, "secrets"),
+            ),
+          ).toEqual([]);
+        }).pipe(
+          Effect.provide(
+            ServerSecretStoreLive.pipe(
+              Layer.provide(failingFileSystem),
+              Layer.provideMerge(makeServerConfigLayer()),
+            ),
+          ),
+        );
+      }),
+  );
+
   it.effect("uses restrictive permissions for the secret directory and files", () =>
     Effect.gen(function* () {
       const chmodCalls: Array<{ readonly path: string; readonly mode: number }> = [];
@@ -239,9 +423,15 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
     }).pipe(Effect.provide(makePermissionDeniedSecretStoreLayer())),
   );
 
-  it.effect("propagates write failures instead of treating them as success", () =>
+  it.effect("preserves the old secret and cleans up after a failed replacement", () =>
     Effect.gen(function* () {
       const secretStore = yield* ServerSecretStore;
+
+      const config = yield* ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const secretsDir = config.secretsDir ?? nodePath.join(config.stateDir, "secrets");
+      const original = Uint8Array.from([9, 8, 7]);
+      yield* fileSystem.writeFile(nodePath.join(secretsDir, "session-signing-key.bin"), original);
 
       const error = yield* Effect.flip(
         secretStore.set("session-signing-key", Uint8Array.from([1, 2, 3])),
@@ -251,6 +441,8 @@ it.layer(NodeServices.layer)("ServerSecretStoreLive", (it) => {
       expect(error.message).toContain("Failed to persist secret session-signing-key.");
       expect(error.cause).toBeInstanceOf(PlatformError.PlatformError);
       expect((error.cause as PlatformError.PlatformError).reason._tag).toBe("PermissionDenied");
+      expect(yield* secretStore.get("session-signing-key")).toEqual(original);
+      expect(yield* fileSystem.readDirectory(secretsDir)).toEqual(["session-signing-key.bin"]);
     }).pipe(Effect.provide(makeRenameFailureSecretStoreLayer())),
   );
 

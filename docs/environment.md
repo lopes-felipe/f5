@@ -38,6 +38,31 @@ Restore limits are enforced while streaming, before extraction, and against the 
 extracted staging footprint. F5 also reserves free space on the staging volume. Increase the caps or
 reduce the reserve only when restoring a known archive that legitimately requires it.
 
+## Secret-store filesystem requirements
+
+Secrets live in `<stateDir>/secrets` unless a server configuration overrides `secretsDir`.
+The directory uses mode `0700` and newly written files use mode `0600` on filesystems
+that enforce these permissions.
+
+`ServerSecretStore.getOrCreateRandom` requires hard-link support in that directory.
+It writes and syncs a temporary file before atomically linking it to the final name,
+so concurrent creators never read unfinished bytes or overwrite another creator's
+secret. FAT/exFAT and some network or container mounts do not support this operation;
+creation returns `SecretStoreError` there. There is deliberately no copy or direct-write
+fallback because either would expose unfinished bytes again. `set` uses atomic rename
+for replacement and does not require hard links. Currently, production code uses
+`get`, `set`, and `remove`; random creation has no production callers.
+
+These operations guarantee atomic visibility, not durable erasure or full power-loss
+durability. The file is synced before publication, but the containing directory is
+not fsynced. Normal completion, failure, and Effect interruption clean up temporary
+files; a process crash can leave `<name>.bin.<uuid>.tmp` files. `remove(name)` deletes
+the published file, not such crash remnants or backup copies. After stopping **all**
+processes that use the directory, leftover temporary files can be removed manually.
+Do not sweep them while a writer may be active: even an old temporary file may still
+belong to a live or suspended write. Automated reclamation needs coordination between
+writers, readers, and removers and is outside the secret-publication race fix.
+
 ## State separation from T3 Code
 
 F5 defaults to `~/.f5/userdata/state.sqlite`. On first run, if that database is missing and the legacy shared `~/.t3/userdata/state.sqlite` exists, F5 copies the legacy state into the active F5 userdata directory (`~/.f5/userdata` by default, or `<F5_HOME>/userdata` / `<T3CODE_HOME>/userdata` when a home override is set) and then runs F5 migrations only against the copy. Explicit `F5_STATE_DIR` / `T3CODE_STATE_DIR` overrides do not trigger automatic legacy migration; unset the override and restart F5 to opt into migration later, or copy the legacy state directory manually while F5 is stopped.
