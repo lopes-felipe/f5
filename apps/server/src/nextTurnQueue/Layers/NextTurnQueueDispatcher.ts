@@ -23,6 +23,7 @@ import {
   Stream,
 } from "effect";
 
+import { reconcileAcceptedPendingTurnStartsBestEffort } from "../../orchestration/acceptedPendingTurnReconciliation.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import { ProjectionThreadSessionRepository } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
@@ -119,6 +120,14 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const readGate = (item: NextTurnQueueItem) =>
     Effect.gen(function* () {
+      const pendingBeforeRepair = yield* turns
+        .getPendingTurnStartByThreadId({ threadId: item.threadId })
+        .pipe(Effect.mapError(storageError));
+      if (Option.isSome(pendingBeforeRepair)) {
+        yield* reconcileAcceptedPendingTurnStartsBestEffort(turns, item.threadId);
+      }
+      // Read lifecycle barriers after repair: a newly projected turn may have
+      // supplied the message association that allowed cleanup to succeed.
       const queue = yield* store.listByThread(item.threadId);
       const [threadOption, sessionOption, pendingOption, runningOption, terminalOption] =
         yield* Effect.all(
