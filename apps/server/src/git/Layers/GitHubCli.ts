@@ -169,59 +169,78 @@ const makeGitHubCli = Effect.gen(function* () {
             "A credential-scoped `gh pr` command must name its target explicitly: pass " +
             `--repo <owner>/<name> or a full https://${context.host}/ pull request URL.`,
         });
-      const command = Effect.tryPromise({
-        try: (signal) => {
+      const command = Effect.try({
+        try: () => {
           if (Option.isSome(serverConfig))
             assertGithubCredentialsAvailable(serverConfig.value.stateDir);
-          if (input.stdin !== undefined && Buffer.byteLength(input.stdin, "utf8") > 1024 * 1024) {
-            return Promise.reject(new Error("GitHub request exceeds the 1 MiB body limit."));
-          }
-          const supplied = context ? githubCredentialEnvironment(context) : input.env;
-          const environment = Option.isSome(serverConfig)
-            ? buildAccountExecutionEnvironment({
-                purpose: "git",
-                profile: serverConfig.value.profile,
-                stateDir: serverConfig.value.stateDir,
-                baseEnv: supplied ?? process.env,
-              })
-            : { ...(supplied ?? process.env) };
-          if (context) {
-            environment.GH_HOST = context.host;
-            delete environment.GH_REPO;
-          }
-          // Only the explicit credential scope may restore tokens stripped from the inherited base.
-          for (const key of [
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "GH_ENTERPRISE_TOKEN",
-            "GITHUB_ENTERPRISE_TOKEN",
-          ]) {
-            if (isolated || supplied) delete environment[key];
-            if (supplied?.[key]) environment[key] = supplied[key];
-          }
-          if (isolated && !context && !input.env)
-            for (const key of Object.keys(environment))
-              if (
-                /^(?:GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_DEBUG)$/i.test(
-                  key,
-                )
-              )
-                if (isolated || supplied) delete environment[key];
-          if (isolated && Option.isSome(serverConfig))
-            environment.GH_CONFIG_DIR = NodePath.join(serverConfig.value.stateDir, "github");
-          return runProcess("gh", args, {
-            cwd: input.cwd,
-            env: environment,
-            timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-            allowNonZeroExit: input.allowNonZeroExit ?? false,
-            stdin: input.stdin,
-            signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal,
-            maxStdoutBytes: input.maxStdoutBytes ?? 8 * 1024 * 1024,
-            outputMode: "error",
-          });
         },
-        catch: (error) => normalizeGitHubCliError("execute", error),
-      });
+        catch: (cause) =>
+          new GitHubCliError({
+            operation: "execute",
+            kind: "unauthenticated",
+            detail:
+              "GitHub credentials are unavailable. Reconnect in Settings > Integrations > GitHub.",
+            cause,
+          }),
+      }).pipe(
+        Effect.andThen(
+          Effect.tryPromise({
+            try: (signal) => {
+              if (
+                input.stdin !== undefined &&
+                Buffer.byteLength(input.stdin, "utf8") > 1024 * 1024
+              ) {
+                return Promise.reject(new Error("GitHub request exceeds the 1 MiB body limit."));
+              }
+              const supplied = context ? githubCredentialEnvironment(context) : input.env;
+              const environment = Option.isSome(serverConfig)
+                ? buildAccountExecutionEnvironment({
+                    purpose: "git",
+                    profile: serverConfig.value.profile,
+                    stateDir: serverConfig.value.stateDir,
+                    baseEnv: supplied ?? process.env,
+                  })
+                : { ...(supplied ?? process.env) };
+              if (context) {
+                environment.GH_HOST = context.host;
+                delete environment.GH_REPO;
+              }
+              // Only the explicit credential scope may restore tokens stripped from the inherited base.
+              for (const key of [
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "GH_ENTERPRISE_TOKEN",
+                "GITHUB_ENTERPRISE_TOKEN",
+              ]) {
+                if (isolated || supplied) delete environment[key];
+                if (supplied?.[key]) environment[key] = supplied[key];
+              }
+              if (isolated && !context && !input.env)
+                for (const key of Object.keys(environment))
+                  if (
+                    /^(?:GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_DEBUG)$/i.test(
+                      key,
+                    )
+                  )
+                    if (isolated || supplied) delete environment[key];
+              if (isolated && Option.isSome(serverConfig))
+                environment.GH_CONFIG_DIR = NodePath.join(serverConfig.value.stateDir, "github");
+              return runProcess("gh", args, {
+                cwd: input.cwd,
+                env: environment,
+                timeoutMs: input.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+                allowNonZeroExit: input.allowNonZeroExit ?? false,
+                stdin: input.stdin,
+                signal: input.signal ? AbortSignal.any([signal, input.signal]) : signal,
+                maxStdoutBytes: input.maxStdoutBytes ?? 8 * 1024 * 1024,
+                outputMode: "error",
+              });
+            },
+            catch: (error) => normalizeGitHubCliError("execute", error),
+          }),
+        ),
+      );
+
       if (!context) return yield* command;
       // Classify by proving a read, never by failing to recognise a write: `gh api`
       // defaults to POST as soon as a body is supplied, and `gh pr` keeps growing

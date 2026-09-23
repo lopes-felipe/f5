@@ -30,7 +30,7 @@ if (fs.existsSync(${JSON.stringify(githubUnavailablePath(stateDir))})) {
   process.stderr.write("GitHub credentials are unavailable. Reconnect in F5 Settings > Integrations.\\n");
   process.exit(1);
 }
-const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:(?:GH|GITHUB)_.*TOKEN|GH_CONFIG_DIR|GH_DEBUG)$/i.test(key)));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(?:(?:GH|GITHUB)_.*TOKEN|GH_CONFIG_DIR|GH_DEBUG|ELECTRON_RUN_AS_NODE)$/i.test(key)));
 env.GH_CONFIG_DIR = ${JSON.stringify(Path.join(stateDir, "github"))};
 const own = ${JSON.stringify(directory)};
 const paths = (env.PATH || env.Path || "").split(path.delimiter).filter(p => path.resolve(p).toLowerCase() !== own.toLowerCase());

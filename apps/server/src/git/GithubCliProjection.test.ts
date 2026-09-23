@@ -208,7 +208,7 @@ it.for(["bash", "zsh"])(
     await FS.mkdir(fakeBin);
     await FS.writeFile(
       Path.join(fakeBin, "gh"),
-      '#!/bin/sh\nprintf "%s|%s|%s" "$GH_TOKEN" "$GH_CONFIG_DIR" "$MY_CUSTOMIZATION"\n',
+      '#!/bin/sh\nprintf "%s|%s|%s|%s|%s" "$GH_TOKEN" "$GH_CONFIG_DIR" "$MY_CUSTOMIZATION" "$ELECTRON_RUN_AS_NODE" "$electron_run_as_node"\n',
       { mode: 0o700 },
     );
     const home = Path.join(p.stateDir, "home");
@@ -222,11 +222,11 @@ it.for(["bash", "zsh"])(
       purpose: "terminal",
       stateDir: p.stateDir,
       profile: fallbackDefaultProfile(p.stateDir),
-      baseEnv: { ...process.env, HOME: home, ZDOTDIR: home },
+      baseEnv: { ...process.env, HOME: home, ZDOTDIR: home, electron_run_as_node: "1" },
     });
     const launch = githubTerminalStartup(shellPath, ["-i", "-c", "gh api user"], env, p.stateDir);
     const result = await runProcess(shellPath, launch.args, { env: launch.env });
-    expect(result.stdout).toBe(`|${Path.join(p.stateDir, "github")}|preserved`);
+    expect(result.stdout).toBe(`|${Path.join(p.stateDir, "github")}|preserved||`);
     await FS.writeFile(Path.join(p.stateDir, "github-unavailable"), "unavailable");
     const failed = await runProcess(shellPath, launch.args, {
       env: launch.env,
@@ -236,3 +236,49 @@ it.for(["bash", "zsh"])(
     expect(failed.stderr).toContain("GitHub credentials are unavailable");
   },
 );
+
+it("follows ZDOTDIR changes across real zsh login startup files", async ({ skip }) => {
+  if (process.platform === "win32" || !(await FS.stat("/bin/zsh").catch(() => null))) {
+    skip();
+    return;
+  }
+  const p = await profile();
+  const { githubTerminalStartup } = await import("./githubShellStartup");
+  const home = Path.join(p.stateDir, "home");
+  const config = Path.join(home, ".config", "zsh");
+  const interactive = Path.join(config, "interactive");
+  await FS.mkdir(interactive, { recursive: true });
+  await FS.writeFile(Path.join(home, ".zshenv"), 'export ZDOTDIR="$HOME/.config/zsh"\n');
+  await FS.writeFile(
+    Path.join(config, ".zprofile"),
+    'export CUSTOM_PROFILE=loaded\nexport ZDOTDIR="$ZDOTDIR/interactive"\n',
+  );
+  await FS.writeFile(
+    Path.join(interactive, ".zshrc"),
+    "export CUSTOM_RC=loaded\nexport GH_TOKEN=workstation\n",
+  );
+  await FS.writeFile(
+    Path.join(interactive, ".zlogin"),
+    "export CUSTOM_LOGIN=loaded\nexport GH_CONFIG_DIR=/workstation\n",
+  );
+  await p.account.reconcile();
+  const env = buildAccountExecutionEnvironment({
+    purpose: "terminal",
+    stateDir: p.stateDir,
+    profile: fallbackDefaultProfile(p.stateDir),
+    baseEnv: { ...process.env, HOME: home, ZDOTDIR: home },
+  });
+  const startup = githubTerminalStartup(
+    "/bin/zsh",
+    [
+      "-l",
+      "-i",
+      "-c",
+      'printf "%s|%s|%s|%s|%s" "$CUSTOM_PROFILE" "$CUSTOM_RC" "$CUSTOM_LOGIN" "$GH_TOKEN" "$GH_CONFIG_DIR"',
+    ],
+    env,
+    p.stateDir,
+  );
+  const result = await runProcess("/bin/zsh", startup.args, { env: startup.env });
+  expect(result.stdout).toBe(`loaded|loaded|loaded||${Path.join(p.stateDir, "github")}`);
+});

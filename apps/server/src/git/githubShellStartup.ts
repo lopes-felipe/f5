@@ -30,7 +30,7 @@ export async function prepareGithubShellStartup(stateDir: string): Promise<void>
   for (const name of [".zshenv", ".zprofile", ".zshrc", ".zlogin", ".zlogout"]) {
     await FS.writeFile(
       Path.join(directory, name),
-      `ZDOTDIR="$F5_GITHUB_ORIGINAL_ZDOTDIR"\nif [ -r "$ZDOTDIR/${name}" ]; then . "$ZDOTDIR/${name}"; fi\n${reset}export ZDOTDIR=${quote(directory)}\n`,
+      `ZDOTDIR="$F5_GITHUB_ORIGINAL_ZDOTDIR"\nif [ -r "$ZDOTDIR/${name}" ]; then . "$ZDOTDIR/${name}"; fi\nexport F5_GITHUB_ORIGINAL_ZDOTDIR="\${ZDOTDIR:-$HOME}"\n${reset}export ZDOTDIR=${quote(directory)}\n`,
       { mode: 0o600 },
     );
   }

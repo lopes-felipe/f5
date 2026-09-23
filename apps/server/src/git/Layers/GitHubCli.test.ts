@@ -11,6 +11,7 @@ vi.mock("../../processRunner", () => ({
 
 import { runProcess } from "../../processRunner";
 import { GitHubCli } from "../Services/GitHubCli.ts";
+import * as ProfileGithubAccount from "../ProfileGithubAccount";
 import { GitHubCredentialScope } from "../githubApi";
 import { GitHubCliLive } from "./GitHubCli.ts";
 
@@ -18,6 +19,7 @@ const mockedRunProcess = vi.mocked(runProcess);
 const layer = it.layer(GitHubCliLive);
 
 afterEach(() => {
+  vi.restoreAllMocks();
   mockedRunProcess.mockReset();
   vi.unstubAllEnvs();
 });
@@ -576,4 +578,30 @@ it.effect("routes captured Enterprise search and repository commands with Server
       ),
     );
   }),
+);
+
+it.effect("preserves reconnect guidance and skips gh when reconciliation failed", () =>
+  Effect.gen(function* () {
+    vi.spyOn(ProfileGithubAccount, "assertGithubCredentialsAvailable").mockImplementation(() => {
+      throw new Error("GitHub credentials are unavailable. Reconnect in Settings > Integrations.");
+    });
+    const gh = yield* GitHubCli;
+    const error = yield* gh
+      .execute({ cwd: process.cwd(), args: ["api", "user"] })
+      .pipe(Effect.flip);
+    expect(error.kind).toBe("unauthenticated");
+    expect(error.detail).toContain("Settings > Integrations > GitHub");
+    expect(mockedRunProcess).not.toHaveBeenCalled();
+  }).pipe(
+    Effect.provide(
+      GitHubCliLive.pipe(
+        Layer.provide(
+          Layer.succeed(ServerConfig, {
+            stateDir: process.cwd(),
+            profile: fallbackDefaultProfile(process.cwd()),
+          } as unknown as ServerConfigShape),
+        ),
+      ),
+    ),
+  ),
 );
