@@ -1,3 +1,4 @@
+import * as Path from "node:path";
 import { ServerConfig, type ServerConfigShape } from "../../config";
 import { fallbackDefaultProfile } from "../../profiles/ProfileRegistryStore";
 import { assert, it } from "@effect/vitest";
@@ -430,7 +431,7 @@ layer("GitHubCliLive", (it) => {
   );
 });
 
-it.effect("Default keeps the host gh login and config directory", () =>
+it.effect("Default never falls back to the host gh login or token", () =>
   Effect.gen(function* () {
     vi.stubEnv("GH_TOKEN", "");
     vi.stubEnv("GITHUB_TOKEN", "");
@@ -446,15 +447,11 @@ it.effect("Default keeps the host gh login and config directory", () =>
       timedOut: false,
     }));
     const gh = yield* GitHubCli;
-    const context = yield* gh.getCredentialContext({ cwd: process.cwd(), host: "github.com" });
-    expect(context.login).toBe("existing-user");
-    expect(mockedRunProcess.mock.calls[0]?.[1]).toEqual([
-      "auth",
-      "token",
-      "--hostname",
-      "github.com",
-    ]);
-    expect(mockedRunProcess.mock.calls[0]?.[2]?.env?.GH_CONFIG_DIR).toBe("/host-gh");
+    const error = yield* gh
+      .getCredentialContext({ cwd: process.cwd(), host: "github.com" })
+      .pipe(Effect.flip);
+    expect(error.kind).toBe("unauthenticated");
+    expect(mockedRunProcess).not.toHaveBeenCalled();
   }).pipe(
     Effect.provide(
       GitHubCliLive.pipe(
@@ -467,4 +464,55 @@ it.effect("Default keeps the host gh login and config directory", () =>
       ),
     ),
   ),
+);
+
+it.effect("captures only the saved profile token for Default and other profiles", () =>
+  Effect.gen(function* () {
+    vi.stubEnv("GH_TOKEN", "workstation-token");
+    const { ServerSecretStore } = yield* Effect.promise(
+      () => import("../../auth/Services/ServerSecretStore"),
+    );
+    mockedRunProcess.mockImplementation(async (_file, _args, options) => ({
+      stdout: `HTTP/2.0 200 Response\r\nContent-Type: application/json\r\n\r\n${JSON.stringify({ id: options.env.GH_TOKEN === "personal-token" ? 1 : 2, login: options.env.GH_TOKEN === "personal-token" ? "personal" : "work" })}`,
+      stderr: "",
+      code: 0,
+      signal: null,
+      timedOut: false,
+    }));
+    for (const [name, isDefault] of [
+      ["personal", true],
+      ["work", false],
+    ] as const) {
+      const stateDir = Path.resolve("test-github-profile", name);
+      const identity = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.getCredentialContext({ cwd: process.cwd(), host: "github.com" });
+      }).pipe(
+        Effect.provide(
+          GitHubCliLive.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                Layer.succeed(ServerConfig, {
+                  stateDir,
+                  profile: { ...fallbackDefaultProfile(stateDir), isDefault },
+                } as unknown as ServerConfigShape),
+                Layer.succeed(ServerSecretStore, {
+                  get: () => Effect.succeed(new TextEncoder().encode(`${name}-token`)),
+                  set: () => Effect.void,
+                  remove: () => Effect.void,
+                  getOrCreateRandom: () => Effect.die("unused"),
+                }),
+              ),
+            ),
+          ),
+        ),
+      );
+      expect(identity.login).toBe(name);
+      expect(mockedRunProcess.mock.lastCall?.[2]?.env?.GH_CONFIG_DIR).toBe(
+        Path.join(stateDir, "github"),
+      );
+      expect(mockedRunProcess.mock.lastCall?.[2]?.env?.GH_TOKEN).toBe(`${name}-token`);
+    }
+    expect(mockedRunProcess.mock.calls.every(([, args]) => args[0] !== "auth")).toBe(true);
+  }),
 );

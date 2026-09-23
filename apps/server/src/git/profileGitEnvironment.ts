@@ -1,3 +1,4 @@
+import { profileGithubEnvironment } from "./profileGithubEnvironment";
 import { assertExecutionDirectory } from "../profiles/executionDirectory";
 import * as Path from "node:path";
 import type { ServerConfigShape } from "../config";
@@ -24,15 +25,19 @@ export async function profileGitEnvironment(input: {
   authorEmail: string;
   tokenForHost: (host: string) => Promise<string | null>;
 }): Promise<NodeJS.ProcessEnv> {
-  if (input.config.profile?.isDefault !== false) {
-    const environment = { ...process.env, ...input.overrides };
+  const isolated = input.config.profile?.isDefault === false;
+  if (!isolated && !["push", "pull", "fetch", "ls-remote", "clone"].includes(input.args[0] ?? "")) {
+    const environment = profileGithubEnvironment(
+      { ...process.env, ...input.overrides },
+      input.config.stateDir,
+    );
     if (input.authorName && input.authorEmail) {
       environment.GIT_AUTHOR_NAME = environment.GIT_COMMITTER_NAME = input.authorName;
       environment.GIT_AUTHOR_EMAIL = environment.GIT_COMMITTER_EMAIL = input.authorEmail;
     }
     return environment;
   }
-  await assertExecutionDirectory(input.cwd);
+  if (isolated) await assertExecutionDirectory(input.cwd);
   const environment = buildAccountExecutionEnvironment({
     purpose: "git",
     profile: input.config.profile,
@@ -53,8 +58,10 @@ export async function profileGitEnvironment(input: {
       )
     )
       environment[key] = value;
-  environment.GIT_CONFIG_GLOBAL = Path.join(input.config.stateDir, "gitconfig");
-  environment.GIT_CONFIG_NOSYSTEM = "1";
+  if (isolated) {
+    environment.GIT_CONFIG_GLOBAL = Path.join(input.config.stateDir, "gitconfig");
+    environment.GIT_CONFIG_NOSYSTEM = "1";
+  }
   environment.GIT_TERMINAL_PROMPT = "0";
   const pairs: [string, string][] = [
     ["credential.helper", ""],
@@ -63,7 +70,7 @@ export async function profileGitEnvironment(input: {
   if (input.authorName && input.authorEmail) {
     environment.GIT_AUTHOR_NAME = environment.GIT_COMMITTER_NAME = input.authorName;
     environment.GIT_AUTHOR_EMAIL = environment.GIT_COMMITTER_EMAIL = input.authorEmail;
-  } else if (input.args[0] === "commit")
+  } else if (isolated && input.args[0] === "commit")
     throw new Error(
       "Set this profile's Git author name and email in Settings > Integrations before committing.",
     );

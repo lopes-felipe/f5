@@ -127,3 +127,30 @@ it("preserves Default reserved overrides and deliberate telemetry endpoints", ()
   expect(env.CODEX_HOME).toBe("configured");
   expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe("explicit");
 });
+
+it.each([true, false])(
+  "uses only profile GitHub config even for Default=%s and explicit overrides",
+  (isDefault) => {
+    const stateDir = Path.resolve("github-environment-test");
+    for (const purpose of ["provider", "terminal", "git", "account"] as const) {
+      const environment = buildAccountExecutionEnvironment({
+        purpose,
+        stateDir,
+        profile: { ...fallbackDefaultProfile(stateDir), isDefault },
+        baseEnv: {
+          GH_TOKEN: "machine",
+          GITHUB_ENTERPRISE_TOKEN: "machine",
+          GH_CONFIG_DIR: "machine",
+          HOME: "home",
+        },
+        overrides: { gh_token: "override", GH_HOST: "wrong-host", GH_CONFIG_DIR: "override" },
+      });
+      expect(environment.GH_CONFIG_DIR).toBe(Path.join(stateDir, "github"));
+      expect(environment.GH_TOKEN).toBeUndefined();
+      expect(environment.gh_token).toBeUndefined();
+      expect(environment.GH_HOST).toBeUndefined();
+      expect(environment.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
+      if (isDefault) expect(environment.HOME).toBe("home");
+    }
+  },
+);

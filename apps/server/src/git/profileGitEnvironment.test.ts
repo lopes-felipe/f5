@@ -98,7 +98,7 @@ describe("profile Git identity", () => {
   });
 });
 
-it("preserves Default Git configuration, SSH and repo-local author without setup", async () => {
+it("preserves Default local Git settings but requires profile credentials for network operations", async () => {
   const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-default-git-"));
   try {
     const globalConfig = Path.join(root, "global.gitconfig");
@@ -156,7 +156,7 @@ it("preserves Default Git configuration, SSH and repo-local author without setup
         authorEmail: "",
         tokenForHost,
       }),
-    ).resolves.toBeDefined();
+    ).rejects.toThrow("HTTPS");
     expect(tokenForHost).not.toHaveBeenCalled();
   } finally {
     await FS.rm(root, { recursive: true, force: true });

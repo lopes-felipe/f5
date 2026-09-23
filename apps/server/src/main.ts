@@ -1,3 +1,5 @@
+import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
+import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import * as ProfileFS from "node:fs/promises";
 import {
   ProfileRegistryStore,
@@ -410,6 +412,17 @@ const ServerConfigLive = (input: CliInput) => {
           (cause) => new StartupError({ message: "Failed to create state directories", cause }),
         ),
       );
+      const githubSecrets = yield* makeServerSecretStore.pipe(
+        Effect.provideService(ServerConfig, config),
+        Effect.mapError(
+          (cause) => new StartupError({ message: "Failed to open GitHub credentials", cause }),
+        ),
+      );
+      yield* Effect.tryPromise({
+        try: () => new ProfileGithubAccount(githubSecrets, fetch, config).reconcile(),
+        catch: () =>
+          new StartupError({ message: "Failed to reconcile profile GitHub credentials" }),
+      });
       if (startupErrorPath)
         yield* Effect.promise(() => ProfileFS.unlink(startupErrorPath!).catch(() => {}));
       return config;

@@ -1,3 +1,4 @@
+import { createServer } from "node:net";
 import { EventEmitter } from "node:events";
 
 import {
@@ -410,12 +411,24 @@ describe("CodexOAuthManager", () => {
   });
 
   it("does not return pending when the control client exits while callback preflight is running", async () => {
+    // A fixed privileged port may already belong to an unrelated workstation service.
+    const probe = createServer();
+    await new Promise<void>((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen(0, "127.0.0.1", resolve);
+    });
+    const address = probe.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP address");
+    const callbackPort = address.port;
+    await new Promise<void>((resolve, reject) =>
+      probe.close((error) => (error ? reject(error) : resolve())),
+    );
     const client = new FakeOauthClient();
     const release = vi.fn();
 
     const dependencies = Layer.mergeAll(
       Layer.succeed(ProviderService, makeProviderServiceStub()),
-      makeProjectMcpConfigServiceStub({ oauthCallbackPort: 9 }),
+      makeProjectMcpConfigServiceStub({ oauthCallbackPort: callbackPort }),
       Layer.succeed(CodexMcpEventBus, {
         publishStatusUpdated: () => Effect.void,
         streamStatusUpdates: Stream.empty,

@@ -1,3 +1,4 @@
+import { profileGithubEnvironment } from "./git/profileGithubEnvironment";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_"] as const;
@@ -100,7 +101,10 @@ export function buildAccountExecutionEnvironment(input: {
     assertAccountEnvironmentOverrides(instance);
     if (input.overrides) assertAccountEnvironmentOverrides(input.overrides);
   }
-  const environment = buildProviderChildProcessEnv(base, { ...instance, ...input.overrides });
+  const environment = profileGithubEnvironment(
+    buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),
+    input.stateDir,
+  );
   if (!isolated) return environment;
   const home = Path.join(input.stateDir, "provider-homes", "claude");
   const drive = /^[a-z]:/i.exec(home)?.[0];

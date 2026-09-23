@@ -144,7 +144,7 @@ function mergeArgsForMethod(method: GitHubMergePullRequestInput["method"]): stri
 const makeGitHubCli = Effect.gen(function* () {
   const secretStore = yield* Effect.serviceOption(ServerSecretStore);
   const serverConfig = yield* Effect.serviceOption(ServerConfig);
-  const isolated = Option.isSome(serverConfig) && serverConfig.value.profile?.isDefault === false;
+  const isolated = Option.isSome(serverConfig);
   const execute: GitHubCliShape["execute"] = (input) =>
     Effect.gen(function* () {
       const capture = yield* Effect.serviceOption(GitHubCredentialScope);
@@ -257,7 +257,12 @@ const makeGitHubCli = Effect.gen(function* () {
     Effect.gen(function* () {
       const saved = Option.isSome(secretStore)
         ? yield* Effect.tryPromise({
-            try: () => new ProfileGithubAccount(secretStore.value).token(host),
+            try: () =>
+              new ProfileGithubAccount(
+                secretStore.value,
+                fetch,
+                Option.isSome(serverConfig) ? serverConfig.value : undefined,
+              ).token(host),
             catch: (cause) =>
               new GitHubCliError({
                 operation: "credentials",
