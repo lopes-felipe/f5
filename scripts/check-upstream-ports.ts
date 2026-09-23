@@ -1,7 +1,24 @@
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { classifyCommit } from "./upstream-port-suggestions.ts";
+import {
+  AUTHORITATIVE_REPOSITORY,
+  selectRefreshHead,
+  verifyUpstream,
+} from "./upstream-port-history.ts";
+import { readPortFiles, writePortFiles } from "./upstream-port-files.ts";
+import {
+  DISPOSITIONS,
+  SHA_PATTERN,
+  SHA256_PATTERN,
+  makeAudit,
+  refreshEntries,
+  sha256,
+  validateAudit,
+  type FrozenCommit,
+  type Ledger,
+} from "./upstream-port-ledger.ts";
 
 const ROOT = process.env.F5_UPSTREAM_PORTS_ROOT
   ? path.resolve(process.env.F5_UPSTREAM_PORTS_ROOT)
@@ -12,20 +29,9 @@ const MANIFEST_PATH = process.env.F5_UPSTREAM_PORTS_MANIFEST_PATH
 const LEDGER_PATH = process.env.F5_UPSTREAM_PORTS_LEDGER_PATH
   ? path.resolve(process.env.F5_UPSTREAM_PORTS_LEDGER_PATH)
   : path.join(ROOT, "scripts", "upstream-ports.json");
-const AUTHORITATIVE_REPOSITORY = "https://github.com/pingdotgg/t3code.git";
+
 const LOCAL_MIRROR = "developer-local convenience checkout (not authoritative)";
 const WINDOW_SIZE = 500;
-
-const SHA_PATTERN = /^[0-9a-f]{40}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
-const DISPOSITIONS = new Set(["ported", "already-present", "not-applicable", "deferred"]);
-
-type Disposition = "ported" | "already-present" | "not-applicable" | "deferred";
-
-interface FrozenCommit {
-  readonly sha: string;
-  readonly subject: string;
-}
 
 interface Manifest {
   readonly schemaVersion: 1;
@@ -46,114 +52,6 @@ interface Manifest {
   readonly commits: ReadonlyArray<FrozenCommit>;
 }
 
-interface LedgerEntry {
-  readonly upstreamSha: string;
-  readonly subject: string;
-  readonly disposition: Disposition;
-  readonly reason?: string;
-  readonly f5Shas?: ReadonlyArray<string>;
-  readonly evidence?: ReadonlyArray<string>;
-}
-
-interface OlderBacklogCategory {
-  readonly category: string;
-  readonly selection: string;
-  readonly disposition: Disposition;
-  readonly reason: string;
-  readonly upstreamShas?: ReadonlyArray<string>;
-  readonly f5Shas?: ReadonlyArray<string>;
-  readonly evidence?: ReadonlyArray<string>;
-}
-
-interface Ledger {
-  readonly schemaVersion: 4;
-  readonly manifest: "scripts/upstream-ports.manifest.json";
-  readonly manifestSha256: string;
-  readonly entries: ReadonlyArray<LedgerEntry>;
-  readonly olderBacklog: ReadonlyArray<OlderBacklogCategory>;
-}
-
-const plannedPhaseByPrefix: Readonly<Record<string, string>> = {
-  fbd77420: "1.1 four runtime modes",
-  "40c0ab08": "1.2 Codex launch arguments and launch identity",
-  a6c9b41f: "1.3 provider-visible pasted-image paths",
-  c8ad4b81: "1.5 Windows ~/.local/bin resolution",
-  "749baec3": "1.6 background task names",
-  "7963cc70": "1.7 runtime mode per turn",
-  "887dd6e4": "2.1 WebSocket compression and backpressure",
-  "8de0aa24": "2.4 non-blocking Windows PATH hydration",
-  "34b15a9a": "2.5 Git metadata caching",
-  "5fcdefd0": "2.6 dead replayEvents RPC removal",
-  a0419812: "3.1 pins and snoozes",
-  "202e5609": "3.1 pins and snoozes",
-  "9afef94a": "3.1 pins and snoozes",
-  "5661c611": "3.1 pins and snoozes",
-  "61b51ae0": "3.1 pins and snoozes",
-  da6e1a96: "3.1 pins and snoozes",
-  "5c9358ac": "3.2 race-safe titles",
-  d37a9b09: "3.2 title regeneration",
-  b2ee17d7: "3.3 shared thread actions",
-  "65b005f1": "3.3 shared thread actions",
-  f2d2fb2f: "3.4 durable prompt stash",
-  "200fa826": "3.4 prompt stash",
-  "752acbf6": "3.5 new-thread affordances",
-  bdf99c17: "3.5 new-window thread creation",
-  "239ef1c5": "3.5 new-thread shortcut copy",
-  "51672b6e": "4.1 diff presentation policy",
-  eea3ea4c: "4.1 diff presentation policy",
-  "38cfc25e": "4.1 diff presentation policy",
-  cbe80520: "4.2 pasted-image compression",
-  f9730979: "4.2 deferred base64 encoding",
-  "8ca4eec9": "4.3 explorer drag into composer",
-  "4cfec8c1": "4.3 explorer context menus",
-  bfc31507: "4.4 sidebar thread search",
-  "4b71a2ae": "4.4 global full-text search",
-  "1735e27d": "4.5 terminal selection actions",
-  "5719e8ac": "4.6 fast-mode icon",
-  "05eb0511": "4.7 unsent drafts in sidebar",
-  b73232bd: "4.8 reset sidebar width",
-  b54bfc93: "4.9 right-panel empty states",
-  abc409c2: "5.2 project content search",
-  e5c75470: "5.3 settings search and deep links",
-  "1c9a6de2": "5.4 checked-in project configuration",
-  "6dbffa02": "5.5 per-project workspace mode",
-  "076e9048": "5.6 manual project icons",
-  "10bca3f4": "5.7 source-control writing preferences",
-  a2ca89aa: "6.2 Agents observability",
-  c2f8cb7c: "6.2 running subagent count",
-  "3da315e7": "7.1 bounded activity payloads",
-  b4680cbf: "7.1 activity pagination",
-  "6b73b3de": "7.2 anchored thread pagination",
-  "8101cd04": "7.3 usage reporting",
-  c842c6f5: "7.3 hourly usage reporting",
-  "0ce7e56e": "7.4 PR details",
-  "91a03e07": "7.4 PR details",
-  cad2c936: "7.4 provider-neutral PR seam",
-  "4f584da0": "8.1 appearance settings",
-  "8eca2000": "8.1 configurable fonts",
-  "85b1734d": "8.2 theme library",
-  "083fa4ab": "8.2 OKLCH themes",
-  f0b57ca2: "8.2 theme import/search",
-  b91a000a: "8.2 theme duplication",
-  "710fd0ee": "8.3 preview favicons",
-  "72d673a8": "8.3 preview recents",
-  "79fe11bc": "8.3 preview color scheme",
-  "1f279732": "8.4 update release notes",
-};
-
-const explicitNonPortsByPrefix: Readonly<Record<string, string>> = {
-  "7e01d33f": "Already equivalent: f5 uses a narrow desktop asar unpack list.",
-  db1507e9: "Not applicable: f5 archives explicitly and has no automatic sidebar settling.",
-  "31891a1a": "Divergent direction: f5 deliberately retains plan mode and streaming.",
-  "48aa875c": "Divergent direction: f5 deliberately retains the Build/Plan composer control.",
-  e60821f0: "Divergent direction: f5 model preferences already address model-menu crowding.",
-  "2f41c073": "Divergent direction: f5 deliberately inherits new-thread workspace context.",
-  "95305c36":
-    "Rejected on security grounds: browser-local executable selection would be privilege escalation.",
-  acf761b2: "Deferred pending a cross-platform Ghostty/Electron packaging spike.",
-  b28f9bf0: "Deferred until the provider-neutral GitHub PR detail seam is complete.",
-};
-
 function git(
   args: ReadonlyArray<string>,
   options?: { readonly cwd?: string; readonly input?: string },
@@ -161,6 +59,7 @@ function git(
   return execFileSync("git", [...args], {
     cwd: options?.cwd ?? ROOT,
     encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
     ...(options?.input !== undefined ? { input: options.input } : {}),
     stdio: [options?.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
   }).trim();
@@ -204,11 +103,24 @@ function readLedger(filePath: string): Ledger {
       (entry) =>
         !isRecord(entry) || !validStringArray(entry.f5Shas) || !validStringArray(entry.evidence),
     ) ||
+    (value.historicalEntries !== undefined &&
+      (!Array.isArray(value.historicalEntries) ||
+        value.historicalEntries.some(
+          (entry) =>
+            !isRecord(entry) ||
+            !validStringArray(entry.f5Shas) ||
+            !validStringArray(entry.evidence),
+        ))) ||
+    (value.audit !== undefined &&
+      (!isRecord(value.audit) ||
+        !Array.isArray(value.audit.upstreamShas) ||
+        !validStringArray(value.audit.upstreamShas))) ||
     !Array.isArray(value.olderBacklog) ||
     value.olderBacklog.some(
       (category) =>
         !isRecord(category) ||
         !validStringArray(category.upstreamShas) ||
+        !validStringArray(category.promotedUpstreamShas) ||
         !validStringArray(category.f5Shas) ||
         !validStringArray(category.evidence),
     )
@@ -216,25 +128,6 @@ function readLedger(filePath: string): Ledger {
     throw new Error("ledger must contain entries and olderBacklog arrays");
   }
   return value as unknown as Ledger;
-}
-
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
-}
-
-function normalizeRepositoryUrl(value: string): string {
-  return value
-    .trim()
-    .replace(/^git@github\.com:/, "https://github.com/")
-    .replace(/\.git\/?$/, "")
-    .replace(/\/$/, "");
-}
-
-function verifyAuthoritativeRemote(): void {
-  const fetchUrl = git(["remote", "get-url", "upstream"]);
-  if (normalizeRepositoryUrl(fetchUrl) !== normalizeRepositoryUrl(AUTHORITATIVE_REPOSITORY)) {
-    throw new Error(`upstream fetch URL is not authoritative: ${fetchUrl}`);
-  }
 }
 
 function hasUpstreamRemote(): boolean {
@@ -296,40 +189,6 @@ function validateEvidence(
   }
 }
 
-function resolvePrefix<T>(sha: string, values: Readonly<Record<string, T>>): T | undefined {
-  for (const [prefix, value] of Object.entries(values)) {
-    if (sha.startsWith(prefix)) return value;
-  }
-  return undefined;
-}
-
-function classifyCommit(commit: FrozenCommit): LedgerEntry {
-  const base = { upstreamSha: commit.sha, subject: commit.subject };
-  const explicitNonPort = resolvePrefix(commit.sha, explicitNonPortsByPrefix);
-  if (explicitNonPort) {
-    return {
-      ...base,
-      disposition: explicitNonPort.startsWith("Deferred") ? "deferred" : "not-applicable",
-      reason: explicitNonPort,
-    };
-  }
-
-  const plannedPhase = resolvePrefix(commit.sha, plannedPhaseByPrefix);
-  if (plannedPhase) {
-    return {
-      ...base,
-      disposition: "deferred",
-      reason: `Scheduled for merged plan item ${plannedPhase}; pending its f5-native implementation commit.`,
-    };
-  }
-
-  return {
-    ...base,
-    disposition: "deferred",
-    reason: `Requires manual f5-native user-impact assessment; no disposition was inferred from the subject alone (${commit.subject}).`,
-  };
-}
-
 function frozenCommits(headSha: string): FrozenCommit[] {
   const recordSeparator = "\u001e";
   const fieldSeparator = "\u001f";
@@ -353,84 +212,27 @@ function frozenCommits(headSha: string): FrozenCommit[] {
     });
 }
 
-function refresh(): void {
-  try {
-    verifyAuthoritativeRemote();
-    git(["fetch", "--no-tags", "upstream", "main"]);
-  } catch (error) {
-    fail([`refusing to refresh from an unverified upstream remote: ${String(error)}`]);
-  }
-  const headSha = git(["rev-parse", "upstream/main"]);
+function firstParentShas(head: string): string[] {
+  return git(["rev-list", "--first-parent", head]).split("\n").filter(Boolean);
+}
+
+function refresh(pin?: string): void {
+  const files = { manifest: MANIFEST_PATH, ledger: LEDGER_PATH };
+  const expected = readPortFiles(files);
+  const headSha = selectRefreshHead(git, pin);
   const commits = frozenCommits(headSha);
-  if (commits.length !== WINDOW_SIZE) {
+  if (commits.length !== WINDOW_SIZE)
     fail([`expected ${WINDOW_SIZE} first-parent commits, received ${commits.length}`]);
-  }
-
-  let previousLedger: Ledger | null = null;
-  let legacyShas: string[] = [];
-  try {
-    const previous = readJson(LEDGER_PATH);
-    if (isRecord(previous) && !("schemaVersion" in previous)) {
-      legacyShas = Object.keys(previous).filter((sha) => SHA_PATTERN.test(sha));
-    } else if (isRecord(previous)) {
-      previousLedger = readLedger(LEDGER_PATH);
-    }
-  } catch (error) {
-    fail([`refusing to overwrite an unreadable ledger: ${String(error)}`]);
-  }
-
-  const previousEntries = new Map(
-    (previousLedger?.entries ?? []).map((entry) => [entry.upstreamSha, entry] as const),
-  );
-  const nextManifestShas = new Set(commits.map((commit) => commit.sha));
-  const previousOlderShas = new Set(
-    (previousLedger?.olderBacklog ?? []).flatMap((category) => category.upstreamShas ?? []),
-  );
-  const rolledOutEntries = (previousLedger?.entries ?? []).filter(
-    (entry) =>
-      !nextManifestShas.has(entry.upstreamSha) && !previousOlderShas.has(entry.upstreamSha),
-  );
-
-  const historicalByDisposition = new Map<Disposition, OlderBacklogCategory>();
-  const addHistorical = (input: {
-    readonly disposition: Disposition;
-    readonly upstreamShas?: ReadonlyArray<string>;
-    readonly f5Shas?: ReadonlyArray<string>;
-    readonly evidence?: ReadonlyArray<string>;
-  }) => {
-    const existing = historicalByDisposition.get(input.disposition);
-    historicalByDisposition.set(input.disposition, {
-      category: `historical-window-${input.disposition}`,
-      selection: `Upstream commits that rolled out of the frozen ${WINDOW_SIZE}-commit window with a reviewed ${input.disposition} disposition`,
-      disposition: input.disposition,
-      reason:
-        "The reviewed disposition is retained at category level after the commit leaves the per-SHA audit window.",
-      upstreamShas: [
-        ...new Set([...(existing?.upstreamShas ?? []), ...(input.upstreamShas ?? [])]),
-      ].sort(),
-      ...((existing?.f5Shas?.length ?? 0) + (input.f5Shas?.length ?? 0) > 0
-        ? { f5Shas: [...new Set([...(existing?.f5Shas ?? []), ...(input.f5Shas ?? [])])].sort() }
-        : {}),
-      ...((existing?.evidence?.length ?? 0) + (input.evidence?.length ?? 0) > 0
-        ? {
-            evidence: [
-              ...new Set([...(existing?.evidence ?? []), ...(input.evidence ?? [])]),
-            ].sort(),
-          }
-        : {}),
-    });
-  };
-  for (const category of previousLedger?.olderBacklog ?? []) {
-    if (category.category.startsWith("historical-window-")) addHistorical(category);
-  }
-  for (const entry of rolledOutEntries) {
-    addHistorical({
-      disposition: entry.disposition,
-      upstreamShas: [entry.upstreamSha],
-      ...(entry.f5Shas === undefined ? {} : { f5Shas: entry.f5Shas }),
-      ...(entry.evidence === undefined ? {} : { evidence: entry.evidence }),
-    });
-  }
+  const previousLedger = readLedger(LEDGER_PATH);
+  if (previousLedger.schemaVersion !== 4 && previousLedger.schemaVersion !== 5)
+    fail(["unsupported ledger schemaVersion"]);
+  const audit =
+    previousLedger.audit ??
+    makeAudit(
+      git(["rev-parse", `${commits.at(-1)!.sha}^1`]),
+      headSha,
+      commits.map((commit) => commit.sha),
+    );
 
   const manifest: Manifest = {
     schemaVersion: 1,
@@ -451,52 +253,18 @@ function refresh(): void {
     commits,
   };
   const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
-  const defaultOlderBacklog: OlderBacklogCategory[] = [
-    {
-      category: "pre-schema-ledger",
-      selection: "Upstream SHAs tracked before the frozen 500-commit window",
-      disposition: "deferred",
-      reason:
-        "Historical claims are retained for provenance but require f5 commit and file:line evidence before they can be promoted to completed dispositions.",
-      ...(legacyShas.length > 0 ? { upstreamShas: legacyShas.sort() } : {}),
-    },
-    {
-      category: "mobile",
-      selection: "Older feat/fix/mobile commits after 86c94b48 and before the frozen window",
-      disposition: "not-applicable",
-      reason: "f5 has no mobile application product line.",
-    },
-    {
-      category: "connect-relay-hosted",
-      selection: "Older Connect, relay, pairing, and hosted-frontend commits",
-      disposition: "not-applicable",
-      reason: "f5 uses its existing remote-access model and has no managed relay product line.",
-    },
-  ];
-  const previousCategories = new Set(
-    (previousLedger?.olderBacklog ?? []).map((category) => category.category),
-  );
   const ledger: Ledger = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     manifest: "scripts/upstream-ports.manifest.json",
     manifestSha256: sha256(manifestText),
-    entries: commits.map((commit) => {
-      const previous = previousEntries.get(commit.sha);
-      return previous === undefined
-        ? classifyCommit(commit)
-        : { ...previous, subject: commit.subject };
-    }),
-    olderBacklog: [
-      ...(previousLedger?.olderBacklog ?? []).filter(
-        (category) => !category.category.startsWith("historical-window-"),
-      ),
-      ...historicalByDisposition.values(),
-      ...defaultOlderBacklog.filter((category) => !previousCategories.has(category.category)),
-    ],
+    ...refreshEntries(previousLedger, commits, classifyCommit),
+    audit,
   };
 
-  writeFileSync(MANIFEST_PATH, manifestText);
-  writeFileSync(LEDGER_PATH, `${JSON.stringify(ledger, null, 2)}\n`);
+  writePortFiles(files, expected, {
+    manifest: manifestText,
+    ledger: `${JSON.stringify(ledger, null, 2)}\n`,
+  });
   console.log(`Frozen ${commits.length} commits at ${headSha}.`);
 }
 
@@ -505,6 +273,7 @@ function validate(): void {
   let manifest: Manifest;
   let ledger: Ledger;
   try {
+    readPortFiles({ manifest: MANIFEST_PATH, ledger: LEDGER_PATH });
     manifest = readManifest(MANIFEST_PATH);
     ledger = readLedger(LEDGER_PATH);
   } catch (error) {
@@ -512,7 +281,10 @@ function validate(): void {
   }
 
   if (manifest.schemaVersion !== 1) errors.push("unsupported manifest schemaVersion");
-  if (ledger.schemaVersion !== 4) errors.push("unsupported ledger schemaVersion");
+  if (ledger.schemaVersion !== 4 && ledger.schemaVersion !== 5)
+    errors.push("unsupported ledger schemaVersion");
+  if (ledger.manifest !== "scripts/upstream-ports.manifest.json")
+    errors.push("ledger references an unsupported manifest path");
   const manifestText = readFileSync(MANIFEST_PATH, "utf8");
   if (!SHA256_PATTERN.test(ledger.manifestSha256)) {
     errors.push("ledger manifestSha256 is missing or invalid");
@@ -558,17 +330,45 @@ function validate(): void {
   }
 
   const ledgerShas = new Set<string>();
-  for (const entry of ledger.entries) {
-    if (!manifestShas.has(entry.upstreamSha)) {
+  const historical = ledger.historicalEntries ?? [];
+  if (ledger.schemaVersion === 5) {
+    if (!Array.isArray(ledger.historicalEntries))
+      errors.push("schema 5 requires historicalEntries");
+    errors.push(...validateAudit(ledger));
+  }
+  for (const entry of [...ledger.entries, ...historical]) {
+    if (ledger.entries.includes(entry) && !manifestShas.has(entry.upstreamSha)) {
       errors.push(`ledger SHA ${entry.upstreamSha} is not in the frozen manifest`);
     }
     if (ledgerShas.has(entry.upstreamSha)) errors.push(`duplicate ledger SHA ${entry.upstreamSha}`);
     ledgerShas.add(entry.upstreamSha);
-    if (!DISPOSITIONS.has(entry.disposition)) {
+    if (!SHA_PATTERN.test(entry.upstreamSha))
+      errors.push(`invalid ledger SHA ${entry.upstreamSha}`);
+    if (!assertNonEmpty(entry.subject))
+      errors.push(`ledger SHA ${entry.upstreamSha} has no subject`);
+    if (historical.includes(entry) && manifestShas.has(entry.upstreamSha))
+      errors.push(`historical SHA ${entry.upstreamSha} overlaps frozen manifest`);
+    if (ledger.schemaVersion === 5) {
+      if (!["pending", "reviewed", "legacy"].includes(entry.reviewStatus ?? ""))
+        errors.push(`ledger SHA ${entry.upstreamSha} has invalid reviewStatus`);
+      if (
+        entry.reviewStatus === "pending" ||
+        /requires manual.*assessment|manual assessment placeholder/i.test(entry.reason ?? "")
+      )
+        errors.push(
+          `ledger SHA ${entry.upstreamSha} requires review; generic manual assessment is not an audited disposition`,
+        );
+      if (entry.plannedWorkstream !== undefined && !assertNonEmpty(entry.plannedWorkstream))
+        errors.push(`ledger SHA ${entry.upstreamSha} has empty plannedWorkstream`);
+    }
+    if (!DISPOSITIONS.includes(entry.disposition)) {
       errors.push(`ledger SHA ${entry.upstreamSha} has invalid disposition ${entry.disposition}`);
       continue;
     }
-    const completed = entry.disposition === "ported" || entry.disposition === "already-present";
+    const completed =
+      entry.disposition === "ported" ||
+      entry.disposition === "already-present" ||
+      entry.disposition === "equivalent";
     if (completed && (!entry.f5Shas || entry.f5Shas.length === 0)) {
       errors.push(`completed ledger SHA ${entry.upstreamSha} has no f5 SHA`);
     }
@@ -576,15 +376,10 @@ function validate(): void {
       errors.push(`skipped/deferred ledger SHA ${entry.upstreamSha} has no concrete reason`);
     }
     if (
-      entry.disposition === "already-present" &&
+      (entry.disposition === "already-present" || entry.disposition === "equivalent") &&
       (!entry.evidence || entry.evidence.length === 0)
     ) {
       errors.push(`already-present ledger SHA ${entry.upstreamSha} has no file:line evidence`);
-    }
-    if (entry.disposition !== "already-present" && entry.evidence && entry.evidence.length > 0) {
-      errors.push(
-        `ledger SHA ${entry.upstreamSha} has evidence outside already-present disposition`,
-      );
     }
     validateEvidence(`ledger SHA ${entry.upstreamSha}`, entry.evidence, errors);
     for (const f5Sha of entry.f5Shas ?? []) {
@@ -605,13 +400,13 @@ function validate(): void {
     if (!assertNonEmpty(category.reason)) {
       errors.push(`older-backlog category ${category.category} has no reason`);
     }
-    if (!DISPOSITIONS.has(category.disposition)) {
+    if (!DISPOSITIONS.includes(category.disposition)) {
       errors.push(`older-backlog category ${category.category} has an invalid disposition`);
       continue;
     }
     const completed =
       category.disposition === "ported" || category.disposition === "already-present";
-    if (completed && (!category.upstreamShas || category.upstreamShas.length === 0)) {
+    if (completed && !category.upstreamShas?.length && !category.promotedUpstreamShas?.length) {
       errors.push(`completed older-backlog category ${category.category} has no upstream SHA`);
     }
     if (completed && (!category.f5Shas || category.f5Shas.length === 0)) {
@@ -635,10 +430,13 @@ function validate(): void {
     validateEvidence(`older-backlog category ${category.category}`, category.evidence, errors);
     for (const sha of category.upstreamShas ?? []) {
       if (!SHA_PATTERN.test(sha)) errors.push(`older-backlog category has invalid SHA ${sha}`);
-      if (manifestShas.has(sha))
-        errors.push(`older-backlog SHA ${sha} overlaps the frozen manifest`);
+      if (ledgerShas.has(sha)) errors.push(`older-backlog SHA ${sha} overlaps the frozen manifest`);
       if (olderShas.has(sha)) errors.push(`duplicate older-backlog SHA ${sha}`);
       olderShas.add(sha);
+    }
+    for (const sha of category.promotedUpstreamShas ?? []) {
+      if (!SHA_PATTERN.test(sha) || !ledgerShas.has(sha))
+        errors.push(`promoted backlog SHA ${sha} has no per-SHA record`);
     }
     for (const f5Sha of category.f5Shas ?? []) {
       if (!SHA_PATTERN.test(f5Sha)) {
@@ -650,13 +448,24 @@ function validate(): void {
   const requireUpstream = process.env.F5_REQUIRE_UPSTREAM === "1";
   if (hasUpstreamRemote()) {
     try {
-      verifyAuthoritativeRemote();
-      git(["merge-base", "--is-ancestor", manifest.selection.headSha, "upstream/main"]);
+      verifyUpstream(git);
+      if (!firstParentShas("upstream/main").includes(manifest.selection.headSha))
+        throw new Error("frozen head is not on upstream/main first-parent ancestry");
+      if (ledger.schemaVersion === 5 && ledger.audit) {
+        const actualAudit = firstParentShas(ledger.audit.targetSha);
+        const boundary = actualAudit.indexOf(ledger.audit.baseSha);
+        if (
+          boundary < 0 ||
+          JSON.stringify(actualAudit.slice(0, boundary)) !==
+            JSON.stringify(ledger.audit.upstreamShas)
+        )
+          errors.push("audit selection differs from upstream first-parent interval");
+      }
       const actual = frozenCommits(manifest.selection.headSha);
       if (JSON.stringify(actual) !== JSON.stringify(manifest.commits)) {
         errors.push("checked-in manifest differs from the frozen upstream commit set");
       }
-      for (const sha of olderShas) {
+      for (const sha of new Set([...olderShas, ...historical.map((entry) => entry.upstreamSha)])) {
         git(["cat-file", "-e", `${sha}^{commit}`]);
       }
     } catch (error) {
@@ -676,5 +485,18 @@ function validate(): void {
   );
 }
 
-if (process.argv.includes("--refresh")) refresh();
-else validate();
+try {
+  const args = process.argv.slice(2);
+  let refreshRequested = false;
+  let pin: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--refresh" && !refreshRequested) refreshRequested = true;
+    else if (args[index] === "--head" && pin === undefined && args[index + 1]) pin = args[++index];
+    else fail([`unknown or duplicate argument: ${args[index]}`]);
+  }
+  if (pin !== undefined && !refreshRequested) fail(["--head requires --refresh"]);
+  if (refreshRequested) refresh(pin);
+  else validate();
+} catch (error) {
+  fail([String(error)]);
+}

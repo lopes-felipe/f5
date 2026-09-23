@@ -44,3 +44,98 @@ Set `F5_DEV_INSTANCE` to any value to deterministically shift all dev ports toge
 - Example: `F5_DEV_INSTANCE=branch-a bun run dev:desktop`
 
 If you want full control instead of hashing, set `F5_PORT_OFFSET` to a numeric offset.
+
+## Upstream port ledger
+
+`bun run upstream-ports:check` validates the frozen manifest and the ledger. With an
+`upstream` remote configured, it also verifies first-parent provenance against the
+read-only `https://github.com/pingdotgg/t3code.git` remote. CI requires that remote
+with `F5_REQUIRE_UPSTREAM=1`.
+
+The ledger now supports schema 5. The checked-in migration preserves the existing
+500-commit window ending at `196c8ea0d`; it does **not** claim the September
+1,836-commit interval has been classified or implemented. Existing schema-4 records
+are labeled `reviewStatus: "legacy"`, retaining their dispositions, reasons,
+implementation SHAs, and evidence without manufacturing a new review. The old
+backlog categories remain as provenance. Schema 4 is still readable for migration.
+
+### Refreshing a window
+
+```sh
+bun scripts/check-upstream-ports.ts --refresh --head <full-40-character-sha>
+```
+
+The pin must lie on `upstream/main`'s first-parent ancestry after a non-pruning fetch.
+Refresh freezes exactly 500 commits ending at that SHA. Plain `--refresh` selects
+the fetched head, resolved once so a moving remote cannot change the selection.
+Invalid pins fail before the manifest or ledger is changed.
+
+Entries leaving the window move intact to `historicalEntries`. Entries returning
+from history retain their decisions. Legacy category members promoted to records
+are retained as `promotedUpstreamShas` references, not counted a second time.
+Prefix maps offer explicit disposition/reason suggestions only. New suggestions
+have `reviewStatus: "pending"`; the checker rejects them until they have a concrete
+reviewed decision. Generic manual-assessment placeholders also fail validation.
+
+The refresh preserves an existing audit interval independently of the rolling
+window. On schema-4 migration it initializes an audit for the selected window.
+An audit freezes `{baseSha, targetSha, selection, count, digest, upstreamShas}`;
+`upstreamShas` is newest-first and excludes `baseSha`. The digest is SHA-256 of the
+ordered SHAs joined by LF with a final LF. The stored list permits offline set and
+digest checks; Git independently verifies the interval when upstream is available.
+
+### Applying reviewed classifications
+
+```sh
+bun scripts/generate-upstream-gap.ts scripts/upstream-port-plan-2026-09.json
+F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check
+```
+
+The classification file is an audit artifact supplied by an actual per-SHA review;
+the generator does not infer decisions from subjects. Its shape is:
+
+```json
+{
+  "schemaVersion": 1,
+  "baseSha": "<full SHA, excluded>",
+  "targetSha": "<full SHA, included>",
+  "entries": [
+    {
+      "upstreamSha": "<full SHA>",
+      "classification": "planned:7b",
+      "reason": "Generic attachments are approved for Phase 7b; implementation is pending.",
+      "reviewStatus": "reviewed"
+    }
+  ]
+}
+```
+
+Supported classifications are `planned:<phase>`, `declined`, `deferred`,
+`equivalent:<repository-path:line>`, and `not-applicable:<reason-key>`. Equivalent
+records also require existing `f5Shas`; extra evidence can be supplied in `evidence`.
+Reason keys are `mobile`, `relay-cloud`, `multi-environment`, `devices`, `marketing`,
+`release-ci`, `maintenance`, and `upstream-only-subsystem:<name>`.
+
+The generator requires exactly one reviewed classification for every SHA in the
+first-parent interval, lists missing and extra SHAs, and rejects duplicates and
+unknown phases/reason keys. Planned work becomes **deferred**, with its
+`plannedWorkstream`; it is never marked ported. Reapplying triage preserves later
+ported records and their implementation proof. The full checker validates the
+candidate, including file/line evidence, before publication. Older legacy records
+outside the audited interval remain preserved and are not counted as new decisions.
+
+### Interrupted updates
+
+Manifest and ledger publication uses staged files and a synced undo journal.
+Two separate path replacements cannot be atomic together: readers fail closed
+while a writer is active. On the next invocation after a killed writer, the old pair
+is restored byte-for-byte before validation or a new refresh proceeds. A real
+subprocess-kill test covers the boundary between renames. Concurrent edits cause
+publication to fail rather than overwrite the edits.
+
+Recovery verifies the originating host, file paths, and that the recorded process
+has exited; it never steals a live writer's journal. A truncated journal, a journal
+from another host, or interruption of recovery itself fails closed for manual
+inspection. Node's Windows filesystem API does not support the directory fsync used
+on POSIX, so this is process-interruption recovery, not a cross-platform guarantee
+against power loss. Do not edit the canonical files while a refresh is running.
