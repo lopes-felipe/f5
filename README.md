@@ -15,6 +15,8 @@ It is for developers who use Codex or Claude Code and want a multi-agent, multi-
 > [!WARNING]
 > This project is very early. Expect bugs, breaking changes, and rough edges.
 
+![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/lopes-felipe/f5?utm_source=oss&utm_medium=github&utm_campaign=lopes-felipe%2Ff5&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)
+
 ## Screenshots
 
 <p align="center">
