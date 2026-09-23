@@ -6,8 +6,9 @@ import {
   AUTHORITATIVE_REPOSITORY,
   selectRefreshHead,
   verifyUpstream,
+  UPSTREAM_MAIN_REF,
 } from "./upstream-port-history.ts";
-import { readPortFiles, writePortFiles } from "./upstream-port-files.ts";
+import { readPortFiles, recoverPortFiles, writePortFiles } from "./upstream-port-files.ts";
 import {
   DISPOSITIONS,
   SHA_PATTERN,
@@ -65,9 +66,9 @@ function git(
   }).trim();
 }
 
-function readJson(filePath: string): unknown {
+function readJson(filePath: string, text: string): unknown {
   try {
-    return JSON.parse(readFileSync(filePath, "utf8"));
+    return JSON.parse(text);
   } catch (error) {
     throw new Error(`could not parse ${path.relative(ROOT, filePath)}: ${String(error)}`);
   }
@@ -77,8 +78,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readManifest(filePath: string): Manifest {
-  const value = readJson(filePath);
+function readManifest(filePath: string, text: string): Manifest {
+  const value = readJson(filePath, text);
   if (
     !isRecord(value) ||
     !isRecord(value.upstream) ||
@@ -91,8 +92,8 @@ function readManifest(filePath: string): Manifest {
   return value as unknown as Manifest;
 }
 
-function readLedger(filePath: string): Ledger {
-  const value = readJson(filePath);
+function readLedger(filePath: string, text: string): Ledger {
+  const value = readJson(filePath, text);
   const validStringArray = (candidate: unknown): boolean =>
     candidate === undefined ||
     (Array.isArray(candidate) && candidate.every((entry) => typeof entry === "string"));
@@ -218,12 +219,15 @@ function firstParentShas(head: string): string[] {
 
 function refresh(pin?: string): void {
   const files = { manifest: MANIFEST_PATH, ledger: LEDGER_PATH };
+  recoverPortFiles(files);
   const expected = readPortFiles(files);
+  const previousLedger = readLedger(LEDGER_PATH, expected.ledger);
+  if (previousLedger.manifestSha256 !== sha256(expected.manifest))
+    fail(["manifest/ledger integrity mismatch; repair the pair before refreshing"]);
   const headSha = selectRefreshHead(git, pin);
   const commits = frozenCommits(headSha);
   if (commits.length !== WINDOW_SIZE)
     fail([`expected ${WINDOW_SIZE} first-parent commits, received ${commits.length}`]);
-  const previousLedger = readLedger(LEDGER_PATH);
   if (previousLedger.schemaVersion !== 4 && previousLedger.schemaVersion !== 5)
     fail(["unsupported ledger schemaVersion"]);
   const audit =
@@ -272,10 +276,12 @@ function validate(): void {
   const errors: string[] = [];
   let manifest: Manifest;
   let ledger: Ledger;
+  let manifestText: string;
   try {
-    readPortFiles({ manifest: MANIFEST_PATH, ledger: LEDGER_PATH });
-    manifest = readManifest(MANIFEST_PATH);
-    ledger = readLedger(LEDGER_PATH);
+    const texts = readPortFiles({ manifest: MANIFEST_PATH, ledger: LEDGER_PATH });
+    manifestText = texts.manifest;
+    manifest = readManifest(MANIFEST_PATH, texts.manifest);
+    ledger = readLedger(LEDGER_PATH, texts.ledger);
   } catch (error) {
     fail([String(error)]);
   }
@@ -285,7 +291,6 @@ function validate(): void {
     errors.push("unsupported ledger schemaVersion");
   if (ledger.manifest !== "scripts/upstream-ports.manifest.json")
     errors.push("ledger references an unsupported manifest path");
-  const manifestText = readFileSync(MANIFEST_PATH, "utf8");
   if (!SHA256_PATTERN.test(ledger.manifestSha256)) {
     errors.push("ledger manifestSha256 is missing or invalid");
   } else if (ledger.manifestSha256 !== sha256(manifestText)) {
@@ -449,10 +454,15 @@ function validate(): void {
   if (hasUpstreamRemote()) {
     try {
       verifyUpstream(git);
-      if (!firstParentShas("upstream/main").includes(manifest.selection.headSha))
+      const upstreamAncestry = firstParentShas(UPSTREAM_MAIN_REF);
+      if (!upstreamAncestry.includes(manifest.selection.headSha))
         throw new Error("frozen head is not on upstream/main first-parent ancestry");
       if (ledger.schemaVersion === 5 && ledger.audit) {
-        const actualAudit = firstParentShas(ledger.audit.targetSha);
+        if (!upstreamAncestry.includes(ledger.audit.targetSha))
+          throw new Error("audit target is not on upstream/main first-parent ancestry");
+        const actualAudit = upstreamAncestry.slice(
+          upstreamAncestry.indexOf(ledger.audit.targetSha),
+        );
         const boundary = actualAudit.indexOf(ledger.audit.baseSha);
         if (
           boundary < 0 ||
@@ -465,8 +475,17 @@ function validate(): void {
       if (JSON.stringify(actual) !== JSON.stringify(manifest.commits)) {
         errors.push("checked-in manifest differs from the frozen upstream commit set");
       }
-      for (const sha of new Set([...olderShas, ...historical.map((entry) => entry.upstreamSha)])) {
-        git(["cat-file", "-e", `${sha}^{commit}`]);
+      const historicalShas = [
+        ...new Set([...olderShas, ...historical.map((entry) => entry.upstreamSha)]),
+      ];
+      if (historicalShas.length) {
+        const objects = git(["cat-file", "--batch-check=%(objecttype)"], {
+          input: historicalShas.map((sha) => `${sha}^{commit}\n`).join(""),
+        }).split("\n");
+        historicalShas.forEach((sha, index) => {
+          if (objects[index] !== "commit")
+            errors.push(`historical upstream SHA is not a commit: ${sha}`);
+        });
       }
     } catch (error) {
       errors.push(`could not resolve frozen upstream history locally: ${String(error)}`);

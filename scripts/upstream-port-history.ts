@@ -1,6 +1,7 @@
 import { SHA_PATTERN } from "./upstream-port-ledger.ts";
 
 export const AUTHORITATIVE_REPOSITORY = "https://github.com/pingdotgg/t3code.git";
+export const UPSTREAM_MAIN_REF = "refs/remotes/upstream/main";
 export type RunGit = (args: ReadonlyArray<string>) => string;
 
 export function verifyUpstream(git: RunGit): void {
@@ -19,9 +20,9 @@ export function selectRefreshHead(git: RunGit, pin?: string): string {
   if (pin !== undefined && !SHA_PATTERN.test(pin))
     throw new Error("--head requires a full 40-character SHA");
   verifyUpstream(git);
-  git(["fetch", "--no-prune", "--no-tags", "upstream", "main"]);
+  git(["fetch", "--no-prune", "--no-tags", "upstream", `refs/heads/main:${UPSTREAM_MAIN_REF}`]);
   // Resolve the remote exactly once, then anchor every read to that immutable SHA.
-  const fetchedHead = git(["rev-parse", "upstream/main"]);
+  const fetchedHead = git(["rev-parse", UPSTREAM_MAIN_REF]);
   const ancestry = git(["rev-list", "--first-parent", fetchedHead]).split("\n");
   const head = pin ?? fetchedHead;
   if (!ancestry.includes(head))

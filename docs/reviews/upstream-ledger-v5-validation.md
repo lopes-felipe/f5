@@ -56,3 +56,36 @@ With the frozen dependencies synchronized, `bun run test:full` passed:
 passed. The upstream gate validates the preserved 500-entry window, not the
 unfinished 1,836-SHA audit. No runtime capability or protocol version changed.
 Local full-suite output: `/tmp/f5-ledger-full.log`.
+
+## PR #28 review follow-up
+
+Completed `ported`, `equivalent`, and `already-present` records now survive plan
+regeneration unchanged; plan fields cannot overwrite their proof or add a workstream.
+All Git history selection uses the fully qualified upstream remote-tracking ref,
+and validation requires the audit target itself to be on that first-parent history.
+Historical commit-object checks use a single batch Git query.
+
+Validation is read-only, rejects an existing publication journal, and parses the
+exact texts read by the file-pair reader. Refresh checks the old pair's digest before
+fetching or publishing. Only writing commands perform recovery. Recovery retains a
+fully published generation, distinguishes reused PIDs using OS creation times,
+names malformed journal and stale-lock paths in errors, and preserves canonical
+file permissions. Publication artifacts are ignored by Git.
+
+Regression coverage includes all three completed dispositions, actual ambiguous
+Git tags and branches in disposable repositories, a fork-only audit target,
+read-only validation with a journal present, malformed journals, reused PIDs,
+leftover recovery locks, finished publication recovery, permission preservation,
+and missing historical commit objects. The ledger suite now has 49 passing tests.
+
+Two review points did not require the suggested action: CI already fetched upstream
+and required `F5_REQUIRE_UPSTREAM=1` at the reviewed commit; its fetch is now explicitly
+non-pruning with a fully qualified refspec. The OAuth test remains because it fixes
+the approved Phase 0a baseline failure encountered during this prerequisite. The
+published commit was not rewritten to split that test out.
+
+Review validation passed: `bun fmt`, `bun lint` (existing warnings), `bun typecheck`,
+`F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`, and `git diff --check`.
+`bun run test:full` passed all seven workspace tasks and all 107 exhaustive Git tests;
+server test counts remain 2,344 unit, 8 Git smoke, and 13 integration passes.
+Local output: `/tmp/f5-pr28-full.log`.

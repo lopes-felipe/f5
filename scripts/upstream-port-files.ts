@@ -1,7 +1,11 @@
+import { execFileSync } from "node:child_process";
+import { sha256 } from "./upstream-port-ledger.ts";
 import {
   closeSync,
   existsSync,
   fsyncSync,
+  fchmodSync,
+  statSync,
   mkdirSync,
   rmdirSync,
   openSync,
@@ -24,6 +28,8 @@ export interface PortTexts {
 interface Journal extends PortTexts {
   readonly pid: number;
   readonly host: string;
+  readonly processStart?: string;
+  readonly nextDigest?: PortTexts;
   readonly paths: PortFiles;
 }
 
@@ -38,9 +44,10 @@ function syncDirectory(directory: string): void {
   }
 }
 
-function durableWrite(file: string, text: string): void {
-  const fd = openSync(file, "w", 0o600);
+function durableWrite(file: string, text: string, mode: number): void {
+  const fd = openSync(file, "w", mode);
   try {
+    fchmodSync(fd, mode);
     writeFileSync(fd, text);
     fsyncSync(fd);
   } finally {
@@ -58,8 +65,8 @@ function pathsFor(files: PortFiles) {
 
 function replacePair(files: PortFiles, texts: PortTexts, afterManifest?: () => void): void {
   const stages = pathsFor(files);
-  durableWrite(stages.manifestStage, texts.manifest);
-  durableWrite(stages.ledgerStage, texts.ledger);
+  durableWrite(stages.manifestStage, texts.manifest, statSync(files.manifest).mode & 0o777);
+  durableWrite(stages.ledgerStage, texts.ledger, statSync(files.ledger).mode & 0o777);
   renameSync(stages.manifestStage, files.manifest);
   afterManifest?.();
   renameSync(stages.ledgerStage, files.ledger);
@@ -76,12 +83,48 @@ function finish(files: PortFiles): void {
   syncDirectory(path.dirname(paths.journal));
 }
 
+/** Use OS process creation time, not PID alone, to distinguish a reused PID. */
+function processStart(pid: number): string {
+  if (process.platform === "linux") {
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const ticks = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
+    return `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:${ticks}`;
+  }
+  const value =
+    process.platform === "win32"
+      ? execFileSync(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+          ],
+          { encoding: "utf8" },
+        )
+      : execFileSync("ps", ["-p", String(pid), "-o", "lstart="], {
+          encoding: "utf8",
+          env: { ...process.env, LC_ALL: "C" },
+        });
+  if (!value.trim()) throw new Error(`cannot determine start time for process ${pid}`);
+  return value.trim();
+}
+
+function manualRecovery(journalPath: string): string {
+  return `Inspect ${journalPath} and the canonical files; after confirming no writer or recovery is active and repairing the pair if necessary, remove ${journalPath} and ${journalPath}.recovering if present, then retry.`;
+}
+
 /** Recover a killed writer before reading either file. Live writers fail closed. */
 export function recoverPortFiles(files: PortFiles): void {
   const journalPath = pathsFor(files).journal;
   if (!existsSync(journalPath)) return;
   const journalText = readFileSync(journalPath, "utf8");
-  const journal: unknown = JSON.parse(journalText);
+  let journal: unknown;
+  try {
+    journal = JSON.parse(journalText);
+  } catch {
+    throw new Error(`empty or truncated refresh journal. ${manualRecovery(journalPath)}`);
+  }
   if (
     !journal ||
     typeof journal !== "object" ||
@@ -91,9 +134,7 @@ export function recoverPortFiles(files: PortFiles): void {
     !("manifest" in journal) ||
     !("ledger" in journal)
   ) {
-    throw new Error(
-      "incomplete refresh journal; canonical files were not replaced before the journal was synced",
-    );
+    throw new Error(`incomplete refresh journal. ${manualRecovery(journalPath)}`);
   }
   const value = journal as Journal;
   if (
@@ -105,7 +146,9 @@ export function recoverPortFiles(files: PortFiles): void {
     value.paths?.manifest !== files.manifest ||
     value.paths?.ledger !== files.ledger
   ) {
-    throw new Error("cannot recover a refresh journal from another host or file pair");
+    throw new Error(
+      `cannot recover a refresh journal from another host or file pair. ${manualRecovery(journalPath)}`,
+    );
   }
   let alive = true;
   try {
@@ -113,16 +156,43 @@ export function recoverPortFiles(files: PortFiles): void {
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ESRCH") alive = false;
   }
-  if (alive) throw new Error(`upstream refresh is already running (pid ${value.pid})`);
+  if (alive && value.processStart) {
+    try {
+      alive = processStart(value.pid) === value.processStart;
+    } catch {
+      throw new Error(`cannot verify refresh process identity. ${manualRecovery(journalPath)}`);
+    }
+  }
+  if (alive)
+    throw new Error(
+      `upstream refresh is already running (pid ${value.pid}); journal: ${journalPath}. ${manualRecovery(journalPath)}`,
+    );
   const recoveryLock = `${journalPath}.recovering`;
-  mkdirSync(recoveryLock);
+  try {
+    mkdirSync(recoveryLock);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST")
+      throw new Error(
+        `refresh recovery lock exists: ${recoveryLock}. ${manualRecovery(journalPath)}`,
+      );
+    throw error;
+  }
   try {
     // Another recovery may have finished between our initial read and this lock.
     // Never restore its stale snapshot over a subsequent writer's generation.
     if (!existsSync(journalPath)) return;
     if (readFileSync(journalPath, "utf8") !== journalText)
       throw new Error("refresh journal changed during recovery; retry");
-    replacePair(files, value);
+    // Both renames may have completed before cleanup was interrupted. Preserve
+    // that published generation rather than restoring the undo snapshot.
+    const completed =
+      value.nextDigest &&
+      sha256(readFileSync(files.manifest, "utf8")) === value.nextDigest.manifest &&
+      sha256(readFileSync(files.ledger, "utf8")) === value.nextDigest.ledger;
+    if (!completed) replacePair(files, value);
+    else
+      for (const directory of new Set([path.dirname(files.manifest), path.dirname(files.ledger)]))
+        syncDirectory(directory);
     finish(files);
   } finally {
     rmdirSync(recoveryLock);
@@ -130,7 +200,11 @@ export function recoverPortFiles(files: PortFiles): void {
 }
 
 export function readPortFiles(files: PortFiles): PortTexts {
-  recoverPortFiles(files);
+  const journalPath = pathsFor(files).journal;
+  if (existsSync(journalPath))
+    throw new Error(
+      `refresh journal exists: ${journalPath}; validation is read-only. Run the refresh or classification command to recover it. ${manualRecovery(journalPath)}`,
+    );
   const texts = {
     manifest: readFileSync(files.manifest, "utf8"),
     ledger: readFileSync(files.ledger, "utf8"),
@@ -143,7 +217,7 @@ export function readPortFiles(files: PortFiles): PortTexts {
 /**
  * Two paths cannot be atomically renamed together. A synced undo journal makes
  * interrupted publication recoverable; readers either see a complete pair or fail
- * closed until the next invocation restores the prior pair. The hook allows tests
+ * closed until a writing command recovers the interrupted publication. The hook allows tests
  * to kill a subprocess at the otherwise unobservable split-rename boundary.
  */
 export function writePortFiles(
@@ -154,6 +228,7 @@ export function writePortFiles(
 ): void {
   recoverPortFiles(files);
   const journalPath = pathsFor(files).journal;
+  const started = processStart(process.pid);
   const fd = openSync(journalPath, "wx", 0o600);
   let journalReady = false;
   let canFinish = false;
@@ -171,6 +246,8 @@ export function writePortFiles(
         paths: files,
         pid: process.pid,
         host: hostname(),
+        processStart: started,
+        nextDigest: { manifest: sha256(next.manifest), ledger: sha256(next.ledger) },
       } satisfies Journal),
     );
     fsyncSync(fd);

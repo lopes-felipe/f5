@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { verifyUpstream } from "./upstream-port-history.ts";
-import { readPortFiles, writePortFiles } from "./upstream-port-files.ts";
+import { UPSTREAM_MAIN_REF, verifyUpstream } from "./upstream-port-history.ts";
+import { readPortFiles, recoverPortFiles, writePortFiles } from "./upstream-port-files.ts";
 import { applyPortPlan, type PortPlan } from "./upstream-port-plan.ts";
 import { SHA_PATTERN, sha256, validateAudit, type Ledger } from "./upstream-port-ledger.ts";
 
@@ -26,7 +26,7 @@ try {
   const git = (args: ReadonlyArray<string>) =>
     execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }).trim();
   verifyUpstream(git);
-  const ancestry = git(["rev-list", "--first-parent", "upstream/main"]).split("\n");
+  const ancestry = git(["rev-list", "--first-parent", UPSTREAM_MAIN_REF]).split("\n");
   const headIndex = ancestry.indexOf(plan.targetSha);
   const baseIndex = ancestry.indexOf(plan.baseSha);
   if (headIndex < 0 || baseIndex <= headIndex)
@@ -44,6 +44,7 @@ try {
     .map((line) => ({ sha: line.slice(0, 40), subject: line.slice(41) }));
   if (JSON.stringify(commits.map((commit) => commit.sha)) !== JSON.stringify(selected))
     throw new Error("classification interval differs from upstream first-parent selection");
+  recoverPortFiles(files);
   const previous = readPortFiles(files);
   const ledger = JSON.parse(previous.ledger) as Ledger;
   if (ledger.manifestSha256 !== sha256(previous.manifest))

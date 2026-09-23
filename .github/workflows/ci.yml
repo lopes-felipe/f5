@@ -57,7 +57,7 @@ jobs:
       - name: Fetch authoritative upstream history
         run: |
           git remote add upstream https://github.com/pingdotgg/t3code.git
-          git fetch --no-tags upstream main
+          git fetch --no-prune --no-tags upstream refs/heads/main:refs/remotes/upstream/main
 
       - name: Validate upstream port ledger
         env:

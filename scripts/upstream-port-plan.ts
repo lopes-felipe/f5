@@ -178,7 +178,9 @@ export function applyPortPlan(
     // Regeneration must never erase a later implementation's proof.
     existing.set(
       commit.sha,
-      previous?.disposition === "ported" ? { ...entry, ...previous } : entry,
+      previous && ["ported", "equivalent", "already-present"].includes(previous.disposition)
+        ? previous
+        : entry,
     );
   }
   const window = new Set(ledger.entries.map((entry) => entry.upstreamSha));

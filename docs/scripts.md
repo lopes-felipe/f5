@@ -120,7 +120,7 @@ The generator requires exactly one reviewed classification for every SHA in the
 first-parent interval, lists missing and extra SHAs, and rejects duplicates and
 unknown phases/reason keys. Planned work becomes **deferred**, with its
 `plannedWorkstream`; it is never marked ported. Reapplying triage preserves later
-ported records and their implementation proof. The full checker validates the
+ported, equivalent, and already-present records unchanged, including their implementation proof. The full checker validates the
 candidate, including file/line evidence, before publication. Older legacy records
 outside the audited interval remain preserved and are not counted as new decisions.
 
@@ -128,14 +128,29 @@ outside the audited interval remain preserved and are not counted as new decisio
 
 Manifest and ledger publication uses staged files and a synced undo journal.
 Two separate path replacements cannot be atomic together: readers fail closed
-while a writer is active. On the next invocation after a killed writer, the old pair
-is restored byte-for-byte before validation or a new refresh proceeds. A real
+when a journal is present. Validation is strictly read-only and reports the journal
+path with recovery instructions. Refresh and classification commands recover first:
+if both canonical files match the recorded new-generation digests, they keep the
+finished publication; otherwise they restore the prior pair byte-for-byte. A real
 subprocess-kill test covers the boundary between renames. Concurrent edits cause
 publication to fail rather than overwrite the edits.
 
-Recovery verifies the originating host, file paths, and that the recorded process
-has exited; it never steals a live writer's journal. A truncated journal, a journal
+Recovery verifies the originating host, file paths, and OS process creation time
+alongside its PID; it never steals a live writer's journal, including older journals
+without a recorded creation time. A reused PID with a different creation time does
+not block recovery. A truncated journal, a journal
 from another host, or interruption of recovery itself fails closed for manual
 inspection. Node's Windows filesystem API does not support the directory fsync used
 on POSIX, so this is process-interruption recovery, not a cross-platform guarantee
 against power loss. Do not edit the canonical files while a refresh is running.
+
+Publication preserves each canonical file's permission bits; only the journal is
+private (0600). Recovery artifacts are gitignored. Malformed journals and leftover
+recovery locks name the exact paths requiring inspection; remove them only after
+confirming no writer/recovery is active and repairing the canonical pair if needed.
+
+Provenance uses `refs/remotes/upstream/main` explicitly, so same-named local tags
+or branches cannot redirect it. Both manifest and audit targets must belong to its
+first-parent history. CI fetches this ref without pruning and requires provenance
+validation. Historical object existence checks use one `git cat-file --batch-check`
+process.
