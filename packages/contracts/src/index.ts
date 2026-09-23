@@ -34,3 +34,6 @@ export * from "./checkedInProjectFile";
 export * from "./usage";
 
 export * from "./profile";
+
+export * from "./protocol";
+export { KNOWN_PROVIDER_KINDS } from "./providerKind";

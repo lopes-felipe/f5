@@ -1,3 +1,4 @@
+import { beginProtocolUpload, protocolFetch } from "../../../protocolState";
 import {
   type StorageCleanupCategoryId,
   type StorageCleanupCategoryUsage,
@@ -514,8 +515,10 @@ export function StorageSettings() {
     );
     if (!confirmed) return;
     setBackupBusy("restore");
+    let finishUpload: (() => void) | undefined;
     try {
-      const response = await fetch(`${getServerHttpOrigin()}/api/storage/restore`, {
+      finishUpload = beginProtocolUpload();
+      const response = await protocolFetch(`${getServerHttpOrigin()}/api/storage/restore`, {
         method: "POST",
         credentials: "include",
         headers: {
@@ -546,6 +549,7 @@ export function StorageSettings() {
     } finally {
       setBackupBusy(null);
       if (restoreInputRef.current) restoreInputRef.current.value = "";
+      finishUpload?.();
     }
   };
 

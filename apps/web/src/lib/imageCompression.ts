@@ -1,7 +1,4 @@
-import {
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS,
-} from "@t3tools/contracts";
+import { getServerSendLimits } from "../protocolState";
 
 import {
   COMPOSER_IMAGE_OUTPUT_MIME_TYPE,
@@ -133,8 +130,8 @@ export const compressImageForComposer: ComposerImageProcessor = async (file, opt
         id: requestId,
         file,
         mimeType: file.type,
-        maxBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-        maxDataUrlChars: PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS,
+        maxBytes: getServerSendLimits().maxImageBytes,
+        maxDataUrlChars: getServerSendLimits().maxImageDataUrlChars,
       });
     } catch {
       finish({ ok: false, reason: "unreadable" });

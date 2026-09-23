@@ -14,15 +14,16 @@ function formatInteger(value: number): string {
 
 export function getProviderTurnInputLengthIssue(
   input: string,
+  maxChars = PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
 ): ProviderTurnInputLengthIssue | null {
   const actualChars = input.trim().length;
-  if (actualChars <= PROVIDER_SEND_TURN_MAX_INPUT_CHARS) {
+  if (actualChars <= maxChars) {
     return null;
   }
 
   return {
     actualChars,
-    maxChars: PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-    message: `Message is ${formatInteger(actualChars)} characters, which exceeds the ${formatInteger(PROVIDER_SEND_TURN_MAX_INPUT_CHARS)} character provider input limit. Trim the pasted output or reference a file path instead.`,
+    maxChars,
+    message: `Message is ${formatInteger(actualChars)} characters, which exceeds the ${formatInteger(maxChars)} character provider input limit. Trim the pasted output or reference a file path instead.`,
   };
 }

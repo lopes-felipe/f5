@@ -1,3 +1,4 @@
+import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
   GithubAccountHostInput,
@@ -691,6 +692,7 @@ export const WsPushSequence = NonNegativeInt;
 export type WsPushSequence = typeof WsPushSequence.Type;
 
 export const WsWelcomePayload = Schema.Struct({
+  bootstrap: Schema.optional(ServerBootstrap),
   profile: Schema.optional(ProfileSummary),
   profileDiagnostic: Schema.optional(ProfileRegistryDiagnostic),
   cwd: TrimmedNonEmptyString,

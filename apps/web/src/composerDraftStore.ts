@@ -1,8 +1,8 @@
+import { getServerSendLimits } from "./protocolState";
 import {
   DEFAULT_REASONING_EFFORT_BY_PROVIDER,
   isRuntimeMode,
   ProjectId,
-  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   ProviderInstanceId,
   REASONING_EFFORT_OPTIONS_BY_PROVIDER,
   ThreadId,
@@ -2054,6 +2054,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { imported: [], failures: [], cancelled: false };
         }
 
+        const maxAttachments = getServerSendLimits().maxImagesPerTurn;
         const acceptedFiles: File[] = [];
         const failures: ComposerImageImportFailure[] = [];
         set((state) => {
@@ -2068,10 +2069,10 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               });
               continue;
             }
-            if (reservedCount >= PROVIDER_SEND_TURN_MAX_ATTACHMENTS) {
+            if (reservedCount >= maxAttachments) {
               failures.push({
                 name: file.name,
-                message: `You can attach up to ${PROVIDER_SEND_TURN_MAX_ATTACHMENTS} images per message.`,
+                message: `You can attach up to ${maxAttachments} images per message.`,
               });
               continue;
             }

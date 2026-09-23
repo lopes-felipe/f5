@@ -80,10 +80,16 @@ const WebSocket = createRequire(path.join(process.cwd(), "apps/server/package.js
         const cookie = login.headers.get("set-cookie").split(";")[0];
         const separator = cookie.indexOf("=");
         cookies.set(cookie.slice(0, separator), cookie.slice(separator + 1));
+        const bootstrap = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
+          headers: { Cookie: cookieHeader() },
+        }).then((response) => response.json());
         return await new Promise((resolve, reject) => {
-          const ws = new WebSocket("ws://127.0.0.1:" + port, {
-            headers: { Cookie: cookieHeader() },
-          });
+          const ws = new WebSocket(
+            `ws://127.0.0.1:${port}/?protocol=${bootstrap.protocolVersion}`,
+            {
+              headers: { Cookie: cookieHeader() },
+            },
+          );
           const timeout = setTimeout(() => {
             ws.terminate();
             reject(Error("welcome timeout"));

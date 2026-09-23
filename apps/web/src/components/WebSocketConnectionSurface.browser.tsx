@@ -1,3 +1,9 @@
+import {
+  beginProtocolUpload,
+  requireProtocolUpgrade,
+  resetProtocolStateForTests,
+  reloadForProtocolUpgrade,
+} from "../protocolState";
 import "../index.css";
 
 import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
@@ -33,6 +39,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   };
 });
 
+vi.mock("../protocolState", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../protocolState")>();
+  return { ...actual, reloadForProtocolUpgrade: vi.fn() };
+});
+
 function enableFlag(key: (typeof WEB_LOCAL_FLAG_KEYS)[keyof typeof WEB_LOCAL_FLAG_KEYS]) {
   localStorage.setItem(key, "true");
 }
@@ -64,10 +75,35 @@ describe("WebSocketConnectionSurface", () => {
     document.body.innerHTML = "";
     resetRequestLatencyStateForTests();
     resetWsConnectionStateForTests();
+    resetProtocolStateForTests();
+    vi.mocked(reloadForProtocolUpgrade).mockClear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("shows upgrades without unmounting drafts and waits for uploads before reloading", async () => {
+    const finishUpload = beginProtocolUpload();
+    const mounted = await mountSurface(<textarea defaultValue="saved draft" />);
+    try {
+      const draft = mounted.host.querySelector("textarea");
+      requireProtocolUpgrade();
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("F5 was updated. Reload to continue."),
+      );
+      expect(document.body.textContent).toContain("Waiting for uploads");
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reloadForProtocolUpgrade).not.toHaveBeenCalled();
+      expect(mounted.host.querySelector("textarea")).toBe(draft);
+      expect(draft?.value).toBe("saved draft");
+      finishUpload();
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Reloading"));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(reloadForProtocolUpgrade).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("keeps the overlay hidden while connecting or connected", async () => {
@@ -104,6 +140,8 @@ describe("WebSocketConnectionSurface", () => {
       });
 
       resetWsConnectionStateForTests();
+      resetProtocolStateForTests();
+      vi.mocked(reloadForProtocolUpgrade).mockClear();
       noteWsConnectionAttempt();
       noteWsConnectionClosed();
 

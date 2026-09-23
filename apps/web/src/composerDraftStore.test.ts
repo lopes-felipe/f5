@@ -1,3 +1,5 @@
+import { setServerBootstrap } from "./protocolState";
+import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1431,3 +1433,5 @@ describe("mergePersistedRecords", () => {
     });
   });
 });
+
+beforeEach(() => setServerBootstrap(serverBootstrapFixture));

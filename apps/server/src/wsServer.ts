@@ -1,3 +1,9 @@
+import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
+import {
+  F5_PROTOCOL_HEADER,
+  F5_PROTOCOL_QUERY,
+  F5_UPGRADE_REQUIRED_CLOSE_CODE,
+} from "@t3tools/contracts";
 import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { profileProviderAccounts } from "@t3tools/shared/profileProviderAccounts";
@@ -242,7 +248,12 @@ export class Server extends ServiceMap.Service<Server, ServerShape>()("t3/wsServ
 
 const DESKTOP_RENDERER_ORIGIN = "t3://app";
 const PRIVATE_CORS_METHODS = new Set(["GET", "POST"]);
-const PRIVATE_CORS_HEADERS = new Set(["authorization", "content-type", "x-f5-backup-password"]);
+const PRIVATE_CORS_HEADERS = new Set([
+  "authorization",
+  "content-type",
+  "x-f5-backup-password",
+  F5_PROTOCOL_HEADER.toLowerCase(),
+]);
 
 const isServerNotRunningError = (error: Error): boolean => {
   const maybeCode = (error as NodeJS.ErrnoException).code;
@@ -1186,7 +1197,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
           );
           respond(204, {
-            "Access-Control-Allow-Headers": "Authorization, Content-Type, X-F5-Backup-Password",
+            "Access-Control-Allow-Headers":
+              "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol",
             "Access-Control-Allow-Methods": "GET, POST",
             "Cache-Control": "no-store",
             "Content-Length": "0",
@@ -1216,6 +1228,27 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             403,
             { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
             JSON.stringify({ error: "Request origin is not allowed." }),
+          );
+          return;
+        }
+
+        if (
+          isPrivatePath &&
+          !["GET", "HEAD", "OPTIONS"].includes(req.method ?? "") &&
+          !protocolMatches(req.headers[F5_PROTOCOL_HEADER.toLowerCase()])
+        ) {
+          respond(
+            426,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify(UPGRADE_REQUIRED),
+          );
+          return;
+        }
+        if (url.pathname === "/api/bootstrap" && req.method === "GET") {
+          respond(
+            200,
+            { "Cache-Control": "no-store", "Content-Type": "application/json; charset=utf-8" },
+            JSON.stringify(SERVER_BOOTSTRAP),
           );
           return;
         }
@@ -1472,7 +1505,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
             respond(404, { "Content-Type": "text/plain" }, "Not Found");
             return;
           }
-          respond(200, { "Content-Type": "text/html; charset=utf-8" }, indexData);
+          respond(
+            200,
+            { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-cache" },
+            indexData,
+          );
           return;
         }
 
@@ -1484,7 +1521,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           respond(500, { "Content-Type": "text/plain" }, "Internal Server Error");
           return;
         }
-        respond(200, { "Content-Type": contentType }, data);
+        respond(
+          200,
+          {
+            "Content-Type": contentType,
+            ...(path.basename(filePath) === "index.html" ? { "Cache-Control": "no-cache" } : {}),
+          },
+          data,
+        );
       }),
     ).catch(() => {
       if (!res.headersSent) {
@@ -4237,6 +4281,14 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     }
 
     wss.handleUpgrade(request, socket, head, (ws) => {
+      if (
+        url.searchParams.getAll(F5_PROTOCOL_QUERY).length !== 1 ||
+        !protocolMatches(url.searchParams.get(F5_PROTOCOL_QUERY))
+      ) {
+        ws.on("error", () => {});
+        ws.close(F5_UPGRADE_REQUIRED_CLOSE_CODE, JSON.stringify(UPGRADE_REQUIRED));
+        return;
+      }
       wss.emit("connection", ws, request);
     });
   });
@@ -4256,6 +4308,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     const projectName = segments[segments.length - 1] ?? "project";
 
     const welcomeData = {
+      bootstrap: SERVER_BOOTSTRAP,
       cwd,
       projectName,
       ...(welcomeBootstrapProjectId ? { bootstrapProjectId: welcomeBootstrapProjectId } : {}),

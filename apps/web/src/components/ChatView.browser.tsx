@@ -1,3 +1,5 @@
+import { setServerBootstrap } from "../protocolState";
+import { serverBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
 
@@ -1890,6 +1892,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   beforeEach(async () => {
+    setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     document.body.innerHTML = "";

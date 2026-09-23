@@ -1,3 +1,5 @@
+import { F5_UPGRADE_REQUIRED_MESSAGE } from "@t3tools/contracts";
+import { reloadForProtocolUpgrade, useProtocolState } from "../protocolState";
 import { AlertTriangle, LoaderCircle, RefreshCw } from "lucide-react";
 import { type ReactNode, useEffect, useRef } from "react";
 
@@ -125,12 +127,30 @@ export function SlowRpcWarningToastCoordinator() {
 }
 
 export function WebSocketConnectionSurface({ children }: { readonly children: ReactNode }) {
+  const protocol = useProtocolState();
+  useEffect(() => {
+    if (!protocol.upgradeRequired || protocol.activeUploads > 0) return;
+    const timer = setTimeout(reloadForProtocolUpgrade, 300);
+    return () => clearTimeout(timer);
+  }, [protocol.upgradeRequired, protocol.activeUploads]);
   const enabled = useWsDisconnectSurfaceEnabled();
   const connectionState = useWsConnectionState();
 
-  const shouldBlock = enabled && isWsInteractionBlocked(connectionState.phase);
+  const shouldBlock =
+    protocol.upgradeRequired || (enabled && isWsInteractionBlocked(connectionState.phase));
   const blockingPhase = connectionState.phase === "reconnecting" ? "reconnecting" : "disconnected";
-  const copy = shouldBlock ? buildSurfaceCopy(blockingPhase) : null;
+  const copy = protocol.upgradeRequired
+    ? {
+        title: F5_UPGRADE_REQUIRED_MESSAGE,
+        eyebrow: "Update available",
+        description:
+          protocol.activeUploads > 0
+            ? "Waiting for uploads to finish before reloading."
+            : "Reloading…",
+      }
+    : shouldBlock
+      ? buildSurfaceCopy(blockingPhase)
+      : null;
   const latestMoment = getLatestConnectionMoment(
     connectionState.disconnectedAt,
     connectionState.lastErrorAt,
@@ -164,43 +184,47 @@ export function WebSocketConnectionSurface({ children }: { readonly children: Re
 
             <p className="mt-3 text-sm leading-relaxed text-muted-foreground">{copy.description}</p>
 
-            <div className="mt-5 grid gap-3 rounded-2xl border border-border/70 bg-background/60 p-4 text-sm sm:grid-cols-2">
-              <div>
-                <p className="text-[11px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
-                  Attempts
-                </p>
-                <p className="mt-1 font-medium text-foreground">{connectionState.attemptCount}</p>
+            {!protocol.upgradeRequired && (
+              <div className="mt-5 grid gap-3 rounded-2xl border border-border/70 bg-background/60 p-4 text-sm sm:grid-cols-2">
+                <div>
+                  <p className="text-[11px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
+                    Attempts
+                  </p>
+                  <p className="mt-1 font-medium text-foreground">{connectionState.attemptCount}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
+                    Latest event
+                  </p>
+                  <p className="mt-1 font-medium text-foreground">
+                    {formatConnectionMoment(latestMoment)}
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-[11px] font-semibold tracking-[0.16em] text-muted-foreground uppercase">
-                  Latest event
-                </p>
-                <p className="mt-1 font-medium text-foreground">
-                  {formatConnectionMoment(latestMoment)}
-                </p>
-              </div>
-            </div>
+            )}
 
-            {connectionState.lastError ? (
+            {connectionState.lastError && !protocol.upgradeRequired ? (
               <div className="mt-4 rounded-2xl border border-warning/25 bg-warning/8 px-4 py-3 text-sm text-warning-foreground">
                 {connectionState.lastError}
               </div>
             ) : null}
 
-            <div className="mt-5 flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                onClick={() => {
-                  void reconnectWsTransport().catch(() => undefined);
-                }}
-              >
-                <RefreshCw />
-                Retry now
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
-                Reload app
-              </Button>
-            </div>
+            {!protocol.upgradeRequired && (
+              <div className="mt-5 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    void reconnectWsTransport().catch(() => undefined);
+                  }}
+                >
+                  <RefreshCw />
+                  Retry now
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+                  Reload app
+                </Button>
+              </div>
+            )}
           </section>
         </div>
       ) : null}
