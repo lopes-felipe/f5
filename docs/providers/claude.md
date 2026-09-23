@@ -31,8 +31,9 @@ The default `claude` binary setting selects the executable bundled with the Clau
 does not require a global `claude` command on `PATH`. An empty `Claude HOME path` means T3 Code uses
 your normal home directory.
 
-F5 pins Claude Agent SDK 0.3.261, which bundles Claude Code v2.1.261. Claude Fable 5.1
-requires v2.1.257+ and provides native 1M context. Opus 5 remains the default Claude model.
+F5 pins Claude Agent SDK 0.3.280, which bundles Claude Code v2.1.280. Claude Fable 5.1
+requires v2.1.257+ and provides native 1M context. Opus 5.5 requires v2.1.280+, provides native 1M context, and is now the default Claude model
+with `medium` effort.
 F5 sets `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` and defaults `CLAUDE_CODE_ENABLE_TASKS=0`
 to expose the legacy `TodoWrite` surface required by its assistant instructions. Set
 `CLAUDE_CODE_ENABLE_TASKS=1` in the server environment to opt into the newer task-tracking
@@ -40,16 +41,39 @@ surface instead; F5 preserves this explicit operator override. That surface repl
 `TodoWrite` with task-tracking tools.
 
 With a custom executable, known versions below v2.1.257 omit Fable 5.1 and show an upgrade
-advisory. Unknown versions remain permissive. Bare `fable` and `claude-fable` aliases now
+advisory. Known versions below v2.1.280 also omit Opus 5.5 and show the upgrade advisory.
+Bare `opus` and `claude-opus` resolve to Opus 5.5; explicit `opus-5` stays on Opus 5.
+Unknown versions remain permissive. Bare `fable` and `claude-fable` aliases now
 resolve to Fable 5.1; explicit `fable-5` stays on Fable 5. Unavailable picker selections
 fall back to a supported option. Persisted thread models and sub-agent overrides are forwarded
 without silent substitution, so an older executable can reject them. Select a supported model
 or upgrade the custom executable to recover.
 
+### Turn cost accounting
+
+F5 converts cumulative SDK costs into per-turn deltas. Fresh sessions start at zero. Resumed
+queries can restore historical totals, and older custom CLIs do not all support the usage RPC.
+F5 stores the last observed total in the resume cursor and restores it across restarts, including
+model and effort changes, without requiring that RPC. Older cursors without a valid total still
+leave the first positive resumed result unpriced while establishing a baseline. Zeroed crash
+results do not reset the baseline and remain unpriced.
+
+A lower positive total is treated as a reset, including `/clear` and legacy CLIs that restart
+cost totals on resume. This is a heuristic: if the first post-reset total equals or exceeds the
+previous total, the delta under-counts spend by that previous total. An unexplained decrease is
+also treated as a reset and charges the new total. Cumulative results alone cannot distinguish
+these cases without an explicit reset signal.
+
+Repair from a native log also leaves costs unreported because the cumulative total alone cannot
+identify a turn's spend. Repair from a canonical completion retains the adapter's normalized cost.
+These unpriced turns can make workflow budgets and usage totals lower than actual spend; they
+are not recorded as zero-cost turns. Historical over-counted totals are not rewritten. Raw SDK
+results, including cumulative costs and model usage, remain available in the native event log.
+
 ### Reproducing bundled-runtime release checks
 
 Run `bun run --cwd apps/server test:claude:live` using Node 24.13.1+ on `PATH` and an
-authenticated Claude account with Fable 5.1 and Opus 4.8 access. This opt-in suite consumes account quota;
+authenticated Claude account with Opus 5.5, Fable 5.1 and Opus 4.8 access. This opt-in suite consumes account quota;
 ordinary test runs skip it. Authentication, quota, entitlement, timeout, and response-shape
 failures fail the live run rather than being reported as passes or automatic skips.
 

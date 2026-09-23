@@ -255,6 +255,7 @@ interface ClaudeSessionContext {
   readonly providerInstanceId: ProviderInstanceId;
   readonly promptQueue: Queue.Queue<PromptQueueItem>;
   readonly query: ClaudeQueryRuntime;
+  lastTotalCostUsd: number | undefined;
   readonly processEnvironment: NodeJS.ProcessEnv;
   streamFiber: Fiber.Fiber<void, Error> | undefined;
   readonly startedAt: string;
@@ -296,6 +297,30 @@ interface ClaudeSessionContext {
   resumeInvalidatedTurnId: TurnId | undefined;
   modelContextWindowTokens: number;
   stopped: boolean;
+}
+
+// Streaming-input results carry a running total. Resumes may restore transcript
+// totals; /clear resets them. An unknown resume baseline omits the first cost,
+// rather than charging historical spend. Zeroed crash results never reset it.
+// Suppressed late interrupt results are included in the next accounted delta;
+// their individual turn cost cannot be recovered from cumulative totals alone.
+function claudeTurnCost(
+  context: ClaudeSessionContext,
+  current: number | undefined,
+  failed: boolean,
+): {
+  totalCostUsd?: number;
+} {
+  if (current === undefined || !Number.isFinite(current) || current < 0) return {};
+  if (current === 0) return !failed && context.lastTotalCostUsd === 0 ? { totalCostUsd: 0 } : {};
+  const previous = context.lastTotalCostUsd;
+  if (previous === undefined) {
+    context.lastTotalCostUsd = current;
+    return {};
+  }
+  const delta = current >= previous ? current - previous : current;
+  context.lastTotalCostUsd = current;
+  return { totalCostUsd: Number(delta.toFixed(6)) };
 }
 
 interface ClaudeQueryRuntime extends AsyncIterable<SDKMessage> {
@@ -2015,6 +2040,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           turnCount: context.turns.length,
+          ...(context.lastTotalCostUsd !== undefined
+            ? { lastTotalCostUsd: context.lastTotalCostUsd }
+            : {}),
           baseContextChars: context.baseContextChars,
           approximateConversationChars: context.approximateConversationChars,
           compactionRecommendationEmitted: context.compactionRecommendationEmitted,
@@ -2699,6 +2727,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           }
           const stamp = yield* makeEventStamp();
+          const turnCost = claudeTurnCost(context, result?.total_cost_usd, status === "failed");
+          yield* updateResumeCursor(context);
           yield* offerRuntimeEvent({
             type: "turn.completed",
             eventId: stamp.eventId,
@@ -2713,9 +2743,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
               ...(result?.usage ? { usage: result.usage } : {}),
               ...(result?.modelUsage ? { modelUsage: result.modelUsage } : {}),
-              ...(typeof result?.total_cost_usd === "number"
-                ? { totalCostUsd: result.total_cost_usd }
-                : {}),
+              ...turnCost,
               ...(errorMessage ? { errorMessage } : {}),
             },
             providerRefs: {},
@@ -2806,6 +2834,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.resumeInvalidatedTurnId === turnState.turnId) {
           context.resumeInvalidatedTurnId = undefined;
         }
+        const turnCost = claudeTurnCost(context, result?.total_cost_usd, status === "failed");
         yield* updateResumeCursor(context);
 
         const stamp = yield* makeEventStamp();
@@ -2824,9 +2853,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             ...(result?.stop_reason !== undefined ? { stopReason: result.stop_reason } : {}),
             ...(result?.usage ? { usage: result.usage } : {}),
             ...(result?.modelUsage ? { modelUsage: result.modelUsage } : {}),
-            ...(typeof result?.total_cost_usd === "number"
-              ? { totalCostUsd: result.total_cost_usd }
-              : {}),
+            ...turnCost,
             ...(errorMessage ? { errorMessage } : {}),
           },
           providerRefs: nativeProviderRefs(context),
@@ -4882,6 +4909,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
 
+        // Reuse the last observed total across restarts without requiring get_usage.
+        // Older cursors remain unknown until the first positive result.
+        const lastTotalCostUsd = existingResumeSessionId ? resumeState?.lastTotalCostUsd : 0;
+
         const session: ProviderSession = {
           threadId,
           provider: PROVIDER,
@@ -4897,6 +4928,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ? { resumeSessionAt: resumeState.resumeSessionAt }
               : {}),
             turnCount: resumeState?.turnCount ?? 0,
+            ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
           },
           createdAt: startedAt,
           updatedAt: startedAt,
@@ -4907,6 +4939,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           providerInstanceId: input.providerInstanceId ?? ProviderInstanceId.make(PROVIDER),
           promptQueue,
           query: queryRuntime,
+          lastTotalCostUsd,
           processEnvironment: queryEnvironment,
           streamFiber: undefined,
           startedAt,

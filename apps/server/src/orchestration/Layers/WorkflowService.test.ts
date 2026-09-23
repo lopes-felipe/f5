@@ -50,7 +50,11 @@ function claudeProvider(models: ReadonlyArray<string>): ServerProvider {
     driver,
     enabled: true,
     installed: true,
-    version: models.includes("claude-opus-5") ? "2.1.220" : "2.1.219",
+    version: models.includes("claude-opus-5-5")
+      ? "2.1.280"
+      : models.includes("claude-opus-5")
+        ? "2.1.220"
+        : "2.1.219",
     status: "ready",
     auth: { status: "authenticated" },
     checkedAt: NOW,
@@ -9255,76 +9259,79 @@ describe("WorkflowService", () => {
     expect(harness.dispatched).toHaveLength(0);
   });
 
-  it("accumulates totalCostUsd from workflow thread session updates", async () => {
-    const workflow = makeWorkflow({
-      branchA: {
-        ...makeWorkflow().branchA,
-        status: "authoring",
-      },
-      implementation: {
-        implementationSlot: { provider: "codex", model: "gpt-5-codex" },
-        threadId: ThreadId.makeUnsafe("implementation-thread"),
-        implementationTurnId: null,
-        revisionTurnId: null,
-        codeReviewEnabled: true,
-        codeReviews: [],
-        status: "implementing",
-        error: null,
-        retryCount: 0,
-        lastRetryAt: null,
-        updatedAt: NOW,
-      },
-    });
-    harness = await createHarness(
-      makeReadModel({
-        workflow,
-        threads: [makeThread({ id: ThreadId.makeUnsafe("implementation-thread") })],
-      }),
-    );
-    await harness.start();
-
-    await harness.emit(
-      makeEvent("thread.session-set", {
-        threadId: ThreadId.makeUnsafe("author-a"),
-        session: {
-          threadId: ThreadId.makeUnsafe("author-a"),
-          status: "ready",
-          providerName: "codex",
-          runtimeMode: "full-access",
-          activeTurnId: null,
-          lastError: null,
-          turnCostUsd: 0.12,
-          updatedAt: NOW,
+  it.each(["codex", "claudeAgent"] as const)(
+    "accumulates %s turn deltas through workflow session updates",
+    async (provider) => {
+      const workflow = makeWorkflow({
+        branchA: {
+          ...makeWorkflow().branchA,
+          status: "authoring",
         },
-      }),
-    );
-
-    await waitFor(
-      () => (lastWorkflowUpsert(harness!.dispatched)?.workflow.totalCostUsd ?? 0) === 0.12,
-      100,
-    );
-
-    await harness.emit(
-      makeEvent("thread.session-set", {
-        threadId: ThreadId.makeUnsafe("implementation-thread"),
-        session: {
+        implementation: {
+          implementationSlot: { provider: "codex", model: "gpt-5-codex" },
           threadId: ThreadId.makeUnsafe("implementation-thread"),
-          status: "ready",
-          providerName: "codex",
-          runtimeMode: "full-access",
-          activeTurnId: null,
-          lastError: null,
-          turnCostUsd: 0.34,
+          implementationTurnId: null,
+          revisionTurnId: null,
+          codeReviewEnabled: true,
+          codeReviews: [],
+          status: "implementing",
+          error: null,
+          retryCount: 0,
+          lastRetryAt: null,
           updatedAt: NOW,
         },
-      }),
-    );
+      });
+      harness = await createHarness(
+        makeReadModel({
+          workflow,
+          threads: [makeThread({ id: ThreadId.makeUnsafe("implementation-thread") })],
+        }),
+      );
+      await harness.start();
 
-    await waitFor(
-      () => (lastWorkflowUpsert(harness!.dispatched)?.workflow.totalCostUsd ?? 0) === 0.46,
-      100,
-    );
-  });
+      await harness.emit(
+        makeEvent("thread.session-set", {
+          threadId: ThreadId.makeUnsafe("author-a"),
+          session: {
+            threadId: ThreadId.makeUnsafe("author-a"),
+            status: "ready",
+            providerName: provider,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            turnCostUsd: 0.12,
+            updatedAt: NOW,
+          },
+        }),
+      );
+
+      await waitFor(
+        () => (lastWorkflowUpsert(harness!.dispatched)?.workflow.totalCostUsd ?? 0) === 0.12,
+        100,
+      );
+
+      await harness.emit(
+        makeEvent("thread.session-set", {
+          threadId: ThreadId.makeUnsafe("implementation-thread"),
+          session: {
+            threadId: ThreadId.makeUnsafe("implementation-thread"),
+            status: "ready",
+            providerName: provider,
+            runtimeMode: "full-access",
+            activeTurnId: null,
+            lastError: null,
+            turnCostUsd: 0.34,
+            updatedAt: NOW,
+          },
+        }),
+      );
+
+      await waitFor(
+        () => (lastWorkflowUpsert(harness!.dispatched)?.workflow.totalCostUsd ?? 0) === 0.46,
+        100,
+      );
+    },
+  );
 
   it("transitions from automatic retries to a permanent error after the final retryable failure", async () => {
     vi.useFakeTimers();

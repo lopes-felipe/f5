@@ -190,9 +190,9 @@ export function parseNativeTurnCompletedLine(
             : {}),
           ...(payload.usage !== undefined ? { usage: payload.usage } : {}),
           ...(payload.modelUsage !== undefined ? { modelUsage: payload.modelUsage } : {}),
-          ...(typeof payload.total_cost_usd === "number"
-            ? { totalCostUsd: payload.total_cost_usd }
-            : {}),
+          // Native results contain cumulative session costs. Without a verified
+          // baseline, leave this repaired turn unpriced rather than charging the
+          // whole session again. Canonical completions retain normalized costs.
         },
       });
     }

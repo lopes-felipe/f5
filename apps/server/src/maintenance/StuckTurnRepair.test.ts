@@ -279,6 +279,59 @@ describe("repairConfirmedCompletedTurn", () => {
     return { engine, commands };
   }
 
+  it.each(["native", "canonical"] as const)(
+    "repairs %s Claude completions without replaying cumulative costs",
+    async (source) => {
+      const { engine, commands } = makeEngine();
+      const event =
+        source === "native"
+          ? parseNativeTurnCompletedLine(
+              `[${completedEvent.createdAt}] NTIVE: ${JSON.stringify({
+                id: "native-claude-cost",
+                kind: "notification",
+                provider: "claudeAgent",
+                threadId: completedEvent.threadId,
+                turnId: completedEvent.turnId,
+                createdAt: completedEvent.createdAt,
+                method: "claude/result/success",
+                payload: {
+                  is_error: false,
+                  subtype: "success",
+                  terminal_reason: "completed",
+                  total_cost_usd: 4.85,
+                  usage: { input_tokens: 10, output_tokens: 5 },
+                },
+              })}`,
+              completedEvent.threadId,
+            )
+          : parseCanonicalTurnCompletedLine(
+              `[${completedEvent.createdAt}] CANON: ${JSON.stringify({
+                ...completedEvent,
+                provider: "claudeAgent",
+                payload: {
+                  state: "completed",
+                  totalCostUsd: 0.05,
+                  usage: { input_tokens: 10, output_tokens: 5 },
+                },
+              })}`,
+            );
+      expect(event).not.toBeNull();
+      if (!event) throw new Error("Missing completion");
+      const result = await Effect.runPromise(repairConfirmedCompletedTurn({ engine, event }));
+      expect(result.status).toBe("repaired");
+      expect(commands).toHaveLength(2);
+      const session = commands.find((command) => command.type === "thread.session.set");
+      expect(session?.session.turnCostUsd).toBe(source === "native" ? undefined : 0.05);
+      const usage = commands.find((command) => command.type === "thread.usage.record");
+      expect(usage?.usageFact).toMatchObject({
+        inputTokens: 10,
+        outputTokens: 5,
+        providerReportedCostUsd: source === "native" ? null : 0.05,
+        costProvenance: source === "native" ? "unreported" : "provider-reported",
+      });
+    },
+  );
+
   it("dispatches lifecycle before usage for an exact confirmed match", async () => {
     const { engine, commands } = makeEngine();
     const result = await Effect.runPromise(

@@ -13,6 +13,12 @@ import { providerModelOptionsToSelections } from "../../providerModelOptions";
 
 const CLAUDE_MODELS: ReadonlyArray<ServerProviderModel> = [
   {
+    slug: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    isCustom: false,
+    capabilities: createClaudeModelCapabilities("claude-opus-5-5"),
+  },
+  {
     slug: "claude-fable-5-1",
     name: "Claude Fable 5.1",
     isCustom: false,
@@ -223,6 +229,32 @@ describe("ClaudeTraitsPicker", () => {
       draftThreadsByThreadId: {},
       projectDraftThreadIdByProjectId: {},
     });
+  });
+
+  it("shows Opus 5.5 reasoning and Fast Mode without context or thinking controls", async () => {
+    const mounted = await mountPicker({ model: "claude-opus-5-5" });
+
+    try {
+      await vi.waitFor(() => {
+        expect(page.getByRole("button").element().textContent).toContain("Medium");
+        expect(document.querySelector('[aria-label="Fast mode enabled"]')).toBeNull();
+      });
+      await page.getByRole("button").click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("Reasoning");
+        for (const label of ["Low", "Medium", "High", "Extra High", "Max", "Ultrathink"])
+          expect(text).toContain(label);
+        expect(text).toContain("Fast Mode");
+        expect(text).toContain("Off");
+        expect(text).toContain("On");
+        expect(text).not.toContain("Context Window");
+        expect(text).not.toContain("Thinking");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("shows Opus 5 reasoning and Fast Mode without context or thinking controls", async () => {

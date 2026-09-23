@@ -183,6 +183,8 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
     { slug: "gpt-5.2", name: "GPT-5.2" },
   ],
   claudeAgent: [
+    // NOTE: first claudeAgent entry must equal DEFAULT_MODEL_BY_PROVIDER.claudeAgent.
+    { slug: "claude-opus-5-5", name: "Claude Opus 5.5" },
     { slug: "claude-opus-5", name: "Claude Opus 5" },
     { slug: "claude-fable-5-1", name: "Claude Fable 5.1" },
     { slug: "claude-fable-5", name: "Claude Fable 5" },
@@ -213,7 +215,7 @@ export type ModelSlug = BuiltInModelSlug | (string & {});
 
 export const DEFAULT_MODEL_BY_PROVIDER = {
   codex: "gpt-6-astra",
-  claudeAgent: "claude-opus-5",
+  claudeAgent: "claude-opus-5-5",
   cursor: "auto",
   opencode: "openai/gpt-5",
   grok: "grok-build",
@@ -261,7 +263,11 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER = {
     "claude-fable-5.1": "claude-fable-5-1",
     "fable-5": "claude-fable-5",
     "claude-fable": "claude-fable-5-1",
-    opus: "claude-opus-5",
+    opus: "claude-opus-5-5",
+    "opus-5.5": "claude-opus-5-5",
+    "opus-5-5": "claude-opus-5-5",
+    "claude-opus-5.5": "claude-opus-5-5",
+    "claude-opus": "claude-opus-5-5",
     "opus-5": "claude-opus-5",
     "claude-opus-5.0": "claude-opus-5",
     "claude-opus-5-0": "claude-opus-5",

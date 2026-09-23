@@ -10,7 +10,7 @@ import type { ProviderAdapterShape } from "../provider/Services/ProviderAdapter"
 import * as Path from "node:path";
 import type { ServerConfigShape } from "../config";
 import { isPathWithinRoot, safeLstat } from "../storage/storagePathSafety";
-export const PROFILE_CERTIFIED_PROVIDERS = { claudeAgent: "0.3.261" } as const;
+export const PROFILE_CERTIFIED_PROVIDERS = { claudeAgent: "0.3.280" } as const;
 // This floor is independent of the protocol audit baseline: auditing a newer
 // release must not automatically make older compatible installations unusable.
 export const MINIMUM_ISOLATED_CODEX_VERSION = "0.144.3";

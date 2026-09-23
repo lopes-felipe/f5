@@ -34,6 +34,7 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
 const CLAUDE_FABLE_5_MODEL = "claude-fable-5";
 const CLAUDE_FABLE_5_1_MODEL = "claude-fable-5-1";
 const CLAUDE_SONNET_5_MODEL = "claude-sonnet-5";
+const CLAUDE_OPUS_5_5_MODEL = "claude-opus-5-5";
 const CLAUDE_OPUS_5_MODEL = "claude-opus-5";
 const CLAUDE_OPUS_4_8_MODEL = "claude-opus-4-8";
 const CLAUDE_OPUS_4_7_MODEL = "claude-opus-4-7";
@@ -59,6 +60,12 @@ interface ClaudeModelMetadata {
 }
 
 const CLAUDE_MODEL_METADATA: Record<ClaudeBuiltInModelSlug, ClaudeModelMetadata> = {
+  [CLAUDE_OPUS_5_5_MODEL]: {
+    contextWindowTokens: 1_000_000,
+    effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,
+    defaultEffort: "medium",
+    supportsFastMode: true,
+  },
   [CLAUDE_OPUS_5_MODEL]: {
     contextWindowTokens: 1_000_000,
     effortOptions: CLAUDE_CODE_EFFORT_OPTIONS,

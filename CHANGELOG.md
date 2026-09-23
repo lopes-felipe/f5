@@ -29,6 +29,15 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   Thread summaries. If that instance is missing, disabled, or deleted, existing notes
   are retained until a working summary instance is selected; no provider fallback occurs.
 
+- Claude Opus 5.5 support across Claude model pickers (requires Claude Code v2.1.280+), with native
+  1M context and fast mode, and the bundled runtime upgraded to v2.1.280. Opus 5.5 is now the
+  default Claude model and defaults to `medium` effort, matching Claude Code. Bare `opus` and
+  `claude-opus` aliases now select 5.5; `opus-5` remains pinned to Opus 5. Older custom CLIs omit
+  5.5 from pickers and fall back to the first supported built-in, which is Opus 5 on v2.1.220
+  through v2.1.279. Isolated profiles now certify Agent SDK 0.3.280. Persisted bare aliases in
+  threads or sub-agent overrides may fail at runtime; select a supported model or upgrade the
+  executable to recover.
+
 - Claude Fable 5.1 support across Claude model pickers (requires Claude Code v2.1.257+),
   with native 1M context and the bundled runtime upgraded to v2.1.261.
   Bare `fable` and `claude-fable` aliases now select 5.1; `fable-5` remains pinned to 5.
@@ -89,6 +98,14 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
   an error survives reconnects while a later failure with identical text remains visible.
 
 ### Fixed
+
+- Claude turn costs are no longer over-counted. The Agent SDK reports a running total per session,
+  which F5 was adding to workflow budgets and usage reporting on every turn, so a long thread could
+  hit its cost limit far below actual spend. Turns now report deltas. Resumes remain compatible
+  with older custom CLIs without requiring the experimental usage RPC. Resume cursors now retain
+  the last observed total so model, effort, and idle-session restarts preserve cost accounting.
+  Older cursors without a baseline and native-log repairs still leave costs unreported. Zeroed
+  crash placeholders remain unpriced. Reset inference and missing baselines can under-count spend.
 
 - Clarifying questions asked during a workflow's merge or revision stage no longer fail the turn.
   Those stages ran as `unattended-readonly`, so a question was treated as a profile violation that

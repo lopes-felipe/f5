@@ -5,6 +5,7 @@ export interface ClaudeResumeState {
   readonly resume?: string;
   readonly resumeSessionAt?: string;
   readonly turnCount?: number;
+  readonly lastTotalCostUsd?: number;
   readonly baseContextChars?: number;
   readonly approximateConversationChars?: number;
   readonly compactionRecommendationEmitted?: boolean;
@@ -34,6 +35,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     threadId?: unknown;
     resumeSessionAt?: unknown;
     turnCount?: unknown;
+    lastTotalCostUsd?: unknown;
     baseContextChars?: unknown;
     approximateConversationChars?: unknown;
     compactionRecommendationEmitted?: unknown;
@@ -52,6 +54,12 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     Number.isInteger(cursor.turnCount) &&
     cursor.turnCount >= 0
       ? cursor.turnCount
+      : undefined;
+  const lastTotalCostUsd =
+    typeof cursor.lastTotalCostUsd === "number" &&
+    Number.isFinite(cursor.lastTotalCostUsd) &&
+    cursor.lastTotalCostUsd >= 0
+      ? cursor.lastTotalCostUsd
       : undefined;
   const baseContextChars =
     typeof cursor.baseContextChars === "number" &&
@@ -74,6 +82,7 @@ export function readClaudeResumeState(resumeCursor: unknown): ClaudeResumeState 
     ...(resume ? { resume } : {}),
     ...(resumeSessionAt ? { resumeSessionAt } : {}),
     ...(turnCount !== undefined ? { turnCount } : {}),
+    ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
     ...(baseContextChars !== undefined ? { baseContextChars } : {}),
     ...(approximateConversationChars !== undefined ? { approximateConversationChars } : {}),
     ...(compactionRecommendationEmitted !== undefined ? { compactionRecommendationEmitted } : {}),

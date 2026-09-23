@@ -5960,6 +5960,330 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  function completeCostTurn(query: FakeClaudeQuery, total: number | undefined, failed = false) {
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "next", attachments: [] });
+      query.emit({
+        type: "result",
+        subtype: failed ? "error_during_execution" : "success",
+        is_error: failed,
+        errors: failed ? ["runtime crashed"] : [],
+        session_id: "sdk-cost-session",
+        uuid: "cost-result",
+        ...(total !== undefined ? { total_cost_usd: total } : {}),
+        modelUsage: {},
+      } as unknown as SDKMessage);
+      const completed = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead);
+      assert.equal(completed._tag, "Some");
+      if (completed._tag !== "Some") throw new Error("Missing completion");
+      assert.equal(completed.value.raw, undefined);
+      assert.deepEqual(completed.value.payload.modelUsage, {});
+      return completed.value.payload.totalCostUsd;
+    });
+  }
+
+  for (const scenario of [
+    { name: "free successful turns", totals: [0, 0.1], deltas: [0, 0.1] },
+    {
+      name: "startup crash placeholders",
+      totals: [0, 0.1],
+      deltas: [undefined, 0.1],
+      failedIndex: 0,
+    },
+    { name: "rising and duplicated totals", totals: [0.1, 0.3, 0.3], deltas: [0.1, 0.2, 0] },
+    { name: "positive resets after clear", totals: [0.3, 0.05, 0.1], deltas: [0.3, 0.05, 0.05] },
+    {
+      name: "zeroed error results",
+      totals: [0.3, 0, 0.35],
+      deltas: [0.3, undefined, 0.05],
+      failedIndex: 1,
+    },
+    {
+      name: "zeroed success-shaped crash results",
+      totals: [0.3, 0, 0.35],
+      deltas: [0.3, undefined, 0.05],
+    },
+    {
+      name: "invalid or absent totals",
+      totals: [0.3, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1, 0.35],
+      deltas: [0.3, undefined, undefined, undefined, undefined, 0.05],
+    },
+    {
+      name: "positive costs on failed turns",
+      totals: [0.3, 0.35, 0.4],
+      deltas: [0.3, 0.05, 0.05],
+      failedIndex: 1,
+    },
+  ]) {
+    it.effect(`normalizes Claude costs for ${scenario.name}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          model: "claude-opus-5-5",
+        });
+        for (const [index, total] of scenario.totals.entries()) {
+          const cost = yield* completeCostTurn(
+            harness.query,
+            total,
+            scenario.failedIndex === index,
+          );
+          assert.equal(cost, scenario.deltas[index], `result ${index}: cumulative ${total}`);
+        }
+      }).pipe(Effect.provide(harness.layer));
+    });
+  }
+
+  it.effect("normalizes orphaned duplicate results without emitting cumulative spend", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        total_cost_usd: 0.3,
+      } as unknown as SDKMessage);
+      const duplicate = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead);
+      assert.equal(duplicate._tag, "Some");
+      if (duplicate._tag === "Some") assert.equal(duplicate.value.payload.totalCostUsd, 0);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  for (const rpc of ["absent", "unsupported", "rejected", "pending", "invalid"] as const) {
+    it.effect(`resumes without depending on a ${rpc} usage RPC`, () => {
+      const harness = makeHarness();
+      let calls = 0;
+      if (rpc !== "absent")
+        Object.assign(harness.query, {
+          usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: async () => {
+            calls++;
+            if (rpc === "pending") return new Promise(() => {});
+            if (rpc === "invalid") return { session: { total_cost_usd: Number.NaN } };
+            throw new Error(
+              rpc === "unsupported"
+                ? "Unsupported control request subtype: get_usage"
+                : "Network unavailable",
+            );
+          },
+        });
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          model: "claude-opus-4-8",
+          resumeCursor: { resume: "550e8400-e29b-41d4-a716-446655440000" },
+        });
+        assert.equal(harness.query.closeCalls, 0);
+        assert.equal(calls, 0);
+        // Error zeros cannot establish a restored-session baseline either.
+        assert.equal(yield* completeCostTurn(harness.query, 0, true), undefined);
+        assert.equal(yield* completeCostTurn(harness.query, 4.85), undefined);
+        assert.equal(yield* completeCostTurn(harness.query, 4.9), 0.05);
+      }).pipe(Effect.provide(harness.layer));
+    });
+  }
+
+  it.effect("handles legacy resumed queries whose cost total starts fresh", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        resumeCursor: { resume: "550e8400-e29b-41d4-a716-446655440000" },
+      });
+      assert.equal(yield* completeCostTurn(harness.query, 0.1), undefined);
+      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.2);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  for (const resumedTotal of [0.35, 0.05]) {
+    it.effect(`preserves cost on an effort-change restart with SDK total ${resumedTotal}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const selection = (effort: string) =>
+          createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5", [
+            { id: "effort", value: effort },
+          ]);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          modelSelection: selection("medium"),
+        });
+        assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+        const sessions = yield* adapter.listSessions();
+        const cursor = sessions[0]!.resumeCursor as Record<string, unknown>;
+        assert.equal(cursor.lastTotalCostUsd, 0.3);
+        // Match the reactor's restart path, including durable JSON serialization.
+        const resumeCursor = JSON.parse(
+          JSON.stringify({ ...cursor, resume: "550e8400-e29b-41d4-a716-446655440000" }),
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          modelSelection: selection("high"),
+          resumeCursor,
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.effort, "high");
+        assert.equal(yield* completeCostTurn(harness.queries[1]!, resumedTotal), 0.05);
+      }).pipe(Effect.provide(harness.layer));
+    });
+  }
+
+  it.effect("carries suppressed late interrupt spend into the next accounted turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "interrupt", attachments: [] });
+      yield* adapter.interruptTurn(THREAD_ID);
+      yield* TestClock.adjust("3 seconds");
+      const interrupted = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead);
+      assert.equal(interrupted._tag, "Some");
+      if (interrupted._tag === "Some") {
+        assert.equal(interrupted.value.payload.state, "interrupted");
+        assert.equal(interrupted.value.payload.totalCostUsd, undefined);
+      }
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        total_cost_usd: 0.35,
+      } as unknown as SDKMessage);
+      for (let i = 0; i < 10; i++) yield* Effect.yieldNow;
+      // If the late event leaked, completeCostTurn would consume it instead.
+      assert.equal(yield* completeCostTurn(harness.query, 0.4), 0.1);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("starts a replacement fresh query with a zero cost baseline", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const input = {
+        threadId: THREAD_ID,
+        provider: "claudeAgent" as const,
+        runtimeMode: "full-access" as const,
+      };
+      yield* adapter.startSession(input);
+      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      yield* adapter.stopSession(THREAD_ID);
+      yield* adapter.startSession(input);
+      assert.equal(yield* completeCostTurn(harness.queries[1]!, 0.4), 0.4);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("switches Haiku with thinking disabled to native Opus 5.5 and resumes", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const instance = ProviderInstanceId.make("claudeAgent");
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        modelSelection: createModelSelection(instance, "claude-haiku-4-5", [
+          { id: "thinking", value: false },
+        ]),
+      });
+      const initial = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.take(1), Stream.runCollect);
+      assert.deepEqual(harness.getLastCreateQueryInput()?.options.settings, {
+        alwaysThinkingEnabled: false,
+      });
+      assert.equal(
+        initial.find((event) => event.type === "session.configured")?.payload.config
+          .modelContextWindowTokens,
+        200_000,
+      );
+      const selection = createModelSelection(instance, "opus[1m]", [
+        { id: "contextWindow", value: "1m" },
+        { id: "fastMode", value: true },
+        { id: "thinking", value: false },
+      ]);
+      yield* adapter.sendTurn({
+        threadId: THREAD_ID,
+        input: "switch",
+        modelSelection: selection,
+        attachments: [],
+      });
+      assert.deepEqual(harness.query.setModelCalls, ["claude-opus-5-5"]);
+      assert.deepEqual(harness.query.applyFlagSettingsCalls, [
+        { effortLevel: "medium", fastMode: true, alwaysThinkingEnabled: null },
+      ]);
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.match(promptText ?? "", /Active model: "claude-opus-5-5"/);
+      yield* adapter.stopSession(THREAD_ID);
+      const resumed = yield* adapter.startSession({
+        threadId: RESUME_THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        modelSelection: selection,
+        resumeCursor: {
+          threadId: THREAD_ID,
+          resume: "550e8400-e29b-41d4-a716-446655440000",
+          turnCount: 1,
+        },
+      });
+      assert.equal(resumed.model, "claude-opus-5-5");
+      assert.equal(harness.getLastCreateQueryInput()?.options.model, "claude-opus-5-5");
+      const resumedConfig = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "session.configured",
+      ).pipe(Stream.runHead);
+      if (resumedConfig._tag === "Some") {
+        assert.equal(resumedConfig.value.payload.config.context_window, undefined);
+        assert.equal(resumedConfig.value.payload.config.effort, "medium");
+        assert.equal(resumedConfig.value.payload.config.alwaysThinkingEnabled, undefined);
+        assert.equal(resumedConfig.value.payload.config.modelContextWindowTokens, 1_000_000);
+      }
+      assert.equal(harness.getLastCreateQueryInput()?.options.effort, "medium");
+      assert.equal(
+        harness.getLastCreateQueryInput()?.options.resume,
+        "550e8400-e29b-41d4-a716-446655440000",
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("switches Fable 5 at 200k to native 1M Fable 5.1, resumes, and switches back", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {

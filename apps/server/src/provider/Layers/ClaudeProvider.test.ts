@@ -113,6 +113,7 @@ function modelSlugs(snapshot: Awaited<ReturnType<typeof runStatusForVersion>>) {
 }
 
 function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
+  expect(slugs).toContain("claude-opus-5-5");
   expect(slugs).toContain("claude-opus-5");
   expect(slugs).toContain("claude-fable-5-1");
   expect(slugs).toContain("claude-fable-5");
@@ -122,6 +123,36 @@ function expectGatedModelsVisible(slugs: ReadonlyArray<string>) {
 }
 
 describe("checkClaudeProviderStatus", () => {
+  it.each(["2.1.279", "2.1.280"])("gates Opus 5.5 and bare aliases at %s", async (version) => {
+    const snapshot = await runStatusForVersionWithSettings(version, {
+      ...claudeSettings,
+      customModels: [
+        "opus",
+        "claude-opus",
+        "opus-5.5",
+        "opus-5-5",
+        "claude-opus-5.5",
+        "claude-opus-5-5[1m]",
+        "opus-5",
+      ],
+    });
+    const slugs = modelSlugs(snapshot);
+    expect(slugs.filter((slug) => slug === "claude-opus-5-5")).toHaveLength(
+      version === "2.1.280" ? 1 : 0,
+    );
+    expect(slugs[0]).toBe(version === "2.1.280" ? "claude-opus-5-5" : "claude-opus-5");
+    expect(slugs.filter((slug) => slug === "claude-opus-5")).toHaveLength(1);
+    if (version === "2.1.280") expect(snapshot.message).toBeUndefined();
+    else expect(snapshot.message).toContain("Claude Opus 5.5. Upgrade to v2.1.280");
+  });
+
+  it("keeps Fable 5.1 visible between the Fable and Opus 5.5 gates", async () => {
+    const snapshot = await runStatusForVersion("2.1.260");
+    expect(snapshot.message).toContain("Claude Opus 5.5");
+    expect(modelSlugs(snapshot)).toContain("claude-fable-5-1");
+    expect(modelSlugs(snapshot)).not.toContain("claude-opus-5-5");
+  });
+
   it.each([
     ['{"loggedIn":false,"authMethod":"none"}', "unauthenticated"],
     ['{"unexpected":"response"}', "unknown"],
@@ -145,7 +176,10 @@ describe("checkClaudeProviderStatus", () => {
       version === "2.1.257" ? 1 : 0,
     );
     expect(slugs.filter((slug) => slug === "claude-fable-5")).toHaveLength(1);
-    if (version === "2.1.256") expect(snapshot.message).toContain("Upgrade to v2.1.257");
+    const gate = VERSION_GATED_CLAUDE_MODELS.find(
+      (candidate) => compareCliVersions(version, candidate.minVersion) < 0,
+    );
+    if (gate) expect(snapshot.message).toContain(`Upgrade to v${gate.minVersion}`);
     else expect(snapshot.message).toBeUndefined();
   });
 
@@ -154,7 +188,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.169 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.169 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-8",
@@ -171,7 +205,7 @@ describe("checkClaudeProviderStatus", () => {
 
     expect(snapshot.status).toBe("ready");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.153 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.153 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-7",
@@ -186,7 +220,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.110");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.110 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.110 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).toEqual([
       "claude-opus-4-6",
@@ -200,7 +234,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.154");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.154 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.154 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
     expect(modelSlugs(snapshot).slice(0, 2)).toEqual(["claude-opus-4-8", "claude-opus-4-7"]);
   });
@@ -209,15 +243,16 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.219");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.219 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.219 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
+    expect(modelSlugs(snapshot)[0]).toBe("claude-fable-5");
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
   });
 
   it("exposes Claude Opus 5 first at Claude Code v2.1.220", async () => {
     const snapshot = await runStatusForVersion("2.1.220");
 
-    expect(snapshot.message).toContain("Claude Fable 5.1");
+    expect(snapshot.message).toContain("Claude Opus 5.5");
     expect(modelSlugs(snapshot).slice(0, 4)).toEqual([
       "claude-opus-5",
       "claude-fable-5",
@@ -236,7 +271,7 @@ describe("checkClaudeProviderStatus", () => {
     expect(snapshot.status).toBe("ready");
     expect(snapshot.auth.status).toBe("authenticated");
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.219 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.219 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
     expect(modelSlugs(snapshot)).not.toContain("claude-opus-5");
   });
@@ -252,7 +287,7 @@ describe("checkClaudeProviderStatus", () => {
     const snapshot = await runStatusForVersion("2.1.170");
 
     expect(snapshot.message).toBe(
-      "Claude Code v2.1.170 is too old for Claude Fable 5.1. Upgrade to v2.1.257 or newer to access it.",
+      "Claude Code v2.1.170 is too old for Claude Opus 5.5. Upgrade to v2.1.280 or newer to access it.",
     );
     expect(modelSlugs(snapshot).slice(0, 3)).toEqual([
       "claude-fable-5",
@@ -306,21 +341,28 @@ describe("checkClaudeProviderStatus", () => {
 });
 
 describe("makePendingClaudeProvider", () => {
+  it("keeps gate names consistent with built-in names", () => {
+    const models = makePendingClaudeProvider(claudeSettings).models;
+    for (const gate of VERSION_GATED_CLAUDE_MODELS)
+      expect(gate.name).toBe(models.find((model) => model.slug === gate.slug)?.name);
+  });
+
   it("matches contract membership while preserving the server leading order", () => {
     const slugs = makePendingClaudeProvider(claudeSettings).models.map((model) => model.slug);
     expect(new Set(slugs)).toEqual(
       new Set(MODEL_OPTIONS_BY_PROVIDER.claudeAgent.map((model) => model.slug)),
     );
-    expect(slugs.slice(0, 4)).toEqual([
+    expect(slugs.slice(0, 5)).toEqual([
+      "claude-opus-5-5",
       "claude-opus-5",
       "claude-fable-5-1",
       "claude-fable-5",
       "claude-sonnet-5",
     ]);
     expect(VERSION_GATED_CLAUDE_MODELS[0]).toEqual({
-      slug: "claude-fable-5-1",
-      name: "Claude Fable 5.1",
-      minVersion: "2.1.257",
+      slug: "claude-opus-5-5",
+      name: "Claude Opus 5.5",
+      minVersion: "2.1.280",
     });
   });
 
@@ -419,6 +461,16 @@ describe("getClaudeModelCapabilities", () => {
 });
 
 describe("resolveClaudeApiModelId", () => {
+  it("keeps native Opus 5.5 context bare despite stale context options", () => {
+    expect(
+      resolveClaudeApiModelId({
+        instanceId: ProviderInstanceId.make("claudeAgent"),
+        model: "claude-opus-5-5",
+        options: [{ id: "contextWindow", value: "1m" }],
+      }),
+    ).toBe("claude-opus-5-5");
+  });
+
   it("applies the 1M suffix only to context-window capable Claude models", () => {
     expect(
       resolveClaudeApiModelId({

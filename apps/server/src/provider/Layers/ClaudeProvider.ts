@@ -57,6 +57,12 @@ const CLAUDE_PRESENTATION = {
 } as const;
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel & { slug: ClaudeBuiltInModelSlug }> = [
   {
+    slug: "claude-opus-5-5",
+    name: "Claude Opus 5.5",
+    isCustom: false,
+    capabilities: createClaudeModelCapabilities("claude-opus-5-5"),
+  },
+  {
     slug: "claude-opus-5",
     name: "Claude Opus 5",
     isCustom: false,
@@ -119,6 +125,7 @@ const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel & { slug: ClaudeBuiltIn
 ];
 
 export const VERSION_GATED_CLAUDE_MODELS = [
+  { slug: "claude-opus-5-5", name: "Claude Opus 5.5", minVersion: "2.1.280" },
   { slug: "claude-fable-5-1", name: "Claude Fable 5.1", minVersion: "2.1.257" },
   { slug: "claude-opus-5", name: "Claude Opus 5", minVersion: "2.1.220" },
   { slug: "claude-fable-5", name: "Claude Fable 5", minVersion: "2.1.170" },

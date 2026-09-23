@@ -60,7 +60,7 @@ describe("instance-scoped model selection", () => {
       provider({
         provider: ProviderDriverKind.make("claudeAgent"),
         instanceId: "claudeAgent",
-        models: ["claude-opus-5", "claude-fable-5-1", "claude-fable-5"],
+        models: ["claude-opus-5-5", "claude-fable-5-1", "claude-fable-5"],
       }),
     ];
     const instanceId = ProviderInstanceId.make("claudeAgent");
@@ -80,7 +80,7 @@ describe("instance-scoped model selection", () => {
     expect(getAppModelOptionsForInstance(settings, entry).map((option) => option.slug)).toEqual([
       "claude-fable-5-1",
       "claude-fable-5",
-      "claude-opus-5",
+      "claude-opus-5-5",
     ]);
     const hidden = {
       ...settings,
@@ -89,11 +89,11 @@ describe("instance-scoped model selection", () => {
       },
     };
     expect(getAppModelOptionsForInstance(hidden, entry).map((option) => option.slug)).toEqual([
-      "claude-opus-5",
+      "claude-opus-5-5",
       "claude-fable-5",
     ]);
     expect(resolveAppModelSelectionForInstance(instanceId, hidden, providers, "fable")).toBe(
-      "claude-opus-5",
+      "claude-opus-5-5",
     );
   });
   it("keeps Fable 5.1 gated per instance and falls back for persisted bare aliases", () => {
@@ -296,6 +296,38 @@ describe("instance-scoped model selection", () => {
         "opus-5[1m]",
       ),
     ).toBe("claude-opus-5");
+  });
+
+  it("shows live Opus 5.5 exactly once after the provider snapshot exposes it", () => {
+    const providers = [
+      provider({
+        provider: ProviderDriverKind.make("claudeAgent"),
+        instanceId: "claudeAgent",
+        models: ["claude-opus-5-5", "claude-fable-5"],
+      }),
+    ];
+    const settings: UnifiedSettings = {
+      ...settingsWithProviderInstances(),
+      providerInstances: {
+        ...settingsWithProviderInstances().providerInstances,
+        [ProviderInstanceId.make("claudeAgent")]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { customModels: ["opus", "opus-5.5", "claude-opus-5-5[1m]"] },
+        },
+      },
+    };
+    const stock = deriveProviderInstanceEntries(providers)[0]!;
+    const slugs = getAppModelOptionsForInstance(settings, stock).map((option) => option.slug);
+
+    expect(slugs).toEqual(["claude-opus-5-5", "claude-fable-5"]);
+    expect(
+      resolveAppModelSelectionForInstance(
+        ProviderInstanceId.make("claudeAgent"),
+        settings,
+        providers,
+        "opus[1m]",
+      ),
+    ).toBe("claude-opus-5-5");
   });
 
   it("hides server models from the instance option list", () => {
