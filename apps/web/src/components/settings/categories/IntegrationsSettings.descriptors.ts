@@ -2,6 +2,14 @@ import type { SettingsItemDescriptor } from "../settingsSearch";
 
 export const INTEGRATIONS_SETTINGS_DESCRIPTORS = [
   {
+    id: "integrations.github",
+    category: "integrations",
+    label: "GitHub account",
+    description: "Sign in to GitHub for this profile’s agents, terminals, and pull requests.",
+    keywords: ["github", "gh", "authentication", "login", "token"],
+    targetSelector: '[data-settings-search-target="integrations.github"]',
+  },
+  {
     id: "integrations.keybindings",
     category: "integrations",
     label: "Keybindings",

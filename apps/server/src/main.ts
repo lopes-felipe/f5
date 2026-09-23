@@ -1,3 +1,5 @@
+import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
+import { makeServerSecretStore } from "./auth/Layers/ServerSecretStore";
 import * as ProfileFS from "node:fs/promises";
 import {
   ProfileRegistryStore,
@@ -410,6 +412,20 @@ const ServerConfigLive = (input: CliInput) => {
           (cause) => new StartupError({ message: "Failed to create state directories", cause }),
         ),
       );
+      const githubSecrets = yield* makeServerSecretStore.pipe(
+        Effect.provideService(ServerConfig, config),
+        Effect.mapError(
+          (cause) => new StartupError({ message: "Failed to open GitHub credentials", cause }),
+        ),
+      );
+      const githubFailure = yield* Effect.promise(() =>
+        new ProfileGithubAccount(githubSecrets, fetch, config).initialize(),
+      );
+      if (githubFailure)
+        yield* Effect.logWarning(
+          "Profile GitHub authentication is unavailable; reconnect in Settings > Integrations.",
+          { cause: githubFailure },
+        );
       if (startupErrorPath)
         yield* Effect.promise(() => ProfileFS.unlink(startupErrorPath!).catch(() => {}));
       return config;

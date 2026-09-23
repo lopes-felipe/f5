@@ -10,7 +10,7 @@ Account usage is read through each configured provider instance, using the same 
 
 ## Existing data and layout
 
-Default keeps its existing paths and provider logins. No existing data moves. Default continues to inherit shell provider credentials. Other profiles discard ambient provider and GitHub credentials and use their managed homes; explicit API tokens configured on an instance still take precedence.
+Default keeps its existing paths and provider logins. No existing data moves. Default continues to inherit shell provider credentials. Other profiles discard ambient provider credentials and use their managed homes; explicit provider API tokens configured on an instance still take precedence. GitHub credentials are profile-owned in every profile, including Default; shell GitHub tokens and workstation gh logins are not inherited.
 
 For a resolved default state directory `D`, profile metadata lives in the sibling directory `D-profiles`, never inside `D`:
 
@@ -40,11 +40,27 @@ Browser state is isolated by origin, so keep a consistent hostname and protocol.
 
 Opening a profile starts its backend and opens a window in its own persistent partition. Default retains the existing default partition. Preview browsing uses a separate partition for each profile. At most six backends run concurrently; use **Stop** to free a slot. Closing a profile's window retains its backend while the app remains open. Closing the last window on Windows or Linux quits the app and stops all backends. macOS retains the existing app lifecycle. A second app launch focuses the existing application.
 
-## Git, GitHub and shared repositories
+## GitHub authentication
 
-Configure a hostname and token in **Settings → Integrations**. F5 verifies the token with that host and stores it in the current profile's secret store. Non-default profiles never use ambient `GH_TOKEN`, `GITHUB_TOKEN` or machine `gh auth` logins. Configure their Git author name and email before committing; their authenticated remote operations require HTTPS without embedded credentials. Default retains host Git configuration, repository-local identity, SSH and credential helpers, and falls back to ambient tokens or the existing `gh auth` login when no profile token is saved. Tokens are passed through a host-restricted credential helper, never command arguments or remote URLs. Repository-local config is not rewritten.
+Connect in **Settings → Integrations → GitHub**. **Sign in with GitHub** displays a device code and opens GitHub in your browser. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection. Disconnect does not revoke the OAuth app grant on GitHub.
+
+A personal access token remains available for github.com and GitHub Enterprise hosts. The profile connection is used by F5’s GitHub features and by ordinary `gh` commands in its agents and terminals. Default must connect explicitly once; F5 never imports workstation credentials. Existing saved profile tokens migrate automatically, without requiring network access at startup.
+
+Credentials are stored in the existing profile secret store and projected into `<profile-state>/github/hosts.yml`. The directory and files are private to the OS user (0700/0600 on POSIX, a user-only DACL on Windows). This is file-based credential storage, not encryption at rest. If reconciliation fails, the backend remains available and logs the cause, while GitHub consumers fail closed until the connection is repaired. Windows permission updates are batched into one PowerShell invocation per projection write. Generated CLI files are excluded from backups; restore regenerates them from secrets supplied through the encrypted-backup flow. Do not edit the generated file or run `gh auth login/logout/switch` to manage an F5 connection: use Settings so all consumers stay consistent and workstation keychain entries remain untouched.
+
+F5 installs a profile CLI launcher and restores its PATH entry after Default shell startup files run. It clears inherited GitHub token overrides while preserving other shell customizations and explicit `GH_HOST`/`GH_REPO` routing. Already-running sessions pick up connection changes on their next `gh` invocation. An in-flight command may finish with the credential it already captured. Disconnected known hosts use an invalid placeholder token to prevent implicit OS-keychain fallback. Profile isolation controls F5-managed execution; it is not a security boundary against arbitrary programs running as the same OS user.
+
+Non-default profiles require explicit HTTPS remotes without embedded credentials or URL rewrites for managed Git network operations and use the profile’s token. Default preserves workstation Git transports, SSH agents, URL rewrites, and credential helpers for unconnected hosts. For a single HTTPS remote with a saved profile token, F5 selects that token through a host-specific credential helper. Configure Git author name/email separately; signing into GitHub does not change commit authorship. Default retains its local Git settings and author fallback.
+
+### Shared repositories
 
 Profiles can open the same repository. Linked worktrees share Git metadata; separate clones are the strongest way to avoid accidental source changes affecting another profile. Profiles isolate F5-owned state, not access to the host filesystem. Deliberately sourcing external shell configuration or manually entering a preview URL is outside the account-isolation guarantee. Automatic preview discovery only considers URLs emitted by owned terminals and provider command output, rather than scanning unrelated listening processes. This applies to Default too: externally started servers and URLs emitted before an F5 restart must be entered manually.
+
+### Browser sign-in deployment
+
+Register an **F5-owned GitHub OAuth app**, enable **Device Flow**, leave expiring tokens disabled, and set `F5_GITHUB_OAUTH_CLIENT_ID` in the backend launch environment to its public client ID. No client secret belongs in the application or frontend. The application requests `repo`, `read:org`, and `notifications`. Every agent and terminal in the connected profile can exercise those privileges, including repository writes allowed by the account. This also applies to Default; prompt injection into an agent can misuse those credentials. Profile separation selects accounts predictably and does not sandbox agent permissions. Organization approval/SSO restrictions can still require additional authorization on GitHub.
+
+Without a configured client ID, Settings explains that browser sign-in is unavailable and offers token login. Enterprise uses token login in this version. Pending device grants are held only in memory; after a backend restart, start sign-in again. Do not configure expiring OAuth tokens until refresh-token support is implemented; F5 rejects that unsupported response instead of silently persisting a short-lived connection.
 
 ## Removal and restore
 

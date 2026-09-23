@@ -57,3 +57,36 @@ describe("profile GitHub accounts", () => {
     expect(request).toHaveBeenCalledWith("https://git.example.com/api/v3/user", expect.anything());
   });
 });
+
+it("token readers wait for a cancelled save without inheriting its error", async () => {
+  const secrets = store();
+  const account = new ProfileGithubAccount(secrets, async () => Response.json({ login: "saved" }));
+  await account.set("github.com", "saved");
+  let release!: () => void;
+  let entered!: () => void;
+  const saving = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocker = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const original = secrets.set;
+  vi.spyOn(secrets, "set").mockImplementation((name, value) =>
+    name === "github-token-github.com" && new TextDecoder().decode(value) === "cancelled"
+      ? Effect.promise(async () => {
+          entered();
+          await blocker;
+          await Effect.runPromise(original(name, value));
+        })
+      : original(name, value),
+  );
+  let active = true;
+  const pending = account.set("github.com", "cancelled", () => active);
+  const rejected = expect(pending).rejects.toThrow("cancelled");
+  await saving;
+  const token = account.token("github.com");
+  active = false;
+  release();
+  await rejected;
+  expect(await token).toBe("saved");
+});

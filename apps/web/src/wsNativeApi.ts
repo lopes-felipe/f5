@@ -388,6 +388,9 @@ export function createWsNativeApi(): NativeApi {
 
   const api: NativeApi = {
     profiles: {
+      githubLoginStart: () => transport.request(WS_METHODS.githubLoginStart, {}),
+      githubLoginStatus: (input) => transport.request(WS_METHODS.githubLoginStatus, input),
+      githubLoginCancel: (input) => transport.request(WS_METHODS.githubLoginCancel, input),
       githubSet: (input) => transport.request(WS_METHODS.githubAccountSet, input),
       githubRemove: (input) => transport.request(WS_METHODS.githubAccountRemove, input),
       githubStatus: (input) => transport.request(WS_METHODS.githubAccountStatus, input),

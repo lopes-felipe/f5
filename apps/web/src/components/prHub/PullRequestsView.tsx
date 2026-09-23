@@ -97,7 +97,7 @@ function preferredFilterForPr(pr: TrackedPullRequest): PrHubFilter {
 function statusMessage(status: string): string | null {
   switch (status) {
     case "auth_required":
-      return "GitHub authentication required. Run `gh auth login`.";
+      return "Connect GitHub for this profile in Settings → Integrations. After upgrading, Default also needs a connection; workstation gh logins are no longer inherited.";
     case "gh_missing":
       return "GitHub CLI is missing. Install `gh` and restart F5.";
     case "degraded":
@@ -331,6 +331,17 @@ export function PullRequestsView({ focusedPrKey }: { focusedPrKey: string | null
             <p>
               {banner}
               {bannerDetail ? ` ${bannerDetail}` : ""}
+              {snapshot?.status === "auth_required" && (
+                <Button
+                  size="sm"
+                  variant="link"
+                  onClick={() =>
+                    void navigate({ to: "/settings", search: { category: "integrations" } })
+                  }
+                >
+                  Open GitHub settings
+                </Button>
+              )}
             </p>
           ) : null}
           {snapshot?.coverage.map((scope) => (
