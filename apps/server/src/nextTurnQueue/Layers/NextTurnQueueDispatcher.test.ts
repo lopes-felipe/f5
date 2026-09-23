@@ -1,4 +1,4 @@
-import { CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import { CommandId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { Effect, Layer, Option, Stream } from "effect";
@@ -12,6 +12,7 @@ import { OrchestrationCommandReceiptRepository } from "../../persistence/Service
 import { ProjectionThreadSessionRepository } from "../../persistence/Services/ProjectionThreadSessions.ts";
 import { ProjectionThreadRepository } from "../../persistence/Services/ProjectionThreads.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
+import { ProjectionTurnRepositoryLive } from "../../persistence/Layers/ProjectionTurns.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { NextTurnQueueDispatcher } from "../Services/NextTurnQueueDispatcher.ts";
 import { NextTurnQueueStore } from "../Services/NextTurnQueueStore.ts";
@@ -29,11 +30,6 @@ const dependencies = Layer.mergeAll(
   } as never),
   Layer.succeed(ProjectionThreadSessionRepository, {
     getByThreadId: () => Effect.succeed(Option.none()),
-  } as never),
-  Layer.succeed(ProjectionTurnRepository, {
-    getPendingTurnStartByThreadId: () => Effect.succeed(Option.none()),
-    getLatestRunningByThreadId: () => Effect.succeed(Option.none()),
-    getLatestTerminalByThreadId: () => Effect.succeed(Option.none()),
   } as never),
   Layer.succeed(OrchestrationCommandReceiptRepository, {
     getByCommandId: () => Effect.succeed(Option.none()),
@@ -61,6 +57,7 @@ const persistence = Layer.mergeAll(
 ).pipe(Layer.provideMerge(NodeServices.layer));
 const storeLayer = NextTurnQueueStoreLive.pipe(Layer.provideMerge(persistence));
 const testLayer = NextTurnQueueDispatcherLive.pipe(
+  Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(persistence))),
   Layer.provideMerge(storeLayer),
   Layer.provideMerge(dependencies),
 );
@@ -115,6 +112,92 @@ const insert = (index: number, threadId: ThreadId) =>
   });
 
 layer("NextTurnQueueDispatcher", (it) => {
+  it.effect(
+    "reconciles accepted feedback, waits for completion, then dispatches exactly once",
+    () =>
+      Effect.gen(function* () {
+        dispatched.length = 0;
+        const dispatcher = yield* NextTurnQueueDispatcher;
+        const store = yield* NextTurnQueueStore;
+        const turns = yield* ProjectionTurnRepository;
+        const sql = yield* SqlClient.SqlClient;
+        const threadId = ThreadId.makeUnsafe("accepted-feedback-thread");
+        const turnId = TurnId.makeUnsafe("existing-feedback-turn");
+        const messageId = MessageId.makeUnsafe("feedback-message");
+        const at = "2026-01-01T00:00:00.000Z";
+        yield* seedThread(threadId);
+        const submission = yield* insert(3, threadId);
+        assert.equal(submission.kind, "created");
+        const turn = {
+          threadId,
+          turnId,
+          pendingMessageId: MessageId.makeUnsafe("original-message"),
+          assistantMessageId: null,
+          state: "running" as const,
+          requestedAt: at,
+          startedAt: at,
+          completedAt: null,
+          processingQuiescedAt: null,
+          checkpointTurnCount: null,
+          checkpointRef: null,
+          checkpointStatus: null,
+          checkpointFiles: [],
+        };
+        yield* turns.upsertByTurnId(turn);
+        yield* turns.replacePendingTurnStart({
+          threadId,
+          messageId,
+          requestedAt: at,
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+        });
+        yield* sql`INSERT INTO provider_turn_deliveries
+        (delivery_id, thread_id, command_id, message_id, state, provider_turn_id,
+         event_json, created_at, updated_at, outcome_projected_at)
+        VALUES ('feedback-delivery', ${threadId}, 'feedback-command', ${messageId}, 'accepted',
+          ${turnId}, '{}', ${at}, ${at}, ${at})`;
+
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.deepEqual(dispatched, []);
+        assert.equal((yield* dispatcher.getSnapshot(threadId)).reasonCode, "active_turn");
+        assert.equal(Option.isNone(yield* turns.getPendingTurnStartByThreadId({ threadId })), true);
+
+        const completedAt = new Date().toISOString();
+        yield* turns.upsertByTurnId({ ...turn, state: "completed", completedAt });
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.deepEqual(dispatched, []);
+        assert.equal((yield* dispatcher.getSnapshot(threadId)).reasonCode, "turn_post_processing");
+
+        // Reproduce an existing false pause and stale placeholder from before the fix.
+        yield* turns.replacePendingTurnStart({
+          threadId,
+          messageId,
+          requestedAt: at,
+          sourceProposedPlanThreadId: null,
+          sourceProposedPlanId: null,
+        });
+        yield* turns.markProcessingQuiesced({
+          threadId,
+          turnId,
+          processingQuiescedAt: completedAt,
+        });
+        yield* store.setPaused({ threadId, paused: true, reasonCode: "turn_never_started" });
+        yield* store.setPaused({ threadId, paused: false });
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        yield* dispatcher.notify(threadId);
+        yield* dispatcher.drain;
+        assert.deepEqual(dispatched, [CommandId.makeUnsafe("dispatcher-command-3")]);
+        assert.equal((yield* store.listByThread(threadId)).state.paused, false);
+        assert.equal(
+          Option.getOrThrow(yield* turns.getByTurnId({ threadId, turnId })).pendingMessageId,
+          turn.pendingMessageId,
+        );
+      }),
+  );
+
   it.effect("does not admit a later item after Resume while delivery recovery is unresolved", () =>
     Effect.gen(function* () {
       dispatched.length = 0;

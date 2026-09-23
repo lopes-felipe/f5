@@ -30,6 +30,7 @@ const make = Effect.gen(function* () {
     readonly providerTurnId: TurnId;
   }) =>
     repository.markAccepted(input).pipe(
+      Effect.andThen(turns.reconcileAcceptedPendingTurnStarts({ threadId: input.threadId })),
       Effect.andThen(
         PubSub.publish(outcomes, {
           deliveryId: input.deliveryId,
@@ -217,19 +218,30 @@ const make = Effect.gen(function* () {
       Effect.forEach(
         deliveries,
         (delivery) =>
-          PubSub.publish(outcomes, {
-            deliveryId: delivery.deliveryId,
-            commandId: delivery.commandId,
-            threadId: delivery.threadId,
-            state: delivery.state as "accepted" | "rejected" | "ambiguous",
-            detail: delivery.errorDetail,
-          }),
+          turns.reconcileAcceptedPendingTurnStarts({ threadId: delivery.threadId }).pipe(
+            Effect.andThen(
+              PubSub.publish(outcomes, {
+                deliveryId: delivery.deliveryId,
+                commandId: delivery.commandId,
+                threadId: delivery.threadId,
+                state: delivery.state as "accepted" | "rejected" | "ambiguous",
+                detail: delivery.errorDetail,
+              }),
+            ),
+          ),
         { concurrency: 1, discard: true },
       ),
     ),
   );
 
   const start: ProviderTurnDeliveryWorkerShape["start"] = Effect.gen(function* () {
+    yield* turns.reconcileAcceptedPendingTurnStarts({}).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logError("accepted pending turn startup reconciliation failed", {
+          cause: Cause.pretty(cause),
+        }),
+      ),
+    );
     yield* reconcileSending.pipe(
       Effect.catchCause((cause) =>
         Effect.logError("provider delivery startup reconciliation failed", {

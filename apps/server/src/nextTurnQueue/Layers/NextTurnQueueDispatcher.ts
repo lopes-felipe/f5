@@ -119,6 +119,9 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
 
   const readGate = (item: NextTurnQueueItem) =>
     Effect.gen(function* () {
+      yield* turns
+        .reconcileAcceptedPendingTurnStarts({ threadId: item.threadId })
+        .pipe(Effect.mapError(storageError));
       const queue = yield* store.listByThread(item.threadId);
       const [threadOption, sessionOption, pendingOption, runningOption, terminalOption] =
         yield* Effect.all(

@@ -105,6 +105,32 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
       `,
   });
 
+  const reconcileAcceptedPendingTurnStarts: ProjectionTurnRepositoryShape["reconcileAcceptedPendingTurnStarts"] =
+    ({ threadId }) =>
+      sql`
+        DELETE FROM projection_turns
+        WHERE ${threadId === undefined ? sql`1 = 1` : sql`thread_id = ${threadId}`}
+          AND turn_id IS NULL
+          AND state = 'pending'
+          AND checkpoint_turn_count IS NULL
+          AND EXISTS (
+            SELECT 1 FROM provider_turn_deliveries AS delivery
+            JOIN projection_turns AS accepted_turn
+              ON accepted_turn.thread_id = delivery.thread_id
+              AND accepted_turn.turn_id = delivery.provider_turn_id
+            WHERE delivery.thread_id = projection_turns.thread_id
+              AND delivery.message_id = projection_turns.pending_message_id
+              AND delivery.state = 'accepted'
+          )
+      `.pipe(
+        Effect.asVoid,
+        Effect.mapError(
+          toPersistenceSqlError(
+            "ProjectionTurnRepository.reconcileAcceptedPendingTurnStarts:query",
+          ),
+        ),
+      );
+
   const insertPendingProjectionTurn = SqlSchema.void({
     Request: ProjectionPendingTurnStart,
     execute: (row) =>
@@ -484,6 +510,7 @@ const makeProjectionTurnRepository = Effect.gen(function* () {
     replacePendingTurnStart,
     getPendingTurnStartByThreadId,
     deletePendingTurnStartByThreadId,
+    reconcileAcceptedPendingTurnStarts,
     listByThreadId,
     getLatestRunningByThreadId,
     getLatestTerminalByThreadId,

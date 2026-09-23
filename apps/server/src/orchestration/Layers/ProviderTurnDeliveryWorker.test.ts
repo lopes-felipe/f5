@@ -23,6 +23,9 @@ let state: ProviderTurnDelivery;
 let requeueCount = 0;
 let outcomeProjected = false;
 let providerReadFails = false;
+let pendingBarrier = true;
+let reconciliationCount = 0;
+let acceptSend = false;
 let providerTurns: Array<{ id: TurnId; items: unknown[] }> = [];
 
 function resetDelivery() {
@@ -50,6 +53,9 @@ function resetDelivery() {
   requeueCount = 0;
   outcomeProjected = false;
   providerReadFails = false;
+  pendingBarrier = true;
+  reconciliationCount = 0;
+  acceptSend = false;
   providerTurns = [];
 }
 
@@ -121,12 +127,20 @@ const testLayer = ProviderTurnDeliveryWorkerLive.pipe(
   ),
   Layer.provideMerge(
     Layer.succeed(ProviderCommandReactor, {
-      deliverTurnStart: () => Effect.fail(new Error("session not found after request write")),
+      deliverTurnStart: () =>
+        acceptSend
+          ? Effect.succeed({ turnId: TurnId.makeUnsafe("existing-turn") })
+          : Effect.fail(new Error("session not found after request write")),
       recordTurnStartFailure: () => Effect.void,
     } as never),
   ),
   Layer.provideMerge(
     Layer.succeed(ProjectionTurnRepository, {
+      reconcileAcceptedPendingTurnStarts: () =>
+        Effect.sync(() => {
+          reconciliationCount += 1;
+          if (state.state === "accepted") pendingBarrier = false;
+        }),
       deletePendingTurnStartByThreadId: () => Effect.void,
     } as never),
   ),
@@ -209,4 +223,31 @@ it.effect(
       assert.equal(delivery?.state, "ambiguous");
       assert.equal(delivery?.certainty, "unknown");
     }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("reconciles acceptance before publishing an outcome that can be acknowledged", () =>
+  Effect.gen(function* () {
+    resetDelivery();
+    acceptSend = true;
+    const worker = yield* ProviderTurnDeliveryWorker;
+    const outcomeFiber = yield* Effect.forkScoped(
+      Stream.runHead(worker.outcomes).pipe(
+        Effect.tap(() => Effect.sync(() => assert.equal(pendingBarrier, false))),
+      ),
+    );
+    yield* Effect.yieldNow;
+    yield* worker.start;
+    yield* worker.drain;
+    const outcome = Option.getOrThrow(yield* Fiber.join(outcomeFiber));
+    assert.equal(outcome.state, "accepted");
+    yield* worker.acknowledgeOutcome(outcome.deliveryId);
+    assert.equal(outcomeProjected, true);
+
+    // A restart must repair old accepted outcomes even after acknowledgement.
+    pendingBarrier = true;
+    reconciliationCount = 0;
+    yield* worker.start;
+    assert.equal(pendingBarrier, false);
+    assert.isAtLeast(reconciliationCount, 1);
+  }).pipe(Effect.provide(testLayer)),
 );
