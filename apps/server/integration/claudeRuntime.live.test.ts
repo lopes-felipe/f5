@@ -11,6 +11,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
+import { getDefaultReasoningEffort } from "@t3tools/shared/model";
 import { Effect, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import { buildClaudeQueryEnv } from "../src/provider/Layers/ClaudeAdapter.ts";
@@ -29,6 +30,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
         q: Query,
         input: ReturnType<typeof createControllableAsyncIterable<SDKUserMessage>>,
       ) => Promise<void>,
+      model = "claude-fable-5-1",
     ) {
       const cwd = mkdtempSync(join(tmpdir(), "f5-claude-live-"));
       const input = createControllableAsyncIterable<SDKUserMessage>();
@@ -39,7 +41,11 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
         prompt: input.iterable,
         options: {
           cwd,
-          model: "claude-fable-5-1",
+          model,
+          // Preserve the older smoke leg's CLI defaults; exercise F5's Opus 5.5 default.
+          ...(model === "claude-opus-5-5"
+            ? { effort: getDefaultReasoningEffort("claudeAgent", model) }
+            : {}),
           persistSession: false,
           settingSources: [],
           env: buildClaudeQueryEnv({ subagentModel: "inherit" }, process.env),
@@ -84,20 +90,26 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
       }
     }
 
-    it("parses real account usage and native context, then cancels and reaps the idle executable", async () => {
-      await withQuery(async (q) => {
-        await q.initializationResult();
-        const usage = normalizeClaudeAccountUsage(
-          await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
-            skipBehaviors: true,
-          }),
-        );
-        expect(typeof usage.limitsAvailable).toBe("boolean");
-        const context = await q.getContextUsage({ detail: "summary" });
-        expect(context.model).toBe("claude-fable-5-1");
-        expect(context.maxTokens).toBe(1_000_000);
-      });
-    }, 60_000);
+    it.each(["claude-fable-5-1", "claude-opus-5-5"])(
+      "parses %s account usage and native context, then cancels and reaps the idle executable",
+      async (model) => {
+        await withQuery(async (q) => {
+          await q.initializationResult();
+          const usage = normalizeClaudeAccountUsage(
+            await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
+              skipBehaviors: true,
+            }),
+          );
+          expect(typeof usage.limitsAvailable).toBe("boolean");
+          const context = await q.getContextUsage({ detail: "summary" });
+          expect(context.model).toBe(model);
+          if (model === "claude-opus-5-5")
+            expect(getDefaultReasoningEffort("claudeAgent", model)).toBe("medium");
+          expect(context.maxTokens).toBe(1_000_000);
+        }, model);
+      },
+      60_000,
+    );
 
     it("advertises and successfully uses TodoWrite to complete three steps in a streamed turn", async () => {
       await withQuery(async (q, input) => {
@@ -160,7 +172,7 @@ describe.skipIf(process.env.F5_CLAUDE_LIVE_TEST !== "1")(
       });
     }, 60_000);
 
-    it.each(["claude-fable-5-1", "claude-opus-4-8"])(
+    it.each(["claude-fable-5-1", "claude-opus-4-8", "claude-opus-5-5"])(
       "validates %s --json-schema output with --effort xhigh through production generation",
       async (model) => {
         const cwd = mkdtempSync(join(tmpdir(), "f5-claude-json-live-"));

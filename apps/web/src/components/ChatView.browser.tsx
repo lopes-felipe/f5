@@ -3021,6 +3021,8 @@ describe("ChatView timeline (full app)", () => {
 
   it.each([
     {
+      alias: "opus-5[1m]",
+      slug: "claude-opus-5",
       label: "falls back to inherit before Claude Code 2.1.220",
       version: "2.1.219",
       includeOpus5: false,
@@ -3029,6 +3031,8 @@ describe("ChatView timeline (full app)", () => {
       expectedSubagentModel: "inherit",
     },
     {
+      alias: "opus-5[1m]",
+      slug: "claude-opus-5",
       label: "canonicalizes the alias once Opus 5 is available",
       version: "2.1.220",
       includeOpus5: true,
@@ -3037,6 +3041,8 @@ describe("ChatView timeline (full app)", () => {
       expectedSubagentModel: "claude-opus-5",
     },
     {
+      alias: "opus-5[1m]",
+      slug: "claude-opus-5",
       label: "uses the selected older Claude instance instead of the upgraded default",
       version: "2.1.219",
       includeOpus5: false,
@@ -3044,17 +3050,37 @@ describe("ChatView timeline (full app)", () => {
       defaultIncludesOpus5: true,
       expectedSubagentModel: "inherit",
     },
+    {
+      alias: "opus",
+      slug: "claude-opus-5-5",
+      label: "canonicalizes bare opus to Opus 5.5 after upgrade",
+      version: "2.1.280",
+      includeOpus5: true,
+      selectedInstanceId: "claudeAgent",
+      defaultIncludesOpus5: true,
+      expectedSubagentModel: "claude-opus-5-5",
+    },
+    {
+      alias: "opus",
+      slug: "claude-opus-5-5",
+      label: "keeps bare opus gated before Opus 5.5 support",
+      version: "2.1.279",
+      includeOpus5: false,
+      selectedInstanceId: "claudeAgent",
+      defaultIncludesOpus5: false,
+      expectedSubagentModel: "inherit",
+    },
   ])("dispatches a safe Claude subagent model: $label", async (testCase) => {
     persistAppSettings({
       claudeProjectSettings: {
         [PROJECT_ID]: {
           subagentsEnabled: true,
-          subagentModel: "opus-5[1m]",
+          subagentModel: testCase.alias,
         },
       },
       providerModelPreferences: {
         claudeAgent: {
-          hiddenModels: ["claude-opus-5"],
+          hiddenModels: [testCase.slug],
           modelOrder: [],
         },
       },
@@ -3084,13 +3110,18 @@ describe("ChatView timeline (full app)", () => {
           ...nextFixture.serverConfig,
           providers: [
             createTestServerProvider("claudeAgent", {
-              version: testCase.defaultIncludesOpus5 ? "2.1.220" : testCase.version,
+              version: testCase.defaultIncludesOpus5
+                ? testCase.slug === "claude-opus-5-5"
+                  ? "2.1.280"
+                  : "2.1.220"
+                : testCase.version,
               models: [
                 ...(testCase.defaultIncludesOpus5
                   ? [
                       {
-                        slug: "claude-opus-5",
-                        name: "Claude Opus 5",
+                        slug: testCase.slug,
+                        name:
+                          testCase.slug === "claude-opus-5-5" ? "Claude Opus 5.5" : "Claude Opus 5",
                         isCustom: false,
                         capabilities: null,
                       },
@@ -3114,8 +3145,11 @@ describe("ChatView timeline (full app)", () => {
                       ...(testCase.includeOpus5
                         ? [
                             {
-                              slug: "claude-opus-5",
-                              name: "Claude Opus 5",
+                              slug: testCase.slug,
+                              name:
+                                testCase.slug === "claude-opus-5-5"
+                                  ? "Claude Opus 5.5"
+                                  : "Claude Opus 5",
                               isCustom: false,
                               capabilities: null,
                             },

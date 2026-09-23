@@ -746,14 +746,15 @@ describe("getAppModelOptions", () => {
 
   it("preserves Claude built-in ordering and deduplicates custom aliases", () => {
     const options = getAppModelOptions("claudeAgent", ["fable", "fable-5.1", "claude-fable-5-1"]);
-    expect(options[1]).toMatchObject({
+    expect(options[2]).toMatchObject({
       slug: "claude-fable-5-1",
       name: "Claude Fable 5.1",
       isCustom: false,
     });
     expect(options.filter((option) => option.slug === "claude-fable-5-1")).toHaveLength(1);
 
-    expect(options.slice(0, 10).map((option) => option.slug)).toEqual([
+    expect(options.slice(0, 11).map((option) => option.slug)).toEqual([
+      "claude-opus-5-5",
       "claude-opus-5",
       "claude-fable-5-1",
       "claude-fable-5",

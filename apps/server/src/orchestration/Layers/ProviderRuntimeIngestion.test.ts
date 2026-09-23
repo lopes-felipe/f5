@@ -823,6 +823,52 @@ describe("ProviderRuntimeIngestion", () => {
     expect(thread.estimatedContextTokens).toBe(550);
   });
 
+  it("persists two Claude turn deltas in session state and usage reporting", async () => {
+    const harness = await createHarness();
+    const coverageStartedAt = await Effect.runPromise(
+      harness.usageFactRepository.readCoverageStartedAt,
+    );
+    const start = new Date(new Date(coverageStartedAt).getTime() + 1);
+    for (const [index, delta] of [0.1, 0.2].entries()) {
+      const turnId = asTurnId(`claude-cost-${index}`);
+      const createdAt = new Date(start.getTime() + index).toISOString();
+      harness.emit({
+        type: "turn.started",
+        eventId: asEventId(`cost-start-${index}`),
+        provider: "claudeAgent",
+        threadId: asThreadId("thread-1"),
+        turnId,
+        createdAt,
+      });
+      await waitForThread(harness.engine, (thread) => thread.session?.activeTurnId === turnId);
+      harness.emit({
+        type: "turn.completed",
+        eventId: asEventId(`cost-complete-${index}`),
+        provider: "claudeAgent",
+        threadId: asThreadId("thread-1"),
+        turnId,
+        createdAt,
+        payload: { state: "completed", totalCostUsd: delta },
+      });
+      await harness.drain();
+      await waitForThread(
+        harness.engine,
+        (entry) => entry.session?.status === "ready" && entry.session?.turnCostUsd === delta,
+      );
+    }
+    const rangeStart = new Date(start);
+    rangeStart.setUTCMinutes(0, 0, 0);
+    const rows = await Effect.runPromise(
+      harness.usageFactRepository.summarizeHourly({
+        startedAt: rangeStart.toISOString(),
+        endedAt: new Date(rangeStart.getTime() + 3_600_000).toISOString(),
+      }),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.providerReportedCostUsd).toBeCloseTo(0.3, 6);
+    expect(rows[0]?.pricedTurnCount).toBe(2);
+  });
+
   it("persists canonical completion usage before lifecycle metrics are collapsed", async () => {
     const harness = await createHarness();
     const coverageStartedAt = await Effect.runPromise(

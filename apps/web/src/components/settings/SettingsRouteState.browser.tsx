@@ -318,6 +318,13 @@ describe("useSettingsRouteState", () => {
 
   it.each([
     {
+      name: "Claude Opus 5.5",
+      alias: "opus",
+      slug: "claude-opus-5-5",
+      before: "2.1.279",
+      after: "2.1.280",
+    },
+    {
       name: "Claude Opus 5",
       alias: "opus-5[1m]",
       slug: "claude-opus-5",
