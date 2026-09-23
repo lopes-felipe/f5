@@ -741,18 +741,20 @@ function createSnapshotWithRichAssistantTarget(): OrchestrationReadModel {
     "- Keep only the highest-value parts",
   ].join("\n");
 
+  // Keep both measured rows in the initial rendered window, as the nested
+  // work-group fixture does. Scrolling to the top virtualizes the next row out.
   return {
     ...snapshot,
     threads: snapshot.threads.map((thread) =>
       thread.id === THREAD_ID
         ? Object.assign({}, thread, {
             messages: thread.messages.map((message) =>
-              message.id === ("msg-assistant-3" as MessageId)
+              message.id === ("msg-assistant-20" as MessageId)
                 ? createAssistantMessage({
                     id: targetAssistantMessageId,
                     text: assistantMarkdown,
                     reasoningText: reasoningMarkdown,
-                    offsetSeconds: 21,
+                    offsetSeconds: 123,
                   })
                 : message,
             ),
@@ -784,7 +786,7 @@ function createSnapshotWithRichAssistantTarget(): OrchestrationReadModel {
                   },
                 ],
                 assistantMessageId: targetAssistantMessageId,
-                completedAt: isoAt(22),
+                completedAt: isoAt(124),
               },
             ],
           })
@@ -2237,7 +2239,8 @@ describe("ChatView timeline (full app)", () => {
     try {
       const measurement = await mounted.measureTimelineRow({
         rowSelector: `[data-message-id="${targetMessageId}"][data-message-role="assistant"]`,
-        nextRowSelector: '[data-message-id="msg-user-4"][data-message-role="user"]',
+        nextRowSelector: '[data-message-id="msg-user-21"][data-message-role="user"]',
+        scrollToTop: false,
       });
 
       expect(measurement.measuredRowHeightPx).toBeGreaterThan(0);
