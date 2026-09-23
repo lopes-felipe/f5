@@ -23,7 +23,8 @@ export function normalizeGitHubCliError(
     ) {
       return new GitHubCliError({
         operation,
-        detail: "GitHub CLI is not authenticated. Run `gh auth login` and retry.",
+        detail:
+          "GitHub is not connected for this profile. Open Settings > Integrations > GitHub and retry.",
         kind: "unauthenticated",
         cause: error,
       });

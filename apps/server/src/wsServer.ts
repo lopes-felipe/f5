@@ -4,6 +4,7 @@ import {
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
 } from "@t3tools/contracts";
+import { GithubDeviceLogin } from "./git/GithubDeviceLogin";
 import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { profileProviderAccounts } from "@t3tools/shared/profileProviderAccounts";
@@ -878,6 +879,12 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
   const profileSecrets = yield* makeServerSecretStore.pipe(
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "profiles.secrets", cause })),
   );
+  const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
+  const githubLogin = new GithubDeviceLogin(
+    githubAccount,
+    process.env.F5_GITHUB_OAUTH_CLIENT_ID?.trim(),
+  );
+  yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
   const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
   const profileCall = <A>(operation: () => Promise<A>) =>
     Effect.tryPromise({
@@ -2102,17 +2109,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
+      case WS_METHODS.githubLoginStart:
+        return yield* profileCall(() => githubLogin.start());
+      case WS_METHODS.githubLoginStatus:
+        return githubLogin.status(request.body.handle);
+      case WS_METHODS.githubLoginCancel:
+        return githubLogin.cancel(request.body.handle);
       case WS_METHODS.githubAccountSet: {
         const { host, token } = request.body;
-        return yield* profileCall(() => new ProfileGithubAccount(profileSecrets).set(host, token));
+        if (host === "github.com") githubLogin.cancel();
+        return yield* profileCall(() => githubAccount.set(host, token));
       }
       case WS_METHODS.githubAccountRemove: {
         const { host } = request.body;
-        return yield* profileCall(() => new ProfileGithubAccount(profileSecrets).remove(host));
+        if (host === "github.com") githubLogin.cancel();
+        return yield* profileCall(() => githubAccount.remove(host));
       }
       case WS_METHODS.githubAccountStatus: {
         const { host } = request.body;
-        return yield* profileCall(() => new ProfileGithubAccount(profileSecrets).status(host));
+        return yield* profileCall(() => githubAccount.status(host));
       }
       case WS_METHODS.profilesList:
         return yield* profileCall(readProfiles);

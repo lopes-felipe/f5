@@ -1,6 +1,7 @@
 import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
+  GithubLoginHandleInput,
   GithubAccountHostInput,
   ProfileSummary,
   ProfileRegistryDiagnostic,
@@ -225,6 +226,9 @@ import {
 // ── WebSocket RPC Method Names ───────────────────────────────────────
 
 export const WS_METHODS = {
+  githubLoginStart: "githubAccount.loginStart",
+  githubLoginStatus: "githubAccount.loginStatus",
+  githubLoginCancel: "githubAccount.loginCancel",
   githubAccountSet: "githubAccount.set",
   githubAccountRemove: "githubAccount.remove",
   githubAccountStatus: "githubAccount.status",
@@ -411,6 +415,9 @@ const tagMcpAccountRequestBody = <
   );
 
 const WebSocketRequestBody = Schema.Union([
+  tagRequestBody(WS_METHODS.githubLoginStart, GithubLoginHandleInput),
+  tagRequestBody(WS_METHODS.githubLoginStatus, GithubLoginHandleInput),
+  tagRequestBody(WS_METHODS.githubLoginCancel, GithubLoginHandleInput),
   tagRequestBody(WS_METHODS.githubAccountSet, GithubAccountInput),
   tagRequestBody(WS_METHODS.githubAccountRemove, GithubAccountHostInput),
   tagRequestBody(WS_METHODS.githubAccountStatus, GithubAccountHostInput),

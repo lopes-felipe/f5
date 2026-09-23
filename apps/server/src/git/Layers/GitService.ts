@@ -116,7 +116,11 @@ const makeGitService = Effect.gen(function* () {
                 authorEmail: settings?.gitAuthorEmail ?? "",
                 tokenForHost: async (host) => {
                   const value = Option.isSome(profileSecrets)
-                    ? await new ProfileGithubAccount(profileSecrets.value).token(host)
+                    ? await new ProfileGithubAccount(
+                        profileSecrets.value,
+                        fetch,
+                        profileConfig.value,
+                      ).token(host)
                     : null;
                   return value;
                 },

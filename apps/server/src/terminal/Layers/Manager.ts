@@ -1,3 +1,4 @@
+import { githubTerminalStartup } from "../../git/githubShellStartup";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import type { ServerConfigShape } from "../../config";
 import { EventEmitter } from "node:events";
@@ -627,8 +628,17 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
       );
       let lastSpawnError: unknown = null;
 
-      const spawnWithCandidate = (candidate: ShellCandidate) =>
-        Effect.runPromise(
+      const spawnWithCandidate = (candidate: ShellCandidate) => {
+        const defaultStartup =
+          this.accountConfig && this.accountConfig.profile?.isDefault !== false
+            ? githubTerminalStartup(
+                candidate.shell,
+                candidate.args,
+                terminalEnv,
+                this.accountConfig.stateDir,
+              )
+            : undefined;
+        return Effect.runPromise(
           this.ptyAdapter.spawn({
             shell: candidate.shell,
             ...(this.accountConfig?.profile?.isDefault === false
@@ -657,15 +667,18 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
                     return candidate.args ?? [];
                   })(),
                 }
-              : candidate.args
-                ? { args: candidate.args }
-                : {}),
+              : defaultStartup
+                ? { args: defaultStartup.args }
+                : candidate.args
+                  ? { args: candidate.args }
+                  : {}),
             cwd: session.cwd,
             cols: session.cols,
             rows: session.rows,
-            env: terminalEnv,
+            env: defaultStartup?.env ?? terminalEnv,
           }),
         );
+      };
 
       const trySpawn = async (
         candidates: ShellCandidate[],

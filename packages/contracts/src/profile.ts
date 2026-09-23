@@ -99,3 +99,18 @@ export const GithubAccountInput = Schema.Struct({
   token: TrimmedNonEmptyString,
 });
 export const GithubAccountHostInput = Schema.Struct({ host: GithubAccountInput.fields.host });
+
+export const GithubLoginHandleInput = Schema.Struct({
+  handle: Schema.optional(TrimmedNonEmptyString),
+});
+export const GithubLoginStatus = Schema.Struct({
+  available: Schema.Boolean,
+  state: Schema.Literals(["idle", "pending", "connected", "cancelled", "expired", "error"]),
+  handle: Schema.optional(Schema.String),
+  userCode: Schema.optional(Schema.String),
+  verificationUri: Schema.optional(Schema.String),
+  expiresAt: Schema.optional(Schema.Number),
+  login: Schema.optional(Schema.String),
+  error: Schema.optional(Schema.String),
+});
+export type GithubLoginStatus = typeof GithubLoginStatus.Type;
