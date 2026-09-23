@@ -948,12 +948,14 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
-  it.effect("distinguishes unsupported subagent kinds from malformed identities", () =>
+  it.effect("distinguishes unsupported subagent kinds from malformed kinds and identities", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
       const cases = [
         { kind: "futureKind", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
         { agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        { kind: null, agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        { kind: 42, agentThreadId: "agent-1", agentPath: "/root/reviewer" },
         { kind: "completed", agentPath: "/root/reviewer" },
         { kind: "completed", agentThreadId: "agent-1" },
         { kind: "completed", agentThreadId: "  ", agentPath: "/root/reviewer" },
@@ -979,9 +981,11 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         if (event.type !== "runtime.warning") return;
         assert.equal(
           event.payload.message,
-          index < 2
-            ? "Unsupported Codex subagent activity kind."
-            : "Malformed Codex subagent activity: expected nonempty agentThreadId and agentPath.",
+          index === 0
+            ? 'Unsupported Codex subagent activity kind "futureKind".'
+            : index < 4
+              ? "Malformed Codex subagent activity: expected a string kind."
+              : "Malformed Codex subagent activity: expected nonempty agentThreadId and agentPath.",
         );
         assert.equal(event.payload.protocolValue, "subAgentActivity");
         assert.deepEqual(event.payload.detail, {

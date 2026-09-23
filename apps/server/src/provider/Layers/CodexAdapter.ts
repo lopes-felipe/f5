@@ -798,7 +798,9 @@ function mapSubagentActivity(
     return protocolWarningEvent(
       event,
       canonicalThreadId,
-      "Unsupported Codex subagent activity kind.",
+      typeof kind === "string"
+        ? `Unsupported Codex subagent activity kind ${JSON.stringify(kind)}.`
+        : "Malformed Codex subagent activity: expected a string kind.",
       "subAgentActivity",
     );
   }

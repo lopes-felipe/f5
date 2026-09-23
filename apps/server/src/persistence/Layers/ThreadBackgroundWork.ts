@@ -119,6 +119,11 @@ const make = Effect.gen(function* () {
         completed_at = CASE
           WHEN projection_thread_background_work.classification = 'inert' AND excluded.active = 1
             THEN projection_thread_background_work.completed_at
+          WHEN projection_thread_background_work.active = 0 AND excluded.active = 0
+            AND projection_thread_background_work.status = excluded.status
+            AND excluded.status IN ('completed', 'failed', 'stopped', 'interrupted')
+            AND projection_thread_background_work.provider_session_identity IS excluded.provider_session_identity
+            THEN COALESCE(projection_thread_background_work.completed_at, excluded.completed_at)
           ELSE excluded.completed_at
         END
       WHERE
