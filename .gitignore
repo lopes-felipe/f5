@@ -22,3 +22,8 @@ apps/web/src/components/__screenshots__
 # Keep repository-wide agent instructions under version control even when a
 # developer's global Git ignore file excludes AGENTS.md.
 !AGENTS.md
+
+# Interrupted upstream ledger publication (local recovery only).
+*.refresh-journal
+*.refresh-next
+*.refresh-journal.recovering/
