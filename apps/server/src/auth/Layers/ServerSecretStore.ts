@@ -47,50 +47,32 @@ export const makeServerSecretStore = Effect.gen(function* () {
       ),
     );
 
-  const set: ServerSecretStoreShape["set"] = (name, value) => {
+  // Publish only fully written files. Creating the destination with `wx` exposes an
+  // empty (or partially written) secret to other processes before writeAll finishes.
+  const persist = (name: string, value: Uint8Array, overwrite: boolean) => {
     const secretPath = resolveSecretPath(name);
     const tempPath = `${secretPath}.${Crypto.randomUUID()}.tmp`;
-    return Effect.gen(function* () {
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const file = yield* fileSystem.open(tempPath, {
-            flag: "wx",
-            mode: 0o600,
-          });
-          yield* file.writeAll(value);
-          yield* file.sync;
-        }),
-      );
-      yield* fileSystem.rename(tempPath, secretPath);
-      yield* fileSystem.chmod(secretPath, 0o600);
-    }).pipe(
-      Effect.catch((cause) =>
-        fileSystem.remove(tempPath).pipe(
-          Effect.ignore,
-          Effect.flatMap(() =>
-            Effect.fail(
-              new SecretStoreError({
-                message: `Failed to persist secret ${name}.`,
-                cause,
-              }),
-            ),
-          ),
-        ),
-      ),
-    );
-  };
-
-  const create: ServerSecretStoreShape["set"] = (name, value) => {
-    const secretPath = resolveSecretPath(name);
     return Effect.scoped(
       Effect.gen(function* () {
-        const file = yield* fileSystem.open(secretPath, {
-          flag: "wx",
-          mode: 0o600,
-        });
-        yield* file.writeAll(value);
-        yield* file.sync;
-        yield* fileSystem.chmod(secretPath, 0o600);
+        yield* Effect.acquireRelease(Effect.succeed(tempPath), (temporary) =>
+          fileSystem.remove(temporary).pipe(Effect.ignore),
+        );
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const file = yield* fileSystem.open(tempPath, {
+              flag: "wx",
+              mode: 0o600,
+            });
+            yield* file.writeAll(value);
+            yield* file.sync;
+          }),
+        );
+        yield* fileSystem.chmod(tempPath, 0o600);
+        // A hard link publishes atomically without replacing a concurrent winner.
+        // Both paths are in secretsDir, so they always reside on the same volume.
+        yield* overwrite
+          ? fileSystem.rename(tempPath, secretPath)
+          : fileSystem.link(tempPath, secretPath);
       }),
     ).pipe(
       Effect.mapError(
@@ -102,6 +84,9 @@ export const makeServerSecretStore = Effect.gen(function* () {
       ),
     );
   };
+
+  const set: ServerSecretStoreShape["set"] = (name, value) => persist(name, value, true);
+  const create: ServerSecretStoreShape["set"] = (name, value) => persist(name, value, false);
 
   const getOrCreateRandom: ServerSecretStoreShape["getOrCreateRandom"] = (name, bytes) =>
     get(name).pipe(

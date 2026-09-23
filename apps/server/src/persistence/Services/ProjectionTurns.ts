@@ -140,6 +140,17 @@ export interface ProjectionTurnRepositoryShape {
   ) => Effect.Effect<void, ProjectionRepositoryError>;
 
   /**
+   * Clears placeholders whose exact message has an accepted delivery to an existing
+   * concrete turn with its message association projected.
+   */
+  readonly reconcileAcceptedPendingTurnStarts: (input: {
+    readonly threadId: ThreadId;
+  }) => Effect.Effect<void, ProjectionRepositoryError>;
+
+  /** Startup repair across all threads, including already acknowledged deliveries. */
+  readonly reconcileAllAcceptedPendingTurnStarts: Effect.Effect<void, ProjectionRepositoryError>;
+
+  /**
    * Lists all projection rows for a thread, including pending placeholders, with checkpoint rows ordered before non-checkpoint rows.
    */
   readonly listByThreadId: (

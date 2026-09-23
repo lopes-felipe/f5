@@ -48,7 +48,7 @@ export function describeQueueBlockedState(snapshot: NextTurnQueueSnapshot): stri
     case "turn_failed":
       return fallback ?? "Queue paused after the previous turn failed.";
     case "turn_never_started":
-      return "The previous turn never started. Resume to try the next turn.";
+      return "Resume to recheck the previous message. If the queue pauses again, its delivery is still unconfirmed.";
     case "turn_interrupted":
       return "Queue paused because the active turn was interrupted.";
     case "thread_archived":
