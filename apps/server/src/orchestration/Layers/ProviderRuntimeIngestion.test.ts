@@ -5833,6 +5833,41 @@ describe("ProviderRuntimeIngestion", () => {
     );
   });
 
+  it("projects Codex subagent completion pairs with their identity and completed label", async () => {
+    const harness = await createHarness();
+    for (let index = 0; index < 2; index += 1) {
+      harness.emit({
+        type: "subagent.activity",
+        provider: "codex",
+        eventId: asEventId(`evt-agent-completion-${index}`),
+        threadId: asThreadId("thread-1"),
+        turnId: asTurnId("turn-1"),
+        itemId: asItemId("subagent-completed-agent-1"),
+        createdAt: `2026-09-23T18:21:12.49${index}Z`,
+        payload: { kind: "completed", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+      });
+    }
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some(
+        (activity: ProviderRuntimeTestActivity) => activity.id === "evt-agent-completion-1",
+      ),
+    );
+    const completions = thread.activities.filter(
+      (activity: ProviderRuntimeTestActivity) => activity.kind === "subagent.activity",
+    );
+    expect(completions).toHaveLength(2);
+    for (const activity of completions) {
+      expect(activity.summary).toBe("Subagent completed");
+      expect(activity.payload).toMatchObject({
+        title: "Subagent completed",
+        providerItemId: "subagent-completed-agent-1",
+        subagentType: "completed",
+        subagentThreadId: "agent-1",
+        subagentPath: "/root/reviewer",
+      });
+    }
+  });
+
   it("persists only Codex collaboration lifecycle endpoints and retains failures", async () => {
     const harness = await createHarness();
     const base = {

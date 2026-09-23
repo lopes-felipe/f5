@@ -1477,6 +1477,33 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.every((entry) => entry.warningCount === undefined)).toBe(true);
   });
 
+  it("deduplicates subagent completion notification pairs by provider item", () => {
+    const activities = [0, 1].map((index) =>
+      makeActivity({
+        id: `completed-${index}`,
+        createdAt: `2026-09-23T18:21:12.49${index}Z`,
+        kind: "subagent.activity",
+        summary: "Subagent completed",
+        payload: {
+          itemType: "collab_agent_tool_call",
+          providerItemId: "subagent-completed-agent-1",
+          title: "Subagent completed",
+          subagentType: "completed",
+          subagentThreadId: "agent-1",
+          subagentPath: "/root/reviewer",
+        },
+      }),
+    );
+    const entries = deriveWorkLogEntries(activities, undefined);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({
+      label: "Subagent completed",
+      subagentType: "completed",
+      subagentThreadId: "agent-1",
+      subagentPath: "/root/reviewer",
+    });
+  });
+
   it("correlates subagent activity with the existing collaboration row", () => {
     const entries = deriveWorkLogEntries(
       [
