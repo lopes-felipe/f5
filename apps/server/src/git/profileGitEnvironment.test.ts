@@ -98,7 +98,7 @@ describe("profile Git identity", () => {
   });
 });
 
-it("preserves Default local Git settings but requires profile credentials for network operations", async () => {
+it("preserves Default Git settings and SSH network operations", async () => {
   const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-default-git-"));
   try {
     const globalConfig = Path.join(root, "global.gitconfig");
@@ -156,8 +156,83 @@ it("preserves Default local Git settings but requires profile credentials for ne
         authorEmail: "",
         tokenForHost,
       }),
-    ).rejects.toThrow("HTTPS");
+    ).resolves.toBeDefined();
     expect(tokenForHost).not.toHaveBeenCalled();
+  } finally {
+    await FS.rm(root, { recursive: true, force: true });
+  }
+});
+
+it.each([
+  ["fetch", "git@github.com:org/repo.git"],
+  ["fetch", "--all"],
+  ["fetch", "--multiple", "origin", "upstream"],
+  ["push", "https://gitlab.com/org/repo.git"],
+  ["pull", "https://bitbucket.org/org/repo.git"],
+])("Default preserves normal Git transport for %j", async (...args) => {
+  const stateDir = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-default-remotes-"));
+  try {
+    const environment = await profileGitEnvironment({
+      config: {
+        stateDir,
+        profile: fallbackDefaultProfile(stateDir),
+      } as unknown as ServerConfigShape,
+      cwd: stateDir,
+      args,
+      authorName: "",
+      authorEmail: "",
+      tokenForHost: async () => null,
+      overrides: {
+        SSH_AUTH_SOCK: "/existing-agent",
+        GIT_SSH_COMMAND: "custom-ssh",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "url.ssh://host/.insteadOf",
+        GIT_CONFIG_VALUE_0: "https://host/",
+      },
+    });
+    expect(environment.SSH_AUTH_SOCK).toBe("/existing-agent");
+    expect(environment.GIT_SSH_COMMAND).toBe("custom-ssh");
+    expect(environment.GIT_CONFIG_VALUE_0).toBe("https://host/");
+    expect(environment.F5_GIT_CREDENTIAL_TOKEN).toBeUndefined();
+  } finally {
+    await FS.rm(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("Default selects its saved HTTPS token without replacing other hosts' helpers", async () => {
+  const root = await FS.mkdtemp(Path.join(OS.tmpdir(), "f5-default-helper-"));
+  try {
+    await runProcess("git", ["init", root], { env: process.env });
+    const env = await profileGitEnvironment({
+      config: {
+        stateDir: root,
+        profile: fallbackDefaultProfile(root),
+      } as unknown as ServerConfigShape,
+      cwd: root,
+      args: ["fetch", "https://github.com/owner/repo"],
+      authorName: "",
+      authorEmail: "",
+      tokenForHost: async (host) => (host === "github.com" ? "profile-token" : null),
+      overrides: {
+        GIT_CONFIG_GLOBAL: Path.join(root, "empty.gitconfig"),
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "credential.helper",
+        GIT_CONFIG_VALUE_0:
+          "!f() { echo username=workstation; echo password=other-host-token; }; f",
+      },
+    });
+    for (const [host, token] of [
+      ["github.com", "profile-token"],
+      ["gitlab.com", "other-host-token"],
+    ]) {
+      const result = await runProcess("git", ["credential", "fill"], {
+        cwd: root,
+        env,
+        stdin: `protocol=https\nhost=${host}\n\n`,
+      });
+      expect(result.stdout).toContain(`password=${token}`);
+    }
   } finally {
     await FS.rm(root, { recursive: true, force: true });
   }

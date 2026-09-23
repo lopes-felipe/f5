@@ -1,3 +1,5 @@
+import * as FS from "node:fs/promises";
+import { githubUnavailablePath, prepareGithubLauncher } from "./GithubCliLauncher";
 import { GithubCliProjection, type GithubProfilePaths } from "./GithubCliProjection";
 import { Effect } from "effect";
 import type { ServerSecretStoreShape } from "../auth/Services/ServerSecretStore";
@@ -22,6 +24,11 @@ class GithubSignInCancelled extends Error {
 
 const generations = new Map<string | ServerSecretStoreShape, Map<string, number>>();
 const failures = new Set<string | ServerSecretStoreShape>();
+export function assertGithubCredentialsAvailable(stateDir: string): void {
+  if (failures.has(stateDir))
+    throw new Error("GitHub credentials are unavailable. Reconnect in Settings > Integrations.");
+}
+
 const queues = new Map<string | ServerSecretStoreShape, Promise<unknown>>();
 
 /** All managed Git and GitHub requests acquire credentials from this profile's secret store. */
@@ -50,12 +57,24 @@ export class ProfileGithubAccount {
     const next = previous
       .catch(() => {})
       .then(async () => {
+        const previouslyFailed = failures.has(key);
         try {
+          if (this.paths) {
+            await FS.writeFile(
+              githubUnavailablePath(this.paths.stateDir),
+              "GitHub credentials are being reconciled.\n",
+              { mode: 0o600 },
+            );
+            await prepareGithubLauncher(this.paths.stateDir);
+          }
           const result = await operation();
+          if (this.paths) await FS.rm(githubUnavailablePath(this.paths.stateDir), { force: true });
           failures.delete(key);
           return result;
         } catch (error) {
           if (!(error instanceof GithubSignInCancelled)) failures.add(key);
+          else if (!previouslyFailed && this.paths)
+            await FS.rm(githubUnavailablePath(this.paths.stateDir), { force: true });
           throw error;
         }
       });
@@ -72,20 +91,29 @@ export class ProfileGithubAccount {
     return this.serialize(async () => {
       if (this.paths) {
         const projection = new GithubCliProjection(this.paths, this.secrets);
-        await projection.invalidate();
         await projection.rebuild();
       }
     });
   }
 
+  async initialize(): Promise<unknown | null> {
+    try {
+      await this.reconcile();
+      return null;
+    } catch (cause) {
+      return cause;
+    }
+  }
+
   async token(host: string): Promise<string | null> {
-    await queues.get(this.key);
+    await queues.get(this.key)?.catch(() => {});
+    const value = await Effect.runPromise(this.secrets.get(`github-token-${accountHost(host)}`));
+    if (!value) return null;
     if (failures.has(this.key))
       throw new Error(
         "GitHub credentials need reconciliation. Reconnect in Settings > Integrations.",
       );
-    const value = await Effect.runPromise(this.secrets.get(`github-token-${accountHost(host)}`));
-    return value ? new TextDecoder().decode(value) : null;
+    return new TextDecoder().decode(value);
   }
 
   private async verify(host: string, token: string): Promise<{ login: string }> {

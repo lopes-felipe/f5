@@ -63,3 +63,35 @@ it("keeps token login available without OAuth configuration and clears the submi
   expect(api.githubRemove).toHaveBeenCalledWith({ host: "github.com" });
   await expect.element(page.getByText("github.com: Not connected")).toBeVisible();
 });
+
+it("debounces valid hosts and clears the previous host error", async () => {
+  vi.mocked(api.githubStatus).mockRejectedValueOnce(new Error("offline"));
+  await render(<GithubAccountPanel />);
+  await expect.element(page.getByText(/Unable to verify this GitHub connection/)).toBeVisible();
+  const field = page.getByLabelText("GitHub or GitHub Enterprise hostname");
+  await field.fill("bad..");
+  await expect
+    .element(page.getByText(/Unable to verify this GitHub connection/))
+    .not.toBeInTheDocument();
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  expect(api.githubStatus).toHaveBeenCalledTimes(1);
+  await field.fill("git.example.com");
+  await field.fill("enterprise.example.com");
+  await expect.element(page.getByText("enterprise.example.com: Not connected")).toBeVisible();
+  expect(api.githubStatus).toHaveBeenCalledTimes(2);
+  expect(api.githubStatus).toHaveBeenLastCalledWith({ host: "enterprise.example.com" });
+});
+
+it("polls only during a pending device login and stops on completion", async () => {
+  await render(<GithubAccountPanel />);
+  await expect.element(page.getByRole("button", { name: "Sign in with GitHub" })).toBeEnabled();
+  await new Promise((resolve) => setTimeout(resolve, 1650));
+  expect(api.githubLoginStatus).toHaveBeenCalledTimes(1);
+  await page.getByRole("button", { name: "Sign in with GitHub" }).click();
+  status = { available: true, state: "connected", login: "browser-user" };
+  await expect.element(page.getByText("github.com: browser-user")).toBeVisible();
+  expect(api.githubLoginStatus).toHaveBeenLastCalledWith({ handle: "attempt" });
+  const calls = vi.mocked(api.githubLoginStatus).mock.calls.length;
+  await new Promise((resolve) => setTimeout(resolve, 1650));
+  expect(api.githubLoginStatus).toHaveBeenCalledTimes(calls);
+});

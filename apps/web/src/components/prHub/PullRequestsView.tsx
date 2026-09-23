@@ -97,7 +97,7 @@ function preferredFilterForPr(pr: TrackedPullRequest): PrHubFilter {
 function statusMessage(status: string): string | null {
   switch (status) {
     case "auth_required":
-      return "Connect GitHub for this profile in Settings → Integrations.";
+      return "Connect GitHub for this profile in Settings → Integrations. After upgrading, Default also needs a connection; workstation gh logins are no longer inherited.";
     case "gh_missing":
       return "GitHub CLI is missing. Install `gh` and restart F5.";
     case "degraded":

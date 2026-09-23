@@ -16,6 +16,71 @@ process.stdin.on("end", () => {
 });
 `;
 const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+
+async function resolveNetworkRemote(
+  cwd: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<string> {
+  const operation = args[0];
+  const argumentsWithValues = new Set([
+    "--depth",
+    "--deepen",
+    "--shallow-since",
+    "--shallow-exclude",
+    "--filter",
+    "--upload-pack",
+    "--receive-pack",
+    "--repo",
+    "--recurse-submodules",
+    "--server-option",
+    "--negotiation-tip",
+    "--jobs",
+    "-j",
+    "--branch",
+    "-b",
+    "--origin",
+    "-o",
+    "--reference",
+    "--reference-if-able",
+    "--separate-git-dir",
+    "--template",
+    "--config",
+    "-c",
+  ]);
+  let positional: string | undefined;
+  for (let index = 1; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument === "--") {
+      positional = args[index + 1];
+      break;
+    }
+    if (argumentsWithValues.has(argument)) {
+      index++;
+      continue;
+    }
+    if (!argument.startsWith("-")) {
+      positional = argument;
+      break;
+    }
+  }
+  let remote = positional ?? "origin";
+  if (!remote.includes(":") && !remote.includes("/") && !remote.includes("\\")) {
+    const result = await runProcess(
+      "git",
+      ["remote", "get-url", "--all", ...(operation === "push" ? ["--push"] : []), remote],
+      {
+        cwd: cwd,
+        env: environment,
+        allowNonZeroExit: true,
+        timeoutMs: 10000,
+      },
+    );
+    if (result.code === 0) remote = result.stdout.trim();
+  }
+  return remote;
+}
+
 export async function profileGitEnvironment(input: {
   config: ServerConfigShape;
   cwd: string;
@@ -26,7 +91,7 @@ export async function profileGitEnvironment(input: {
   tokenForHost: (host: string) => Promise<string | null>;
 }): Promise<NodeJS.ProcessEnv> {
   const isolated = input.config.profile?.isDefault === false;
-  if (!isolated && !["push", "pull", "fetch", "ls-remote", "clone"].includes(input.args[0] ?? "")) {
+  if (!isolated) {
     const environment = profileGithubEnvironment(
       { ...process.env, ...input.overrides },
       input.config.stateDir,
@@ -34,6 +99,40 @@ export async function profileGitEnvironment(input: {
     if (input.authorName && input.authorEmail) {
       environment.GIT_AUTHOR_NAME = environment.GIT_COMMITTER_NAME = input.authorName;
       environment.GIT_AUTHOR_EMAIL = environment.GIT_COMMITTER_EMAIL = input.authorEmail;
+    }
+    // Default retains normal Git transports, SSH, rewrites and multi-remote operations.
+    // For a single HTTPS target with a saved account, override only that host's helper.
+    if (
+      ["push", "pull", "fetch", "ls-remote", "clone"].includes(input.args[0] ?? "") &&
+      !input.args.includes("--all") &&
+      !input.args.includes("--multiple")
+    ) {
+      const remote = await resolveNetworkRemote(input.cwd, input.args, environment);
+      if (remote.startsWith("https://") && !remote.includes("\n")) {
+        const url = new URL(remote);
+        if (!url.username && !url.password) {
+          const token = await input.tokenForHost(url.hostname.toLowerCase());
+          if (token) {
+            const pairs = [
+              [`credential.https://${url.host}.helper`, ""],
+              [
+                `credential.https://${url.host}.helper`,
+                `!${shellQuote(process.execPath)} -e ${shellQuote(helperSource)} --`,
+              ],
+            ];
+            const offset = Number(environment.GIT_CONFIG_COUNT ?? 0);
+            if (!Number.isSafeInteger(offset) || offset < 0)
+              throw new Error("Invalid GIT_CONFIG_COUNT.");
+            pairs.forEach(([key, value], index) => {
+              environment[`GIT_CONFIG_KEY_${offset + index}`] = key;
+              environment[`GIT_CONFIG_VALUE_${offset + index}`] = value;
+            });
+            environment.GIT_CONFIG_COUNT = String(offset + pairs.length);
+            environment.F5_GIT_CREDENTIAL_HOST = url.host;
+            environment.F5_GIT_CREDENTIAL_TOKEN = token;
+          }
+        }
+      }
     }
     return environment;
   }
@@ -89,61 +188,7 @@ export async function profileGitEnvironment(input: {
       throw new Error(
         "Fetch one named remote at a time so its profile credentials can be validated.",
       );
-    const argumentsWithValues = new Set([
-      "--depth",
-      "--deepen",
-      "--shallow-since",
-      "--shallow-exclude",
-      "--filter",
-      "--upload-pack",
-      "--receive-pack",
-      "--repo",
-      "--recurse-submodules",
-      "--server-option",
-      "--negotiation-tip",
-      "--jobs",
-      "-j",
-      "--branch",
-      "-b",
-      "--origin",
-      "-o",
-      "--reference",
-      "--reference-if-able",
-      "--separate-git-dir",
-      "--template",
-      "--config",
-      "-c",
-    ]);
-    let positional: string | undefined;
-    for (let index = 1; index < input.args.length; index++) {
-      const argument = input.args[index]!;
-      if (argument === "--") {
-        positional = input.args[index + 1];
-        break;
-      }
-      if (argumentsWithValues.has(argument)) {
-        index++;
-        continue;
-      }
-      if (!argument.startsWith("-")) {
-        positional = argument;
-        break;
-      }
-    }
-    let remote = positional ?? "origin";
-    if (!remote.includes(":") && !remote.includes("/") && !remote.includes("\\")) {
-      const result = await runProcess(
-        "git",
-        ["remote", "get-url", "--all", ...(operation === "push" ? ["--push"] : []), remote],
-        {
-          cwd: input.cwd,
-          env: environment,
-          allowNonZeroExit: true,
-          timeoutMs: 10000,
-        },
-      );
-      if (result.code === 0) remote = result.stdout.trim();
-    }
+    const remote = await resolveNetworkRemote(input.cwd, input.args, environment);
     if (remote.includes("\n"))
       throw new Error("Use a single HTTPS remote URL for profile-authenticated operations.");
     if (remote.startsWith("ssh:") || /^[^/]+@[^:]+:/.test(remote))

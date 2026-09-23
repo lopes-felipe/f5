@@ -102,3 +102,17 @@ describe("GitHub device authorization", () => {
     await expect(login.start()).rejects.toThrow("not configured");
   });
 });
+
+it("saves an issued token even when verification crosses the device-code deadline", async () => {
+  const { account, request, login } = setup();
+  const save = account.set.bind(account);
+  vi.spyOn(account, "set").mockImplementation(async (...args) => {
+    await new Promise((resolve) => setTimeout(resolve, 61000));
+    return save(...args);
+  });
+  request.mockResolvedValueOnce(Response.json({ access_token: "issued-before-expiry" }));
+  await login.start();
+  await vi.advanceTimersByTimeAsync(62000);
+  expect(login.status().state).toBe("connected");
+  expect(await account.token("github.com")).toBe("issued-before-expiry");
+});

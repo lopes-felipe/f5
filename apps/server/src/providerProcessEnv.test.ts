@@ -73,7 +73,7 @@ describe("profile account execution", () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined();
-    expect(env.PATH).toBe("tools");
+    expect(env.PATH).toBe(Path.join(stateDir, "github-bin") + Path.delimiter + "tools");
     expect(env.CODEX_HOME).toBe(Path.join(stateDir, "provider-homes", "codex"));
     expect(env.HOME).toBe(env.USERPROFILE);
     expect(env.F5_PROFILE_ISOLATED).toBe("1");
@@ -148,7 +148,7 @@ it.each([true, false])(
       expect(environment.GH_CONFIG_DIR).toBe(Path.join(stateDir, "github"));
       expect(environment.GH_TOKEN).toBeUndefined();
       expect(environment.gh_token).toBeUndefined();
-      expect(environment.GH_HOST).toBeUndefined();
+      expect(environment.GH_HOST).toBe("wrong-host");
       expect(environment.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
       if (isDefault) expect(environment.HOME).toBe("home");
     }

@@ -1,5 +1,5 @@
 import type { GithubLoginStatus } from "@t3tools/contracts";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { readNativeApi } from "../../nativeApi";
 import { useSettings, useUpdateSettings } from "../../hooks/useSettings";
 import { Button } from "../ui/button";
@@ -15,7 +15,9 @@ export function GithubAccountPanel() {
   const [email, setEmail] = useState(settings.gitAuthorEmail ?? "");
   const [login, setLogin] = useState<GithubLoginStatus>({ available: false, state: "idle" });
   const [pending, setPending] = useState(false);
+  const identityRevision = useRef(0);
   const run = async (operation: () => Promise<unknown>) => {
+    identityRevision.current++;
     setPending(true);
     setError("");
     try {
@@ -28,46 +30,71 @@ export function GithubAccountPanel() {
   };
   const api = readNativeApi()?.profiles;
   useEffect(() => {
-    if (!api) return;
+    setError("");
+    setIdentity("");
+    if (!api || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(host) || host.includes("..")) return;
     let active = true;
-    void api
-      .githubStatus({ host })
-      .then((result) => {
-        if (active) setIdentity(result.login ?? "Not connected");
-      })
-      .catch(() => {
-        if (active)
-          setError("Unable to verify this GitHub connection. Check your network or reconnect.");
-      });
-    return () => {
-      active = false;
-    };
-  }, [api, host]);
-  useEffect(() => {
-    if (!api) return;
-    let active = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => {
-      try {
-        const result = await api.githubLoginStatus({});
-        if (!active) return;
-        setLogin(result);
-        if (result.state === "connected" && host === "github.com")
-          setIdentity(result.login ?? "Connected");
-      } catch {
-        /* A transient reconnect must not lose the server-owned sign-in attempt. */
-      }
-      if (active)
-        timer = setTimeout(() => {
-          void poll();
-        }, 1500);
-    };
-    void poll();
+    const revision = ++identityRevision.current;
+    const timer = setTimeout(() => {
+      if (revision !== identityRevision.current) return;
+      void api
+        .githubStatus({ host })
+        .then((result) => {
+          if (active && revision === identityRevision.current)
+            setIdentity(result.login ?? "Not connected");
+        })
+        .catch(() => {
+          if (active && revision === identityRevision.current)
+            setError("Unable to verify this GitHub connection. Check your network or reconnect.");
+        });
+    }, 350);
     return () => {
       active = false;
       clearTimeout(timer);
     };
   }, [api, host]);
+  useEffect(() => {
+    if (!api) return;
+    let active = true;
+    void api
+      .githubLoginStatus({})
+      .then((result) => {
+        if (active) setLogin(result);
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [api]);
+  useEffect(() => {
+    if (!api || login.state !== "pending") return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      let pending = true;
+      try {
+        const result = await api.githubLoginStatus(login.handle ? { handle: login.handle } : {});
+        if (!active) return;
+        setLogin(result);
+        pending = result.state === "pending";
+        if (result.state === "connected" && host === "github.com")
+          setIdentity(result.login ?? "Connected");
+      } catch {
+        /* Retry transient transport failures only during an active sign-in. */
+      }
+      if (active && pending)
+        timer = setTimeout(() => {
+          void poll();
+        }, 1500);
+    };
+    timer = setTimeout(() => {
+      void poll();
+    }, 1500);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [api, host, login.state, login.handle]);
   if (!api) return null;
   return (
     <section
@@ -79,6 +106,10 @@ export function GithubAccountPanel() {
         This profile’s connection is used by GitHub features, agents, and terminal gh commands.
         Credentials are stored in private files in this profile. Verification sends credentials only
         to the selected host.
+      </p>
+      <p className="text-sm text-muted-foreground">
+        Upgrading from workstation GitHub authentication? Connect once here, including in Default.
+        F5 does not import your workstation login, CLI aliases, or Git protocol preferences.
       </p>
       <Input
         aria-label="GitHub or GitHub Enterprise hostname"

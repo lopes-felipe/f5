@@ -1,3 +1,5 @@
+import { githubShellEnvironment } from "./git/githubShellStartup";
+import { githubLauncherDir } from "./git/GithubCliLauncher";
 import { profileGithubEnvironment } from "./git/profileGithubEnvironment";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
@@ -105,7 +107,15 @@ export function buildAccountExecutionEnvironment(input: {
     buildProviderChildProcessEnv(base, { ...instance, ...input.overrides }),
     input.stateDir,
   );
-  if (!isolated) return environment;
+  if (input.purpose === "provider" || input.purpose === "terminal") {
+    const pathKey = Object.keys(environment).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+    environment[pathKey] =
+      githubLauncherDir(input.stateDir) + Path.delimiter + (environment[pathKey] ?? "");
+  }
+  if (!isolated)
+    return input.purpose === "provider" || input.purpose === "terminal"
+      ? githubShellEnvironment(environment, input.stateDir)
+      : environment;
   const home = Path.join(input.stateDir, "provider-homes", "claude");
   const drive = /^[a-z]:/i.exec(home)?.[0];
   return {

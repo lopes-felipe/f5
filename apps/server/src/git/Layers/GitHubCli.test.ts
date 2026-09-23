@@ -11,6 +11,7 @@ vi.mock("../../processRunner", () => ({
 
 import { runProcess } from "../../processRunner";
 import { GitHubCli } from "../Services/GitHubCli.ts";
+import { GitHubCredentialScope } from "../githubApi";
 import { GitHubCliLive } from "./GitHubCli.ts";
 
 const mockedRunProcess = vi.mocked(runProcess);
@@ -514,5 +515,65 @@ it.effect("captures only the saved profile token for Default and other profiles"
       expect(mockedRunProcess.mock.lastCall?.[2]?.env?.GH_TOKEN).toBe(`${name}-token`);
     }
     expect(mockedRunProcess.mock.calls.every(([, args]) => args[0] !== "auth")).toBe(true);
+  }),
+);
+
+it.effect("routes captured Enterprise search and repository commands with ServerConfig", () =>
+  Effect.gen(function* () {
+    const { ServerSecretStore } = yield* Effect.promise(
+      () => import("../../auth/Services/ServerSecretStore"),
+    );
+    mockedRunProcess.mockImplementation(async (_file, args) => ({
+      stdout:
+        args[0] === "api"
+          ? 'HTTP/2.0 200 Response\r\nContent-Type: application/json\r\n\r\n{"id":42,"login":"enterprise-user"}'
+          : "[]",
+      stderr: "",
+      code: 0,
+      signal: null,
+      timedOut: false,
+    }));
+    vi.stubEnv("GH_HOST", "github.com");
+    vi.stubEnv("GH_REPO", "wrong/repository");
+    const stateDir = Path.resolve("test-github-enterprise");
+    yield* Effect.gen(function* () {
+      const gh = yield* GitHubCli;
+      const context = yield* gh.getCredentialContext({
+        cwd: process.cwd(),
+        host: "git.example.com",
+      });
+      for (const args of [
+        ["search", "prs", "--author", "@me"],
+        ["pr", "view", "1", "--repo", "owner/repo"],
+      ]) {
+        yield* gh
+          .execute({ cwd: process.cwd(), args })
+          .pipe(Effect.provideService(GitHubCredentialScope, context));
+        const env = mockedRunProcess.mock.lastCall?.[2]?.env;
+        expect(env?.GH_HOST).toBe("git.example.com");
+        expect(env?.GH_REPO).toBeUndefined();
+        expect(env?.GH_ENTERPRISE_TOKEN).toBe("enterprise-token");
+        expect(env?.GH_CONFIG_DIR).toBe(Path.join(stateDir, "github"));
+      }
+    }).pipe(
+      Effect.provide(
+        GitHubCliLive.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(ServerConfig, {
+                stateDir,
+                profile: fallbackDefaultProfile(stateDir),
+              } as unknown as ServerConfigShape),
+              Layer.succeed(ServerSecretStore, {
+                get: () => Effect.succeed(new TextEncoder().encode("enterprise-token")),
+                set: () => Effect.void,
+                remove: () => Effect.void,
+                getOrCreateRandom: () => Effect.die("unused"),
+              }),
+            ),
+          ),
+        ),
+      ),
+    );
   }),
 );

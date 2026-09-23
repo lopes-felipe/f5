@@ -7,10 +7,7 @@ export function profileGithubEnvironment(
 ): NodeJS.ProcessEnv {
   const environment = Object.fromEntries(
     Object.entries(base).filter(
-      ([key]) =>
-        !/^(?:(?:GH|GITHUB)_.*TOKEN|GH_CONFIG_DIR|GH_HOST|GH_REPO|GH_DEBUG)$/.test(
-          key.toUpperCase(),
-        ),
+      ([key]) => !/^(?:(?:GH|GITHUB)_.*TOKEN|GH_CONFIG_DIR|GH_DEBUG)$/.test(key.toUpperCase()),
     ),
   );
   environment.GH_CONFIG_DIR = Path.join(stateDir, "github");

@@ -418,11 +418,14 @@ const ServerConfigLive = (input: CliInput) => {
           (cause) => new StartupError({ message: "Failed to open GitHub credentials", cause }),
         ),
       );
-      yield* Effect.tryPromise({
-        try: () => new ProfileGithubAccount(githubSecrets, fetch, config).reconcile(),
-        catch: () =>
-          new StartupError({ message: "Failed to reconcile profile GitHub credentials" }),
-      });
+      const githubFailure = yield* Effect.promise(() =>
+        new ProfileGithubAccount(githubSecrets, fetch, config).initialize(),
+      );
+      if (githubFailure)
+        yield* Effect.logWarning(
+          "Profile GitHub authentication is unavailable; reconnect in Settings > Integrations.",
+          { cause: githubFailure },
+        );
       if (startupErrorPath)
         yield* Effect.promise(() => ProfileFS.unlink(startupErrorPath!).catch(() => {}));
       return config;

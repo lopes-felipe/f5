@@ -1,4 +1,4 @@
-import { ProfileGithubAccount } from "../ProfileGithubAccount";
+import { ProfileGithubAccount, assertGithubCredentialsAvailable } from "../ProfileGithubAccount";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import * as NodePath from "node:path";
 import { ServerConfig } from "../../config";
@@ -171,6 +171,8 @@ const makeGitHubCli = Effect.gen(function* () {
         });
       const command = Effect.tryPromise({
         try: (signal) => {
+          if (Option.isSome(serverConfig))
+            assertGithubCredentialsAvailable(serverConfig.value.stateDir);
           if (input.stdin !== undefined && Buffer.byteLength(input.stdin, "utf8") > 1024 * 1024) {
             return Promise.reject(new Error("GitHub request exceeds the 1 MiB body limit."));
           }
@@ -183,6 +185,10 @@ const makeGitHubCli = Effect.gen(function* () {
                 baseEnv: supplied ?? process.env,
               })
             : { ...(supplied ?? process.env) };
+          if (context) {
+            environment.GH_HOST = context.host;
+            delete environment.GH_REPO;
+          }
           // Only the explicit credential scope may restore tokens stripped from the inherited base.
           for (const key of [
             "GH_TOKEN",

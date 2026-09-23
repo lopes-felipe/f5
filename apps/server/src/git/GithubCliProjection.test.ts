@@ -152,3 +152,87 @@ describe("profile CLI credentials", () => {
     expect(await token()).toBe("f5-profile-not-connected");
   });
 });
+
+it("keeps startup available while rejecting GitHub after a reconciliation failure", async () => {
+  const p = await profile();
+  await Effect.runPromise(
+    p.secrets.set("github-token-github.com", new TextEncoder().encode("broken\ntoken")),
+  );
+  expect(await p.account.initialize()).toBeInstanceOf(Error);
+  await expect(p.account.token("github.com")).rejects.toThrow("reconciliation");
+  expect(await p.account.token("gitlab.com")).toBeNull();
+  await p.account.set("github.com", "repaired");
+  expect(await p.account.token("github.com")).toBe("repaired");
+});
+
+it("starts native gh with only the disconnected placeholder, then an Enterprise-only connection", async ({
+  skip,
+}) => {
+  const p = await profile();
+  const env = buildAccountExecutionEnvironment({
+    purpose: "terminal",
+    stateDir: p.stateDir,
+    profile: fallbackDefaultProfile(p.stateDir),
+    baseEnv: process.env,
+  });
+  const version = await runProcess("gh", ["--version"], {
+    env: process.env,
+    allowNonZeroExit: true,
+  }).catch(() => null);
+  if (!version || version.code !== 0) {
+    skip();
+    return;
+  }
+  await p.account.reconcile();
+  const invoke = (host: string) =>
+    runProcess("gh", ["auth", "token", "--hostname", host], { env, timeoutMs: 3000 });
+  expect((await invoke("github.com")).stdout.trim()).toBe("f5-profile-not-connected");
+  await p.account.set("git.example.com", "enterprise-only");
+  expect((await invoke("git.example.com")).stdout.trim()).toBe("enterprise-only");
+  expect(
+    parse(await FS.readFile(Path.join(p.stateDir, "github", "config.yml"), "utf8")).version,
+  ).toBe("1");
+});
+
+it.for(["bash", "zsh"])(
+  "keeps shell startup customizations but rejects rc credentials through %s",
+  async (shell, { skip }) => {
+    const p = await profile();
+    const shellPath = `/bin/${shell}`;
+    if (process.platform === "win32" || !(await FS.stat(shellPath).catch(() => null))) {
+      skip();
+      return;
+    }
+    const { githubTerminalStartup } = await import("./githubShellStartup");
+    const fakeBin = Path.join(p.stateDir, "fake-bin");
+    await FS.mkdir(fakeBin);
+    await FS.writeFile(
+      Path.join(fakeBin, "gh"),
+      '#!/bin/sh\nprintf "%s|%s|%s" "$GH_TOKEN" "$GH_CONFIG_DIR" "$MY_CUSTOMIZATION"\n',
+      { mode: 0o700 },
+    );
+    const home = Path.join(p.stateDir, "home");
+    await FS.mkdir(home);
+    await FS.writeFile(
+      Path.join(home, shell === "bash" ? ".bashrc" : ".zshrc"),
+      `export GH_TOKEN=workstation\nexport GH_CONFIG_DIR=/workstation\nexport PATH='${fakeBin}':"$PATH"\nexport MY_CUSTOMIZATION=preserved\n`,
+    );
+    await p.account.reconcile();
+    const env = buildAccountExecutionEnvironment({
+      purpose: "terminal",
+      stateDir: p.stateDir,
+      profile: fallbackDefaultProfile(p.stateDir),
+      baseEnv: { ...process.env, HOME: home, ZDOTDIR: home },
+    });
+    const launch = githubTerminalStartup(shellPath, ["-i", "-c", "gh api user"], env, p.stateDir);
+    const result = await runProcess(shellPath, launch.args, { env: launch.env });
+    expect(result.stdout).toBe(`|${Path.join(p.stateDir, "github")}|preserved`);
+    await FS.writeFile(Path.join(p.stateDir, "github-unavailable"), "unavailable");
+    const failed = await runProcess(shellPath, launch.args, {
+      env: launch.env,
+      allowNonZeroExit: true,
+    });
+    expect(failed.code).not.toBe(0);
+    expect(failed.stderr).toContain("GitHub credentials are unavailable");
+  },
+);

@@ -161,10 +161,8 @@ export class GithubDeviceLogin {
           return;
         }
         try {
-          const identity = await this.account.set(
-            "github.com",
-            response.access_token,
-            () => this.current(attempt) && Date.now() < (attempt.status.expiresAt ?? 0),
+          const identity = await this.account.set("github.com", response.access_token, () =>
+            this.current(attempt),
           );
           if (this.current(attempt))
             attempt.status = {
