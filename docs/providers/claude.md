@@ -53,9 +53,16 @@ or upgrade the custom executable to recover.
 
 F5 converts cumulative SDK costs into per-turn deltas. Fresh sessions start at zero. Resumed
 queries can restore historical totals, and older custom CLIs do not all support the usage RPC.
-Resume therefore does not depend on that RPC: the first positive result establishes a baseline
-and its turn cost remains unreported. Later results report deltas; a lower positive total
-starts a new baseline after `/clear`. Zeroed crash results do not reset a known baseline.
+F5 stores the last observed total in the resume cursor and restores it across restarts, including
+model and effort changes, without requiring that RPC. Older cursors without a valid total still
+leave the first positive resumed result unpriced while establishing a baseline. Zeroed crash
+results do not reset the baseline and remain unpriced.
+
+A lower positive total is treated as a reset, including `/clear` and legacy CLIs that restart
+cost totals on resume. This is a heuristic: if the first post-reset total equals or exceeds the
+previous total, the delta under-counts spend by that previous total. An unexplained decrease is
+also treated as a reset and charges the new total. Cumulative results alone cannot distinguish
+these cases without an explicit reset signal.
 
 Repair from a native log also leaves costs unreported because the cumulative total alone cannot
 identify a turn's spend. Repair from a canonical completion retains the adapter's normalized cost.

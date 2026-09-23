@@ -102,9 +102,10 @@ All notable changes to F5 are documented here. The format is based on [Keep a Ch
 - Claude turn costs are no longer over-counted. The Agent SDK reports a running total per session,
   which F5 was adding to workflow budgets and usage reporting on every turn, so a long thread could
   hit its cost limit far below actual spend. Turns now report deltas. Resumes remain compatible
-  with older custom CLIs without requiring the experimental usage RPC. The first positive result
-  after resume establishes a baseline and leaves that turn's cost unreported; native-log repairs
-  likewise omit costs without a verified baseline. These gaps can under-count actual spend.
+  with older custom CLIs without requiring the experimental usage RPC. Resume cursors now retain
+  the last observed total so model, effort, and idle-session restarts preserve cost accounting.
+  Older cursors without a baseline and native-log repairs still leave costs unreported. Zeroed
+  crash placeholders remain unpriced. Reset inference and missing baselines can under-count spend.
 
 - Clarifying questions asked during a workflow's merge or revision stage no longer fail the turn.
   Those stages ran as `unattended-readonly`, so a question was treated as a profile violation that

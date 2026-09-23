@@ -5987,15 +5987,26 @@ describe("ClaudeAdapterLive", () => {
   }
 
   for (const scenario of [
+    { name: "free successful turns", totals: [0, 0.1], deltas: [0, 0.1] },
+    {
+      name: "startup crash placeholders",
+      totals: [0, 0.1],
+      deltas: [undefined, 0.1],
+      failedIndex: 0,
+    },
     { name: "rising and duplicated totals", totals: [0.1, 0.3, 0.3], deltas: [0.1, 0.2, 0] },
     { name: "positive resets after clear", totals: [0.3, 0.05, 0.1], deltas: [0.3, 0.05, 0.05] },
     {
       name: "zeroed error results",
       totals: [0.3, 0, 0.35],
-      deltas: [0.3, 0, 0.05],
+      deltas: [0.3, undefined, 0.05],
       failedIndex: 1,
     },
-    { name: "zeroed success-shaped crash results", totals: [0.3, 0, 0.35], deltas: [0.3, 0, 0.05] },
+    {
+      name: "zeroed success-shaped crash results",
+      totals: [0.3, 0, 0.35],
+      deltas: [0.3, undefined, 0.05],
+    },
     {
       name: "invalid or absent totals",
       totals: [0.3, undefined, Number.NaN, Number.POSITIVE_INFINITY, -1, 0.35],
@@ -6103,6 +6114,77 @@ describe("ClaudeAdapterLive", () => {
       });
       assert.equal(yield* completeCostTurn(harness.query, 0.1), undefined);
       assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.2);
+    }).pipe(Effect.provide(harness.layer));
+  });
+
+  for (const resumedTotal of [0.35, 0.05]) {
+    it.effect(`preserves cost on an effort-change restart with SDK total ${resumedTotal}`, () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const selection = (effort: string) =>
+          createModelSelection(ProviderInstanceId.make("claudeAgent"), "claude-opus-5-5", [
+            { id: "effort", value: effort },
+          ]);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          modelSelection: selection("medium"),
+        });
+        assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+        const sessions = yield* adapter.listSessions();
+        const cursor = sessions[0]!.resumeCursor as Record<string, unknown>;
+        assert.equal(cursor.lastTotalCostUsd, 0.3);
+        // Match the reactor's restart path, including durable JSON serialization.
+        const resumeCursor = JSON.parse(
+          JSON.stringify({ ...cursor, resume: "550e8400-e29b-41d4-a716-446655440000" }),
+        );
+        yield* adapter.stopSession(THREAD_ID);
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          modelSelection: selection("high"),
+          resumeCursor,
+        });
+        assert.equal(harness.getLastCreateQueryInput()?.options.effort, "high");
+        assert.equal(yield* completeCostTurn(harness.queries[1]!, resumedTotal), 0.05);
+      }).pipe(Effect.provide(harness.layer));
+    });
+  }
+
+  it.effect("carries suppressed late interrupt spend into the next accounted turn", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      assert.equal(yield* completeCostTurn(harness.query, 0.3), 0.3);
+      yield* adapter.sendTurn({ threadId: THREAD_ID, input: "interrupt", attachments: [] });
+      yield* adapter.interruptTurn(THREAD_ID);
+      yield* TestClock.adjust("3 seconds");
+      const interrupted = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead);
+      assert.equal(interrupted._tag, "Some");
+      if (interrupted._tag === "Some") {
+        assert.equal(interrupted.value.payload.state, "interrupted");
+        assert.equal(interrupted.value.payload.totalCostUsd, undefined);
+      }
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        total_cost_usd: 0.35,
+      } as unknown as SDKMessage);
+      for (let i = 0; i < 10; i++) yield* Effect.yieldNow;
+      // If the late event leaked, completeCostTurn would consume it instead.
+      assert.equal(yield* completeCostTurn(harness.query, 0.4), 0.1);
     }).pipe(Effect.provide(harness.layer));
   });
 

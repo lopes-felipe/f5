@@ -307,11 +307,12 @@ interface ClaudeSessionContext {
 function claudeTurnCost(
   context: ClaudeSessionContext,
   current: number | undefined,
+  failed: boolean,
 ): {
   totalCostUsd?: number;
 } {
   if (current === undefined || !Number.isFinite(current) || current < 0) return {};
-  if (current === 0) return context.lastTotalCostUsd === undefined ? {} : { totalCostUsd: 0 };
+  if (current === 0) return !failed && context.lastTotalCostUsd === 0 ? { totalCostUsd: 0 } : {};
   const previous = context.lastTotalCostUsd;
   if (previous === undefined) {
     context.lastTotalCostUsd = current;
@@ -2039,6 +2040,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(context.resumeSessionId ? { resume: context.resumeSessionId } : {}),
           ...(context.lastAssistantUuid ? { resumeSessionAt: context.lastAssistantUuid } : {}),
           turnCount: context.turns.length,
+          ...(context.lastTotalCostUsd !== undefined
+            ? { lastTotalCostUsd: context.lastTotalCostUsd }
+            : {}),
           baseContextChars: context.baseContextChars,
           approximateConversationChars: context.approximateConversationChars,
           compactionRecommendationEmitted: context.compactionRecommendationEmitted,
@@ -2723,7 +2727,8 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             return;
           }
           const stamp = yield* makeEventStamp();
-          const turnCost = claudeTurnCost(context, result?.total_cost_usd);
+          const turnCost = claudeTurnCost(context, result?.total_cost_usd, status === "failed");
+          yield* updateResumeCursor(context);
           yield* offerRuntimeEvent({
             type: "turn.completed",
             eventId: stamp.eventId,
@@ -2829,10 +2834,10 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (context.resumeInvalidatedTurnId === turnState.turnId) {
           context.resumeInvalidatedTurnId = undefined;
         }
+        const turnCost = claudeTurnCost(context, result?.total_cost_usd, status === "failed");
         yield* updateResumeCursor(context);
 
         const stamp = yield* makeEventStamp();
-        const turnCost = claudeTurnCost(context, result?.total_cost_usd);
         yield* offerRuntimeEvent({
           type: "turn.completed",
           eventId: stamp.eventId,
@@ -4904,9 +4909,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             }),
         });
 
-        // Resume totals vary across custom CLI versions. Do not require get_usage
-        // or guess zero: the first positive result establishes an unknown baseline.
-        const lastTotalCostUsd = existingResumeSessionId ? undefined : 0;
+        // Reuse the last observed total across restarts without requiring get_usage.
+        // Older cursors remain unknown until the first positive result.
+        const lastTotalCostUsd = existingResumeSessionId ? resumeState?.lastTotalCostUsd : 0;
 
         const session: ProviderSession = {
           threadId,
@@ -4923,6 +4928,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               ? { resumeSessionAt: resumeState.resumeSessionAt }
               : {}),
             turnCount: resumeState?.turnCount ?? 0,
+            ...(lastTotalCostUsd !== undefined ? { lastTotalCostUsd } : {}),
           },
           createdAt: startedAt,
           updatedAt: startedAt,
