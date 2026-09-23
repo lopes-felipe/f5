@@ -1,4 +1,4 @@
-import { getServerSendLimits } from "../protocolState";
+import { getServerSendLimits, useProtocolState } from "../protocolState";
 import {
   type ApprovalRequestId,
   type CommandId,
@@ -776,7 +776,7 @@ export default function ChatView({
   const updateStorePendingTurnDispatch = usePendingTurnDispatchStore(
     (store) => store.updatePendingTurnDispatch,
   );
-  const [isConnecting, _setIsConnecting] = useState(false);
+  const isConnecting = !useProtocolState().ready;
   const [isRevertingCheckpoint, setIsRevertingCheckpoint] = useState(false);
   const [respondingRequestIds, setRespondingRequestIds] = useState<ApprovalRequestId[]>([]);
   const [respondingUserInputRequestIds, setRespondingUserInputRequestIds] = useState<
@@ -4143,6 +4143,13 @@ export default function ChatView({
       return;
     }
     if (!activeProject) return;
+    let sendLimits;
+    try {
+      sendLimits = getServerSendLimits();
+    } catch (error) {
+      setThreadError(activeThread.id, error instanceof Error ? error.message : String(error));
+      return;
+    }
     sendInFlightRef.current = true;
     const mentionedPaths = collectComposerMentionPaths(promptForSend);
     if (mentionedPaths.length > 0) {
@@ -4261,7 +4268,7 @@ export default function ChatView({
     const outgoingMessageText = messageTextForSend || IMAGE_ONLY_BOOTSTRAP_PROMPT;
     const inputLengthIssue = getProviderTurnInputLengthIssue(
       outgoingMessageText,
-      getServerSendLimits(selectedProvider).maxInputChars,
+      sendLimits.maxInputChars,
     );
     if (inputLengthIssue) {
       setThreadError(threadIdForSend, inputLengthIssue.message);
@@ -4661,7 +4668,7 @@ export default function ChatView({
       );
       const inputLengthIssue = getProviderTurnInputLengthIssue(
         outgoingMessageText,
-        getServerSendLimits(selectedProvider).maxInputChars,
+        getServerSendLimits().maxInputChars,
       );
       if (inputLengthIssue) {
         setThreadError(threadIdForSend, inputLengthIssue.message);
@@ -4849,7 +4856,7 @@ export default function ChatView({
     const outgoingImplementationPrompt = implementationPrompt;
     const inputLengthIssue = getProviderTurnInputLengthIssue(
       outgoingImplementationPrompt,
-      getServerSendLimits(selectedProvider).maxInputChars,
+      getServerSendLimits().maxInputChars,
     );
     if (inputLengthIssue) {
       setThreadError(activeThread.id, inputLengthIssue.message);

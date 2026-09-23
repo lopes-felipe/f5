@@ -540,10 +540,15 @@ export class WsTransport {
 
     const message = result.success;
     if (isWsPushMessage(message)) {
-      if (message.channel === WS_CHANNELS.serverWelcome && message.data.bootstrap) {
-        if (message.data.bootstrap.protocolVersion !== F5_PROTOCOL_VERSION) {
+      if (message.channel === WS_CHANNELS.serverWelcome) {
+        if (
+          !message.data.bootstrap ||
+          message.data.bootstrap.protocolVersion !== F5_PROTOCOL_VERSION
+        ) {
           requireProtocolUpgrade();
           this.failPendingRequests(F5_UPGRADE_REQUIRED_MESSAGE);
+          noteWsConnectionError(F5_UPGRADE_REQUIRED_MESSAGE);
+          this.ws?.close(F5_UPGRADE_REQUIRED_CLOSE_CODE, "upgrade-required");
           return;
         }
         setServerBootstrap(message.data.bootstrap);

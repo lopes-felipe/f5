@@ -1,6 +1,5 @@
 import {
   F5_PROTOCOL_VERSION,
-  KNOWN_PROVIDER_KINDS,
   PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS,
@@ -21,9 +20,6 @@ export const SERVER_BOOTSTRAP: ServerBootstrap = {
   // Generic uploads do not exist yet. Advertise only implemented functionality.
   uploadLimits: { attachments: { enabled: false, maxFileBytes: 0 } },
   sendLimits,
-  providerSendLimits: Object.fromEntries(
-    KNOWN_PROVIDER_KINDS.map((kind) => [kind, sendLimits]),
-  ) as ServerBootstrap["providerSendLimits"],
 };
 
 export const UPGRADE_REQUIRED = {

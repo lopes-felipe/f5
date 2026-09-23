@@ -622,3 +622,29 @@ describe("protocol upgrades", () => {
     transport.dispose();
   });
 });
+
+it.each([undefined, { ...serverBootstrapFixture, protocolVersion: F5_PROTOCOL_VERSION + 1 }])(
+  "closes an incompatible welcome and stops reconnecting (%j)",
+  (bootstrap) => {
+    const transport = new WsTransport("ws://localhost:3020/");
+    const listener = vi.fn();
+    transport.subscribe(WS_CHANNELS.serverWelcome, listener);
+    const socket = getSocket();
+    socket.open();
+    socket.serverMessage(
+      JSON.stringify({
+        type: "push",
+        sequence: 1,
+        channel: WS_CHANNELS.serverWelcome,
+        data: { cwd: "/repo", projectName: "repo", bootstrap },
+      }),
+    );
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(getProtocolState().upgradeRequired).toBe(true);
+    expect(getWsConnectionState().lastError).toContain("F5 was updated");
+    expect(listener).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+    transport.dispose();
+  },
+);

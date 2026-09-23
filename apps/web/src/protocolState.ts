@@ -4,11 +4,10 @@ import {
   F5_PROTOCOL_VERSION,
   F5_UPGRADE_REQUIRED_MESSAGE,
   type ServerBootstrap,
-  type ProviderKind,
 } from "@t3tools/contracts";
 
 let bootstrap: ServerBootstrap | null = null;
-let state = { upgradeRequired: false, activeUploads: 0 };
+let state = { upgradeRequired: false, activeUploads: 0, ready: false };
 const listeners = new Set<() => void>();
 const subscribe = (listener: () => void) => {
   listeners.add(listener);
@@ -29,14 +28,16 @@ export function requireProtocolUpgrade(): void {
 }
 export function setServerBootstrap(value: ServerBootstrap): void {
   bootstrap = value;
+  state = { ...state, ready: true };
+  emit();
 }
-export function getServerSendLimits(provider?: ProviderKind) {
+export function getServerSendLimits() {
   if (!bootstrap) throw new Error("Waiting for server capabilities. Reconnect before sending.");
-  return provider ? bootstrap.providerSendLimits[provider] : bootstrap.sendLimits;
+  return bootstrap.sendLimits;
 }
 export function resetProtocolStateForTests(): void {
   bootstrap = null;
-  state = { upgradeRequired: false, activeUploads: 0 };
+  state = { upgradeRequired: false, activeUploads: 0, ready: false };
   emit();
 }
 
@@ -70,6 +71,21 @@ export async function protocolFetch(
   return response;
 }
 
+const reloadAttemptKey = `f5:protocol-reload:${F5_PROTOCOL_VERSION}`;
+export function canAutoReloadForProtocolUpgrade(): boolean {
+  try {
+    return sessionStorage.getItem(reloadAttemptKey) !== "attempted";
+  } catch {
+    return false;
+  }
+}
 export function reloadForProtocolUpgrade(): void {
-  if (state.upgradeRequired && state.activeUploads === 0) window.location.reload();
+  if (!state.upgradeRequired || state.activeUploads > 0 || !canAutoReloadForProtocolUpgrade())
+    return;
+  try {
+    sessionStorage.setItem(reloadAttemptKey, "attempted");
+  } catch {
+    return;
+  }
+  window.location.reload();
 }

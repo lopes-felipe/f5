@@ -24,7 +24,7 @@ Upload callers acquire `beginProtocolUpload()` before sending and release its
 lease in `finally`, after consuming the response.
 
 The authenticated `GET /api/bootstrap` response and WebSocket welcome advertise
-current capabilities, upload support, and global/per-provider send limits. Today
+current capabilities, upload support, and global send limits. Today
 image attachments retain the existing eight-image, 10 MiB/image and 120,000-character
 limits. Generic attachment uploads are explicitly disabled; future-phase limits
 are not advertised early. The composer obtains limits from this metadata for image
@@ -34,7 +34,12 @@ metadata; importing or sending new content requires the server limits.
 On 4426 or HTTP 426, the web client stops reconnecting and sending mutations and
 shows “F5 was updated. Reload to continue.” The workspace remains mounted. Reload
 is scheduled after active uploads finish, including reading their responses, and
-new uploads are refused. Existing draft persistence is retained. The upgrade
+new uploads are refused. Send remains disabled until welcome limits arrive; a welcome
+without metadata is explicitly rejected. Automatic reload waits for imports and
+verified draft persistence, and is attempted only once per client version in a tab.
+If saving fails, users can download a JSON recovery copy containing draft text and
+image data URLs. A warned "Reload anyway" action remains available during uploads.
+Provider-specific limits will be introduced alongside provider-specific enforcement. The upgrade
 surface is always enabled, independently of the optional disconnect overlay.
 Both direct `index.html` requests and SPA fallback responses use `no-cache` so a
 reload fetches current assets.

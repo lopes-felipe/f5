@@ -1,8 +1,17 @@
 import { F5_UPGRADE_REQUIRED_MESSAGE } from "@t3tools/contracts";
-import { reloadForProtocolUpgrade, useProtocolState } from "../protocolState";
+import {
+  canAutoReloadForProtocolUpgrade,
+  reloadForProtocolUpgrade,
+  useProtocolState,
+} from "../protocolState";
 import { AlertTriangle, LoaderCircle, RefreshCw } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import {
+  getComposerReloadStatus,
+  serializeComposerDraftRecovery,
+  useComposerDraftStore,
+} from "../composerDraftStore";
 import { APP_DISPLAY_NAME } from "../branding";
 import { type SlowRpcRequest, useSlowRpcRequests } from "../requestLatencyState";
 import { useSlowRpcWarningEnabled, useWsDisconnectSurfaceEnabled } from "../webLocalFlags";
@@ -128,11 +137,29 @@ export function SlowRpcWarningToastCoordinator() {
 
 export function WebSocketConnectionSurface({ children }: { readonly children: ReactNode }) {
   const protocol = useProtocolState();
+  const drafts = useComposerDraftStore((state) =>
+    protocol.upgradeRequired ? state.draftsByThreadId : null,
+  );
+  const imports = useComposerDraftStore((state) =>
+    protocol.upgradeRequired ? state.imageImportsByThreadId : null,
+  );
+  const [draftStatus, setDraftStatus] =
+    useState<ReturnType<typeof getComposerReloadStatus>>("pending");
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const autoReloadAllowed = canAutoReloadForProtocolUpgrade();
   useEffect(() => {
-    if (!protocol.upgradeRequired || protocol.activeUploads > 0) return;
-    const timer = setTimeout(reloadForProtocolUpgrade, 300);
+    if (!protocol.upgradeRequired) return;
+    const status = getComposerReloadStatus();
+    setDraftStatus(status);
+    if (protocol.activeUploads > 0 || status !== "ready" || !autoReloadAllowed) return;
+    const timer = setTimeout(() => {
+      // Recheck live state; imports can complete while the timer is pending.
+      const latest = getComposerReloadStatus();
+      setDraftStatus(latest);
+      if (latest === "ready") reloadForProtocolUpgrade();
+    }, 300);
     return () => clearTimeout(timer);
-  }, [protocol.upgradeRequired, protocol.activeUploads]);
+  }, [protocol.upgradeRequired, protocol.activeUploads, drafts, imports, autoReloadAllowed]);
   const enabled = useWsDisconnectSurfaceEnabled();
   const connectionState = useWsConnectionState();
 
@@ -146,7 +173,11 @@ export function WebSocketConnectionSurface({ children }: { readonly children: Re
         description:
           protocol.activeUploads > 0
             ? "Waiting for uploads to finish before reloading."
-            : "Reloading…",
+            : draftStatus !== "ready"
+              ? "Draft attachments are still being prepared or could not be saved. Download drafts before reloading to keep a recovery copy."
+              : autoReloadAllowed
+                ? "Reloading…"
+                : "Automatic reload already attempted. Reload manually after the update is available.",
       }
     : shouldBlock
       ? buildSurfaceCopy(blockingPhase)
@@ -209,6 +240,55 @@ export function WebSocketConnectionSurface({ children }: { readonly children: Re
               </div>
             ) : null}
 
+            {protocol.upgradeRequired && (
+              <div className="mt-5 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  disabled={Object.values(imports ?? {}).some(
+                    (value) => (value?.pendingCount ?? 0) > 0,
+                  )}
+                  onClick={() => {
+                    setRecoveryError(null);
+                    void serializeComposerDraftRecovery()
+                      .then((text) => {
+                        const url = URL.createObjectURL(
+                          new Blob([text], { type: "application/json" }),
+                        );
+                        const link = document.createElement("a");
+                        link.href = url;
+                        link.download = "f5-draft-recovery.json";
+                        link.click();
+                        setTimeout(() => URL.revokeObjectURL(url), 1000);
+                      })
+                      .catch(() =>
+                        setRecoveryError(
+                          "Could not download drafts. Keep this tab open and try again.",
+                        ),
+                      );
+                  }}
+                >
+                  Download drafts
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const unsafe =
+                      protocol.activeUploads > 0 || getComposerReloadStatus() !== "ready";
+                    if (
+                      !unsafe ||
+                      window.confirm(
+                        "Reload anyway? Uploads will be interrupted and unsaved draft attachments will be lost. Download drafts first to keep a recovery copy.",
+                      )
+                    )
+                      window.location.reload();
+                  }}
+                >
+                  Reload anyway
+                </Button>
+                {recoveryError && <p role="alert">{recoveryError}</p>}
+              </div>
+            )}
             {!protocol.upgradeRequired && (
               <div className="mt-5 flex flex-wrap gap-2">
                 <Button

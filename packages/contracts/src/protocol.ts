@@ -1,6 +1,5 @@
 import { Schema } from "effect";
 import { NonNegativeInt } from "./baseSchemas";
-import { ProviderKind } from "./providerKind";
 
 /** Bump when a client must decode a new union variant or persisted state shape. */
 export const F5_PROTOCOL_VERSION = 1;
@@ -29,6 +28,5 @@ export const ServerBootstrap = Schema.Struct({
     attachments: Schema.Struct({ enabled: Schema.Boolean, maxFileBytes: NonNegativeInt }),
   }),
   sendLimits: ProviderSendLimits,
-  providerSendLimits: Schema.Record(ProviderKind, ProviderSendLimits),
 });
 export type ServerBootstrap = typeof ServerBootstrap.Type;

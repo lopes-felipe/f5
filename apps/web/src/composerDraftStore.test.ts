@@ -1,10 +1,11 @@
-import { setServerBootstrap } from "./protocolState";
+import { resetProtocolStateForTests, setServerBootstrap } from "./protocolState";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   type ComposerImageAttachment,
+  getComposerReloadStatus,
   createDebouncedStorage,
   mergePersistedRecords,
   pruneOrphanedDraftThreads,
@@ -371,6 +372,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     };
 
     useComposerDraftStore.getState().addImage(threadId, image);
+    expect(getComposerReloadStatus()).toBe("pending");
     useComposerDraftStore.getState().syncPersistedAttachments(threadId, [attachment]);
 
     await waitForComposerDraftVerification();
@@ -380,6 +382,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
       nonPersistedImageIds: [],
     });
     expect(baseStorage.setItem).toHaveBeenCalled();
+    expect(getComposerReloadStatus()).toBe("ready");
   });
 
   it("marks current images as non-persisted when the debounced storage flush fails", async () => {
@@ -408,6 +411,7 @@ describe("composerDraftStore syncPersistedAttachments", () => {
       persistedAttachments: [],
       nonPersistedImageIds: [image.id],
     });
+    expect(getComposerReloadStatus()).toBe("unsaved");
   });
 });
 
@@ -1435,3 +1439,16 @@ describe("mergePersistedRecords", () => {
 });
 
 beforeEach(() => setServerBootstrap(serverBootstrapFixture));
+
+it("returns a visible import failure before welcome metadata arrives", async () => {
+  resetProtocolStateForTests();
+  const result = await useComposerDraftStore
+    .getState()
+    .importImages(ThreadId.makeUnsafe("not-ready"), [
+      new File(["image"], "clipboard.png", { type: "image/png" }),
+    ]);
+  expect(result.imported).toEqual([]);
+  expect(result.failures).toEqual([
+    { name: "clipboard.png", message: expect.stringContaining("Waiting for server capabilities") },
+  ]);
+});

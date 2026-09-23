@@ -2054,7 +2054,19 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           return { imported: [], failures: [], cancelled: false };
         }
 
-        const maxAttachments = getServerSendLimits().maxImagesPerTurn;
+        let maxAttachments: number;
+        try {
+          maxAttachments = getServerSendLimits().maxImagesPerTurn;
+        } catch (error) {
+          return {
+            imported: [],
+            cancelled: false,
+            failures: files.map((file) => ({
+              name: file.name,
+              message: String(error instanceof Error ? error.message : error),
+            })),
+          };
+        }
         const acceptedFiles: File[] = [];
         const failures: ComposerImageImportFailure[] = [];
         set((state) => {
@@ -3091,4 +3103,38 @@ export function pruneOrphanedDraftThreads(validProjectIds: ReadonlySet<string>):
       revokeObjectPreviewUrl(image.previewUrl);
     }
   }
+}
+
+/** Fail closed until imports, serialization and durable storage all agree. */
+export function getComposerReloadStatus(): "ready" | "pending" | "unsaved" {
+  const state = useComposerDraftStore.getState();
+  if (Object.values(state.imageImportsByThreadId).some((value) => (value?.pendingCount ?? 0) > 0))
+    return "pending";
+  try {
+    composerDebouncedStorage.flush();
+    for (const [id, draft] of Object.entries(state.draftsByThreadId)) {
+      if (draft.nonPersistedImageIds.length > 0) return "unsaved";
+      const saved = new Set(draft.persistedAttachments.map((image) => image.id));
+      if (draft.images.some((image) => !saved.has(image.id))) return "pending";
+      if (!persistedDraftMatches(id as ThreadId, draft)) return "unsaved";
+    }
+    return "ready";
+  } catch {
+    return "unsaved";
+  }
+}
+
+/** A portable recovery copy, including images that local storage could not retain. */
+export async function serializeComposerDraftRecovery(): Promise<string> {
+  const drafts = useComposerDraftStore.getState().draftsByThreadId;
+  const entries = await Promise.all(
+    Object.entries(drafts).map(async ([threadId, draft]) => ({
+      threadId,
+      prompt: draft.prompt,
+      filePaths: draft.filePaths,
+      terminalContexts: draft.terminalContexts,
+      attachments: await serializeComposerDraftAttachments(draft),
+    })),
+  );
+  return JSON.stringify({ drafts: entries }, null, 2);
 }

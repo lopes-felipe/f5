@@ -1,3 +1,4 @@
+import { compressImageForComposer } from "./lib/imageCompression";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { F5_PROTOCOL_HEADER, F5_PROTOCOL_VERSION } from "@t3tools/contracts";
 import {
@@ -8,6 +9,8 @@ import {
   requireProtocolUpgrade,
   resetProtocolStateForTests,
   setServerBootstrap,
+  canAutoReloadForProtocolUpgrade,
+  reloadForProtocolUpgrade,
 } from "./protocolState";
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 
@@ -20,13 +23,9 @@ describe("protocol state", () => {
     setServerBootstrap({
       ...serverBootstrapFixture,
       sendLimits: { ...serverBootstrapFixture.sendLimits, maxImagesPerTurn: 3 },
-      providerSendLimits: {
-        ...serverBootstrapFixture.providerSendLimits,
-        codex: { ...serverBootstrapFixture.sendLimits, maxInputChars: 42 },
-      },
     });
     expect(getServerSendLimits().maxImagesPerTurn).toBe(3);
-    expect(getServerSendLimits("codex").maxInputChars).toBe(42);
+    expect(getProtocolState().ready).toBe(true);
   });
   it("preserves existing uploads, rejects new uploads and releases each lease once", () => {
     const one = beginProtocolUpload();
@@ -60,4 +59,28 @@ describe("protocol state", () => {
     );
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
+});
+
+it("attempts only one automatic reload per client version, even across state resets", () => {
+  const values = new Map<string, string>();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => values.get(key),
+    setItem: (key: string, value: string) => values.set(key, value),
+  });
+  const reload = vi.fn();
+  vi.stubGlobal("window", { location: { reload } });
+  requireProtocolUpgrade();
+  reloadForProtocolUpgrade();
+  resetProtocolStateForTests();
+  requireProtocolUpgrade();
+  expect(canAutoReloadForProtocolUpgrade()).toBe(false);
+  reloadForProtocolUpgrade();
+  expect(reload).toHaveBeenCalledTimes(1);
+});
+
+it("does not report missing compression limits as a corrupt image", async () => {
+  vi.stubGlobal("Worker", vi.fn());
+  expect(
+    await compressImageForComposer(new File(["image"], "clipboard.png", { type: "image/png" })),
+  ).toEqual({ ok: false, reason: "not-ready" });
 });

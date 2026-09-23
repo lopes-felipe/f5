@@ -54,6 +54,26 @@ fix is separated from the protocol implementation in its own commit.
 
 Tests ran on macOS arm64. Browser installation used Node 24.13.1; application checks
 used the normal Node 26.9.0/Bun 1.3.11 environment. Platform-specific CI remains
-necessary; no Linux or Windows packaged-run result is claimed here. Local outputs
-are `/tmp/f5-protocol-full-final.log`, `/tmp/f5-protocol-browser.log`,
-`/tmp/f5-protocol-desktop.log`, and `/tmp/f5-protocol-profiles.log`.
+necessary; no Linux or Windows packaged-run result is claimed here.
+
+## Review follow-up
+
+Send waits for welcome metadata, and the send handler resolves limits before taking
+its lock. Missing image-import limits return visible failures. Missing or mismatched
+welcome metadata closes the socket without reconnecting. The optional schema field
+allows legacy welcomes to reach this explicit rejection path.
+
+Automatic reload requires completed image imports and verified draft persistence.
+A recovery download includes in-memory image data URLs; manual reload warns before
+interrupting uploads or discarding unsaved attachments. A session-storage marker
+limits automatic reload to one attempt per client version. Global advertised limits
+use the same constants as server enforcement; provider-specific limits are deferred
+until provider-specific enforcement exists.
+
+Follow-up validation passed: formatting, lint (eight existing warnings), typecheck,
+the full workspace suite and all 107 extended Git tests, all 429 browser tests,
+desktop smoke, and the upstream ledger check with `F5_REQUIRE_UPSTREAM=1`.
+The browser fixtures now include current bootstrap metadata. Tests cover absent
+limits, import/serialization/storage failure with the real draft store, recovery
+image bytes, repeat reloads, manual reload warnings, and explicit HTTP 400 for an
+invalid restore request with the current protocol header.

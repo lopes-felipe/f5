@@ -1,4 +1,4 @@
-import { setServerBootstrap } from "../protocolState";
+import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
 import { serverBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
@@ -1393,7 +1393,7 @@ const worker = setupWorker(
         type: "push",
         sequence: 1,
         channel: WS_CHANNELS.serverWelcome,
-        data: fixture.welcome,
+        data: { ...fixture.welcome, bootstrap: serverBootstrapFixture },
       }),
     );
     client.addEventListener("message", (event) => {
@@ -3448,6 +3448,39 @@ describe("ChatView timeline (full app)", () => {
           expect(document.body.textContent).not.toContain(removedLabel);
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("waits for welcome limits before enabling send, then sends normally", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Send after welcome");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-waiting" as MessageId,
+        targetText: "waiting",
+      }),
+    });
+    try {
+      await waitForSendButton();
+      resetProtocolStateForTests();
+      const connecting = await waitForElement<HTMLButtonElement>(
+        () =>
+          Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            button.textContent?.includes("Connecting"),
+          ) ?? null,
+        "Waiting for connecting button",
+      );
+      expect(connecting.disabled).toBe(true);
+      connecting.click();
+      setServerBootstrap(serverBootstrapFixture);
+      const button = await waitForSendButton();
+      await vi.waitFor(() => expect(button.disabled).toBe(false));
+      button.click();
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
       );
     } finally {
       await mounted.cleanup();

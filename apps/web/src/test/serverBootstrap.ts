@@ -1,8 +1,4 @@
-import {
-  F5_PROTOCOL_VERSION,
-  KNOWN_PROVIDER_KINDS,
-  type ServerBootstrap,
-} from "@t3tools/contracts";
+import { F5_PROTOCOL_VERSION, type ServerBootstrap } from "@t3tools/contracts";
 
 const limits = {
   maxInputChars: 120_000,
@@ -15,7 +11,4 @@ export const serverBootstrapFixture: ServerBootstrap = {
   capabilities: ["image-attachments"],
   uploadLimits: { attachments: { enabled: false, maxFileBytes: 0 } },
   sendLimits: limits,
-  providerSendLimits: Object.fromEntries(
-    KNOWN_PROVIDER_KINDS.map((kind) => [kind, limits]),
-  ) as ServerBootstrap["providerSendLimits"],
 };

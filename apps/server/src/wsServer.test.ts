@@ -4204,7 +4204,7 @@ describe("WebSocket Server", () => {
       },
       body: "not a backup",
     });
-    expect(current.status).not.toBe(426);
+    expect(current.status).toBe(400);
   });
 
   it("rejects websocket connections without a valid auth token", async () => {
