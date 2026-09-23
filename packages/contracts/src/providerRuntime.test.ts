@@ -6,6 +6,21 @@ import { ProviderRuntimeEvent } from "./providerRuntime";
 const decodeRuntimeEvent = Schema.decodeUnknownSync(ProviderRuntimeEvent);
 
 describe("ProviderRuntimeEvent", () => {
+  it.each(["started", "interacted", "interrupted", "completed"])(
+    "decodes subagent activity kind %s",
+    (kind) => {
+      const event = {
+        type: "subagent.activity",
+        eventId: "event-subagent-1",
+        provider: "codex",
+        createdAt: "2026-09-23T18:21:12.496Z",
+        threadId: "thread-1",
+        payload: { kind, agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+      };
+      expect(decodeRuntimeEvent(event)).toEqual(event);
+    },
+  );
+
   it("decodes thread token usage snapshots with normalized context fields", () => {
     const parsed = decodeRuntimeEvent({
       type: "thread.token-usage.updated",

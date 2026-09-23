@@ -1512,12 +1512,7 @@ function runtimeEventToActivities(
     }
 
     case "subagent.activity": {
-      const kindLabel =
-        event.payload.kind === "started"
-          ? "started"
-          : event.payload.kind === "interrupted"
-            ? "interrupted"
-            : "interacted";
+      const kindLabel = event.payload.kind;
       return [
         {
           id: event.eventId,

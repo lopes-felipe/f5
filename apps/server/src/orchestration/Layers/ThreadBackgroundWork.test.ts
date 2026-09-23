@@ -134,6 +134,95 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     }),
   );
 
+  it.effect(
+    "persists subagent completion and clears protection despite duplicate notifications",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+        yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+        yield* Migration0066;
+        yield* sql`DELETE FROM projection_thread_background_work`;
+        const work = yield* ThreadBackgroundWork;
+        yield* work.recordProviderEvent({
+          ...eventBase(1),
+          provider: "codex",
+          type: "subagent.activity",
+          payload: { kind: "started", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        });
+        const freshSince = "2026-01-01T00:00:00.000Z";
+        assert.equal((yield* work.listProtectedThreadIds({ freshSince })).has(threadId), true);
+        for (const index of [2, 3]) {
+          yield* work.recordProviderEvent({
+            ...eventBase(index),
+            provider: "codex",
+            type: "subagent.activity",
+            payload: { kind: "completed", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+          });
+          const snapshot = yield* work.getSnapshot;
+          assert.equal(snapshot.entries.length, 1);
+          assert.equal(snapshot.entries[0]?.status, "completed");
+          assert.equal(snapshot.entries[0]?.active, false);
+          assert.equal(snapshot.entries[0]?.ownership, "direct-subagent");
+          assert.equal((yield* work.listProtectedThreadIds({ freshSince })).has(threadId), false);
+          const rows =
+            yield* sql`SELECT status, active, completed_at FROM projection_thread_background_work`;
+          assert.equal(rows[0]?.status, "completed");
+          assert.equal(rows[0]?.active, 0);
+          assert.equal(rows[0]?.completed_at, eventBase(2).createdAt);
+        }
+
+        yield* work.recordProviderEvent({
+          ...eventBase(4),
+          provider: "codex",
+          type: "subagent.activity",
+          payload: { kind: "interacted", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        });
+        const reactivated = yield* work.getSnapshot;
+        assert.equal(reactivated.entries[0]?.status, "running");
+        assert.equal(reactivated.entries[0]?.active, true);
+        assert.equal(reactivated.entries[0]?.completedAt, null);
+        assert.equal((yield* work.listProtectedThreadIds({ freshSince })).has(threadId), true);
+
+        yield* work.recordProviderEvent({
+          ...eventBase(5),
+          provider: "codex",
+          type: "subagent.activity",
+          payload: { kind: "completed", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        });
+        const completedAgain = yield* work.getSnapshot;
+        assert.equal(completedAgain.entries[0]?.completedAt, eventBase(5).createdAt);
+        assert.equal(completedAgain.entries[0]?.active, false);
+        assert.equal((yield* work.listProtectedThreadIds({ freshSince })).has(threadId), false);
+      }),
+  );
+
+  it.effect("records completion without an earlier start as inactive and unprotected", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+      yield* Migration0066;
+      yield* sql`DELETE FROM projection_thread_background_work`;
+      const work = yield* ThreadBackgroundWork;
+      yield* work.recordProviderEvent({
+        ...eventBase(1),
+        provider: "codex",
+        type: "subagent.activity",
+        payload: { kind: "completed", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+      });
+      const snapshot = yield* work.getSnapshot;
+      assert.equal(snapshot.entries.length, 1);
+      assert.equal(snapshot.entries[0]?.status, "completed");
+      assert.equal(snapshot.entries[0]?.active, false);
+      assert.equal(snapshot.entries[0]?.completedAt, eventBase(1).createdAt);
+      const protectedThreads = yield* work.listProtectedThreadIds({
+        freshSince: "2026-01-01T00:00:00.000Z",
+      });
+      assert.equal(protectedThreads.has(threadId), false);
+    }),
+  );
+
   it.effect("marks all active work terminal when its provider session exits", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

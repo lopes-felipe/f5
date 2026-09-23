@@ -16,6 +16,7 @@ import {
   RuntimeItemId,
   RuntimeRequestId,
   RuntimeTaskId,
+  SubagentActivityKind,
   ProviderApprovalDecision,
   ProviderItemId,
   ThreadId,
@@ -783,6 +784,8 @@ function protocolWarningEvent(
   };
 }
 
+const isSubagentActivityKind = Schema.is(SubagentActivityKind);
+
 function mapSubagentActivity(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -791,15 +794,21 @@ function mapSubagentActivity(
   const kind = source.kind;
   const agentThreadId = asString(source.agentThreadId ?? source.agent_thread_id)?.trim();
   const agentPath = asString(source.agentPath ?? source.agent_path)?.trim();
-  if (
-    (kind !== "started" && kind !== "interacted" && kind !== "interrupted") ||
-    !agentThreadId ||
-    !agentPath
-  ) {
+  if (!isSubagentActivityKind(kind)) {
     return protocolWarningEvent(
       event,
       canonicalThreadId,
-      "Malformed Codex subagent activity: expected kind, agentThreadId, and agentPath.",
+      typeof kind === "string"
+        ? `Unsupported Codex subagent activity kind ${JSON.stringify(kind)}.`
+        : "Malformed Codex subagent activity: expected a string kind.",
+      "subAgentActivity",
+    );
+  }
+  if (!agentThreadId || !agentPath) {
+    return protocolWarningEvent(
+      event,
+      canonicalThreadId,
+      "Malformed Codex subagent activity: expected nonempty agentThreadId and agentPath.",
       "subAgentActivity",
     );
   }

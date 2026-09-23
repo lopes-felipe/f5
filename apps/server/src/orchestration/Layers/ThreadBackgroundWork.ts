@@ -171,7 +171,7 @@ function taskTransition(
 function subagentTransition(
   event: Extract<ProviderRuntimeEvent, { type: "subagent.activity" }>,
 ): Omit<ThreadBackgroundWorkTransition, "providerInstanceId" | "providerSessionIdentity"> {
-  const active = event.payload.kind !== "interrupted";
+  const active = event.payload.kind === "started" || event.payload.kind === "interacted";
   return {
     threadId: event.threadId,
     workItemId: `subagent:${event.payload.agentThreadId}`,
@@ -179,7 +179,7 @@ function subagentTransition(
     turnId: event.turnId ?? null,
     ...(event.payload.kind === "started" ? { classification: "working" as const } : {}),
     ...(event.payload.kind === "started" ? { ownership: "direct-subagent" as const } : {}),
-    status: active ? "running" : "interrupted",
+    status: active ? "running" : event.payload.kind === "completed" ? "completed" : "interrupted",
     active,
     phase: event.payload.agentPath,
     occurredAt: event.createdAt,

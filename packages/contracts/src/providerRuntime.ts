@@ -553,8 +553,16 @@ const ApprovalReviewPayload = Schema.Struct({
 });
 export type ApprovalReviewPayload = typeof ApprovalReviewPayload.Type;
 
+export const SubagentActivityKind = Schema.Literals([
+  "started",
+  "interacted",
+  "interrupted",
+  "completed",
+]);
+export type SubagentActivityKind = typeof SubagentActivityKind.Type;
+
 const SubagentActivityPayload = Schema.Struct({
-  kind: Schema.Literals(["started", "interacted", "interrupted"]),
+  kind: SubagentActivityKind,
   agentThreadId: TrimmedNonEmptyStringSchema,
   agentPath: TrimmedNonEmptyStringSchema,
 });

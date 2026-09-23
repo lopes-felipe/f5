@@ -1477,6 +1477,56 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.every((entry) => entry.warningCount === undefined)).toBe(true);
   });
 
+  it.each([false, true])(
+    "deduplicates subagent completion pairs with intervening activity: %s",
+    (intervening) => {
+      const activities = [0, 1].map((index) =>
+        makeActivity({
+          id: `completed-${index}`,
+          createdAt: `2026-09-23T18:21:12.49${index * 2}Z`,
+          kind: "subagent.activity",
+          summary: "Subagent completed",
+          payload: {
+            itemType: "collab_agent_tool_call",
+            providerItemId: "subagent-completed-agent-1",
+            title: "Subagent completed",
+            subagentType: "completed",
+            subagentThreadId: "agent-1",
+            subagentPath: "/root/reviewer",
+          },
+        }),
+      );
+      if (intervening) {
+        activities.splice(
+          1,
+          0,
+          makeActivity({
+            id: "another-agent",
+            createdAt: "2026-09-23T18:21:12.491Z",
+            kind: "subagent.activity",
+            summary: "Subagent completed",
+            payload: {
+              itemType: "collab_agent_tool_call",
+              providerItemId: "subagent-completed-agent-2",
+              subagentType: "completed",
+              subagentThreadId: "agent-2",
+              subagentPath: "/root/other",
+            },
+          }),
+        );
+      }
+      const entries = deriveWorkLogEntries(activities, undefined);
+      expect(entries).toHaveLength(intervening ? 2 : 1);
+      if (intervening) expect(entries.some((entry) => entry.id === "another-agent")).toBe(true);
+      expect(entries.find((entry) => entry.subagentThreadId === "agent-1")).toMatchObject({
+        label: "Subagent completed",
+        subagentType: "completed",
+        subagentThreadId: "agent-1",
+        subagentPath: "/root/reviewer",
+      });
+    },
+  );
+
   it("correlates subagent activity with the existing collaboration row", () => {
     const entries = deriveWorkLogEntries(
       [

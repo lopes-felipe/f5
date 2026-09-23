@@ -892,6 +892,109 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
     }),
   );
 
+  it.effect("maps all subagent kinds through both lifecycle notifications", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const cases = ["started", "interacted", "interrupted", "completed"].flatMap((kind) =>
+        ["item/started", "item/completed"].flatMap((method) =>
+          [false, true].map((snakeCase) => ({ kind, method, snakeCase })),
+        ),
+      );
+      const eventsFiber = yield* Stream.runCollect(
+        Stream.take(adapter.streamEvents, cases.length),
+      ).pipe(Effect.forkChild);
+      const createdAt = "2026-09-23T18:21:12.496Z";
+
+      cases.forEach(({ kind, method, snakeCase }, index) => {
+        // Completion items use the same identity for their started/completed pair.
+        const itemId = `subagent-${kind}-agent-1`;
+        lifecycleManager.emit("event", {
+          id: asEventId(`evt-subagent-kind-${index}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          turnId: asTurnId("turn-1"),
+          itemId: asItemId(itemId),
+          createdAt,
+          method,
+          payload: {
+            item: {
+              type: "subAgentActivity",
+              id: itemId,
+              kind,
+              ...(snakeCase
+                ? { agent_thread_id: " agent-1 ", agent_path: " /root/reviewer " }
+                : { agentThreadId: "agent-1", agentPath: "/root/reviewer" }),
+            },
+            threadId: "provider-thread-1",
+            turnId: "turn-1",
+          },
+        } satisfies ProviderEvent);
+      });
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      events.forEach((event, index) => {
+        const kind = cases[index]!.kind;
+        assert.equal(event.type, "subagent.activity");
+        assert.deepEqual(event.payload, {
+          kind,
+          agentThreadId: "agent-1",
+          agentPath: "/root/reviewer",
+        });
+        assert.equal(event.itemId, `subagent-${kind}-agent-1`);
+        assert.equal(event.providerRefs?.providerItemId, event.itemId);
+        assert.equal(event.turnId, "turn-1");
+      });
+    }),
+  );
+
+  it.effect("distinguishes unsupported subagent kinds from malformed kinds and identities", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const cases = [
+        { kind: "futureKind", agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        { agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        { kind: null, agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        { kind: 42, agentThreadId: "agent-1", agentPath: "/root/reviewer" },
+        { kind: "completed", agentPath: "/root/reviewer" },
+        { kind: "completed", agentThreadId: "agent-1" },
+        { kind: "completed", agentThreadId: "  ", agentPath: "/root/reviewer" },
+        { kind: "completed", agentThreadId: "agent-1", agentPath: "  " },
+      ];
+      const eventsFiber = yield* Stream.runCollect(
+        Stream.take(adapter.streamEvents, cases.length),
+      ).pipe(Effect.forkChild);
+      cases.forEach((fields, index) => {
+        lifecycleManager.emit("event", {
+          id: asEventId(`evt-invalid-subagent-${index}`),
+          kind: "notification",
+          provider: "codex",
+          threadId: asThreadId("thread-1"),
+          createdAt: "2026-09-23T18:21:12.496Z",
+          method: "item/completed",
+          payload: { item: { type: "subAgentActivity", id: `invalid-${index}`, ...fields } },
+        } satisfies ProviderEvent);
+      });
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      events.forEach((event, index) => {
+        assert.equal(event.type, "runtime.warning");
+        if (event.type !== "runtime.warning") return;
+        assert.equal(
+          event.payload.message,
+          index === 0
+            ? 'Unsupported Codex subagent activity kind "futureKind".'
+            : index < 4
+              ? "Malformed Codex subagent activity: expected a string kind."
+              : "Malformed Codex subagent activity: expected nonempty agentThreadId and agentPath.",
+        );
+        assert.equal(event.payload.protocolValue, "subAgentActivity");
+        assert.deepEqual(event.payload.detail, {
+          item: { type: "subAgentActivity", id: `invalid-${index}`, ...cases[index] },
+        });
+      });
+    }),
+  );
+
   it.effect("maps approval reviews and patch updates onto their existing lifecycles", () =>
     Effect.gen(function* () {
       const adapter = yield* CodexAdapter;
@@ -1186,7 +1289,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         [
           {
             message:
-              "Malformed Codex subagent activity: expected kind, agentThreadId, and agentPath.",
+              "Malformed Codex subagent activity: expected nonempty agentThreadId and agentPath.",
             protocolMethod: "item/completed",
             protocolValue: "subAgentActivity",
           },
