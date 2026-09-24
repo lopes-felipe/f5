@@ -33,3 +33,32 @@ it("refuses a repository lock held by another profile and releases its own lock"
     await fs.rm(base, { recursive: true, force: true });
   }
 });
+
+it("serializes two same-process repository mutations beyond the cross-profile retry window", async () => {
+  const base = await fs.mkdtemp(path.join(os.tmpdir(), "f5-repository-serial-"));
+  try {
+    const order: string[] = [];
+    await Effect.runPromise(
+      Effect.all(
+        [1, 2].map((id) =>
+          withRepositoryLifecycleLock(
+            base,
+            base,
+            Effect.gen(function* () {
+              order.push("start" + id);
+              yield* Effect.sleep("650 millis");
+              order.push("end" + id);
+            }),
+          ),
+        ),
+        { concurrency: 2 },
+      ),
+    );
+    expect([
+      ["start1", "end1", "start2", "end2"],
+      ["start2", "end2", "start1", "end1"],
+    ]).toContainEqual(order);
+  } finally {
+    await fs.rm(base, { recursive: true, force: true });
+  }
+});

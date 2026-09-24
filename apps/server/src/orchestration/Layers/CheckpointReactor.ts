@@ -1,6 +1,5 @@
 import { canonicalWorktreePath, isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
 import { GitService } from "../../git/Services/GitService.ts";
-import { GitServiceLive } from "../../git/Layers/GitService.ts";
 import type { CheckpointStoreError } from "../../checkpointing/Errors.ts";
 import {
   CommandId,
@@ -950,6 +949,4 @@ const make = Effect.gen(function* () {
   } satisfies CheckpointReactorShape;
 });
 
-export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make).pipe(
-  Layer.provide(GitServiceLive),
-);
+export const CheckpointReactorLive = Layer.effect(CheckpointReactor, make);

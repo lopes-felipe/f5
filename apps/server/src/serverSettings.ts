@@ -582,6 +582,8 @@ const makeServerSettings = Effect.gen(function* () {
   return {
     start,
     ready: Deferred.await(startedDeferred),
+    // The cache stores secret references, not an immutable materialized snapshot.
+    // Readers must not observe a partially written secret transaction or its rollback.
     getSettings: writeSemaphore.withPermits(1)(
       getSettingsFromCache.pipe(
         Effect.flatMap(materializeProviderEnvironmentSecrets),

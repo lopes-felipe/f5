@@ -27,6 +27,8 @@ const ThreadBackgroundWorkDbRow = ThreadBackgroundWorkEntry.mapFields(
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
 
+  // Progress is a heartbeat, not a task start. Unknown or completed tasks must
+  // not become active merely because delayed progress arrives.
   const upsertQuery = SqlSchema.void({
     Request: ThreadBackgroundWorkTransition,
     execute: (row) => sql`

@@ -1,3 +1,4 @@
+import { GitServiceLive } from "../src/git/Layers/GitService.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -384,6 +385,7 @@ export const makeOrchestrationIntegrationHarness = (
       Layer.provideMerge(textGenerationLayer),
     );
     const checkpointReactorLayer = CheckpointReactorLive.pipe(
+      Layer.provide(GitServiceLive),
       Layer.provideMerge(runtimeServicesLayer),
     );
     const compactionServiceLayer = CompactionServiceLive.pipe(

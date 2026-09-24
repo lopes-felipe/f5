@@ -4367,33 +4367,33 @@ const make = Effect.gen(function* () {
           thread.latestTurn.state === "running" &&
           (yield* isGitRepoForThread(thread.id))
         ) {
-          // Re-emit a placeholder for every provider diff refresh so
-          // CheckpointReactor can keep the current turn checkpoint aligned with
-          // the latest filesystem state without allocating a new turn count.
+          // Allocate one placeholder. Capture the final filesystem state when
+          // the turn ends, after its last edit, rather than on each diff update.
           const existingCheckpoint = thread.checkpoints.find(
             (checkpoint) => checkpoint.turnId === turnId,
           );
-          if (existingCheckpoint) return;
-          const assistantMessageId = MessageId.makeUnsafe(
-            `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
-          );
-          const maxTurnCount = thread.checkpoints.reduce(
-            (max, c) => Math.max(max, c.checkpointTurnCount),
-            0,
-          );
-          yield* orchestrationEngine.dispatch({
-            type: "thread.turn.diff.complete",
-            commandId: providerCommandId(event, "thread-turn-diff-complete"),
-            threadId: thread.id,
-            turnId,
-            completedAt: now,
-            checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
-            status: "missing",
-            files: [],
-            assistantMessageId,
-            checkpointTurnCount: maxTurnCount + 1,
-            createdAt: now,
-          });
+          if (!existingCheckpoint) {
+            const assistantMessageId = MessageId.makeUnsafe(
+              `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+            );
+            const maxTurnCount = thread.checkpoints.reduce(
+              (max, c) => Math.max(max, c.checkpointTurnCount),
+              0,
+            );
+            yield* orchestrationEngine.dispatch({
+              type: "thread.turn.diff.complete",
+              commandId: providerCommandId(event, "thread-turn-diff-complete"),
+              threadId: thread.id,
+              turnId,
+              completedAt: now,
+              checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
+              status: "missing",
+              files: [],
+              assistantMessageId,
+              checkpointTurnCount: maxTurnCount + 1,
+              createdAt: now,
+            });
+          }
         }
       }
 

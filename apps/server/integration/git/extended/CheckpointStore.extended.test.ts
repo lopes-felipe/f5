@@ -1,3 +1,4 @@
+import { parseTurnDiffFilesFromUnifiedDiff } from "../../../src/checkpointing/Diffs.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -151,6 +152,27 @@ it("captures from a nested project directory in its parent Git repository", asyn
     expect(git(root, "show", "refs/t3/test-checkpoint:packages/project/file.txt")).toBe(
       "nested change",
     );
+    git(root, "update-ref", "refs/t3/baseline", "refs/t3/test-checkpoint");
+    fs.writeFileSync(path.join(nested, "file.txt"), "final change");
+    fs.writeFileSync(path.join(root, "outside.txt"), "not in this project");
+    await capture(nested);
+    const diff = await Effect.runPromise(
+      Effect.flatMap(Effect.service(CheckpointStore), (store) =>
+        store.diffCheckpoints({
+          cwd: nested,
+          fromCheckpointRef: CheckpointRef.makeUnsafe("refs/t3/baseline"),
+          toCheckpointRef: CheckpointRef.makeUnsafe("refs/t3/test-checkpoint"),
+        }),
+      ).pipe(Effect.provide(layer)),
+    );
+    expect(diff).toContain("diff --git a/file.txt b/file.txt");
+    expect(diff).not.toContain("packages/project/");
+    expect(diff).not.toContain("outside.txt");
+    const files = parseTurnDiffFilesFromUnifiedDiff(diff);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.path).toBe("file.txt");
+    // The editor resolves the projected path against the active project cwd.
+    expect(fs.readFileSync(path.resolve(nested, files[0]!.path), "utf8")).toBe("final change");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

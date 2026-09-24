@@ -451,6 +451,7 @@ const makeCheckpointStore = Effect.gen(function* () {
       const diffArgs = [
         "diff",
         "--patch",
+        "--relative",
         "--src-prefix=a/",
         "--dst-prefix=b/",
         "--minimal",

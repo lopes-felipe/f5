@@ -2350,7 +2350,7 @@ export default function ChatView({
     });
   }, [activeProjectCwd, activeThreadWorktreePath]);
   // Default true while loading to avoid toolbar flicker.
-  const isGitRepo = branchesQuery.data?.isRepo ?? true;
+  const isGitRepo = branchesQuery.data?.worktreeMissing || (branchesQuery.data?.isRepo ?? true);
   const onOpenFileChangeDiff = useCallback(
     (fileChangeId: OrchestrationFileChangeId, filePath?: string) => {
       void navigate({
@@ -2369,7 +2369,8 @@ export default function ChatView({
   const chatDiffContext = useMemo<ChatDiffContext>(
     () => ({
       threadId: activeThread?.id ?? null,
-      isGitRepo: branchesQuery.data?.isRepo === true,
+      isGitRepo:
+        branchesQuery.data?.isRepo === true || branchesQuery.data?.worktreeMissing === true,
       inferredCheckpointTurnCountByTurnId,
       expandedFileChangeDiffs,
       fileChangeSummariesById,
@@ -2379,6 +2380,7 @@ export default function ChatView({
     [
       activeThread?.id,
       branchesQuery.data?.isRepo,
+      branchesQuery.data?.worktreeMissing,
       expandedFileChangeDiffs,
       fileChangeSummariesById,
       inferredCheckpointTurnCountByTurnId,

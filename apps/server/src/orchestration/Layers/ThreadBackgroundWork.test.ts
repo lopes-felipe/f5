@@ -249,6 +249,26 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
     }),
   );
 
+  it.effect("ignores progress when its task start was never stored", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`CREATE TABLE IF NOT EXISTS projection_threads (thread_id TEXT PRIMARY KEY)`;
+      yield* sql`INSERT OR REPLACE INTO projection_threads (thread_id) VALUES (${threadId})`;
+      yield* Migration0066;
+      yield* sql`DELETE FROM projection_thread_background_work`;
+      const work = yield* ThreadBackgroundWork;
+      yield* work.recordProviderEvent({
+        ...eventBase(1),
+        type: "task.progress",
+        payload: {
+          taskId: RuntimeTaskId.makeUnsafe("never-started"),
+          description: "Late heartbeat",
+        },
+      });
+      assert.equal((yield* work.getSnapshot).entries.length, 0);
+    }),
+  );
+
   it.effect("keeps inert work inactive when a progress event follows its start", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;

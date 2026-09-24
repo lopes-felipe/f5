@@ -76,11 +76,18 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
     }
 
     const project = readModel.projects.find((entry) => entry.id === thread.projectId);
-    if (!project || !thread.branch) continue;
-    const branchExists = yield* git
-      .branchExists(project.workspaceRoot, thread.branch)
-      .pipe(Effect.catch(() => Effect.succeed(true)));
-    if (branchExists) continue;
+    if (project && !project.deletedAt && thread.branch) {
+      const branchExists = yield* git.branchExists(project.workspaceRoot, thread.branch).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("preserving missing worktree; branch probe failed", {
+            threadId: thread.id,
+            worktreePath,
+            error: String(error),
+          }).pipe(Effect.as(true)),
+        ),
+      );
+      if (branchExists) continue;
+    }
 
     yield* Effect.logInfo("clearing stale worktree projection", {
       threadId: thread.id,

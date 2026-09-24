@@ -1947,6 +1947,40 @@ describe("ChatView timeline (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it("shows missing worktree recovery status instead of offering Git initialization", async () => {
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-missing-worktree" as MessageId,
+        targetText: "Missing worktree",
+      }),
+      configureFixture: (nextFixture) => {
+        nextFixture.resolveWsRequest = (body) =>
+          body._tag === WS_METHODS.gitListBranches
+            ? {
+                type: "result",
+                result: {
+                  isRepo: false,
+                  worktreeMissing: true,
+                  hasOriginRemote: false,
+                  branches: [],
+                },
+              }
+            : null;
+      },
+    });
+    try {
+      await expect
+        .element(page.getByRole("button", { name: "Worktree missing", exact: true }))
+        .toBeDisabled();
+      await expect
+        .element(page.getByRole("button", { name: "Initialize Git" }))
+        .not.toBeInTheDocument();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("renders a startup thread skeleton for deep links until the snapshot resolves", async () => {
     const targetText = "deep link startup content";
     const snapshot = createSnapshotForTargetUser({

@@ -44,28 +44,31 @@ export function withRepositoryLifecycleLock<A, E, R>(
       "locks",
       createHash("sha256").update(canonical).digest("hex") + ".sqlite",
     );
-    return yield* Effect.acquireUseRelease(
-      Effect.tryPromise({
-        try: async () => {
-          for (let attempt = 0; ; attempt++) {
-            try {
-              return await acquireInstanceLock(lockPath);
-            } catch (error) {
-              if (!(error instanceof ProfileBusyError) || attempt === 4) throw error;
-              await new Promise((resolve) => setTimeout(resolve, 100));
+    return yield* withWorktreeLifecycleLock(
+      canonical,
+      Effect.acquireUseRelease(
+        Effect.tryPromise({
+          try: async () => {
+            for (let attempt = 0; ; attempt++) {
+              try {
+                return await acquireInstanceLock(lockPath);
+              } catch (error) {
+                if (!(error instanceof ProfileBusyError) || attempt === 4) throw error;
+                await new Promise((resolve) => setTimeout(resolve, 100));
+              }
             }
-          }
-        },
-        catch: (error) =>
-          new RepositoryLifecycleError({
-            message:
-              error instanceof ProfileBusyError
-                ? "Another F5 profile is updating this repository. Retry shortly."
-                : `Cannot acquire repository lock: ${String(error)}`,
-          }),
-      }),
-      () => action,
-      (lock) => Effect.sync(() => lock.release()),
+          },
+          catch: (error) =>
+            new RepositoryLifecycleError({
+              message:
+                error instanceof ProfileBusyError
+                  ? "Another F5 profile is updating this repository. Retry shortly."
+                  : `Cannot acquire repository lock: ${String(error)}`,
+            }),
+        }),
+        () => action,
+        (lock) => Effect.sync(() => lock.release()),
+      ),
     );
   });
 }

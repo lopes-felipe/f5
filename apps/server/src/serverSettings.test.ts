@@ -680,12 +680,18 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     Effect.gen(function* () {
       const values = new Map<string, Uint8Array>();
       let fail = false;
+      let readSettings: (() => Promise<ServerSettings>) | undefined;
+      let concurrentRead: Promise<ServerSettings> | undefined;
       const store = Layer.succeed(ServerSecretStore, {
         get: (name) => Effect.sync(() => values.get(name) ?? null),
         set: (name, value) =>
           Effect.gen(function* () {
             values.set(name, value);
             if (fail && new TextDecoder().decode(value) === "reject-after-write") {
+              concurrentRead = readSettings!();
+              // Give the reader a scheduler turn while the secret store contains
+              // uncommitted values. It must wait for rollback.
+              yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
               return yield* new SecretStoreError({ message: "injected write failure" });
             }
           }),
@@ -713,6 +719,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         });
         assert.ok(config.settingsPath);
         const disk = yield* fs.readFileString(config.settingsPath);
+        readSettings = () => Effect.runPromise(service.getSettings);
         fail = true;
         const result = yield* Effect.result(
           service.updateSettings({
@@ -729,6 +736,11 @@ it.layer(NodeServices.layer)("server settings", (it) => {
           }),
         );
         assert.equal(result._tag, "Failure");
+        assert.ok(concurrentRead);
+        assert.deepEqual(
+          (yield* Effect.promise(() => concurrentRead!)).providerInstances,
+          initial.providerInstances,
+        );
         assert.deepEqual((yield* service.getSettings).providerInstances, initial.providerInstances);
         assert.equal(yield* fs.readFileString(config.settingsPath), disk);
       }).pipe(

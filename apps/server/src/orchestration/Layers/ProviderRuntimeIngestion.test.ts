@@ -1,3 +1,4 @@
+import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
 import { makeFakeGitCore } from "../../git/testDoubles.ts";
@@ -646,8 +647,8 @@ describe("ProviderRuntimeIngestion", () => {
     ]);
   });
 
-  it.each([true, false])(
-    "retains a missing worktree exactly when its branch exists: %s",
+  it.each([true, false, "probe-error"] as const)(
+    "retains a missing worktree unless the branch is known to be gone: %s",
     async (branchExists) => {
       const harness = await createHarness({ startIngestion: false });
       const threadId = asThreadId("thread-1");
@@ -661,7 +662,19 @@ describe("ProviderRuntimeIngestion", () => {
           worktreePath: missingPath,
         }),
       );
-      const git = makeFakeGitCore({ branchExists: () => Effect.succeed(branchExists) });
+      const git = makeFakeGitCore({
+        branchExists: () =>
+          branchExists === "probe-error"
+            ? Effect.fail(
+                new GitCommandError({
+                  operation: "test",
+                  command: "git show-ref",
+                  cwd: "/unavailable",
+                  detail: "Repository unavailable",
+                }),
+              )
+            : Effect.succeed(branchExists),
+      });
       await Effect.runPromise(
         cleanupStaleWorktrees(harness.engine).pipe(
           Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
@@ -672,6 +685,46 @@ describe("ProviderRuntimeIngestion", () => {
         branchExists ? missingPath : null,
       );
       expect(git.calls.branchExists).toHaveLength(1);
+    },
+  );
+
+  it.each(["no-branch", "no-project", "deleted-project"] as const)(
+    "clears an unrecoverable missing worktree: %s",
+    async (scenario) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("missing-unrecoverable"),
+          threadId,
+          branch: scenario === "no-branch" ? null : "feature",
+          worktreePath: path.join(os.tmpdir(), crypto.randomUUID()),
+        }),
+      );
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      const git = makeFakeGitCore({});
+      await Effect.runPromise(
+        cleanupStaleWorktrees({
+          ...harness.engine,
+          getReadModel: () =>
+            Effect.succeed({
+              ...model,
+              projects:
+                scenario === "no-project"
+                  ? []
+                  : model.projects.map((project) => ({
+                      ...project,
+                      deletedAt: scenario === "deleted-project" ? new Date().toISOString() : null,
+                    })),
+            }),
+        }).pipe(
+          Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
+        ),
+      );
+      const updated = await Effect.runPromise(harness.engine.getReadModel());
+      expect(updated.threads.find((thread) => thread.id === threadId)?.worktreePath).toBeNull();
+      expect(git.calls.branchExists).toHaveLength(0);
     },
   );
 

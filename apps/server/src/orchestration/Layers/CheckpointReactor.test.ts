@@ -1,3 +1,5 @@
+import { GitService, type GitServiceShape } from "../../git/Services/GitService.ts";
+import { GitServiceLive } from "../../git/Layers/GitService.ts";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -357,6 +359,7 @@ describe("CheckpointReactor", () => {
   });
 
   async function createHarness(options?: {
+    readonly gitService?: GitServiceShape;
     readonly initiallyGit?: boolean;
     readonly checkpointStore?: CheckpointStoreShape;
     readonly hasSession?: boolean;
@@ -383,6 +386,9 @@ describe("CheckpointReactor", () => {
     );
 
     const layer = CheckpointReactorLive.pipe(
+      Layer.provide(
+        options?.gitService ? Layer.succeed(GitService, options.gitService) : GitServiceLive,
+      ),
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
@@ -468,73 +474,87 @@ describe("CheckpointReactor", () => {
   }
 
   it.each([
-    { shared: false, checkout: "agent-selected" },
+    { shared: false, checkout: "agent-selected", injected: false },
+    { shared: false, checkout: "agent-selected", injected: true },
     { shared: true, checkout: "agent-selected" },
     { shared: false, checkout: "t3code/abcdef01" },
-  ])("follows only an exclusive non-temporary checkout: %j", async ({ shared, checkout }) => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
-    execFileSync("git", ["init", `--initial-branch=${checkout}`], {
-      cwd: harness.cwd,
-      stdio: "ignore",
-    });
-    const threadId = ThreadId.makeUnsafe("thread-1");
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.meta.update",
-        commandId: CommandId.makeUnsafe("placeholder-branch"),
-        threadId,
-        branch: "t3code/1234abcd",
-      }),
-    );
-    const createdAt = new Date().toISOString();
-    if (shared)
+  ])(
+    "follows only an exclusive non-temporary checkout: %j",
+    async ({ shared, checkout, injected }) => {
+      const execute = vi.fn(() => Effect.succeed({ code: 0, stdout: checkout + "\n", stderr: "" }));
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        ...(injected ? { gitService: { execute } } : {}),
+      });
+      execFileSync("git", ["init", `--initial-branch=${checkout}`], {
+        cwd: harness.cwd,
+        stdio: "ignore",
+      });
+      const threadId = ThreadId.makeUnsafe("thread-1");
       await Effect.runPromise(
         harness.engine.dispatch({
-          type: "thread.create",
-          commandId: CommandId.makeUnsafe("shared-thread"),
-          threadId: ThreadId.makeUnsafe("thread-2"),
-          projectId: asProjectId("project-1"),
-          title: "Shared",
-          model: "gpt-5-codex",
-          runtimeMode: "approval-required",
-          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("placeholder-branch"),
+          threadId,
           branch: "t3code/1234abcd",
-          worktreePath: harness.cwd,
+        }),
+      );
+      const createdAt = new Date().toISOString();
+      if (shared)
+        await Effect.runPromise(
+          harness.engine.dispatch({
+            type: "thread.create",
+            commandId: CommandId.makeUnsafe("shared-thread"),
+            threadId: ThreadId.makeUnsafe("thread-2"),
+            projectId: asProjectId("project-1"),
+            title: "Shared",
+            model: "gpt-5-codex",
+            runtimeMode: "approval-required",
+            interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+            branch: "t3code/1234abcd",
+            worktreePath: harness.cwd,
+            createdAt,
+          }),
+        );
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("branch-sync-session"),
+          threadId,
+          session: {
+            threadId,
+            status: "running",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: asTurnId("branch-sync"),
+            lastError: null,
+            updatedAt: createdAt,
+          },
           createdAt,
         }),
       );
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.makeUnsafe("branch-sync-session"),
-        threadId,
-        session: {
-          threadId,
-          status: "running",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: asTurnId("branch-sync"),
-          lastError: null,
-          updatedAt: createdAt,
-        },
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.makeUnsafe("branch-sync-done"),
+        provider: "codex",
         createdAt,
-      }),
-    );
-    harness.provider.emit({
-      type: "turn.completed",
-      eventId: EventId.makeUnsafe("branch-sync-done"),
-      provider: "codex",
-      createdAt,
-      threadId,
-      turnId: asTurnId("branch-sync"),
-      payload: { state: "completed" },
-    });
-    const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
-    expect(thread.branch).toBe(
-      !shared && checkout === "agent-selected" ? checkout : "t3code/1234abcd",
-    );
-    expect(thread.worktreePath).toBe(harness.cwd);
-  });
+        threadId,
+        turnId: asTurnId("branch-sync"),
+        payload: { state: "completed" },
+      });
+      const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
+      expect(thread.branch).toBe(
+        !shared && checkout === "agent-selected" ? checkout : "t3code/1234abcd",
+      );
+      expect(thread.worktreePath).toBe(harness.cwd);
+      if (injected)
+        expect(execute).toHaveBeenCalledWith(
+          expect.objectContaining({
+            operation: "checkpoint.syncBranch",
+          }),
+        );
+    },
+  );
 
   it("does not block readiness on startup quiescence recovery", async () => {
     const harness = await createHarness({ stallStartupQuiescence: true });

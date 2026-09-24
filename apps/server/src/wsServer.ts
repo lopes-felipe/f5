@@ -1544,7 +1544,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
     });
   });
-  guardHttpResponseWriteErrors(httpServer);
+  guardHttpResponseWriteErrors(httpServer, (code) => {
+    void Effect.runPromise(
+      Effect.logWarning("Unexpected HTTP response or upgrade write error", { code }),
+    );
+  });
 
   // WebSocket server — upgrades from the HTTP server
   const wss = new WebSocketServer({

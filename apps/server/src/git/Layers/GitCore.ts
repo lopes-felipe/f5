@@ -6,7 +6,11 @@ import {
   parseRemoteFetchUrls,
   NONINTERACTIVE_GIT_ENV as BACKGROUND_GIT_FETCH_ENV,
 } from "../remoteInspection.ts";
-import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
+import {
+  isAbsolute as isAbsolutePath,
+  relative as relativePath,
+  resolve as resolvePath,
+} from "node:path";
 
 import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref, Schema } from "effect";
 
@@ -1070,6 +1074,24 @@ const makeGitCore = Effect.gen(function* () {
       input.path,
       Effect.gen(function* () {
         if (yield* fileSystem.exists(input.path)) return;
+        const target = yield* Effect.tryPromise(() => canonicalWorktreePath(input.path));
+        const managedRoot = yield* Effect.tryPromise(() => canonicalWorktreePath(worktreesDir));
+        const relative = relativePath(managedRoot, target);
+        if (
+          !isAbsolutePath(input.path) ||
+          !relative ||
+          relative === ".." ||
+          relative.startsWith("../") ||
+          relative.startsWith("..\\") ||
+          isAbsolutePath(relative)
+        ) {
+          return yield* createGitCommandError(
+            "GitCore.ensureWorktree",
+            input.cwd,
+            [],
+            "Missing worktrees can only be recreated inside this profile's managed worktrees directory.",
+          );
+        }
         const common = yield* runGitStdout("GitCore.ensureWorktree", input.cwd, [
           "rev-parse",
           "--path-format=absolute",
@@ -1088,7 +1110,6 @@ const makeGitCore = Effect.gen(function* () {
                 `Worktree branch ${input.branch} is missing.`,
               );
             }
-            yield* runGit("GitCore.ensureWorktree", input.cwd, ["worktree", "prune"]);
             const listing = yield* runGitStdout("GitCore.ensureWorktree", input.cwd, [
               "worktree",
               "list",
@@ -1096,9 +1117,31 @@ const makeGitCore = Effect.gen(function* () {
               "-z",
             ]);
             let checkedOutAt = "";
+            let isTarget = false;
+            let targetRegistered = false;
+            let targetBranchMatches = false;
             for (const field of listing.split("\0")) {
-              if (field.startsWith("worktree ")) checkedOutAt = field.slice(9);
-              if (field === `branch refs/heads/${input.branch}`) {
+              if (field.startsWith("worktree ")) {
+                checkedOutAt = field.slice(9);
+                isTarget =
+                  (yield* Effect.tryPromise(() => canonicalWorktreePath(checkedOutAt))) === target;
+                targetRegistered ||= isTarget;
+              }
+              if (isTarget && field === `branch refs/heads/${input.branch}`)
+                targetBranchMatches = true;
+              if (
+                isTarget &&
+                field.startsWith("branch ") &&
+                field !== `branch refs/heads/${input.branch}`
+              ) {
+                return yield* createGitCommandError(
+                  "GitCore.ensureWorktree",
+                  input.cwd,
+                  [],
+                  "The missing worktree is registered to a different branch.",
+                );
+              }
+              if (!isTarget && field === `branch refs/heads/${input.branch}`) {
                 return yield* createGitCommandError(
                   "GitCore.ensureWorktree",
                   input.cwd,
@@ -1106,6 +1149,23 @@ const makeGitCore = Effect.gen(function* () {
                   `Branch ${input.branch} is checked out at ${checkedOutAt}.`,
                 );
               }
+            }
+            if (yield* fileSystem.exists(input.path)) return;
+            if (targetRegistered) {
+              if (!targetBranchMatches) {
+                return yield* createGitCommandError(
+                  "GitCore.ensureWorktree",
+                  input.cwd,
+                  [],
+                  "The missing worktree registration does not match the requested branch.",
+                );
+              }
+              yield* executeGit(
+                "GitCore.ensureWorktree",
+                input.cwd,
+                ["worktree", "remove", "--force", "--", input.path],
+                { timeoutMs: 300_000 },
+              );
             }
             yield* executeGit(
               "GitCore.ensureWorktree",
