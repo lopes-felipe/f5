@@ -385,6 +385,37 @@ describe("composerDraftStore syncPersistedAttachments", () => {
     expect(getComposerReloadStatus()).toBe("ready");
   });
 
+  it.each([
+    { model: "different-model" },
+    { provider: "claudeAgent" as const },
+    { providerInstanceId: ProviderInstanceId.makeUnsafe("different-instance") },
+    { modelOptions: { codex: { reasoningEffort: "high" as const } } },
+    { runtimeMode: "full-access" as const },
+    { interactionMode: "plan" as const },
+    { effort: "high" as const },
+    { codexFastMode: true },
+    { terminalContexts: [makeTerminalContext({ id: "ctx", text: "updated output" })] },
+  ])("blocks reload if saving draft fields fails: %j", (patch) => {
+    const store = useComposerDraftStore.getState();
+    store.setPrompt(threadId, "Keep my draft");
+    store.addTerminalContext(threadId, makeTerminalContext({ id: "ctx", text: "original output" }));
+    expect(getComposerReloadStatus()).toBe("ready");
+    const setItem = baseStorage.setItem.getMockImplementation()!;
+    baseStorage.setItem.mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    useComposerDraftStore.setState((state) => ({
+      draftsByThreadId: {
+        ...state.draftsByThreadId,
+        [threadId]: { ...state.draftsByThreadId[threadId]!, ...patch },
+      },
+    }));
+    expect(getComposerReloadStatus()).toBe("unsaved");
+    baseStorage.setItem.mockImplementation(setItem);
+    useComposerDraftStore.getState().setPrompt(threadId, "Retry saving my draft");
+    expect(getComposerReloadStatus()).toBe("ready");
+  });
+
   it("marks current images as non-persisted when the debounced storage flush fails", async () => {
     const image = makeImage({
       id: "img-persist-failure",

@@ -1,4 +1,9 @@
-import { getProtocolState, requireProtocolUpgrade, setServerBootstrap } from "./protocolState";
+import {
+  getProtocolState,
+  requireProtocolUpgrade,
+  setServerBootstrap,
+  subscribeProtocolState,
+} from "./protocolState";
 import {
   F5_PROTOCOL_VERSION,
   F5_PROTOCOL_QUERY,
@@ -164,6 +169,7 @@ export class WsTransport {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private authConnectInFlight = false;
   private disposed = false;
+  private unsubscribeProtocolState: (() => void) | null = null;
   private unregisterReconnectHandler: (() => void) | null = null;
   private foregroundProbeGeneration: number | null = null;
   private lastForegroundProbe: {
@@ -197,7 +203,25 @@ export class WsTransport {
     window.addEventListener("focus", this.handleWindowFocus);
     window.addEventListener("online", this.handleWindowOnline);
     document.addEventListener("visibilitychange", this.handleVisibilityChange);
+    this.unsubscribeProtocolState = subscribeProtocolState(() => {
+      if (getProtocolState().upgradeRequired) this.stopForProtocolUpgrade();
+    });
     this.connect();
+  }
+
+  private stopForProtocolUpgrade(): void {
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    const socket = this.ws;
+    this.detachAuthoritativeSocket();
+    this.failPendingRequests(F5_UPGRADE_REQUIRED_MESSAGE);
+    noteWsConnectionClosed();
+    noteWsConnectionError(F5_UPGRADE_REQUIRED_MESSAGE);
+    if (socket && socket.readyState < WebSocket.CLOSING) {
+      socket.close(F5_UPGRADE_REQUIRED_CLOSE_CODE, "upgrade-required");
+    }
   }
 
   async request<T = unknown>(
@@ -336,6 +360,8 @@ export class WsTransport {
 
   dispose() {
     this.disposed = true;
+    this.unsubscribeProtocolState?.();
+    this.unsubscribeProtocolState = null;
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -390,7 +416,7 @@ export class WsTransport {
 
     noteWsConnectionAttempt();
 
-    const url = new URL(this.url);
+    const url = new URL(this.url, window.location.href);
     url.searchParams.set(F5_PROTOCOL_QUERY, String(F5_PROTOCOL_VERSION));
     const ws = new WebSocket(url.toString());
     const generation = ++this.socketGeneration;
