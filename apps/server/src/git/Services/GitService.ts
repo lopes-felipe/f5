@@ -17,7 +17,8 @@ export interface ExecuteGitInput {
   readonly args: ReadonlyArray<string>;
   readonly env?: NodeJS.ProcessEnv;
   readonly allowNonZeroExit?: boolean;
-  readonly timeoutMs?: number;
+  /** null disables the deadline for noninteractive long-running operations. */
+  readonly timeoutMs?: number | null;
   readonly maxOutputBytes?: number;
 }
 

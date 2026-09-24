@@ -30,6 +30,7 @@ import {
   resolveBranchSelectionTarget,
   resolveBranchToolbarValue,
   shouldIncludeBranchPickerItem,
+  sanitizeNewRefName,
   shouldScrollHighlightedBranchIntoView,
   shouldVirtualizeBranchListForCount,
 } from "./BranchToolbar.logic";
@@ -154,7 +155,8 @@ export function BranchToolbarBranchSelector({
   const checkoutPullRequestItemValue =
     prReference && onCheckoutPullRequestRequest ? `__checkout_pull_request__:${prReference}` : null;
   const canCreateBranch = !isSelectingWorktreeBase && trimmedBranchQuery.length > 0;
-  const hasExactBranchMatch = branchByName.has(trimmedBranchQuery);
+  const newRefName = sanitizeNewRefName(trimmedBranchQuery);
+  const hasExactBranchMatch = branchByName.has(newRefName);
   const createBranchItemValue = canCreateBranch
     ? `__create_new_branch__:${trimmedBranchQuery}`
     : null;
@@ -264,7 +266,7 @@ export function BranchToolbarBranchSelector({
   };
 
   const createBranch = (rawName: string) => {
-    const name = rawName.trim();
+    const name = sanitizeNewRefName(rawName);
     const api = readNativeApi();
     if (!api || !branchCwd || !name || isBranchActionPending) return;
 
@@ -391,7 +393,7 @@ export function BranchToolbarBranchSelector({
           value={itemValue}
           onClick={() => createBranch(trimmedBranchQuery)}
         >
-          <span className="truncate">Create new branch "{trimmedBranchQuery}"</span>
+          <span className="truncate">Create new branch "{newRefName}"</span>
         </ComboboxItem>
       );
     }

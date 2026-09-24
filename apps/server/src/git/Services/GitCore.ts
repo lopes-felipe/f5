@@ -76,6 +76,8 @@ export interface GitFetchRemoteBranchInput {
 }
 
 export interface GitFetchRemoteBranchCommitInput {
+  /** Return null only when the selected branch is absent from the remote. */
+  allowMissingBranch?: boolean;
   cwd: string;
   branch: string;
   remoteName?: string;
@@ -188,7 +190,7 @@ export interface GitCoreShape {
    */
   readonly fetchRemoteBranchCommit: (
     input: GitFetchRemoteBranchCommitInput,
-  ) => Effect.Effect<GitRemoteBranchCommit, GitCommandError>;
+  ) => Effect.Effect<GitRemoteBranchCommit | null, GitCommandError>;
 
   /**
    * Materialize a GitHub pull request head as a local branch without switching checkout.

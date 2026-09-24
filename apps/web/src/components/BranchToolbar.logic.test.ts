@@ -7,6 +7,7 @@ import {
   resolveDraftEnvModeAfterBranchChange,
   resolveBranchToolbarValue,
   shouldIncludeBranchPickerItem,
+  sanitizeNewRefName,
 } from "./BranchToolbar.logic";
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
@@ -301,5 +302,23 @@ describe("shouldIncludeBranchPickerItem", () => {
         checkoutPullRequestItemValue: "__checkout_pull_request__:1359",
       }),
     ).toBe(false);
+  });
+});
+
+describe("sanitizeNewRefName", () => {
+  it("replaces rejected whitespace while preserving Unicode, slashes and case", () => {
+    expect(sanitizeNewRefName("  Feature/new\t branch  ")).toBe("Feature/new-branch");
+    expect(sanitizeNewRefName("new\u00a0branch")).toBe("new\u00a0branch");
+    expect(sanitizeNewRefName("foo--bar")).toBe("foo--bar");
+  });
+  it("finds existing branches using their sanitized name", () => {
+    expect(
+      shouldIncludeBranchPickerItem({
+        itemValue: "new-branch",
+        normalizedQuery: "new branch",
+        createBranchItemValue: null,
+        checkoutPullRequestItemValue: null,
+      }),
+    ).toBe(true);
   });
 });

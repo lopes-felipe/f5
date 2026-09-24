@@ -246,6 +246,8 @@ function makeWorkingTreePatch(
           [
             "diff",
             "--binary",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             "--full-index",
             "--minimal",
             "--find-renames",
@@ -341,6 +343,8 @@ export function getReviewPreviewDiff(
       [
         "diff",
         "--binary",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
         "--full-index",
         "--minimal",
         ...(input.request.ignoreWhitespace ? ["--ignore-all-space"] : []),

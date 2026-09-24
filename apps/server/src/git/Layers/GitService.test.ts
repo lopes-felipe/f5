@@ -23,6 +23,20 @@ layer("GitServiceLive", (it) => {
     }),
   );
 
+  it.effect("forces noninteractive credentials even when the caller enables prompts", () =>
+    Effect.gen(function* () {
+      const gitService = yield* GitService;
+      const result = yield* gitService.execute({
+        operation: "GitProcess.test.noninteractive",
+        cwd: process.cwd(),
+        args: ["-c", "alias.f5-env=!echo $GIT_TERMINAL_PROMPT:$GCM_INTERACTIVE", "f5-env"],
+        env: { ...process.env, GIT_TERMINAL_PROMPT: "1", GCM_INTERACTIVE: "always" },
+        timeoutMs: null,
+      });
+      assert.equal(result.stdout.trim(), "0:never");
+    }),
+  );
+
   it.effect("runGit can return non-zero exit codes when allowed", () =>
     Effect.gen(function* () {
       const gitService = yield* GitService;

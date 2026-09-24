@@ -62,6 +62,11 @@ it("places generated worktrees under the configured server worktree root", async
         path: null,
       });
       expect(result.worktree.path.startsWith(config.worktreesDir)).toBe(true);
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.env).toEqual({
+        GIT_TERMINAL_PROMPT: "0",
+        GCM_INTERACTIVE: "never",
+      });
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.timeoutMs).toBe(300_000);
       expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
         result.worktree.path,
       );
@@ -225,7 +230,7 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["diff", "--cached", "--numstat", "-z"])) {
         return { stdout: "3\t2\tsrc/a.ts\x00" };
       }
-      if (argsEqual(input, ["diff", "HEAD", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
         return { stdout: "3\t1\tsrc/a.ts\x002\t0\tnotes.txt\x00" };
       }
       return {};
@@ -286,6 +291,8 @@ describe("GitCore unit", () => {
       "diff",
       "--cached",
       "--patch",
+      "--src-prefix=a/",
+      "--dst-prefix=b/",
       "--minimal",
       "--",
       "src/selected.ts",
@@ -371,7 +378,7 @@ describe("GitCore unit", () => {
           stdout: "# branch.oid (initial)\x00# branch.head main\x00? README.md\x00",
         };
       }
-      if (argsEqual(input, ["diff", "HEAD", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
         return { code: 128, stderr: "fatal: ambiguous argument 'HEAD'" };
       }
       return {};
@@ -402,7 +409,7 @@ describe("GitCore unit", () => {
       if (argsEqual(input, ["diff", "--numstat", "-z"])) {
         return { stdout: "1\t0\tcafé.txt\x00" };
       }
-      if (argsEqual(input, ["diff", "HEAD", "--numstat", "-z"])) {
+      if (argsEqual(input, ["diff", "--numstat", "-z", "HEAD", "--"])) {
         return {
           stdout: "0\t0\t\x00dir/old name.txt\x00dir/new name.txt\x001\t0\tcafé.txt\x00",
         };
@@ -630,3 +637,35 @@ describe("GitCore unit", () => {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+it("redacts remote output from failed fetches while explaining the cause", async () => {
+  const secret = "https://user:private-token@example.test/repo";
+  const scripted = makeScriptedGitService((input) =>
+    input.args[0] === "fetch"
+      ? { code: 128, stdout: secret, stderr: `fatal: Authentication failed for '${secret}'` }
+      : { stdout: input.args[0] === "remote" ? "origin\n" : "" },
+  );
+  const core = await makeCore(scripted.service);
+  const result = await Effect.runPromise(
+    core
+      .fetchRemoteBranch({
+        cwd: process.cwd(),
+        remoteName: "origin",
+        remoteBranch: "main",
+        localBranch: "feature",
+      })
+      .pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  if (result._tag === "Failure") {
+    expect(result.failure.message).toContain("could not authenticate");
+    expect(JSON.stringify(result.failure)).not.toContain("private-token");
+  }
+});
+
+it("allows five minutes for worktree removal", async () => {
+  const scripted = makeScriptedGitService();
+  const core = await makeCore(scripted.service);
+  await Effect.runPromise(core.removeWorktree({ cwd: process.cwd(), path: process.cwd() }));
+  expect(scripted.calls.find((call) => call.args[1] === "remove")?.timeoutMs).toBe(300_000);
+});

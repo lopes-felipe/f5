@@ -84,7 +84,7 @@ const makeGitService = Effect.gen(function* () {
       ...input,
       args: [...input.args],
     } as const;
-    const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const timeoutMs = input.timeoutMs === undefined ? DEFAULT_TIMEOUT_MS : input.timeoutMs;
     const maxOutputBytes = input.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
 
     const commandEffect = Effect.gen(function* () {
@@ -133,7 +133,7 @@ const makeGitService = Effect.gen(function* () {
         .spawn(
           ChildProcess.make("git", commandInput.args, {
             cwd: commandInput.cwd,
-            env: environment,
+            env: { ...environment, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
           }),
         )
         .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
@@ -165,6 +165,8 @@ const makeGitService = Effect.gen(function* () {
 
       return { code: exitCode, stdout, stderr } satisfies ExecuteGitResult;
     });
+
+    if (timeoutMs === null) return yield* commandEffect.pipe(Effect.scoped);
 
     return yield* commandEffect.pipe(
       Effect.scoped,

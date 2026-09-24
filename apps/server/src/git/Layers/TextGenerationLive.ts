@@ -27,6 +27,7 @@
  */
 import { Effect, Layer } from "effect";
 
+import { repositoryWritingPreferences } from "../repositoryInstructions.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
@@ -53,11 +54,11 @@ const resolveInstance = (
   registry: ProviderInstanceRegistryShape,
   operation: TextGenerationOp,
   instanceId: ProviderInstanceId,
-): Effect.Effect<ProviderInstance["textGeneration"], TextGenerationError> =>
+): Effect.Effect<ProviderInstance, TextGenerationError> =>
   registry.getInstance(instanceId).pipe(
     Effect.flatMap((instance) =>
       instance
-        ? Effect.succeed(instance.textGeneration)
+        ? Effect.succeed(instance)
         : Effect.fail(
             new TextGenerationError({
               operation,
@@ -79,7 +80,23 @@ export const makeTextGenerationFromRegistry = (
     Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstance(registry, "generateCommitMessage", modelSelection.instanceId).pipe(
-          Effect.flatMap((tg) => tg.generateCommitMessage({ ...input, modelSelection })),
+          Effect.flatMap((instance) =>
+            Effect.promise(() =>
+              repositoryWritingPreferences(
+                input.cwd,
+                instance.driverKind,
+                input.writingPreferences,
+              ),
+            ).pipe(
+              Effect.flatMap((writingPreferences) =>
+                instance.textGeneration.generateCommitMessage({
+                  ...input,
+                  modelSelection,
+                  writingPreferences,
+                }),
+              ),
+            ),
+          ),
         ),
       ),
     ),
@@ -87,7 +104,23 @@ export const makeTextGenerationFromRegistry = (
     Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstance(registry, "generatePrContent", modelSelection.instanceId).pipe(
-          Effect.flatMap((tg) => tg.generatePrContent({ ...input, modelSelection })),
+          Effect.flatMap((instance) =>
+            Effect.promise(() =>
+              repositoryWritingPreferences(
+                input.cwd,
+                instance.driverKind,
+                input.writingPreferences,
+              ),
+            ).pipe(
+              Effect.flatMap((writingPreferences) =>
+                instance.textGeneration.generatePrContent({
+                  ...input,
+                  modelSelection,
+                  writingPreferences,
+                }),
+              ),
+            ),
+          ),
         ),
       ),
     ),
@@ -95,7 +128,9 @@ export const makeTextGenerationFromRegistry = (
     Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstance(registry, "generateBranchName", modelSelection.instanceId).pipe(
-          Effect.flatMap((tg) => tg.generateBranchName({ ...input, modelSelection })),
+          Effect.flatMap((tg) =>
+            tg.textGeneration.generateBranchName({ ...input, modelSelection }),
+          ),
         ),
       ),
     ),
@@ -103,7 +138,9 @@ export const makeTextGenerationFromRegistry = (
     Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstance(registry, "generateThreadTitle", modelSelection.instanceId).pipe(
-          Effect.flatMap((tg) => tg.generateThreadTitle({ ...input, modelSelection })),
+          Effect.flatMap((tg) =>
+            tg.textGeneration.generateThreadTitle({ ...input, modelSelection }),
+          ),
         ),
       ),
     ),
@@ -111,7 +148,9 @@ export const makeTextGenerationFromRegistry = (
     Effect.succeed(input.modelSelection ?? defaultCodexModelSelection(input.model)).pipe(
       Effect.flatMap((modelSelection) =>
         resolveInstance(registry, "generateStructuredJson", modelSelection.instanceId).pipe(
-          Effect.flatMap((tg) => tg.generateStructuredJson({ ...input, modelSelection })),
+          Effect.flatMap((tg) =>
+            tg.textGeneration.generateStructuredJson({ ...input, modelSelection }),
+          ),
         ),
       ),
     ),

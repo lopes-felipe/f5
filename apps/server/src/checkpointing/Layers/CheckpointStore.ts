@@ -241,11 +241,18 @@ const makeCheckpointStore = Effect.gen(function* () {
         });
       }
 
-      const diffArgs = ["diff", "--patch", "--minimal", "--no-color"];
+      const diffArgs = [
+        "diff",
+        "--patch",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--minimal",
+        "--no-color",
+      ];
       if (input.options?.ignoreWhitespace === true) {
         diffArgs.push("--ignore-all-space");
       }
-      diffArgs.push(fromCommitOid, toCommitOid);
+      diffArgs.push(fromCommitOid, toCommitOid, "--");
 
       const result = yield* git.execute({
         operation,
