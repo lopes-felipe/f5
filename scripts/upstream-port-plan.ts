@@ -3,6 +3,7 @@ import {
   sortEntries,
   validateAudit,
   SHA_PATTERN,
+  REVIEW_PLACEHOLDER_PATTERN,
   type FrozenCommit,
   type Ledger,
   type LedgerEntry,
@@ -82,7 +83,7 @@ function classify(commit: FrozenCommit, decision: PlannedCommit): LedgerEntry {
     decision.reviewStatus !== "reviewed" ||
     typeof decision.reason !== "string" ||
     !decision.reason.trim() ||
-    /manual.*assessment|pending review/i.test(decision.reason)
+    REVIEW_PLACEHOLDER_PATTERN.test(decision.reason)
   ) {
     throw new Error(`SHA ${commit.sha} requires an explicit reviewed decision and concrete reason`);
   }

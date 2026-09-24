@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
+  mkdirSync,
+  unlinkSync,
   existsSync,
   readFileSync,
   readdirSync,
@@ -10,12 +12,13 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { readLedgerText, withLedgerLock, writeLedgerText } from "./upstream-port-files.ts";
 import { ROOT, temp } from "./upstream-port-test-fixtures.ts";
 
 const directories: string[] = [];
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const d of directories.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 function fixture() {
@@ -54,6 +57,31 @@ describe("single-file publication", () => {
     });
     writeLedgerText(file, previous, next);
     expect(readLedgerText(file)).toBe(next);
+  });
+  it("leaves another writer's replacement lock intact", () => {
+    const { file } = fixture();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    withLedgerLock(file, () => {
+      unlinkSync(`${file}.lock`);
+      writeFileSync(`${file}.lock`, JSON.stringify({ token: "replacement-writer" }));
+    });
+    expect(JSON.parse(readFileSync(`${file}.lock`, "utf8")).token).toBe("replacement-writer");
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("ownership changed"));
+  });
+  it.each([false, true])("cleanup failure preserves the main outcome (throws=%s)", (throws) => {
+    const { file } = fixture();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const failure = new Error("original operation failure");
+    const operation = () =>
+      withLedgerLock(file, () => {
+        unlinkSync(`${file}.lock`);
+        mkdirSync(`${file}.lock`); // Force an actual filesystem cleanup failure.
+        if (throws) throw failure;
+        return "published";
+      });
+    if (throws) expect(operation).toThrow(failure);
+    else expect(operation()).toBe("published");
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining("cleanup failed"));
   });
   it.each(["", "{", '{"pid":999999,"host":"other"}'])(
     "never steals malformed or stale lock %j",

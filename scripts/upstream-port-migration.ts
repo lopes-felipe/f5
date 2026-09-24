@@ -1,16 +1,20 @@
+import { classifyCommit } from "./upstream-port-suggestions.ts";
 import { readPortFiles, type PortFiles } from "./upstream-port-legacy-files.ts";
 import {
   AUTHORITATIVE_REPOSITORY,
   UPSTREAM_MAIN_REF,
   verifyUpstream,
+  newCommitsSince,
   type RunGit,
 } from "./upstream-port-history.ts";
 import {
   DISPOSITIONS,
   SHA_PATTERN,
+  REVIEW_PLACEHOLDER_PATTERN,
   SHA256_PATTERN,
   sha256,
   makeCoverage,
+  makeAudit,
   sortEntries,
   type Ledger,
   type FrozenCommit,
@@ -45,8 +49,10 @@ interface Manifest {
 export function migrateLegacyLedger(
   legacy: LegacyLedger,
   subjects: ReadonlyMap<string, string>,
+  refreshedCommits: ReadonlyArray<FrozenCommit> = [],
 ): Ledger {
-  const errors = validateLegacyAudit(legacy);
+  const extraCoverage = new Set(refreshedCommits.map((commit) => commit.sha));
+  const errors = validateLegacyAudit(legacy, extraCoverage);
   if (errors.length) throw new Error(errors.join("\n"));
   const entries: LedgerEntry[] = [...legacy.entries, ...(legacy.historicalEntries ?? [])];
   const seen = new Set(entries.map((e) => e.upstreamSha));
@@ -67,11 +73,26 @@ export function migrateLegacyLedger(
       });
     }
   }
-  const audited = new Set(legacy.audit!.upstreamShas);
+  for (const commit of refreshedCommits) {
+    if (!seen.has(commit.sha)) {
+      entries.push({ ...classifyCommit(commit), reviewStatus: "pending" });
+      seen.add(commit.sha);
+    }
+  }
+  const intervals = [legacy.audit!];
+  if (refreshedCommits.length)
+    intervals.push(
+      makeAudit(
+        legacy.audit!.targetSha,
+        refreshedCommits[0]!.sha,
+        refreshedCommits.map((commit) => commit.sha),
+      ),
+    );
+  const audited = new Set(intervals.flatMap((interval) => interval.upstreamShas));
   return {
     schemaVersion: 6,
     entries: sortEntries(entries),
-    intervals: [legacy.audit!],
+    intervals,
     legacyCoverage: makeCoverage([...seen].filter((sha) => !audited.has(sha)).sort()),
     legacyProvenance: legacy.olderBacklog,
   };
@@ -217,7 +238,14 @@ export function prepareMigration(
   if (ledger.schemaVersion === 5) {
     if (!Array.isArray(ledger.historicalEntries))
       errors.push("schema 5 requires historicalEntries");
-    errors.push(...validateLegacyAudit(ledger));
+    // The manifest can have advanced since this audit. Verify additional coverage
+    // against Git below before accepting any out-of-audit record.
+    errors.push(
+      ...validateLegacyAudit(
+        ledger,
+        new Set([...ledger.entries, ...historical].map((entry) => entry.upstreamSha)),
+      ),
+    );
   }
   for (const entry of [...ledger.entries, ...historical]) {
     if (ledger.entries.includes(entry) && !manifestShas.has(entry.upstreamSha)) {
@@ -234,10 +262,7 @@ export function prepareMigration(
     if (ledger.schemaVersion === 5) {
       if (!["pending", "reviewed", "legacy"].includes(entry.reviewStatus ?? ""))
         errors.push(`ledger SHA ${entry.upstreamSha} has invalid reviewStatus`);
-      if (
-        entry.reviewStatus === "pending" ||
-        /requires manual.*assessment|manual assessment placeholder/i.test(entry.reason ?? "")
-      )
+      if (entry.reviewStatus !== "pending" && REVIEW_PLACEHOLDER_PATTERN.test(entry.reason ?? ""))
         errors.push(
           `ledger SHA ${entry.upstreamSha} requires review; generic manual assessment is not an audited disposition`,
         );
@@ -344,14 +369,20 @@ export function prepareMigration(
     .map((line) => ({ sha: line.slice(0, 40), subject: line.slice(41) }));
   if (JSON.stringify(actual) !== JSON.stringify(manifest.commits))
     throw new Error("legacy manifest differs from upstream history");
+  const refreshedCommits = newCommitsSince(
+    git,
+    ledger.audit!.targetSha,
+    manifest.selection.headSha,
+  );
+  const trackedHead = refreshedCommits[0]?.sha ?? ledger.audit!.targetSha;
   const subjects = new Map(
-    git(["log", "--format=%H%x09%s", ledger.audit!.targetSha])
+    git(["log", "--format=%H%x09%s", trackedHead])
       .split("\n")
       .filter(Boolean)
       .map((line) => [line.slice(0, 40), line.slice(41)]),
   );
-  const migrated = migrateLegacyLedger(ledger, subjects);
-  assertValid(migrated, root);
+  const migrated = migrateLegacyLedger(ledger, subjects, refreshedCommits);
+  assertValid(migrated, root, true);
   validateProvenance(migrated, git);
   return { expected: ledgerText, expectedManifest: manifestText, ledger: migrated };
 }

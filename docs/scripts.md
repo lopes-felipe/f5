@@ -82,7 +82,10 @@ non-first-parent commits. Batched history reads also verify subjects; no Git
 process is launched per record. Unresolvable historical f5 implementation SHAs
 remain allowed because squash merges can remove those objects.
 
-Refresh fetches without pruning from the verified read-only upstream repository.
+Refresh fetches without pruning from the verified read-only upstream repository,
+before acquiring the ledger writer lock. An interrupted network fetch therefore
+leaves no ledger lock. Once the immutable head is selected, the writer takes the
+lock and reads the current ledger so another writer’s intervening changes are retained.
 Plain `--refresh` selects the fetched head once; `--head` must be a full SHA on its
 first-parent ancestry. New commits extend coverage with another interval. Existing
 records and proof stay unchanged. Repeated or older pins are no-ops, never a request
@@ -126,8 +129,14 @@ bun scripts/check-upstream-ports.ts --migrate
 Migration requires the verified upstream remote and its history. It validates the
 old ledger/manifest pair, preserves all individual records, materializes exact-SHA
 backlog members, and publishes schema 6 before removing the obsolete manifest.
-Normal commands never migrate implicitly. Repeating migration on schema 6 only
-validates the ledger; an obsolete manifest left by an interrupted cleanup is ignored.
+Normal commands never migrate implicitly. Migration preserves pending reviews;
+structural and provenance validation remain mandatory, while the normal checker
+continues to reject pending records. If a schema-5 refresh advanced the manifest
+beyond its audit, migration appends that verified first-parent interval. Any gap
+that the old 500-entry window never recorded receives pending suggestions, never
+review approval. Existing decisions and the original audit remain unchanged.
+Repeating migration on schema 6 validates structure and provenance while allowing
+pending reviews; an obsolete manifest left by interrupted cleanup is ignored.
 Schema 4 must first be upgraded with the previous schema-5 tooling.
 
 Old two-file journal recovery is available only during schema-5 migration. It
@@ -135,9 +144,20 @@ refuses active or unverifiable writers. Empty/truncated journals, foreign-host
 journals and leftover recovery locks produce instructions naming the files to
 inspect. No schema-6 reader depends on that recovery machinery.
 
+Compatibility consumers are developer branches and worktrees based on the
+schema-5 tooling shipped in PRs #28 and #31, including branches with an unfinished
+refresh or an interrupted two-file publication. Migration support is scheduled
+for removal on **2026-10-24** in a follow-up that removes `--migrate` and the legacy
+validator/recovery modules together. There is no automatic date-based expiration;
+those consumers should migrate before that cleanup. Schema-6 operation and CI do
+not depend on the compatibility path.
+
 ### Atomic publication
 
-Refresh, classification and migration share an exclusive writer lock. A writer
+Refresh, classification and migration share an exclusive writer lock. Each lock
+has a random ownership token; cleanup removes it only if that token still matches.
+A replacement lock is left intact. Cleanup failures produce actionable warnings
+without replacing the operation’s result or original exception. A writer
 compares the canonical bytes against its original read, writes and syncs a
 same-directory temporary file with the original permissions, checks for intervening
 edits again, atomically renames it, and syncs the directory where supported.

@@ -270,6 +270,18 @@ describe("classification within existing history", () => {
     expect(applied.entries.at(-1)).toEqual(extended.entries.at(-1));
     expect(applyPortPlan(applied, commits, plan)).toEqual(applied);
   });
+  it("accepts substantive reasons that mention manual assessment or pending review", () => {
+    for (const reason of [
+      "Declined after manual accessibility assessment.",
+      "Deferred pending review of the optional capture dependency license.",
+    ]) {
+      const applied = applyPortPlan(old, commits, {
+        ...plan,
+        entries: plan.entries.map((e) => ({ ...e, reason })),
+      });
+      expect(validateLedger(applied, ROOT)).toEqual([]);
+    }
+  });
   it("allows a contiguous plan spanning two discovery intervals", () => {
     const extended = appendInterval(old, [{ sha: sha(3), subject: "new" }], classifyCommit);
     const selected = [{ sha: sha(3), subject: "new" }, commits[0]!];
@@ -324,7 +336,10 @@ describe("classification within existing history", () => {
     expect(() =>
       applyPortPlan(old, commits, {
         ...plan,
-        entries: plan.entries.map((e) => ({ ...e, reason: "manual assessment" })),
+        entries: plan.entries.map((e) => ({
+          ...e,
+          reason: "Requires manual f5-native user-impact assessment.",
+        })),
       }),
     ).toThrow("concrete reason");
   });

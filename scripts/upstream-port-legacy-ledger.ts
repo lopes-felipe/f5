@@ -15,7 +15,10 @@ export interface LegacyLedger {
   readonly audit?: Audit;
 }
 
-export function validateLegacyAudit(ledger: LegacyLedger): string[] {
+export function validateLegacyAudit(
+  ledger: LegacyLedger,
+  additionalCoverage: ReadonlySet<string> = new Set(),
+): string[] {
   const errors: string[] = [];
   const audit = ledger.audit;
   if (!audit || !Array.isArray(audit.upstreamShas))
@@ -39,7 +42,11 @@ export function validateLegacyAudit(ledger: LegacyLedger): string[] {
     if (seen.has(entry.upstreamSha))
       errors.push(`duplicate audit coverage SHA ${entry.upstreamSha}`);
     seen.add(entry.upstreamSha);
-    if (!expected.has(entry.upstreamSha) && entry.reviewStatus !== "legacy")
+    if (
+      !expected.has(entry.upstreamSha) &&
+      !additionalCoverage.has(entry.upstreamSha) &&
+      entry.reviewStatus !== "legacy"
+    )
       extra.push(entry.upstreamSha);
   }
   // Legacy categories deliberately retain older provenance outside this audit.

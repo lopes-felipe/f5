@@ -7,11 +7,12 @@ import { readLedgerText, publishLedgerText, withLedgerLock } from "./upstream-po
 import { root, ledgerPath, legacyManifestPath, git, checkLedger } from "./upstream-port-runtime.ts";
 
 function refresh(pin?: string): void {
+  // Fetch before taking a writer lock: interrupted network I/O must not strand it.
+  const head = selectRefreshHead(git, pin);
   withLedgerLock(ledgerPath, () => {
     const expected = readLedgerText(ledgerPath);
     const previous = parseLedger(expected);
     assertValid(previous, root, true);
-    const head = selectRefreshHead(git, pin);
     checkLedger(previous, { allowPending: true, requireUpstream: true });
     const latest = previous.intervals.at(-1)!.targetSha;
     const commits = newCommitsSince(git, latest, head);
@@ -38,7 +39,10 @@ async function migrate(): Promise<void> {
     "schemaVersion" in current &&
     current.schemaVersion === 6
   ) {
-    checkLedger(parseLedger(readLedgerText(ledgerPath)), { requireUpstream: true });
+    checkLedger(parseLedger(readLedgerText(ledgerPath)), {
+      allowPending: true,
+      requireUpstream: true,
+    });
     console.log("Ledger is already schema 6; obsolete manifest files, if any, are ignored.");
     return;
   }

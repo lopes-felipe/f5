@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrateLegacyLedger } from "./upstream-port-migration.ts";
 import { type LegacyLedger } from "./upstream-port-legacy-ledger.ts";
 import { recoverPortFiles } from "./upstream-port-legacy-files.ts";
-import { sha256 } from "./upstream-port-ledger.ts";
+import { sha256, makeAudit } from "./upstream-port-ledger.ts";
 import { parseLedger } from "./upstream-port-validation.ts";
 import { AUTHORITATIVE_REPOSITORY } from "./upstream-port-history.ts";
 import { ROOT, repository, runCheck, temp } from "./upstream-port-test-fixtures.ts";
@@ -14,8 +14,8 @@ const directories: string[] = [];
 afterEach(() => {
   for (const d of directories.splice(0)) rmSync(d, { recursive: true, force: true });
 });
-function pair() {
-  const r = repository(501);
+function pair(count = 501) {
+  const r = repository(count);
   directories.push(r.directory);
   const selected = r.commits.slice(0, 500);
   const manifest = {
@@ -108,6 +108,80 @@ describe("schema-5 migration", () => {
     expect(p.run().status).toBe(0);
     expect(readFileSync(p.file, "utf8")).toBe(text);
     expect(runCheck(p.directory, p.file).status).toBe(0);
+  });
+  it("migrates a refreshed schema-5 window while keeping its new records pending", () => {
+    const p = pair();
+    const newest = p.legacy.entries[0]!;
+    const pending = {
+      ...newest,
+      reviewStatus: "pending" as const,
+      reason: "Requires manual f5-native user-impact assessment.",
+    };
+    const legacy = {
+      ...p.legacy,
+      entries: [pending, ...p.legacy.entries.slice(1)],
+      audit: makeAudit(
+        p.legacy.audit!.baseSha,
+        p.commits[1]!.sha,
+        p.legacy.audit!.upstreamShas.slice(1),
+      ),
+    };
+    writeFileSync(p.file, JSON.stringify(legacy));
+    const result = p.run();
+    expect(result.status, result.stderr).toBe(0);
+    const migrated = parseLedger(readFileSync(p.file, "utf8"));
+    expect(migrated.entries.find((e) => e.upstreamSha === newest.upstreamSha)).toEqual(pending);
+    expect(migrated.intervals).toEqual([
+      legacy.audit,
+      makeAudit(legacy.audit.targetSha, newest.upstreamSha, [newest.upstreamSha]),
+    ]);
+    expect(migrated.legacyCoverage.upstreamShas).not.toContain(newest.upstreamSha);
+    expect(runCheck(p.directory, p.file).stderr).toContain("requires review");
+    expect(p.run().status).toBe(0);
+  });
+  it("fills an unrecorded refresh gap with pending suggestions, retaining the old audit", () => {
+    const p = pair(1003);
+    const old = p.ledger.entries.find((e) => e.upstreamSha === p.commits.at(-2)!.sha)!;
+    const audit = makeAudit(p.commits.at(-1)!.sha, old.upstreamSha, [old.upstreamSha]);
+    const legacy = {
+      ...p.legacy,
+      audit,
+      historicalEntries: [old],
+      entries: p.legacy.entries.map((e) => ({
+        ...e,
+        reviewStatus: "pending",
+        reason: "Requires manual f5-native user-impact assessment.",
+      })),
+    };
+    writeFileSync(p.file, JSON.stringify(legacy));
+    const result = p.run();
+    expect(result.status, result.stderr).toBe(0);
+    const migrated = parseLedger(readFileSync(p.file, "utf8"));
+    expect(migrated.entries).toHaveLength(1002);
+    expect(migrated.entries.filter((e) => e.reviewStatus === "pending")).toHaveLength(1001);
+    expect(migrated.intervals[0]).toEqual(audit);
+    expect(migrated.intervals[1]?.count).toBe(1001);
+    expect(migrated.entries.find((e) => e.upstreamSha === old.upstreamSha)).toEqual(old);
+    expect(runCheck(p.directory, p.file).status).toBe(1);
+  });
+  it("preserves pending decisions inside the existing audit too", () => {
+    const p = pair();
+    const pending = {
+      ...p.legacy.entries[0]!,
+      reviewStatus: "pending",
+      reason: "Requires manual f5-native user-impact assessment.",
+    };
+    writeFileSync(
+      p.file,
+      JSON.stringify({ ...p.legacy, entries: [pending, ...p.legacy.entries.slice(1)] }),
+    );
+    expect(p.run().status).toBe(0);
+    expect(
+      parseLedger(readFileSync(p.file, "utf8")).entries.find(
+        (e) => e.upstreamSha === pending.upstreamSha,
+      ),
+    ).toEqual(pending);
+    expect(runCheck(p.directory, p.file).status).toBe(1);
   });
   it.each(["digest", "duplicate", "subject", "boundary"])(
     "rejects invalid %s without changing either file",

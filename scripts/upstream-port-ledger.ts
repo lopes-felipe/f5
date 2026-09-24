@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 
+/** Reject placeholder decisions without banning substantive discussion of manual review. */
+export const REVIEW_PLACEHOLDER_PATTERN =
+  /requires manual.*assessment|manual assessment placeholder/i;
 export const SHA_PATTERN = /^[0-9a-f]{40}$/;
 export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 export const DISPOSITIONS = [

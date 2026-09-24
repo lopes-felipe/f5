@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   DISPOSITIONS,
   SHA_PATTERN,
+  REVIEW_PLACEHOLDER_PATTERN,
   validateAudit,
   type Ledger,
   type LedgerEntry,
@@ -104,8 +105,7 @@ export function validateEntries(
       errors.push(`${owner} has invalid reviewStatus`);
     if (
       (!allowPending || entry.reviewStatus !== "pending") &&
-      (entry.reviewStatus === "pending" ||
-        /manual.*assessment|pending review/i.test(entry.reason ?? ""))
+      (entry.reviewStatus === "pending" || REVIEW_PLACEHOLDER_PATTERN.test(entry.reason ?? ""))
     )
       errors.push(`${owner} requires review`);
     if (entry.plannedWorkstream !== undefined && !nonempty(entry.plannedWorkstream))

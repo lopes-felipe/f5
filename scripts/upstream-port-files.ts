@@ -31,6 +31,7 @@ export function readLedgerText(file: string): string {
 /** Shared by refresh, classification and migration. Never steal even a stale lock. */
 export function withLedgerLock<T>(file: string, operation: () => T): T {
   const lock = `${file}.lock`;
+  const token = crypto.randomUUID();
   let fd: number;
   try {
     fd = openSync(lock, "wx", 0o600);
@@ -44,14 +45,49 @@ export function withLedgerLock<T>(file: string, operation: () => T): T {
   try {
     writeFileSync(
       fd,
-      JSON.stringify({ pid: process.pid, host: hostname(), startedAt: new Date().toISOString() }),
+      JSON.stringify({
+        token,
+        pid: process.pid,
+        host: hostname(),
+        startedAt: new Date().toISOString(),
+      }),
     );
     fsyncSync(fd);
     return operation();
   } finally {
-    closeSync(fd);
-    unlinkSync(lock);
-    syncDirectory(path.dirname(file));
+    // Cleanup must preserve the operation's success or original exception.
+    const cleanup = (action: () => void) => {
+      try {
+        action();
+      } catch (error) {
+        console.warn(
+          `Ledger lock cleanup failed for ${lock}: ${String(error)}. Inspect the lock before retrying.`,
+        );
+      }
+    };
+    cleanup(() => closeSync(fd));
+    cleanup(() => {
+      let owner: unknown;
+      try {
+        owner = JSON.parse(readFileSync(lock, "utf8"));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw error;
+      }
+      if (
+        typeof owner !== "object" ||
+        owner === null ||
+        !("token" in owner) ||
+        owner.token !== token
+      ) {
+        console.warn(
+          `Ledger lock ownership changed: ${lock}; leaving the replacement lock intact.`,
+        );
+        return;
+      }
+      unlinkSync(lock);
+      syncDirectory(path.dirname(file));
+    });
   }
 }
 
