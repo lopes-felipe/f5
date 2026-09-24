@@ -1,3 +1,4 @@
+import { describeMcpElicitation, mcpElicitationResponse } from "./codex/mcpElicitation.ts";
 import { type ChildProcessWithoutNullStreams, spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
@@ -76,10 +77,12 @@ interface PendingApprovalRequest {
     | "item/fileChange/requestApproval"
     | "item/fileRead/requestApproval"
     | "item/permissions/requestApproval"
+    | "mcpServer/elicitation/request"
     | "applyPatchApproval"
     | "execCommandApproval";
   requestKind: ProviderRequestKind;
-  responseKind: "decision" | "permissions" | "legacy-decision";
+  responseKind: "decision" | "permissions" | "legacy-decision" | "mcp-elicitation";
+  elicitation?: unknown;
   requestedPermissions?: Record<string, unknown>;
   threadId: ThreadId;
   turnId?: TurnId;
@@ -117,6 +120,7 @@ interface CodexSessionContext {
   writer: JsonRpcStdinWriter;
   pending: Map<PendingRequestKey, PendingRequest>;
   pendingApprovals: Map<ApprovalRequestId, PendingApprovalRequest>;
+  memoryThreadIds?: Set<string>;
   pendingUserInputs: Map<ApprovalRequestId, PendingUserInputRequest>;
   nativeRequestCorrelations: Map<string, NativeRequestCorrelation>;
   instructionContext?: Partial<SharedInstructionInput>;
@@ -252,6 +256,7 @@ const RECOVERABLE_THREAD_RESUME_ERROR_SNIPPETS = [
   "no such thread",
   "unknown thread",
   "does not exist",
+  "no rollout found",
 ];
 const CODEX_SPARK_FALLBACK_MODEL = "gpt-5.3-codex";
 const CODEX_SPARK_MODEL = "gpt-5.3-codex-spark";
@@ -315,7 +320,18 @@ function codexApprovalResponse(
   pendingRequest: PendingApprovalRequest,
   decision: ProviderApprovalDecision,
 ): Record<string, unknown> {
+  if (decision === "acceptAlways" && pendingRequest.responseKind !== "mcp-elicitation")
+    throw new Error("Persistent approval is only supported for advertised MCP app approvals.");
   switch (pendingRequest.responseKind) {
+    case "mcp-elicitation": {
+      if (
+        !describeMcpElicitation(pendingRequest.elicitation).approvalOptions.some(
+          (option) => option.decision === decision,
+        )
+      )
+        throw new Error("This MCP request does not support the selected approval.");
+      return mcpElicitationResponse(pendingRequest.elicitation, decision);
+    }
     case "decision":
       return { decision };
     case "permissions":
@@ -337,6 +353,8 @@ export function legacyCodexApprovalDecision(
       return "approved";
     case "acceptForSession":
       return "approved_for_session";
+    case "acceptAlways":
+      throw new Error("Persistent approval is not supported by legacy Codex requests.");
     case "decline":
       return "denied";
     case "cancel":
@@ -1799,6 +1817,27 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
       return;
     }
 
+    const notificationThread = asObject(asObject(notification.params)?.thread);
+    const source = asObject(notificationThread?.source);
+    const notificationThreadId = readNotificationProviderThreadId(notification.params);
+    if (
+      notification.method === "thread/started" &&
+      notificationThreadId &&
+      (notificationThread?.threadSource === "memory_consolidation" ||
+        source?.subAgent === "memory_consolidation")
+    ) {
+      const memoryThreadIds = (context.memoryThreadIds ??= new Set());
+      memoryThreadIds.add(notificationThreadId);
+      if (memoryThreadIds.size > 256)
+        memoryThreadIds.delete(memoryThreadIds.values().next().value!);
+      return;
+    }
+    if (notificationThreadId && context.memoryThreadIds?.has(notificationThreadId)) {
+      if (notification.method === "thread/closed")
+        context.memoryThreadIds.delete(notificationThreadId);
+      return;
+    }
+
     const primaryProviderThreadId = readResumeCursorThreadId(context.session.resumeCursor);
     const notificationProviderThreadId = readNotificationProviderThreadId(notification.params);
     if (
@@ -1944,6 +1983,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         method: approvalRequest.method,
         requestKind: approvalRequest.requestKind,
         responseKind: approvalRequest.responseKind,
+        ...(approvalRequest.responseKind === "mcp-elicitation"
+          ? { elicitation: request.params }
+          : {}),
         ...(requestedPermissions !== undefined ? { requestedPermissions } : {}),
         threadId: context.session.threadId,
         ...(route.turnId ? { turnId: route.turnId } : {}),
@@ -2000,23 +2042,6 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
           currentTimeAt: Math.floor(Date.now() / 1_000),
         },
       });
-      return;
-    }
-
-    if (request.method === "mcpServer/elicitation/request") {
-      this.writeServerRequestResponse(context, {
-        id: request.id,
-        result: {
-          action: "cancel",
-          content: null,
-          _meta: null,
-        },
-      });
-      this.emitUnsupportedServerRequestWarning(
-        context,
-        request,
-        "An MCP server requested structured input, which F5 does not support yet. The request was cancelled; use the chat composer to provide the information instead.",
-      );
       return;
     }
 
@@ -2421,6 +2446,9 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         readonly responseKind: PendingApprovalRequest["responseKind"];
       }
     | undefined {
+    if (method === "mcpServer/elicitation/request")
+      return { method, requestKind: "mcp-elicitation", responseKind: "mcp-elicitation" };
+
     if (method === "item/commandExecution/requestApproval") {
       return { method, requestKind: "command", responseKind: "decision" };
     }

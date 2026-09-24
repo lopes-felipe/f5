@@ -37,7 +37,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       );
       assert.deepEqual(cursorLaunch, {
         command: "cursor",
-        args: ["/tmp/workspace"],
+        args: ["--classic", "/tmp/workspace"],
       });
 
       const traeLaunch = yield* resolveEditorLaunch(
@@ -113,7 +113,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       );
       assert.deepEqual(lineOnly, {
         command: "cursor",
-        args: ["--goto", "/tmp/workspace/AGENTS.md:48"],
+        args: ["--classic", "--goto", "/tmp/workspace/AGENTS.md:48"],
       });
 
       const lineAndColumn = yield* resolveEditorLaunch(
@@ -122,7 +122,7 @@ it.layer(NodeServices.layer)("resolveEditorLaunch", (it) => {
       );
       assert.deepEqual(lineAndColumn, {
         command: "cursor",
-        args: ["--goto", "/tmp/workspace/src/open.ts:71:5"],
+        args: ["--classic", "--goto", "/tmp/workspace/src/open.ts:71:5"],
       });
 
       const traeLineAndColumn = yield* resolveEditorLaunch(

@@ -71,6 +71,11 @@ import { type GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { buildProviderAttachmentRuntimeContext } from "../attachmentRuntimeContext.ts";
 
+import {
+  buildGrokBackgroundTaskEvents,
+  type GrokBackgroundTaskRecord,
+} from "../acp/XAiBackgroundTasks.ts";
+
 const PROVIDER: ProviderKind = "grok";
 const GROK_RESUME_VERSION = 1 as const;
 
@@ -108,6 +113,7 @@ interface GrokSessionContext {
   promptsInFlight: number;
   currentModelId: string | undefined;
   stopped: boolean;
+  readonly backgroundTasks: Map<string, GrokBackgroundTaskRecord>;
 }
 
 function settlePendingApprovalsAsCancelled(
@@ -329,13 +335,38 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
       Effect.gen(function* () {
         if (ctx.stopped) return;
         ctx.stopped = true;
+        sessions.delete(ctx.threadId);
         yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
         yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
-        sessions.delete(ctx.threadId);
+        for (const task of ctx.backgroundTasks.values()) {
+          yield* offerRuntimeEvent({
+            type: "task.completed",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            ...(task.turnId ? { turnId: task.turnId } : {}),
+            payload: {
+              taskId: task.payload.taskId,
+              status: "stopped",
+              summary: "Grok session stopped",
+            },
+          });
+        }
+        ctx.backgroundTasks.clear();
+        if (ctx.activeTurnId && ctx.promptsInFlight > 0) {
+          yield* offerRuntimeEvent({
+            type: "turn.completed",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: ctx.threadId,
+            turnId: ctx.activeTurnId,
+            payload: { state: "cancelled", stopReason: "cancelled" },
+          });
+        }
         yield* offerRuntimeEvent({
           type: "session.exited",
           ...(yield* makeEventStamp()),
@@ -596,6 +627,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             promptsInFlight: 0,
             currentModelId: boundModelId,
             stopped: false,
+            backgroundTasks: new Map(),
           };
 
           const nf = yield* Stream.runDrain(
@@ -633,6 +665,22 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                     yield* emitPlanUpdate(ctx, event.payload, event.rawPayload, "session/update");
                     return;
                   case "ToolCallUpdated":
+                    if (ctx.stopped) return;
+                    for (const task of buildGrokBackgroundTaskEvents({
+                      tasks: ctx.backgroundTasks,
+                      toolCallId: event.toolCall.toolCallId,
+                      rawInput: event.toolCall.data.rawInput,
+                      rawOutput: event.toolCall.data.rawOutput,
+                      toolCallStatus: event.toolCall.status,
+                      turnId: ctx.activeTurnId,
+                    })) {
+                      yield* offerRuntimeEvent({
+                        ...task,
+                        ...(yield* makeEventStamp()),
+                        provider: PROVIDER,
+                        threadId: ctx.threadId,
+                      });
+                    }
                     yield* logNative(ctx.threadId, "session/update", event.rawPayload);
                     yield* offerRuntimeEvent(
                       makeAcpToolCallEvent({
@@ -662,7 +710,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
                 }
               }),
             ),
-          ).pipe(Effect.forkChild);
+          ).pipe(Effect.forkIn(sessionScope));
 
           ctx.notificationFiber = nf;
           sessions.set(input.threadId, ctx);
@@ -890,10 +938,15 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             }),
           );
         }).pipe(
+          Effect.catchCause((cause) =>
+            sessions.get(input.threadId)?.acpSessionId !== prepared.acpSessionId
+              ? Effect.succeed({ threadId: input.threadId, turnId: prepared.turnId })
+              : Effect.failCause(cause),
+          ),
           Effect.ensuring(
             Effect.sync(() => {
               const liveCtx = sessions.get(input.threadId);
-              if (liveCtx) {
+              if (liveCtx?.acpSessionId === prepared.acpSessionId) {
                 liveCtx.promptsInFlight = Math.max(0, liveCtx.promptsInFlight - 1);
               }
             }),
@@ -901,19 +954,18 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
         );
       });
 
-    const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId) =>
-      Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        yield* settlePendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settlePendingUserInputsAsCancelled(ctx.pendingUserInputs);
-        yield* Effect.ignore(
-          ctx.acp.cancel.pipe(
-            Effect.mapError((error) =>
-              mapAcpToAdapterError(PROVIDER, threadId, "session/cancel", error),
-            ),
-          ),
-        );
-      });
+    const interruptTurn: GrokAdapterShape["interruptTurn"] = (threadId, turnId) =>
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const ctx = sessions.get(threadId);
+          if (!ctx || ctx.stopped || (turnId && ctx.activeTurnId && turnId !== ctx.activeTurnId))
+            return;
+          // A notification alone cannot guarantee the CLI stopped its prompt or background tools.
+          // Closing this process preserves the resume cursor and makes Stop definitive.
+          yield* stopSessionInternal(ctx);
+        }),
+      );
 
     const respondToRequest: GrokAdapterShape["respondToRequest"] = (
       threadId,

@@ -1039,11 +1039,19 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                     cwd={markdownCwd}
                   />
                 ) : null}
-                <ChatMarkdown
-                  text={messageText}
-                  cwd={markdownCwd}
-                  isStreaming={Boolean(row.message.streaming)}
-                />
+                <div
+                  className={
+                    /^★ Insight(?:\s|─)/mu.test(messageText)
+                      ? "[&_.chat-markdown_p]:whitespace-pre-line"
+                      : undefined
+                  }
+                >
+                  <ChatMarkdown
+                    text={messageText}
+                    cwd={markdownCwd}
+                    isStreaming={Boolean(row.message.streaming)}
+                  />
+                </div>
                 {(() => {
                   const turnSummary = turnDiffSummaryByAssistantMessageId.get(row.message.id);
                   if (!turnSummary) return null;

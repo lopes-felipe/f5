@@ -1,5 +1,7 @@
+import { Schema } from "effect";
 import {
   ApprovalRequestId,
+  ProviderApprovalOption,
   type CodexCollaborationTool,
   type CompactSubagentState,
   ProviderItemId,
@@ -124,6 +126,8 @@ export interface WorkLogEntry {
 export interface PendingApproval {
   requestId: ApprovalRequestId;
   requestKind: ProviderRequestKind;
+  appName?: string;
+  approvalOptions?: ReadonlyArray<ProviderApprovalOption>;
   requestType?: string;
   createdAt: string;
   detail?: string;
@@ -303,6 +307,8 @@ function requestKindFromRequestType(requestType: unknown): PendingApproval["requ
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "mcp_elicitation_approval":
+      return "mcp-elicitation";
     case "permissions_approval":
       return "permission";
     default:
@@ -337,6 +343,7 @@ export function derivePendingApprovals(
         payload.requestKind === "file-read" ||
         payload.requestKind === "file-change" ||
         payload.requestKind === "permission" ||
+        payload.requestKind === "mcp-elicitation" ||
         payload.requestKind === "unknown")
         ? payload.requestKind
         : payload
@@ -352,6 +359,14 @@ export function derivePendingApprovals(
         requestId,
         requestKind,
         createdAt: activity.createdAt,
+        ...(requestKind === "mcp-elicitation"
+          ? {
+              appName: typeof payload?.appName === "string" ? payload.appName : "MCP app",
+              approvalOptions: Array.isArray(payload?.approvalOptions)
+                ? payload.approvalOptions.filter(Schema.is(ProviderApprovalOption))
+                : [],
+            }
+          : {}),
         ...(requestKind === "unknown" && requestType ? { requestType } : {}),
         ...(detail ? { detail } : {}),
         ...(requestKind === "permission" && requestedPermissions ? { requestedPermissions } : {}),

@@ -92,12 +92,13 @@ function resolveEditorArgs(editorId: EditorId, target: string): ReadonlyArray<st
     ];
   }
 
+  const baseArgs = editor.id === "cursor" ? ["--classic"] : [];
   const parsedTarget = parseTargetPosition(target);
   if (editor.supportsGoto === true && parsedTarget) {
-    return ["--goto", target];
+    return [...baseArgs, "--goto", target];
   }
 
-  return [target];
+  return [...baseArgs, target];
 }
 
 function resolveEditorCommandCandidates(

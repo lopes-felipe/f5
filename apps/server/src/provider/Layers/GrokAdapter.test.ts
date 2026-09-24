@@ -48,6 +48,43 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
 );
 
 it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) => {
+  it.effect("stops the process and active turn even without a prompt cancellation response", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.make("grok-stop-prompt");
+      const events: ProviderRuntimeEvent[] = [];
+      const fiber = yield* adapter.streamEvents.pipe(
+        Stream.runForEach((event) =>
+          Effect.sync(() => {
+            events.push(event);
+          }),
+        ),
+        Effect.forkChild,
+      );
+      yield* adapter.startSession({
+        threadId,
+        provider: ProviderDriverKind.make("grok"),
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      const prompt = yield* adapter
+        .sendTurn({ threadId, input: "keep working", attachments: [] })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.await(prompt);
+      yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
+      assert.equal(
+        events.filter(
+          (event) => event.type === "turn.completed" && event.payload.state === "cancelled",
+        ).length,
+        1,
+      );
+      assert.equal(events.filter((event) => event.type === "session.exited").length, 1);
+      yield* adapter.interruptTurn(threadId);
+      yield* Fiber.interrupt(fiber);
+    }),
+  );
   it.effect("threads resume cursors through the hardened load fallback", () =>
     Effect.gen(function* () {
       const adapter = yield* GrokAdapter;
@@ -81,13 +118,16 @@ it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) =>
         }),
       ).pipe(Effect.forkScoped);
 
-      yield* adapter.startSession({
-        threadId,
-        provider: ProviderDriverKind.make("grok"),
-        cwd: process.cwd(),
-        runtimeMode: "full-access",
-        modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
-      });
+      const startup = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("grok"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          modelSelection: { instanceId: ProviderInstanceId.make("grok"), model: "grok-build" },
+        })
+        .pipe(Effect.forkChild);
+      yield* Fiber.join(startup);
 
       const first = yield* adapter
         .sendTurn({ threadId, input: "first", attachments: [] })
@@ -107,6 +147,7 @@ it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) =>
       assert.equal(firstResult.turnId, secondResult.turnId);
       const turnStarted = events.filter((event) => event.type === "turn.started");
       const turnCompleted = events.filter((event) => event.type === "turn.completed");
+      assert.ok(events.some((event) => event.type === "content.delta"));
       assert.equal(turnStarted.length, 1);
       assert.equal(turnCompleted.length, 1);
       assert.equal(turnCompleted[0]?.turnId, firstResult.turnId);

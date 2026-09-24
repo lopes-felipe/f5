@@ -1203,6 +1203,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             allowRecovery: true,
           });
           metricProvider = routed.adapter.provider;
+          if (input.decision === "acceptAlways" && routed.adapter.provider !== "codex")
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "This provider does not support persistent app approvals.",
+            );
           yield* Effect.annotateCurrentSpan({
             "provider.operation": "respond-to-request",
             "provider.kind": routed.adapter.provider,

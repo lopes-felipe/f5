@@ -9,6 +9,12 @@ describe("Windows PATH hydration", () => {
     ).toBe("C:\\Tools;C:\\Windows\\System32;D:\\Node");
   });
 
+  it("removes embedded quotes from Windows PATH entries", () => {
+    expect(
+      mergeWindowsPathValues(['C:\\"Program Files"\\Node;"C:\\Tools"', "C:\\Program Files\\Node"]),
+    ).toBe("C:\\Program Files\\Node;C:\\Tools");
+  });
+
   it("replaces duplicate PATH key spellings and appends existing known directories", async () => {
     const env: NodeJS.ProcessEnv = {
       Path: "C:\\Inherited",

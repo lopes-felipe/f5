@@ -46,6 +46,7 @@ export default mergeConfig(
         "src/routes/-_chat.settings.browser.tsx",
         "src/routes/-_chat.index.browser.tsx",
         "src/components/chat/AssistantMessageActions.browser.tsx",
+        "src/components/chat/ComposerPendingApprovalActions.browser.tsx",
         "src/components/chat/ClaudeTraitsPicker.browser.tsx",
         "src/components/chat/CodexTraitsPicker.browser.tsx",
         "src/components/chat/ChatHeader.browser.tsx",

@@ -384,7 +384,7 @@ describe("ProviderCommandReactor", () => {
         turnId: asTurnId("turn-1"),
       }),
     );
-    const interruptTurn = vi.fn((_: unknown) => Effect.void);
+    const interruptTurn = vi.fn<ProviderServiceShape["interruptTurn"]>(() => Effect.void);
     const respondToRequest = vi.fn<ProviderServiceShape["respondToRequest"]>(() => Effect.void);
     const respondToUserInput = vi.fn<ProviderServiceShape["respondToUserInput"]>(() => Effect.void);
     const stopSession = vi.fn((input: unknown) =>
@@ -3244,6 +3244,59 @@ describe("ProviderCommandReactor", () => {
       threadId: "thread-1",
       turnId: "turn-1",
     });
+  });
+
+  it("closes a session after an interrupt fails and records the failure", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+    harness.interruptTurn.mockImplementation(() =>
+      Effect.fail(
+        new ProviderAdapterRequestError({
+          provider: "codex",
+          method: "turn/interrupt",
+          detail: "interrupt connection lost",
+        }),
+      ),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("interrupt-failure-session"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        session: {
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("turn-1"),
+          lastError: null,
+          updatedAt: now,
+        },
+        createdAt: now,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.interrupt",
+        commandId: CommandId.makeUnsafe("interrupt-failure"),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        createdAt: now,
+      }),
+    );
+    await waitFor(async () => {
+      const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+        (thread) => thread.id === "thread-1",
+      );
+      return thread?.session?.status === "stopped";
+    });
+    expect(harness.stopSession).toHaveBeenCalledWith({ threadId: "thread-1" });
+    const thread = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (thread) => thread.id === "thread-1",
+    );
+    expect(thread?.session?.activeTurnId).toBeNull();
+    expect(
+      thread?.activities.some((activity) => activity.kind === "provider.turn.interrupt.failed"),
+    ).toBe(true);
   });
 
   it("reacts to thread.approval.respond by forwarding provider approval response", async () => {

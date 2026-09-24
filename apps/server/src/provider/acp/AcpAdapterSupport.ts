@@ -8,7 +8,7 @@ import * as EffectAcpErrors from "effect-acp/errors";
 
 import {
   ProviderAdapterRequestError,
-  ProviderAdapterSessionClosedError,
+  ProviderAdapterProcessError,
   type ProviderAdapterError,
 } from "../Errors.ts";
 
@@ -19,9 +19,10 @@ export function mapAcpToAdapterError(
   error: EffectAcpErrors.AcpError,
 ): ProviderAdapterError {
   if (Schema.is(EffectAcpErrors.AcpProcessExitedError)(error)) {
-    return new ProviderAdapterSessionClosedError({
+    return new ProviderAdapterProcessError({
       provider,
       threadId,
+      detail: error.message,
       cause: error,
     });
   }

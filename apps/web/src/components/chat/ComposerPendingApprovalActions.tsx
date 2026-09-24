@@ -1,4 +1,8 @@
-import { type ApprovalRequestId, type ProviderApprovalDecision } from "@t3tools/contracts";
+import {
+  type ApprovalRequestId,
+  type ProviderApprovalOption,
+  type ProviderApprovalDecision,
+} from "@t3tools/contracts";
 import { memo } from "react";
 import { type PendingApproval } from "../../session-logic";
 import { Button } from "../ui/button";
@@ -7,6 +11,7 @@ interface ComposerPendingApprovalActionsProps {
   requestId: ApprovalRequestId;
   requestKind: PendingApproval["requestKind"];
   canApprove: boolean;
+  approvalOptions?: ReadonlyArray<ProviderApprovalOption> | undefined;
   isResponding: boolean;
   onRespondToApproval: (
     requestId: ApprovalRequestId,
@@ -18,10 +23,34 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
   requestId,
   requestKind,
   canApprove,
+  approvalOptions,
   isResponding,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
   const approveDisabled = isResponding || !canApprove;
+  if (requestKind === "mcp-elicitation") {
+    const options = approvalOptions?.length
+      ? approvalOptions
+      : [
+          { decision: "cancel" as const, label: "Cancel" },
+          { decision: "decline" as const, label: "Decline" },
+        ];
+    return (
+      <>
+        {options.map((option) => (
+          <Button
+            key={option.decision}
+            size="sm"
+            variant={option.decision === "accept" ? "default" : "outline"}
+            disabled={isResponding || (option.decision.startsWith("accept") && !canApprove)}
+            onClick={() => void onRespondToApproval(requestId, option.decision)}
+          >
+            {option.label}
+          </Button>
+        ))}
+      </>
+    );
+  }
   return (
     <>
       {requestKind !== "permission" ? (

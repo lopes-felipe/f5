@@ -1,3 +1,4 @@
+import { writeSync } from "node:fs";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 
@@ -12,6 +13,7 @@ if (process.env.ACP_MOCK_MALFORMED_OUTPUT === "1") {
 }
 
 if (process.env.ACP_MOCK_EXIT_IMMEDIATELY_CODE !== undefined) {
+  if (process.env.ACP_MOCK_EXIT_STDERR) writeSync(2, process.env.ACP_MOCK_EXIT_STDERR);
   process.exit(Number(process.env.ACP_MOCK_EXIT_IMMEDIATELY_CODE));
 }
 
@@ -71,7 +73,7 @@ const program = Effect.gen(function* () {
         },
       });
 
-      yield* agent.client.elicit({
+      const elicitationRequest = {
         sessionId,
         message: "Need confirmation before continuing.",
         mode: "form",
@@ -86,7 +88,17 @@ const program = Effect.gen(function* () {
           },
           required: ["approved"],
         },
-      });
+      } as const;
+      if (process.env.ACP_MOCK_ELICITATION_ALIAS === "1") {
+        const response = yield* agent.raw.request("elicitation/create", elicitationRequest);
+        if (
+          JSON.stringify(response) !==
+          JSON.stringify({ action: "accept", content: { approved: true } })
+        )
+          throw new Error("Unexpected SDK elicitation response");
+      } else {
+        yield* agent.client.elicit(elicitationRequest);
+      }
 
       yield* agent.client.sessionUpdate({
         sessionId,
@@ -102,9 +114,11 @@ const program = Effect.gen(function* () {
         },
       });
 
-      yield* agent.client.elicitationComplete({
-        elicitationId: "elicitation-1",
-      });
+      if (process.env.ACP_MOCK_ELICITATION_ALIAS === "1") {
+        yield* agent.raw.notify("elicitation/complete", { elicitationId: "elicitation-1" });
+      } else {
+        yield* agent.client.elicitationComplete({ elicitationId: "elicitation-1" });
+      }
 
       yield* agent.client.extRequest("x/typed_request", {
         message: process.env.ACP_MOCK_BAD_TYPED_REQUEST === "1" ? 123 : "hello from typed request",

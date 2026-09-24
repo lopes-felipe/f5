@@ -540,6 +540,77 @@ describe("ClaudeAdapterLive", () => {
     );
   });
 
+  it.effect("consumes Claude command lifecycle notifications silently", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const sessionId = "6e81554e-5cff-4b37-8a39-f3a9051ac234";
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      const readyMessage = "command lifecycle test ready";
+      const readyFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.warning" && event.payload.message === readyMessage,
+      ).pipe(Stream.runDrain, Effect.forkChild);
+      harness.query.emit({
+        type: "system",
+        subtype: "notification",
+        key: "command-lifecycle-ready",
+        text: readyMessage,
+        priority: "high",
+        session_id: sessionId,
+        uuid: "command-lifecycle-ready",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(readyFiber);
+
+      const processedMessage = "command lifecycle messages processed";
+      const runtimeEventsFiber = yield* Stream.takeUntil(
+        adapter.streamEvents,
+        (event) => event.type === "runtime.warning" && event.payload.message === processedMessage,
+      ).pipe(Stream.runCollect, Effect.forkChild);
+      for (const [state, uuid] of [
+        ["started", "command-started"],
+        ["completed", "command-completed"],
+      ]) {
+        harness.query.emit({
+          type: "command_lifecycle",
+          command_uuid: "4cd8e8a3-df7a-425d-b6c9-4053abc0b8fd",
+          state,
+          session_id: sessionId,
+          uuid,
+        } as unknown as SDKMessage);
+      }
+      harness.query.emit({
+        type: "system",
+        subtype: "notification",
+        key: "command-lifecycle-processed",
+        text: processedMessage,
+        priority: "high",
+        session_id: sessionId,
+        uuid: "command-lifecycle-processed",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+      assert.deepEqual(
+        runtimeEvents.map((event) => event.type),
+        ["runtime.warning"],
+      );
+      const warning = runtimeEvents[0];
+      assert.equal(warning?.type, "runtime.warning");
+      if (warning?.type === "runtime.warning") {
+        assert.equal(warning.payload.message, processedMessage);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
   it.effect("returns validation error for non-claude provider on startSession", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -3762,6 +3833,71 @@ describe("ClaudeAdapterLive", () => {
     },
   );
 
+  it.effect(
+    "keeps an early subagent snapshot model without leaking child text into the parent",
+    () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const progress = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil((event) => event.type === "task.progress"),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+          model: "claude-opus-5-5",
+        });
+        yield* adapter.sendTurn({ threadId: THREAD_ID, input: "review", attachments: [] });
+        harness.query.emit({
+          type: "assistant",
+          parent_tool_use_id: "agent-tool",
+          message: {
+            model: "claude-sonnet-4-6",
+            content: [{ type: "text", text: "private child response" }],
+          },
+          uuid: "child-snapshot",
+          session_id: BACKGROUND_SESSION_ID,
+        } as unknown as SDKMessage);
+        emitClaudeTaskStarted(harness.query, {
+          taskId: "agent-task",
+          toolUseId: "agent-tool",
+          description: "Review",
+        });
+        harness.query.emit({
+          type: "system",
+          subtype: "task_progress",
+          task_id: "agent-task",
+          description: "Review",
+          session_id: BACKGROUND_SESSION_ID,
+          uuid: "agent-progress",
+        } as unknown as SDKMessage);
+        const collected = Array.from(yield* Fiber.join(progress));
+        const events = collected.filter((event) => event.type === "task.progress");
+        assert.equal(events[0]?.type, "task.progress");
+        if (events[0]?.type === "task.progress")
+          assert.equal(events[0].payload.model, "claude-sonnet-4-6");
+        const started = collected.find((event) => event.type === "task.started");
+        if (started?.type === "task.started")
+          assert.equal(started.payload.model, "claude-sonnet-4-6");
+        else assert.fail("Missing task start");
+        assert.ok(
+          !collected.some(
+            (event) =>
+              event.type === "content.delta" &&
+              event.payload.delta.includes("private child response"),
+          ),
+        );
+        yield* adapter.stopSession(THREAD_ID);
+      }).pipe(
+        Effect.provideService(Random.Random, makeDeterministicRandomService()),
+        Effect.provide(harness.layer),
+      );
+    },
+  );
+
   it.effect("forwards Claude task progress summaries for subagent updates", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
@@ -6197,7 +6333,7 @@ describe("ClaudeAdapterLive", () => {
     });
   }
 
-  it.effect("carries suppressed late interrupt spend into the next accounted turn", () => {
+  it.effect("carries the cost baseline through a stopped session and ignores late results", () => {
     const harness = makeHarness();
     return Effect.gen(function* () {
       const adapter = yield* ClaudeAdapter;
@@ -6226,8 +6362,21 @@ describe("ClaudeAdapterLive", () => {
         total_cost_usd: 0.35,
       } as unknown as SDKMessage);
       for (let i = 0; i < 10; i++) yield* Effect.yieldNow;
-      // If the late event leaked, completeCostTurn would consume it instead.
-      assert.equal(yield* completeCostTurn(harness.query, 0.4), 0.1);
+      assert.equal(interrupted._tag, "Some");
+      if (interrupted._tag !== "Some") return;
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+        resumeCursor: {
+          ...(interrupted.value.resumeCursor as Record<string, unknown>),
+          resume: "550e8400-e29b-41d4-a716-446655440000",
+        },
+      });
+      assert.equal(harness.queries.length, 2);
+      // The replacement process resumes the cumulative baseline, while a late
+      // result from the closed process cannot be counted a second time.
+      assert.equal(yield* completeCostTurn(harness.queries[1]!, 0.4), 0.1);
     }).pipe(Effect.provide(harness.layer));
   });
 
@@ -7466,7 +7615,8 @@ describe("ClaudeAdapterLive", () => {
         if (firstTurnCompleted?.type === "turn.completed") {
           assert.equal(firstTurnCompleted.payload.state, "interrupted");
         }
-        assert.equal(harness.query.interruptCalls.length, 1);
+        assert.equal(harness.query.interruptCalls.length, 0);
+        assert.equal(harness.query.closeCalls, 1);
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
         Effect.provide(harness.layer),
@@ -7616,7 +7766,7 @@ describe("ClaudeAdapterLive", () => {
       );
     });
 
-    it.effect("watchdog force-completes the turn as interrupted when no result arrives", () => {
+    it.effect("closes the runtime and completes the turn even when no result arrives", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
@@ -7657,7 +7807,7 @@ describe("ClaudeAdapterLive", () => {
         const firstTurnCompleted = turnCompleted[0];
         if (firstTurnCompleted?.type === "turn.completed") {
           assert.equal(firstTurnCompleted.payload.state, "interrupted");
-          assert.equal(firstTurnCompleted.payload.errorMessage, "Turn interrupted by user.");
+          assert.equal(firstTurnCompleted.payload.errorMessage, "Session stopped.");
         }
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -7709,7 +7859,8 @@ describe("ClaudeAdapterLive", () => {
         yield* Effect.yieldNow;
         runtimeEventsFiber.interruptUnsafe();
 
-        assert.equal(harness.query.interruptCalls.length, 1);
+        assert.equal(harness.query.interruptCalls.length, 0);
+        assert.equal(harness.query.closeCalls, 1);
         const turnCompleted = runtimeEvents.filter((event) => event.type === "turn.completed");
         assert.equal(turnCompleted.length, 1);
       }).pipe(
@@ -7718,7 +7869,7 @@ describe("ClaudeAdapterLive", () => {
       );
     });
 
-    it.effect("keeps the session alive after an interrupt for follow-up turns", () => {
+    it.effect("closes an interrupted session and permits a follow-up in a new runtime", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {
         const adapter = yield* ClaudeAdapter;
@@ -7752,9 +7903,13 @@ describe("ClaudeAdapterLive", () => {
         yield* Effect.yieldNow;
         yield* Effect.yieldNow;
 
-        assert.equal(yield* adapter.hasSession(session.threadId), true);
-        const thread = yield* adapter.readThread(session.threadId);
-        assert.equal(thread.threadId, session.threadId);
+        assert.equal(yield* adapter.hasSession(session.threadId), false);
+        assert.equal(harness.query.closeCalls, 1);
+        yield* adapter.startSession({
+          threadId: session.threadId,
+          provider: "claudeAgent",
+          runtimeMode: "full-access",
+        });
 
         // A follow-up turn should succeed.
         const followUp = yield* adapter.sendTurn({

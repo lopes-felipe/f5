@@ -14,6 +14,8 @@ function approvalSummary(requestKind: PendingApproval["requestKind"]): string {
       return "File-read approval requested";
     case "file-change":
       return "File-change approval requested";
+    case "mcp-elicitation":
+      return "App access approval requested";
     case "permission":
       return "Permission approval requested";
     case "unknown":
@@ -33,6 +35,8 @@ function approvalDetailLabel(requestKind: PendingApproval["requestKind"]): strin
       return "File to read";
     case "file-change":
       return "File change";
+    case "mcp-elicitation":
+      return "App access";
     case "permission":
       return "Permission detail";
     case "unknown":
@@ -67,6 +71,7 @@ export const ComposerPendingApprovalPanel = memo(function ComposerPendingApprova
           <span className="text-xs text-muted-foreground">1/{pendingCount}</span>
         ) : null}
       </div>
+      {approval.appName ? <p className="mt-2 text-sm font-medium">{approval.appName}</p> : null}
       {approval.requestKind === "unknown" && approval.requestType ? (
         <p className="mt-2 text-xs text-muted-foreground">
           Raw request type: <code>{approval.requestType}</code>

@@ -127,6 +127,47 @@ const cursorAdapterTestLayer = it.layer(
 );
 
 cursorAdapterTestLayer("CursorAdapterLive", (it) => {
+  it.effect("fails a turn containing only a transport diagnostic", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CursorAdapter;
+      const settings = yield* ServerSettingsService;
+      const threadId = ThreadId.make("cursor-transport-failure");
+      const diagnostic = "Error: ConnectError: [unavailable] connection lost";
+      const wrapperPath = yield* Effect.promise(() =>
+        makeMockAgentWrapper({
+          T3_ACP_PROMPT_RESPONSE_TEXT: diagnostic,
+        }),
+      );
+      yield* settings.updateSettings({ providers: { cursor: { binaryPath: wrapperPath } } });
+      const startup = yield* adapter
+        .startSession({
+          threadId,
+          provider: ProviderDriverKind.make("cursor"),
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        })
+        .pipe(Effect.forkChild);
+      yield* Fiber.join(startup);
+      const eventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "turn.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      const error = yield* adapter
+        .sendTurn({ threadId, input: "hello", attachments: [] })
+        .pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterRequestError");
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      const completed = events.find((event) => event.type === "turn.completed");
+      assert.isDefined(completed);
+      if (completed?.type === "turn.completed") {
+        assert.equal(completed.payload.state, "failed");
+        assert.equal(completed.payload.errorMessage, diagnostic);
+      }
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("starts a session and maps mock ACP prompt flow to runtime events", () =>
     Effect.gen(function* () {
       const adapter = yield* CursorAdapter;
@@ -1198,7 +1239,7 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
 
       const argvRuns = yield* Effect.promise(() => readArgvLog(argvLogPath));
       assert.lengthOf(argvRuns, 1, "session should not restart — only one spawn");
-      assert.deepStrictEqual(argvRuns[0], ["acp"]);
+      assert.deepStrictEqual(argvRuns[0], ["--force", "acp"]);
 
       const requests = yield* Effect.promise(() => readJsonLines(requestLogPath));
       const setConfigRequests = requests.filter(
