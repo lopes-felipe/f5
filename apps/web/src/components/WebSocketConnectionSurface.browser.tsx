@@ -1,3 +1,18 @@
+import {
+  useComposerDraftStore,
+  resetComposerDraftBaseStorageForTesting,
+  setComposerDraftBaseStorageForTesting,
+  serializeComposerDraftRecovery,
+} from "../composerDraftStore";
+import { serverBootstrapFixture } from "../test/serverBootstrap";
+import { F5_PROTOCOL_VERSION, ThreadId } from "@t3tools/contracts";
+import {
+  beginProtocolUpload,
+  requireProtocolUpgrade,
+  resetProtocolStateForTests,
+  reloadForProtocolUpgrade,
+  setServerBootstrap,
+} from "../protocolState";
 import "../index.css";
 
 import { ORCHESTRATION_WS_METHODS, WS_METHODS } from "@t3tools/contracts";
@@ -33,6 +48,11 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
   };
 });
 
+vi.mock("../protocolState", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../protocolState")>();
+  return { ...actual, reloadForProtocolUpgrade: vi.fn() };
+});
+
 function enableFlag(key: (typeof WEB_LOCAL_FLAG_KEYS)[keyof typeof WEB_LOCAL_FLAG_KEYS]) {
   localStorage.setItem(key, "true");
 }
@@ -61,13 +81,127 @@ describe("WebSocketConnectionSurface", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     localStorage.clear();
+    sessionStorage.clear();
+    resetComposerDraftBaseStorageForTesting();
+    useComposerDraftStore.setState({ draftsByThreadId: {}, imageImportsByThreadId: {} });
     document.body.innerHTML = "";
     resetRequestLatencyStateForTests();
     resetWsConnectionStateForTests();
+    resetProtocolStateForTests();
+    vi.mocked(reloadForProtocolUpgrade).mockClear();
   });
 
   afterEach(() => {
+    resetComposerDraftBaseStorageForTesting();
+    vi.restoreAllMocks();
     vi.useRealTimers();
+  });
+
+  it("shows upgrades without unmounting drafts and waits for uploads before reloading", async () => {
+    const finishUpload = beginProtocolUpload();
+    const mounted = await mountSurface(<textarea defaultValue="saved draft" />);
+    try {
+      const draft = mounted.host.querySelector("textarea");
+      requireProtocolUpgrade();
+      await vi.waitFor(() =>
+        expect(document.body.textContent).toContain("F5 was updated. Reload to continue."),
+      );
+      expect(document.body.textContent).toContain("Waiting for uploads");
+      expect(document.body.textContent).toContain("Reload anyway");
+      const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+      Array.from(document.querySelectorAll("button"))
+        .find((button) => button.textContent?.includes("Reload anyway"))
+        ?.click();
+      expect(confirm).toHaveBeenCalledWith(
+        expect.stringContaining("unsaved draft attachments will be lost"),
+      );
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reloadForProtocolUpgrade).not.toHaveBeenCalled();
+      expect(mounted.host.querySelector("textarea")).toBe(draft);
+      expect(draft?.value).toBe("saved draft");
+      finishUpload();
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Reloading"));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(reloadForProtocolUpgrade).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps real importing and unsaved draft images available for recovery", async () => {
+    setServerBootstrap(serverBootstrapFixture);
+    const threadId = ThreadId.makeUnsafe("upgrade-draft");
+    const file = new File(["clipboard image"], "clipboard.png", { type: "image/png" });
+    let finish!: () => void;
+    const wait = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const importing = useComposerDraftStore.getState().importImages(threadId, [file], {
+      processor: async () => {
+        await wait;
+        return {
+          ok: true,
+          file,
+          recompressed: false,
+          originalSizeBytes: file.size,
+          finalSizeBytes: file.size,
+        };
+      },
+    });
+    const mounted = await mountSurface();
+    try {
+      requireProtocolUpgrade();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reloadForProtocolUpgrade).not.toHaveBeenCalled();
+      finish();
+      await importing;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reloadForProtocolUpgrade).not.toHaveBeenCalled();
+      const recovery = JSON.parse(await serializeComposerDraftRecovery());
+      expect(recovery.drafts[0].attachments[0].dataUrl).toBe(
+        "data:image/png;base64,Y2xpcGJvYXJkIGltYWdl",
+      );
+      setComposerDraftBaseStorageForTesting({
+        getItem: () => null,
+        setItem: () => {
+          throw new Error("quota exceeded");
+        },
+        removeItem: () => {},
+      });
+      useComposerDraftStore
+        .getState()
+        .syncPersistedAttachments(threadId, recovery.drafts[0].attachments);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reloadForProtocolUpgrade).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Download drafts");
+      expect(
+        useComposerDraftStore.getState().draftsByThreadId[threadId]?.nonPersistedImageIds,
+      ).toHaveLength(1);
+      resetComposerDraftBaseStorageForTesting();
+      useComposerDraftStore
+        .getState()
+        .syncPersistedAttachments(threadId, recovery.drafts[0].attachments);
+      await vi.waitFor(() => expect(document.body.textContent).toContain("Reloading"));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(reloadForProtocolUpgrade).toHaveBeenCalledTimes(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("offers manual recovery when this version has already attempted a reload", async () => {
+    sessionStorage.setItem(`f5:protocol-reload:${F5_PROTOCOL_VERSION}`, "attempted");
+    requireProtocolUpgrade();
+    const mounted = await mountSurface();
+    try {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(reloadForProtocolUpgrade).not.toHaveBeenCalled();
+      expect(document.body.textContent).toContain("Automatic reload already attempted");
+      expect(document.body.textContent).toContain("Reload anyway");
+    } finally {
+      await mounted.cleanup();
+    }
   });
 
   it("keeps the overlay hidden while connecting or connected", async () => {
@@ -104,6 +238,8 @@ describe("WebSocketConnectionSurface", () => {
       });
 
       resetWsConnectionStateForTests();
+      resetProtocolStateForTests();
+      vi.mocked(reloadForProtocolUpgrade).mockClear();
       noteWsConnectionAttempt();
       noteWsConnectionClosed();
 

@@ -1,3 +1,5 @@
+import { resetProtocolStateForTests, setServerBootstrap } from "../protocolState";
+import { serverBootstrapFixture } from "../test/serverBootstrap";
 // Production CSS is part of the behavior under test because row height depends on it.
 import "../index.css";
 
@@ -741,18 +743,20 @@ function createSnapshotWithRichAssistantTarget(): OrchestrationReadModel {
     "- Keep only the highest-value parts",
   ].join("\n");
 
+  // Keep both measured rows in the initial rendered window, as the nested
+  // work-group fixture does. Scrolling to the top virtualizes the next row out.
   return {
     ...snapshot,
     threads: snapshot.threads.map((thread) =>
       thread.id === THREAD_ID
         ? Object.assign({}, thread, {
             messages: thread.messages.map((message) =>
-              message.id === ("msg-assistant-3" as MessageId)
+              message.id === ("msg-assistant-20" as MessageId)
                 ? createAssistantMessage({
                     id: targetAssistantMessageId,
                     text: assistantMarkdown,
                     reasoningText: reasoningMarkdown,
-                    offsetSeconds: 21,
+                    offsetSeconds: 123,
                   })
                 : message,
             ),
@@ -784,7 +788,7 @@ function createSnapshotWithRichAssistantTarget(): OrchestrationReadModel {
                   },
                 ],
                 assistantMessageId: targetAssistantMessageId,
-                completedAt: isoAt(22),
+                completedAt: isoAt(124),
               },
             ],
           })
@@ -1389,7 +1393,7 @@ const worker = setupWorker(
         type: "push",
         sequence: 1,
         channel: WS_CHANNELS.serverWelcome,
-        data: fixture.welcome,
+        data: { ...fixture.welcome, bootstrap: serverBootstrapFixture },
       }),
     );
     client.addEventListener("message", (event) => {
@@ -1888,6 +1892,7 @@ describe("ChatView timeline (full app)", () => {
   });
 
   beforeEach(async () => {
+    setServerBootstrap(serverBootstrapFixture);
     await setViewport(DEFAULT_VIEWPORT);
     localStorage.clear();
     document.body.innerHTML = "";
@@ -2237,7 +2242,8 @@ describe("ChatView timeline (full app)", () => {
     try {
       const measurement = await mounted.measureTimelineRow({
         rowSelector: `[data-message-id="${targetMessageId}"][data-message-role="assistant"]`,
-        nextRowSelector: '[data-message-id="msg-user-4"][data-message-role="user"]',
+        nextRowSelector: '[data-message-id="msg-user-21"][data-message-role="user"]',
+        scrollToTop: false,
       });
 
       expect(measurement.measuredRowHeightPx).toBeGreaterThan(0);
@@ -3442,6 +3448,39 @@ describe("ChatView timeline (full app)", () => {
           expect(document.body.textContent).not.toContain(removedLabel);
         },
         { timeout: 8_000, interval: 16 },
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("waits for welcome limits before enabling send, then sends normally", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Send after welcome");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-waiting" as MessageId,
+        targetText: "waiting",
+      }),
+    });
+    try {
+      await waitForSendButton();
+      resetProtocolStateForTests();
+      const connecting = await waitForElement<HTMLButtonElement>(
+        () =>
+          Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+            button.textContent?.includes("Connecting"),
+          ) ?? null,
+        "Waiting for connecting button",
+      );
+      expect(connecting.disabled).toBe(true);
+      connecting.click();
+      setServerBootstrap(serverBootstrapFixture);
+      const button = await waitForSendButton();
+      await vi.waitFor(() => expect(button.disabled).toBe(false));
+      button.click();
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt ?? "").toBe(""),
       );
     } finally {
       await mounted.cleanup();

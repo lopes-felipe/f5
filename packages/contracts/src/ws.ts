@@ -1,3 +1,4 @@
+import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
   GithubLoginHandleInput,
@@ -698,6 +699,8 @@ export const WsPushSequence = NonNegativeInt;
 export type WsPushSequence = typeof WsPushSequence.Type;
 
 export const WsWelcomePayload = Schema.Struct({
+  // Optional only to decode legacy welcomes and explicitly close them as upgrade-required.
+  bootstrap: Schema.optional(ServerBootstrap),
   profile: Schema.optional(ProfileSummary),
   profileDiagnostic: Schema.optional(ProfileRegistryDiagnostic),
   cwd: TrimmedNonEmptyString,

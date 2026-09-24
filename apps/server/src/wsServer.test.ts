@@ -1,3 +1,10 @@
+import {
+  F5_PROTOCOL_VERSION,
+  F5_PROTOCOL_QUERY,
+  F5_PROTOCOL_HEADER,
+  F5_UPGRADE_REQUIRED_CLOSE_CODE,
+} from "@t3tools/contracts";
+import { SERVER_BOOTSTRAP } from "./wsServer/protocol";
 import * as Http from "node:http";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -565,7 +572,7 @@ function connectWsOnce(
   headers?: Readonly<Record<string, string>>,
 ): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
-    const query = token ? `?token=${encodeURIComponent(token)}` : "";
+    const query = `?${F5_PROTOCOL_QUERY}=${F5_PROTOCOL_VERSION}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
     const ws = new WebSocket(`ws://127.0.0.1:${port}/${query}`, { headers });
     const channels: SocketChannels = {
       push: { queue: [], waiters: [] },
@@ -1226,6 +1233,14 @@ describe("WebSocket Server", () => {
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("static-root");
+    expect(response.headers.get("cache-control")).toBe("no-cache");
+    fs.writeFileSync(path.join(staticDir, "index.html"), "<h1>updated app</h1>", "utf8");
+    const refreshed = await fetch(`http://127.0.0.1:${port}/index.html`, {
+      headers: { "If-None-Match": "old-client" },
+    });
+    expect(refreshed.status).toBe(200);
+    expect(refreshed.headers.get("cache-control")).toBe("no-cache");
+    expect(await refreshed.text()).toContain("updated app");
   });
 
   it("rejects static path traversal attempts", async () => {
@@ -4122,6 +4137,76 @@ describe("WebSocket Server", () => {
     );
   });
 
+  it.each([null, "0", "999", "1&protocol=1"])(
+    "rejects incompatible protocol %s without sending any domain data",
+    async (protocol) => {
+      server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : 0;
+      const result = await new Promise<{ code: number; reason: string; messages: string[] }>(
+        (resolve, reject) => {
+          const socket = new WebSocket(
+            `ws://127.0.0.1:${port}/?token=secret-token${protocol === null ? "" : `&protocol=${protocol}`}`,
+          );
+          const messages: string[] = [];
+          socket.on("error", reject);
+          socket.on("message", (raw) => messages.push(String(raw)));
+          socket.on("open", () =>
+            socket.send(
+              JSON.stringify({ id: "stale", body: { _tag: ORCHESTRATION_WS_METHODS.getSnapshot } }),
+            ),
+          );
+          socket.on("close", (code, reason) => resolve({ code, reason: String(reason), messages }));
+        },
+      );
+      expect(result).toEqual({
+        code: F5_UPGRADE_REQUIRED_CLOSE_CODE,
+        reason: JSON.stringify({ error: "upgrade-required", protocolVersion: F5_PROTOCOL_VERSION }),
+        messages: [],
+      });
+      const [current, welcome] = await connectAndAwaitWelcome(port, "secret-token");
+      connections.push(current);
+      expect(welcome.data.bootstrap).toEqual(SERVER_BOOTSTRAP);
+    },
+  );
+
+  it("authenticates bootstrap metadata and rejects stale upload protocols before consuming bytes", async () => {
+    server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
+    const address = server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+    const base = `http://127.0.0.1:${port}`;
+    expect((await fetch(`${base}/api/bootstrap`)).status).toBe(401);
+    const metadata = await fetch(`${base}/api/bootstrap`, {
+      headers: { Authorization: "Bearer secret-token" },
+    });
+    expect(metadata.headers.get("cache-control")).toBe("no-store");
+    expect(await metadata.json()).toEqual(SERVER_BOOTSTRAP);
+    for (const version of [undefined, "0", "999"]) {
+      const response = await fetch(`${base}/api/storage/restore`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer secret-token",
+          ...(version ? { [F5_PROTOCOL_HEADER]: version } : {}),
+        },
+        body: "not a backup",
+      });
+      expect(response.status).toBe(426);
+      expect(await response.json()).toEqual({
+        error: "upgrade-required",
+        protocolVersion: F5_PROTOCOL_VERSION,
+      });
+    }
+    const current = await fetch(`${base}/api/storage/restore`, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer secret-token",
+        [F5_PROTOCOL_HEADER]: String(F5_PROTOCOL_VERSION),
+      },
+      body: "not a backup",
+    });
+    expect(current.status).toBe(400);
+  });
+
   it("rejects websocket connections without a valid auth token", async () => {
     server = await createTestServer({ cwd: "/test", authToken: "secret-token" });
     const addr = server.address();
@@ -4173,7 +4258,7 @@ describe("WebSocket Server", () => {
     expect(preflightResponse.headers.get("access-control-allow-credentials")).toBe("true");
     expect(preflightResponse.headers.get("access-control-allow-methods")).toBe("GET, POST");
     expect(preflightResponse.headers.get("access-control-allow-headers")).toBe(
-      "Authorization, Content-Type, X-F5-Backup-Password",
+      "Authorization, Content-Type, X-F5-Backup-Password, X-F5-Protocol",
     );
 
     const unauthenticatedResponse = await fetch(`${origin}/api/storage/backup`, {

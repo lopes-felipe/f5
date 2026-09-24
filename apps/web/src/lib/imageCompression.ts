@@ -1,7 +1,4 @@
-import {
-  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-  PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS,
-} from "@t3tools/contracts";
+import { getServerSendLimits } from "../protocolState";
 
 import {
   COMPOSER_IMAGE_OUTPUT_MIME_TYPE,
@@ -42,6 +39,8 @@ export function imageCompressionFailureMessage(
 ): string {
   const displayName = fileName.trim() || "image";
   switch (reason) {
+    case "not-ready":
+      return "Waiting for server capabilities. Reconnect before attaching images.";
     case "animated":
       return `'${displayName}' is animated. Animated GIF and WebP images cannot be attached.`;
     case "cancelled":
@@ -60,6 +59,13 @@ export function imageCompressionFailureMessage(
 export const compressImageForComposer: ComposerImageProcessor = async (file, options) => {
   if (options?.signal?.aborted) return { ok: false, reason: "cancelled" };
   if (typeof Worker !== "function") return { ok: false, reason: "unsupported" };
+
+  let limits;
+  try {
+    limits = getServerSendLimits();
+  } catch {
+    return { ok: false, reason: "not-ready" };
+  }
 
   let worker: Worker;
   try {
@@ -133,8 +139,8 @@ export const compressImageForComposer: ComposerImageProcessor = async (file, opt
         id: requestId,
         file,
         mimeType: file.type,
-        maxBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
-        maxDataUrlChars: PROVIDER_SEND_TURN_MAX_IMAGE_DATA_URL_CHARS,
+        maxBytes: limits.maxImageBytes,
+        maxDataUrlChars: limits.maxImageDataUrlChars,
       });
     } catch {
       finish({ ok: false, reason: "unreadable" });

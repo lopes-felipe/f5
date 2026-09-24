@@ -1,3 +1,4 @@
+import { serverBootstrapFixture } from "../test/serverBootstrap";
 import "../index.css";
 
 import {
@@ -496,7 +497,7 @@ const worker = setupWorker(
         type: "push",
         sequence: 1,
         channel: WS_CHANNELS.serverWelcome,
-        data: fixture.welcome,
+        data: { ...fixture.welcome, bootstrap: serverBootstrapFixture },
       }),
     );
     client.addEventListener("message", (event) => {

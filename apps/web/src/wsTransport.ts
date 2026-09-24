@@ -1,3 +1,11 @@
+import { getProtocolState, requireProtocolUpgrade, setServerBootstrap } from "./protocolState";
+import {
+  F5_PROTOCOL_VERSION,
+  F5_PROTOCOL_QUERY,
+  F5_UPGRADE_REQUIRED_CLOSE_CODE,
+  F5_UPGRADE_REQUIRED_MESSAGE,
+  WS_CHANNELS,
+} from "@t3tools/contracts";
 import {
   type WsPush,
   type WsPushChannel,
@@ -197,6 +205,7 @@ export class WsTransport {
     params?: unknown,
     options?: RequestOptions,
   ): Promise<T> {
+    if (getProtocolState().upgradeRequired) throw new Error(F5_UPGRADE_REQUIRED_MESSAGE);
     if (typeof method !== "string" || method.length === 0) {
       throw new Error("Request method is required");
     }
@@ -297,6 +306,7 @@ export class WsTransport {
   }
 
   reconnect(): void {
+    if (getProtocolState().upgradeRequired) return;
     if (this.disposed) {
       throw new Error("Transport disposed");
     }
@@ -348,7 +358,7 @@ export class WsTransport {
   }
 
   private connect() {
-    if (this.disposed) {
+    if (this.disposed || getProtocolState().upgradeRequired) {
       return;
     }
 
@@ -362,7 +372,7 @@ export class WsTransport {
         },
         (error: unknown) => {
           this.authConnectInFlight = false;
-          if (this.disposed) return;
+          if (this.disposed || getProtocolState().upgradeRequired) return;
           noteWsConnectionError(
             error instanceof Error ? error.message : "F5 authentication failed.",
           );
@@ -376,11 +386,13 @@ export class WsTransport {
   }
 
   private openSocket() {
-    if (this.disposed) return;
+    if (this.disposed || getProtocolState().upgradeRequired) return;
 
     noteWsConnectionAttempt();
 
-    const ws = new WebSocket(this.url);
+    const url = new URL(this.url);
+    url.searchParams.set(F5_PROTOCOL_QUERY, String(F5_PROTOCOL_VERSION));
+    const ws = new WebSocket(url.toString());
     const generation = ++this.socketGeneration;
     this.ws = ws;
     this.authoritativeSocketGeneration = generation;
@@ -407,12 +419,19 @@ export class WsTransport {
       this.handleMessage(event.data);
     });
 
-    ws.addEventListener("close", () => {
+    ws.addEventListener("close", (event) => {
       if (!this.isAuthoritativeSocket(generation, ws)) {
         return;
       }
 
       this.detachAuthoritativeSocket();
+      if (event.code === F5_UPGRADE_REQUIRED_CLOSE_CODE) {
+        requireProtocolUpgrade();
+        this.failPendingRequests(F5_UPGRADE_REQUIRED_MESSAGE);
+        noteWsConnectionClosed();
+        noteWsConnectionError(F5_UPGRADE_REQUIRED_MESSAGE);
+        return;
+      }
       this.failPendingRequests(WS_CONNECTION_CLOSED_MESSAGE);
       if (this.disposed) {
         return;
@@ -442,7 +461,7 @@ export class WsTransport {
   }
 
   private handleForegroundSignal(): void {
-    if (this.disposed) return;
+    if (this.disposed || getProtocolState().upgradeRequired) return;
 
     const ws = this.ws;
     if (ws?.readyState !== WebSocket.OPEN) {
@@ -512,6 +531,7 @@ export class WsTransport {
   }
 
   private handleMessage(raw: unknown) {
+    if (getProtocolState().upgradeRequired) return;
     const result = decodeWsResponse(raw);
     if (Result.isFailure(result)) {
       console.warn("Dropped inbound WebSocket envelope", formatSchemaError(result.failure));
@@ -520,6 +540,19 @@ export class WsTransport {
 
     const message = result.success;
     if (isWsPushMessage(message)) {
+      if (message.channel === WS_CHANNELS.serverWelcome) {
+        if (
+          !message.data.bootstrap ||
+          message.data.bootstrap.protocolVersion !== F5_PROTOCOL_VERSION
+        ) {
+          requireProtocolUpgrade();
+          this.failPendingRequests(F5_UPGRADE_REQUIRED_MESSAGE);
+          noteWsConnectionError(F5_UPGRADE_REQUIRED_MESSAGE);
+          this.ws?.close(F5_UPGRADE_REQUIRED_CLOSE_CODE, "upgrade-required");
+          return;
+        }
+        setServerBootstrap(message.data.bootstrap);
+      }
       this.latestPushByChannel.set(message.channel, message);
       const channelListeners = this.listeners.get(message.channel);
       if (channelListeners) {
@@ -558,7 +591,7 @@ export class WsTransport {
   }
 
   private send(message: OutboundMessage) {
-    if (this.disposed) {
+    if (this.disposed || getProtocolState().upgradeRequired) {
       return;
     }
 
@@ -577,7 +610,7 @@ export class WsTransport {
   }
 
   private flushQueue() {
-    if (this.ws?.readyState !== WebSocket.OPEN) {
+    if (getProtocolState().upgradeRequired || this.ws?.readyState !== WebSocket.OPEN) {
       return;
     }
 

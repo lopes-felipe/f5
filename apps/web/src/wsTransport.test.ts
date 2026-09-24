@@ -1,3 +1,6 @@
+import { serverBootstrapFixture } from "./test/serverBootstrap";
+import { F5_PROTOCOL_VERSION, F5_UPGRADE_REQUIRED_CLOSE_CODE } from "@t3tools/contracts";
+import { getProtocolState, getServerSendLimits, resetProtocolStateForTests } from "./protocolState";
 import { ORCHESTRATION_WS_METHODS, WS_CHANNELS, WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +13,7 @@ import { getWsConnectionState, resetWsConnectionStateForTests } from "./wsConnec
 import { jitterReconnectDelay, WsTransport } from "./wsTransport";
 
 type WsEventType = "open" | "message" | "close" | "error";
-type WsEvent = { data?: unknown; type?: string };
+type WsEvent = { data?: unknown; type?: string; code?: number };
 type WsListener = (event?: WsEvent) => void;
 
 const sockets: MockWebSocket[] = [];
@@ -25,7 +28,7 @@ class MockWebSocket {
   readonly sent: string[] = [];
   private readonly listeners = new Map<WsEventType, Set<WsListener>>();
 
-  constructor(_url: string) {
+  constructor(readonly url: string) {
     sockets.push(this);
   }
 
@@ -39,9 +42,9 @@ class MockWebSocket {
     this.sent.push(data);
   }
 
-  close() {
+  close(code = 1000) {
     this.readyState = MockWebSocket.CLOSED;
-    this.emit("close", { type: "close" });
+    this.emit("close", { type: "close", code });
   }
 
   open() {
@@ -85,6 +88,7 @@ beforeEach(() => {
   sockets.length = 0;
   resetRequestLatencyStateForTests();
   resetWsConnectionStateForTests();
+  resetProtocolStateForTests();
 
   const windowTarget = new EventTarget();
   Object.assign(windowTarget, {
@@ -136,6 +140,7 @@ afterEach(() => {
   }
   resetRequestLatencyStateForTests();
   resetWsConnectionStateForTests();
+  resetProtocolStateForTests();
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
@@ -560,3 +565,86 @@ describe("WsTransport", () => {
     transport.dispose();
   });
 });
+
+describe("protocol upgrades", () => {
+  it("installs welcome limits before notifying subscribers and refreshes them on reconnect", () => {
+    const transport = new WsTransport("ws://localhost:3020/");
+    const observed: number[] = [];
+    transport.subscribe(WS_CHANNELS.serverWelcome, () =>
+      observed.push(getServerSendLimits().maxInputChars),
+    );
+    const welcome = (maxInputChars: number) =>
+      JSON.stringify({
+        type: "push",
+        sequence: 1,
+        channel: WS_CHANNELS.serverWelcome,
+        data: {
+          cwd: "/repo",
+          projectName: "repo",
+          bootstrap: {
+            ...serverBootstrapFixture,
+            sendLimits: { ...serverBootstrapFixture.sendLimits, maxInputChars },
+          },
+        },
+      });
+    getSocket().open();
+    getSocket().serverMessage(welcome(42));
+    getSocket().close();
+    vi.advanceTimersByTime(500);
+    getSocket().open();
+    getSocket().serverMessage(welcome(84));
+    expect(observed).toEqual([42, 84]);
+    transport.dispose();
+  });
+
+  it("sends the current version on initial connection and reconnect", () => {
+    const transport = new WsTransport("ws://localhost:3020/?token=secret&protocol=old");
+    expect(new URL(getSocket().url).searchParams.get("protocol")).toBe(String(F5_PROTOCOL_VERSION));
+    expect(new URL(getSocket().url).searchParams.get("token")).toBe("secret");
+    getSocket().open();
+    getSocket().close();
+    vi.advanceTimersByTime(500);
+    expect(new URL(getSocket().url).searchParams.get("protocol")).toBe(String(F5_PROTOCOL_VERSION));
+    transport.dispose();
+  });
+  it("stops retrying and rejects requests after an upgrade-required close", async () => {
+    const transport = new WsTransport("ws://localhost:3020/");
+    getSocket().open();
+    const request = transport.request("server.probe");
+    const rejected = expect(request).rejects.toThrow("F5 was updated. Reload to continue.");
+    getSocket().close(F5_UPGRADE_REQUIRED_CLOSE_CODE);
+    await rejected;
+    expect(getProtocolState().upgradeRequired).toBe(true);
+    vi.advanceTimersByTime(60_000);
+    transport.reconnect();
+    expect(sockets).toHaveLength(1);
+    await expect(transport.request("server.probe")).rejects.toThrow("F5 was updated");
+    transport.dispose();
+  });
+});
+
+it.each([undefined, { ...serverBootstrapFixture, protocolVersion: F5_PROTOCOL_VERSION + 1 }])(
+  "closes an incompatible welcome and stops reconnecting (%j)",
+  (bootstrap) => {
+    const transport = new WsTransport("ws://localhost:3020/");
+    const listener = vi.fn();
+    transport.subscribe(WS_CHANNELS.serverWelcome, listener);
+    const socket = getSocket();
+    socket.open();
+    socket.serverMessage(
+      JSON.stringify({
+        type: "push",
+        sequence: 1,
+        channel: WS_CHANNELS.serverWelcome,
+        data: { cwd: "/repo", projectName: "repo", bootstrap },
+      }),
+    );
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(getProtocolState().upgradeRequired).toBe(true);
+    expect(getWsConnectionState().lastError).toContain("F5 was updated");
+    expect(listener).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(60_000);
+    expect(sockets).toHaveLength(1);
+    transport.dispose();
+  },
+);
