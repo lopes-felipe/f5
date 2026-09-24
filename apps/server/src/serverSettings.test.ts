@@ -10,7 +10,12 @@ import { createModelSelection } from "@t3tools/shared/model";
 import { assert, it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Schema } from "effect";
 import { ServerConfig } from "./config.ts";
-import { ServerSettingsLive, ServerSettingsService } from "./serverSettings.ts";
+import { SecretStoreError, ServerSecretStore } from "./auth/Services/ServerSecretStore.ts";
+import {
+  ServerSettingsLiveWithSecretStore,
+  ServerSettingsLive,
+  ServerSettingsService,
+} from "./serverSettings.ts";
 
 const makeServerSettingsLayer = () =>
   ServerSettingsLive.pipe(
@@ -551,5 +556,193 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         "sk-or-secret",
       );
     }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("skips explicitly disabled built-in instances when choosing a fallback", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsService;
+      const next = yield* service.updateSettings({
+        providerInstances: {
+          [ProviderInstanceId.make("codex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            enabled: false,
+            config: {},
+          },
+          [ProviderInstanceId.make("claudeAgent")]: {
+            driver: ProviderDriverKind.make("claudeAgent"),
+            enabled: true,
+            config: {},
+          },
+        },
+      });
+      assert.equal(next.textGenerationModelSelection.instanceId, "claudeAgent");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect("preserves the last inline secret when saving a redacted settings form", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const config = yield* ServerConfig;
+      assert.ok(config.settingsPath);
+      yield* fs.writeFileString(
+        config.settingsPath,
+        JSON.stringify({
+          providerInstances: {
+            [ProviderInstanceId.make("codex")]: {
+              driver: "codex",
+              config: {},
+              environment: [
+                { name: "API_KEY", value: "older-inline", sensitive: true },
+                { name: "API_KEY", value: "current-inline", sensitive: true },
+              ],
+            },
+          },
+        }),
+      );
+      const service = yield* ServerSettingsService;
+      const next = yield* service.updateSettings({
+        providerInstances: {
+          [ProviderInstanceId.make("codex")]: {
+            driver: ProviderDriverKind.make("codex"),
+            config: {},
+            environment: [{ name: "API_KEY", value: "", sensitive: true, valueRedacted: true }],
+          },
+        },
+      });
+      assert.equal(
+        next.providerInstances[ProviderInstanceId.make("codex")]?.environment?.[0]?.value,
+        "current-inline",
+      );
+      assert.notInclude(yield* fs.readFileString(config.settingsPath), "current-inline");
+    }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+
+  it.effect(
+    "restores replaced and removed secrets and removes new secrets after settings publication fails",
+    () =>
+      Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig;
+        assert.ok(config.settingsPath);
+        const before = yield* service.updateSettings({
+          providerInstances: {
+            [ProviderInstanceId.make("codex")]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: {},
+              environment: [
+                { name: "REPLACED", value: "original", sensitive: true },
+                { name: "REMOVED", value: "retained", sensitive: true },
+              ],
+            },
+          },
+        });
+        const saved = config.settingsPath + ".saved";
+        yield* fs.rename(config.settingsPath, saved);
+        yield* fs.makeDirectory(config.settingsPath);
+        const result = yield* Effect.result(
+          service.updateSettings({
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                config: {},
+                environment: [
+                  { name: "REPLACED", value: "changed", sensitive: true },
+                  { name: "NEW", value: "new-secret", sensitive: true },
+                ],
+              },
+            },
+          }),
+        );
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual(
+          (yield* service.getSettings).providerInstances[ProviderInstanceId.make("codex")],
+          before.providerInstances[ProviderInstanceId.make("codex")],
+        );
+        yield* fs.remove(config.settingsPath, { recursive: true });
+        yield* fs.rename(saved, config.settingsPath);
+        // A later redacted reference must not recover the rejected new value.
+        const recovered = yield* service.updateSettings({
+          providerInstances: {
+            [ProviderInstanceId.make("codex")]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: {},
+              environment: [{ name: "NEW", value: "", sensitive: true, valueRedacted: true }],
+            },
+          },
+        });
+        assert.equal(
+          recovered.providerInstances[ProviderInstanceId.make("codex")]?.environment?.[0]?.value,
+          "",
+        );
+      }).pipe(Effect.provide(makeServerSettingsLayer())),
+  );
+  it.effect("rolls back partial secret writes even when the failed operation already mutated", () =>
+    Effect.gen(function* () {
+      const values = new Map<string, Uint8Array>();
+      let fail = false;
+      const store = Layer.succeed(ServerSecretStore, {
+        get: (name) => Effect.sync(() => values.get(name) ?? null),
+        set: (name, value) =>
+          Effect.gen(function* () {
+            values.set(name, value);
+            if (fail && new TextDecoder().decode(value) === "reject-after-write") {
+              return yield* new SecretStoreError({ message: "injected write failure" });
+            }
+          }),
+        remove: (name) =>
+          Effect.sync(() => {
+            values.delete(name);
+          }),
+        getOrCreateRandom: () => Effect.die("unused"),
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* ServerSettingsService;
+        const fs = yield* FileSystem.FileSystem;
+        const config = yield* ServerConfig;
+        const initial = yield* service.updateSettings({
+          providerInstances: {
+            [ProviderInstanceId.make("codex")]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: {},
+              environment: [
+                { name: "FIRST", value: "first-original", sensitive: true },
+                { name: "SECOND", value: "second-original", sensitive: true },
+              ],
+            },
+          },
+        });
+        assert.ok(config.settingsPath);
+        const disk = yield* fs.readFileString(config.settingsPath);
+        fail = true;
+        const result = yield* Effect.result(
+          service.updateSettings({
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                config: {},
+                environment: [
+                  { name: "FIRST", value: "changed", sensitive: true },
+                  { name: "SECOND", value: "reject-after-write", sensitive: true },
+                ],
+              },
+            },
+          }),
+        );
+        assert.equal(result._tag, "Failure");
+        assert.deepEqual((yield* service.getSettings).providerInstances, initial.providerInstances);
+        assert.equal(yield* fs.readFileString(config.settingsPath), disk);
+      }).pipe(
+        Effect.provide(
+          ServerSettingsLiveWithSecretStore.pipe(
+            Layer.provide(store),
+            Layer.provideMerge(
+              Layer.fresh(
+                ServerConfig.layerTest(process.cwd(), { prefix: "f5-settings-rollback-" }),
+              ),
+            ),
+          ),
+        ),
+      );
+    }),
   );
 });

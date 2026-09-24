@@ -215,7 +215,10 @@ function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings
 }
 
 function fallbackTextGenerationProvider(settings: ServerSettings): ServerSettings {
-  const fallbackEntry = Object.entries(settings.providers).find(([, provider]) => provider.enabled);
+  const fallbackEntry = Object.entries(settings.providers).find(([driver, provider]) => {
+    const instance = settings.providerInstances[ProviderInstanceId.make(driver)];
+    return instance === undefined ? provider.enabled : (instance.enabled ?? true);
+  });
   const fallback =
     fallbackEntry && isKnownProviderKind(fallbackEntry[0])
       ? (fallbackEntry[0] as ProviderKind)
@@ -404,11 +407,13 @@ const makeServerSettings = Effect.gen(function* () {
       };
     });
 
-  const persistProviderEnvironmentSecrets = (
+  type SecretChange = { name: string; value: Uint8Array | null };
+  const prepareProviderEnvironmentSecrets = (
     current: ServerSettings,
     next: ServerSettings,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
-    Effect.gen(function* () {
+  ): Effect.Effect<{ settings: ServerSettings; changes: SecretChange[] }> =>
+    Effect.sync(() => {
+      const changes: SecretChange[] = [];
       const providerInstances: Record<string, ProviderInstanceConfig> = {
         ...next.providerInstances,
       };
@@ -420,36 +425,29 @@ const makeServerSettings = Effect.gen(function* () {
         for (const variable of instance.environment) {
           const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
           if (!variable.sensitive) {
-            yield* secretStore
-              .remove(secretName)
-              .pipe(
-                Effect.mapError((cause) =>
-                  toSettingsError(`failed to remove environment secret ${variable.name}`, cause),
-                ),
-              );
+            changes.push({ name: secretName, value: null });
             environment.push(redactProviderEnvironmentVariable(variable));
             continue;
           }
 
           nextSecretKeys.add(secretName);
-          if (!variable.valueRedacted) {
-            if (variable.value.length > 0) {
-              yield* secretStore
-                .set(secretName, textEncoder.encode(variable.value))
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toSettingsError(`failed to persist environment secret ${variable.name}`, cause),
-                  ),
-                );
+          // Provider environment resolution uses the last entry for duplicate names.
+          const previous = variable.valueRedacted
+            ? current.providerInstances[ProviderInstanceId.make(instanceId)]?.environment?.findLast(
+                (entry) => entry.name === variable.name,
+              )
+            : undefined;
+          const inlineValue =
+            previous?.sensitive && !previous.valueRedacted && previous.value.length > 0
+              ? previous.value
+              : undefined;
+          const value = inlineValue ?? variable.value;
+          if (!variable.valueRedacted || inlineValue !== undefined) {
+            if (value.length > 0) {
+              changes.push({ name: secretName, value: textEncoder.encode(value) });
               environment.push({ ...variable, value: "", valueRedacted: true });
             } else {
-              yield* secretStore
-                .remove(secretName)
-                .pipe(
-                  Effect.mapError((cause) =>
-                    toSettingsError(`failed to remove environment secret ${variable.name}`, cause),
-                  ),
-                );
+              changes.push({ name: secretName, value: null });
               const { valueRedacted: _omit, ...rest } = variable;
               environment.push(rest);
             }
@@ -469,22 +467,16 @@ const makeServerSettings = Effect.gen(function* () {
           if (!variable.sensitive) continue;
           const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
           if (nextSecretKeys.has(secretName)) continue;
-          yield* secretStore
-            .remove(secretName)
-            .pipe(
-              Effect.mapError((cause) =>
-                toSettingsError(
-                  `failed to remove stale environment secret ${variable.name}`,
-                  cause,
-                ),
-              ),
-            );
+          changes.push({ name: secretName, value: null });
         }
       }
 
       return {
-        ...next,
-        providerInstances: providerInstances as ServerSettings["providerInstances"],
+        settings: {
+          ...next,
+          providerInstances: providerInstances as ServerSettings["providerInstances"],
+        },
+        changes,
       };
     });
 
@@ -590,9 +582,11 @@ const makeServerSettings = Effect.gen(function* () {
   return {
     start,
     ready: Deferred.await(startedDeferred),
-    getSettings: getSettingsFromCache.pipe(
-      Effect.flatMap(materializeProviderEnvironmentSecrets),
-      Effect.map(resolveTextGenerationProvider),
+    getSettings: writeSemaphore.withPermits(1)(
+      getSettingsFromCache.pipe(
+        Effect.flatMap(materializeProviderEnvironmentSecrets),
+        Effect.map(resolveTextGenerationProvider),
+      ),
     ),
     updateSettings: (patch) =>
       writeSemaphore.withPermits(1)(
@@ -636,11 +630,11 @@ const makeServerSettings = Effect.gen(function* () {
             });
           }
           const current = yield* getSettingsFromCache;
-          const nextPersisted = yield* persistProviderEnvironmentSecrets(
+          const prepared = yield* prepareProviderEnvironmentSecrets(
             current,
             applyServerSettingsPatch(current, patch),
           );
-          const next = yield* Schema.decodeEffect(ServerSettings)(nextPersisted).pipe(
+          const next = yield* Schema.decodeEffect(ServerSettings)(prepared.settings).pipe(
             Effect.mapError(
               (cause) =>
                 new ServerSettingsError({
@@ -650,11 +644,57 @@ const makeServerSettings = Effect.gen(function* () {
                 }),
             ),
           );
-          yield* writeSettingsAtomically(next);
-          yield* Cache.set(settingsCache, cacheKey, next);
-          yield* emitChange(next);
-          const materialized = yield* materializeProviderEnvironmentSecrets(next);
-          return resolveTextGenerationProvider(materialized);
+          return yield* Effect.uninterruptible(
+            Effect.gen(function* () {
+              const applied: SecretChange[] = [];
+              const transaction = yield* Effect.exit(
+                Effect.gen(function* () {
+                  for (const change of prepared.changes) {
+                    const previous = yield* secretStore
+                      .get(change.name)
+                      .pipe(
+                        Effect.mapError((cause) =>
+                          toSettingsError("failed to read provider environment secret", cause),
+                        ),
+                      );
+                    // Record before mutation: a store can write successfully and then report an error.
+                    applied.push({ name: change.name, value: previous });
+                    yield* (
+                      change.value === null
+                        ? secretStore.remove(change.name)
+                        : secretStore.set(change.name, change.value)
+                    ).pipe(
+                      Effect.mapError((cause) =>
+                        toSettingsError("failed to persist provider environment secret", cause),
+                      ),
+                    );
+                  }
+                  const materialized = yield* materializeProviderEnvironmentSecrets(next);
+                  yield* writeSettingsAtomically(next);
+                  return materialized;
+                }),
+              );
+              if (transaction._tag === "Failure") {
+                for (const previous of applied.toReversed()) {
+                  yield* (
+                    previous.value === null
+                      ? secretStore.remove(previous.name)
+                      : secretStore.set(previous.name, previous.value)
+                  ).pipe(
+                    Effect.catch(() =>
+                      Effect.logError("failed to restore provider environment secret", {
+                        secretName: previous.name,
+                      }),
+                    ),
+                  );
+                }
+                return yield* Effect.failCause(transaction.cause);
+              }
+              yield* Cache.set(settingsCache, cacheKey, next);
+              yield* emitChange(next);
+              return resolveTextGenerationProvider(transaction.value);
+            }),
+          );
         }),
       ),
     get streamChanges() {
@@ -676,6 +716,11 @@ const makeServerSettings = Effect.gen(function* () {
   } satisfies ServerSettingsShape;
 });
 
-export const ServerSettingsLive = Layer.effect(ServerSettingsService, makeServerSettings).pipe(
+export const ServerSettingsLiveWithSecretStore = Layer.effect(
+  ServerSettingsService,
+  makeServerSettings,
+);
+
+export const ServerSettingsLive = ServerSettingsLiveWithSecretStore.pipe(
   Layer.provide(ServerSecretStoreLive),
 );
