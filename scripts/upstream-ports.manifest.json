@@ -8,2012 +8,2012 @@
   "selection": {
     "rule": "first-parent",
     "maxCount": 500,
-    "headSha": "196c8ea0d642acd1db66bd57f5d98abe81d8da6e",
-    "boundarySha": "8e3467fe60c49ee739b278229156108032b72e25",
-    "firstSha": "196c8ea0d642acd1db66bd57f5d98abe81d8da6e",
-    "lastSha": "8e3467fe60c49ee739b278229156108032b72e25",
+    "headSha": "f5ef0ddb90a8c36584e181b1913e7b8a5df30ffc",
+    "boundarySha": "18f7254e0adbd7d642f4d78f9b9c8e6cb569af56",
+    "firstSha": "f5ef0ddb90a8c36584e181b1913e7b8a5df30ffc",
+    "lastSha": "18f7254e0adbd7d642f4d78f9b9c8e6cb569af56",
     "count": 500
   },
   "commits": [
     {
-      "sha": "196c8ea0d642acd1db66bd57f5d98abe81d8da6e",
-      "subject": "fix(web): style sidebar action tooltips (#6371)"
+      "sha": "f5ef0ddb90a8c36584e181b1913e7b8a5df30ffc",
+      "subject": "chore(mobile): bump app version to 1.3.1"
     },
     {
-      "sha": "c9063f03ea1c16e0239e1996a9b6ef611679995d",
-      "subject": "perf(desktop): speed up Windows update installation (#6169)"
+      "sha": "eb6c170c42eaec20d063ce80ff810e97d4dddb37",
+      "subject": "test(desktop): remove redundant keyring module-load test (#13220)"
     },
     {
-      "sha": "1add47b322ab1dfb5010bb363613650176b88088",
-      "subject": "fix(web): add copying terminal selection with ctrl+c in the web app (#5638)"
+      "sha": "b21c5456548f17190e7f3688f9883b98cbf5221d",
+      "subject": "fix(web): sort title matches by recent activity (#13219)"
     },
     {
-      "sha": "80991402dcdc488838fb4d8b21171bd38d9ab0aa",
-      "subject": "fix(server): terminal subprocess polling no longer floods the PID space (#6377)"
+      "sha": "829af7b73a960d390a0b32becd37ad6483627aa4",
+      "subject": "feat(web): navigate back and forward with mod+[ and mod+] (#13212)"
     },
     {
-      "sha": "1a6599437b6ad77330923819613cc28be3b33945",
-      "subject": "fix(web): clarify desktop update status (#6504)"
+      "sha": "23c7ab901afa66dc8e791a3873b600726a6ba8c7",
+      "subject": "fix(mobile): recover from screen render errors (#13197)"
     },
     {
-      "sha": "184d8ef33b8f42869fb84f66a33984185b81dc47",
-      "subject": "fix(mobile): steer active turns by default (#6543)"
+      "sha": "10882bea739a98f11b942c20c6570eb6126dd010",
+      "subject": "chore(web): no-restyle fails lint, and the ceiling gate goes (#13210)"
     },
     {
-      "sha": "038560e58036d51b2576b3c2cd9170a194cefe9e",
-      "subject": "fix(web): align every titlebar control cluster on one shared inset (#6592)"
+      "sha": "0e512db34d787b21b827f07c6a62fba7fb00369e",
+      "subject": "refactor(web): composer controls own their look instead of restyling ui components (#13209)"
     },
     {
-      "sha": "21a3669cee0c6fb54f5afe065cf0eb0348bd232c",
-      "subject": "fix(mobile): prevent OTA update restart crashes (#6324)"
+      "sha": "71c9b693137c070b4887b365c68659f1a2fb7aed",
+      "subject": "refactor(web): Button consumers outside the composer stop restyling it (#13208)"
     },
     {
-      "sha": "b3b4b57794476c2e130d38f9243f3c5da1a0cbe7",
-      "subject": "fix(mobile): preserve keyboard suggestions while typing (#6323)"
+      "sha": "f46522777372be1705e3b7a1ab08756f236db5d2",
+      "subject": "refactor(web): app code stops restyling sidebar, popover, table and misc ui exports (#13207)"
     },
     {
-      "sha": "6ae44b418a24dc021cf042cbb1e60ebeb47e160f",
-      "subject": "refactor(mobile): name the iOS nav bar height fallback (#6589)"
+      "sha": "21079391c72d1eeaa3c40f1cc5eb3e78abf0a846",
+      "subject": "refactor(web): field controls stop restyling Input, Select, Combobox and Command (#13206)"
     },
     {
-      "sha": "4a2f8b04bbce916be166fec96f33a7e1f0df4a9f",
-      "subject": "fix(web): keep thread rename open during IME composition (#6281)"
+      "sha": "866fc907592c9746b407484087d66c409e8034fa",
+      "subject": "refactor(web): menu triggers and items stop restyling ui/menu (#13205)"
     },
     {
-      "sha": "8f9ab0845d8e034bf49b28eb4d6abbb14fce597d",
-      "subject": "fix(mobile): add breathing room between the git progress overlay and the app bar (#6587)"
+      "sha": "361b047f5f559abccacc802cd5ab9992b01473ea",
+      "subject": "refactor(web): ui components drop their secondary className props (#13193)"
     },
     {
-      "sha": "baaeda305c60933e5e573b30807ecfc3a0871a80",
-      "subject": "fix: avoid stale Live Activities when publishing is disabled (#6325)"
+      "sha": "266d70cc4d887b7459ec6557c430ec7bb92bd3fc",
+      "subject": "refactor(web): context chips render through one ContextChip component (#13192)"
     },
     {
-      "sha": "7e01d33f0eeb9435299791392d546756cc09c5d3",
-      "subject": "perf(build): stop unpacking node_modules wholesale from the Windows asar (#5877)"
+      "sha": "29931dd3a9a4996a5282f59564a64e6be496d5c6",
+      "subject": "hatch/variant functions (#13191)"
     },
     {
-      "sha": "9fd788b5a92254a2afa72c2a53513ed2cb730f0d",
-      "subject": "fix(preview): only show browser-ready local servers (#6021)"
+      "sha": "aca3c87cdbfb59ea5ed52fe2df82df508d57eb31",
+      "subject": "chore(mobile): clear the legacy-list deletion fallout (#13203)"
     },
     {
-      "sha": "710fd0eeb3b4c4146c28fa0fc558ac4c236a8067",
-      "subject": "feat(desktop): add favicons to the Browser panel (#5644)"
+      "sha": "eafb4a9340bd2c2271b7c8fac7eddd55beea3972",
+      "subject": "fix(server): GitHub PR lookups stop probing owner-qualified heads (#13200)"
     },
     {
-      "sha": "e15f655ba423e4b0e50a5692cc06eb9421bff7df",
-      "subject": "fix(web): show background policy tooltips sooner (#6506)"
+      "sha": "18de6bb328059703b5d1b0661610076e3c0fa2d4",
+      "subject": "fix(server): background PR sync reads summaries in batches (#13198)"
     },
     {
-      "sha": "59be6f78465d73d2d8bba5ddd7741018205dc675",
-      "subject": "fix(web): simplify the desktop-managed server update banner copy (#6549)"
+      "sha": "5975ec78b7eaff654e6183b99f8de7a05591e99d",
+      "subject": "fix(server): background PR checks spend less GitHub quota (#13189)"
     },
     {
-      "sha": "5304f3e9d4c912bfa0eb2f5f41fa109b3646236b",
-      "subject": "chore(mobile): bump app version to 1.0.4"
+      "sha": "0c91f687de606f62e157209f34e6aa74744b555a",
+      "subject": "refactor(mobile): retire the legacy grouped thread list (#13183)"
     },
     {
-      "sha": "85389b9883a2c7b31022573563b59981d697c3b4",
-      "subject": "Nest mobile task settings in bottom sheets (#6224)"
+      "sha": "151324b2c0bf0ace789820b8ea4ec8ceb55753d9",
+      "subject": "perf(mobile): recycle the default v2 home list and scope the snooze minute tick (#13149)"
     },
     {
-      "sha": "db1507e986591ae8e82f8fa1e173a9013309c64e",
-      "subject": "feat: allow disabling auto-settle on merge (#5880)"
+      "sha": "219c1d265d917f0e7083b9033f4014c0c2940463",
+      "subject": "fix(web): align provider emails without clipping (#13174)"
     },
     {
-      "sha": "96bfa67b3d05d8adb2fb23d1017bd10fe4b9a338",
-      "subject": "fix(web): align the snoozed thread wake icon (#6215)"
+      "sha": "db898a30629a9d87ad0a9bc4bde1b13e672fa2d3",
+      "subject": "refactor(mobile): remaining className platform ternaries become class variants (#13188)"
     },
     {
-      "sha": "5ff3a03ada52f5a18a23dbab82ace3ddcf470ca1",
-      "subject": "fix(web): align sidebar wordmark label (#6086)"
+      "sha": "21be723addfc01c797acd0b7a1e6547c9be6bff0",
+      "subject": "refactor(mobile): git sheets use uniwind platform variants instead of className ternaries (#13185)"
     },
     {
-      "sha": "23d45d914eeecb2b4b33a3c7781cc02f4d73cbab",
-      "subject": "fix(web): restore default stage artwork colors (#6535)"
+      "sha": "b9199617d57178b136ece0b8d649565cd463a0ff",
+      "subject": "fix(mobile): uniwind platform variants stay guarded on both platforms (#13172)"
     },
     {
-      "sha": "bad1143b02f7b585d1fe1335b3d9a97983ce8d8b",
-      "subject": "fix(mobile): show a real settings cog in the Android sidebar header (#6520)"
+      "sha": "6975efd3dd52c95dd978ff26f591139d8c5c2503",
+      "subject": "fix(web): the pull request badge reads at the meta size again (#13175)"
     },
     {
-      "sha": "92d4a2e996b19239d95e32a3feb05208e0a52306",
-      "subject": "fix(web): scope pull request errors to their environment (#6490)"
+      "sha": "2eaff08241a51dadfd9ef5ad53cba74e6d0fceb4",
+      "subject": "chore(lint): keep mobile theme escape-hatch allowlist honest (#13146)"
     },
     {
-      "sha": "2fab18e289bdb2b1b767f05a307729d0a0d1c002",
-      "subject": "fix(web): show unlinked icon when viewport aspect ratio is unlocked (#6509)"
+      "sha": "96c4bfa0a27f776f7cd17df7c7115c3de79ee399",
+      "subject": "feat(providers): check remote compatibility ranges (#13130)"
     },
     {
-      "sha": "1b16ed663ffe475490a644d1004873a8aae6bb90",
-      "subject": "fix(web): avoid Clerk close button overlap (#6442)"
+      "sha": "a493946bb42ab16e1d18285dac3e9e4603651330",
+      "subject": "fix(mobile): keep ordinary offline outbox failures out of console.warn (#13144)"
     },
     {
-      "sha": "83ad26c3a3aeb877ee8bf07c05145ad804717e2e",
-      "subject": "fix(mobile): prevent invalid HTML entities from crashing markdown (#6495)"
+      "sha": "ca864a25b14813e390cbcaeb334b97cd61717ce3",
+      "subject": "chore(models): use GPT-6 Luna for text generation (#13115)"
     },
     {
-      "sha": "fd51561b4e2de1893cb7eb4069937256d702572c",
-      "subject": "fix(mobile): extend blockquotes across wrapped lines (#6482)"
+      "sha": "e4422eec752e8cce46af2865d8fbd3d5b7468a2a",
+      "subject": "fix(desktop): find linuxbrew node for the WSL backend (#7827)"
     },
     {
-      "sha": "9e201941aaa9cfece3e0ffaa4cc24bbe880d1be4",
-      "subject": "Remove rebase requirement before opening PR (#6479)"
+      "sha": "b954af60c402ff0698f9f2d9a214695e817f07fe",
+      "subject": "test(web): cover usage model ordering without static markup (#13104)"
     },
     {
-      "sha": "2ab188f1c0afe99ba269739704e2e96f0bbbe78f",
-      "subject": "fix: ignore pull request actions in latency tracker (#6476)"
+      "sha": "68607c5a99147710b92228e0642f6c0a642e32a6",
+      "subject": "fix(web): preserve nested scroll behavior in chat timeline (#13167)"
     },
     {
-      "sha": "9513e62e240bdf1da285e4f3304bc52787125671",
-      "subject": "Add bil0000 to VOUCHED contributors list (#6462)"
+      "sha": "f22331240ed1a97fae560e314bffb75fe39db8ca",
+      "subject": "fix(server): generate PR diffs from branch changes (#13170)"
     },
     {
-      "sha": "97db94c9bf6fa5d83f94c8fff85566d7fc96276e",
-      "subject": "fix(web): keep pull request panel within viewport (#6451)"
+      "sha": "5821b778fd29e9c5b6945f4e7150f92d19a0a3da",
+      "subject": "refactor(mobile): break module cycles with focused extractions (#13151)"
     },
     {
-      "sha": "5015d7cf9f98fe551115b625031f01e3f022cd2d",
-      "subject": "fix(web): keep turn minimap stable as composer grows (#6414)"
+      "sha": "5d493d67cedc3401af42e77d6a238bc49204a09b",
+      "subject": "docs(mobile): document the two mobile routes that intentionally skip deep links (#13164)"
     },
     {
-      "sha": "df19f6cfe3046dbbeb4073a3aac4c12f991b8fc7",
-      "subject": "fix(server): align Codex collaboration prompts (#6432)"
+      "sha": "6dcde218ad6c07af4dde2a69517c9316adaf732f",
+      "subject": "revert(mobile): git sheets back to Platform.OS ternaries (un-guarded uniwind variants broke both platforms) (#13169)"
     },
     {
-      "sha": "6bc6cb6be4ebecd5bd7a3b7b88f07cb61815ded5",
-      "subject": "fix(web): keep diff file lists scrollable past expanded files (#6423)"
+      "sha": "34096519121033ccf72cd43ea5350f9482df188a",
+      "subject": "chore(mobile): name the two project favicon caches by their job (#13160)"
     },
     {
-      "sha": "1e59b4c4004ce3c724d09ca0b140ed4523758d1e",
-      "subject": "fix(web): keep the typed prompt when a draft changes repo (#6393)"
+      "sha": "ec28eefa0d017e2b0cb65ba4269cee1adddb0e98",
+      "subject": "refactor(mobile): git sheets use uniwind platform variants instead of className ternaries (#13161)"
     },
     {
-      "sha": "33f9705926c4557c845bdf972256f805f625b95b",
-      "subject": "fix(web): make reset zoom hover visible (#6385)"
+      "sha": "7e65b226e7a74ecd13bf8b4738ea6bdd096cb1ba",
+      "subject": "feat(auth): share provider sign-in flows and credential bindings (#12983)"
     },
     {
-      "sha": "da6253b3dd3a2fbf5040c236775b1c48fd757856",
-      "subject": "web/settings: fix source control scan on relay environments (#6230)"
+      "sha": "db9a0671bb8921ebf5f9da16cd54f7e87f5ef3b0",
+      "subject": "refactor(web): move settings scope pickers into breadcrumbs (#13165)"
     },
     {
-      "sha": "ac1264e2cab1f357cc683bc52c32bcec23845f32",
-      "subject": "feat(web): project favicon and workspace icons in command subtitles (#6330)"
+      "sha": "242816af805b048aec653d6cc359ecc784ef98c5",
+      "subject": "feat(web): show settings scope as a sentence at the top of the page (#13139)"
     },
     {
-      "sha": "2eb099fdc896506a2663bc7fe3117b6062ac345f",
-      "subject": "fix(web): cmd+click sidebar PR numbers open in the browser (#6378)"
+      "sha": "bed0b4cdad41408bb09b445a0a8f8ea0e5b62d1b",
+      "subject": "chore(mobile): drop dead nitro-markdown tgz override and @expo/metro-runtime (#13148)"
     },
     {
-      "sha": "b28f9bf0a1bd562623c027c5ed80b5ca50395b28",
-      "subject": "feat(web): pull request surfaces — filters & qualifiers, all-server listing, update branch, reactions, in-place editing, smarter diffs (#6039)"
+      "sha": "d7819c18813fa03b033cc1c9472c9acc0ffc0618",
+      "subject": "chore(devices): bump agent-device to 0.21.12 (#13124)"
     },
     {
-      "sha": "d0b8d6306b4686528913948b21c8a9eeda01645a",
-      "subject": "feat(connect): deregister account environments from any client (#4844)"
+      "sha": "f193a6863c494fdfa36a1ef3132e42a7d7b42926",
+      "subject": "fix(server): bypass owned caches on explicit provider refresh (#13109)"
     },
     {
-      "sha": "9666b875164581b67e5d75cf26aa05753e83e49e",
-      "subject": "fix(web): preserve appearance mode when changing themes (#6343)"
+      "sha": "83bbfa7e87e16a3c21413fe55524c1d05ce88dab",
+      "subject": "refactor(web): sidebar alerts use the standard variants; one keycap (#13043)"
     },
     {
-      "sha": "e3a9c2518d5f71ca24872cb3238c1b921c5ae5a1",
-      "subject": "test(mobile): seed snoozed showcase threads (#5155)"
+      "sha": "1c2f933892cce833823fcfbf3099a51813ba67fb",
+      "subject": "refactor(web): render menu and popover triggers through Button (#13042)"
     },
     {
-      "sha": "18918d1c4d0933b565d1336a75cc5069547ff5e6",
-      "subject": "Fix mobile command popover glass rendering (#6370)"
+      "sha": "4321aa24fd21c2b5360cc58e84de4ccc09c801f9",
+      "subject": "refactor(web): one row height for select, combobox and radio items (#13041)"
     },
     {
-      "sha": "8d24b5131f439d11876815996df41a57d791d3ad",
-      "subject": "fix(web): open modified PR clicks in browser (#6278)"
+      "sha": "0ee02ebf228769beec4b240db6254ba2bad565af",
+      "subject": "refactor(web): Empty has three sizes (#13040)"
     },
     {
-      "sha": "770946d026208359450bf94083ad807d469d9f07",
-      "subject": "fix(web): render tooltips above dropdowns (#6241)"
+      "sha": "0fa4a859f6992be80302e2a7508e28b9b64e4991",
+      "subject": "refactor(web): show more / show less are ordinary sidebar sub-rows (#13039)"
     },
     {
-      "sha": "8601797233f2723d83faac7fd5677b137a0b8781",
-      "subject": "fix(web): align update toast release notes link (#6322)"
+      "sha": "e420ef98333c97205f836201cfeb94682a41893c",
+      "subject": "refactor(web): Collapsible stays a plain container (#13038)"
     },
     {
-      "sha": "b73232bdd31e83914a8a943960c7dc4b6390b39b",
-      "subject": "feat(web): reset sidebar width on double click (#6320)"
+      "sha": "016cdb9622359967afe80a27c538056ef1e7b857",
+      "subject": "refactor(web): stacked sidebar groups share one inset (#13037)"
     },
     {
-      "sha": "f131228a5908974c90d9b80a4d8ef866bb29e973",
-      "subject": "fix(web): theme Clerk surfaces (#6300)"
+      "sha": "da89e102f80b7ef6c8166d41cc202035f6ad75a4",
+      "subject": "refactor(web): every textarea caps its growth; the diff comment box is a Textarea (#13036)"
     },
     {
-      "sha": "e321667b100a18d5306f845c655dce6f20525776",
-      "subject": "fix(web): prevent changed files header overlap (#6314)"
+      "sha": "d7736e06b6a4f8211f452908963fd23c4a04b2c4",
+      "subject": "refactor(web): one minimum width for menus, three widths for popovers (#13035)"
     },
     {
-      "sha": "849bac8946c40420174b4187e36fcf17b5ea7cc4",
-      "subject": "fix(connect): preserve CLI OAuth parameters through browser sign-in (#6285)"
+      "sha": "4c9fbf1f647c83179af1c2acd78eded04ef07fe8",
+      "subject": "refactor(web): InlineButton underlines on hover and takes a tone (#13034)"
     },
     {
-      "sha": "6fd088af9f77933745c8ecb93dda98fa0938ea4d",
-      "subject": "fix(web): align mobile onboarding header (#6293)"
+      "sha": "18aa7036732c0fc2e2ab79e54d5d8f59a160843d",
+      "subject": "refactor(web): ghost-muted icons follow the text; add ghost-destructive (#13033)"
     },
     {
-      "sha": "b54bfc9312b030bad9d89771fbf561ccbfb2d315",
-      "subject": "feat(web): a better right panel empty state (#6258)"
+      "sha": "f3d3fe4569274c5ee6f3c5435809330bef494a2d",
+      "subject": "refactor(web): one vertical rhythm for dialog bodies (#13032)"
     },
     {
-      "sha": "e1378a1f4d6a78d51c2d583997121f6adc0ad6cc",
-      "subject": "fix(mobile): keep ordered lists inside user bubbles (#6154)"
+      "sha": "aa2b25d29b4b13ef1c2ee80e1afade1635de9ca8",
+      "subject": "refactor(web): one wrap width for tooltips, plus a code variant (#13031)"
     },
     {
-      "sha": "5a84614809b6e853b872f9e57ff4b97e9df5df02",
-      "subject": "fix(web): align the composer model picker (#6252)"
+      "sha": "7d658c24dbf81d7cfc594b89d9cd5b8bab0e1046",
+      "subject": "refactor(web): give Skeleton three shapes (#13030)"
     },
     {
-      "sha": "63e6faef62218c9d1b5277933154516e278f7cb2",
-      "subject": "chore: add dara to vouched (#6259)"
+      "sha": "8d02447c36df2cf6cbfe1501738314685a22a1fc",
+      "subject": "refactor(web): add a label variant to Badge (#13029)"
     },
     {
-      "sha": "d37a9b09b8ea6b014e9ea2d6b00d9b25cde0efc6",
-      "subject": "feat(mobile): add thread title regeneration (#6253)"
+      "sha": "be80e369394f5d0cb771b51669686f2bc916e543",
+      "subject": "refactor(web): add SidebarInput (#13028)"
     },
     {
-      "sha": "560d4a4560ddb5f42c8f8e0e35fa7827c0e46f80",
-      "subject": "fix(web): keep sidebar wordmark visible at minimum width (#6246)"
+      "sha": "7b54af90f79a6858f75ff86d42a2f083d4edfa2a",
+      "subject": "refactor(web): add font=\"mono\" to Input (#13027)"
     },
     {
-      "sha": "52e5a75a872289040df85621d7a82ea9cba05182",
-      "subject": "feat(web): compact sidebar footer actions (#6210)"
+      "sha": "b4f1f18b735679aedc4369190fc3f07ecaf8966c",
+      "subject": "refactor(web): add radius=\"none\" to ScrollArea (#13026)"
     },
     {
-      "sha": "c196f422ed387a1cc2cdb671b0472782e5610339",
-      "subject": "fix(web): clean up composer resize animation (#6209)"
+      "sha": "9515016166f926968dacaefc69e2ea0af63942ae",
+      "subject": "refactor(web): use icon-xs where icon buttons were forced to size-6 (#13025)"
     },
     {
-      "sha": "f0b57ca2313bd7971cefb366d3b3808152b014fc",
-      "subject": "feat(web): add Open VSX theme search (#5654)"
+      "sha": "bbd5cc03231b8b831b44bdbd6e62bf736391cb1f",
+      "subject": "chore(lint): exempt CollapsibleTrigger from no-restyle (#13024)"
     },
     {
-      "sha": "2db08457f2f4eaaa713a067b2ea480ca2b583025",
-      "subject": "fix(web): use upload icon for disabled push action (#6207)"
+      "sha": "ed856946c63e51861a8153d264856db0dbb677a4",
+      "subject": "refactor(web): add an active prop to CommandItem (#13023)"
     },
     {
-      "sha": "083fa4ab24c464ddf01e5b7ab22135d1ebdc120b",
-      "subject": "feat(web): use OKLCH for theme palettes (#6036)"
+      "sha": "ce98d4107758ed7a492f94a93b3685a828caeba1",
+      "subject": "refactor(web): mark the current menu value with MenuRadioGroup (#13022)"
     },
     {
-      "sha": "35172010b131510d36d0cef54e174926e38a3013",
-      "subject": "fix(web): use a clearer pull action icon (#6194)"
+      "sha": "1a81ea8c153214ddc74b7046062a8957c2612e8d",
+      "subject": "refactor(web): fold repeated overrides into ui defaults (#13021)"
     },
     {
-      "sha": "57b1052679da56229dba45e3505718e5f5991b32",
-      "subject": "fix(web): thread error banner dismiss survives reconnect and rerenders (#6123)"
+      "sha": "c0490e9d0eb057218bfa5df3f25a7c26c37145a5",
+      "subject": "refactor(web): use ghost-muted where ghost buttons restyled to muted (#13020)"
     },
     {
-      "sha": "1e355a2a3444d4de0c9cf68cbe31ade370afd598",
-      "subject": "fix(web): render dropdowns above toasts (#6165)"
+      "sha": "17e34773b148fd7351a44ab39e9616b4073a1fa8",
+      "subject": "Update model manifest with new timestamps and models"
     },
     {
-      "sha": "44621c345fe7ce7cfa5d8e5286290d9c8dc20ce5",
-      "subject": "feat(web): add back buttons for the pull requests and usage pages in the sidebar footer (#6031)"
+      "sha": "f25a8e4b72c1164f2ab7b1c8481496f168d17f55",
+      "subject": "feat(models): add opus 5.5 without changing existing aliases (#13094)"
     },
     {
-      "sha": "220e573b14cea84b6662a7d69047129047433b63",
-      "subject": "fix(shared): detect Azure DevOps SSH remotes (ssh.dev.azure.com) (#6187)"
+      "sha": "7c2702d68ae2e10fa9d3a08c996ed47c393dcffd",
+      "subject": "fix(web): read panel animation settings in the composer (#13098)"
     },
     {
-      "sha": "6befe42eb09633f3adb500ae906a0e1da3f15f64",
-      "subject": "fix(shared): normalize a bare Windows drive root the same as C:\\ / C:/ (#6189)"
+      "sha": "da6a85b1365993d0ff2a79698cd82498de247d8a",
+      "subject": "fix(web): respect panel motion in composer transitions (#11064)"
     },
     {
-      "sha": "b30a9bc4143910f12d9c990c221fb9bc20cbc293",
-      "subject": "feat(web): make environment artwork theme aware (#6183)"
+      "sha": "aff9318bf46beaf05cc7155b428d3f0b8711efd2",
+      "subject": "fix(web): retry failed attachment uploads after reconnect (#10338)"
     },
     {
-      "sha": "ac4780f451f98c10d5b518f2bfa3d035b46645df",
-      "subject": "fix(web): restore typography font sizes to defaults (#6172)"
+      "sha": "b5a0f810108d42ca8635b5a3d75a6e885bb3a254",
+      "subject": "refactor(web): give Spinner and RefreshIcon a size prop (#12985)"
     },
     {
-      "sha": "3da7f9c5c35d0c1f2a1b4420fbc10016e11ce069",
-      "subject": "fix(mobile): guard App Store release versions (#6177)"
+      "sha": "438bf466fd7e97bb80f0d1f936b2c857830249b7",
+      "subject": "fix(web): close menus when clicking into the browser tab (#11148)"
     },
     {
-      "sha": "c842c6f5b90122ad88b1d2295df6a99e94954571",
-      "subject": "Add hourly past-24-hour usage view (#6170)"
+      "sha": "c26119ada3565dda55bc3e86fdf47c7f9088e4b5",
+      "subject": "refactor(web): drop className overrides that repeat the base styles (#12984)"
     },
     {
-      "sha": "6676f9c83b6a6dd1e2076eaa68dff48845ad955b",
-      "subject": "fix(mobile): stabilize thread composer and interactions (#5986)"
+      "sha": "5a61f50cce12685f70d530aa5fdf83d9c9b065d7",
+      "subject": "chore(lint): report className restyling of components/ui exports (#12982)"
     },
     {
-      "sha": "65b005f1e4bfccb6a404b3b1e5bfa363d534ac2a",
-      "subject": "feat(web): add Copy Thread ID to the sidebar and chat header thread context menu (#5574)"
+      "sha": "e65bc1c73e5e922216415b8e553bc74682d6810d",
+      "subject": "fix(web): allow text selection when renaming threads (#12935)"
     },
     {
-      "sha": "752acbf6549e6dd422ac8d8ed11c0fa02577965b",
-      "subject": "feat: add ability to create a new thread in the current project with shift+click and show shortcut in tooltip (#5994)"
+      "sha": "5423ba0fd08447240282c08362ee8e382bf16903",
+      "subject": "feat(web): merge the comment and review buttons into one composer (#12945)"
     },
     {
-      "sha": "f5fce74169a5629f701aeb8c4535cab6f7bd3c92",
-      "subject": "fix(pull-requests): route self-hosted GitLab remotes (#6061)"
+      "sha": "9a609a4e444ba739d6fcd607769d68b679b0bcc5",
+      "subject": "fix(web): show thread undo notice in the sidebar (#12972)"
     },
     {
-      "sha": "9c7622dac3d1a385351e6c74354a9e6b9c2037d5",
-      "subject": "fix(server): handle unborn HEAD in VCS status (#5944)"
+      "sha": "0141bc2bf5fcf52a563240a6bce4b58050496db5",
+      "subject": "feat(settings): choose how new worktrees initialize submodules (#12955)"
     },
     {
-      "sha": "c14bcca1035895edca5ebd8d65faea5fe788a825",
-      "subject": "fix(server): advertise 256-color TERM on Windows terminals (#5693)"
+      "sha": "742173a13250bcba880b700aaead34e1b0810dff",
+      "subject": "feat(settings): resolve t3.json inside the project settings resolver (#12954)"
     },
     {
-      "sha": "1fa315ea93f24e6f72455e234fa84a97de28492b",
-      "subject": "fix(server): skip Linux libc detection on Windows/macOS (#5354)"
+      "sha": "1262d2f3ab2940c1d47ca4f5c4ca42e5c7259765",
+      "subject": "feat(server): let t3.json limit or disable submodule init in new worktrees (#12953)"
     },
     {
-      "sha": "f9730979c1046e3e69ac89aa86882ebf8b2be9a6",
-      "subject": "perf(web): skip base64 for oversized image candidates (#5220)"
+      "sha": "76cc9b08f19d89012f16d18f47478c4f7b9b0a6f",
+      "subject": "chore(mobile): bump app version to 1.3.0"
     },
     {
-      "sha": "59d0c922e9363b209bcb004444c05e70fa9fdd8b",
-      "subject": "fix(web): persist sidebar shelf collapse state (#5136)"
+      "sha": "e1cbb705273a261d26b489f35a7ddca6567d9663",
+      "subject": "fix(web): the custom snooze calendar starts the week where the locale does (#12745)"
     },
     {
-      "sha": "2ea51bd31f494ec3214a0c9f9adc3262c71e6530",
-      "subject": "fix(server): OpenCode model parsing drops models with a slash in the JSON body (#5072)"
+      "sha": "80d9c181da41ee3890791c9b65018ce093e7bc9e",
+      "subject": "fix(contracts): old message-sent events without turnId no longer stop the server from starting (#12763)"
     },
     {
-      "sha": "e5c82d79a09e010d1a87c715f405635f8c45f1f7",
-      "subject": "fix(mobile): keep chat composer above the Android gesture bar (#5988)"
+      "sha": "d2a90b921a5843654a58448d0bc59828e1e3ccc4",
+      "subject": "fix(web): name message copy actions accurately (#12865)"
     },
     {
-      "sha": "9afef94a61466422128da9c3b723b633d4c7ed1d",
-      "subject": "feat: add three-hour snooze option (#5914)"
+      "sha": "2d377bfb1c8c85a61679fa6cdb6e8181cfb13626",
+      "subject": "fix(web): dismiss selection actions when pressing buttons (#12950)"
     },
     {
-      "sha": "a7b0366cbe1e9eabc9e37eb079a38f6b6691f999",
-      "subject": "fix(web): account for Windows window controls in PR page header (#6049)"
+      "sha": "2c2fa8cd7ded97be76587ae1cfce54ee0a65f544",
+      "subject": "fix(web): pull request embed chip shows the state icon (#12951)"
     },
     {
-      "sha": "428d9f9f67b73688317e362d9f658d06b2a42dfe",
-      "subject": "Allow Android tablets to rotate (#5613)"
+      "sha": "33cb911ceb89d55b812f486d4e001d0f86d77680",
+      "subject": "fix(mobile): stop iOS autocorrect from rewriting search queries (#12949)"
     },
     {
-      "sha": "1b120f352f6cc518d0b2822d4ec303d050aaef10",
-      "subject": "fix(ci): extend release publish timeout (#6034)"
+      "sha": "371b52d9dad76876f84609a4cd0f80eaa757b69c",
+      "subject": "feat(web): answer pull request actions on the row at once (#12843)"
     },
     {
-      "sha": "0a7c662d39329eeb3cffe00d66a31f1a8241b3d7",
-      "subject": "fix(web): improve built-in theme contrast (#6000)"
+      "sha": "1de563c1491c7d82563e4553bf5bf689ce6adbb9",
+      "subject": "feat(devices): offer manual updates in tool version details (#12877)"
     },
     {
-      "sha": "b91a000a17ddb4937397151a0a39a07990ad6473",
-      "subject": "feat(web): add duplicate action to the T3 Code default theme (#6013)"
+      "sha": "b379b5b1407b4c718095cd13395173b6cc005218",
+      "subject": "test(web): remove redundant favicon test (#12856)"
     },
     {
-      "sha": "8de0aa24d9b09b3dff9e3378222877cbfff41ae0",
-      "subject": "perf(desktop): probe the Windows shell environment concurrently (#5878)"
+      "sha": "1eeeabb26f654c679efe265cd03edf69c3df3a6f",
+      "subject": "fix(mobile): use a proper pull request icon on iOS (#12855)"
     },
     {
-      "sha": "cad2c93616a7c25110670c151a816d5c68341bd4",
-      "subject": "feat: multi-provider pull requests page with in-app reviews (#4849)"
+      "sha": "5781b5240bd5d2e21c651f6b228975ac40cbd67b",
+      "subject": "feat(web): undo settle, snooze and archive, with a mod+z shortcut (#12848)"
     },
     {
-      "sha": "78f462c4e18c8ea5e5037dc916389a3b72246025",
-      "subject": "chore(release): prepare v0.0.33"
+      "sha": "6b0a04ade021588dd9f1afbfa0e75cccdb7b2da4",
+      "subject": "fix(web): offer undo after unpinning a thread (#10744)"
     },
     {
-      "sha": "3b72d17cbca691f0b64e6d4a10c9e349f42873a5",
-      "subject": "fix(mobile): parse EAS fingerprint JSON (#5991)"
+      "sha": "f391b88c3754047c3c9434b76328699c083723b0",
+      "subject": "fix(web): move sidebar shelves as one block (#11772)"
     },
     {
-      "sha": "d440442db6cd1c45696ba551a71ee6575cc23f37",
-      "subject": "fix(mobile): stop Android user bubbles with code blocks from overlapping (#5659)"
+      "sha": "30e3649c3281fe88b3d8d125293f1bb58132a3c2",
+      "subject": "fix(web): match thread notification icons to sidebar status (#12806)"
     },
     {
-      "sha": "67ef189d8b7b68c3096350db404bd649704ec6f2",
-      "subject": "fix(mobile): detect PowerShell cmdlet errors in work log rows (#5726)"
+      "sha": "790be6d755026d61bd13a970dd77176c12ca0425",
+      "subject": "fix(devices): safely reclaim obsolete managed tool versions (#12819)"
     },
     {
-      "sha": "fbcae59ef57f28cc51956ca47c0838298b24e79c",
-      "subject": "fix(web): use import/export-appropriate icons for theme buttons (#5964)"
+      "sha": "61b25b88d7922a480790066341867f3f8ae42fcb",
+      "subject": "feat(devices): add read-only update discovery and remote ownership (#12818)"
     },
     {
-      "sha": "9821bca1ceb97f137a9d93f1080fe1954b6641d3",
-      "subject": "fix(web): use themed confirmation dialogs (#5624)"
+      "sha": "3b836f9942143cdcf1ad7f121e78b59476585781",
+      "subject": "feat(devices): show automatic update progress and host retry (#12817)"
     },
     {
-      "sha": "3d74474f6cf825d3ef37b40dc7af0037e26a3bf9",
-      "subject": "fix(web): update pills use readable theme foregrounds (#5938)"
+      "sha": "5c5fa5ffb6ab45cadb6f0d873af0242f4f6d2c1c",
+      "subject": "feat(devices): show installed and running tool versions per host (#12816)"
     },
     {
-      "sha": "f0e2975180a85004e0d2604e3aa4125ed8bddb24",
-      "subject": "fix(web): align project name with headline (#5864)"
+      "sha": "6cc7f7006e24283072cc3e0b3ed8ced80c6d71a5",
+      "subject": "fix(web): keep composer controls visible while they fit (#12837)"
     },
     {
-      "sha": "d43210050b97d57d7a4e76df30624b89108102d9",
-      "subject": "fix(web): trait menu closes after you pick a level (#5879)"
+      "sha": "a6cb1dd2054c96c5be41980e63594ea51554a552",
+      "subject": "fix(mobile): keep the source worktree when starting a thread on a branch (#12623)"
     },
     {
-      "sha": "ef051bdb87c5eba1942aeda9a4f8607d892dc96c",
-      "subject": "fix(web): enable restore defaults after theme mix changes (#5928)"
+      "sha": "a4bc7deb992cc3d48dd4a40ee1f84254f190f318",
+      "subject": "fix(web): dismiss composer suggestions with Escape (#12836)"
     },
     {
-      "sha": "0ca9fb3fb5c7bb604b572a45bac1a3b8936c81ae",
-      "subject": "fix(web): show worktree icon in sidebar v2 (#5909)"
+      "sha": "a9ab9049bbbab89fe23dcfb26c3169ef70a0597e",
+      "subject": "feat(web): show the pull request refresh spinning in the detail header (#12833)"
     },
     {
-      "sha": "cbd55d637413f9fd0b688dc0bd9ee75eeb4f2d75",
-      "subject": "fix(web): correct model picker trigger padding (#5935)"
+      "sha": "dca84efb53b071691a88c6712751fb7de9dcbfdb",
+      "subject": "fix(web): paste markdown with inline code inside bold, italic, or strikethrough (#12290)"
     },
     {
-      "sha": "96906805f1677a3b064ebd2c40902cbb48337a23",
-      "subject": "Add settings and usage breadcrumbs (#5929)"
+      "sha": "f7efb5354a3e6fb5e6b13a658ba57020e2c554ad",
+      "subject": "feat(web): truncate branch names and paths in the middle (#12805)"
     },
     {
-      "sha": "73b2e8fdd47807fcc0fc5bfe4928187035b71242",
-      "subject": "Automate production mobile EAS releases (#5609)"
+      "sha": "2efb8178d83f4f7c4ccc3ae1165f2a2ded0b2742",
+      "subject": "fix(clients): keep backslashes in copied Codex citations (#12243)"
     },
     {
-      "sha": "5da45337f7178db711624c3e7c4d69059b2b286a",
-      "subject": "Preserve back navigation when opening settings (#5930)"
+      "sha": "411da2a7356dd795b720228e9c834ea9bad0415f",
+      "subject": "feat(web): use the linked pull request row layout on the pull requests page (#12536)"
     },
     {
-      "sha": "f21d5e444e9a6b5876253ca8618a4dc8d4f2146c",
-      "subject": "Move project settings to contextual project routes (#5923)"
+      "sha": "58f89818e3ada7f680bede396d41ed27eb618203",
+      "subject": "fix(server): tolerate shutting down an iOS simulator that is already off (#12807)"
     },
     {
-      "sha": "9a1472d9558ec74b5ed419bd7b87b2aa0e6be1e6",
-      "subject": "fix(web): match usage titlebar text styling (#5897)"
+      "sha": "051a4057a67ceebc7a36b13678f404b7ee871a46",
+      "subject": "fix(web): device Reconnect starts one stream instead of two (#12808)"
     },
     {
-      "sha": "2abe66800cceeafea759d4db782c72298cc1e1e1",
-      "subject": "fix(server): sandbox user-provided SVGs (#5916)"
+      "sha": "2b178231ebfa597947efb4ec31bf60e0bb9e3128",
+      "subject": "fix: allow more attachments without raising the image payload budget (#12620)"
     },
     {
-      "sha": "0d38866dcf63d133b2ed732bbb303dc533b5934f",
-      "subject": "fix(server): usage no longer double-counts forked Codex sessions (#5887)"
+      "sha": "1ba471a37cd6b0f18820795f4505206f4723a0e3",
+      "subject": "chore(server): bump device tooling versions (#12809)"
     },
     {
-      "sha": "f993fa1c5fe51dfae78ec8869c9694b7cb97115f",
-      "subject": "fix(mobile): long-pressing a thread row no longer navigates into the thread (#5901)"
+      "sha": "9f73ca3677faa975be00f0ac55460279671df726",
+      "subject": "fix(devices): recover simulator streams after failures (#12639)"
     },
     {
-      "sha": "83d769f02dc874e8d3112b5eeef2ac6e5420eaac",
-      "subject": "fix(web): match settings search shortcut styling to command palette's (#5841)"
+      "sha": "f4d979a6c6139ab10aa1013335bd94a313a5b56e",
+      "subject": "fix(web): only show notice details when text is clipped (#12760)"
     },
     {
-      "sha": "c8ad4b8135dca79c439a44845d270f12c355cfe2",
-      "subject": "fix(shell): add ~/.local/bin to the Windows CLI resolver so native-installed providers are found (#5074)"
+      "sha": "c789cd174ae50f50ecb0a34b96a81e00b0f5c823",
+      "subject": "fix(web): skip image inline chip when composer is empty (#12528)"
     },
     {
-      "sha": "bd18d8d6d1feb23dd05dc357e34e353547a51d40",
-      "subject": "fix(web): unify usage page chrome (#5823)"
+      "sha": "67285e4b8719000eecb9de2a424609ca5c6f0274",
+      "subject": "fix(web): route keyboard submit through the primary worktree action (#12526)"
     },
     {
-      "sha": "659986ce384d29123269820ccb8340ab4d824cdd",
-      "subject": "fix(web): thread title button no longer eats the drag area (#5857)"
+      "sha": "584450a1f198c8592d28947a0a7a060d28013298",
+      "subject": "fix(web): compact the worktree setup glass popover (#12802)"
     },
     {
-      "sha": "062b4618c229f3e2f13e44efd8dab8c71ad33dae",
-      "subject": "fix(shared): bound the file-link label so bracket runs stop rescanning (#5782)"
+      "sha": "93349247008517663aa16a3ed145d5b0f3f044ff",
+      "subject": "fix(web): pull request chips share the link hover preview (#12719)"
     },
     {
-      "sha": "deb901d6381e0c86ef326946c8fb45ee323db708",
-      "subject": "fix(server): favicon resolution no longer pins the event loop (#5538)"
+      "sha": "adcd90858c3bfece59095465d2f49860ba3dcea9",
+      "subject": "fix(web): allow full contrast in assistant replies (#12405)"
     },
     {
-      "sha": "02f4ce566711e7989e10c2b937c2655ef19188ff",
-      "subject": "fix(web): match create theme and import theme buttons to the standard outline style (#5860)"
+      "sha": "f6cc6bc7e9cbe1feeb7811ea92d519ad77c76596",
+      "subject": "fix(mobile): respect word wrap in diffs (#12590)"
     },
     {
-      "sha": "285cf5947b14acb9a66d26a669ce632633fd0749",
-      "subject": "fix(web): preserve desktop route during Clerk auth (#5770)"
+      "sha": "45e06f48a03354b600782259010ae6222241aff0",
+      "subject": "fix: composer hero reads project name to screen readers (#12397)"
     },
     {
-      "sha": "1a003e383ac6b10258b8100c2617d938c4f06c69",
-      "subject": "Add cross-platform mobile usage dashboard (#5743)"
+      "sha": "2d8f9a8f55d2195ac820c91f0f1e8f66a055f841",
+      "subject": "fix(web): keep the timeline still when the resting composer expands (#12771)"
     },
     {
-      "sha": "963ebf5bd7cce00d40ff60c258b34c12dcab271e",
-      "subject": "ci: label-gated hosted-web preview deploys (#5465)"
+      "sha": "5d9e27a596884d30499c7401296916fd729c817f",
+      "subject": "fix(web): render citations in queued messages (#12403)"
     },
     {
-      "sha": "ba9c9ae81dce4e554b4dd52abfd28d0c01b5c651",
-      "subject": "fix(server): one greedy agent process no longer takes down the whole server (#5788)"
+      "sha": "3cfebf4aa3ce7410806c0ba4cc4d991cc1ce8dbb",
+      "subject": "fix(web): keep portaled menus clickable over Electron drag regions (#12527)"
     },
     {
-      "sha": "076e9048dc57ab09b3692def050e12d690a1b027",
-      "subject": "feat(web): project icons can be chosen manually (#5775)"
+      "sha": "7ade2d2c6b37df6f1bc879bfcbf64658b7af2554",
+      "subject": "fix(web): the Run on / Workspace menu closes after a pick (#12685)"
     },
     {
-      "sha": "05eb051184ac4d486795ac6f8be29129b8b8845f",
-      "subject": "feat(web): keep unsent drafts one click away in the sidebar (#5777)"
+      "sha": "55c24273a025874cdb8a96a25ee0c59eeb4e3051",
+      "subject": "fix(desktop): align preview recording cursors and show input feedback (#12779)"
     },
     {
-      "sha": "ddaa6afef55e0da53950c7ed45f7d91b717475a5",
-      "subject": "feat(server): vp run migrate-dev-db seeds worktree dev dbs with real data (#5773)"
+      "sha": "6a699f0f2fbd8847d7ec2df8d9245ce8c2eb8707",
+      "subject": "fix(web): stabilize pull request loading layout (#12721)"
     },
     {
-      "sha": "6f69b4407f1e6e1aa56e46bbb51a0b133374eeae",
-      "subject": "fix(web): sidebar rows show the branch again, not a truncated plan step (#5776)"
+      "sha": "9f0c9f725d4553d34e3c91c13d67ebcc58be5b0f",
+      "subject": "fix(web): reuse current PR status in the sidebar (#12545)"
     },
     {
-      "sha": "6dbffa022d9e44091d0edc496181011e3acfb695",
-      "subject": "feat: pick worktree or current checkout per project (#5766)"
+      "sha": "ead1dee22916b414906eafdae5f5a1293f16e637",
+      "subject": "fix(web): explain what enabling network access means in its confirmation (#10098)"
     },
     {
-      "sha": "5bb8c0366447b1bb94c0ac41f2d4cd06730ffb94",
-      "subject": "fix(server): settle no longer leaves monitors and dev servers running (#5774)"
+      "sha": "fa1e1715538f6f8ac076761f7821f68479f616ab",
+      "subject": "refactor(observability): hold OTLP export settings per signal (#12657)"
     },
     {
-      "sha": "886195ec1e6335d46d34fb3819ab4f3440b42b6d",
-      "subject": "fix(web): usage totals no longer jump while devices report in (#5772)"
+      "sha": "c14f6015bfe479d313355cb234af1a5c16dbb15f",
+      "subject": "fix(web): keep narrow chat headers readable and aligned (#12453)"
     },
     {
-      "sha": "288d8e3457f0466da2cbef2eab648331c969b8a7",
-      "subject": "feat(web): overhaul project settings into a real settings page (#5768)"
+      "sha": "0ff87f251dafb32703d5f531e7b248ad0a581ee2",
+      "subject": "fix(web): keep citation comment when popover is dismissed (#10831)"
     },
     {
-      "sha": "5208bdeb0db95063091a29f97af3548436c5f291",
-      "subject": "fix(web): pinned reorder no longer reshuffles while writes land (#5767)"
+      "sha": "4a560b4e4ebb37efb7f57805ba79e37f5500bdca",
+      "subject": "fix(web): honor whitespace settings in pull request diffs (#12438)"
     },
     {
-      "sha": "a6c9b41f902fba2a4137806c09e829935e91baac",
-      "subject": "feat(server): agents can now open the images you paste into chat (#5757)"
+      "sha": "7445aa733ada33e45289e5aa5055f79142556513",
+      "subject": "fix(web): align menu item icons in pull request detail panel (#11263)"
     },
     {
-      "sha": "70c423a5e48ab34d8b1a033e798ab378b48dde5d",
-      "subject": "fix(web): usage page loses the cost quality panel, gains a back button (#5756)"
+      "sha": "599c9776eb887d4fff42da7d2daf8aa07ee9a9e2",
+      "subject": "fix(web): align pull request state glyph to top of row (#11268)"
     },
     {
-      "sha": "89c320df0b0884a8c4df1cf596564c6bc725eb54",
-      "subject": "fix(server): stop Codex threads with queued follow-ups (#5762)"
+      "sha": "d6f291303ddc0c9a14f570266a4d9eff6d431593",
+      "subject": "fix(server): surface ACP stderr when cursor-agent exits at session start (#12625)"
     },
     {
-      "sha": "7b2cf4374f5d92cc01eff482ad1af92ab7a87f41",
-      "subject": "chore: vouch saphid (#5763)"
+      "sha": "52d08a14b9e475371658fabbb12c056c3d3dad67",
+      "subject": "fix(desktop): include SnapShot app text for Flatpak and GTK4 (#12635)"
     },
     {
-      "sha": "49964e38c02ca26783449e56a3083b124a1d04c8",
-      "subject": "chore: vouch gfsaaser24 (#5761)"
+      "sha": "63ff33756c47f127391962458d8388a647e8ed44",
+      "subject": "fix(server): empty Claude homePath shares continuation with ~/.claude (#12624)"
     },
     {
-      "sha": "e70cdb478d34342d13ba4f433992394bf7303c1d",
-      "subject": "fix(server): stop Claude resume handshakes from completing turns that never ran (#5710)"
+      "sha": "e36725682bd2935f1bcfdf81660cb569b5f3df29",
+      "subject": "fix(web): keep typed text when a question option is clicked (#12577)"
     },
     {
-      "sha": "be01b287b92b4686023a5e213078a2f51b3c1880",
-      "subject": "fix(web): add missing cursor-pointer styling to dropdowns and interactive buttons (#5716)"
+      "sha": "dcf8942304cfef382af55c0068cb2f04c86757fc",
+      "subject": "fix(web): keep desktop annotation screenshots under CSP (#12636)"
     },
     {
-      "sha": "c2f8cb7ca1576afd70294b98dfe1de9be17aacae",
-      "subject": "feat(web): show how many subagents are running at a glance (#5745)"
+      "sha": "f9e8f578fa0fb1ea25e458334a28bbb4fe22302d",
+      "subject": "chore: vouch cestercian (#12638)"
     },
     {
-      "sha": "89ee692bf0436505d008c1d70215e70836eba4e2",
-      "subject": "fix(web): persist diff view mode (#5731)"
+      "sha": "7810fb263f5a92b9d438d1eabf408d2ac705e944",
+      "subject": "Add new GitHub user 'yordis' to VOUCHED.td (#12546)"
     },
     {
-      "sha": "a20923ce463335e89e92f5983d98a180536e8e7d",
-      "subject": "fix(web): usage chart no longer makes Claude look like the bigger spender (#5697)"
+      "sha": "8dd02470b1e7603b8d36a21ae27c510480351f18",
+      "subject": "fix(web): restore providers settings heading (#12552)"
     },
     {
-      "sha": "8101cd044911c7dc2a2adf7c7a9ba7962abf57b6",
-      "subject": "feat(usage): usage page reading provider transcripts across environments (#5684)"
+      "sha": "b44c1ce5d25ee0d5a5be82e380618a886c19ea96",
+      "subject": "fix(mobile): keep the Android composer placeholder on one line (#12605)"
     },
     {
-      "sha": "30164cb1ba8ea05fdd6be69215dba2cc2f0e2aa8",
-      "subject": "feat(mobile): one sheet for model and thread settings (#5625)"
+      "sha": "9accc567670da5096e9a694c1adb0d35adb51d9d",
+      "subject": "fix(web): wrap long titles in confirmation dialogs (#12571)"
     },
     {
-      "sha": "06404107261cae24394d6abe39984fb445c5aff5",
-      "subject": "fix(desktop): zoom shortcuts no longer die when the preview browser has focus (#5691)"
+      "sha": "dfbb11bdd7c3f1a5575cb55d3e3abb12be025727",
+      "subject": "fix(web): show plain text in collapsed thought previews (#12377)"
     },
     {
-      "sha": "2c7267ad43a05cf3e30343400c76fd9ac47698e7",
-      "subject": "fix(server): stop the reaper from silently killing live background subagents (#5677)"
+      "sha": "408ff8ae9bd7eb2e7e90cbfd8b3fcfe63641bf23",
+      "subject": "fix: detect installed editors outside PATH (#12439)"
     },
     {
-      "sha": "daf8ee0b2f684cda82e8721abe1138b219b1ef12",
-      "subject": "fix(web): inherit terminal size in simple typography (#5628)"
+      "sha": "7a326c244f72d6421c2f1cbf004d55806c631526",
+      "subject": "chore(mobile): add dev client script with preview environment (#12558)"
     },
     {
-      "sha": "ed886fe1814890da30ae73c77f9e894ddc9bd481",
-      "subject": "fix(web): delay transient reconnect warnings (#5670)"
+      "sha": "29a23fdf1481485593d7d90e195b7c8bf2a705a8",
+      "subject": "fix(mobile): adapt workspace navigation and expand controls (#12551)"
     },
     {
-      "sha": "4eaf5ef8bb47b870397d5c61cd216b1a6bdd1510",
-      "subject": "fix(server): stop PR status lookups amplifying GitHub rate limits (#5673)"
+      "sha": "803f94e787faef498edecba5dbd07493ac8bc817",
+      "subject": "fix(release): drop placeholder allowBuilds entry that broke desktop builds (#12544)"
     },
     {
-      "sha": "0de9540739369301d5056870deeee3f258a03b14",
-      "subject": "feat: sidebar v2 is now the default sidebar (#5672)"
+      "sha": "a8693eb4ed3a66d72e6b814117e7beeaf0fb5f8b",
+      "subject": "chore(desktop): leave main process metrics export off until a metric exists (#12540)"
     },
     {
-      "sha": "31891a1a0c208a6b244b64937741066c61fefd9c",
-      "subject": "feat(web): fold plan mode and token-by-token output into Legacy features (#5664)"
+      "sha": "efb96939fbb135b9f4de3bff19447200b178b23a",
+      "subject": "fix(codex): surface app permission requests as approvable (#7861)"
     },
     {
-      "sha": "45d9aa90baab8f2d6b13c7ae3cf2f97128edaf7b",
-      "subject": "fix(web): show Stop button while input is pending (#5554)"
+      "sha": "82059df1523d070b00ab6f45159115f626a4977e",
+      "subject": "feat(desktop): export main process telemetry over OTLP (#12520)"
     },
     {
-      "sha": "7a84f6cf10a5040d29c6392ad216d976458363cd",
-      "subject": "fix(web): reconnect the composer seam for remote non-Git projects (#5633)"
+      "sha": "0f1b572b9865256dd61e245b4dd09f6a7b15f0e1",
+      "subject": "fix(mobile): align built-in theme colors with desktop (#12534)"
     },
     {
-      "sha": "f0fb406acf419c1ab3d37d5f42093c07921484b2",
-      "subject": "feat(web): make sidebar artwork theme-aware (#5636)"
+      "sha": "5378f87f99175bded2b9241876319567875aca03",
+      "subject": "fix(preview): recover host registration after request timeouts (#12535)"
     },
     {
-      "sha": "82406bce99c2cf46d1d8fbad26bfefc2ab3169ce",
-      "subject": "chore: vouch chrisdeeming (#5641)"
+      "sha": "823119350ee29cca434b1295aa5c560f4c9ef98a",
+      "subject": "feat(mobile): view and control agent devices (#12531)"
     },
     {
-      "sha": "72d673a855c730536f0cf3bb964ba523e0af9e2e",
-      "subject": "feat(desktop): remember recently used sites in the Browser panel (#5270)"
+      "sha": "cb3d95c17487f3d834a5537f7c3aa0106bc9b5ec",
+      "subject": "fix(server): release oversized pull request diff cache entries (#12523)"
     },
     {
-      "sha": "e2cd2383cec150ea674030d408f2a99a411c94fc",
-      "subject": "chore(ci): vouch StiensWout (#5637)"
+      "sha": "9cb586acd0494c4f47f60045ee42ef25edb5a07c",
+      "subject": "refactor: remove obsolete code (#9917)"
     },
     {
-      "sha": "5661c6116c9d6e9e93e59cf067fc02dd3303ceef",
-      "subject": "feat(web): drag pinned threads into your own order (#5581)"
+      "sha": "e74c668d786ffc14f40a9540cd3aede02ba5d62e",
+      "subject": "fix(release): strip Alchemy progress before parsing relay state (#12519)"
     },
     {
-      "sha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
-      "subject": "fix(mobile): reconnects no longer shift the thread list (#5372)"
+      "sha": "4931d73af3e68d8706d7568b9af37c8397caffdb",
+      "subject": "fix(ci): reconcile native change labels against pinned commits (#12517)"
     },
     {
-      "sha": "be1a836745395286cbd392512179ab5816f538ba",
-      "subject": "chore(release): prepare v0.0.32"
+      "sha": "bd0b9edac3cf8fe30f8242dd7943a9240810b2c9",
+      "subject": "fix(release): read relay configuration without loading deployment providers (#12518)"
     },
     {
-      "sha": "239ef1c54df2f657912ccb5b8e25193d49d90417",
-      "subject": "fix(web): show the correctly matching shortcut in new thread button's tooltip (#5594)"
+      "sha": "de6a230db0bb71d3fa91d8de0ae7067b68253f82",
+      "subject": "fix(acp): accept SDK elicitation requests (#11294)"
     },
     {
-      "sha": "61b51ae0e343afc42ba0424d4d74b4f9a216d620",
-      "subject": "feat(web): click the pin icon to unpin a thread (#5578)"
+      "sha": "8c3b5bef17a637bf53f297189350359790ef7afb",
+      "subject": "fix(mobile): prefer pull-to-refresh on list screens (#12515)"
     },
     {
-      "sha": "bfc69e4b4de12cd9867972dc802936acfb219b74",
-      "subject": "Bump mobile app version to 1.0.2 (#5588)"
+      "sha": "d99bc5a4d707df2506e60cbb411b8d30022bbf89",
+      "subject": "feat(web): sort pull requests by what is blocked on me (#12508)"
     },
     {
-      "sha": "af281c9fc4cd74e9e28e5ee153a605fef9dfd5f9",
-      "subject": "fix(mobile): repair Clerk auth navigation headers (#5140)"
+      "sha": "ea15f17afd94e7ce7133e52f5b5983910662c9ec",
+      "subject": "fix(mobile): use native settings and snooze controls (#12512)"
     },
     {
-      "sha": "bd422fd8d1d960d9f75b9434cbc6b9128fbd3187",
-      "subject": "fix(mobile): keep Android chat text from showing through the composer (#5582)"
+      "sha": "3bb06ad910389fcfc886bd5156f41dc73f307f80",
+      "subject": "feat(server): export log records over OTLP (#12493)"
     },
     {
-      "sha": "33a03c8a7bf4a398f410c9e6def903531237958a",
-      "subject": "fix(mobile): pad scroll views above Android nav bar (#5415)"
+      "sha": "82cd1d1aabe8baa4a5ae23f3c7b08b3fce092e08",
+      "subject": "fix(mobile): preserve multiple model favorites (#12505)"
     },
     {
-      "sha": "a17459e8a93a7be1f8261166034c245dd9794a0a",
-      "subject": "fix(mobile): avoid iOS terminal reset on clear (#5440)"
+      "sha": "93e04160a0c0dece8a258384d2118a660415a53d",
+      "subject": "feat(mobile): search projects when starting a task (#12496)"
     },
     {
-      "sha": "b2ee17d7c1b1bdff543ffff43929d01b92a902f4",
-      "subject": "feat(web): thread actions from the chat header title (#5592)"
+      "sha": "88b9226d229a7d51283122a8b8b8be8305822a9e",
+      "subject": "refactor(mobile): compose review menus through the shared header (#12400)"
     },
     {
-      "sha": "7963cc70f3c9873768a5eaad7ca0a20a23d67aed",
-      "subject": "feat(server): record runtime mode per turn and on mode changes (#5593)"
+      "sha": "aba1c6352d77c33188dc03d2b76bdfe489c95542",
+      "subject": "refactor(mobile): share archived thread header configuration (#12399)"
     },
     {
-      "sha": "b792ed9f7b9c7c6386a14a1697c4393567812546",
-      "subject": "fix(web): stabilize chat timeline positioning (#5449)"
+      "sha": "7ee60f4bc964c2d8d8cf182c173faaabcf902b7d",
+      "subject": "refactor(mobile): share terminal header and menu configuration (#12391)"
     },
     {
-      "sha": "2e66b1fdfc63d39822cd58948bcf43e8fbc239b6",
-      "subject": "fix(web): live background-work banner no longer hides behind the update notice (#5595)"
+      "sha": "54bbed660fc5dc99c6bfe335981e6d431275c91e",
+      "subject": "refactor(mobile): share file header actions and search configuration (#12390)"
     },
     {
-      "sha": "8100062a78f1e1942663a0cea9ddc42d2f835525",
-      "subject": "fix(mobile): improve keyboard avoiding (#5451)"
+      "sha": "989bde889dd119f5919ce27c9d56db77efedec4c",
+      "subject": "refactor(mobile): configure thread headers through the shared core (#12389)"
     },
     {
-      "sha": "a1762fdd7482728800f1f4fd260c632f01a30b1f",
-      "subject": "fix(dev): Improve instructions for --share (#5586)"
+      "sha": "4fb9dfc8b8600d830b36da1c15c5f0cd21627e77",
+      "subject": "refactor(mobile): centralize platform header rendering (#12388)"
     },
     {
-      "sha": "388b43a27cc37ae067087073825633d4fc5de3b7",
-      "subject": "perf(dev): faster cold-start for dev web serving (#5584)"
+      "sha": "7230f6b1be4d1ad839b9a6ab45d0d70b4abc9a54",
+      "subject": "refactor(mobile): split settings selection rows by platform (#12384)"
     },
     {
-      "sha": "23f0a1ae38cb1fc510a499ef2b3602f5ae98d0c9",
-      "subject": "fix(web): reading a thread clears Done; Woke is dismissible (#5579)"
+      "sha": "dec0732281f5b7e787ad3a84e5cbe9a1607ea4ca",
+      "subject": "refactor(mobile): isolate thread row appearance by platform (#12383)"
     },
     {
-      "sha": "85b1734d4d4914e743044f0ea8cb38a796de7da5",
-      "subject": "feat(web): add modular theme library (#5226)"
+      "sha": "429d66c13666c4e243065bbd02bee48e1eea2307",
+      "subject": "refactor(mobile): split native menus by platform (#12382)"
     },
     {
-      "sha": "3ffe84f9688e22afea531988807a1c7faeccdc37",
-      "subject": "fix(web): stop the sidebar \"Working\" label from pulsing (#5580)"
+      "sha": "7e7cd32463b528838cb10ef6b89ef6ceac1f7a4c",
+      "subject": "refactor(mobile): split home headers by platform (#12381)"
     },
     {
-      "sha": "220efad62b7ce7b9ee4befff75edb0753467df0a",
-      "subject": "fix: add missing space before 'GitHub releases page' link on download page (#4511)"
+      "sha": "53830d413474b2a5749c040d4382c96002894b88",
+      "subject": "perf(mobile): isolate iOS Live Activity imports (#12380)"
     },
     {
-      "sha": "b98a0f0d2292d180db0ac7c6ae8ccdbc9f6478f7",
-      "subject": "fix(mobile): invisible T3 Connect devices can now be seen and removed (#5563)"
+      "sha": "e0649ed7d8f8b5f21d114ff2b09ef803184f1d05",
+      "subject": "perf(mobile): isolate Material You conversion on Android (#12379)"
     },
     {
-      "sha": "95305c36fa418301183e4750f13b6a525a20cafe",
-      "subject": "feat(web): per-device provider settings (#4479)"
+      "sha": "4d36142c022e0dc797034933d01e200818b4083d",
+      "subject": "fix(mobile): keep archived threads visible during iOS search (#12420)"
     },
     {
-      "sha": "48aa875c0e6f8f2ee83d6972dd4357a4a083fe30",
-      "subject": "feat(web): remove Build/Plan toggle from the composer (#5551)"
+      "sha": "869347bc26051bba7c3c0274a7dfcae7770d3e3a",
+      "subject": "fix(server): retry transient git failures during checkpoint capture (#11665)"
     },
     {
-      "sha": "a8cd2ad2ebb32ad789e8e0ecd2fc713c2edc38f4",
-      "subject": "fix(web): plans stop hijacking the UI, fold into chat instead (#5558)"
+      "sha": "e84f23a97d587e0e58215f1fba2eab12717bec28",
+      "subject": "fix(web): speed up PR previews with fewer GitHub requests (#11825)"
     },
     {
-      "sha": "4a07c1ca9d9033ef35161a1ffbea44d0418ca2bf",
-      "subject": "docs: ship production T3 Connect public config in .env.example (#5573)"
+      "sha": "8ebb6112377a110afb956ac01fb44fee68f5709c",
+      "subject": "fix(ci): accept V2 transfer reports without cross-scenario comparisons (#12492)"
     },
     {
-      "sha": "cf5c9948c895e120965165b7b2b643ca275c5315",
-      "subject": "fix(web): keep agent panel rows stable (#5569)"
+      "sha": "6d68677ff90915c17de06d78bb498d41a1adfe6a",
+      "subject": "fix(server): restore secrets when settings persistence fails (#12487)"
     },
     {
-      "sha": "2288d416aa3bcb5f2eeb4004228872593296971e",
-      "subject": "fix(web): stop the \"requests are slow\" warning from firing on every provider update (#5570)"
+      "sha": "c557bb10aa7cbb78a50df230d1e8e24af79cb662",
+      "subject": "fix(web): sidebar search matches message content (#11761)"
     },
     {
-      "sha": "ddfe45c66eccd93c0adf61db92a16cbbbcde23e1",
-      "subject": "test(server): catch client transfer regressions in CI (#5350)"
+      "sha": "c03b240265a1d4954536c5c0758ac2b7fa762ba8",
+      "subject": "fix(git): explain fetch failures without exposing remote output (#12485)"
     },
     {
-      "sha": "9547cf24634ccafe5d381964449b722d33f812b8",
-      "subject": "fix(server): one disconnecting client no longer blocks every reconnect (#5572)"
+      "sha": "80c1f771b39674ada4d3724610f08fba855fdd49",
+      "subject": "fix(relay): accept delegated thread IDs in activity routes (#12484)"
     },
     {
-      "sha": "1c7d059f550a53dd94d5b9802640ecd11b759d1a",
-      "subject": "fix: scrolling up during a running thread no longer snaps back to the bottom (#5566)"
+      "sha": "4c61e3d7ecc4d9957c243677d35dd3313a37c067",
+      "subject": "fix(mobile): synchronize native notification delegates (#12483)"
     },
     {
-      "sha": "6fa457607886caf096e7871b67e447f76d3772f6",
-      "subject": "fix(server): settle stopped Claude subagents (#5568)"
+      "sha": "dcdf5e6a013607b42836a270165286181da48296",
+      "subject": "fix(build): parse executable imports without matching source strings (#12488)"
     },
     {
-      "sha": "ae7b27de824e890f2cdfc85018fc9301e7d45022",
-      "subject": "fix: prevent reconnect loops during server stalls (#5561)"
+      "sha": "ed6fe339d71863f39a1d5405554a3bac892e55b6",
+      "subject": "fix(build): retain multiple license notices for one package (#12489)"
     },
     {
-      "sha": "6b73b3defe1dfb365de3b7bbb97ca56a26b50a43",
-      "subject": "feat: paginate thread loading with user-anchored turn windows (#5493)"
+      "sha": "9118b6d3e868db161ca3f330c0a8011527348dce",
+      "subject": "fix(mobile): synchronize native permission registry access (#12482)"
     },
     {
-      "sha": "7aad7911f66c2fecba1cfd6601ea783a3fe2bf31",
-      "subject": "fix(server): let stopped threads settle immediately (#5553)"
+      "sha": "eadeaf228267be215a2e9486f16b876d703dcccc",
+      "subject": "fix(bitbucket): preserve rate limits from optional PR reads (#12486)"
     },
     {
-      "sha": "6da92244cc2a7438703be95a0fcfaca0b73502a7",
-      "subject": "fix(web): show one toast when snoozing threads in bulk (#5560)"
+      "sha": "bd5dc58c65b87bfd2222e4697c4742b48e639ea4",
+      "subject": "fix(web): client spans reach the trace proxy again (#12332)"
     },
     {
-      "sha": "c471145e96fc2399b4df57ce78c72aa7fb7ccabf",
-      "subject": "fix(server): stopping a Claude thread no longer shows an ede_diagnostic error (#5557)"
+      "sha": "ccad9f69aae7465c4ad4ea169d273f61ffac1eb5",
+      "subject": "Use T3 Device panel for mobile testing (#12414)"
     },
     {
-      "sha": "64a991ad455234e6fdd808a5a3caadc51f18a152",
-      "subject": "fix(web): show remote environment for non-Git projects (#5555)"
+      "sha": "9ea9c3d5d2c444133e3ddff40eecf38737951589",
+      "subject": "fix(web): keep a file-to-symlink type change from crashing the diff view (#11075)"
     },
     {
-      "sha": "0ec4fbc4a376cbf6465e59b05506ce9d89b3d078",
-      "subject": "fix(server): stop showing commit/push/PR notices as errors in the work log (#5559)"
+      "sha": "52e4b4429359904441039a286c61eaafe8474451",
+      "subject": "chore(deps): bump parents that carry vulnerable transitive dependencies (#12417)"
     },
     {
-      "sha": "ea50b695a749d6a0d44ef96b479b6dfceb8881e3",
-      "subject": "fix(web): update tooltip no longer dismisses when scrolling release notes (#5547)"
+      "sha": "56a9bf2bd7d3dcdae722a5de84578909dc11aeda",
+      "subject": "fix(git): prevent stale branch selections from restoring files (#10574)"
     },
     {
-      "sha": "331c6dce7f6745863752b1b423fc76d24014deec",
-      "subject": "fix(server): skip origin fetch when creating worktrees in repos without an origin remote (#5556)"
+      "sha": "c5bbf3d1495234236e7ad5d7e8d091b0ab081a95",
+      "subject": "chore(deps): bump the npm_and_yarn group across 1 directory with 3 updates (#12411)"
     },
     {
-      "sha": "4f5834ba72c5905a318c00456dd21271b2fa9d6f",
-      "subject": "fix(web): clear woke state on explicit thread actions (#5486)"
+      "sha": "74796256868916da550ecbe9b5e37d359a8cb321",
+      "subject": "chore(relay): deploy with the Alchemy CLI and publish client config through an Action (#12401)"
     },
     {
-      "sha": "aa16c180e5850ab94c022d3e41e18350c2117deb",
-      "subject": "fix(web): align composer inline chips with prompt text (#5495)"
+      "sha": "e3c85ead63c3a69f9be5dbb873b3d87c9b76b43f",
+      "subject": "chore(refs): sync Effect and Alchemy references to rc.115 and beta.78 (#12327)"
     },
     {
-      "sha": "470d4eb993eccd7d33cc9ad6f282c684d6760ac8",
-      "subject": "fix(mobile): stop thread messages reading through pending cards (#5450)"
+      "sha": "d547e3b12a1af79e9dd81e422255a12d6ecf70d1",
+      "subject": "chore(deps): upgrade Effect to rc.115 and Alchemy to beta.78 (#12326)"
     },
     {
-      "sha": "99d91ddaa4996203b675cbd086d5acaa642d4827",
-      "subject": "fix(acp): keep unknown approvals actionable (#5430)"
+      "sha": "243e94470f80a6a5f31a68785ceff30c29ce5d4c",
+      "subject": "fix(mobile): remove Android input underline backgrounds (#12394)"
     },
     {
-      "sha": "ab3b55e29ac20a6212f09e38f1983b856fd77695",
-      "subject": "fix(web): clarify auto permission fallback (#5431)"
+      "sha": "7a2cce826852c3a3255d7c7aa1e9c148287eba2c",
+      "subject": "feat(mobile): add copy thread ID to thread list actions (#12228)"
     },
     {
-      "sha": "e4abc31f1e3f930e521a5bb62b38a9c5b28d8fb1",
-      "subject": "docs(server): pin interleaved-collapse divergence as intentional with test"
+      "sha": "818add08fcd73942f1f05edacc23f4019c146eeb",
+      "subject": "fix(mobile): use singular label for one settings environment (#12282)"
     },
     {
-      "sha": "b7d1981b57f1c30908808d1939fd4edbc781de12",
-      "subject": "fix(server): drop superseded tool updates from snapshots"
+      "sha": "994654198d5820b6fab9ee09063646a8b6fd8e22",
+      "subject": "fix(web): share accessible color picker controls (#12355)"
     },
     {
-      "sha": "64a3cd6d7daab21f6bfbc00faf0104b6fd361267",
-      "subject": "fix(server): separate trial cleanup from handoff retention"
+      "sha": "cc39ec1008ce584e088e79210b69d3359357463b",
+      "subject": "fix(mobile): share request action button defaults (#12366)"
     },
     {
-      "sha": "48e2c27f2fef10520512fcfc482d022477ed18ab",
-      "subject": "fix(web): make update version tooltips accessible"
+      "sha": "c7fa1e96943f380a8893e89460d03a362285ab83",
+      "subject": "fix(mobile): share settings action row defaults (#12369)"
     },
     {
-      "sha": "8b2ea5721a213c3e3e3bcab56eaea6fa0fa82714",
-      "subject": "fix(server): order explicit service shutdown"
+      "sha": "fa2decfce7fa359551634b4d24a2aecd9cef88c9",
+      "subject": "refactor(web): share standalone page layout (#12354)"
     },
     {
-      "sha": "df2f1273e9e1f1c6f342eecbf3539a5e992163e1",
-      "subject": "fix(server): clean up interrupted update trials"
+      "sha": "58fcae64aece8198bcbbf051b02554ea893d859e",
+      "subject": "refactor(mobile): share file preview feedback (#12368)"
     },
     {
-      "sha": "f9e8236899f25653ce95d688fac798cd070afbc1",
-      "subject": "fix(server): release the tunnel when an explicit stop interrupts an update"
+      "sha": "1a2a03f44b7ef6e3159a67a262c1586dbd3d3d5b",
+      "subject": "refactor(mobile): share local environment lists (#12365)"
     },
     {
-      "sha": "8f341f20c91e708de1dab949dbd723e86f2ff328",
-      "subject": "test(server): use the launcher state writer in release tests"
+      "sha": "18dcc43ace0a7b0d93f2fd61907b2a4e27522936",
+      "subject": "refactor(mobile): share connection form fields (#12364)"
     },
     {
-      "sha": "808d6853555c8b57f414a06e0a79eb1b9e192ef5",
-      "subject": "fix(server): keep the managed tunnel across remote update restarts"
+      "sha": "767a5dbd00d0a2050745a2ae2e29050c5282b8c0",
+      "subject": "refactor(mobile): share thread list section controls (#12363)"
     },
     {
-      "sha": "80720ad592dc68c29677444fd7b6abb97b82c03e",
-      "subject": "fix(web): calm one-row server update status and banner"
+      "sha": "8eb1f6e74869130b7602e0c6b0ab56b7805c0889",
+      "subject": "refactor(web): reuse inline settings actions (#12362)"
     },
     {
-      "sha": "a483337a02d4ac641db0219517816c300a33be6b",
-      "subject": "fix: respect time format for sidebar snooze (#4438)"
+      "sha": "4aa841a8d45ccd611a809351db0b693faba6ba13",
+      "subject": "refactor(web): share settings group surfaces (#12360)"
     },
     {
-      "sha": "1ffba7093a83c99ef41dd486b10df75f2b9974e1",
-      "subject": "fix(web): closed plan sidebar stays closed when returning to a thread (#5484)"
+      "sha": "14337401bc801d6239dd10e34997b4481081cf1d",
+      "subject": "refactor(mobile): share Android toolbar search fields (#12359)"
     },
     {
-      "sha": "3da315e7b5c4537cbc7280f33dadb3f5f0e3baf0",
-      "subject": "perf(server): stop shipping full MCP tool results in thread payloads (#5482)"
+      "sha": "6088c8104cfda0c11eafd1e1f636d47106fee136",
+      "subject": "refactor(web): share diagnostic process actions (#12358)"
     },
     {
-      "sha": "a2ca89aa10f13a2222e08afd98c66285121d5ba2",
-      "subject": "feat: native subagent & workflow observability (#5219)"
+      "sha": "a1390ac655927cda10cfab3e4678d456db7b54b8",
+      "subject": "fix(mobile): share settings control row layout (#12356)"
     },
     {
-      "sha": "990bb0b689b23a33f8e53f12962fe2542b3f4005",
-      "subject": "fix: reconnect faster after remote server updates (#5404)"
+      "sha": "05a8c6016a4070b92f5d51e7a79b9c76814947df",
+      "subject": "fix(mobile): share accessible connection trace controls (#12371)"
     },
     {
-      "sha": "7251f1a1f14afdf626e7c7f8664da423594732a3",
-      "subject": "Prevent terminal loading flash (#5432)"
+      "sha": "5a39013313a7e6e9d6fbeeb915b8c176ea3dd126",
+      "subject": "fix(web): share touch-visible pull request edit actions (#12370)"
     },
     {
-      "sha": "30e471530b3e2ddf59caf309636bed940b8b3776",
-      "subject": "fix(web): preserve terminal font size when splitting (#5444)"
+      "sha": "8583eac643b8c248bcd835e8de81c7c0d7182ad3",
+      "subject": "refactor(web): reuse searchable picker inputs (#12353)"
     },
     {
-      "sha": "de592a00e89776d2e0614f3be6e666012d90cd51",
-      "subject": "Enrich terminal font previews (#5428)"
+      "sha": "53510d44ea7b4a44c10c122dd9245194f2f14d09",
+      "subject": "fix(mobile): define Clerk colors in every Uniwind theme (#12344)"
     },
     {
-      "sha": "2a04db134c2d88f06e5b8d61a8410cb51ea07430",
-      "subject": "fix(web): keep terminal font settings reliable (#5397)"
+      "sha": "3fd5d6439d8fd49d173503ecda96500463a39bd2",
+      "subject": "fix(web): keep numbered jumps from stealing browser tabs (#12315)"
     },
     {
-      "sha": "37d3667de4e45ffb42dc96e8b7fbf39e3a78c1da",
-      "subject": "fix(web): keep model picker shortcuts in sync (#5400)"
+      "sha": "9051ed9c3923b7b5fb88d99fe9267380d69baa51",
+      "subject": "feat(web): open diff files from a right-click context menu (#11842)"
     },
     {
-      "sha": "9697b765e5c32232e96514e38b6ecfac351d5a8f",
-      "subject": "fix(ci): isolate releases from shared API rate limits (#5394)"
+      "sha": "256e630ef7b8372f70f80590e85aada62da821ab",
+      "subject": "feat(web): filter sidebar from thread menu (#8719)"
     },
     {
-      "sha": "9d9a872bccc6ed099de85a121ab042c9e078987e",
-      "subject": "fix(web): restore terminal link hover styles (#5382)"
+      "sha": "3fd21df62da3191f1abf12a0cd74df6de9ed30a2",
+      "subject": "fix(server): pass Codex image attachments by path to avoid oversized requests (#11050)"
     },
     {
-      "sha": "9235c83eb7f16c321ad02aa4cc502fbe0be252c1",
-      "subject": "fix(web): keep the composer command menu anchored to the composer (#5336)"
+      "sha": "5f225395637cb347cfe416c649825a8c7c210014",
+      "subject": "chore(review): keep review bots out of the vendored .repos references (#12333)"
     },
     {
-      "sha": "e0c85a20ef0ec9b49ade5989a13850493036a49b",
-      "subject": "fix(mobile): avoid double dividers between thread sections (#5391)"
+      "sha": "1455cb5c35e50211145073be6ca155d56684f0f4",
+      "subject": "fix(server): checkpoint workspaces with empty nested repositories (#12181)"
     },
     {
-      "sha": "3c5bdb84a93682646848acf48cae94c4d189b7a6",
-      "subject": "fix(web): truncate long project switcher names (#5348)"
+      "sha": "fcfd9f911a27ee3b813d64582c53d82dfa2e892b",
+      "subject": "fix(web): keep chat from jumping when the scroll-to-end pill mounts (#12317)"
     },
     {
-      "sha": "70de6e17860d7343a73e117e6e9e1ce41b1b633e",
-      "subject": "fix(mobile): prevent Android thread search crash (#5386)"
+      "sha": "d17f46d7631b178b6834596264f0f44f210d584b",
+      "subject": "fix(server): refresh file search outside checkpoint processing (#12308)"
     },
     {
-      "sha": "47dfc6526521866992f6b50beac4587b45114631",
-      "subject": "fix(mobile): preserve grouped project workspaces (#4642)"
+      "sha": "67993623afb14c017bb0b959478dc892f9c427da",
+      "subject": "fix(server): capture checkpoints when baseline lookup fails (#12307)"
     },
     {
-      "sha": "41ebf22eea64e177b11a0709a16d6716581cc78c",
-      "subject": "fix(web): clear main branch lint warnings (#5384)"
+      "sha": "b4620d595554654c259ec7c0afb3d3d5532959a8",
+      "subject": "fix(server): reject file rewind in shared workspaces (#12306)"
     },
     {
-      "sha": "3d429662c9bd7b731c059dc3a84ccdfc43bf3701",
-      "subject": "fix(mcp): unblock Kimi models in OpenCode with preview tools (#5128)"
+      "sha": "b17cc2ab5d5029f898121798ca19db3288cba616",
+      "subject": "fix(server): bound provider event log records before serialization (#12305)"
     },
     {
-      "sha": "7b38fb5c6b0fb46a7dadaf33e1739726be3dc104",
-      "subject": "fix(server): allow remote updates with database migrations (#5374)"
+      "sha": "4cc984fedc33184c0a0fb67ea17fb02902ae2224",
+      "subject": "fix(web): keep browser pages aligned during panel animations (#12329)"
     },
     {
-      "sha": "7537adc30f41059afcfeb8bd20368cb0acfce293",
-      "subject": "fix(web): prevent legacy model picker layout shift (#5349)"
+      "sha": "e26af33b228792bb72349ca4e849a96381578a57",
+      "subject": "fix(web): keep PR panel actions in the current thread (#12320)"
     },
     {
-      "sha": "94696b0f54f467062a14aa800ee257a4801c2022",
-      "subject": "fix(desktop,web): improve in-app browser shortcuts and URL behavior (#4703)"
+      "sha": "6deac7a924e6d90eef400cd218703cd3ad00a383",
+      "subject": "fix(mobile): show Agent behavior icon on Android (#12316)"
     },
     {
-      "sha": "fff6a5b028f85122ffef8d3636f390f95ade5172",
-      "subject": "feat(web): make pairing QR codes actually scannable, with endpoint choice (#5360)"
+      "sha": "675869d2b0f9e059d5950b80390c0cad1cb1590e",
+      "subject": "fix(usage): preserve saved totals after transcript cleanup (#12304)"
     },
     {
-      "sha": "da6e1a96782594cab3a6925f441731a65be57c11",
-      "subject": "feat(sidebar-v2): thread pinning for sidebar v2 (#5312)"
+      "sha": "592021f008010ee947c326df0452d093ead8aeb1",
+      "subject": "fix(web): collapse thoughts within tool groups (#12302)"
     },
     {
-      "sha": "8eca20005b47e197b3610f7996f3fd02355c1891",
-      "subject": "feat(web): configurable fonts and sizes under Settings → Appearance (#5103)"
+      "sha": "4749035bda13b4b6260499caedbc0d69a2f60e6f",
+      "subject": "fix(web): keep composer banners compact and readable (#12166)"
     },
     {
-      "sha": "2fa1fec8d8f63bc8fa4579e7c0fd280b21de02ef",
-      "subject": "refactor(server): make title prompts plaintext (#5368)"
+      "sha": "03950089ffa5cecf0ce731227f58551f6437495f",
+      "subject": "feat(web): pull request files can be marked as viewed (#7721)"
     },
     {
-      "sha": "9bd2a4c6886a4c20e0a0a937dc98dd118c645c8f",
-      "subject": "fix(server): keep regenerated titles on topic (#5365)"
+      "sha": "8db3c250f41e8f1d0b36da6b5a5093821e72d4f3",
+      "subject": "fix(mobile): prevent overlapping text and UI on Android chat messages (#11611)"
     },
     {
-      "sha": "4fb03aff0bcddf3379e9f9277a87e8eae994a2ae",
-      "subject": "fix(web): better right panel (new diffs styling) (#5260)"
+      "sha": "c25c3e0ee678ef62245cb5eef20eeafb9a86d9d9",
+      "subject": "feat(mobile): make Settings easier to navigate and scope (#12272)"
     },
     {
-      "sha": "d7950ac153c6fdd788ef63699a5d061243bb4997",
-      "subject": "fix(server): generate durable thread titles (#5357)"
+      "sha": "2d8378b4404888f0d5458e8fc9c83b1032e21290",
+      "subject": "fix(web): avoid reopening settled threads when adding projects (#11804)"
     },
     {
-      "sha": "36caf34c68b7bc6c2e967fdec1812fd08f61cdc8",
-      "subject": "fix(desktop,web): contain renderer memory growth and recover from renderer OOM crashes (#5148)"
+      "sha": "fbc8b960026e408c163ea55db8075bbf1a42d628",
+      "subject": "fix(web): keep thoughts and failed tool calls in one activity row (#12270)"
     },
     {
-      "sha": "90e3778660690e4f00bdd4e237fc541725dc1427",
-      "subject": "fix(web): stop the chat timeline reading through the provider status banner (#5353)"
+      "sha": "d4d5d12e8ba086cfbf79ca3adeb4156b46ead665",
+      "subject": "fix(shared): keep the newest shared usage scan (#10315)"
     },
     {
-      "sha": "94331c58ecda6b32ee101e8f5ce2dfe5b5195afd",
-      "subject": "fix(mobile): show correct provider icons for Grok, Cursor, and OpenCode (#4586)"
+      "sha": "1ab2dfb5a7bd2996f79407b5d02cae6132a7626c",
+      "subject": "fix(desktop): keep preview picking active across subframe navigation (#9741)"
     },
     {
-      "sha": "c30a6d9b9943cfbf2fd47efc9de6eb9675457d52",
-      "subject": "fix(server): scrub AppImage XDG_DATA_DIRS and GSETTINGS_SCHEMA_DIR from terminals (#5075)"
+      "sha": "298f8c95cd7c20ea7943a431f22e836fa637457b",
+      "subject": "feat(mobile): add favorites to model picker (#12231)"
     },
     {
-      "sha": "37ae1abbe947f0e002d008276225e4af2248a969",
-      "subject": "fix(ssh): isolate managed tunnel processes (#4347)"
+      "sha": "dd9528a974ba534faa8d1588f3f137fa2a281860",
+      "subject": "fix(mobile): keep screen awake during dictation (#12227)"
     },
     {
-      "sha": "82b76e2138db7fcf8f8c1613184dc94777b2196e",
-      "subject": "fix(server): use a Cursor todo's title when its content is blank (#5073)"
+      "sha": "0150c6a53b409ba3bcb45645709b649cf8708354",
+      "subject": "feat(web): start new threads with multiple models in separate worktrees (#12179)"
     },
     {
-      "sha": "8a16cadbafb2ec98f79e7cb1300a3ad09ca394e5",
-      "subject": "fix(web): increase tooltip z-index to overlay popovers and menus (#5326)"
+      "sha": "c0dded88b1fc8c1c86d65f684fbfa520139e58dc",
+      "subject": "feat(web): command palette finds the pull requests and usage pages (#12211)"
     },
     {
-      "sha": "2b1d4fecb859b9a68f4853b8c4c5857ffe9d448d",
-      "subject": "Upgrade Effect to beta.103 (#5331)"
+      "sha": "c4ca1b0f94e56bd93899704f03015d51948a6b4d",
+      "subject": "feat(settings): add automatic storage cleanup per machine and project (#11598)"
     },
     {
-      "sha": "cec1bb9de38a80d7c06faa6841360002ca136080",
-      "subject": "fix(web): align multiline error alert controls (#5304)"
+      "sha": "2a47fc905a7a1054823919980f625b7cd869f1c1",
+      "subject": "fix(skills): support unicode currency symbols as skill aliases (#12098)"
     },
     {
-      "sha": "25ec0b9d13deaaa6d30c42f66ddfee633e9a29be",
-      "subject": "fix(web): simplify chat code blocks (#5301)"
+      "sha": "01eb4b9a8776e6057dfacf12e7366565e5eab934",
+      "subject": "fix(web): align notification icons with titles (#12202)"
     },
     {
-      "sha": "966cc05a9007a4ad1b7f8d5d3a1fc0e5c82a5b94",
-      "subject": "fix(contracts): decode ServerProviders forward-compatibly (#5327)"
+      "sha": "712f8cad32bf8961c3c4b53497dd65c32672d59d",
+      "subject": "feat(web): command palette search matches thread IDs (#11185)"
     },
     {
-      "sha": "1cbd88aba042f3209e1538a927775a7c4f7fdb06",
-      "subject": "fix(server): strip replayable terminal queries from history (#5319)"
+      "sha": "886c83450797c46ee84ae28fc16c2208cafa965e",
+      "subject": "fix(web): folder links from chat open the file tree instead of a broken preview (#10909)"
     },
     {
-      "sha": "553867262cf22f982622df3eb7f3174f62b4ba2b",
-      "subject": "fix(terminal): protect held Ctrl/Cmd+W close shortcut (#5322)"
+      "sha": "6d1d549441be84f19696ab59ed7e2fbf305280d4",
+      "subject": "fix(diff): collapse files by default (#12190)"
     },
     {
-      "sha": "11639bf4391d9d49e48052bae755f748cbd22ff2",
-      "subject": "fix(web): blink the terminal cursor again (#5314)"
+      "sha": "f17165a76b1a782831eb6a05a4383b27283df15d",
+      "subject": "fix(web): preserve thread reading positions (#12144)"
     },
     {
-      "sha": "a261a6440ae7c1a063ff23591f43960c7d2b06e5",
-      "subject": "fix(web): match loading screen to dark theme (#5303)"
+      "sha": "71d12d8c4a05bc50344d6e3fac1b967c6daaff84",
+      "subject": "feat(web): make keybindings searchable from settings search (#12175)"
     },
     {
-      "sha": "6f04a5cffb8fcad95f709af69eb2da2605c4d472",
-      "subject": "fix(desktop): Niri/Hyprland - Linux secret storage backend (#2916)"
+      "sha": "d359e94cabca4722029359c77d60cb6d13da1e59",
+      "subject": "feat(web): enable rich text composer by default (#12160)"
     },
     {
-      "sha": "30c96228067bcd3a49e432ec898e52d4acb04297",
-      "subject": "fix(web): polish interface spacing (#5252)"
+      "sha": "df466c79810046d20c0f3ccc4e51709c5703814e",
+      "subject": "fix(web): fall back when pull request avatars fail (#11728)"
     },
     {
-      "sha": "69dfb7f09a473d270a8b127cb1c39836fa1c6bc4",
-      "subject": "fix(desktop): claim the t3code:// scheme default on Linux at startup (#5054)"
+      "sha": "573a8f2f30d59c528997daf1e02bdb58e0d9dc54",
+      "subject": "fix(web): keep header spacing stable when sidebar drawer opens (#12162)"
     },
     {
-      "sha": "e60821f0e0d82a5d671ca3b94719c49d333921c8",
-      "subject": "feat: fold legacy models into separate menus (#5190)"
+      "sha": "901db896691da5ab7b7428ef8a5da52883f831dd",
+      "subject": "fix(server): keep VCS waits from blocking turn completion (#11970)"
     },
     {
-      "sha": "64bf0161919ec0e41470af3304928d9fc8711bf4",
-      "subject": "fix(server): stop npx service updates from silently leaving the old server running (#5217)"
+      "sha": "d42a3bd2ae3e698141b26f6426aa28d8886e1754",
+      "subject": "fix(server): keep ready checkpoints when a later placeholder arrives (#8432)"
     },
     {
-      "sha": "5192f777fe54c2a2a359f6c25ecf5fbde46d49b0",
-      "subject": "fix(server): surface cloudflared FTL/PNC relay logs as warnings, not debug (#5076)"
+      "sha": "88d0c40c8581f8886b8c94496c3e4af105851424",
+      "subject": "chore(mobile): bump app version to 1.2.1"
     },
     {
-      "sha": "283c7ac4baafd96711872d4fe49e3851a8ecaa65",
-      "subject": "fix: normalize app icon glyph sizing (#5202)"
+      "sha": "8130a9f13a1ef506f4393423ded21d71f3c9b5e4",
+      "subject": "fix(server): flush checkpoint objects and refs before publishing them (#10944)"
     },
     {
-      "sha": "78eb3ecae981a6fce108cd3ecc44a6832b4cd3a0",
-      "subject": "fix(web): stop settle controls overlapping the status label (#4574)"
+      "sha": "4abb07eac3d47543b5804e8039633ac8ad7f67d2",
+      "subject": "feat(mobile): port worktree setup progress and agent handoff (#12177)"
     },
     {
-      "sha": "d3037064e61a9f059eafbd4f9869679779bd2a7c",
-      "subject": "fix(server): make remote updates rollback-safe (#5181)"
+      "sha": "3bee4c286e586c2eb7f8d196a65b4b5ea6a95241",
+      "subject": "fix(server): settle cancelled worktree setup before rollback (#12176)"
     },
     {
-      "sha": "0ad91b6e7fc1fcb6d5f4bc736d84c337e912bc62",
-      "subject": "fix(server): follow branch drift in dedicated worktrees so PRs link to their thread (#5159)"
+      "sha": "962bf62921c0ecbc9320f9b071e16b1d41484aad",
+      "subject": "fix(web): show author avatars in pull request previews (#12125)"
     },
     {
-      "sha": "ca72e381c64f25d771236eecf70219f68e5f365b",
-      "subject": "fix(server): bound thread catch-up replay and stop full-DB snapshot hydration (#5147)"
+      "sha": "315b7237115356cee49a3a8a983a6d82596e1864",
+      "subject": "Remove `new` badge from Fable 5.1 (#12173)"
     },
     {
-      "sha": "491219bf1f4db7144b747fe02af0cbc075668b12",
-      "subject": "fix: threads with open PRs no longer auto-settle (#5151)"
+      "sha": "d612d12b8bb278af97b0029f8d48b2403a5f9ee6",
+      "subject": "fix(web): reuse cached GitHub PR details across entry points (#12168)"
     },
     {
-      "sha": "e5c75470678e33ca2bd1001d9d93493fe437972a",
-      "subject": "feat(web): add settings sidebar search (#4682)"
+      "sha": "19ee856ec099dddb94e28a3f933ec7c2575ed5a2",
+      "subject": "fix(server): propagate linked pr changes and settle threads immediately (#12161)"
     },
     {
-      "sha": "bfc31507f8483b0ba22cf10f5862947b49b20a53",
-      "subject": "feat(web): search threads from the sidebar (#4769)"
+      "sha": "c12ba7581ac00ba2a623ad23283da5d03d34c2d8",
+      "subject": "feat(web): make pull request comments easier to scan (#12150)"
     },
     {
-      "sha": "03adf215ceebedeb9c5e813406154dd8353b36f6",
-      "subject": "follow-up normalization after #4700. (#4498)"
+      "sha": "c1738f131d6f0d5c6dfabb3aad46755a25319663",
+      "subject": "fix(server): keep large sparse checkouts on the fast checkpoint path (#12154)"
     },
     {
-      "sha": "916cff733cd00c85fe0419df5bcb9372a6384746",
-      "subject": "feat(mobile): make settled threads collapsible (#5056)"
+      "sha": "ed88937cf03e65fe5d620f170fd14b1fae6bb2e7",
+      "subject": "fix(mobile): prevent Android compose FAB animation jitter (#12169)"
     },
     {
-      "sha": "a041981276b4c789fed8132e3b8a320749bf25e8",
-      "subject": "feat(mobile): add thread snoozing (#5053)"
+      "sha": "892b86da124b6f672622e3002faaa93e6a5bed00",
+      "subject": "fix(web): align composer task rows (#12165)"
     },
     {
-      "sha": "964cc279014f512b4fc4c719377403417744ace2",
-      "subject": "refactor: move the canonical libghostty-vt vendor to the repository root (#5102)"
+      "sha": "e47a11e1e65dcb7dc58630178c3f23fee7c156ec",
+      "subject": "fix(web): align follow-up and license settings controls (#12167)"
     },
     {
-      "sha": "acf761b2f511e1918260a8043e151bbc2849e29a",
-      "subject": "feat(web): render terminals with libghostty-vt (#4860)"
+      "sha": "9686cd9afe20d13fcb850199f9b9849a8276737a",
+      "subject": "feat(web): choose themes from chat with color previews (#12143)"
     },
     {
-      "sha": "ab8182cb4e5338caf93ee90a7bd57351a0c77283",
-      "subject": "fix(ci): rotate iPad showcase captures without Simulator UI scripting (#5094)"
+      "sha": "e106fe95cc814797cfb3dad6d78c062e96d0060f",
+      "subject": "design(mobile): unify Android Material layouts and native controls (#11841)"
     },
     {
-      "sha": "ef4ec2ad4b9b08d1aca31d68aea28f0a846ef295",
-      "subject": "fix(server): self-update no longer rolls itself back on restart (#5095)"
+      "sha": "394af73e02238e551db14f44d57f1469dd2942aa",
+      "subject": "fix(web): default diff panel to working tree (#12139)"
     },
     {
-      "sha": "61514c1294ff79e2a9924551b2042fcc0d1c3a34",
-      "subject": "feat(cli): `npx t3 pair` - generate QR code from a running server (#4955)"
+      "sha": "ed123897943e9175d4a0e92a5a8a09d200573336",
+      "subject": "fix(web): keep tool timestamps before disclosure chevrons (#12152)"
     },
     {
-      "sha": "894d6d68f555b97a070791590ed99695c09e4233",
-      "subject": "fix(oxlint-plugin): Resolve the oxlint bin without assuming a pnpm layout (#5066)"
+      "sha": "22539f2a428947ab218589c984b2af44e434012e",
+      "subject": "fix(chat): group thoughts into the changing tool activity line (#12147)"
     },
     {
-      "sha": "fccec9f097ab6b89714161ccab2efc7e19d59c00",
-      "subject": "fix(ci): capture iPad App Store screenshots in landscape (#5065)"
+      "sha": "dda44ed33280106aa46612fd9e1f1475bb5a0712",
+      "subject": "fix(web): show tooltips for composer environment and workspace controls (#11787)"
     },
     {
-      "sha": "50a3d6b872406bb15af72d439740dd63e89f820d",
-      "subject": "fix(ci): repair the mobile showcase screenshots workflow (#5057)"
+      "sha": "01e64193d9d2abfae8f7b3d20f66824e38397bd6",
+      "subject": "fix(web): simplify agent approval prompts (#12082)"
     },
     {
-      "sha": "e259dd23c7ef67a7f215389762a1ef5622c79088",
-      "subject": "fix(mobile): server model, worktree, and origin preferences now apply to new tasks (#5064)"
+      "sha": "f1b497a5552abf4616a7477b730b78a1274f3db4",
+      "subject": "feat(cli): show installer and update download progress (#12044)"
     },
     {
-      "sha": "df78cda8bf9c0971300e1bf35251774d9fbc833a",
-      "subject": "fix(contracts): decode growing config unions forward-compatibly (#5055)"
+      "sha": "52ad70ec43b5dcfcdc72ac79c0964da8e4d163db",
+      "subject": "fix(web): prioritize linked pull requests over automatic diffs (#12142)"
     },
     {
-      "sha": "605c2bb734bbebed0b19fc1ff6b514f41bd3659b",
-      "subject": "fix(mobile): show the correct build channel in Android's Threads page header (#4861)"
+      "sha": "aae361c4ef6478e4dcf970d574f3fd38d908e6b9",
+      "subject": "fix(review): show complete counts and load large diffs progressively (#10822)"
     },
     {
-      "sha": "cb11a71d632e0fb9e7a1fe8c0a95f35583c9cf11",
-      "subject": "fix(mobile): accept Android clipboard images in composer (#4836)"
+      "sha": "32e8b2584556c0c55ce0d1d8f72b506cb771d60d",
+      "subject": "fix(web): show private repository media in pull request tabs (#11706)"
     },
     {
-      "sha": "41124c726001498bb09e6c1b3eaff71e6ca0b43d",
-      "subject": "fix(desktop): link release notes from the update downloaded toast (#4771)"
+      "sha": "384de0858d1f59ca2ad7c660544a5290fd9138cb",
+      "subject": "fix(web): adapt provider settings to available content width (#12138)"
     },
     {
-      "sha": "b0b275227bcf495f75bab1daa39f99489420dad7",
-      "subject": "chore: add mobile issue template area (#4895)"
+      "sha": "d1a644897119300688cbd8bf26e0b64aeb92c382",
+      "subject": "fix(web): dropped folders become path chips on the local environment and are refused on remote ones (#12001)"
     },
     {
-      "sha": "cb293fe790fef3acba6220404f30c1665cde5fdb",
-      "subject": "fix(mobile): restore iOS Threads branding (#4862)"
+      "sha": "eff44be433dc9683da7764a20334598e47b127b2",
+      "subject": "feat(usage): show OpenCode Go, Cursor, and Grok subscription limits (#12115)"
     },
     {
-      "sha": "1d694dcbd8d27c994b3bdc66c4bdb199faf2efc3",
-      "subject": "fix(mobile): default bare IP pairing to HTTP (#4990)"
+      "sha": "052c7ae53e46c705d5fd5dfa995275bc3100744e",
+      "subject": "feat(chat): show provider thinking traces (#11784)"
     },
     {
-      "sha": "32407df9c5ffd3c5dda2e745568997ac33c15ed1",
-      "subject": "fix(shared): lenient JSON parser deletes commas inside string values (#5025)"
+      "sha": "f4ef5155fb8aab7776a41fc8ec73d5367f53ba1f",
+      "subject": "feat(web): add send shortcut and follow-up controls (#12075)"
     },
     {
-      "sha": "162e774294f9e3dda15ca2f8083db019fe398837",
-      "subject": "fix(mobile): remove unnecessary photo library permission (#4929)"
+      "sha": "0b83045d00d88d0a0b0866fe4942a50a41a08471",
+      "subject": "feat(providers): expose native slash commands across clients (#11519)"
     },
     {
-      "sha": "063ed7120a17de65fcd5bd835b5c7c4e19536037",
-      "subject": "feat(shared): support shorthand (major-only) versions in the semver helpers (#5027)"
+      "sha": "e8ca3a82806dff84438d5aba66b693468f7ca426",
+      "subject": "refactor(web): centralize pull request icon state presentation (#11144)"
     },
     {
-      "sha": "34b15a9acec5519425c81bdd2a10f11e9ba3d23d",
-      "subject": "perf(server): cache default branch name and origin existence across status refreshes (#5008)"
+      "sha": "f45c6b4a755905485431872f4a4188de3ed05974",
+      "subject": "fix(web): submit PR comments with Cmd/Ctrl+Enter (#11994)"
     },
     {
-      "sha": "fbecb7365ede9892045dec4d03805d20ef9859f8",
-      "subject": "fix(desktop): bump Clerk Electron SDK to 0.0.24 and register t3code:// scheme on Linux (#5015)"
+      "sha": "ccf220be205f0e509021dbc8cbda90daa638e20d",
+      "subject": "docs: make the standalone installer the primary way to get the CLI (#11696)"
     },
     {
-      "sha": "4029b858eaaa3f029d30a02a930f887853239169",
-      "subject": "fix(ci): drop sparse-checkout from EAS workflows"
+      "sha": "b900fc94ebe630155783c07324c58af7e6387a03",
+      "subject": "feat(web): reveal timestamps on tool rows and turn folds (#8641)"
     },
     {
-      "sha": "5b2577f6a941527e4db4ae32d6d0992e435d58a4",
-      "subject": "style(web): make scroll-to-end pill translucent (#5036)"
+      "sha": "bf55408a5cddbb0f3f7f50d538398e315b5407d0",
+      "subject": "fix(server): resolve Node for standalone helper scripts (#12033)"
     },
     {
-      "sha": "bc142f84a2f1ab47b7bca2c363b72f9115d76bda",
-      "subject": "chore(mobile): bump app version to 1.0.1"
+      "sha": "6ee03240bccd9287a8c2246e9547697aa5857998",
+      "subject": "fix(clients): hold the discovered machine icon across relay refreshes (#12030)"
     },
     {
-      "sha": "e4829603ff70bdeac96780e1512ac2c09638e5a3",
-      "subject": "perf(ci): cut stale runs and redundant setup (#4802)"
+      "sha": "c1b2ed6504bbd57440d03c6a5af2736f33be7c65",
+      "subject": "fix(clients): show unsupported environments as neutral rows with their machine icon (#12026)"
     },
     {
-      "sha": "1d77cec991971d3113918e896b1c871e8b044da7",
-      "subject": "fix: cache project favicons across web and mobile (#4767)"
+      "sha": "0f5a1513e09fb41e0d0f86157aff64cc3657975d",
+      "subject": "fix(web): stop the worktree setup card from flashing and shifting (#12015)"
     },
     {
-      "sha": "4ba4871af76081f0e830a91b8f747ff2de53ba7d",
-      "subject": "fix(web): fill fast mode icon (#5004)"
+      "sha": "fe896e6a90dd2a91e9499c098bb621568a3f341f",
+      "subject": "chore(release): prepare v0.0.42"
     },
     {
-      "sha": "edc503a7a8ea5284a2711981c1a10a6b9999f5e4",
-      "subject": "fix(server): restore PR detection without HOME (#4985)"
+      "sha": "53612cc040ad828566f958a275e3d3bad01c5033",
+      "subject": "fix(server): detect unsupported legacy Android command-line tools (#12017)"
     },
     {
-      "sha": "323dc321a2f8bec2160e6e35f94d07c5bb949084",
-      "subject": "fix(mobile): support pre-Liquid-Glass iOS bottom toolbar (#4984)"
+      "sha": "3060cc461458e66842dfb656d979c4acca4dfb20",
+      "subject": "fix(release): restrict stable channels to main"
     },
     {
-      "sha": "6154b46cb86b038f1b54c32690a794ac639520ca",
-      "subject": "Check for mobile app updates on launch (#4958)"
+      "sha": "47ef0177dc18d328e91c64a1641cfe1f37298160",
+      "subject": "Revert \"chore(release): prepare v0.0.41\""
     },
     {
-      "sha": "abc409c2d4a072c2de46c9015f5cffff00dcc46b",
-      "subject": "Add project file picker (⌘P) and project content search (⇧⌘F) (#4855)"
+      "sha": "0bf2d6b0109f243add8fb6d727e153e97dd51802",
+      "subject": "chore(release): prepare v0.0.41"
     },
     {
-      "sha": "1877237c7ae99ecf2163b4c5bb7d3e14bebcca4d",
-      "subject": "fix(connect): reboots no longer strand the relay link, 403s now say why (#4988)"
+      "sha": "f8500f11271622ed82df7f6c1d7f73eddb4f43e6",
+      "subject": "fix(mobile): use native toolbar search for licenses (#12011)"
     },
     {
-      "sha": "e0513d29839f934df1d5a13551e6ccd76d11006b",
-      "subject": "fix(web): server updates no longer look like warnings (#4992)"
+      "sha": "eed974c122e192de45b54b7dac7ca1a51448c08f",
+      "subject": "fix(server): keep Claude rewind when fork history length changes (#11954)"
     },
     {
-      "sha": "9dd425b2234c062b4767583e42d4b2c1aabab15d",
-      "subject": "docs: split user and maintainer docs, fix 100+ stale claims (#4807)"
+      "sha": "0ec2b08a9a1db6fa35fab8d505b5bdc2d3709a8a",
+      "subject": "fix(mobile): bare t3code:// links no longer reset navigation to Home (#12002)"
     },
     {
-      "sha": "50871eb5de641ffd41b1f9d0151668982d276393",
-      "subject": "fix: marketing site Vercel builds no longer die after ~100 deploys (#4975)"
+      "sha": "8c18b5bb21a5349fbadba8c77456ea34c41b7339",
+      "subject": "fix(antigravity): stop health checks from filling the disk with _MEI folders (#12008)"
     },
     {
-      "sha": "4b71a2ae2ffbbb7b6936051552094b71364cefd4",
-      "subject": "feat(search): find threads by conversation content (#4959)"
+      "sha": "935c55b3778fdeae0e25b250ce2a9fa7e79c0327",
+      "subject": "fix(clients): disable incompatible environments during discovery (#11990)"
     },
     {
-      "sha": "197d3487116372ca2f16661f57d4e869fc3cb6c0",
-      "subject": "fix(web): show server update progress through reconnect (#4903)"
+      "sha": "7a368fe7c45a45c284f1b064e440a2d696452b07",
+      "subject": "refactor: give project monograms their own icon variant (#11993)"
     },
     {
-      "sha": "5c9358acaa34f8619513bba1e6821f0fdec27f74",
-      "subject": "feat(web): regenerate thread titles from sidebar (#4810)"
+      "sha": "b12c92f695a6b12116fb2cda40d610bdbe2a9566",
+      "subject": "fix(server): reuse Git index metadata during checkpoint capture (#10792)"
     },
     {
-      "sha": "cbe8052020aa0c02c63fbe090e7f1f25603622d1",
-      "subject": "feat(web): pasting a huge screenshot now compresses it instead of erroring (#4967)"
+      "sha": "37a8ab2b29dfa33b4e20ad709a9860f0da7b7eb2",
+      "subject": "feat(lint): extend Hermes API bans with a configurable API list (#11982)"
     },
     {
-      "sha": "69a18ce912ac3ae93cf498cfe0cee40beb49fb9f",
-      "subject": "perf(mobile): reconnect environments immediately on resume (#4878)"
+      "sha": "6f7aaffe26f0e6ae3d47b0ae512b322f890e0f43",
+      "subject": "fix(contracts): avoid Intl.Segmenter in monogram validation (Hermes crash) (#11984)"
     },
     {
-      "sha": "f0c6ba994670bbd9eeab97eab6701d5c3589178d",
-      "subject": "fix(web): keep worktree default when switching a draft's machine (#4964)"
+      "sha": "87a12b53fdff7e2e0318af3edea54005557cea56",
+      "subject": "fix(usage): refresh limits when the tab opens (#11928)"
     },
     {
-      "sha": "90f3913a81380af7aeafac62f8132aeb98345a12",
-      "subject": "fix(mobile): stop long iOS threads from jumping while scrolling up (#4867)"
+      "sha": "f4600d77dd7c2fa9f10e8f4500882e427fcc7e26",
+      "subject": "fix: reduce GitHub quota use with sharing enabled (#11888)"
     },
     {
-      "sha": "2652fee49bdb0a7d286124cd2bd318155d4a7931",
-      "subject": "fix(mobile): support dragged images in the composer (#4953)"
+      "sha": "b84f63bb13f13b1d0ee8537c4d244d6f1efdb987",
+      "subject": "fix(server): block updates under legacy service launchers (#11940)"
     },
     {
-      "sha": "2f466ffc9ca21b2d536082dd821a1f57e0f354b1",
-      "subject": "docs: seed worktrees with a copy of real userdata instead of banning it (#4949)"
+      "sha": "f0a0ead946ca3f3f310460a91b7dabb0e3fe4834",
+      "subject": "fix(web): keep PR controls readable in narrow panels (#11962)"
     },
     {
-      "sha": "9146ed2f49a094aa8afee7d3a66987e2a82aaaf6",
-      "subject": "fix(web): show Codex fast mode as a bolt (#4947)"
+      "sha": "2c16c1d264173d86fc354e9a4c0c78cd42e514b7",
+      "subject": "fix(mobile): block incompatible server connections (#11974)"
     },
     {
-      "sha": "f0f16e4f6e8e923dcb17fc1c25d4fb1e442f80a5",
-      "subject": "perf(mobile): sends respond instantly, thread opens stop freezing (#4882)"
+      "sha": "e6ae764f47d678b96f4a1b2c8c76eedf1a342e26",
+      "subject": "feat(mobile): add v2 preview store builds (#11966)"
     },
     {
-      "sha": "00da6b57a43aef39162ff9e8205b5441c24298d0",
-      "subject": "fix(mobile): stop shared content errors in Personal Team builds (#4943)"
+      "sha": "719a76ca1dbf5490f1aa33ffb9966301e02be9a9",
+      "subject": "feat(web): choose queue or steer for follow-up messages (#11964)"
     },
     {
-      "sha": "6ab2f16809e584449831aa5dba0b0e5ca14a2a54",
-      "subject": "fix(connect): suggest a serve command that matches how you ran connect (#4897)"
+      "sha": "96bddf81258090690bfcf4e6a6414aa0dcf1910a",
+      "subject": "fix(desktop): paste as text no longer doubles the pasted text (#11958)"
     },
     {
-      "sha": "6efcf3e10c02935780af6cc06f7146b8c9731ee2",
-      "subject": "fix(web): align remote server update action (#4731)"
+      "sha": "b18a560bbac70c7166677d7f3bb51ecaf42acf08",
+      "subject": "fix(mobile): update Reanimated and Worklets (#11957)"
     },
     {
-      "sha": "748203ea19fb68741709614b33b305079f0f4c05",
-      "subject": "docs: link iOS and Android app store downloads (#4902)"
+      "sha": "844203d4fe5f82b4bfd24ff31655307bd201893b",
+      "subject": "chore(deps): bump Clerk stack to latest stable versions (#11956)"
     },
     {
-      "sha": "b125b7635170ec0c33f8ddf39299155a21f8c9b9",
-      "subject": "fix(composer): hide default Codex service tier (#4784)"
+      "sha": "a5da32750125c3bedb959bf331e5e49e95b95e5d",
+      "subject": "fix(client-runtime): preserve cached turns and older-page loading (#8309)"
     },
     {
-      "sha": "758decaa565f021f85af756669b18bd9f80cacf5",
-      "subject": "fix(clients): disable add project while disconnected (#4834)"
+      "sha": "3efdcc5296f1754e0f3bf7fee5fc2ada510e0438",
+      "subject": "Preserve diff tree order and collapsed folders (#11931)"
     },
     {
-      "sha": "2d9066e089c241c3befd7a4632efe493fabd70d9",
-      "subject": "fix(web): settle button now works on hover, not just right-click (#4905)"
+      "sha": "7235701de052658cd78cb029b0df71af4b8dc21f",
+      "subject": "fix(server): release preview hosts after unanswered requests (#11381)"
     },
     {
-      "sha": "35a684000d2aa6d106aed93df52a9105883f9f3f",
-      "subject": "fix(web): restore sidebar v2 thread actions and terminal icon (#4712)"
+      "sha": "24b711b7f9ccba03518551991e466e2e4f8ace5a",
+      "subject": "fix: multiple UI and server bug fixes (#11593)"
     },
     {
-      "sha": "9e3e9bb4f081a6ad331cb94b42b2bd2d93339b81",
-      "subject": "fix(mobile): reduce thread feed scroll jank (#4874)"
+      "sha": "438465d6b7dd2e50dd38862a0db1252d2d72ecfc",
+      "subject": "feat: add customizable soft-tint project monograms (#11845)"
     },
     {
-      "sha": "a8e05cbb92633a1351529f2bc402071f615e5051",
-      "subject": "chore(release): prepare v0.0.31"
+      "sha": "d07ffbe351a10e1001f6d8eafa5b7533b8bd7e23",
+      "subject": "fix(mobile): keep iOS chat rows aligned after measurement (#11813)"
     },
     {
-      "sha": "e6987965f65914861f0dabd0db03729fe5cd2508",
-      "subject": "fix(web): remember the rendered-markdown choice across threads (#4853)"
+      "sha": "caf8b5d798909780a7b197cb264e782888b919c1",
+      "subject": "fix(mobile): wait for thread deep link hydration (#11502)"
     },
     {
-      "sha": "fc28abf24b034502402cba1fedf5fa38658ee2e8",
-      "subject": "Fix editable file focus and live syntax highlighting (#3979)"
+      "sha": "d1790aa14639a0361c02fbc5c326d0aa76f95a83",
+      "subject": "fix(mobile): add missing thread rename action (#11503)"
     },
     {
-      "sha": "85a89868703530e03c5e79797c7b952c684bd222",
-      "subject": "fix(git): disable external diff for review diff previews (#4854)"
+      "sha": "2a264adc6f6c65f98d4273acaa1af567eca83f2a",
+      "subject": "fix(server): explain how to configure a missing Codex executable (#11345)"
     },
     {
-      "sha": "faea70aebae41f1257140c6722f1d78f12f5eb74",
-      "subject": "perf(server): merge separate staged/unstaged numstat calls into single diff HEAD --numstat (#4843)"
+      "sha": "9a6b57be2ae601e6969669a8ad276f974b2a5978",
+      "subject": "fix(web): drop the filled well behind the sidebar header buttons (#11660)"
     },
     {
-      "sha": "d19039aeef6942e6eb204856c43b5354c0333e2d",
-      "subject": "fix(server): detect repositories after initialization (#4848)"
+      "sha": "c1b2210411da79350a3f9f5a65a4a64971e4acad",
+      "subject": "fix(desktop): keep the sidebar brand and window buttons aligned (#11906)"
     },
     {
-      "sha": "49c0d96edf280f1fe6750a83161a3a2cff0f25ef",
-      "subject": "Reduce idle work and disk churn with native resource diagnostics (#2679)"
+      "sha": "ae53072af0560c0606202b87b5fdb7e52d48ac5c",
+      "subject": "fix(web): keep the composer ready during background worktree setup (#11883)"
     },
     {
-      "sha": "3137c2b162109640343a6ff88120609e061f3782",
-      "subject": "Preserve the thread shell while detail loads (#4830)"
+      "sha": "e33b710d5f1147993e52076a9e033d97ef4106ad",
+      "subject": "fix(mobile): match command palette colors to sheets (#11861)"
     },
     {
-      "sha": "c3e8fb67d73955862ac312c801d45f2cc00c7178",
-      "subject": "Update model version from claude-opus-4-8 to claude-opus-5 (#4832)"
+      "sha": "bf3be75c400cf605dc0c80de9458458854c84131",
+      "subject": "fix(web): center refresh devices in the empty state (#11808)"
     },
     {
-      "sha": "72b960fa3985ec61af6a459431861a5dcb360009",
-      "subject": "build(desktop): reduce installed app size by ~300MB (#4824)"
+      "sha": "3c4c9a125bf6e3dd7207fff23b4bf3d449e4df36",
+      "subject": "fix(web): restore composer focus after closing option menus (#11884)"
     },
     {
-      "sha": "08e4932f0465327968368b22be343b58a07d476a",
-      "subject": "Simplify files panel header (#4828)"
+      "sha": "50ff4c371eab927a9650c114975241999f4cd7b1",
+      "subject": "fix(mobile): ensure a compatible native client before verification (#11862)"
     },
     {
-      "sha": "1b4830ff06bf80e505dbf669deef189af85f77d7",
-      "subject": "fix(desktop): restore T3 Connect sign-in (#4809)"
+      "sha": "6ecc15fa25c808922a58f07377add25b55d9ac90",
+      "subject": "fix(mobile): restrict row highlighting to pointer input (#11863)"
     },
     {
-      "sha": "694f8d1c6eaaabafbf5c2861ae524174919ef625",
-      "subject": "chore(release): prepare v0.0.30"
+      "sha": "9ea892e3b365faff31eed294ac38f70d122656b2",
+      "subject": "fix(client): show thread state changes before remote replies (#11408)"
     },
     {
-      "sha": "1b61ce1112d56358a4207322620c20ac3f3ce8a8",
-      "subject": "Fix Connect sign-in settings label (#4806)"
+      "sha": "a37b85279d71f958482cb8b6fef1886cdb43f364",
+      "subject": "perf(server): speed up worktree fetch and checkout (#11633)"
     },
     {
-      "sha": "60af905e70c944228cb35a74fa50740ec4b2d1f7",
-      "subject": "Remove Connect waitlist and add GA announcement tooling (#4691)"
+      "sha": "5b377e2a047569ff928ccc6b07a900f698332496",
+      "subject": "fix(server): bound Git process bursts to keep connections responsive (#11405)"
     },
     {
-      "sha": "8650f05f95ac9f19254de679fdf4b380c37d7b94",
-      "subject": "refactor(server): use native HTTP compression streams (#4798)"
+      "sha": "cc839c42b1adfddd059142bb6d7151719080c4ea",
+      "subject": "feat(web): queue messages sent client-side while the agent is working (#11673)"
     },
     {
-      "sha": "8fe8f9a9c1486528f689a7499c2eb78217d35caf",
-      "subject": "fix(mobile): defer filesystem navigation (#4799)"
+      "sha": "2c19283afed1e3b69a9af33360980527aeb37494",
+      "subject": "feat(server): persist the worktree setup send and progress on the thread (#11852)"
     },
     {
-      "sha": "936593c2583c6640a07fc310f97bd5d0c27a7c31",
-      "subject": "refactor(client): share filesystem browse navigation (#4797)"
+      "sha": "26b8f985d85773e41a2ee637785f7c87d5c1a01e",
+      "subject": "feat(mobile): add iPad keyboard shortcuts and command palette (#11679)"
     },
     {
-      "sha": "2919147c80e4daae326a25f870a1c7b19cd16f42",
-      "subject": "fix(release): skip scripts during Vercel installs (#4796)"
+      "sha": "b20d29dc438bcabb2c25e85976dc108169bb4c6d",
+      "subject": "fix(desktop): prevent startup from running twice (#11857)"
     },
     {
-      "sha": "1ba3d01bc61d142eacda7c45aa3af748e4afa1bb",
-      "subject": "fix(web): defer command palette filesystem navigation (#2109)"
+      "sha": "0310cbf9f46ca94e9df0231a3440bca08ac44709",
+      "subject": "fix: keep worktree setup visible after leaving and reopening the thread (#11836)"
     },
     {
-      "sha": "5fcdefd057751eb511de9e61142ef797f142059b",
-      "subject": "perf(server): trim stale context-window rows and drop dead replay RPC (#4791)"
+      "sha": "5623089aea68ca62811f51321686c259fa4c810f",
+      "subject": "fix(server): disable color probes in worktree setup (#11843)"
     },
     {
-      "sha": "38a6e3ce65b1d4fa58788faa96ff9410a8c26ffe",
-      "subject": "Fix Git ref refresh resource storms (#4727)"
+      "sha": "a62e7d670c67bf221a5699b5a988367781fead74",
+      "subject": "refactor(server): align title generation with Effect conventions (#11847)"
     },
     {
-      "sha": "f2d2fb2f2444bcabc31bf906b5b334aee0d9d79c",
-      "subject": "fix(web): stashed prompts now survive switching providers (#4787)"
+      "sha": "08abda9dcf6fee89561f861004efb48bad665df2",
+      "subject": "refactor(server): resolve title links through source control providers (#11844)"
     },
     {
-      "sha": "8829e2f9b960eb31dc62ddab256d5da82c5077a6",
-      "subject": "perf(server): gzip large thread snapshots (#4788)"
+      "sha": "8b9f6d3d5596f2d9990697ebb1e9b8afa4a1dafd",
+      "subject": "Change conclusion from 'failure' to 'neutral'"
     },
     {
-      "sha": "2deea7abb0f9e4df71ca10da06a8d7268a4b9d42",
-      "subject": "Prevent sidebar row labels from truncating (#4789)"
+      "sha": "970a8730eec2ae7faa89639365c02b03fe53ac4e",
+      "subject": "Change conclusion status from failure to neutral"
     },
     {
-      "sha": "b64ae880e0f88cd35e2f7e1f5fab868546fbe29b",
-      "subject": "docs: overhaul agent guidance (#4782)"
+      "sha": "537dc0fe15242940038c6b964aff861989178c45",
+      "subject": "Remove labels from ui-consistency.md"
     },
     {
-      "sha": "887dd6e455bb969c1a0c9659a6bdf2baceac030d",
-      "subject": "perf(server): negotiate permessage-deflate on the websocket (#4705)"
+      "sha": "e9b055588ab22a060c41abcc37669ae4f44ef8e8",
+      "subject": "Remove labels from effect service conventions"
     },
     {
-      "sha": "f1a68ac9b05c93292e677f700ae3ce7f7ac7f064",
-      "subject": "Fix Android showcase capture and rebuild v2 queued rows (#4730)"
+      "sha": "7cafe52bb8f1a4f26e9a8504c53ceae5cb32548a",
+      "subject": "fix(server): keep thread titles tied to user intent (#10720)"
     },
     {
-      "sha": "55dd01612efc51e19de479da5a0e348cbe2521e3",
-      "subject": "Link inline code file paths in chat markdown (#4726)"
+      "sha": "b5b29e7b8b12536a0619fb6df54d20d2b649d6e5",
+      "subject": "fix(server): stream tight list items one at a time in paragraph mode (#11833)"
     },
     {
-      "sha": "3c50a6488503f3ca73e0abe6e50ebdf5cb1a8167",
-      "subject": "fix(web): prevent diff panel scroll jumping (#4724)"
+      "sha": "5ea6439816470288d3f2b6b43635fea41fbbb101",
+      "subject": "feat(web): inline worktree setup rows and async setup scripts (#11832)"
     },
     {
-      "sha": "9ccfd9dfef4e78285f9ac2a83b0333e67df36378",
-      "subject": "fix(desktop): allow updater-controlled relaunch (#4721)"
+      "sha": "6dbea7ed0947780694943bd86c4cd22cebbcd8eb",
+      "subject": "chore(mobile): bump app version to 1.2.0"
     },
     {
-      "sha": "4f584da0f84666bda0cd399721115b0001cc0308",
-      "subject": "feat(web): add appearance settings category (#4715)"
+      "sha": "ea6af5924b3d55265826641233a1eda0bfc9a2e7",
+      "subject": "feat(mobile): redesign the Android agent activity card (#11645)"
     },
     {
-      "sha": "362f12792254335bfe2a015787d7cbbaa214654e",
-      "subject": "feat(web): add maria's sidebar header artwork toggle (#4652)"
+      "sha": "3be02ae5791480b8c8bf3a13020a932378eca1ba",
+      "subject": "feat: add custom snooze dates and durations (#11800)"
     },
     {
-      "sha": "9cf9fc9c5c0f48d42f407f86cf83d0f04fbdf5a8",
-      "subject": "Settle merged PR threads immediately (#4704)"
+      "sha": "014016a62344ab03dbccdb73c3c1861bc4f7e349",
+      "subject": "fix(web): make copy PR link discoverable in keybindings (#11826)"
     },
     {
-      "sha": "e00781a6619125e30f3e30ec6e17bc4c61d30502",
-      "subject": "Fix relay credential lookup for unlinked environments (#4692)"
+      "sha": "9a49d6d5a656254d7079d463aa6ead5d62f4a3e6",
+      "subject": "ci(desktop): sign fork PR macOS previews without exposing signing secrets (#11760)"
     },
     {
-      "sha": "d25b15737a058614ab6632bbad23d2497e49b62c",
-      "subject": "Fix mobile showcase workflow without Clerk (#4718)"
+      "sha": "5bf43c9f3d09faae49fbc99714456d18e3172ff2",
+      "subject": "fix(web): align monogram project icons in menus (#11806)"
     },
     {
-      "sha": "b0c4992c79605ec310ed9fee6b60fad6e145def4",
-      "subject": "Make mobile Thread List v2 the default (#4717)"
+      "sha": "7931227977ca3e6f3354a63467caa634ab79796f",
+      "subject": "fix(server): stop refreshing providers on every config subscription (#11811)"
     },
     {
-      "sha": "dd5ea324885aea4980a49bb42d28f83023c40ea7",
-      "subject": "fix(web): 33 web UI fixes (#4700)"
+      "sha": "84192388b3a54ef593d35b64390f99bf6dec6a74",
+      "subject": "Add new GitHub user f-trycua"
     },
     {
-      "sha": "c13a021e432e94728fe88ff983fb9601c6d6b943",
-      "subject": "feat: default sidebar v2 on for nightly and dev builds (#4491)"
+      "sha": "dc0869b605f60c2c8afa924035a81c8f98b29385",
+      "subject": "feat(server): use Clerk's device authorization grant for headless connect login (#11794)"
     },
     {
-      "sha": "476d69cd1d5d89b4aad77df8fc01c71e34af930c",
-      "subject": "fix(mobile): threads load snapped to bottom on iOS (#4689)"
+      "sha": "0f21fcbb6dbabb6d2185a73edf6b865fd64c6019",
+      "subject": "feat(mobile): add a T3 Connect page to the Clerk profile (#11765)"
     },
     {
-      "sha": "a148e08197fc38b24e59c10c7cd5ba06dd182dab",
-      "subject": "Add OTA update checks to mobile settings (#4686)"
+      "sha": "bcc20249cc0a888430f2006d61c11de176d531cd",
+      "subject": "chore(deps): bump the Clerk stack to current releases (#11764)"
     },
     {
-      "sha": "831eb66fee91e397f5f8d6ae179408291e8f28b0",
-      "subject": "chore(release): prepare v0.0.29"
+      "sha": "9d4bb550a6588a462852a7802bc37a3fd62d0a76",
+      "subject": "fix(mobile): scale inline pills with Dynamic Type (#11792)"
     },
     {
-      "sha": "1153afb4fb694944b5c25e2153b904a85cf47d70",
-      "subject": "fix(mobile): match react version to react-native 0.85.3 vendored renderer (19.2.3) (#4675)"
+      "sha": "549d182aaadbf0e1e195d1a8cdc1805200e6751e",
+      "subject": "feat(mobile): clone repositories in the background and gate the draft on the clone (#11774)"
     },
     {
-      "sha": "a2ffb122e2041731d1efe24d999aefe4e1ff7c03",
-      "subject": "Show origin ref in branch trigger label (#4680)"
+      "sha": "8d7c700c1788c4f42932cd3be541b3c630bd664d",
+      "subject": "feat(web): clone repositories in the background instead of holding the palette open (#11762)"
     },
     {
-      "sha": "3957a958184650656dbbab6d73d9882de9855bd5",
-      "subject": "Use glass surfaces for web toasts (#4681)"
+      "sha": "112a7088da63ea4fa48fee63dc8f29557c545ed7",
+      "subject": "fix(web): use project monograms for automatic icon fallbacks (#11572)"
     },
     {
-      "sha": "6a3df51707b67c3435f86b3b83a093aec8b03415",
-      "subject": "Fix sidebar highlighting for draft threads (#4679)"
+      "sha": "f328db30da063a7bce9a9d038fc583d3ff83673a",
+      "subject": "chore(server): keep the legacy service entry point to the npm package only (#11770)"
     },
     {
-      "sha": "6afbed3c36bbb731b9551ec60d7d12ed1fd1d2ee",
-      "subject": "Clear provider update actions while updating (#4676)"
+      "sha": "9130d932f4ddb8abab595b7d12553b46a11c7b22",
+      "subject": "feat(web): add composer and PR number shortcuts (#11615)"
     },
     {
-      "sha": "eea3ea4c6ffc4567ab1037cbf53feb33af0bb132",
-      "subject": "feat(diff-panel): show total line additions and deletions (#4674)"
+      "sha": "33118d9ab263904e4180b3bf2cbf0a36fe0695e2",
+      "subject": "Add T3CODE_OTLP_PROTOCOL to allow protobuf protocol (#11224)"
     },
     {
-      "sha": "10bca3f44e1be6a874438fe80badbad45cd00279",
-      "subject": "feat: add configurable source control writing settings (#4204)"
+      "sha": "47ace94962a714a561d7cfbdbaa4c721ef6b0598",
+      "subject": "fix(web): use consistent PR section toggles (#11763)"
     },
     {
-      "sha": "e77f42c111dc40e0b208393957ebb23863330e2e",
-      "subject": "Prevent draft thread detail polling before shell registration (#4670)"
+      "sha": "494cfac2494095c3f9b24cc16fb73721f84894a4",
+      "subject": "Allow setting T3CODE_OTLP_HEADERS (#11218)"
     },
     {
-      "sha": "6e3b73884bf40eeb2859cb16f1200c8e2f9cf7c3",
-      "subject": "fix(server): bound editor discovery during config loading (#4291)"
+      "sha": "ec5ede5e6a1f2f9d564a5834462f47d1b7e5f0ec",
+      "subject": "fix(web): open video attachment thumbnails in the viewer (#11734)"
     },
     {
-      "sha": "5ba6ef7f84a5586e3795264cae348404dd408cb5",
-      "subject": "Use tarball archiving for hosted web deploys (#4669)"
+      "sha": "05e3bcbc65d43adc70c900f176bec6c095b3b833",
+      "subject": "fix(desktop): keep preview releases out of the nightly update changelog (#11753)"
     },
     {
-      "sha": "80ead5f3a7743010cdab6ad84fa4dcbd4c021038",
-      "subject": "Add glass styling for thread tooltips and simplify preview tab handling (#4665)"
+      "sha": "955b787e6b9fb8666e84abfa6868671859d72f7e",
+      "subject": "fix(server): parse CLI versions with a \"v\" prefix (#11738)"
     },
     {
-      "sha": "32af2f002468c320d40ab730b575dea872f1d86d",
-      "subject": "fix(preview): stabilize PiP viewport identity (#4661)"
+      "sha": "ae67c5b8159cb49a68c16f96f7bb64a2e3c6b1c6",
+      "subject": "fix(release): stop npm from pruning the platform packages' shipped node_modules (#11750)"
     },
     {
-      "sha": "f0121f31d0e7c069f4007480fc13907c28efd4d5",
-      "subject": "fix: close actions dropdown when editing (#4660)"
+      "sha": "8b1ea4dd2465f3cf3cfa02d6878beaa1ec22e71a",
+      "subject": "fix(desktop): restore Node discovery for WSL providers (#11741)"
     },
     {
-      "sha": "0e19c103ef07b6a2c143839d2d2a9cf223915d1e",
-      "subject": "Keep MCP credentials alive across provider turns (#4659)"
+      "sha": "9375c779707fb95c06670db6da87441720b2d2e2",
+      "subject": "fix(release): preserve updates from npm-based services (#11732)"
     },
     {
-      "sha": "32843c2551bd5832d436ef46bff5ab1198cdc39c",
-      "subject": "fix(web): constrain branch toolbar context (#4657)"
+      "sha": "6f00d3881a197dd33c2cb43c6a11a9e759e56089",
+      "subject": "fix(web): remember panel width for each thread (#11310)"
     },
     {
-      "sha": "da11342e03dbf2bf46058d66b9c4f4eab8047a5a",
-      "subject": "Fix live sidebar resize limits and defer Alchemy runtime context (#4655)"
+      "sha": "8ef478eb0a6deeef81c5421dd7bb1c6b8c4d0e7d",
+      "subject": "fix(server): avoid extra round trips for terminal output (#11407)"
     },
     {
-      "sha": "180620e43688843e694c6fd155d4e113886698a0",
-      "subject": "Fix Relay Worker RuntimeContext wiring (#4653)"
+      "sha": "0dec07d91488e08206ad32f9758a95acd746c424",
+      "subject": "fix(web): keep large image previews from stalling composer typing (#11324)"
     },
     {
-      "sha": "96398e3775fc6c74525e4a211e75e580c6cf4225",
-      "subject": "feat(connect): release the Cloudflare tunnel when the environment shuts down (#4531)"
+      "sha": "01e05c15268dedb76da95f442fbf5201cd8e7a44",
+      "subject": "docs(claude): clarify OpenRouter model selection (#11369)"
     },
     {
-      "sha": "d2d40b6c1aa2464b38357d52b7f991cfb422a669",
-      "subject": "Drop redundant Relay user indexes (#4648)"
+      "sha": "d8655ed2fcf5cac3e1742459476b4a392b949367",
+      "subject": "feat(cli): add t3 service restart and make t3 update repoint the service eagerly (#11702)"
     },
     {
-      "sha": "724887717f1b5ded5b60bd5abe7e41a9ce5b47e5",
-      "subject": "fix(web): scope PR state to the thread branch (#4460)"
+      "sha": "cba7dd77817df2a458d86977f1daf4606c67dfc8",
+      "subject": "feat(desktop): allow disabling the local environment (#9194)"
     },
     {
-      "sha": "bdf99c17bf7ae634728481677cf1bca8db65d00e",
-      "subject": "feat: allow new thread creation through project breadcrumbs (#4638)"
+      "sha": "e3792a53f7d7f9ebba37abfca99073f3f1ead2a7",
+      "subject": "Update model and input type in ui-consistency.md"
     },
     {
-      "sha": "108e01746c585d98703df5fe76cb6c213ecb6b8f",
-      "subject": "Upgrade Effect and Alchemy betas (#4643)"
+      "sha": "0b54e00f9ba9d86b05b462955e84c9944349d55b",
+      "subject": "Change input type from 'full_diff' to 'incremental'"
     },
     {
-      "sha": "200fa826b02cf0503c6f6c2bd7250a58747bff2d",
-      "subject": "feat(web): prompt stash — cmd+S saves the composer to a per-provider queue (#4453)"
+      "sha": "8984f8103d0836c0b340fe70cd053428d622a8c3",
+      "subject": "fix(web): test device hosts across selected environments (#11699)"
     },
     {
-      "sha": "f4c394323d458224b25898ef784ca0a0cc2969af",
-      "subject": "Add background preview capture and picture-in-picture support (#4397)"
+      "sha": "1ced38a6647b7f466b535b4b413ca4a74303da8e",
+      "subject": "fix(server): skip device hosts that resolve to the local machine (#11698)"
     },
     {
-      "sha": "2b06c08a4bdc1ffa46a37710d3bf27c80802a949",
-      "subject": "Add managed tunnel limits migration (#4635)"
+      "sha": "73b206f4bf99e7e98ae144a9d9edbf7cb2700fc1",
+      "subject": "feat(web): show each worktree setup step and let users cancel it (#11372)"
     },
     {
-      "sha": "a78f245dffc3123af36fb66cd2c95aac1a48ffd9",
-      "subject": "feat(relay): limit managed tunnels per user (#4530)"
+      "sha": "b70015b6db8ffafd902174f78cb260cc8082fc6e",
+      "subject": "feat(cli): add t3 uninstall for self-contained installs (#11659)"
     },
     {
-      "sha": "23ea08daf27a2f56b85e605dd3d36f66bd1a132d",
-      "subject": "test: account for lazy thread feed details (#4628)"
+      "sha": "91cd91c0872bd52be3b45bea70a9539d1ce6adaa",
+      "subject": "feat(release): publish npx t3 as a launcher over per-platform executable packages (#11607)"
     },
     {
-      "sha": "b4680cbfd064d59fdd2386a5ac6fc75e26e8c96b",
-      "subject": "perf(mobile): defer work-log detail serialization (#4607)"
+      "sha": "2f7616ef1743de52d24581f7e5724f8f674d9152",
+      "subject": "ci(release): build the JS bundle once and run every platform and architecture in parallel (#11606)"
     },
     {
-      "sha": "d60f6e971f8f982836f26507275d651e2e7af4a5",
-      "subject": "fix: cut websocket throughput in half by pruning activity payloads (#4622)"
+      "sha": "2c54f2ff17b3ae87bdbe4e072e38bd6f3045eb5b",
+      "subject": "ci(release): build CLI archives for five targets, each on its own architecture (#11605)"
     },
     {
-      "sha": "89c5a192f4d36bcf4201e8b490ab5ad37a4adac7",
-      "subject": "fix(dev): skip browser-blocked ports (#4608)"
+      "sha": "07549200dcdc70dce57285276879004024beeaa7",
+      "subject": "feat(desktop): run the WSL backend from the Linux CLI archive (#11511)"
     },
     {
-      "sha": "23b55022175e69938514934f65c5a607d38f1e47",
-      "subject": "feat(dev): Make t3 code dev instances shareable over Tailscale (#4556)"
+      "sha": "af6c138a0de297f94ddef3133e2f47d017b46e94",
+      "subject": "feat(server): manage runtimes as release archives only, never from npm (#11510)"
     },
     {
-      "sha": "a17cbc3b4022b824cda9b199e4c53a8c9a608923",
-      "subject": "feat(dev): keep worktree dev state isolated on T3 Code dev servers (#4555)"
+      "sha": "c7f23c4668ce3ff2e1b2f63fe51759d1bcc159f8",
+      "subject": "feat(cli): add t3 update for self-contained installs (#11451)"
     },
     {
-      "sha": "5719e8ac4020dda0e375ef61d044b61f55a0df8a",
-      "subject": "feat(web): show fast mode as a bolt instead of a \"Normal\" label (#4488)"
+      "sha": "13c134c10be163fa5345dd7c39371b6089e352bb",
+      "subject": "feat(ssh): run preview builds on remotes from the release archive (#11319)"
     },
     {
-      "sha": "38cfc25e5422e468303f2010f639cf3de9ad89ba",
-      "subject": "feat(web): add collapse-all toggle to diff panel (#4475)"
+      "sha": "8f90b380f676735f1e3026b5173c45c22d265583",
+      "subject": "feat(server): install preview runtimes from release archives (#11318)"
     },
     {
-      "sha": "41a430a88e8dde9c428f59d54dd328aa6a66a8fd",
-      "subject": "Add Claude Opus 5 model (#4472)"
+      "sha": "eb8f6f42a5cad1a5d0bc51eaa16cff13a9c69f45",
+      "subject": "ci(release): build, sign, and publish self-contained CLI archives (#11317)"
     },
     {
-      "sha": "ece05087a70e94efcd57441337fa1249559362ba",
-      "subject": "[codex] Fix glass hover compositing artifacts (#4446)"
+      "sha": "06de59b3d67e5be427ce4c7c8d41e91265709aec",
+      "subject": "build(server): make the CLI bundle loadable as a Node single-executable (#11316)"
     },
     {
-      "sha": "a7ee3092c3c4383a65a16a51de7e0328d6e027c9",
-      "subject": "Color settled PR labels on hover (#4451)"
+      "sha": "683aa87096899aa191e150429415ecc78966f538",
+      "subject": "build(desktop): bundle the main process and stage only its native externals (#11410)"
     },
     {
-      "sha": "f7cc7764887a3c0616973043fa77e12671e3f9ef",
-      "subject": "Restore model picker layout and retain iterative test state (#4450)"
+      "sha": "d81278aa6b272bb3d3314266c6d17f22504d19d6",
+      "subject": "revert(web): remove the compact sidebar (#11685)"
     },
     {
-      "sha": "15e875a2d9bdda2fc08909c4b1582a363d288403",
-      "subject": "Increase light-mode contrast for user message bubbles (#4441)"
+      "sha": "1bbca0e78202c8ece73351fccd29f3c99070b82e",
+      "subject": "feat(settings): choose how responses stream, with a warning on legacy token mode (#11678)"
     },
     {
-      "sha": "5d173547ff50a97eb9bdb50609fb76cd641c5aa0",
-      "subject": "Upgrade Clerk packages and Expo integration (#4440)"
+      "sha": "3b75e607eb909522a8f5562fb40e44efc72bb66c",
+      "subject": "feat(server): add reusable auth token for dev worktrees (#8606)"
     },
     {
-      "sha": "202e5609ffb294bc0aa86c08ce1d3751de567226",
-      "subject": "feat(sidebar-v2): thread snoozing (#4311)"
+      "sha": "564719165e9131ab2aa55e9c805b860a415690da",
+      "subject": "fix(mobile): keep usage widget rows consistently sized (#11669)"
     },
     {
-      "sha": "bb38c3320d0a4eec4e9097fdc400970d881ff559",
-      "subject": "fix(web): keep settled threads reachable when opened directly (#4413)"
+      "sha": "5e961d3d7fc07ff1ba998bfd20bb366c2ab8c9a9",
+      "subject": "feat(web): flatten the connections page into one environments list (#11672)"
     },
     {
-      "sha": "6b9a5987f686d0d904abe6f51b4be3bf873907e9",
-      "subject": "fix: Claude Code skills discoverable for the composer $ picker (#4414)"
+      "sha": "2d737465027b18cafd0c4704e9025b124bc94b2c",
+      "subject": "fix(web): disconnect offline servers from threads (#11671)"
     },
     {
-      "sha": "fc3f78f5d917fdeee6271d2f6fd42961369c7d9f",
-      "subject": "fix: tone down branch-mismatch banner (#4416)"
+      "sha": "c07575f573dd3a1af4f734297d17f7c951c95f10",
+      "subject": "feat(server): show finished paragraphs and code blocks while the response streams (#11062)"
     },
     {
-      "sha": "2f41c073a2f846e9a96082e76cd1b2c3a7e44c18",
-      "subject": "Stop new threads inheriting checkout/branch from viewed thread (#4411)"
+      "sha": "66e39ca2aabde054bc50312a9c34f05dbd1f6f9e",
+      "subject": "fix(web): apply device settings to selected environments (#11541)"
     },
     {
-      "sha": "51672b6ecb9d927d57d0b12dd071ca0d4a34ef36",
-      "subject": "feat(web): collapse large git diffs by default to make chat more readable (#4409)"
+      "sha": "3689c98d2739c6e5bf788850bc1a82a7372d313d",
+      "subject": "fix(web): separate expanded tool output from adjacent hover highlights (#11658)"
     },
     {
-      "sha": "67a7b1a1d3443beeedc6a3bd7fe9dd875f016b11",
-      "subject": "Improve composer glass fallbacks (#4406)"
+      "sha": "9086a1f7174c9a66c29c96bf0e3a2ddc33c5a507",
+      "subject": "fix(mobile): adopt system glass for Live Activities (#11604)"
     },
     {
-      "sha": "ce467da9cfae3d7952ce13a9e2450e2908e9f224",
-      "subject": "Polish iOS git progress overlay with glass effects (#4387)"
+      "sha": "7b61099886f3aac139ad43fb73873c73ba7baf4f",
+      "subject": "feat(web): show the linked pull request in the compact sidebar rail (#11652)"
     },
     {
-      "sha": "6ef7aa8399640fd2bf10fcb126c0db93fee47ff0",
-      "subject": "Fix composer context strip alignment and glass shell (#4404)"
+      "sha": "df7ccc8fd01f5d2a1d8ec21bef8f9c59398fe913",
+      "subject": "feat(web): refine compact thread row badges (#11644)"
     },
     {
-      "sha": "193e3c62e6d52fcc200d823ca6d9061d13f81f23",
-      "subject": "fix(client-runtime): keep a warm thread un-settled despite a merged/closed PR (#4309)"
+      "sha": "77bca8b2d76a1f42552e5eee7d277fcb1160347a",
+      "subject": "feat(web): add compact thread list mode (#9417)"
     },
     {
-      "sha": "91dfe60a99b7bf6cc44138a237e663ba158062b7",
-      "subject": "Fix thread loading flash (#4396)"
+      "sha": "6e5e986f15b3cbec3588646ddf216f00b4301785",
+      "subject": "feat: badge background thread notifications on desktop and web (#11569)"
     },
     {
-      "sha": "edb12401e547be4806836077f336295c58097c9b",
-      "subject": "fix(cli): publish nightly branded favicons (#4372)"
+      "sha": "dd6ba84dc96f83000388e14b90f6533d5f63315d",
+      "subject": "fix(server): fall back when new worktrees are unavailable (#6208)"
     },
     {
-      "sha": "79fe11bc1c586029dfe052df25f4b2d6227b3b33",
-      "subject": "Add preview color scheme controls and simplify project grouping (#4385)"
+      "sha": "9bf349cf6b3988dd01e2d9871b99e1be883aaa41",
+      "subject": "fix(cursor): preserve internal agent errors without transport labels (#11365)"
     },
     {
-      "sha": "b3e51317e404109ebc41fe1c9e487d5d73367e76",
-      "subject": "Fix logical project grouping labels on mobile (#4391)"
+      "sha": "0118b52295264a73ef7cd045437181f7b3e5a99f",
+      "subject": "fix(web): keep sparse sidebar shelves at the bottom (#11595)"
     },
     {
-      "sha": "ddd5a46f3942df302f8a13310cdfa47838b0ca81",
-      "subject": "fix(web): sidebar v2 polish — jump hints, working duration, in-flight fade, settled sort (#4274)"
+      "sha": "f26198d799bb81bf754985d457a60f8a851ea895",
+      "subject": "feat(web): organize connections by environment (#11542)"
     },
     {
-      "sha": "88c69ffff6ca3a025eec6a2ea597d4048e851266",
-      "subject": "fix(server): parse CLI version in update preflight (#4389)"
+      "sha": "42b6bcc6f59bd0369377746b0f2ef370c275b624",
+      "subject": "feat(web): add opt-in in-app thread notifications (#11570)"
     },
     {
-      "sha": "979854895cc539269213915cd6581cf444089bdc",
-      "subject": "Fix thread tooltip folder icon color (#4383)"
+      "sha": "ca2cc1339bbd1904b932c3a92d23a2c0ffe1d267",
+      "subject": "feat(web): add optional compact sidebar rail (#11525)"
     },
     {
-      "sha": "9cbe50d10de90684f4322d467dd1eafe9f726045",
-      "subject": "fix(web): restore dark composer toolbar styling"
+      "sha": "e6286839369a29d829aee3c64dd64ce39c626d2f",
+      "subject": "fix(web): retry startup after the server recovers (#11291)"
     },
     {
-      "sha": "9d9208cec5ac6a3ddb61647644da2b99eee59bff",
-      "subject": "[codex] Group projects in new-thread pickers (#4312)"
+      "sha": "4a39cade982926f607b4606d0f8d92a807f4b0bf",
+      "subject": "fix(web): offer recovery from missing pages (#11314)"
     },
     {
-      "sha": "57100fba854fb1214ae7a413111efae14443d445",
-      "subject": "[codex] restore Sidebar V2 project actions (#4373)"
+      "sha": "20363c32c9bfdbf49c2716ef11d1f18483fcc01b",
+      "subject": "feat(web): add provider selector to pull request toolbar (#11524)"
     },
     {
-      "sha": "3afb4a9ef9e71ddf44035797cd224301bc5645a1",
-      "subject": "Restore grouped project filtering in Sidebar V2 (#4282)"
+      "sha": "17f8e2a8acba76d5516e0a52c85bf802b0e17892",
+      "subject": "feat(mobile): add pooled subscription usage widgets (#11506)"
     },
     {
-      "sha": "315b27385d7eb36a56b410fa8b624fc2ed246278",
-      "subject": "[codex] Deduplicate connection failure messaging (#4367)"
+      "sha": "0a91b9a116117dd5df619fb7c1248cba9cf6f43c",
+      "subject": "feat(mobile): show startup crashes in Settings → Diagnostics (#11540)"
     },
     {
-      "sha": "719c905eacdcb04e11dd4ce1e515a44455ed0874",
-      "subject": "[codex] Move mobile project grouping to General settings (#4315)"
+      "sha": "20a8f1de3668e0ff4da236d75258e2184a68d727",
+      "subject": "chore(mobile): enable noUncheckedIndexedAccess and noImplicitOverride (#11538)"
     },
     {
-      "sha": "0542abc75e378428165cf8a492d02dd4cc3dc348",
-      "subject": "[codex] Group project scopes in mobile thread lists (#4314)"
+      "sha": "db6e0531e4faac0fc5ac0e12088b01bed6e7b851",
+      "subject": "feat(github): route pull request operations across matching accounts (#11367)"
     },
     {
-      "sha": "7609495bf70a51dd4d8608e3f71da636a7348aa6",
-      "subject": "[codex] Move project grouping to General settings (#4313)"
+      "sha": "8b3ddf51c59a54411cd02b321cb07f39c927df09",
+      "subject": "fix(mobile): stop crashing on launch before the shell snapshot arrives (#11537)"
     },
     {
-      "sha": "b41e89eba9cd232cc3257b400fc30972a9b53438",
-      "subject": "fix(web): warn before silent Windows updates (#4350)"
+      "sha": "d7c71f91d61e68ae35fcc0032847cb42324a8b51",
+      "subject": "feat(web): float the pull request comment composer (#11531)"
     },
     {
-      "sha": "4d83436415c0f6020afe84c127b88874b6f0103c",
-      "subject": "Unify dialog glass and fix composer overlays (#4365)"
+      "sha": "21d53ca2eecbf9f1e481454e8084459b422de714",
+      "subject": "fix(files): browse ignored files and load folders on demand (#11527)"
     },
     {
-      "sha": "e51538b812392d522947494ae32dacf3f3859f5e",
-      "subject": "Restore light-mode surfaces and refine dialog styling"
+      "sha": "2ec59ca1fad6d9eb6ae36714b76b6130e63201e6",
+      "subject": "fix(web): hide back button for single linked pull requests (#11520)"
     },
     {
-      "sha": "1c9a6de26eb41f77dbf2f6039427f50f2e9f8b39",
-      "subject": "Add shared t3.json project configuration support (#4317)"
+      "sha": "46140c96afe1d8a8b5b4bde1fccb671f8760017a",
+      "subject": "fix(web): unify panel resizing and retain final drag width (#11529)"
     },
     {
-      "sha": "fbd77420f27c1322d49726dd927861b8b5903494",
-      "subject": "feat: add \"Auto\" runtime mode — AI-reviewed approvals for Codex and Claude (#4272)"
+      "sha": "3138f5716098a331f9a7d4cfc1bcd07118967a83",
+      "subject": "fix(grok): emit task lifecycle for monitors and background shells (#9139)"
     },
     {
-      "sha": "16491a84b9bb2842ad6db41635d087647fc2df5b",
-      "subject": "fix(web): new-thread defaults ignored for remote environments (#4276)"
+      "sha": "0c5771d60a8ef2db34dfbbc142f7524badc829e0",
+      "subject": "fix(web): match draft row heights to thread rows (#11512)"
     },
     {
-      "sha": "b44ed835c63caafae619e303ca019a251c2698b2",
-      "subject": "fix(web): sync provider banner dismissal"
+      "sha": "6fd68f5c3e7c81a9650ba36df32f2241912e00ba",
+      "subject": "feat(source-control): support Forgejo and Gitea with fj and tea (#11436)"
     },
     {
-      "sha": "9c9916aefe18586b305e1d973d609e60bd6de4c0",
-      "subject": "fix(web): address redesign review findings"
+      "sha": "c29976458a7dbbb61c83b3d06ea894869b718607",
+      "subject": "fix(server): open Cursor links in classic IDE mode (#11498)"
     },
     {
-      "sha": "936394b6f2cdd430d809f09a28f14b9a7c230a28",
-      "subject": "test(desktop): include glass opacity in settings fixture"
+      "sha": "0e0ddaeedf30698bec131caf040a8e8d7b2e3f37",
+      "subject": "feat(web): add opt-in thread notifications and sounds (#11481)"
     },
     {
-      "sha": "c38225ef1cd462ce79034f6b76f9acd9eac0349b",
-      "subject": "style(web): fade settings content beneath navbar"
+      "sha": "af0657e3b36d8fc9d2652e83e6e9032272629631",
+      "subject": "fix(mobile): stop alerting that shared content vanished after sending it (#11487)"
     },
     {
-      "sha": "39cd15b9543af45dd8aed75612bf9baebe92abbd",
-      "subject": "test(web): stabilize timeline module setup"
+      "sha": "5781e2be2b7d079faaf677cc1b39679e9850d833",
+      "subject": "fix(mobile): stop crashing on launch when a thread has a PR stack (#11486)"
     },
     {
-      "sha": "160d97f4031bcbe8a74615de6222a95ea53840e1",
-      "subject": "fix(web): honor composer glass opacity"
+      "sha": "2587c8060c103245b4f970b925977008f2592d1d",
+      "subject": "feat(web): switch saved environments off instead of removing them (#11478)"
     },
     {
-      "sha": "d330759f58bad677b9296d4dd9134ccc902821ce",
-      "subject": "fix(web): add glass composer alerts"
+      "sha": "2db675aeffd9cb1e8b5ad76ddd018433b45b02e9",
+      "subject": "fix(usage): respect provider account homes (#11485)"
     },
     {
-      "sha": "5961d36769b1147604ac0fb847f7c058697447e0",
-      "subject": "fix(web): apply glass opacity to command palette"
+      "sha": "6cdbf76fa4b0509913046abe6105037ded9e52bb",
+      "subject": "feat(web): expose each chat message as a heading for screen readers (#11199)"
     },
     {
-      "sha": "0b1ce588246c1e38124598d9fcac4bc5e4063ce3",
-      "subject": "style(web): polish glass opacity slider"
+      "sha": "68c2277f500bbbb299396bcdcd0aec60dcb5db9d",
+      "subject": "feat(composer): fold large pastes into text attachments (#11442)"
     },
     {
-      "sha": "10da67b9da3e366acf827518423978e4d762a337",
-      "subject": "fix(web): apply glass opacity to model picker"
+      "sha": "36caf200c2b24c12838570966f5c85786a1fc1f8",
+      "subject": "feat(web): choose the default diff file state (#11484)"
     },
     {
-      "sha": "6e5df67f15f4d214350977335a806ee153b620d4",
-      "subject": "fix(web): override thread tooltip background"
+      "sha": "8ddd9f7efcdfb6e32b614595242b5986942d37b0",
+      "subject": "fix(desktop): bound backend shutdown wait during quit (#7599)"
     },
     {
-      "sha": "29b1abc45eabe13a930dda58f845fea86dafeec1",
-      "subject": "fix(web): apply glass opacity to thread tooltip"
+      "sha": "fcbe45796aea99e9e2a9ce19dd9409fbd7e720e4",
+      "subject": "fix(usage): make unavailable account limits more visible (#10601)"
     },
     {
-      "sha": "14b6bfdf157c0ce020a5a55e1c8d3d68552931ef",
-      "subject": "fix(web): unify and tune glass surfaces"
+      "sha": "af2baccd100604f9885d6af97a5fa99622dd1c4f",
+      "subject": "fix(web): keep subagent rows visible under folded turns (#11474)"
     },
     {
-      "sha": "b6a2563db7c0cd1b2df56540852d48c3c96aeaac",
-      "subject": "style(web): polish dark mode dialogs"
+      "sha": "c0ddfb3a81abe553fea1e43c79cb723118959449",
+      "subject": "feat(web): subagent spawns render as an expandable work row (#11433)"
     },
     {
-      "sha": "c5ff51ec1fff1a9f0447b0336d645ab0f089db62",
-      "subject": "feat(web): refresh application surfaces"
+      "sha": "b0c6c3b2fd6079bd56ea8a101f1a3be244864bde",
+      "subject": "fix(web): tighten sidebar search and footer spacing (#11466)"
     },
     {
-      "sha": "2d31cb022dee43e5a729273a6936228f30077e29",
-      "subject": "improve and prevent silent thread branch drift and PR fetching (#2284)"
+      "sha": "c1ff6ab3d6531e733fb1bca5d4b94f0ff97f7af4",
+      "subject": "fix(web): move viewer controls outside media and restore arrow navigation (#11470)"
     },
     {
-      "sha": "bc9428a06a60db59cfddb99c6d7044a9db47eb1c",
-      "subject": "fix(mobile): don't mark Android VPN/Tailscale as offline when connected (#3949)"
+      "sha": "75d8b132cd0718d8cd703c97d02b143891d80022",
+      "subject": "feat(web): tint image chips with their average color (#11468)"
     },
     {
-      "sha": "593289c3c771ec1987b3f904eb95305d7ccaecf6",
-      "subject": "Refine light-mode sidebar surfaces (#4268)"
+      "sha": "03e135577cbf861c2948981601c070dab038ea11",
+      "subject": "fix(web): complete thread status icons and keep input threads prominent (#11461)"
     },
     {
-      "sha": "ab4a88386d5227706fadc4feb045dfb3e7fe6e1d",
-      "subject": "Add remote server updates and standalone service management (#4286)"
+      "sha": "cfeaca41ae27bdf2c203158d378c87c7308fea2a",
+      "subject": "fix(web): preserve preview focus on window return (#11444)"
     },
     {
-      "sha": "78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3",
-      "subject": "feat(web): copy branch name via right-click in the branch selector (#4275)"
+      "sha": "3486451525ecaf3a8379aa6d08c885c7cc5335e3",
+      "subject": "fix(chat): keep user input outside collapsed work (#11363)"
     },
     {
-      "sha": "9a0a07167f0623c3a7db0ffeff2e3939760309df",
-      "subject": "fix(server): don't drop sticky PR fallback when remote URL can't be resolved (#4289)"
+      "sha": "c542b781c6c4c766e66dcb764b2142d95600e890",
+      "subject": "fix(desktop): keep the native preview User-Agent so Turnstile passes (#7110)"
     },
     {
-      "sha": "9fe4832a3f87e48152f915cfac9f85ec78e14e24",
-      "subject": "fix: open command palette instead of custom dialog for new thread picker in SidebarV2 (#4269)"
+      "sha": "bbedad0278bbf753503184c00e0c09a0eab6679c",
+      "subject": "fix(mobile): render photo library picks to a bounded JPEG off the JS thread (#11440)"
     },
     {
-      "sha": "376c149eac201fd1492c7b7512a1de96c3b345b7",
-      "subject": "Stabilize PR status lookups and provider session lifecycle (#4281)"
+      "sha": "a43f9b45ae85caf37e0be8270ad3d27365ece2bd",
+      "subject": "fix(web): preserve snapshot preview size in sent messages (#11429)"
     },
     {
-      "sha": "7e2bb475042ccfd196779831e69f5b19a38a2423",
-      "subject": "Move mobile working timer into the thread timeline (#4285)"
+      "sha": "5349522108bec896bb6a69ae76c6e1b8d419ae16",
+      "subject": "Delete .pnpm-store/v11 directory"
     },
     {
-      "sha": "18fa89c4adaae722e619f6abde093becf80efc08",
-      "subject": "Preserve draft thread highlighting during promotion (#4283)"
+      "sha": "18d8cbfd920d0a53e5b5206456585aea767e852c",
+      "subject": "fix(mobile): pin expo-audio so the release smoke patch stays in use (#11426)"
     },
     {
-      "sha": "f74eb62661734927aea45a243e2c3effced43fb9",
-      "subject": "fix(desktop): handle EPIPE errors on stdout/stderr to prevent crash dialog (#4213)"
+      "sha": "d1d15c67f4a5fb82fd8d5e01e5e3b288296789c3",
+      "subject": "feat(sidebar): fold the project scope into the search row (#11315)"
     },
     {
-      "sha": "e5fba263e6820350e4edc7e5d93955aabef53df1",
-      "subject": "Restore Copy Link in chat link context menu (#4161)"
+      "sha": "b1e223e2b0d87124883b1410ab52dd6a1338e40d",
+      "subject": "perf(server): avoid workspace scans when loading pull requests (#11299)"
     },
     {
-      "sha": "18b468871e6a3bfad207109898011ea330afeadb",
-      "subject": "Stabilize sidebar settling animations (#4280)"
+      "sha": "57b23a09f9dff15d57e3fa288c111381259a9a12",
+      "subject": "fix(desktop): preserve long offscreen text in SnapShots (#11250)"
     },
     {
-      "sha": "020179c19a0073d130c30083c7623cf1196688e7",
-      "subject": "fix(web): use message-square icon for settled icon-less project threads in sidebar v2 (#4279)"
+      "sha": "4fed6cfb3517ef9af9b2a361142152c079504530",
+      "subject": "feat: add inline file previews and attachment chips across surfaces (#11265)"
     },
     {
-      "sha": "571a8b44bdd4f0f0b0464ef24240021689616e7d",
-      "subject": "Unify temporary worktree branch naming (#4278)"
+      "sha": "ca6416ec2d1d194738bc78a81df4b82a75cb72e2",
+      "subject": "perf(client): reduce repeated sorting and date formatting (#11019)"
     },
     {
-      "sha": "b6e1b39335ffd34583c94f5b1e5e2c80520729fe",
-      "subject": "fix(web): default provider selection for users without Codex (#4117)"
+      "sha": "4a4c6dd2adc350a68ba18bb28b24b5a7e4660dab",
+      "subject": "feat(settings): add open source license notices (#8962)"
     },
     {
-      "sha": "c7b21ff172f8e64318ec681e8839ee60ca660fa4",
-      "subject": "[codex] keep scoped package references as text (#4167)"
+      "sha": "e816064945144957b6eb9b268912a98b0555644b",
+      "subject": "fix(desktop): keep preview keystrokes out of the composer (#11354)"
     },
     {
-      "sha": "4e09cddb40eb1bb1e111a0374b46e73b38ffbb29",
-      "subject": "fix(server): stop restoring stale OpenCode models (#4095)"
+      "sha": "8eec78cf839a6ce507c085f0b4c42042831407c7",
+      "subject": "fix(web): remove pr description reactions (#11361)"
     },
     {
-      "sha": "783692afc10dd63693b3f65ca334322762293e67",
-      "subject": "Preserve connecting status while a turn starts (#4101)"
+      "sha": "38827789c4de97955315b459cb3b0b8207f692d8",
+      "subject": "fix(web): keep sidebar scroll position when pinning threads (#10757)"
     },
     {
-      "sha": "aa5ec8036451a8dcf16d93294c69f524907c42c8",
-      "subject": "fix(claude): isolate capability probe from user MCP servers (#4015)"
+      "sha": "efccda9ac9230db22b36990cffabdad218fa41b0",
+      "subject": "feat: rewind conversations while keeping file changes (#11358)"
     },
     {
-      "sha": "282ecb317877e6cce296976a03278cc388b7ca37",
-      "subject": "fix(settings): validate the add-provider wizard step before advancing (#2813) (#3100)"
+      "sha": "25da986037a99d1e87bf1ed51aa58d7babee064a",
+      "subject": "fix(web): keep comment actions visible when pr comments are folded (#11357)"
     },
     {
-      "sha": "32c6012dabdbd0eb178b25ea4225d889ec8f6475",
-      "subject": "Sidebar v2 beta: flat thread list with a server-backed settled lifecycle (#4026)"
+      "sha": "fd5553f1afcef4f410a067687faa991743b5034c",
+      "subject": "fix: restore provider history and prompts when rewinding (#11338)"
     },
     {
-      "sha": "6f34ad3e87eba2ffba66cac5593dae8b680e5b84",
-      "subject": "fix(claude): handle all SDK stream messages; stop spurious work-log warning rows (#4244)"
+      "sha": "cf1ba3d7da98357243ee056d2fd358eed8171981",
+      "subject": "feat(settings): configure default permissions for new threads (#11346)"
     },
     {
-      "sha": "62cf4617594c2a0d8c9c5dc4bbc2012d0ead802d",
-      "subject": "fix: better defaults — Claude 1M context, Codex gpt-5.6, worktrees from origin main (#4240)"
+      "sha": "4d16e6bc6f0be52c5d44b8864000c70c7825e4f7",
+      "subject": "fix(web): align provider settings with shared settings rows (#10571)"
     },
     {
-      "sha": "23c18fda7a969634a30888e36b2da45f6d66a83b",
-      "subject": "fix(web): keep composer editable while disconnected (#4241)"
+      "sha": "1f73a89fc4d5c8b3e188282aeb8173f8f8bf257b",
+      "subject": "fix(models): default to astra medium and fable 5.1 medium (#11347)"
     },
     {
-      "sha": "c0bb2373450231e3931937d2f703e35ce906ed85",
-      "subject": "fix(web): always show environment chip for remote projects (#4217)"
+      "sha": "8461c25ffd0a11dfb537b081ed8460283d04f033",
+      "subject": "fix(web): disable linked pull requests when none are linked (#11348)"
     },
     {
-      "sha": "5d34f9ff235115d43a6cb4b4561d10badf218b87",
-      "subject": "Pass CLI OAuth config to hosted web deploy (#4186)"
+      "sha": "8a2d5f545ae1f76d08a6a6515f6b6c383cada5ad",
+      "subject": "fix(test): drain worker broadcasts before restoring browser globals (#11349)"
     },
     {
-      "sha": "c8a04bd59b7e1a18124468f1592b4c925839a9de",
-      "subject": "Finale: upgrade changed files card to fix various UI issues (#4113)"
+      "sha": "36668dbe4fe2f8c881cc4f93bc675413eef1406f",
+      "subject": "feat(desktop): share macOS permission onboarding (#11289)"
     },
     {
-      "sha": "db4b2d8a0f23b00f19774dda33e0b02627272c90",
-      "subject": "perf(orchestration): speed up new-chat propagation and offline catch-up (#4177)"
+      "sha": "a92161a05040c3fcaaa479f1b60d2d45cd368dd4",
+      "subject": "fix(codex): preserve qualified model ids in selection and generation (#9921)"
     },
     {
-      "sha": "2c199aacac3244adc93c5f4a9c838683e93946dd",
-      "subject": "fix(desktop): preserve main window bounds (#3851)"
+      "sha": "cd64ad384e40988f57e4caa5a3f74f25ca5ef450",
+      "subject": "fix(mobile): keep Android file icons on the line with wrapped filenames (#11234)"
     },
     {
-      "sha": "8ca4eec9ca46e1dd2f2427ae2405f5f417e8f95d",
-      "subject": "feat(web): drag files from the explorer into the chat composer (#4140)"
+      "sha": "50791a0530a9c4eed7924dbfedf2fcf430d4ed98",
+      "subject": "fix(web): use branch wording in commit dialogs (#11281)"
     },
     {
-      "sha": "0936fd271f866f5f58cce067865c8d0262b9ea20",
-      "subject": "fix(web): preview workspace images in the file panel (#3996)"
+      "sha": "867eb9bffc1e46ce0f7493ae760f9eb9d9dec3a8",
+      "subject": "fix(web): themed panel toggles show their disabled state (#11188)"
     },
     {
-      "sha": "fa69f05b69d05003a6994194c12edd1d8aee080c",
-      "subject": "[codex] preserve custom model slugs (#4168)"
+      "sha": "871192933fe0a501fd92a1ed3a5d317ba1eea9d3",
+      "subject": "fix(web): show pointer cursors on pull request controls (#11283)"
     },
     {
-      "sha": "c710167bde19e665c8517b606718bfbd406f2dd1",
-      "subject": "fix(web): paint text selection over composer chips (#4139)"
+      "sha": "4a8ab1b720c41b035dc4b7c58030ed62fbe6bd7f",
+      "subject": "feat(web): mark projects on another machine in project pickers (#11323)"
     },
     {
-      "sha": "a135f2c2d32bcded09fca32d4147c06df90ec84d",
-      "subject": "[codex] show complete approval details (#4111)"
+      "sha": "095d57552c4579ce33a6560a76b7c643b92f00f9",
+      "subject": "fix(desktop): hold-to-quit no longer strands the quit (#11016)"
     },
     {
-      "sha": "946b867666be94482e9e41015a304f55fe1e4754",
-      "subject": "fix(web): scope timeline minimap hover target to the side gutter (#3869)"
+      "sha": "0eaa18c12936dffde078b277be91cbafa5758cb9",
+      "subject": "feat(web): show recording status on floating previews (#11312)"
     },
     {
-      "sha": "0ca3240691bf1773802b3ed70330515d68b0a6b8",
-      "subject": "fix(server): use CLI for OpenCode health check instead of spawning server (#4153)"
+      "sha": "b3ed07fb39fb795b9d2c74644e4b0a7f12392ad5",
+      "subject": "feat(web): add PR page selections to new draft threads (#11296)"
     },
     {
-      "sha": "f4da4f3b4037260bbb0d8914acbebafd2206607a",
-      "subject": "fix(opencode): resume the OpenCode session on follow-ups instead of starting an empty one (#3617)"
+      "sha": "15c6167bc48922c9359235d6eee11259f2164d1d",
+      "subject": "fix(web): use the configured panel shortcut on the PR page (#11292)"
     },
     {
-      "sha": "b6d9ce325c4586ea3ab2d2ea5cfd5e8f8c167aeb",
-      "subject": "Gate iOS glass layout on native support (#4032)"
+      "sha": "e145c5f22a10d7433420b447537ed3f29a66d7d9",
+      "subject": "perf(client-runtime): speed up message sync on desktop and mobile (#11302)"
     },
     {
-      "sha": "8e3467fe60c49ee739b278229156108032b72e25",
-      "subject": "Synchronize mobile threads with authoritative shell snapshots (#4163)"
+      "sha": "18f7254e0adbd7d642f4d78f9b9c8e6cb569af56",
+      "subject": "fix(web): floating preview can use the margins beside the composer (#11290)"
     }
   ]
 }

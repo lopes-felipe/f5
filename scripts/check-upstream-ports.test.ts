@@ -119,9 +119,9 @@ describe("check-upstream-ports", () => {
     "rejects %s already-present evidence",
     (_label, evidence) => {
       const ledger = structuredClone(sourceLedger);
-      const entry = ledger.entries.find(
-        (candidate) => candidate.disposition === "already-present",
-      )!;
+      // The frozen window can advance past every existing already-present row.
+      const entry = ledger.entries[0]!;
+      entry.disposition = "already-present";
       entry.evidence = evidence;
 
       const result = runWith(ledger);
