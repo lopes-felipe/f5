@@ -723,11 +723,26 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
 function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const deduped: Array<WorkLogEntry | null> = [];
   const latestByProviderItemId = new Map<ProviderItemId, { index: number; signature: string }>();
+  const terminalProviderItemIds = new Set<ProviderItemId>();
 
   for (const entry of entries) {
     if (!entry.providerItemId) {
       deduped.push(entry);
       continue;
+    }
+
+    const isTerminal = workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE;
+    // A non-terminal snapshot sorting after its item's terminal entry is an
+    // ordering artifact: providers can emit the final update and the
+    // completion in the same millisecond (Claude does for every tool result),
+    // and without an activity sequence the tie falls back to random ids.
+    // Keeping it would regress a finished item to in-progress and hide its
+    // inline diff.
+    if (!isTerminal && terminalProviderItemIds.has(entry.providerItemId)) {
+      continue;
+    }
+    if (isTerminal) {
+      terminalProviderItemIds.add(entry.providerItemId);
     }
 
     const signature = workEntryVisibleSignature(entry);
@@ -746,9 +761,11 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
   return deduped.filter((entry): entry is WorkLogEntry => entry !== null);
 }
 
-function collaborationLifecyclePrecedence(entry: WorkLogEntry): number {
+const TERMINAL_LIFECYCLE_PRECEDENCE = 2;
+
+function workEntryLifecyclePrecedence(entry: WorkLogEntry): number {
   if (entry.status === "completed" || entry.status === "failed" || entry.status === "declined") {
-    return 2;
+    return TERMINAL_LIFECYCLE_PRECEDENCE;
   }
   if (entry.activityKind === "tool.updated") return 1;
   return 0;
@@ -773,7 +790,7 @@ function coalesceCodexCollaborationEntries(entries: ReadonlyArray<WorkLogEntry>)
       Object.entries(entry).filter(([, value]) => value !== undefined),
     ) as Partial<WorkLogEntry>;
     const lifecycleWinner =
-      collaborationLifecyclePrecedence(entry) >= collaborationLifecyclePrecedence(existing)
+      workEntryLifecyclePrecedence(entry) >= workEntryLifecyclePrecedence(existing)
         ? entry
         : existing;
     result[existingIndex] = {

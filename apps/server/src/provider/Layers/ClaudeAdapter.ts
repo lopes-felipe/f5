@@ -129,6 +129,7 @@ import { enforceTurnItemBudget } from "./claudeTurnRetention.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { resolveClaudeApiModelId } from "./ClaudeProvider.ts";
 import { resolveClaudeSdkExecutableOptions } from "../claudeSdkExecutable.ts";
+import { makeMonotonicIsoClock } from "../monotonicEventClock.ts";
 import { isUuid, readClaudeResumeCandidate, readClaudeResumeState } from "../claudeResumeState.ts";
 
 const PROVIDER = "claudeAgent" as const;
@@ -1818,7 +1819,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
-    const makeEventStamp = () => Effect.all({ eventId: nextEventId, createdAt: nowIso });
+    // Runtime events are often emitted back to back (a tool's final
+    // item.updated and item.completed); strictly increasing timestamps keep
+    // their activities in emission order instead of tying on the millisecond.
+    const nextEventCreatedAt = makeMonotonicIsoClock();
+    const makeEventStamp = () =>
+      Effect.all({ eventId: nextEventId, createdAt: nextEventCreatedAt });
     const acquireThreadLock = (threadId: string) =>
       SynchronizedRef.modifyEffect(threadLocksRef, (current) => {
         const existing = Option.fromNullishOr(current.get(threadId));
