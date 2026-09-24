@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+import { SCRIPT_RUN_COMMAND_PATTERN } from "@t3tools/contracts";
 import {
   MAX_PINNED_THREADS,
   ProjectId,
@@ -143,6 +145,24 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         projectId: command.projectId,
       });
+      if (command.scripts !== undefined) {
+        const oldIds = new Set(
+          readModel.projects
+            .find((entry) => entry.id === command.projectId)
+            ?.scripts.map((script) => script.id),
+        );
+        for (const script of command.scripts) {
+          if (
+            !oldIds.has(script.id) &&
+            !Schema.is(SCRIPT_RUN_COMMAND_PATTERN)(`script.${script.id}.run`)
+          ) {
+            return yield* new OrchestrationCommandInvariantError({
+              commandType: command.type,
+              detail: `Invalid project script ID: ${script.id}`,
+            });
+          }
+        }
+      }
       const occurredAt = nowIso();
       return {
         ...withEventBase({
@@ -1640,6 +1660,15 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         command,
         threadId: command.threadId,
       });
+      const existing = readModel.threads
+        .find((thread) => thread.id === command.threadId)
+        ?.checkpoints.find((checkpoint) => checkpoint.turnId === command.turnId);
+      if (command.status === "missing" && existing && existing.status !== "missing") {
+        return yield* new OrchestrationCommandInvariantError({
+          commandType: command.type,
+          detail: "A placeholder cannot replace a captured checkpoint.",
+        });
+      }
       return {
         ...withEventBase({
           aggregateKind: "thread",

@@ -1,3 +1,5 @@
+import { isTemporaryWorktreeBranch } from "../../git/worktreePaths.ts";
+import { ensureWorkspaceDirectory } from "../../provider/workspaceDirectory.ts";
 import {
   type ChatAttachment,
   CommandId,
@@ -160,7 +162,6 @@ const serverCommandId = (tag: string): CommandId =>
   CommandId.makeUnsafe(`server:${tag}:${crypto.randomUUID()}`);
 
 const WORKTREE_BRANCH_PREFIX = "t3code";
-const TEMP_WORKTREE_BRANCH_PATTERN = new RegExp(`^${WORKTREE_BRANCH_PREFIX}\\/[0-9a-f]{8}$`);
 
 function threadMessageContextCharacters(thread: OrchestrationThread): number {
   return thread.messages.reduce(
@@ -251,10 +252,6 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
     message.includes("unknown pending approval request") ||
     message.includes("unknown pending permission request")
   );
-}
-
-function isTemporaryWorktreeBranch(branch: string): boolean {
-  return TEMP_WORKTREE_BRANCH_PATTERN.test(branch.trim().toLowerCase());
 }
 
 function buildGeneratedWorktreeBranchName(raw: string, configuredPrefix: string): string {
@@ -981,6 +978,21 @@ const make = Effect.gen(function* () {
     if (!thread) {
       return;
     }
+    if (thread.worktreePath && thread.branch) {
+      const model = yield* orchestrationEngine.getReadModel();
+      const project = model.projects.find((entry) => entry.id === thread.projectId);
+      if (project)
+        yield* git.ensureWorktree({
+          cwd: project.workspaceRoot,
+          path: thread.worktreePath,
+          branch: thread.branch,
+        });
+    }
+    const workspace = resolveThreadWorkspaceCwd({
+      thread,
+      projects: (yield* orchestrationEngine.getReadModel()).projects,
+    });
+    if (workspace) yield* ensureWorkspaceDirectory(workspace);
     yield* ensureSessionForThread(input.threadId, input.createdAt, {
       ...(input.provider !== undefined ? { provider: input.provider } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
@@ -1881,6 +1893,14 @@ const make = Effect.gen(function* () {
           break;
         }
         case "thread.meta-updated": {
+          // Titles and observed checkout branches do not change the provider
+          // launch context. Re-reading its stale session would erase turn errors.
+          if (
+            event.payload.model === undefined &&
+            event.payload.modelSelection === undefined &&
+            event.payload.worktreePath === undefined
+          )
+            return;
           const thread = yield* resolveThread(event.payload.threadId);
           if (!thread?.session || thread.session.status === "stopped") {
             return;

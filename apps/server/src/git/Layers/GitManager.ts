@@ -1,3 +1,4 @@
+import { GitCommandError } from "../Errors.ts";
 import {
   isSshRemoteUrl,
   parseSourceControlRemoteUrl,
@@ -988,6 +989,31 @@ export const makeGitManager = Effect.gen(function* () {
     });
 
   const status: GitManagerShape["status"] = Effect.fnUntraced(function* (input) {
+    if (
+      !(yield* fileSystem.exists(input.cwd).pipe(
+        Effect.mapError(
+          (cause) =>
+            new GitCommandError({
+              operation: "GitManager.status",
+              cwd: input.cwd,
+              command: "stat",
+              detail: cause.message,
+            }),
+        ),
+      ))
+    ) {
+      return {
+        worktreeMissing: true,
+        branch: null,
+        hasWorkingTreeChanges: false,
+        workingTree: { files: [], insertions: 0, deletions: 0 },
+        hasUpstream: false,
+        aheadCount: 0,
+        behindCount: 0,
+        pr: null,
+        changeRequest: null,
+      };
+    }
     const details = yield* gitCore.statusDetails(input.cwd);
     const sourceControlProvider = yield* resolveSourceControlProviderIdentity(input.cwd);
 

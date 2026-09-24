@@ -1,3 +1,4 @@
+import { ensureWorkspaceDirectory } from "../workspaceDirectory.ts";
 /**
  * ProviderServiceLive - Cross-provider orchestration layer.
  *
@@ -655,6 +656,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             `Cannot recover thread '${input.binding.threadId}' because no provider resume state is persisted.`,
           );
         }
+        if (persistedCwd) yield* ensureWorkspaceDirectory(persistedCwd);
         const resumed = yield* adapter.startSession({
           threadId: input.binding.threadId,
           ...(input.binding.projectId ? { projectId: input.binding.projectId } : {}),
@@ -961,6 +963,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             threadId,
             currentInstanceId: requestedInstanceId,
           });
+          if (adapterInput.cwd) yield* ensureWorkspaceDirectory(adapterInput.cwd);
           const session = yield* adapter.startSession(adapterInput);
 
           if (session.provider !== adapter.provider) {

@@ -131,9 +131,10 @@ export function resolveShortcutCommand(
 
 export function shortcutLabelForCommand(
   keybindings: ResolvedKeybindingsConfig,
-  command: KeybindingCommand,
+  command: KeybindingCommand | null,
   platform = navigator.platform,
 ): string | null {
+  if (command === null) return null;
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding || binding.command !== command) continue;

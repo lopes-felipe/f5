@@ -4361,33 +4361,39 @@ const make = Effect.gen(function* () {
 
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
-        if (turnId && (yield* isGitRepoForThread(thread.id))) {
-          // Re-emit a placeholder for every provider diff refresh so
-          // CheckpointReactor can keep the current turn checkpoint aligned with
-          // the latest filesystem state without allocating a new turn count.
+        if (
+          turnId &&
+          thread.latestTurn?.turnId === turnId &&
+          thread.latestTurn.state === "running" &&
+          (yield* isGitRepoForThread(thread.id))
+        ) {
+          // Allocate one placeholder. Capture the final filesystem state when
+          // the turn ends, after its last edit, rather than on each diff update.
           const existingCheckpoint = thread.checkpoints.find(
             (checkpoint) => checkpoint.turnId === turnId,
           );
-          const assistantMessageId =
-            existingCheckpoint?.assistantMessageId ??
-            MessageId.makeUnsafe(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`);
-          const maxTurnCount = thread.checkpoints.reduce(
-            (max, c) => Math.max(max, c.checkpointTurnCount),
-            0,
-          );
-          yield* orchestrationEngine.dispatch({
-            type: "thread.turn.diff.complete",
-            commandId: providerCommandId(event, "thread-turn-diff-complete"),
-            threadId: thread.id,
-            turnId,
-            completedAt: now,
-            checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
-            status: "missing",
-            files: [],
-            assistantMessageId,
-            checkpointTurnCount: existingCheckpoint?.checkpointTurnCount ?? maxTurnCount + 1,
-            createdAt: now,
-          });
+          if (!existingCheckpoint) {
+            const assistantMessageId = MessageId.makeUnsafe(
+              `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+            );
+            const maxTurnCount = thread.checkpoints.reduce(
+              (max, c) => Math.max(max, c.checkpointTurnCount),
+              0,
+            );
+            yield* orchestrationEngine.dispatch({
+              type: "thread.turn.diff.complete",
+              commandId: providerCommandId(event, "thread-turn-diff-complete"),
+              threadId: thread.id,
+              turnId,
+              completedAt: now,
+              checkpointRef: CheckpointRef.makeUnsafe(`provider-diff:${event.eventId}`),
+              status: "missing",
+              files: [],
+              assistantMessageId,
+              checkpointTurnCount: maxTurnCount + 1,
+              createdAt: now,
+            });
+          }
         }
       }
 
@@ -4489,6 +4495,40 @@ const make = Effect.gen(function* () {
       let recoveredCount = 0;
 
       for (const thread of readModel.threads) {
+        // Sessions can be orphaned before a turn id was allocated. They have no
+        // terminal receipt to replay, but must not remain "starting" forever.
+        if (
+          thread.session &&
+          !liveThreadIds.has(thread.id) &&
+          (thread.session.status === "starting" || thread.session.status === "running") &&
+          thread.session.activeTurnId === null
+        ) {
+          const reconciledAt = new Date().toISOString();
+          const binding = bindingsByThreadId.get(thread.id);
+          if (binding)
+            yield* providerSessionDirectory.upsert({
+              ...binding,
+              status: "stopped",
+              runtimePayload: { activeTurnId: null },
+            });
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe(
+              `server:orphaned-session:${thread.id}:${thread.session.updatedAt}`,
+            ),
+            threadId: thread.id,
+            createdAt: reconciledAt,
+            session: {
+              ...thread.session,
+              status: "error",
+              activeTurnId: null,
+              lastError:
+                "Provider session did not survive a server restart. Send a new message to continue.",
+              updatedAt: reconciledAt,
+            },
+          });
+          continue;
+        }
         const activeTurnId = thread.session?.activeTurnId;
         if (
           thread.session?.status !== "running" ||

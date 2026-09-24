@@ -1,3 +1,7 @@
+import { GitCommandError } from "../../git/Errors.ts";
+import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
+import { GitCore } from "../../git/Services/GitCore.ts";
+import { makeFakeGitCore } from "../../git/testDoubles.ts";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -642,6 +646,122 @@ describe("ProviderRuntimeIngestion", () => {
       },
     ]);
   });
+
+  it.each([true, false, "probe-error"] as const)(
+    "retains a missing worktree unless the branch is known to be gone: %s",
+    async (branchExists) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      const missingPath = path.join(os.tmpdir(), `missing-worktree-${crypto.randomUUID()}`);
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("missing-worktree"),
+          threadId,
+          branch: "feature",
+          worktreePath: missingPath,
+        }),
+      );
+      const git = makeFakeGitCore({
+        branchExists: () =>
+          branchExists === "probe-error"
+            ? Effect.fail(
+                new GitCommandError({
+                  operation: "test",
+                  command: "git show-ref",
+                  cwd: "/unavailable",
+                  detail: "Repository unavailable",
+                }),
+              )
+            : Effect.succeed(branchExists),
+      });
+      await Effect.runPromise(
+        cleanupStaleWorktrees(harness.engine).pipe(
+          Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
+        ),
+      );
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      expect(model.threads.find((thread) => thread.id === threadId)?.worktreePath).toBe(
+        branchExists ? missingPath : null,
+      );
+      expect(git.calls.branchExists).toHaveLength(1);
+    },
+  );
+
+  it.each(["no-branch", "no-project", "deleted-project"] as const)(
+    "clears an unrecoverable missing worktree: %s",
+    async (scenario) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe("missing-unrecoverable"),
+          threadId,
+          branch: scenario === "no-branch" ? null : "feature",
+          worktreePath: path.join(os.tmpdir(), crypto.randomUUID()),
+        }),
+      );
+      const model = await Effect.runPromise(harness.engine.getReadModel());
+      const git = makeFakeGitCore({});
+      await Effect.runPromise(
+        cleanupStaleWorktrees({
+          ...harness.engine,
+          getReadModel: () =>
+            Effect.succeed({
+              ...model,
+              projects:
+                scenario === "no-project"
+                  ? []
+                  : model.projects.map((project) => ({
+                      ...project,
+                      deletedAt: scenario === "deleted-project" ? new Date().toISOString() : null,
+                    })),
+            }),
+        }).pipe(
+          Effect.provide(Layer.mergeAll(Layer.succeed(GitCore, git.service), NodeServices.layer)),
+        ),
+      );
+      const updated = await Effect.runPromise(harness.engine.getReadModel());
+      expect(updated.threads.find((thread) => thread.id === threadId)?.worktreePath).toBeNull();
+      expect(git.calls.branchExists).toHaveLength(0);
+    },
+  );
+
+  it.each(["starting", "running"] as const)(
+    "settles an orphaned %s session without a turn id",
+    async (status) => {
+      const harness = await createHarness({ startIngestion: false });
+      const threadId = asThreadId("thread-1");
+      const createdAt = new Date().toISOString();
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe(`orphan-${status}`),
+          threadId,
+          session: {
+            threadId,
+            status,
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
+      harness.clearProviderSessions();
+      await harness.startIngestion();
+      await harness.drain();
+      const settled = await waitForThread(
+        harness.engine,
+        (thread) => thread.session?.status === "error",
+      );
+      expect(settled.session?.lastError).toContain("server restart");
+      expect(settled.session?.activeTurnId).toBeNull();
+    },
+  );
 
   it("settles an orphaned active turn from a stopped provider generation on startup", async () => {
     const harness = await createHarness({ startIngestion: false });
@@ -5569,6 +5689,16 @@ describe("ProviderRuntimeIngestion", () => {
     const now = new Date().toISOString();
 
     harness.emit({
+      type: "turn.started",
+      eventId: asEventId("p1-start"),
+      provider: "codex",
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-p1"),
+      createdAt: now,
+      payload: {},
+    });
+
+    harness.emit({
       type: "thread.metadata.updated",
       eventId: asEventId("evt-thread-metadata-updated"),
       provider: "codex",
@@ -5704,6 +5834,16 @@ describe("ProviderRuntimeIngestion", () => {
     const turnId = asTurnId("turn-diff-repeat");
 
     harness.emit({
+      type: "turn.started",
+      eventId: asEventId("repeat-start"),
+      provider: "claudeAgent",
+      threadId: asThreadId("thread-1"),
+      turnId,
+      createdAt: "2026-04-23T09:59:59.000Z",
+      payload: {},
+    });
+
+    harness.emit({
       type: "turn.diff.updated",
       eventId: asEventId("evt-turn-diff-updated-1"),
       provider: "claudeAgent",
@@ -5735,11 +5875,12 @@ describe("ProviderRuntimeIngestion", () => {
       },
     });
 
+    await harness.drain();
     const thread = await waitForThread(harness.engine, (entry) =>
       entry.checkpoints.some(
         (checkpoint: ProviderRuntimeTestCheckpoint) =>
           checkpoint.turnId === turnId &&
-          checkpoint.checkpointRef === "provider-diff:evt-turn-diff-updated-2",
+          checkpoint.checkpointRef === "provider-diff:evt-turn-diff-updated-1",
       ),
     );
 
@@ -5747,7 +5888,7 @@ describe("ProviderRuntimeIngestion", () => {
       (entry: ProviderRuntimeTestCheckpoint) => entry.turnId === turnId,
     );
     expect(checkpoint?.checkpointTurnCount).toBe(1);
-    expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated-2");
+    expect(checkpoint?.checkpointRef).toBe("provider-diff:evt-turn-diff-updated-1");
   });
 
   it("suppresses redundant Claude subagent tool updates once a result is present", async () => {

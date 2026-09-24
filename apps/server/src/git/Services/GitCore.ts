@@ -111,9 +111,14 @@ export interface GitCoreShape {
    */
   readonly status: (input: GitStatusInput) => Effect.Effect<GitStatusResult, GitCommandError>;
 
-  /**
-   * Read detailed working tree / branch status for a repository.
-   */
+  /** Recreate a missing linked worktree from its existing branch under lifecycle locks. */
+  readonly ensureWorktree: (input: {
+    cwd: string;
+    path: string;
+    branch: string;
+  }) => Effect.Effect<void, GitCommandError>;
+  readonly branchExists: (cwd: string, branch: string) => Effect.Effect<boolean, GitCommandError>;
+  /** Read detailed status without the polling cache, for mutation decisions. */
   readonly statusDetails: (cwd: string) => Effect.Effect<GitStatusDetails, GitCommandError>;
 
   /**

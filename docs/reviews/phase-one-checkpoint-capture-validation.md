@@ -1,5 +1,7 @@
 # Phase 1b: checkpoint capture reliability
 
+Historical report. The completed Phase 1b scope is recorded in [phase-one-b-completion.md](phase-one-b-completion.md).
+
 This follows merged PR #35 at `906afb0185`. It implements five additional upstream records: `8130a9f13`, `869347bc2`, `1455cb5c3`, `67993623a`, and `c843c1929`. Together with the first batch, 11 of the 33 Phase 1b records are delivered; 22 remain unfinished. This PR does not change the pinned coverage or the original review artifact.
 
 ## Behavior

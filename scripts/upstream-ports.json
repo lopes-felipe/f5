@@ -143,10 +143,20 @@
     {
       "upstreamSha": "01fc7d228dd6794ffb35b57752d0218559de5e89",
       "subject": "fix(server): recreate a thread's worktree before starting a turn (#7839)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): recreate a thread's worktree before starting a turn. Reimplement in f5; not yet delivered.",
+      "reason": "Recreate missing worktrees from their surviving branch under path and cross-profile repository locks; reject branches checked out elsewhere, preserve recoverable startup paths, and return missing polling metadata without Git.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/integration/git/extended/WorktreeRecovery.extended.test.ts:23",
+        "apps/server/integration/git/extended/WorktreeRecovery.extended.test.ts:15",
+        "apps/server/src/project/Layers/WorktreeLifecycleCoordinator.test.ts:37",
+        "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts:651"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "020179c19a0073d130c30083c7623cf1196688e7",
@@ -674,10 +684,12 @@
     {
       "upstreamSha": "0929907ff9aecd2541050fe4361ad03199ffbf73",
       "subject": "fix(server): reconcile orphaned provider sessions (#7719)",
-      "reason": "Phase 1b: fix(server): reconcile orphaned provider sessions. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Reconcile orphaned starting/running sessions without turn IDs on restart, alongside f5's durable terminal receipt recovery and mismatched-binding safeguards.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts:679"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "0936fd271f866f5f58cce067865c8d0262b9ea20",
@@ -964,10 +976,18 @@
     {
       "upstreamSha": "0dd5c64bcfac7974d81bac76740ecd83540077e8",
       "subject": "fix(server): detect nested Git workspaces for checkpoints (#9842)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): detect nested Git workspaces for checkpoints. Reimplement in f5; not yet delivered.",
+      "reason": "Recognize nested project directories for checkpoint capture; runtime ingestion detects parent Git metadata without invoking Git.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/integration/git/extended/CheckpointStore.extended.test.ts:136",
+        "apps/server/integration/git/extended/CheckpointStore.extended.test.ts:137"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "0de9540739369301d5056870deeee3f258a03b14",
@@ -2205,10 +2225,18 @@
     {
       "upstreamSha": "1e740e48a5f91b3edd35c5446d33b0d36fb5a6ac",
       "subject": "fix(server): follow placeholder branches after checkout updates (#10441)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): follow placeholder branches after checkout updates. Reimplement in f5; not yet delivered.",
+      "reason": "Follow an agent's exclusive worktree checkout from a placeholder branch, excluding shared paths and temporary destinations. Compare branch/path before publication and preserve provider error state on branch-only metadata changes.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:474",
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:482"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "1e87029261f9b81061a2a7420849b9eeaf1a2ebe",
@@ -3011,10 +3039,12 @@
     {
       "upstreamSha": "2a7a449cca3c7760b689a54b3aa02476a206dbc9",
       "subject": "fix(web): hide deleted providers with prototype keys (#8337)",
-      "reason": "Phase 1b: fix(web): hide deleted providers with prototype keys. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5 derives provider choices from authoritative arrays and reconciles registry membership, without upstream's settings-object overlay. Deleted constructor/toString instances stay absent; the instance schema rejects __proto__.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/web/src/providerInstances.test.ts:48"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "2aa5f095fc3bb65c00cc4efce66a5473e2d4554a",
@@ -4686,10 +4716,12 @@
     {
       "upstreamSha": "41adccc83e819c286dcdf32cd8b5f55af8bb0b49",
       "subject": "fix(server): allow long thread IDs in HTTP routes (#8898)",
-      "reason": "Phase 1b: fix(server): allow long thread IDs in HTTP routes. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5's native Node HTTP routing has no upstream router parameter-length ceiling. Authenticated attachment regression uses a 167-character thread ID.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/wsServer.test.ts:4445"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "41ebf22eea64e177b11a0709a16d6716581cc78c",
@@ -4754,10 +4786,12 @@
     {
       "upstreamSha": "430fbd1ffc98378f6a6a41027ddc6004a79b2e7b",
       "subject": "fix(server): give completed turns a full session idle window (#10689)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): give completed turns a full session idle window. Reimplement in f5; not yet delivered.",
+      "reason": "Measure session idle time from the later of binding activity and projected session completion; recheck before stopping a provider.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/provider/Layers/ProviderSessionReaper.ts:127"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "4321aa24fd21c2b5360cc58e84de4ccc09c801f9",
@@ -6943,10 +6977,15 @@
     {
       "upstreamSha": "62f568b88b58e1e7cf422c21ee2e08f10977b714",
       "subject": "fix(server): skip disabled provider instances for text generation fallback (#10346)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): skip disabled provider instances for text generation fallback. Reimplement in f5; not yet delivered.",
+      "reason": "Text-generation fallback gives explicit built-in instance enablement precedence over legacy provider defaults while retaining persisted model preferences.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/serverSettings.ts:217",
+        "apps/server/src/serverSettings.test.ts:560"
+      ],
+      "f5Shas": ["ae1d9ef765f0202e769fd8f82fc4f250c1704c96"]
     },
     {
       "upstreamSha": "62fbbe08aa854fcbd8044cd971a45a54edafcb98",
@@ -7591,10 +7630,19 @@
     {
       "upstreamSha": "6d68677ff90915c17de06d78bb498d41a1adfe6a",
       "subject": "fix(server): restore secrets when settings persistence fails (#12487)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): restore secrets when settings persistence fails. Reimplement in f5; not yet delivered.",
+      "reason": "Settings saves validate before secret mutation, restore prior values in reverse order on secret or settings publication failure, and publish cache changes only after success. Tests cover partial writes and failed file replacement.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/serverSettings.ts:650",
+        "apps/server/src/serverSettings.test.ts:620",
+        "apps/server/src/serverSettings.test.ts:679"
+      ],
+      "f5Shas": [
+        "ae1d9ef765f0202e769fd8f82fc4f250c1704c96",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
@@ -8478,10 +8526,18 @@
     {
       "upstreamSha": "7a089b2b2449c5c146e1a7d554a31e6d55924d3f",
       "subject": "fix(server): capture turn checkpoints after all edits finish (#9841)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): capture turn checkpoints after all edits finish. Reimplement in f5; not yet delivered.",
+      "reason": "Capture once after terminal completion or abort, including edits after the last diff. Preserve running/interrupted turn state and retain the checkpoint count during durable completion reconciliation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:687",
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:708"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "7a2cce826852c3a3255d7c7aa1e9c148287eba2c",
@@ -9019,10 +9075,18 @@
     {
       "upstreamSha": "82b8a9380298509d68170961d9717be62836e490",
       "subject": "fix(orchestration): do not revive idle tasks from status-free progress (#7172)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(orchestration): do not revive idle tasks from status-free progress. Reimplement in f5; not yet delivered. Verify against f5 a765af331 before implementing; do not duplicate an existing fix.",
+      "reason": "Verified existing f5 timestamp ordering did not reject newer status-free progress after completion. Require a matching active background task for progress-only transitions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/persistence/Layers/ThreadBackgroundWork.ts:71",
+        "apps/server/src/orchestration/Layers/ThreadBackgroundWork.test.ts:252"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "82c2b7ffb4d450572f5baf9a70693f1e25cfdfed",
@@ -9959,10 +10023,12 @@
     {
       "upstreamSha": "901db896691da5ab7b7428ef8a5da52883f831dd",
       "subject": "fix(server): keep VCS waits from blocking turn completion (#11970)",
-      "reason": "Phase 1b: fix(server): keep VCS waits from blocking turn completion. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "f5 runtime ingestion uses filesystem metadata rather than blocking VCS subprocesses; checkpoint work runs in a separate reactor. Late missing placeholders are rejected instead of replacing completed checkpoints.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/git/isRepo.ts:4"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "9027d62679c6669d8e45e2e419b311ec8dfdaa4f",
@@ -10151,10 +10217,15 @@
     {
       "upstreamSha": "931e91527c285c49d8482328877c93c8c684591a",
       "subject": "Keep the server alive when a response write hits a dead socket (#4470)",
-      "reason": "Phase 1b: Keep the server alive when a response write hits a dead socket. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Observe response and upgraded-socket error events so a disconnected client cannot crash the server through an unhandled write error.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/httpResponseErrorGuard.test.ts:6"],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "93349247008517663aa16a3ed145d5b0f3f044ff",
@@ -10241,10 +10312,12 @@
     {
       "upstreamSha": "941acb4f919bcef337d4d9e1623101bdc30d3616",
       "subject": "fix(provider): drop removed custom models from the model picker (#9075)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(provider): drop removed custom models from the model picker. Reimplement in f5; not yet delivered.",
+      "reason": "Drop removed custom models from retained inventories, startup caches and both client model selectors; preserve metadata for custom models still configured.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/provider/Layers/ProviderRegistry.ts:102"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "94331c58ecda6b32ee101e8f5ce2dfe5b5195afd",
@@ -10780,10 +10853,11 @@
     {
       "upstreamSha": "9cb40178a53cca279c67a9079afab3cddf6b6ddb",
       "subject": "fix(cli): resolve projects with missing workspace directories (#9885)",
-      "reason": "Phase 1b: fix(cli): resolve projects with missing workspace directories. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "upstream-only-subsystem:project-cli; f5 has no upstream project CLI resolver. Its CLI launches the server rather than resolving project commands.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/main.ts:649"]
     },
     {
       "upstreamSha": "9cb586acd0494c4f47f60045ee42ef25edb5a07c",
@@ -11738,10 +11812,15 @@
     {
       "upstreamSha": "ac4f1a2b6d52b082edcc06d866892f8dcfdc033f",
       "subject": "fix(server): preserve inline provider secrets on redacted saves (#10054)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): preserve inline provider secrets on redacted saves. Reimplement in f5; not yet delivered.",
+      "reason": "Redacted environment patches preserve the last matching inline sensitive value and migrate it to the profile secret store instead of losing it.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/serverSettings.ts:435",
+        "apps/server/src/serverSettings.test.ts:581"
+      ],
+      "f5Shas": ["ae1d9ef765f0202e769fd8f82fc4f250c1704c96"]
     },
     {
       "upstreamSha": "ac90950f1ac315bcef5f92b53c5e0d6579daeefd",
@@ -12011,10 +12090,12 @@
     {
       "upstreamSha": "b12c92f695a6b12116fb2cda40d610bdbe2a9566",
       "subject": "fix(server): reuse Git index metadata during checkpoint capture (#10792)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): reuse Git index metadata during checkpoint capture. Reimplement in f5; not yet delivered.",
+      "reason": "Seed checkpoint staging by copying the user index and preserving racy timestamps; stream flag checks and fall back safely without mutating the user index.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/checkpointing/Layers/CheckpointStore.ts:149"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "b155c2199bdcb4fdf1920da02a223536f8c2d729",
@@ -13279,10 +13360,12 @@
     {
       "upstreamSha": "c1738f131d6f0d5c6dfabb3aad46755a25319663",
       "subject": "fix(server): keep large sparse checkouts on the fast checkpoint path (#12154)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): keep large sparse checkouts on the fast checkpoint path. Reimplement in f5; not yet delivered.",
+      "reason": "Retain valid sparse index metadata and sparse rules, detect manual index flags, and capture present out-of-cone files without expanding the whole checkout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/integration/git/extended/CheckpointStore.extended.test.ts:111"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "c17d02cff98f2e7b590d4c3a5775d1faa47c2e7b",
@@ -14255,10 +14338,12 @@
     {
       "upstreamSha": "d17f46d7631b178b6834596264f0f44f210d584b",
       "subject": "fix(server): refresh file search outside checkpoint processing (#12308)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): refresh file search outside checkpoint processing. Reimplement in f5; not yet delivered.",
+      "reason": "f5 invalidates workspace search caches synchronously after capture and rebuilds lazily on demand; it does not await upstream's eager file-index refresh.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/workspaceEntries.ts:736"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "d19039aeef6942e6eb204856c43b5354c0333e2d",
@@ -14760,10 +14845,12 @@
     {
       "upstreamSha": "d8bc6831cd822b294d875364cf3aa0a17c999258",
       "subject": "fix(projects): prevent invalid script IDs from crashing threads (#10019)",
-      "reason": "Phase 1b: fix(projects): prevent invalid script IDs from crashing threads. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Reject new script IDs that cannot form shortcut commands; legacy invalid IDs render without crashing the thread and remain editable/removable.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/orchestration/decider.ts:161"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "d924fe266483e1d400775e3c3ce784f8e90f355f",
@@ -15109,10 +15196,12 @@
     {
       "upstreamSha": "dddc0bdcb2230147e207efb17df2e49dbe1bdd8c",
       "subject": "fix(server): include SQLite conditions in persistence errors",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): include SQLite conditions in persistence errors. Reimplement in f5; not yet delivered.",
+      "reason": "Expose numeric SQLite conditions through driver wrappers and schema issue tags without copying query data or rejected values.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/persistence/Errors.test.ts:8"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "ddee418a8d6d3e242ca26a8053a886ecc3b56b53",
@@ -17233,10 +17322,12 @@
     {
       "upstreamSha": "fce8508456e7f9218eebb02ecd764f9b3a47df6b",
       "subject": "fix(server): surface a missing workspace folder instead of a spawn error (#5040)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): surface a missing workspace folder instead of a spawn error. Reimplement in f5; not yet delivered.",
+      "reason": "Validate workspace directories before turn dispatch, provider startup and persisted-session recovery, with a path-specific missing-folder error.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": ["apps/server/src/provider/workspaceDirectory.test.ts:8"],
+      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
     },
     {
       "upstreamSha": "fcfd9f911a27ee3b813d64582c53d82dfa2e892b",

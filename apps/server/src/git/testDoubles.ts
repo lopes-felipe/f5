@@ -29,6 +29,8 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
       "prepareCommitContext",
       "commit",
       "pushCurrentBranch",
+      "branchExists",
+      "ensureWorktree",
       "readRangeContext",
       "readDefaultBranch",
       "readConfigValue",
@@ -52,6 +54,8 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
   ) as unknown as { [K in keyof GitCoreShape]: Array<ReadonlyArray<unknown>> };
 
   const implementations: GitCoreShape = {
+    branchExists: () => Effect.succeed(true),
+    ensureWorktree: () => Effect.void,
     status: (_input) =>
       Effect.succeed({
         ...DEFAULT_STATUS_DETAILS,
@@ -115,6 +119,14 @@ export function makeFakeGitCore(overrides: Partial<GitCoreShape> = {}): {
   };
 
   const service: GitCoreShape = {
+    branchExists: (cwd, branch) => {
+      record("branchExists", [cwd, branch]);
+      return implementations.branchExists(cwd, branch);
+    },
+    ensureWorktree: (input) => {
+      record("ensureWorktree", [input]);
+      return implementations.ensureWorktree(input);
+    },
     status: (input) => {
       record("status", [input]);
       return implementations.status(input);

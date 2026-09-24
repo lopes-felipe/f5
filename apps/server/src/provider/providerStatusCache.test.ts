@@ -266,3 +266,13 @@ it.layer(NodeServices.layer)("providerStatusCache", (it) => {
     );
   });
 });
+
+it("does not resurrect removed custom models from disk", () => {
+  const fallbackProvider = makeProvider(CODEX_DRIVER);
+  const cachedProvider = makeProvider(CODEX_DRIVER, {
+    models: [
+      { slug: "removed-custom", name: "Removed", isCustom: true, capabilities: emptyCapabilities },
+    ],
+  });
+  assert.deepEqual(hydrateCachedProvider({ cachedProvider, fallbackProvider }).models, []);
+});

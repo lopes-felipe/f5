@@ -86,6 +86,7 @@ function makeLayer(input: {
   readonly listedBindings?: ReadonlyArray<ProviderRuntimeBindingWithMetadata>;
   readonly currentBinding?: Option.Option<ProviderRuntimeBindingWithMetadata>;
   readonly stopTimeoutMs?: number;
+  readonly inactivityThresholdMs?: number;
   readonly protectedThreadIds?: ReadonlySet<ThreadId>;
   readonly hasFreshProtectingWork?: boolean;
 }) {
@@ -119,7 +120,7 @@ function makeLayer(input: {
   };
 
   return makeProviderSessionReaperLive({
-    inactivityThresholdMs: 1,
+    inactivityThresholdMs: input.inactivityThresholdMs ?? 1,
     sweepIntervalMs: 1,
     stopTimeoutMs: input.stopTimeoutMs ?? 10_000,
   }).pipe(
@@ -292,6 +293,31 @@ it.effect("ProviderSessionReaperLive continues after stopSession times out", () 
         stopSession: stopSession as unknown as ProviderServiceShape["stopSession"],
         stopTimeoutMs: 1,
       }),
+    ),
+  );
+});
+
+it.effect("gives a completed long turn a full idle window", () => {
+  const stopSession = vi.fn<ProviderServiceShape["stopSession"]>(() => Effect.void);
+  const model = makeReadModel();
+  const updated = {
+    ...model,
+    threads: model.threads.map((thread) => ({
+      ...thread,
+      session: thread.session ? { ...thread.session, updatedAt: "1970-01-01T00:50:00.000Z" } : null,
+    })),
+  };
+  return Effect.gen(function* () {
+    const reaper = yield* ProviderSessionReaper;
+    yield* TestClock.adjust("60 minutes");
+    yield* reaper.sweep();
+    assert.strictEqual(stopSession.mock.calls.length, 0);
+    yield* TestClock.adjust("30 minutes");
+    yield* reaper.sweep();
+    assert.strictEqual(stopSession.mock.calls.length, 1);
+  }).pipe(
+    Effect.provide(
+      makeLayer({ readModel: updated, stopSession, inactivityThresholdMs: 30 * 60 * 1000 }),
     ),
   );
 });

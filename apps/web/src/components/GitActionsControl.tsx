@@ -777,7 +777,16 @@ export default function GitActionsControl({ gitCwd, activeThreadId }: GitActions
 
   return (
     <>
-      {!isRepo ? (
+      {branchList?.worktreeMissing ? (
+        <Button
+          variant="outline"
+          size="xs"
+          disabled
+          title="The worktree directory is missing. Sending a turn will attempt recovery."
+        >
+          Worktree missing
+        </Button>
+      ) : !isRepo ? (
         <Button
           variant="outline"
           size="xs"

@@ -668,3 +668,13 @@ it("allows five minutes for worktree removal", async () => {
   await Effect.runPromise(core.removeWorktree({ cwd: process.cwd(), path: process.cwd() }));
   expect(scripted.calls.find((call) => call.args[1] === "remove")?.timeoutMs).toBe(300_000);
 });
+
+it("returns missing worktree branches without running git", async () => {
+  const scripted = makeScriptedGitService();
+  const core = await makeCore(scripted.service);
+  const result = await Effect.runPromise(
+    core.listBranches({ cwd: `${process.cwd()}/missing-${crypto.randomUUID()}` }),
+  );
+  expect(result).toMatchObject({ worktreeMissing: true, branches: [] });
+  expect(scripted.calls).toEqual([]);
+});

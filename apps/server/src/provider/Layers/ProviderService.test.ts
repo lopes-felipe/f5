@@ -639,7 +639,7 @@ it.effect(
         const threadId = asThreadId("thread-1");
         const session = yield* provider.startSession(threadId, {
           provider: "codex",
-          cwd: "/tmp/project",
+          cwd: process.cwd(),
           runtimeMode: "full-access",
           threadId,
         });
@@ -704,7 +704,7 @@ it.effect(
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project");
+        assert.equal(startPayload.cwd, process.cwd());
         assert.deepEqual(startPayload.resumeCursor, started.session.resumeCursor);
         assert.equal(startPayload.threadId, started.session.threadId);
       }
@@ -930,7 +930,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       yield* provider.startSession(threadId, {
         provider: "codex",
         threadId,
-        cwd: "/tmp/project",
+        cwd: process.cwd(),
         model: "gpt-5-codex",
         runtimeMode: "full-access",
       });
@@ -999,7 +999,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const session = yield* provider.startSession(asThreadId("thread-1"), {
         provider: "codex",
         threadId: asThreadId("thread-1"),
-        cwd: "/tmp/project",
+        cwd: process.cwd(),
         runtimeMode: "full-access",
       });
       assert.equal(session.provider, "codex");
@@ -1089,7 +1089,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const session = yield* provider.startSession(asThreadId("thread-read"), {
         provider: "codex",
         threadId: asThreadId("thread-read"),
-        cwd: "/tmp/project-read-thread",
+        cwd: process.cwd(),
         runtimeMode: "full-access",
       });
 
@@ -1178,7 +1178,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const initial = yield* provider.startSession(asThreadId("thread-1"), {
         provider: "codex",
         threadId: asThreadId("thread-1"),
-        cwd: "/tmp/project",
+        cwd: process.cwd(),
         runtimeMode: "full-access",
       });
       yield* routing.codex.stopSession(initial.threadId);
@@ -1201,7 +1201,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project");
+        assert.equal(startPayload.cwd, process.cwd());
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
       }
@@ -1218,7 +1218,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const initial = yield* provider.startSession(asThreadId("thread-1"), {
         provider: "codex",
         threadId: asThreadId("thread-1"),
-        cwd: "/tmp/project-send-turn",
+        cwd: process.cwd(),
         model: "gpt-5.3-codex",
         modelOptions: { codex: { reasoningEffort: "high" } },
         providerOptions: { codex: { homePath: "/tmp/codex-recovery-home" } },
@@ -1255,7 +1255,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
           threadId?: string;
         };
         assert.equal(startPayload.provider, "codex");
-        assert.equal(startPayload.cwd, "/tmp/project-send-turn");
+        assert.equal(startPayload.cwd, process.cwd());
         assert.equal(startPayload.projectTitle, "Project title");
         assert.equal(startPayload.threadTitle, "Recovery thread");
         assert.equal(startPayload.priorWorkSummary, "Earlier work");
@@ -1277,7 +1277,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const initial = yield* provider.startSession(asThreadId("thread-first-turn"), {
         provider: "codex",
         threadId: asThreadId("thread-first-turn"),
-        cwd: "/tmp/project-first-turn",
+        cwd: process.cwd(),
         projectTitle: "Project title",
         priorWorkSummary: "Earlier work",
         restoredTasks: ["[pending] Finish the task"],
@@ -1337,7 +1337,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.projectTitle, "Project title");
         assert.equal(startPayload.priorWorkSummary, "Earlier work");
         assert.deepEqual(startPayload.restoredTasks, ["[pending] Finish the task"]);
-        assert.equal(startPayload.cwd, "/tmp/project-first-turn");
+        assert.equal(startPayload.cwd, process.cwd());
         assert.equal(startPayload.providerOptions?.codex?.homePath, "/tmp/codex-home");
       }
 
@@ -1372,7 +1372,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.projectTitle, "Project title");
         assert.equal(startPayload.priorWorkSummary, "Earlier work");
         assert.deepEqual(startPayload.restoredTasks, ["[pending] Finish the task"]);
-        assert.equal(startPayload.cwd, "/tmp/project-first-turn");
+        assert.equal(startPayload.cwd, process.cwd());
         assert.equal(startPayload.providerOptions?.codex?.homePath, "/tmp/codex-home");
       }
     }),
@@ -1889,7 +1889,7 @@ validation.layer("ProviderServiceLive validation", (it) => {
       const session = yield* provider.startSession(asThreadId("thread-missing"), {
         provider: "codex",
         threadId: asThreadId("thread-missing"),
-        cwd: "/tmp/project",
+        cwd: process.cwd(),
         runtimeMode: "full-access",
       });
 

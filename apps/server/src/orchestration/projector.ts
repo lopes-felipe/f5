@@ -1339,7 +1339,8 @@ export function projectEvent(
           .toSorted((left, right) => left.checkpointTurnCount - right.checkpointTurnCount)
           .slice(-MAX_THREAD_CHECKPOINTS);
         const shouldPreserveRunningLatestTurn =
-          thread.latestTurn?.turnId === payload.turnId && thread.latestTurn.state === "running";
+          thread.latestTurn?.turnId === payload.turnId &&
+          (thread.latestTurn.state === "running" || thread.latestTurn.state === "interrupted");
         const nextLatestTurn = shouldPreserveRunningLatestTurn
           ? {
               ...thread.latestTurn,

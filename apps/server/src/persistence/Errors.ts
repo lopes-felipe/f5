@@ -30,11 +30,30 @@ export class PersistenceDecodeError extends Schema.TaggedErrorClass<PersistenceD
   }
 }
 
+/** Only numeric SQLite conditions enter diagnostics; SQL messages may contain user data. */
+function sqliteCondition(cause: unknown): string | undefined {
+  let current = cause;
+  for (let depth = 0; depth < 4 && current !== null && typeof current === "object"; depth++) {
+    const value = current as Record<string, unknown>;
+    const code =
+      typeof value.errcode === "number"
+        ? value.errcode
+        : value.name === "SQLiteError"
+          ? value.errno
+          : undefined;
+    if (typeof code === "number" && Number.isInteger(code)) return `SQLITE(${code})`;
+    current = value.cause;
+  }
+  return undefined;
+}
+
 export function toPersistenceSqlError(operation: string) {
   return (cause: unknown): PersistenceSqlError =>
     new PersistenceSqlError({
       operation,
-      detail: `Failed to execute ${operation}`,
+      detail: Schema.isSchemaError(cause)
+        ? `Schema issue: ${cause.issue._tag}`
+        : (sqliteCondition(cause) ?? `Failed to execute ${operation}`),
       cause,
     });
 }

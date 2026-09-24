@@ -44,6 +44,18 @@ describe("deriveProviderInstanceEntries", () => {
   });
 });
 
+it.each(["constructor", "toString"])(
+  "does not retain a deleted provider instance named %s",
+  (instanceId) => {
+    const snapshot = provider({ provider: ProviderDriverKind.make("codex"), instanceId });
+    expect(deriveProviderInstanceEntries([snapshot])).toHaveLength(1);
+    expect(deriveProviderInstanceEntries([])).toEqual([]);
+    expect(
+      resolveSelectableProviderInstance([], ProviderInstanceId.make(instanceId)),
+    ).toBeUndefined();
+  },
+);
+
 describe("resolveSelectableProviderInstance", () => {
   it("returns the requested instance when it is enabled and available", () => {
     const requested = ProviderInstanceId.make("claude_work");
@@ -129,4 +141,8 @@ describe("resolveProviderDriverKindForInstanceSelection", () => {
       ),
     ).toBeUndefined();
   });
+});
+
+it("rejects prototype-mutating instance IDs", () => {
+  expect(() => ProviderInstanceId.make("__proto__")).toThrow();
 });

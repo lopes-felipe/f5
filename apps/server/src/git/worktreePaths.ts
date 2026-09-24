@@ -38,3 +38,7 @@ export async function canonicalWorktreePath(value: string): Promise<string> {
     }
   }
 }
+
+export function isTemporaryWorktreeBranch(branch: string): boolean {
+  return /^t3code\/[0-9a-f]{8}$/.test(branch.trim().toLowerCase());
+}

@@ -1,3 +1,8 @@
+import path from "node:path";
+import os from "node:os";
+import { GitCommandError } from "../../git/Errors.ts";
+import { GitCore, type GitCoreShape } from "../../git/Services/GitCore.ts";
+import { makeFakeGitCore } from "../../git/testDoubles.ts";
 import { CommandId, MessageId, ProjectId, ThreadId, TurnId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -22,47 +27,66 @@ import { NextTurnQueueStoreLive } from "./NextTurnQueueStore.ts";
 
 const dispatched: CommandId[] = [];
 
-const dependencies = Layer.mergeAll(
-  Layer.succeed(ProjectionThreadRepository, {
-    getById: ({ threadId }: { threadId: ThreadId }) =>
-      Effect.succeed(
-        Option.some({ threadId, archivedAt: null, deletedAt: null, worktreePath: null }),
-      ),
-  } as never),
-  Layer.succeed(ProjectionThreadSessionRepository, {
-    getByThreadId: () => Effect.succeed(Option.none()),
-  } as never),
-  Layer.succeed(OrchestrationCommandReceiptRepository, {
-    getByCommandId: () => Effect.succeed(Option.none()),
-  } as never),
-  Layer.succeed(ProviderTurnDeliveryRepository, {
-    getByCommandId: () => Effect.succeed(null),
-  } as never),
-  Layer.succeed(OrchestrationEngineService, {
-    dispatch: (command: { readonly commandId: CommandId }) =>
-      Effect.sync(() => {
-        dispatched.push(command.commandId);
-        return { sequence: dispatched.length };
-      }),
-    streamDomainEvents: Stream.empty,
-  } as never),
-  Layer.succeed(RuntimeReceiptBus, {
-    publish: () => Effect.void,
-    stream: Stream.empty,
-  }),
-);
+const makeDependencies = (worktreePath: string | null) =>
+  Layer.mergeAll(
+    Layer.succeed(ProjectionThreadRepository, {
+      getById: ({ threadId }: { threadId: ThreadId }) =>
+        Effect.succeed(
+          Option.some({
+            threadId,
+            archivedAt: null,
+            deletedAt: null,
+            worktreePath,
+            branch: "feature",
+            projectId: ProjectId.makeUnsafe("queue-dispatcher-project"),
+          }),
+        ),
+    } as never),
+    Layer.succeed(ProjectionThreadSessionRepository, {
+      getByThreadId: () => Effect.succeed(Option.none()),
+    } as never),
+    Layer.succeed(OrchestrationCommandReceiptRepository, {
+      getByCommandId: () => Effect.succeed(Option.none()),
+    } as never),
+    Layer.succeed(ProviderTurnDeliveryRepository, {
+      getByCommandId: () => Effect.succeed(null),
+    } as never),
+    Layer.succeed(OrchestrationEngineService, {
+      dispatch: (command: { readonly commandId: CommandId }) =>
+        Effect.sync(() => {
+          dispatched.push(command.commandId);
+          return { sequence: dispatched.length };
+        }),
+      getReadModel: () =>
+        Effect.succeed({
+          projects: [
+            { id: ProjectId.makeUnsafe("queue-dispatcher-project"), workspaceRoot: process.cwd() },
+          ],
+        }),
+      streamDomainEvents: Stream.empty,
+    } as never),
+    Layer.succeed(RuntimeReceiptBus, {
+      publish: () => Effect.void,
+      stream: Stream.empty,
+    }),
+  );
 
 const persistence = Layer.mergeAll(
   SqlitePersistenceMemory,
   ServerConfig.layerTest(process.cwd(), { prefix: "f5-next-turn-dispatcher-" }),
 ).pipe(Layer.provideMerge(NodeServices.layer));
 const storeLayer = NextTurnQueueStoreLive.pipe(Layer.provideMerge(persistence));
-const testLayer = NextTurnQueueDispatcherLive.pipe(
-  Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(persistence))),
-  Layer.provideMerge(storeLayer),
-  Layer.provideMerge(dependencies),
-);
-const layer = it.layer(testLayer);
+const makeTestLayer = (
+  git: GitCoreShape = makeFakeGitCore().service,
+  worktreePath: string | null = null,
+) =>
+  NextTurnQueueDispatcherLive.pipe(
+    Layer.provide(Layer.succeed(GitCore, git)),
+    Layer.provideMerge(ProjectionTurnRepositoryLive.pipe(Layer.provide(persistence))),
+    Layer.provideMerge(storeLayer),
+    Layer.provideMerge(makeDependencies(worktreePath)),
+  );
+const layer = it.layer(makeTestLayer());
 
 const seedThread = (threadId: ThreadId) =>
   Effect.gen(function* () {
@@ -359,3 +383,48 @@ layer("NextTurnQueueDispatcher", (it) => {
     }),
   );
 });
+
+for (const scenario of ["recoverable", "missing-ref", "checked-out-elsewhere"] as const) {
+  it.effect(`handles a missing worktree before queue dispatch: ${scenario}`, () => {
+    const git = makeFakeGitCore({
+      branchExists: () => Effect.succeed(scenario !== "missing-ref"),
+      ensureWorktree: () =>
+        scenario === "checked-out-elsewhere"
+          ? Effect.fail(
+              new GitCommandError({
+                operation: "ensureWorktree",
+                cwd: process.cwd(),
+                command: "git worktree add",
+                detail: "Branch feature is checked out at another-worktree.",
+              }),
+            )
+          : Effect.void,
+    });
+    return Effect.gen(function* () {
+      dispatched.length = 0;
+      const dispatcher = yield* NextTurnQueueDispatcher;
+      const threadId = ThreadId.makeUnsafe(`queue-worktree-${scenario}`);
+      yield* seedThread(threadId);
+      yield* insert(1, threadId);
+      const before = yield* dispatcher.getSnapshot(threadId);
+      assert.equal(git.calls.ensureWorktree.length, 0);
+      if (scenario === "recoverable") assert.equal(before.reasonCode, null);
+      yield* dispatcher.notify(threadId);
+      yield* dispatcher.drain;
+      const queue = yield* (yield* NextTurnQueueStore).listByThread(threadId);
+      if (scenario === "recoverable") {
+        assert.equal(dispatched.length, 1);
+        assert.equal(git.calls.ensureWorktree.length, 1);
+      } else {
+        assert.equal(dispatched.length, 0);
+        assert.equal(queue.state.pauseReasonCode, "worktree_missing");
+        if (scenario === "checked-out-elsewhere")
+          assert.match(queue.state.pauseDetail ?? "", /checked out at/);
+      }
+    }).pipe(
+      Effect.provide(
+        makeTestLayer(git.service, path.join(os.tmpdir(), `f5-missing-${crypto.randomUUID()}`)),
+      ),
+    );
+  });
+}

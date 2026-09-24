@@ -1,3 +1,4 @@
+import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
 import {
   F5_PROTOCOL_HEADER,
@@ -1542,6 +1543,11 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         respond(500, { "Content-Type": "text/plain" }, "Internal Server Error");
       }
     });
+  });
+  guardHttpResponseWriteErrors(httpServer, (code) => {
+    void Effect.runPromise(
+      Effect.logWarning("Unexpected HTTP response or upgrade write error", { code }),
+    );
   });
 
   // WebSocket server — upgrades from the HTTP server

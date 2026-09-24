@@ -91,6 +91,16 @@ async function makeManager(options?: {
 }
 
 describe("GitManager unit", () => {
+  it("returns missing worktree status without running git", async () => {
+    const { manager, git, github } = await makeManager();
+    const status = await Effect.runPromise(
+      manager.status({ cwd: path.join(cwd, `missing-${crypto.randomUUID()}`) }),
+    );
+    expect(status.worktreeMissing).toBe(true);
+    expect(Object.values(git.calls).flat()).toEqual([]);
+    expect(github.calls).toEqual([]);
+  });
+
   it("adds current pull-request metadata to Git status", async () => {
     const { manager } = await makeManager({
       gitCore: { statusDetails: () => Effect.succeed(cleanStatus) },

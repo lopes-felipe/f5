@@ -51,6 +51,7 @@ const collectOutput = Effect.fn(function* <E>(
   input: Pick<ExecuteGitInput, "operation" | "cwd" | "args">,
   stream: Stream.Stream<Uint8Array, E>,
   maxOutputBytes: number,
+  consume?: (chunk: Uint8Array) => void,
 ): Effect.fn.Return<string, GitCommandError> {
   const decoder = new TextDecoder();
   let bytes = 0;
@@ -58,6 +59,10 @@ const collectOutput = Effect.fn(function* <E>(
 
   yield* Stream.runForEach(stream, (chunk) =>
     Effect.gen(function* () {
+      if (consume) {
+        consume(chunk);
+        return;
+      }
       bytes += chunk.byteLength;
       if (bytes > maxOutputBytes) {
         return yield* new GitCommandError({
@@ -160,13 +165,16 @@ const makeGitService = Effect.gen(function* () {
           ChildProcess.make("git", commandInput.args, {
             cwd: commandInput.cwd,
             env: environment,
+            ...(input.stdin === undefined
+              ? {}
+              : { stdin: Stream.make(new TextEncoder().encode(input.stdin)) }),
           }),
         )
         .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));
 
       const [stdout, stderr, exitCode] = yield* Effect.all(
         [
-          collectOutput(commandInput, child.stdout, maxOutputBytes),
+          collectOutput(commandInput, child.stdout, maxOutputBytes, input.onStdoutChunk),
           collectOutput(commandInput, child.stderr, maxOutputBytes),
           child.exitCode.pipe(
             Effect.map((value) => Number(value)),
