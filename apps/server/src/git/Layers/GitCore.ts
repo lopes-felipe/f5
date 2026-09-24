@@ -10,9 +10,13 @@ import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observa
 import { GitCommandError } from "../Errors.ts";
 import { GitService } from "../Services/GitService.ts";
 import { GitCore, type GitCoreShape } from "../Services/GitCore.ts";
-import { parseRemoteNamesInGitOrder, parseRemoteRefWithRemoteNames } from "../remoteRefs.ts";
+import {
+  isPullRequestTrackingAlias,
+  parseRemoteNamesInGitOrder,
+  parseRemoteRefWithRemoteNames,
+} from "../remoteRefs.ts";
 import { ServerConfig } from "../../config.ts";
-import { resolveDefaultWorktreePath } from "../worktreePaths.ts";
+import { canonicalWorktreePath, resolveDefaultWorktreePath } from "../worktreePaths.ts";
 
 const STATUS_UPSTREAM_REFRESH_INTERVAL = Duration.seconds(15);
 const STATUS_UPSTREAM_REFRESH_TIMEOUT = Duration.seconds(5);
@@ -44,7 +48,7 @@ interface StatusStaticMetadata {
 }
 
 interface ExecuteGitOptions {
-  timeoutMs?: number | undefined;
+  timeoutMs?: number | null | undefined;
   allowNonZeroExit?: boolean | undefined;
   fallbackErrorMessage?: string | undefined;
   env?: NodeJS.ProcessEnv | undefined;
@@ -204,6 +208,43 @@ function createGitCommandError(
   });
 }
 
+// Remote output may contain credentials. Persist only fixed network diagnoses.
+function networkFailureDetail(stderr: string): string {
+  if (
+    /Authentication failed|could not read (?:Username|Password)|Permission denied \(publickey/i.test(
+      stderr,
+    )
+  ) {
+    return "Git could not authenticate with the remote. Check Git credentials or SSH access on the server, then retry.";
+  }
+  if (
+    /Could not resolve host|Failed to connect|Connection timed out|Connection refused|Network is unreachable/i.test(
+      stderr,
+    )
+  ) {
+    return "Git could not reach the remote. Check the server's network connection and remote host, then retry.";
+  }
+  if (/couldn't find remote ref/i.test(stderr))
+    return "The requested branch is absent from the remote. Check the selected base branch.";
+  if (/non-fast-forward|fetch first|rejected.*behind/i.test(stderr))
+    return "The remote branch has newer commits. Fetch and reconcile them before retrying.";
+  if (/protected branch|protected branch hook|GH006|GH013/i.test(stderr))
+    return "The remote rejected this write under its branch protection rules.";
+  if (/Host key verification failed/i.test(stderr))
+    return "SSH host verification failed. Configure trusted host keys on the server.";
+  if (
+    /Repository not found|repository .+ not found|does not appear to be a git repository/i.test(
+      stderr,
+    )
+  ) {
+    return "Git could not access the remote repository. Check the remote URL and repository permissions on the server.";
+  }
+  if (/cannot lock ref|Unable to create .+\.lock/i.test(stderr)) {
+    return "Git could not update a local reference. Check for another Git operation or a stale lock, then retry.";
+  }
+  return "The remote operation failed. Check the remote configuration and repository access on the server, then retry.";
+}
+
 function missingCwdErrorDetail(cwd: string): string {
   return `Working directory does not exist: ${cwd}`;
 }
@@ -246,6 +287,18 @@ const makeGitCore = Effect.gen(function* () {
         Effect.flatMap((result) => {
           if (options.allowNonZeroExit || result.code === 0) {
             return Effect.succeed(result);
+          }
+          if (["fetch", "push", "pull", "ls-remote"].includes(args[0] ?? "")) {
+            return Effect.fail(
+              createGitCommandError(
+                operation,
+                cwd,
+                args.map((argument) =>
+                  argument.includes("://") || argument.includes("@") ? "<remote>" : argument,
+                ),
+                `${options.fallbackErrorMessage ?? `Git ${args[0]} failed`}: ${networkFailureDetail(result.stderr)} (exit ${result.code})`,
+              ),
+            );
           }
           const stderr = result.stderr.trim();
           if (stderr.length > 0) {
@@ -643,6 +696,7 @@ const makeGitCore = Effect.gen(function* () {
   const resolvePushRemoteName = (
     cwd: string,
     branch: string,
+    upstreamRemote?: string,
   ): Effect.Effect<string | null, GitCommandError> =>
     Effect.gen(function* () {
       const branchPushRemote = yield* runGitStdout(
@@ -665,7 +719,10 @@ const makeGitCore = Effect.gen(function* () {
         return pushDefaultRemote;
       }
 
-      return yield* resolvePrimaryRemoteName(cwd).pipe(Effect.catch(() => Effect.succeed(null)));
+      return (
+        upstreamRemote ??
+        (yield* resolvePrimaryRemoteName(cwd).pipe(Effect.catch(() => Effect.succeed(null))))
+      );
     });
 
   const ensureRemote: GitCoreShape["ensureRemote"] = (input) =>
@@ -825,6 +882,36 @@ const makeGitCore = Effect.gen(function* () {
       // worktree paths still referenced by the projection DB.
       yield* ensureCwdExists("GitCore.statusDetails", cwd);
 
+      const index = yield* executeGit(
+        "GitCore.statusDetails.indexPath",
+        cwd,
+        ["rev-parse", "--git-path", "index"],
+        { allowNonZeroExit: true },
+      );
+      if (index.code === 0 && index.stdout.trim()) {
+        const locked = yield* fileSystem
+          .exists(`${resolvePath(cwd, index.stdout.trim())}.lock`)
+          .pipe(
+            Effect.mapError((cause) =>
+              createGitCommandError(
+                "GitCore.statusDetails.indexPath",
+                cwd,
+                [],
+                "Failed to check the Git index lock.",
+                cause,
+              ),
+            ),
+          );
+        if (locked) {
+          return yield* createGitCommandError(
+            "GitCore.statusDetails.indexPath",
+            cwd,
+            [],
+            "Git index is locked. Status will resume when the index lock is removed.",
+          );
+        }
+      }
+
       yield* refreshStatusUpstreamIfStale(cwd).pipe(Effect.ignoreCause({ log: true }));
 
       const [statusStdout, unstagedNumstatStdout, stagedNumstatStdout, headNumstatResult] =
@@ -846,7 +933,7 @@ const makeGitCore = Effect.gen(function* () {
             executeGit(
               "GitCore.statusDetails.headNumstat",
               cwd,
-              ["diff", "HEAD", "--numstat", "-z"],
+              ["diff", "--numstat", "-z", "HEAD", "--"],
               { allowNonZeroExit: true },
             ),
           ],
@@ -951,7 +1038,7 @@ const makeGitCore = Effect.gen(function* () {
           ? aggregate.deletions
           : splitAggregate.deletions;
 
-      return {
+      const result = {
         branch,
         upstreamRef,
         hasWorkingTreeChanges,
@@ -965,6 +1052,7 @@ const makeGitCore = Effect.gen(function* () {
         aheadCount,
         behindCount,
       };
+      return result;
     });
 
   const status: GitCoreShape["status"] = (input) =>
@@ -1008,6 +1096,8 @@ const makeGitCore = Effect.gen(function* () {
         "diff",
         "--cached",
         "--patch",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
         "--minimal",
         ...(filePaths && filePaths.length > 0 ? ["--", ...filePaths] : []),
       ]);
@@ -1106,12 +1196,12 @@ const makeGitCore = Effect.gen(function* () {
             "Cannot push because no git remote is configured for this repository.",
           );
         }
-        yield* runGit("GitCore.pushCurrentBranch.pushWithUpstream", cwd, [
-          "push",
-          "-u",
-          publishRemoteName,
-          branch,
-        ]);
+        yield* executeGit(
+          "GitCore.pushCurrentBranch.pushWithUpstream",
+          cwd,
+          ["push", "-u", publishRemoteName, `HEAD:refs/heads/${branch}`],
+          { timeoutMs: 15 * 60_000 },
+        );
         return {
           status: "pushed" as const,
           branch,
@@ -1124,11 +1214,46 @@ const makeGitCore = Effect.gen(function* () {
         Effect.catch(() => Effect.succeed(null)),
       );
       if (currentUpstream) {
-        yield* runGit("GitCore.pushCurrentBranch.pushUpstream", cwd, [
-          "push",
-          currentUpstream.remoteName,
-          `HEAD:${currentUpstream.upstreamBranch}`,
-        ]);
+        // Git may retain part of a slash-containing remote name in a tracking alias.
+        const isAliasOfUpstreamHead =
+          branch === currentUpstream.upstreamBranch ||
+          isPullRequestTrackingAlias(branch, currentUpstream.upstreamBranch) ||
+          (branch.endsWith(`/${currentUpstream.upstreamBranch}`) &&
+            currentUpstream.upstreamRef.endsWith(`/${branch}`));
+        if (!isAliasOfUpstreamHead) {
+          const remoteName = yield* resolvePushRemoteName(cwd, branch, currentUpstream.remoteName);
+          const mergeBaseKey = `branch.${branch}.gh-merge-base`;
+          const configuredBase = yield* runGitStdout(
+            "GitCore.pushCurrentBranch.readMergeBase",
+            cwd,
+            ["config", "--get", mergeBaseKey],
+            true,
+          );
+          if (!configuredBase.trim())
+            yield* runGit("GitCore.pushCurrentBranch.recordMergeBase", cwd, [
+              "config",
+              mergeBaseKey,
+              currentUpstream.upstreamBranch,
+            ]);
+          yield* executeGit(
+            "GitCore.pushCurrentBranch.pushOwnBranch",
+            cwd,
+            ["push", "-u", remoteName!, `HEAD:refs/heads/${branch}`],
+            { timeoutMs: 15 * 60_000 },
+          );
+          return {
+            status: "pushed" as const,
+            branch,
+            upstreamBranch: `${remoteName}/${branch}`,
+            setUpstream: true,
+          };
+        }
+        yield* executeGit(
+          "GitCore.pushCurrentBranch.pushUpstream",
+          cwd,
+          ["push", currentUpstream.remoteName, `HEAD:refs/heads/${currentUpstream.upstreamBranch}`],
+          { timeoutMs: 15 * 60_000 },
+        );
         return {
           status: "pushed" as const,
           branch,
@@ -1137,7 +1262,9 @@ const makeGitCore = Effect.gen(function* () {
         };
       }
 
-      yield* runGit("GitCore.pushCurrentBranch.push", cwd, ["push"]);
+      yield* executeGit("GitCore.pushCurrentBranch.push", cwd, ["push"], {
+        timeoutMs: 15 * 60_000,
+      });
       return {
         status: "pushed" as const,
         branch,
@@ -1210,13 +1337,26 @@ const makeGitCore = Effect.gen(function* () {
       const diffRange = `${remoteRangeBase}...HEAD`;
       const [commitSummary, diffSummary, diffPatch] = yield* Effect.all(
         [
-          runGitStdout("GitCore.readRangeContext.log", cwd, ["log", "--oneline", commitRange]),
-          runGitStdout("GitCore.readRangeContext.diffStat", cwd, ["diff", "--stat", diffRange]),
+          runGitStdout("GitCore.readRangeContext.log", cwd, [
+            "log",
+            "--oneline",
+            commitRange,
+            "--",
+          ]),
+          runGitStdout("GitCore.readRangeContext.diffStat", cwd, [
+            "diff",
+            "--stat",
+            diffRange,
+            "--",
+          ]),
           runGitStdout("GitCore.readRangeContext.diffPatch", cwd, [
             "diff",
             "--patch",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             "--minimal",
             diffRange,
+            "--",
           ]),
         ],
         { concurrency: "unbounded" },
@@ -1438,6 +1578,7 @@ const makeGitCore = Effect.gen(function* () {
         : ["worktree", "add", worktreePath, baseRefName];
 
       yield* executeGit("GitCore.createWorktree", input.cwd, args, {
+        timeoutMs: 300_000,
         fallbackErrorMessage: "git worktree add failed",
       });
 
@@ -1469,6 +1610,24 @@ const makeGitCore = Effect.gen(function* () {
         ["check-ref-format", `refs/heads/${branch}`],
         { fallbackErrorMessage: `Invalid remote branch '${input.branch}'` },
       );
+
+      if (input.allowMissingBranch) {
+        const probe = yield* executeGit(
+          "GitCore.fetchRemoteBranchCommit.probe",
+          input.cwd,
+          ["ls-remote", "--exit-code", "--heads", "--", remoteName, `refs/heads/${branch}`],
+          { allowNonZeroExit: true },
+        );
+        if (probe.code === 2) return null;
+        if (probe.code !== 0) {
+          return yield* createGitCommandError(
+            "GitCore.fetchRemoteBranchCommit.probe",
+            input.cwd,
+            ["ls-remote"],
+            networkFailureDetail(probe.stderr),
+          );
+        }
+      }
 
       const fullRefName = `refs/remotes/${remoteName}/${branch}`;
       yield* executeGit(
@@ -1558,13 +1717,61 @@ const makeGitCore = Effect.gen(function* () {
 
   const removeWorktree: GitCoreShape["removeWorktree"] = (input) =>
     Effect.gen(function* () {
+      if (
+        !(yield* fileSystem
+          .exists(resolvePath(input.cwd, input.path))
+          .pipe(
+            Effect.mapError((cause) =>
+              createGitCommandError(
+                "GitCore.removeWorktree",
+                input.cwd,
+                ["worktree", "remove", input.path],
+                "Cannot inspect worktree directory.",
+                cause,
+              ),
+            ),
+          ))
+      ) {
+        const listed = yield* runGitStdout("GitCore.removeWorktree.list", input.cwd, [
+          "worktree",
+          "list",
+          "--porcelain",
+          "-z",
+        ]);
+        const requestedPath = yield* Effect.tryPromise({
+          try: () => canonicalWorktreePath(resolvePath(input.cwd, input.path)),
+          catch: (cause) =>
+            createGitCommandError(
+              "GitCore.removeWorktree",
+              input.cwd,
+              ["worktree", "remove"],
+              "Cannot resolve the missing worktree path.",
+              cause,
+            ),
+        });
+        const registered = listed
+          .split("\0")
+          .some(
+            (field) =>
+              field.startsWith("worktree ") &&
+              resolvePath(input.cwd, field.slice(9)) === requestedPath,
+          );
+        if (!registered) return;
+        yield* executeGit(
+          "GitCore.removeWorktree.missing",
+          input.cwd,
+          ["worktree", "remove", "--force", "--", input.path],
+          { timeoutMs: 300_000 },
+        );
+        return;
+      }
       const args = ["worktree", "remove"];
       if (input.force) {
         args.push("--force");
       }
       args.push(input.path);
       yield* executeGit("GitCore.removeWorktree", input.cwd, args, {
-        timeoutMs: 15_000,
+        timeoutMs: 300_000,
         fallbackErrorMessage: "git worktree remove failed",
       }).pipe(
         Effect.mapError((error) =>
@@ -1673,7 +1880,7 @@ const makeGitCore = Effect.gen(function* () {
               ? ["checkout", localTrackingBranch]
               : ["checkout", input.branch];
 
-      yield* executeGit("GitCore.checkoutBranch.checkout", input.cwd, checkoutArgs, {
+      yield* executeGit("GitCore.checkoutBranch.checkout", input.cwd, [...checkoutArgs, "--"], {
         timeoutMs: 10_000,
         fallbackErrorMessage: "git checkout failed",
       });
@@ -1735,6 +1942,7 @@ const makeGitCore = Effect.gen(function* () {
     checkoutBranch,
     initRepo,
     listLocalBranchNames,
+    readDefaultBranch: (cwd) => resolveDefaultBranchName(cwd, "origin"),
   } satisfies GitCoreShape;
 });
 

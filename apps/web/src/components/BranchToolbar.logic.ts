@@ -122,6 +122,11 @@ export function resolveBranchSelectionTarget(input: {
   };
 }
 
+/** Replace only ASCII whitespace rejected by Git; preserve valid Unicode names. */
+export function sanitizeNewRefName(rawName: string): string {
+  return rawName.trim().replace(/[ \t\n\r\f\v]+/g, "-");
+}
+
 export function shouldIncludeBranchPickerItem(input: {
   itemValue: string;
   normalizedQuery: string;
@@ -142,7 +147,10 @@ export function shouldIncludeBranchPickerItem(input: {
     return true;
   }
 
-  return itemValue.toLowerCase().includes(normalizedQuery);
+  return (
+    itemValue.toLowerCase().includes(normalizedQuery) ||
+    itemValue.toLowerCase().includes(sanitizeNewRefName(normalizedQuery))
+  );
 }
 
 /**

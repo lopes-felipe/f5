@@ -194,6 +194,11 @@ function parseRemoteParts(input: {
   };
 }
 
+export function isSshRemoteUrl(remoteUrl: string): boolean {
+  const trimmed = remoteUrl.trim();
+  return /^[a-zA-Z0-9._-]+@[^:/\s]+:/.test(trimmed) || trimmed.toLowerCase().startsWith("ssh://");
+}
+
 export function parseSourceControlRemoteUrl(
   url: string | null | undefined,
 ): ParsedSourceControlRemote {
@@ -202,7 +207,7 @@ export function parseSourceControlRemoteUrl(
     return { kind: "unknown", host: null, owner: null, repository: null, webUrl: null };
   }
 
-  const sshMatch = /^git@([^:]+):(.+)$/.exec(raw);
+  const sshMatch = /^[a-zA-Z0-9._-]+@([^:/\s]+):(.+)$/.exec(raw);
   if (sshMatch) {
     const host = sshMatch[1]!.trim();
     const parsed = parseRemoteParts({ host, pathname: sshMatch[2] ?? "" });

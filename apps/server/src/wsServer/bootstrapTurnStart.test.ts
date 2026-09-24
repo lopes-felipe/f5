@@ -1194,6 +1194,62 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(createWorktree.mock.calls[0]?.[0]).not.toHaveProperty("baseRefName");
   });
 
+  it("creates from a local-only base when the configured remote lacks that branch", async () => {
+    const fetchRemoteBranchCommit = vi.fn(() => Effect.succeed(null));
+    const createWorktree = vi.fn((_input: Parameters<GitCoreShape["createWorktree"]>[0]) =>
+      Effect.succeed({
+        worktree: {
+          branch: "t3code/bootstrap-branch",
+          path: "/repo/project/.worktrees/thread-1",
+        },
+      } satisfies GitCreateWorktreeResult),
+    );
+    const dependencies = makeDependencies({
+      hasRemote: () => Effect.succeed(true),
+      fetchRemoteBranchCommit,
+      createWorktree,
+    });
+
+    await Effect.runPromise(
+      dispatchBootstrapTurnStart({
+        ...dependencies,
+        command: makeTurnStartCommand({
+          bootstrap: {
+            createThread: {
+              projectId: PROJECT_ID,
+              title: "New thread",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: "main",
+              worktreePath: null,
+              createdAt: "2026-01-01T00:00:00.000Z",
+            },
+            prepareWorktree: {
+              projectCwd: "/repo/project",
+              baseBranch: "main",
+              branch: "t3code/bootstrap-branch",
+            },
+          },
+        }),
+      }),
+    );
+
+    expect(fetchRemoteBranchCommit).toHaveBeenCalledWith({
+      cwd: "/repo/project",
+      branch: "main",
+      allowMissingBranch: true,
+    });
+    expect(createWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: "/repo/project",
+        branch: "main",
+        newBranch: "t3code/bootstrap-branch",
+      }),
+    );
+    expect(createWorktree.mock.calls[0]?.[0]).not.toHaveProperty("baseRefName");
+  });
+
   it("appends cleanup failure detail onto the original bootstrap error", async () => {
     const dependencies = makeDependencies({
       dispatch: (command) =>

@@ -179,3 +179,14 @@ it("restricts manually tracked PR URLs to the selected host", () => {
       ?.number,
   ).toBe(1);
 });
+
+describe("SSH usernames", () => {
+  it.each(["deploy", "gitlab", "build.bot", "ci-user"])("parses an SCP remote for %s", (user) => {
+    expect(parseSourceControlRemoteUrl(`${user}@github.com:owner/repo.git`)).toMatchObject({
+      kind: "github",
+      host: "github.com",
+      owner: "owner",
+      repository: "repo",
+    });
+  });
+});

@@ -486,6 +486,7 @@ export const dispatchBootstrapTurnStart = Effect.fnUntraced(function* (
           ? yield* observeBootstrapStage(
               "worktree-base-fetch",
               input.git.fetchRemoteBranchCommit({
+                allowMissingBranch: true,
                 cwd: bootstrap.prepareWorktree.projectCwd,
                 branch: bootstrap.prepareWorktree.baseBranch,
               }),

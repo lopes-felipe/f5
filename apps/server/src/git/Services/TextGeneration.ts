@@ -17,6 +17,7 @@ import type {
 import type { TextGenerationError } from "../Errors.ts";
 
 export interface CommitMessageGenerationInput {
+  repositoryContext?: string | undefined;
   cwd: string;
   branch: string | null;
   stagedSummary: string;
@@ -37,6 +38,7 @@ export interface CommitMessageGenerationResult {
 }
 
 export interface PrContentGenerationInput {
+  repositoryContext?: string | undefined;
   cwd: string;
   baseBranch: string;
   headBranch: string;

@@ -1322,10 +1322,12 @@
     {
       "upstreamSha": "12c497083e6ed2d6f90cc7775b5ecea232926b4a",
       "subject": "fix(vcs): give `git worktree add` a longer timeout on large repos (#6326)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(vcs): give `git worktree add` a longer timeout on large repos. Reimplement in f5; not yet delivered.",
+      "reason": "Worktree addition has a five-minute deadline.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1537"]
     },
     {
       "upstreamSha": "12e8997e58dbca8f1bd8c63b67d662eb69cf0e0d",
@@ -3487,10 +3489,15 @@
     {
       "upstreamSha": "30be31195883635aba96031a8d79c255fb28b438",
       "subject": "fix(server): fall back to the remote default branch instead of assuming main (#7078)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): fall back to the remote default branch instead of assuming main. Reimplement in f5; not yet delivered.",
+      "reason": "Resolve the PR base from origin HEAD directly, then local main/master, without changing remote branch picker isDefault flags.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitManager.ts:778"]
     },
     {
       "upstreamSha": "30c96228067bcd3a49e432ec898e52d4acb04297",
@@ -3893,10 +3900,12 @@
     {
       "upstreamSha": "36c4e9cf5c0123e33d65f2af9497ee090404b532",
       "subject": "fix(server): keep a/ and b/ prefixes in rendered git patches (#9438)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): keep a/ and b/ prefixes in rendered git patches. Reimplement in f5; not yet delivered.",
+      "reason": "Commit, range, review and checkpoint patches force a/ and b/ prefixes independently of diff.noprefix.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1089"]
     },
     {
       "upstreamSha": "36caf200c2b24c12838570966f5c85786a1fc1f8",
@@ -5525,10 +5534,11 @@
     {
       "upstreamSha": "4f1092cec2ebaa6ed0e49821238dfe6f1add362d",
       "subject": "fix(web): keep worktree origin preference visible (#9846)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(web): keep worktree origin preference visible. Reimplement in f5; not yet delivered.",
+      "reason": "Fixes upstream-only newWorktreesStartFromOrigin settings visibility. f5 has no such preference or conditional settings row; its bootstrap directly selects the base.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1a",
+      "evidence": ["apps/server/src/wsServer/bootstrapTurnStart.ts:453"]
     },
     {
       "upstreamSha": "4f1dc55cabe6cb4a89c2180d6b0e270584bb8883",
@@ -5630,10 +5640,12 @@
     {
       "upstreamSha": "50791a0530a9c4eed7924dbfedf2fcf430d4ed98",
       "subject": "fix(web): use branch wording in commit dialogs (#11281)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(web): use branch wording in commit dialogs. Reimplement in f5; not yet delivered.",
+      "reason": "f5 already uses branch wording in commit and default-branch dialogs; there is no leaked refName label to replace.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1a",
+      "evidence": ["apps/web/src/components/GitActionsControl.tsx:1064"],
+      "f5Shas": ["aa62686fcc05740550250adab6ce879bddf766bd"]
     },
     {
       "upstreamSha": "50871eb5de641ffd41b1f9d0151668982d276393",
@@ -5997,10 +6009,12 @@
     {
       "upstreamSha": "56a9bf2bd7d3dcdae722a5de84578909dc11aeda",
       "subject": "fix(git): prevent stale branch selections from restoring files (#10574)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(git): prevent stale branch selections from restoring files. Reimplement in f5; not yet delivered.",
+      "reason": "Every checkout argument variant ends with --, preventing stale ref names from restoring matching files.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1842"]
     },
     {
       "upstreamSha": "57100fba854fb1214ae7a413111efae14443d445",
@@ -6766,10 +6780,15 @@
     {
       "upstreamSha": "60f2ce0279d524bd70a573f6e0b6e9fab56e4b3e",
       "subject": "fix(git): follow repository instructions in generated source control text (#8804)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(git): follow repository instructions in generated source control text. Reimplement in f5; not yet delivered.",
+      "reason": "Repository writing guidance is explicitly opt-in through a default-off setting. Bound AGENTS.md/Claude-specific CLAUDE.md context, log oversized skips, and keep quoted untrusted style context separate from user instructions and required JSON format.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/repositoryInstructions.ts:34"]
     },
     {
       "upstreamSha": "6134b90ffb19c18e0b2f468aa172095a393470b0",
@@ -6907,10 +6926,11 @@
     {
       "upstreamSha": "62fbbe08aa854fcbd8044cd971a45a54edafcb98",
       "subject": "fix(web): tolerate servers that predate git identity in project import (#10547)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(web): tolerate servers that predate git identity in project import. Reimplement in f5; not yet delivered.",
+      "reason": "Fixes upstream-only cross-version onboarding project-import Git identity. f5 does not implement that import contract and requires an exact protocol version.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1a",
+      "evidence": ["apps/web/src/protocolState.ts:12"]
     },
     {
       "upstreamSha": "6319a9714881a1d25549f797c468fabebae92813",
@@ -6939,10 +6959,15 @@
     {
       "upstreamSha": "636caf4c70345d74c5391cbf9a607a91426a6e39",
       "subject": "fix(server): avoid PRs inherited from default upstreams (#7317)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): avoid PRs inherited from default upstreams. Reimplement in f5; not yet delivered.",
+      "reason": "Find local feature PRs without inheriting base PRs; preserve checked-out PR aliases and same-repo PR discovery when origin is absent.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitManager.ts:589"]
     },
     {
       "upstreamSha": "6382268323f86e01b2d40206bcf33beccb3fb64a",
@@ -8574,10 +8599,12 @@
     {
       "upstreamSha": "7ce4194707e2a883ccd6a44fd2e07eba08f5369a",
       "subject": "fix: detect SSH remotes with non-git user prefixes (e.g. gitlab@) (#3649)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix: detect SSH remotes with non-git user prefixes (e.g. gitlab@). Reimplement in f5; not yet delivered.",
+      "reason": "SCP-style SSH remotes accept non-git usernames; PR remote parsing and SSH transport preference share the source-control helpers.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["packages/shared/src/sourceControl.ts:197"]
     },
     {
       "upstreamSha": "7cf5b284e6e37895f535433c77f728b3e4292c9b",
@@ -9180,10 +9207,15 @@
     {
       "upstreamSha": "86070cbc7430957e542f5b1d4c6a38359329002d",
       "subject": "fix(server): skip git status scans while the index is locked (#9845)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): skip git status scans while the index is locked. Reimplement in f5; not yet delivered.",
+      "reason": "Resolve index.lock before status/diff and return an explicit locked-index error. Client queries retain their previous snapshot while displaying the error; server mutation paths never act on cached status.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:878"]
     },
     {
       "upstreamSha": "860caaa6023a3aaf616a5899816c74c195ca8de2",
@@ -9238,10 +9270,15 @@
     {
       "upstreamSha": "86fb47afd724ea28e96c4657a0e99b66af926b87",
       "subject": "fix(server): allow long-running git pushes (#6499)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): allow long-running git pushes. Reimplement in f5; not yet delivered.",
+      "reason": "Allow long pushes with a finite 15-minute deadline, noninteractive Git/GCM/askpass and SSH batch mode plus bounded connection/keepalive waits. Review replaces upstream's unbounded timeout to prevent indefinitely stuck actions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1140"]
     },
     {
       "upstreamSha": "871192933fe0a501fd92a1ed3a5d317ba1eea9d3",
@@ -10486,10 +10523,15 @@
     {
       "upstreamSha": "994372ba43810e64027c537231da200988faa7ca",
       "subject": "fix(server): push no longer writes a feature branch's commits to its base branch (#8228)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): push no longer writes a feature branch's commits to its base branch. Reimplement in f5; not yet delivered.",
+      "reason": "Publish ordinary feature branches to their own ref with merge-base preservation, while Git tracking aliases and f5 PR worktree aliases keep the original upstream and never record the PR head as a base.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1218"]
     },
     {
       "upstreamSha": "994654198d5820b6fab9ee09063646a8b6fd8e22",
@@ -10842,10 +10884,12 @@
     {
       "upstreamSha": "9e61d0f127cad164702ca37aad6f5f38babc1ac7",
       "subject": "fix(web): replace whitespace in new ref names with dashes (#6270)",
-      "reason": "Phase 1a: fix(web): replace whitespace in new ref names with dashes. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Branch creation replaces ASCII whitespace with dashes and uses the sanitized name for previews, collisions and filtering while preserving valid Unicode names.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/web/src/components/BranchToolbar.logic.ts:126"]
     },
     {
       "upstreamSha": "9e646ad84c9d5008187eabf479e85619df9de8ca",
@@ -11383,10 +11427,12 @@
     {
       "upstreamSha": "a81a52afbb4e03ba82b2743801772151ed8c7d70",
       "subject": "fix(server): allow local-only worktree bases (#8751)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): allow local-only worktree bases. Reimplement in f5; not yet delivered.",
+      "reason": "New-thread worktrees support local-only bases with a configured remote. A confirmed absent remote ref permits local fallback; authentication/network failures do not.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1603"]
     },
     {
       "upstreamSha": "a850895f6833b99d90fc6c50192b5eaa4966d5c7",
@@ -13002,10 +13048,15 @@
     {
       "upstreamSha": "c03b240265a1d4954536c5c0758ac2b7fa762ba8",
       "subject": "fix(git): explain fetch failures without exposing remote output (#12485)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(git): explain fetch failures without exposing remote output. Reimplement in f5; not yet delivered.",
+      "reason": "Use fixed diagnoses for fetch/push/pull and missing-ref probes without persisting arbitrary remote output; retain safe command context, per-call explanations and exit codes, masking URL/userinfo arguments.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:212"]
     },
     {
       "upstreamSha": "c0490e9d0eb057218bfa5df3f25a7c26c37145a5",
@@ -13511,10 +13562,12 @@
     {
       "upstreamSha": "c7b14a8666dc44ee426f8d139e0493af9fe4b6db",
       "subject": "fix(client-runtime): branch list no longer resets while paging through refs (#5858)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(client-runtime): branch list no longer resets while paging through refs. Reimplement in f5; not yet delivered.",
+      "reason": "f5 retrieves the complete branch list in one query and has no paginated client-runtime VCS store or partial-query coverage cache.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1a",
+      "evidence": ["apps/web/src/lib/gitReactQuery.ts:76"],
+      "f5Shas": ["aa62686fcc05740550250adab6ce879bddf766bd"]
     },
     {
       "upstreamSha": "c7b21ff172f8e64318ec681e8839ee60ca660fa4",
@@ -15593,10 +15646,15 @@
     {
       "upstreamSha": "e6a109b9f74552eb735968986845e500b98c3c73",
       "subject": "fix(server): thread delete no longer fails on already-removed worktrees (#8076)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): thread delete no longer fails on already-removed worktrees. Reimplement in f5; not yet delivered.",
+      "reason": "Remove only the confirmed registration for a missing worktree, resolving symlinked ancestors. Unknown paths are no-ops; unrelated unavailable worktrees are not pruned.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1718"]
     },
     {
       "upstreamSha": "e6ae764f47d678b96f4a1b2c8c76eedf1a342e26",
@@ -15858,10 +15916,15 @@
     {
       "upstreamSha": "eafb4a9340bd2c2271b7c8fac7eddd55beea3972",
       "subject": "fix(server): GitHub PR lookups stop probing owner-qualified heads (#13200)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): GitHub PR lookups stop probing owner-qualified heads. Reimplement in f5; not yet delivered.",
+      "reason": "Probe bare branch names and filter repository identity without assuming every non-origin remote is a fork; preserve owner-qualified PR creation for PR aliases.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": [
+        "0356087b4e557a1aa753c82f6beae5d39216b751",
+        "76642d7c06c4e2f8aa1677268c88c93e667f19c8"
+      ],
+      "evidence": ["apps/server/src/git/Layers/GitManager.ts:373"]
     },
     {
       "upstreamSha": "eb115063634c416c6362cc407f8572cb0c136ddf",
@@ -15942,10 +16005,11 @@
     {
       "upstreamSha": "ec3ec6f0b4e005c47aff07d4d9e31506241bce3a",
       "subject": "fix(web): mute sidebar branch name to match worktree icon (#9622)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(web): mute sidebar branch name to match worktree icon. Reimplement in f5; not yet delivered.",
+      "reason": "Fixes the upstream sidebar's inline branch-name label. f5's trailing metadata uses its existing worktree indicator without that label.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1a",
+      "evidence": ["apps/web/src/components/Sidebar.tsx:559"]
     },
     {
       "upstreamSha": "ec44bc56f598be16ffbc22ed0e4e095447043844",
@@ -16219,10 +16283,12 @@
     {
       "upstreamSha": "f0719072a1c6435b5a91243afc57bc8bf1f3e2b6",
       "subject": "fix(server): handle files named HEAD in git status (#6397)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): fix(server): handle files named HEAD in git status. Reimplement in f5; not yet delivered.",
+      "reason": "Status and range/checkpoint diffs explicitly separate revisions from paths, including a tracked file named HEAD.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:923"]
     },
     {
       "upstreamSha": "f075a58119f392137d699cefe5290b2aa6e55935",
@@ -16631,10 +16697,12 @@
     {
       "upstreamSha": "f54ab901fa77f76eeb1e1cdfa103b9ed6f5ee4ca",
       "subject": "Fix worktree removal timing out on large install trees (#3902)",
-      "reason": "Phase 1a (Git safety and branch/PR detection): Fix worktree removal timing out on large install trees. Reimplement in f5; not yet delivered.",
+      "reason": "Worktree removal has a five-minute deadline.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1a"
+      "disposition": "ported",
+      "plannedWorkstream": "1a",
+      "f5Shas": ["0356087b4e557a1aa753c82f6beae5d39216b751"],
+      "evidence": ["apps/server/src/git/Layers/GitCore.ts:1707"]
     },
     {
       "upstreamSha": "f559fe0ba6fb5950bd14a2404f10b9c94b33f696",

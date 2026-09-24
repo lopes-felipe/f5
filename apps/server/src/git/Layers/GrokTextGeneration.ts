@@ -194,6 +194,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     "GrokTextGeneration.generateCommitMessage",
   )(function* (input) {
     const { prompt, outputSchema } = buildCommitMessagePrompt({
+      repositoryContext: input.repositoryContext,
       branch: input.branch,
       stagedSummary: input.stagedSummary,
       stagedPatch: input.stagedPatch,
@@ -222,6 +223,7 @@ export const makeGrokTextGeneration = Effect.fn("makeGrokTextGeneration")(functi
     "GrokTextGeneration.generatePrContent",
   )(function* (input) {
     const { prompt, outputSchema } = buildPrContentPrompt({
+      repositoryContext: input.repositoryContext,
       baseBranch: input.baseBranch,
       headBranch: input.headBranch,
       commitSummary: input.commitSummary,

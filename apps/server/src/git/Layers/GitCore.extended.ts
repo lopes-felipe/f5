@@ -1,6 +1,7 @@
 import { ServerConfig } from "../../config.ts";
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { createServer } from "node:http";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
@@ -109,6 +110,7 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
       pushCurrentBranch: (cwd, fallbackBranch) => core.pushCurrentBranch(cwd, fallbackBranch),
       pullCurrentBranch: (cwd) => core.pullCurrentBranch(cwd),
       readRangeContext: (cwd, baseBranch) => core.readRangeContext(cwd, baseBranch),
+      readDefaultBranch: (cwd) => core.readDefaultBranch(cwd),
       readConfigValue: (cwd, key) => core.readConfigValue(cwd, key),
       listRemotes: (cwd) => core.listRemotes(cwd),
       listBranches: (input) => core.listBranches(input),
@@ -238,6 +240,242 @@ function commitWithDate(
 // ── Tests ──
 
 it.layer(TestLayer)("git integration", (it) => {
+  describe("upstream Git safety", () => {
+    it.effect("does not restore a tracked file when a stale branch name matches it", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* writeTextFile(path.join(cwd, "README.md"), "unsaved local edits\n");
+        const core = yield* GitCore;
+        const result = yield* core.checkoutBranch({ cwd, branch: "README.md" }).pipe(Effect.result);
+        expect(result._tag).toBe("Failure");
+        const fs = yield* FileSystem.FileSystem;
+        expect(yield* fs.readFileString(path.join(cwd, "README.md"))).toBe("unsaved local edits\n");
+      }),
+    );
+
+    it.effect("publishes a feature branch without changing its tracked base", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["branch", "-m", "dev"]);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "-u", "origin", "dev"]);
+        const base = yield* git(remote, ["rev-parse", "refs/heads/dev"]);
+        yield* git(cwd, ["checkout", "-b", "feature/safety", "origin/dev"]);
+        yield* writeTextFile(path.join(cwd, "change.txt"), "feature\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "feature"]);
+        const core = yield* GitCore;
+        const result = yield* core.pushCurrentBranch(cwd, null);
+        expect(result.upstreamBranch).toBe("origin/feature/safety");
+        expect(yield* git(remote, ["rev-parse", "refs/heads/dev"])).toBe(base);
+        expect(yield* git(remote, ["rev-parse", "refs/heads/feature/safety"])).toBe(
+          yield* git(cwd, ["rev-parse", "HEAD"]),
+        );
+        expect(yield* git(cwd, ["config", "--get", "branch.feature/safety.gh-merge-base"])).toBe(
+          "dev",
+        );
+      }),
+    );
+
+    it.effect("honors the branch push remote and preserves an explicit merge base", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const origin = yield* makeTmpDir();
+        const publish = yield* makeTmpDir();
+        yield* git(origin, ["init", "--bare"]);
+        yield* git(publish, ["init", "--bare"]);
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["branch", "-m", "dev"]);
+        yield* git(cwd, ["remote", "add", "origin", origin]);
+        yield* git(cwd, ["remote", "add", "publish", publish]);
+        yield* git(cwd, ["push", "-u", "origin", "dev"]);
+        yield* git(cwd, ["checkout", "-b", "feature", "origin/dev"]);
+        yield* git(cwd, ["config", "remote.pushDefault", "origin"]);
+        yield* git(cwd, ["config", "branch.feature.pushRemote", "publish"]);
+        yield* git(cwd, ["config", "branch.feature.gh-merge-base", "release"]);
+        yield* writeTextFile(path.join(cwd, "change.txt"), "feature\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "feature"]);
+        const core = yield* GitCore;
+        expect((yield* core.pushCurrentBranch(cwd, null)).upstreamBranch).toBe("publish/feature");
+        expect(yield* git(publish, ["rev-parse", "refs/heads/feature"])).toBe(
+          yield* git(cwd, ["rev-parse", "HEAD"]),
+        );
+        expect(yield* git(cwd, ["config", "--get", "branch.feature.gh-merge-base"])).toBe(
+          "release",
+        );
+      }),
+    );
+
+    it.effect("preserves Git's tracking alias for a remote containing a slash", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["branch", "-m", "effect-atom"]);
+        yield* git(cwd, ["remote", "add", "my-org/upstream", remote]);
+        yield* git(cwd, ["push", "-u", "my-org/upstream", "effect-atom"]);
+        yield* git(cwd, [
+          "checkout",
+          "-b",
+          "upstream/effect-atom",
+          "--track",
+          "my-org/upstream/effect-atom",
+        ]);
+        yield* writeTextFile(path.join(cwd, "change.txt"), "feature\n");
+        yield* git(cwd, ["add", "."]);
+        yield* git(cwd, ["commit", "-m", "feature"]);
+        const core = yield* GitCore;
+        const result = yield* core.pushCurrentBranch(cwd, null);
+        expect(result.setUpstream).toBe(false);
+        expect(yield* git(remote, ["rev-parse", "refs/heads/effect-atom"])).toBe(
+          yield* git(cwd, ["rev-parse", "HEAD"]),
+        );
+        expect(yield* git(remote, ["branch", "--list", "upstream/effect-atom"])).toBe("");
+      }),
+    );
+
+    it.effect("fails a credential-requiring push without waiting for a prompt", () =>
+      Effect.gen(function* () {
+        const server = yield* Effect.acquireRelease(
+          Effect.promise(async () => {
+            const server = createServer((_request, response) => {
+              response.writeHead(401, { "WWW-Authenticate": 'Basic realm="test"' });
+              response.end();
+            });
+            await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+            return server;
+          }),
+          (server) =>
+            Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+        );
+        const address = server.address();
+        if (!address || typeof address === "string") throw new Error("Missing test listener");
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["config", "credential.helper", ""]);
+        yield* git(cwd, ["config", "core.askPass", ""]);
+        yield* git(cwd, ["remote", "add", "origin", `http://127.0.0.1:${address.port}/repo.git`]);
+        const core = yield* GitCore;
+        const error = yield* core
+          .pushCurrentBranch(cwd, null)
+          .pipe(Effect.flip, Effect.timeout("5 seconds"));
+        expect(error.message).toMatch(/could not authenticate/);
+      }),
+    );
+
+    it.effect("reads origin HEAD without marking its remote branch as a checkout default", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["push", "origin", "HEAD:refs/heads/stable"]);
+        yield* git(cwd, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/stable"]);
+        const core = yield* GitCore;
+        expect(yield* core.readDefaultBranch(cwd)).toBe("stable");
+        expect(
+          (yield* core.listBranches({ cwd })).branches.find(
+            (branch) => branch.name === "origin/stable",
+          )?.isDefault,
+        ).toBe(false);
+      }),
+    );
+
+    it.effect("allows a local-only worktree base when a remote exists", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const remote = yield* makeTmpDir();
+        const worktrees = yield* makeTmpDir();
+        yield* git(remote, ["init", "--bare"]);
+        yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["remote", "add", "origin", remote]);
+        yield* git(cwd, ["checkout", "-b", "local-only"]);
+        const core = yield* GitCore;
+        expect(
+          yield* core.fetchRemoteBranchCommit({
+            cwd,
+            branch: "local-only",
+            allowMissingBranch: true,
+          }),
+        ).toBeNull();
+        const result = yield* core.createWorktree({
+          cwd,
+          branch: "local-only",
+          newBranch: "child",
+          path: path.join(worktrees, "child"),
+        });
+        expect(yield* git(result.worktree.path, ["rev-parse", "HEAD"])).toBe(
+          yield* git(cwd, ["rev-parse", "HEAD"]),
+        );
+      }),
+    );
+
+    it.effect("reads status with a HEAD file and produces standard patch prefixes", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        yield* git(cwd, ["config", "diff.noprefix", "true"]);
+        yield* writeTextFile(path.join(cwd, "HEAD"), "a file, not a ref\n");
+        yield* git(cwd, ["add", "HEAD"]);
+        const core = yield* GitCore;
+        expect((yield* core.statusDetails(cwd)).hasWorkingTreeChanges).toBe(true);
+        const context = yield* core.prepareCommitContext(cwd);
+        expect(context?.stagedPatch).toContain("diff --git a/HEAD b/HEAD");
+        yield* git(cwd, ["checkout", "-b", "feature"]);
+        yield* git(cwd, ["commit", "-m", "add HEAD"]);
+        const range = yield* core.readRangeContext(cwd, initialBranch);
+        expect(range.diffPatch).toContain("diff --git a/HEAD b/HEAD");
+      }),
+    );
+
+    it.effect("reports an index lock and refreshes after release", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const core = yield* GitCore;
+        const before = yield* core.statusDetails(cwd);
+        const fs = yield* FileSystem.FileSystem;
+        const index = yield* git(cwd, ["rev-parse", "--git-path", "index"]);
+        const lockPath = path.resolve(cwd, index) + ".lock";
+        yield* writeTextFile(lockPath, "");
+        yield* writeTextFile(path.join(cwd, "README.md"), "changed\n");
+        expect(before.hasWorkingTreeChanges).toBe(false);
+        expect((yield* core.statusDetails(cwd).pipe(Effect.result))._tag).toBe("Failure");
+        expect((yield* core.pushCurrentBranch(cwd, null).pipe(Effect.result))._tag).toBe("Failure");
+        yield* fs.remove(lockPath);
+        expect((yield* core.statusDetails(cwd)).hasWorkingTreeChanges).toBe(true);
+      }),
+    );
+
+    it.effect("removes only the registration of an already missing worktree", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const root = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const target = path.join(root, "missing");
+        yield* git(cwd, ["worktree", "add", "-b", "disappeared", target]);
+        const fs = yield* FileSystem.FileSystem;
+        const unrelated = path.join(root, "offline");
+        yield* git(cwd, ["worktree", "add", "-b", "offline", unrelated]);
+        yield* fs.remove(unrelated, { recursive: true });
+        yield* fs.remove(target, { recursive: true });
+        const core = yield* GitCore;
+        yield* core.removeWorktree({ cwd, path: path.join(root, "never-registered") });
+        expect(yield* git(cwd, ["worktree", "list", "--porcelain"])).toContain(target);
+        yield* core.removeWorktree({ cwd, path: target });
+        expect(yield* git(cwd, ["worktree", "list", "--porcelain"])).toContain(unrelated);
+        expect(yield* git(cwd, ["worktree", "list", "--porcelain"])).not.toContain(target);
+      }),
+    );
+  });
+
   describe("shell process execution", () => {
     it.effect("caps captured output when maxOutputBytes is exceeded", () =>
       Effect.gen(function* () {
@@ -1124,7 +1362,7 @@ it.layer(TestLayer)("git integration", (it) => {
         yield* core.createWorktree({
           cwd: source,
           branch: initialBranch,
-          baseRefName: resolved.commit,
+          baseRefName: resolved!.commit,
           newBranch: "feature/origin-based",
           path: wtPath,
         });
@@ -1170,7 +1408,7 @@ it.layer(TestLayer)("git integration", (it) => {
           cwd: linkedPath,
           branch: initialBranch,
         });
-        expect(resolved.commit).toBe(originCommit);
+        expect(resolved!.commit).toBe(originCommit);
         expect(yield* git(linkedPath, ["rev-parse", `origin/${initialBranch}`])).toBe(originCommit);
 
         yield* core.removeWorktree({ cwd: source, path: linkedPath });
@@ -1819,51 +2057,53 @@ it.layer(TestLayer)("git integration", (it) => {
       }),
     );
 
-    it.effect(
-      "pushes renamed PR worktree branches to their tracked upstream branch even when push.default is current",
-      () =>
-        Effect.gen(function* () {
-          const tmp = yield* makeTmpDir();
-          const fork = yield* makeTmpDir();
-          yield* git(fork, ["init", "--bare"]);
+    it.effect("updates the original fork PR branch from its renamed worktree", () =>
+      Effect.gen(function* () {
+        const tmp = yield* makeTmpDir();
+        const fork = yield* makeTmpDir();
+        yield* git(fork, ["init", "--bare"]);
 
-          const { initialBranch } = yield* initRepoWithCommit(tmp);
-          yield* git(tmp, ["remote", "add", "jasonLaster", fork]);
-          yield* git(tmp, ["checkout", "-b", "statemachine"]);
-          yield* writeTextFile(path.join(tmp, "fork.txt"), "fork branch\n");
-          yield* git(tmp, ["add", "fork.txt"]);
-          yield* git(tmp, ["commit", "-m", "fork branch"]);
-          yield* git(tmp, ["push", "-u", "jasonLaster", "statemachine"]);
-          yield* git(tmp, ["checkout", initialBranch]);
-          yield* git(tmp, ["branch", "-D", "statemachine"]);
+        const { initialBranch } = yield* initRepoWithCommit(tmp);
+        yield* git(tmp, ["remote", "add", "jasonLaster", fork]);
+        yield* git(tmp, ["checkout", "-b", "statemachine"]);
+        yield* writeTextFile(path.join(tmp, "fork.txt"), "fork branch\n");
+        yield* git(tmp, ["add", "fork.txt"]);
+        yield* git(tmp, ["commit", "-m", "fork branch"]);
+        yield* git(tmp, ["push", "-u", "jasonLaster", "statemachine"]);
+        yield* git(tmp, ["checkout", initialBranch]);
+        yield* git(tmp, ["branch", "-D", "statemachine"]);
+        yield* git(tmp, [
+          "checkout",
+          "-b",
+          "t3code/pr-488/statemachine",
+          "--track",
+          "jasonLaster/statemachine",
+        ]);
+        yield* git(tmp, ["config", "push.default", "current"]);
+        yield* writeTextFile(path.join(tmp, "fork.txt"), "updated fork branch\n");
+        yield* git(tmp, ["add", "fork.txt"]);
+        yield* git(tmp, ["commit", "-m", "update reviewed PR branch"]);
+
+        const core = yield* GitCore;
+        const pushed = yield* core.pushCurrentBranch(tmp, null);
+
+        expect(pushed.status).toBe("pushed");
+        expect(pushed.setUpstream).toBe(false);
+        expect(pushed.upstreamBranch).toBe("jasonLaster/statemachine");
+        expect(yield* git(tmp, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toBe(
+          "jasonLaster/statemachine",
+        );
+        expect(
+          yield* git(tmp, ["ls-remote", "--heads", "jasonLaster", "t3code/pr-488/statemachine"]),
+        ).toBe("");
+        expect(
           yield* git(tmp, [
-            "checkout",
-            "-b",
-            "t3code/pr-488/statemachine",
-            "--track",
-            "jasonLaster/statemachine",
-          ]);
-          yield* git(tmp, ["config", "push.default", "current"]);
-          yield* writeTextFile(path.join(tmp, "fork.txt"), "updated fork branch\n");
-          yield* git(tmp, ["add", "fork.txt"]);
-          yield* git(tmp, ["commit", "-m", "update reviewed PR branch"]);
-
-          const core = yield* GitCore;
-          const pushed = yield* core.pushCurrentBranch(tmp, null);
-
-          expect(pushed.status).toBe("pushed");
-          expect(pushed.setUpstream).toBe(false);
-          expect(pushed.upstreamBranch).toBe("jasonLaster/statemachine");
-          expect(yield* git(tmp, ["rev-parse", "--abbrev-ref", "@{upstream}"])).toBe(
-            "jasonLaster/statemachine",
-          );
-          expect(
-            yield* git(tmp, ["ls-remote", "--heads", "jasonLaster", "statemachine"]),
-          ).toContain("statemachine");
-          expect(
-            yield* git(tmp, ["ls-remote", "--heads", "jasonLaster", "t3code/pr-488/statemachine"]),
-          ).toBe("");
-        }),
+            "config",
+            "--get",
+            "branch.t3code/pr-488/statemachine.gh-merge-base",
+          ]).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+      }),
     );
 
     it.effect("includes command context when worktree removal fails", () =>
@@ -1871,7 +2111,9 @@ it.layer(TestLayer)("git integration", (it) => {
         const tmp = yield* makeTmpDir();
         yield* initRepoWithCommit(tmp);
         const core = yield* GitCore;
-        const missingWorktreePath = path.join(tmp, "missing-worktree");
+        const missingWorktreePath = path.join(tmp, "not-a-worktree");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(missingWorktreePath);
 
         const removeResult = yield* Effect.result(
           core.removeWorktree({ cwd: tmp, path: missingWorktreePath }),
