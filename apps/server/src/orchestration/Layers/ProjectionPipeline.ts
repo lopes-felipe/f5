@@ -1959,6 +1959,15 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
             threadId: event.payload.threadId,
             turnId: event.payload.turnId,
           });
+          // A late placeholder must not replace an already captured checkpoint.
+          if (
+            Option.isSome(existingTurn) &&
+            existingTurn.value.checkpointStatus !== null &&
+            existingTurn.value.checkpointStatus !== "missing" &&
+            event.payload.status === "missing"
+          ) {
+            return;
+          }
           const nextState = event.payload.status === "error" ? "error" : "completed";
           yield* projectionTurnRepository.clearCheckpointTurnConflict({
             threadId: event.payload.threadId,
@@ -2247,6 +2256,7 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           Stream.runForEach(
             eventStore.readFromSequence(
               Option.isSome(stateRow) ? stateRow.value.lastAppliedSequence : 0,
+              Number.MAX_SAFE_INTEGER,
             ),
             (event) => runProjectorForEvent(projector, event),
           ),

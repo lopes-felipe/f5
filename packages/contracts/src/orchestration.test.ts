@@ -213,6 +213,23 @@ it.effect("decodes message-sent payloads without skill call metadata", () =>
   }),
 );
 
+it.effect("decodes legacy messages without a turn ID as null", () =>
+  Effect.gen(function* () {
+    const parsed = yield* decodeThreadMessageSentPayload({
+      threadId: "legacy-thread",
+      messageId: "legacy-message",
+      role: "user",
+      text: "hello",
+      streaming: false,
+      createdAt: "2026-04-01T09:00:00.000Z",
+      updatedAt: "2026-04-01T09:00:00.000Z",
+    });
+    assert.strictEqual(parsed.turnId, null);
+    const encoded = yield* encodeThreadMessageSentPayloadJson(parsed);
+    assert.strictEqual(JSON.parse(encoded).turnId, null);
+  }),
+);
+
 it.effect("preserves message-sent skill call metadata when present", () =>
   Effect.gen(function* () {
     const parsed = yield* decodeThreadMessageSentPayload({

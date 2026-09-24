@@ -215,6 +215,62 @@ describe("OrchestrationEngine", () => {
     await system.dispose();
   });
 
+  it("rejects cross-aggregate command reuse without replacing the original receipt", async () => {
+    const system = await createOrchestrationSystem();
+    try {
+      const command = {
+        type: "project.create" as const,
+        commandId: CommandId.makeUnsafe("shared-command"),
+        projectId: asProjectId("receipt-project"),
+        title: "Receipt project",
+        workspaceRoot: "/tmp/receipt-project",
+        defaultModel: "gpt-5-codex",
+        createdAt: now(),
+      };
+      const accepted = await system.run(system.engine.dispatch(command));
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            ...command,
+            projectId: asProjectId("other-project"),
+          }),
+        ),
+      ).rejects.toThrow("belongs to project 'receipt-project'");
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            type: "thread.delete",
+            commandId: command.commandId,
+            threadId: ThreadId.makeUnsafe("receipt-project"),
+          }),
+        ),
+      ).rejects.toThrow("not thread 'receipt-project'");
+      expect(await system.run(system.engine.dispatch(command))).toEqual(accepted);
+      const rejected = {
+        type: "thread.delete" as const,
+        commandId: CommandId.makeUnsafe("rejected-command"),
+        threadId: ThreadId.makeUnsafe("absent-thread"),
+      };
+      await expect(system.run(system.engine.dispatch(rejected))).rejects.toThrow();
+      await expect(
+        system.run(
+          system.engine.dispatch({
+            ...rejected,
+            threadId: ThreadId.makeUnsafe("other-thread"),
+          }),
+        ),
+      ).rejects.toThrow("belongs to thread 'absent-thread'");
+      await expect(system.run(system.engine.dispatch(rejected))).rejects.toThrow(
+        "previously rejected",
+      );
+      expect((await system.run(system.engine.getReadModel())).snapshotSequence).toBe(
+        accepted.sequence,
+      );
+    } finally {
+      await system.dispose();
+    }
+  });
+
   it("hydrates warm startup from the projection snapshot instead of replaying from sequence 0", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-orchestration-snapshot-"));
     const dbPath = path.join(tempDir, "state.sqlite");
@@ -255,6 +311,18 @@ describe("OrchestrationEngine", () => {
       }),
     );
 
+    const checkpointReadModel = await seededSystem.run(seededSystem.engine.getReadModel());
+    for (let index = 0; index < 1001; index++) {
+      await seededSystem.run(
+        seededSystem.engine.dispatch({
+          type: "project.meta.update",
+          commandId: CommandId.makeUnsafe(`cmd-warm-update-${index}`),
+          projectId: asProjectId("project-snapshot"),
+          title: `Updated ${index}`,
+        }),
+      );
+    }
+
     const seededReadModel = await seededSystem.run(seededSystem.engine.getReadModel());
     const latestSequence = seededReadModel.snapshotSequence;
     await seededSystem.dispose();
@@ -263,6 +331,13 @@ describe("OrchestrationEngine", () => {
     const warmSystem = await createPersistentOrchestrationSystem({
       dbPath,
       eventStoreLayer: makeRecordingEventStoreLayer(readCursors),
+      projectionSnapshotQueryLayer: Layer.effect(
+        ProjectionSnapshotQuery,
+        Effect.gen(function* () {
+          const live = yield* ProjectionSnapshotQuery;
+          return { ...live, getBootstrapSnapshot: () => Effect.succeed(checkpointReadModel) };
+        }),
+      ).pipe(Layer.provide(OrchestrationProjectionSnapshotQueryLive)),
     });
     const warmReadModel = await warmSystem.run(warmSystem.engine.getReadModel());
 
@@ -272,7 +347,7 @@ describe("OrchestrationEngine", () => {
     expect(
       warmReadModel.threads.find((thread) => thread.id === "thread-snapshot")?.deletedAt,
     ).toEqual(seededReadModel.threads.find((thread) => thread.id === "thread-snapshot")?.deletedAt);
-    expect(readCursors).toContain(latestSequence);
+    expect(readCursors).toContain(checkpointReadModel.snapshotSequence);
     expect(readCursors).not.toContain(0);
 
     await warmSystem.dispose();
@@ -311,6 +386,17 @@ describe("OrchestrationEngine", () => {
         createdAt,
       }),
     );
+
+    for (let index = 0; index < 1001; index++) {
+      await seededSystem.run(
+        seededSystem.engine.dispatch({
+          type: "thread.meta.update",
+          commandId: CommandId.makeUnsafe(`cmd-fallback-update-${index}`),
+          threadId: ThreadId.makeUnsafe("thread-snapshot-fallback"),
+          title: `Updated ${index}`,
+        }),
+      );
+    }
 
     const seededReadModel = await seededSystem.run(seededSystem.engine.getReadModel());
     const latestSequence = seededReadModel.snapshotSequence;
@@ -926,8 +1012,10 @@ describe("OrchestrationEngine", () => {
         events.push(savedEvent);
         return Effect.succeed(savedEvent);
       },
-      readFromSequence(sequenceExclusive) {
-        return Stream.fromIterable(events.filter((event) => event.sequence > sequenceExclusive));
+      readFromSequence(sequenceExclusive, limit = 1000) {
+        return Stream.fromIterable(
+          events.filter((event) => event.sequence > sequenceExclusive).slice(0, limit),
+        );
       },
       readAll() {
         return Stream.fromIterable(events);
@@ -959,6 +1047,13 @@ describe("OrchestrationEngine", () => {
           event.commandId === CommandId.makeUnsafe("cmd-thread-meta-sync-fail")
         ) {
           shouldFailProjection = false;
+          for (let index = 0; index < 1001; index++) {
+            events.push({
+              ...event,
+              eventId: `recovery-${index}` as OrchestrationEvent["eventId"],
+              sequence: nextSequence++,
+            } as StoredEvent);
+          }
           return Effect.fail(
             new PersistenceSqlError({
               operation: "test.projection",
@@ -1024,7 +1119,7 @@ describe("OrchestrationEngine", () => {
     const updatedThread = readModelAfterFailure.threads.find(
       (thread) => thread.id === "thread-sync",
     );
-    expect(readModelAfterFailure.snapshotSequence).toBe(3);
+    expect(readModelAfterFailure.snapshotSequence).toBe(1004);
     expect(updatedThread?.title).toBe("sync-after-failed-projection");
 
     await runtime.dispose();

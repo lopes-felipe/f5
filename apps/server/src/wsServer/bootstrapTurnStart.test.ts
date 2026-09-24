@@ -20,10 +20,16 @@ import { AttachmentIngressError } from "../attachmentIngress.ts";
 import { makeLocalFileTracer } from "../observability/LocalFileTracer.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationCommandIdConflictError,
+} from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectSetupScriptRunnerShape } from "../project/Services/ProjectSetupScriptRunner.ts";
-import { dispatchBootstrapTurnStart } from "./bootstrapTurnStart.ts";
+import {
+  dispatchBootstrapTurnStart,
+  isDefinitelyUncommittedDispatchError,
+} from "./bootstrapTurnStart.ts";
 
 const PROJECT_ID = ProjectId.makeUnsafe("project-1");
 const THREAD_ID = ThreadId.makeUnsafe("thread-1");
@@ -1409,4 +1415,18 @@ describe("dispatchBootstrapTurnStart", () => {
         }),
     ).toBe(1);
   });
+});
+
+it("treats a command ID owned by another thread as definitely uncommitted", () => {
+  expect(
+    isDefinitelyUncommittedDispatchError(
+      new OrchestrationCommandIdConflictError({
+        commandId: "reused",
+        receiptAggregateKind: "thread",
+        receiptAggregateId: "other",
+        commandAggregateKind: "thread",
+        commandAggregateId: "current",
+      }),
+    ),
+  ).toBe(true);
 });

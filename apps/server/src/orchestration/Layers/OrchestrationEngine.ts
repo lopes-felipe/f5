@@ -26,6 +26,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
+  OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
@@ -106,7 +107,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     } as const;
     const reconcileReadModelAfterDispatchFailure = Effect.gen(function* () {
       const persistedEvents = yield* Stream.runCollect(
-        eventStore.readFromSequence(dispatchStartSequence),
+        eventStore.readFromSequence(dispatchStartSequence, Number.MAX_SAFE_INTEGER),
       ).pipe(Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)));
       if (persistedEvents.length === 0) {
         return;
@@ -136,6 +137,18 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           commandId: envelope.command.commandId,
         });
         if (Option.isSome(existingReceipt)) {
+          if (
+            existingReceipt.value.aggregateKind !== aggregateRef.aggregateKind ||
+            existingReceipt.value.aggregateId !== aggregateRef.aggregateId
+          ) {
+            return yield* new OrchestrationCommandIdConflictError({
+              commandId: envelope.command.commandId,
+              receiptAggregateKind: existingReceipt.value.aggregateKind,
+              receiptAggregateId: existingReceipt.value.aggregateId,
+              commandAggregateKind: aggregateRef.aggregateKind,
+              commandAggregateId: aggregateRef.aggregateId,
+            });
+          }
           if (existingReceipt.value.status === "accepted") {
             return {
               sequence: existingReceipt.value.resultSequence,
@@ -285,7 +298,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
 
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
-          if (!Schema.is(OrchestrationCommandPreviouslyRejectedError)(error)) {
+          if (
+            !Schema.is(OrchestrationCommandPreviouslyRejectedError)(error) &&
+            !Schema.is(OrchestrationCommandIdConflictError)(error)
+          ) {
             yield* reconcileReadModelAfterDispatchFailure.pipe(
               Effect.catch(() =>
                 Effect.logWarning(
@@ -351,10 +367,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   // Bootstrap the in-memory read model from projections when available, then
   // catch up from any newer persisted events.
-  yield* Stream.runForEach(eventStore.readFromSequence(replayFromSequence), (event) =>
-    Effect.gen(function* () {
-      readModel = yield* projectEvent(readModel, event);
-    }),
+  yield* Stream.runForEach(
+    eventStore.readFromSequence(replayFromSequence, Number.MAX_SAFE_INTEGER),
+    (event) =>
+      Effect.gen(function* () {
+        readModel = yield* projectEvent(readModel, event);
+      }),
   );
 
   const worker = Effect.forever(

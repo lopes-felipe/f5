@@ -13,6 +13,54 @@ const layer = it.layer(
 );
 
 layer("OrchestrationEventStore", (it) => {
+  it.effect("replays 20,000 events across pages and keeps ordinary reads bounded", () =>
+    Effect.gen(function* () {
+      const eventStore = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const baseline = yield* sql<{
+        sequence: number;
+      }>`SELECT COALESCE(MAX(sequence), 0) AS sequence FROM orchestration_events`;
+      const cursor = baseline[0]!.sequence;
+      const timestamp = "2026-09-24T00:00:00.000Z";
+      yield* sql`
+        WITH RECURSIVE numbers(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM numbers WHERE n < 20000)
+        INSERT INTO orchestration_events (
+          event_id, aggregate_kind, stream_id, stream_version, event_type, occurred_at,
+          command_id, causation_event_id, correlation_id, actor_kind, payload_json, metadata_json
+        )
+        SELECT 'paging-' || n, 'project', 'paging-project', n, 'project.created', ${timestamp},
+          NULL, NULL, NULL, 'server', ${JSON.stringify({
+            projectId: "paging-project",
+            title: "Paging",
+            workspaceRoot: "/tmp/paging",
+            defaultModel: null,
+            scripts: [],
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          })}, '{}'
+        FROM numbers
+      `;
+      const bounded = yield* Stream.runCollect(eventStore.readFromSequence(cursor));
+      assert.equal(bounded.length, 1000);
+      let count = 0;
+      yield* Stream.runForEach(
+        eventStore.readFromSequence(cursor, Number.MAX_SAFE_INTEGER),
+        (event) =>
+          Effect.sync(() => {
+            count++;
+            assert.equal(event.sequence, cursor + count);
+            assert.equal(event.eventId, `paging-${count}`);
+          }),
+      );
+      assert.equal(count, 20000);
+      const partial = yield* Stream.runCollect(eventStore.readFromSequence(cursor, 1501));
+      assert.equal(partial.length, 1501);
+      const empty = yield* Stream.runCollect(eventStore.readFromSequence(cursor, 0));
+      assert.equal(empty.length, 0);
+      yield* sql`DELETE FROM orchestration_events WHERE event_id LIKE 'paging-%'`;
+    }),
+  );
+
   it.effect("stores json columns as strings and replays decoded events", () =>
     Effect.gen(function* () {
       const eventStore = yield* OrchestrationEventStore;
