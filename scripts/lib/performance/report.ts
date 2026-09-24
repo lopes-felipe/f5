@@ -17,19 +17,59 @@ export interface Observation {
 }
 export interface PerformanceReport {
   schemaVersion: 1;
-  scope: "server-component";
+  scope: "server-component" | "interactive";
   mode: "smoke" | "measurement";
   metadata: ReturnType<typeof metadata>;
   method: { warmups: number; repetitions: number };
   measurements: Record<string, Samples>;
   observations: Observation[];
   notMeasured: string[];
+  memory?: MemorySample[];
+}
+
+export interface MemorySample {
+  elapsedMs: number;
+  heapBytes: number;
+  server: { heapBytes: number };
+}
+
+export function retainedMemoryObservations(samples: ReadonlyArray<MemorySample>): Observation[] {
+  if (
+    samples.length !== fixture.method.retainedMemoryMinutes + 1 ||
+    samples.some(
+      (s, i) =>
+        !Number.isFinite(s.elapsedMs) ||
+        s.elapsedMs < i * 60000 ||
+        !Number.isFinite(s.heapBytes) ||
+        s.heapBytes <= 0 ||
+        !Number.isFinite(s.server.heapBytes) ||
+        s.server.heapBytes <= 0 ||
+        (i > 0 && s.elapsedMs <= samples[i - 1]!.elapsedMs),
+    )
+  )
+    throw new Error("A retained-memory gate requires all 11 samples over at least 10 minutes");
+  const start =
+    samples[fixture.method.retainedMemoryMinutes - fixture.method.finalMemoryWindowMinutes]!;
+  const end = samples[fixture.method.retainedMemoryMinutes]!;
+  return (["browser", "server", "combined"] as const).flatMap((kind) => {
+    const value = (sample: MemorySample) =>
+      kind === "browser"
+        ? sample.heapBytes
+        : kind === "server"
+          ? sample.server.heapBytes
+          : sample.heapBytes + sample.server.heapBytes;
+    const growth = Math.max(0, value(end) - value(start));
+    return [
+      maximumObservation(`memory.${kind}.growthBytes`, growth, 10 * 1024 * 1024),
+      maximumObservation(`memory.${kind}.growthRatio`, growth / value(start), 0.05),
+    ];
+  });
 }
 
 const hash = (text: string | Buffer) => createHash("sha256").update(text).digest("hex");
 export function metadata(root: string) {
   const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
-  const fixtureSources = ["fixtures.json", "fixtures.ts"].map((file) =>
+  const fixtureSources = ["fixtures.json", "fixtures.ts", "browserFixture.ts"].map((file) =>
     readFileSync(path.join(root, "scripts/lib/performance", file), "utf8"),
   );
   return {
@@ -45,12 +85,16 @@ export function metadata(root: string) {
           "apps/server/scripts/performance/server.perf.ts",
           "apps/server/scripts/performance/sqlite-writer.mjs",
           "apps/server/vitest.performance.config.ts",
+          "apps/server/scripts/performance/interactive.perf.ts",
+          "apps/server/scripts/performance/native-terminal.mjs",
+          "apps/web/scripts/performance-browser.mjs",
         ].map((file) => readFileSync(path.join(root, file), "utf8")),
       ),
     ),
     dependencyLockDigest: hash(readFileSync(path.join(root, "bun.lock"))),
     runtime: { executable: process.execPath, versions: process.versions },
-    browser: null,
+    browser: null as string | null,
+    browserConfig: null as Record<string, unknown> | null,
     os: { platform: os.platform(), release: os.release(), architecture: os.arch() },
     hardware: {
       cpu: os.cpus()[0]?.model ?? "unknown",
@@ -58,7 +102,7 @@ export function metadata(root: string) {
       memoryBytes: os.totalmem(),
     },
     dependencies: Object.fromEntries(
-      ["apps/server", "packages/contracts", "packages/shared"].map((dir) => {
+      ["apps/server", "apps/web", "packages/contracts", "packages/shared"].map((dir) => {
         const pkg = JSON.parse(readFileSync(path.join(root, dir, "package.json"), "utf8"));
         return [
           pkg.name,
@@ -132,14 +176,23 @@ export function compareReports(
   for (const report of [base, next]) {
     if (
       report.schemaVersion !== 1 ||
-      report.scope !== "server-component" ||
+      !["server-component", "interactive"].includes(report.scope) ||
+      report.scope !== base.scope ||
       report.mode !== "measurement" ||
       report.method.warmups !== 5 ||
       report.method.repetitions !== 30
     )
       failures.push("Comparison requires full server measurements (5 warmups, 30 repetitions)");
   }
-  for (const key of ["fixtureDigest", "harnessDigest", "hardware", "os", "gitVersion"] as const)
+  for (const key of [
+    "fixtureDigest",
+    "harnessDigest",
+    "hardware",
+    "os",
+    "gitVersion",
+    "browser",
+    "browserConfig",
+  ] as const)
     if (JSON.stringify(base.metadata[key]) !== JSON.stringify(next.metadata[key]))
       failures.push(`Incompatible ${key}`);
   if (
@@ -187,5 +240,10 @@ export function compareReports(
       !observation.passed
     )
       failures.push(`Exceeded bound: ${observation.name}`);
+  if (base.scope === "interactive") {
+    for (const report of [base, next]) retainedMemoryObservations(report.memory ?? []);
+    for (const observation of retainedMemoryObservations(next.memory ?? []))
+      if (!observation.passed) failures.push(`Exceeded bound: ${observation.name}`);
+  }
   return failures;
 }

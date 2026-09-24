@@ -1,5 +1,8 @@
 # Upstream ledger schema 5 prerequisite
 
+> Historical report. Later Phase 0 work supersedes the unfinished-prerequisite and
+> rolling-window statements below; see [the Phase 0 validation report](phase-zero-validation.md).
+
 > Historical schema-5 report. Storage and refresh mechanics are superseded by
 > [the schema-6 ledger](../scripts.md#upstream-port-ledger); classification decisions remain preserved.
 

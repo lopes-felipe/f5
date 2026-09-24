@@ -1,5 +1,8 @@
 # Secret publication prerequisite: scope and validation
 
+> Historical report. Later Phase 0 work supersedes the unfinished-prerequisite and
+> rolling-window statements below; see [the Phase 0 validation report](phase-zero-validation.md).
+
 This patch addresses only the secret-store race discovered during Phase 0a of the
 September upstream-port program. It is **not** delivery of the merged port plan.
 The review revision now passes the local gates listed below; this does not establish

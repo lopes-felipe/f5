@@ -1,20 +1,27 @@
 # Upstream performance baseline
 
-Phase 0d is being delivered in two PRs. The server component harness is available;
-the browser/transport harness and complete baseline at
-`290d261c9c9daa0c469b312d7f62dfd4ea9b9698` remain outstanding. This tooling does not
-implement any upstream ports or certify Phase 0d as complete.
+The Phase 0 harness collects server component measurements and a production-browser,
+WebSocket and native-terminal soak. Both reports are required. The pinned original
+baseline is `290d261c9c9daa0c469b312d7f62dfd4ea9b9698`; use its runtime code and
+frozen dependencies when collecting it. This is measurement tooling, not a runtime
+performance port. Existing baseline failures remain failures until their approved
+Phase 2 fixes meet the gates.
 
 ## Run server measurements
 
-From the repository root, with dependencies installed and Node 24 available:
+From the repository root, with dependencies installed and the same Node version in both checkouts:
 
 ```sh
+bun run --cwd apps/web build
 bun run perf:server --smoke
+bun run perf:interactive --smoke
 bun run perf:server --output=.performance/server-before.json
+bun run perf:interactive --output=.performance/interactive-before.json
 # After the relevant implementation changes, on the same machine/runtime:
 bun run perf:server --output=.performance/server-after.json
+bun run perf:interactive --output=.performance/interactive-after.json
 bun run perf:compare .performance/server-before.json .performance/server-after.json
+bun run perf:compare .performance/interactive-before.json .performance/interactive-after.json
 # A change targeting CPU must additionally improve its named scenario by at least 20%:
 bun run perf:compare .performance/server-before.json .performance/server-after.json terminal.ingest-20
 ```
@@ -71,25 +78,81 @@ the harness must preserve that result until Phase 2 fixes it. The PTY adapter
 delivers deterministic bytes instead of starting interactive shells. Process
 discovery/polling cost and native PTY integration are **not measured** here.
 
-## Remaining Phase 0d work
+## Browser, transport and retained memory
 
-The fixture specification also pins 10,000 chat messages with code, 50 attachment
-references and ten 1 MiB tool outputs, plus ten streaming threads at 20 updates/s
-each. Those sizes are tested, but this PR does not yet render or stream them.
+The user revised the soak duration from 30 to **10 minutes** on 2026-09-24.
+Retained growth is measured over the final **5 minutes**, with the original 5% and
+10 MiB thresholds unchanged. Five warmups and 30 timing repetitions also remain
+unchanged. This shorter run is not evidence of 30-minute stability.
 
-Before Phase 2, add and run:
+The interactive runner serves the **production-built application**, with deterministic
+read-model RPC responses and the production WebSocket push controller. Playwright
+uses the real router, composer, message rendering and WebSocket client. The fixture
+server is not a measurement of production HTTP static-asset serving. It provides
+10,000 messages, 50 image attachments, ten 1 MiB command outputs and ten streaming
+threads. All ten threads are hydrated before streaming starts; each receives 20
+updates/second through real sockets. Unknown RPC methods fail the run.
 
-- Actual browser input-to-paint (p95 ≤ 100 ms), warm large-thread switch
-  (p95 ≤ 500 ms), and unaffected startup/interaction paths.
-- Ten streaming threads, native terminal/process polling, and the slow or
-  disconnecting WebSocket client with a concurrent writer.
-- Thirty-minute retained-memory runs, with final ten-minute growth ≤ 5% **and**
-  ≤ 10 MiB; instrument internal replay, upload and terminal buffer peaks.
-- The complete harness against the pinned original baseline and candidate with
-  identical fixtures, recording browser and dependency versions. The baseline
-  must use that commit's runtime code and dependencies, not current code with an
-  old SHA label.
+Measurements use browser event/paint timestamps, excluding automation transport
+latency. Startup ends when the small thread and composer paint; warm switching
+ends when the last large-thread message paints. Composer timing starts at captured
+`beforeinput` and ends two animation frames after its DOM update, both idle and
+under streaming. Renderer process CPU is recorded through Chromium's process API.
 
-Reports carry an explicit `notMeasured` list. Passing the available server
-comparison never certifies these outstanding measurements or permits relaxing a
-Phase 2 acceptance threshold.
+A separate socket pauses TCP reads until the production send controller rejects
+queued frames and closes it. Each trial reconnects while a separate physical
+SQLite connection writes. The legacy 1013 and future 4409 overflow codes are
+accepted; the 8 MiB / 2,000-event limits remain fixed. This measures overflow and
+reconnection, not the Phase 2 snapshot-resynchronization feature.
+
+Every full interactive run then keeps ten streams, twenty **native PTYs** and the
+SQLite writer active for 10 minutes. Terminal children have a bounded lifetime and
+an owned foreground descendant, exercising the production process poller. Terminal
+output and SQLite rows are bounded; terminal histories are loaded from full disposable persisted logs before timing
+so their initial growth does not consume the shorter observation window; memory is sampled after garbage collection at
+minutes 0 through 10. Reports retain browser/server heap, server RSS, terminal
+history bytes and cumulative renderer/server CPU. Child process CPU is excluded.
+The final five-minute heap growth must be ≤ 5% **and** ≤ 10 MiB for each measured
+process and their sum. All 11 samples are required; a short smoke cannot qualify.
+Raw browser reports and minute-progress files remain available if a run fails.
+
+The server runner also observes real replay SQL page row counts and serialized
+bytes, and measures legacy base64 attachment decoding/persistence/release using
+eight 1 MiB images. These are the existing ingress path, not future generic HTTP
+uploads. Replay/upload observations describe those buffers, not whole-process
+heap. The separate soak measures retained heap.
+
+## Reproducing the pinned baseline
+
+Create a detached disposable checkout without changing its production source:
+
+```sh
+git worktree add --detach /tmp/f5-phase0-baseline 290d261c9c9daa0c469b312d7f62dfd4ea9b9698
+```
+
+Copy only the harness directories `scripts/lib/performance`,
+`apps/server/scripts/performance`, the files `scripts/performance.ts`,
+`apps/server/vitest.performance.config.ts`, and
+`apps/web/scripts/performance-browser.mjs` into that checkout. Run
+`bun install --frozen-lockfile` and build its web app there. Verify that `git diff`
+contains no production-source changes (installation may regenerate the MSW public
+worker; preserve the checked-in baseline version). Invoke the copied runner using
+`bun scripts/performance.ts` and `bun scripts/performance.ts interactive`, since
+the baseline's package manifest has no performance commands. Keep its original
+lockfile and dependencies; never substitute the candidate's node_modules.
+
+Run baseline and candidate sequentially on the same machine and runtime. Reports
+must have matching fixture and harness digests. The source-dirty flag includes
+untracked harness files in the old checkout; retain a separate production-source
+verification with the results. Machine-specific raw reports remain untracked.
+Check that each revision has both complete reports before comparing:
+
+```sh
+bun scripts/performance.ts coverage .performance/server-before.json .performance/interactive-before.json
+bun scripts/performance.ts coverage .performance/server-after.json .performance/interactive-after.json
+```
+
+Coverage validation checks required scenarios, sample counts, fixed resource limits,
+matching source/environment metadata and the complete memory duration. It reports
+measured failures separately: complete coverage is not a passing performance gate.
+Use both comparisons; neither report alone establishes complete Phase 0d coverage.

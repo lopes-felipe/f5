@@ -1,5 +1,8 @@
 # Phase 0c protocol gate validation
 
+> Historical report. Later Phase 0 work supersedes the unfinished-prerequisite and
+> rolling-window statements below; see [the Phase 0 validation report](phase-zero-validation.md).
+
 This change introduces protocol version 1, admission checks, authenticated capability
 and limit metadata, and upload-aware reload handling. Wire behavior and the first
 rollout limitation are documented in `docs/protocol-versioning.md`. It leaves the

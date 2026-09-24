@@ -1,5 +1,6 @@
 import { execFileSync, fork } from "node:child_process";
 import { createHash } from "node:crypto";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +10,20 @@ import { setTimeout as delay } from "node:timers/promises";
 import { Effect, Layer, ManagedRuntime, Stream } from "effect";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as SqlClient from "effect/unstable/sql/SqlClient";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import {
+  CommandId,
+  ThreadId,
+  PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+  PROVIDER_SEND_TURN_MAX_ATTACHMENTS,
+} from "@t3tools/contracts";
+import {
+  prepareAttachmentIngress,
+  persistPreparedAttachmentIngress,
+  discardAttachmentIngress,
+} from "../../src/attachmentIngress.ts";
+import { ensureAttachmentSchema } from "../../src/persistence/Migrations/AttachmentSchema.ts";
+import * as NodeSqlite from "../../src/persistence/NodeSqliteClient.ts";
 import { ServerConfig } from "../../src/config.ts";
 import { GitCoreLive } from "../../src/git/Layers/GitCore.ts";
 import { GitServiceLive } from "../../src/git/Layers/GitService.ts";
@@ -129,9 +143,8 @@ it("records server component performance with deterministic workloads", async ()
     notMeasured: [
       "Browser input-to-paint, warm thread switch and startup",
       "Ten concurrent streaming threads at 20 updates/s each",
-      "30-minute retained memory",
+      "10-minute retained memory",
       "WebSocket slow-client overflow and resync",
-      "Internal replay/upload buffer peaks",
       "Native PTY process-table polling",
     ],
   };
@@ -163,6 +176,26 @@ it("records server component performance with deterministic workloads", async ()
       Layer.provide(NodeServices.layer),
     ),
   );
+  const uploadRuntime = ManagedRuntime.make(
+    Layer.mergeAll(NodeServices.layer, NodeSqlite.layerMemory()),
+  );
+  const probe = new DatabaseSync(":memory:");
+  const statementPrototype = Object.getPrototypeOf(probe.prepare("SELECT 1")) as StatementSync;
+  const originalAll = statementPrototype.all;
+  probe.close();
+  let replayPageRows = 0;
+  let replayPageBytes = 0;
+  const readSpy = vi.spyOn(statementPrototype, "all").mockImplementation(function (
+    this: StatementSync,
+    ...params
+  ) {
+    const rows = originalAll.apply(this, params);
+    if (rows[0] && "eventId" in rows[0] && "payload" in rows[0] && "sequence" in rows[0]) {
+      replayPageRows = Math.max(replayPageRows, rows.length);
+      replayPageBytes = Math.max(replayPageBytes, Buffer.byteLength(JSON.stringify(rows)));
+    }
+    return rows;
+  });
   try {
     const inputs = Array.from({ length: fixture.terminal.count }, (_, i) => ({
       threadId: `perf-${i}`,
@@ -246,6 +279,62 @@ it("records server component performance with deterministic workloads", async ()
       expect(count).toBe(take);
     };
     report.measurements["replay.20000"] = await measure(() => replay(false), method);
+    report.observations.push(maximumObservation("replay.pageEvents", replayPageRows, 200));
+    report.observations.push(
+      maximumObservation("replay.pageSerializedBytes", replayPageBytes, 1024 * 1024),
+    );
+    await uploadRuntime.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`PRAGMA foreign_keys = ON`;
+        yield* sql`CREATE TABLE projection_threads (thread_id TEXT PRIMARY KEY)`;
+        yield* sql`INSERT INTO projection_threads (thread_id) VALUES ('perf-upload')`;
+        yield* ensureAttachmentSchema;
+      }),
+    );
+    const uploadBytes = Buffer.alloc(1024 * 1024, 1);
+    // PNG signature; ingestion validates MIME/size, it does not decode pixels.
+    uploadBytes.set([137, 80, 78, 71, 13, 10, 26, 10]);
+    const attachments = Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS }, (_, i) => ({
+      type: "image" as const,
+      name: `fixture-${i}.png`,
+      mimeType: "image/png",
+      sizeBytes: uploadBytes.length,
+      dataUrl: `data:image/png;base64,${uploadBytes.toString("base64")}`,
+    }));
+    let uploadPeakBytes = 0;
+    let uploadIndex = 0;
+    report.measurements["upload.decode-persist-release-8MiB"] = await measure(async () => {
+      await uploadRuntime.runPromise(
+        Effect.gen(function* () {
+          const commandId = CommandId.makeUnsafe(`perf-upload-${uploadIndex++}`);
+          const prepared = yield* prepareAttachmentIngress({
+            attachments,
+            attachmentsDir: path.join(directory, "uploads"),
+            commandId,
+            threadId: ThreadId.makeUnsafe("perf-upload"),
+          });
+          uploadPeakBytes = Math.max(
+            uploadPeakBytes,
+            prepared.entries.reduce((sum, entry) => sum + (entry.bytes?.length ?? 0), 0),
+          );
+          yield* persistPreparedAttachmentIngress(prepared);
+          expect(prepared.entries.every((entry) => entry.bytes === undefined)).toBe(true);
+          yield* discardAttachmentIngress({
+            attachments: prepared.attachments,
+            attachmentsDir: path.join(directory, "uploads"),
+            commandId,
+          });
+        }),
+      );
+    }, method);
+    report.observations.push(
+      maximumObservation(
+        "upload.decodedBuffersBytes",
+        uploadPeakBytes,
+        PROVIDER_SEND_TURN_MAX_ATTACHMENTS * PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
+      ),
+    );
     const writer = fork(
       fileURLToPath(new URL("./sqlite-writer.mjs", import.meta.url)),
       [database],
@@ -300,7 +389,9 @@ it("records server component performance with deterministic workloads", async ()
     // Correctness is checked outside timing as well, so a fast empty result cannot pass.
     expect(readFileSync(path.join(repository, ".gitmodules"), "utf8")).toContain("modules/sub-1");
   } finally {
+    readSpy.mockRestore();
     terminals.dispose();
+    await uploadRuntime.dispose();
     await persistence.dispose();
     await gitRuntime.dispose();
     rmSync(directory, { recursive: true, force: true });

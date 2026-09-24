@@ -13,6 +13,7 @@ import {
   maximumObservation,
   measure,
   percentile95,
+  retainedMemoryObservations,
   type PerformanceReport,
 } from "./report.ts";
 
@@ -123,5 +124,29 @@ describe("performance gates", () => {
     expect(compareReports(report(), { ...report(), observations: [] })).toContain(
       "Resource bounds changed or disappeared",
     );
+  });
+});
+
+describe("retained memory gates", () => {
+  const samples = () =>
+    Array.from({ length: 11 }, (_, i) => ({
+      elapsedMs: i * 60000,
+      heapBytes: 100 * 1024 * 1024,
+      server: { heapBytes: 100 * 1024 * 1024 },
+    }));
+  it("requires the complete 10-minute run", () => {
+    expect(() => retainedMemoryObservations(samples().slice(0, 10))).toThrow();
+    const short = samples();
+    short[10]!.elapsedMs = 599999;
+    expect(() => retainedMemoryObservations(short)).toThrow();
+    expect(retainedMemoryObservations(samples()).every((x) => x.passed)).toBe(true);
+  });
+  it("checks both bounds and each process over the final five minutes", () => {
+    const growing = samples();
+    growing[10]!.heapBytes *= 1.06;
+    const result = retainedMemoryObservations(growing);
+    expect(result.find((x) => x.name === "memory.browser.growthBytes")!.passed).toBe(true);
+    expect(result.find((x) => x.name === "memory.browser.growthRatio")!.passed).toBe(false);
+    expect(result.find((x) => x.name === "memory.combined.growthRatio")!.passed).toBe(true);
   });
 });

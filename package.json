@@ -63,6 +63,7 @@
     "clean": "node scripts/clean.ts",
     "sync:vscode-icons": "node scripts/sync-vscode-icons.mjs",
     "perf:server": "bun scripts/performance.ts",
+    "perf:interactive": "bun scripts/performance.ts interactive",
     "perf:compare": "bun scripts/performance.ts compare"
   },
   "devDependencies": {

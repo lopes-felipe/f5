@@ -4,12 +4,18 @@ const db = new DatabaseSync(process.argv[2]);
 db.exec(
   "PRAGMA busy_timeout = 5000; CREATE TABLE IF NOT EXISTS perf_writes (id INTEGER PRIMARY KEY, value TEXT)",
 );
-const write = db.prepare("INSERT INTO perf_writes(value) VALUES (?)");
+const bounded = process.argv[3] === "bounded";
+const write = db.prepare(
+  bounded
+    ? "INSERT INTO perf_writes(id,value) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value"
+    : "INSERT INTO perf_writes(value) VALUES (?)",
+);
 let writes = 0;
 let failures = 0;
 const timer = setInterval(() => {
   try {
-    write.run(`write-${writes}`);
+    if (bounded) write.run(writes % 1000, `write-${writes}`);
+    else write.run(`write-${writes}`);
     writes++;
   } catch {
     failures++;
