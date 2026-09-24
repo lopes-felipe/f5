@@ -18,7 +18,7 @@ No new settings, capabilities, database migrations or wire variants are introduc
 - `bun fmt`, `bun lint`, `bun typecheck`: pass. Lint reports existing warnings and no errors.
 - `F5_TEST_MAX_WORKERS=1 VITEST_MAX_WORKERS=1 bun run test:full`: pass, including 131 exhaustive real-Git tests.
 - Focused metadata, probe, adapter and real-CLI integration tests pass. Coverage includes malformed envelopes, relative custom executable paths, temporary-directory cleanup on success/failure, image/slash-command ordering, session permission fallback, and warning delivery.
-- `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`: required after recording the implementation commit in the ledger.
+- `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`: pass after recording the implementation commit. Coverage remains 2,332 records (1,836 audited interval commits and 496 legacy commits), with no pending reviews; seven records move from planned to ported.
 
 The real-runtime compatibility test uses the pinned SDK 0.3.280 / CLI 2.1.280 against a local synthetic Anthropic API. Through production metadata generation, the CLI advertises only `StructuredOutput`, consumes a streamed structured result, returns the expected title, and never executes a configured user `SessionStart` hook. Thus `--json-schema` works with `--tools ""`; the broader allowed-tools fallback is unnecessary. The fixture uses a temporary config directory and a synthetic key, without a real account or paid inference.
 

@@ -1781,10 +1781,15 @@
     {
       "upstreamSha": "18573d60aab1344bf124a044b01445086e910c4c",
       "subject": "fix(claude): expand slash commands when a message has attachments (#9122)",
-      "reason": "Phase 1c (provider correctness): fix(claude): expand slash commands when a message has attachments. Reimplement in f5; not yet delivered.",
+      "reason": "Claude user messages place image blocks before the final text block, including slash-command prompts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:1308",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:1941"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "1862686f9e42bf1d77e7f2ad03e24d7b0c7908f1",
@@ -5814,10 +5819,16 @@
     {
       "upstreamSha": "52b2bf77a941740b4d979f3f4cae1c2851c14a69",
       "subject": "fix(server): handle JSON-wrapped titles and verbose Claude output (#10446)",
-      "reason": "Phase 1c (provider correctness): fix(server): handle JSON-wrapped titles and verbose Claude output. Reimplement in f5; not yet delivered.",
+      "reason": "Claude metadata decodes object and verbose-array result envelopes, selecting the final result, and unwraps JSON thread titles before normalization.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/git/Layers/ClaudeTextGeneration.ts:248",
+        "apps/server/src/git/Utils.ts:100",
+        "apps/server/src/git/Layers/ClaudeTextGeneration.test.ts:422"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "52d08a14b9e475371658fabbb12c056c3d3dad67",
@@ -10440,10 +10451,16 @@
     {
       "upstreamSha": "95834d68aa475a8afe4b2b14eaedffb35b590dab",
       "subject": "fix(server): disable executable capabilities in Claude metadata generation (#4169)",
-      "reason": "Phase 1c (provider correctness): fix(server): disable executable capabilities in Claude metadata generation. Reimplement in f5; not yet delivered.",
+      "reason": "Claude metadata uses an isolated temporary cwd, disables hooks, ordinary tools, slash commands and implicit MCP configuration, and no longer skips permissions. The pinned real CLI's structured-output path passes against a local API fixture; live authenticated inference remains unverified.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/git/Layers/ClaudeTextGeneration.ts:141",
+        "apps/server/integration/claudeMetadata.integration.test.ts:13",
+        "apps/server/src/git/Layers/ClaudeTextGeneration.test.ts:375"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "95d99373b74edfb3bfd092c61a15999a95727423",
@@ -11443,10 +11460,15 @@
     {
       "upstreamSha": "a5bbad910f78cc14eef8baa94fe6f46676f78d5a",
       "subject": "fix(server): surface Claude safety model fallback notices instead of dropping them (#8853)",
-      "reason": "Phase 1c (provider correctness): fix(server): surface Claude safety model fallback notices instead of dropping them. Reimplement in f5; not yet delivered.",
+      "reason": "Claude model-refusal fallback notices now emit a provider runtime warning instead of being silently ignored.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:3515",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3421"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "a5d35321bd620400dc03ddf7a42ee2672b225ac3",
@@ -14988,10 +15010,15 @@
     {
       "upstreamSha": "db02c6b9c9d5714ae3d519328cdd68c746f4cbad",
       "subject": "Skip user hooks during Claude capability probes (#4466)",
-      "reason": "Phase 1c (provider correctness): Skip user hooks during Claude capability probes. Reimplement in f5; not yet delivered.",
+      "reason": "Claude capability and usage probes disable user hooks and implicit MCP servers while retaining settings sources for command discovery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeProvider.ts:419",
+        "apps/server/src/provider/Layers/ClaudeUsageProbe.test.ts:27"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "db0659fead9b7f29f4668c9ba3eb16702c2cff7f",
@@ -15980,10 +16007,15 @@
     {
       "upstreamSha": "e9e46972fbabdee0eb39cbd86470a5b5f5f26910",
       "subject": "fix(claude): make \"Always allow for session\" stick, and only for the session (#5041)",
-      "reason": "Phase 1c (provider correctness): fix(claude): make \"Always allow for session\" stick, and only for the session. Reimplement in f5; not yet delivered.",
+      "reason": "Accept-for-session permissions are always scoped to the session; missing suggestions produce a session-only tool rule while accept-once does not update permissions.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:4723",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:5048"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "e9f50c3efcb02a199042364ead292e164274e716",
@@ -17038,10 +17070,15 @@
     {
       "upstreamSha": "f86c5e8c8700b76250ed1073700a5b9db47e2d57",
       "subject": "fix(server): skip IDE detection in Claude probes (#8634)",
-      "reason": "Phase 1c (provider correctness): fix(server): skip IDE detection in Claude probes. Reimplement in f5; not yet delivered.",
+      "reason": "Claude probes disable IDE discovery, auto-connect and auto-install, overriding inherited IDE detection flags.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeProvider.ts:423",
+        "apps/server/src/provider/Layers/ClaudeUsageProbe.test.ts:27"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "f87ecf0cc307f974745da8eea856fab5711023f3",
