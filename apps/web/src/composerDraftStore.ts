@@ -1293,21 +1293,67 @@ function readPersistedPromptStashIdsFromStorage(): string[] {
   }
 }
 
+function toPersistedThreadDraft(
+  draft: ComposerThreadDraftState,
+): PersistedComposerThreadDraftState {
+  const persistedDraft: PersistedComposerThreadDraftState = {
+    prompt: draft.prompt,
+    attachments: draft.persistedAttachments,
+  };
+  if (draft.filePaths.length > 0) {
+    persistedDraft.filePaths = draft.filePaths;
+  }
+  if (draft.terminalContexts.length > 0) {
+    persistedDraft.terminalContexts = draft.terminalContexts.map((context) => ({
+      id: context.id,
+      threadId: context.threadId,
+      createdAt: context.createdAt,
+      terminalId: context.terminalId,
+      terminalLabel: context.terminalLabel,
+      lineStart: context.lineStart,
+      lineEnd: context.lineEnd,
+      text: context.text,
+    }));
+  }
+  if (draft.model) {
+    persistedDraft.model = draft.model;
+  }
+  if (draft.provider) {
+    persistedDraft.provider = draft.provider;
+  }
+  if (draft.providerInstanceId) {
+    persistedDraft.providerInstanceId = draft.providerInstanceId;
+  }
+  if (draft.modelOptions) {
+    persistedDraft.modelOptions = draft.modelOptions;
+  }
+  if (draft.runtimeMode) {
+    persistedDraft.runtimeMode = draft.runtimeMode;
+  }
+  if (draft.interactionMode) {
+    persistedDraft.interactionMode = draft.interactionMode;
+  }
+  if (draft.effort) {
+    persistedDraft.effort = draft.effort;
+  }
+  if (draft.codexFastMode) {
+    persistedDraft.codexFastMode = true;
+  }
+  return persistedDraft;
+}
+
 function persistedDraftMatches(threadId: ThreadId, draft: ComposerThreadDraftState): boolean {
   try {
     const raw = composerDebouncedStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY);
     if (raw instanceof Promise) return false;
-    const persisted = parsePersistedDraftStateRaw(raw).draftsByThreadId[threadId];
-    if (!persisted) return false;
-    return (
-      persisted.prompt === draft.prompt &&
-      areComposerFilePathsEqual(persisted.filePaths ?? [], draft.filePaths) &&
-      persisted.attachments.length === draft.persistedAttachments.length &&
-      persisted.attachments.every(
-        (attachment, index) => attachment.id === draft.persistedAttachments[index]?.id,
-      ) &&
-      (persisted.terminalContexts ?? []).length === draft.terminalContexts.length
-    );
+    if (!raw) return false;
+    // Compare the bytes represented by the persisted fields, without migration
+    // normalizers that could erase differences in model selection or context.
+    const parsed = JSON.parse(raw) as {
+      state?: PersistedComposerDraftStoreState;
+    } & Partial<PersistedComposerDraftStoreState>;
+    const persisted = (parsed.state ?? parsed).draftsByThreadId?.[threadId];
+    return persistedValuesEqual(persisted, toPersistedThreadDraft(draft));
   } catch {
     return false;
   }
@@ -2831,49 +2877,7 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
           ) {
             continue;
           }
-          const persistedDraft: PersistedComposerThreadDraftState = {
-            prompt: draft.prompt,
-            attachments: draft.persistedAttachments,
-          };
-          if (draft.filePaths.length > 0) {
-            persistedDraft.filePaths = draft.filePaths;
-          }
-          if (draft.terminalContexts.length > 0) {
-            persistedDraft.terminalContexts = draft.terminalContexts.map((context) => ({
-              id: context.id,
-              threadId: context.threadId,
-              createdAt: context.createdAt,
-              terminalId: context.terminalId,
-              terminalLabel: context.terminalLabel,
-              lineStart: context.lineStart,
-              lineEnd: context.lineEnd,
-              text: context.text,
-            }));
-          }
-          if (draft.model) {
-            persistedDraft.model = draft.model;
-          }
-          if (draft.provider) {
-            persistedDraft.provider = draft.provider;
-          }
-          if (draft.providerInstanceId) {
-            persistedDraft.providerInstanceId = draft.providerInstanceId;
-          }
-          if (draft.modelOptions) {
-            persistedDraft.modelOptions = draft.modelOptions;
-          }
-          if (draft.runtimeMode) {
-            persistedDraft.runtimeMode = draft.runtimeMode;
-          }
-          if (draft.interactionMode) {
-            persistedDraft.interactionMode = draft.interactionMode;
-          }
-          if (draft.effort) {
-            persistedDraft.effort = draft.effort;
-          }
-          if (draft.codexFastMode) {
-            persistedDraft.codexFastMode = true;
-          }
+          const persistedDraft = toPersistedThreadDraft(draft);
           persistedDraftsByThreadId[threadId as ThreadId] = persistedDraft;
         }
         return {
@@ -3130,9 +3134,7 @@ export async function serializeComposerDraftRecovery(): Promise<string> {
   const entries = await Promise.all(
     Object.entries(drafts).map(async ([threadId, draft]) => ({
       threadId,
-      prompt: draft.prompt,
-      filePaths: draft.filePaths,
-      terminalContexts: draft.terminalContexts,
+      ...toPersistedThreadDraft(draft),
       attachments: await serializeComposerDraftAttachments(draft),
     })),
   );

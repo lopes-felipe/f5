@@ -1,6 +1,11 @@
 import { serverBootstrapFixture } from "./test/serverBootstrap";
 import { F5_PROTOCOL_VERSION, F5_UPGRADE_REQUIRED_CLOSE_CODE } from "@t3tools/contracts";
-import { getProtocolState, getServerSendLimits, resetProtocolStateForTests } from "./protocolState";
+import {
+  getProtocolState,
+  getServerSendLimits,
+  resetProtocolStateForTests,
+  protocolFetch,
+} from "./protocolState";
 import { ORCHESTRATION_WS_METHODS, WS_CHANNELS, WS_METHODS } from "@t3tools/contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -93,6 +98,7 @@ beforeEach(() => {
   const windowTarget = new EventTarget();
   Object.assign(windowTarget, {
     location: {
+      href: "http://localhost:3020/app/",
       hash: "",
       hostname: "localhost",
       pathname: "/",
@@ -648,3 +654,38 @@ it.each([undefined, { ...serverBootstrapFixture, protocolVersion: F5_PROTOCOL_VE
     transport.dispose();
   },
 );
+
+it.each([
+  "/ws?token=secret",
+  "./ws?token=secret",
+  "//remote.example/ws?token=secret",
+  "wss://remote.example/ws?token=secret",
+])("resolves %s and preserves authentication on reconnect", (input) => {
+  const expected = new URL(input, window.location.href);
+  expected.searchParams.set("protocol", String(F5_PROTOCOL_VERSION));
+  const transport = new WsTransport(input);
+  expect(getSocket().url).toBe(expected.href);
+  getSocket().open();
+  getSocket().close();
+  vi.advanceTimersByTime(500);
+  expect(getSocket().url).toBe(expected.href);
+  transport.dispose();
+});
+
+it("rejects timeout-free websocket requests when HTTP reports an upgrade, without waiting for socket traffic", async () => {
+  const transport = new WsTransport("ws://localhost:3020/");
+  const socket = getSocket();
+  socket.open();
+  const pending = transport.request("server.probe", {}, { timeoutMs: null });
+  const rejected = expect(pending).rejects.toThrow("F5 was updated");
+  globalThis.fetch = vi.fn(async () => new Response("{}", { status: 426 }));
+  await expect(protocolFetch("/api/storage/restore", { method: "POST" })).rejects.toThrow(
+    "F5 was updated",
+  );
+  await rejected;
+  expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+  vi.advanceTimersByTime(60_000);
+  expect(sockets).toHaveLength(1);
+  expect(getWsConnectionState().lastError).toContain("F5 was updated");
+  transport.dispose();
+});

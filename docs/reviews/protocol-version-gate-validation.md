@@ -77,3 +77,10 @@ The browser fixtures now include current bootstrap metadata. Tests cover absent
 limits, import/serialization/storage failure with the real draft store, recovery
 image bytes, repeat reloads, manual reload warnings, and explicit HTTP 400 for an
 invalid restore request with the current protocol header.
+
+The subsequent inline review adds complete persisted-field comparison (including
+terminal text and model selection), relative WebSocket URL resolution, and immediate
+WebSocket request rejection when HTTP reports an upgrade. Draft persistence and
+recovery downloads share the same field serializer. Regression tests cover rejected
+storage writes for nine field changes, relative URLs through reconnect, and a
+pending WebSocket request without a timeout when HTTP returns 426.

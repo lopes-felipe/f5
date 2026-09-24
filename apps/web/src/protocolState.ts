@@ -9,7 +9,7 @@ import {
 let bootstrap: ServerBootstrap | null = null;
 let state = { upgradeRequired: false, activeUploads: 0, ready: false };
 const listeners = new Set<() => void>();
-const subscribe = (listener: () => void) => {
+export const subscribeProtocolState = (listener: () => void) => {
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
@@ -20,7 +20,7 @@ const emit = () => {
 };
 export const getProtocolState = () => state;
 export const useProtocolState = () =>
-  useSyncExternalStore(subscribe, getProtocolState, getProtocolState);
+  useSyncExternalStore(subscribeProtocolState, getProtocolState, getProtocolState);
 export function requireProtocolUpgrade(): void {
   if (state.upgradeRequired) return;
   state = { ...state, upgradeRequired: true };
