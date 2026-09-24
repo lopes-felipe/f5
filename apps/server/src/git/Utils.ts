@@ -7,12 +7,7 @@ import { Schema } from "effect";
 
 import { TextGenerationError } from "./Errors.ts";
 
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-
-export function isGitRepository(cwd: string): boolean {
-  return existsSync(join(cwd, ".git"));
-}
+export { isGitRepository } from "./isRepo.ts";
 
 /** Convert an Effect Schema to a flat JSON Schema object, inlining `$defs` when present. */
 export function toJsonSchemaObject(schema: Schema.Top): unknown {

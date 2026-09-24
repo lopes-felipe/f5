@@ -67,6 +67,8 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
         const latestThread = latestReadModel.threads.find(
           (thread) => thread.id === binding.threadId,
         );
+        if (Date.parse(latestThread?.session?.updatedAt ?? "") > Date.parse(freshSince))
+          return false;
         if (latestThread?.session?.activeTurnId != null) {
           yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
             threadId: binding.threadId,
@@ -120,12 +122,14 @@ const makeProviderSessionReaper = (options?: ProviderSessionReaperLiveOptions) =
             continue;
           }
 
-          const idleDurationMs = now - lastSeenMs;
+          const thread = threadsById.get(binding.threadId);
+          const completedAt = Date.parse(thread?.session?.updatedAt ?? binding.lastSeenAt);
+          const idleDurationMs =
+            now - Math.max(lastSeenMs, Number.isFinite(completedAt) ? completedAt : lastSeenMs);
           if (idleDurationMs < inactivityThresholdMs) {
             continue;
           }
 
-          const thread = threadsById.get(binding.threadId);
           if (thread?.session?.activeTurnId != null) {
             yield* Effect.logDebug("provider.session.reaper.skipped-active-turn", {
               threadId: binding.threadId,

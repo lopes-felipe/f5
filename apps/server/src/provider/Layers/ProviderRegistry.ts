@@ -98,8 +98,10 @@ const mergeProviderModels = (
   previousModels: ReadonlyArray<ServerProvider["models"][number]>,
   nextModels: ReadonlyArray<ServerProvider["models"][number]>,
 ): ReadonlyArray<ServerProvider["models"][number]> => {
-  if (retainMissingModels && nextModels.length === 0 && previousModels.length > 0) {
-    return previousModels;
+  // Custom models are authoritative settings data, not probe-discovered inventory.
+  const retainablePrevious = previousModels.filter((model) => !model.isCustom);
+  if (retainMissingModels && nextModels.length === 0 && retainablePrevious.length > 0) {
+    return retainablePrevious;
   }
 
   const previousBySlug = new Map(previousModels.map((model) => [model.slug, model] as const));
@@ -115,7 +117,7 @@ const mergeProviderModels = (
   });
   const nextSlugs = new Set(nextModels.map((model) => model.slug));
   return retainMissingModels
-    ? [...mergedModels, ...previousModels.filter((model) => !nextSlugs.has(model.slug))]
+    ? [...mergedModels, ...retainablePrevious.filter((model) => !nextSlugs.has(model.slug))]
     : mergedModels;
 };
 

@@ -16,6 +16,9 @@ export interface ExecuteGitInput {
   readonly cwd: string;
   readonly args: ReadonlyArray<string>;
   readonly env?: NodeJS.ProcessEnv;
+  readonly stdin?: string;
+  /** Consume stdout incrementally instead of retaining it. Stderr remains bounded. */
+  readonly onStdoutChunk?: (chunk: Uint8Array) => void;
   readonly allowNonZeroExit?: boolean;
   /** null disables the deadline for noninteractive long-running operations. */
   readonly timeoutMs?: number | null;

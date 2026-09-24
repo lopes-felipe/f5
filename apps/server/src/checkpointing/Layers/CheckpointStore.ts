@@ -105,6 +105,12 @@ const makeCheckpointStore = Effect.gen(function* () {
   const captureCheckpoint: CheckpointStoreShape["captureCheckpoint"] = (input) =>
     Effect.gen(function* () {
       const operation = "CheckpointStore.captureCheckpoint";
+      const indexConfig = [
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "sparse.expectFilesOutsideOfPatterns=false",
+      ];
 
       yield* Effect.acquireUseRelease(
         fs.makeTempDirectory({ prefix: "t3-fs-checkpoint-" }),
@@ -121,20 +127,133 @@ const makeCheckpointStore = Effect.gen(function* () {
             };
 
             const headExists = yield* hasHeadCommit(input.cwd);
+            const sparseResult = yield* executeCapture({
+              operation,
+              cwd: input.cwd,
+              args: ["config", "--bool", "core.sparseCheckout"],
+              allowNonZeroExit: true,
+            });
+            const sparse = sparseResult.stdout.trim() === "true";
             if (headExists) {
-              yield* executeCapture({
-                operation,
-                cwd: input.cwd,
-                args: ["read-tree", "HEAD"],
-                env: commitEnv,
-              });
+              const reused = yield* Effect.gen(function* () {
+                const source = yield* executeCapture({
+                  operation,
+                  cwd: input.cwd,
+                  args: ["rev-parse", "--path-format=absolute", "--git-path", "index"],
+                });
+                const sourcePath = source.stdout.trim();
+                const metadata = yield* fs.stat(sourcePath);
+                if (metadata.mtime === undefined) return false;
+                const timestamp = Math.floor((metadata.mtime.getTime() - 1) / 1000);
+                if (timestamp <= 0) return false;
+                yield* fs.copyFile(sourcePath, tempIndexPath);
+                yield* executeCapture({
+                  operation,
+                  cwd: input.cwd,
+                  args: [...indexConfig, "read-tree", "--reset", "HEAD"],
+                  env: commitEnv,
+                });
+                // Preserve racy-index detection even when read-tree rewrites the copy.
+                yield* fs.utimes(tempIndexPath, timestamp, timestamp);
+                let specialFlags = false;
+                let atStart = true;
+                let skippedRecord = false;
+                let record: number[] = [];
+                let retainedBytes = 0;
+                const skipped: string[] = [];
+                yield* executeCapture({
+                  operation,
+                  cwd: input.cwd,
+                  args: [...indexConfig, "ls-files", "--full-name", "--sparse", "-v", "-z"],
+                  env: commitEnv,
+                  onStdoutChunk: (chunk) => {
+                    for (const byte of chunk) {
+                      if (atStart) {
+                        skippedRecord = byte === 83 && sparse;
+                        if ((byte >= 97 && byte <= 122) || (byte === 83 && !sparse))
+                          specialFlags = true;
+                      }
+                      if (skippedRecord && !specialFlags) {
+                        if (byte !== 0) {
+                          record.push(byte);
+                          if (++retainedBytes > 32 * 1024 * 1024) specialFlags = true;
+                        } else {
+                          if (record.at(-1) !== 47) {
+                            try {
+                              skipped.push(
+                                new TextDecoder("utf-8", { fatal: true }).decode(
+                                  Uint8Array.from(record).subarray(2),
+                                ),
+                              );
+                            } catch {
+                              specialFlags = true;
+                            }
+                          }
+                          record = [];
+                        }
+                      }
+                      atStart = byte === 0;
+                    }
+                  },
+                });
+                if (specialFlags) return false;
+                if (sparse && skipped.length > 0) {
+                  let hasSelected = false;
+                  yield* executeCapture({
+                    operation,
+                    cwd: input.cwd,
+                    args: [...indexConfig, "sparse-checkout", "check-rules", "-z"],
+                    stdin: skipped.join("\0") + "\0",
+                    env: commitEnv,
+                    onStdoutChunk: (chunk) => {
+                      if (chunk.length > 0) hasSelected = true;
+                    },
+                  });
+                  if (hasSelected) return false;
+                }
+                return true;
+              }).pipe(Effect.catch(() => Effect.succeed(false)));
+              if (!reused) {
+                if (sparse) {
+                  const cone = yield* executeCapture({
+                    operation,
+                    cwd: input.cwd,
+                    args: ["config", "--bool", "core.sparseCheckoutCone"],
+                    allowNonZeroExit: true,
+                  });
+                  if (cone.stdout.trim() !== "true")
+                    return yield* new CheckpointInvariantError({
+                      operation,
+                      detail:
+                        "Cannot safely rebuild a checkpoint index for non-cone sparse checkout.",
+                    });
+                }
+                yield* fs.remove(tempIndexPath, { force: true });
+                yield* executeCapture({
+                  operation,
+                  cwd: input.cwd,
+                  args: sparse
+                    ? [...indexConfig, "-c", "index.sparse=true", "read-tree", "--reset", "HEAD"]
+                    : [...indexConfig, "read-tree", "HEAD"],
+                  env: commitEnv,
+                });
+              }
             }
 
             const stageFiles = (exclusions: ReadonlyArray<string>) =>
               executeCapture({
                 operation,
                 cwd: input.cwd,
-                args: [...durableWrite, "add", "-A", "--", ".", ...exclusions],
+                args: [
+                  ...durableWrite,
+                  ...indexConfig,
+                  "add",
+                  ...(sparse ? ["--sparse"] : []),
+                  "-A",
+                  "--",
+                  ".",
+                  ...exclusions,
+                ],
                 env: commitEnv,
               });
             yield* stageFiles([]).pipe(
@@ -213,7 +332,7 @@ const makeCheckpointStore = Effect.gen(function* () {
             const writeTreeResult = yield* executeCapture({
               operation,
               cwd: input.cwd,
-              args: [...durableWrite, "write-tree"],
+              args: [...durableWrite, ...indexConfig, "write-tree"],
               env: commitEnv,
             });
             const treeOid = writeTreeResult.stdout.trim();

@@ -1393,20 +1393,30 @@ export function applyDomainEvent(state: AppState, event: OrchestrationEvent): Ap
         if (turnDiffSummaries === null) {
           return thread;
         }
-        const latestTurn = {
-          turnId: event.payload.turnId,
-          state: checkpointStatusToLatestTurnState(event.payload.status),
-          requestedAt:
-            thread.latestTurn?.turnId === event.payload.turnId
-              ? thread.latestTurn.requestedAt
-              : event.payload.completedAt,
-          startedAt:
-            thread.latestTurn?.turnId === event.payload.turnId
-              ? (thread.latestTurn.startedAt ?? event.payload.completedAt)
-              : event.payload.completedAt,
-          completedAt: event.payload.completedAt,
-          assistantMessageId: event.payload.assistantMessageId,
-        } satisfies NonNullable<Thread["latestTurn"]>;
+        const previousTurn = thread.latestTurn;
+        const preserveTurn =
+          previousTurn?.turnId === event.payload.turnId &&
+          (previousTurn.state === "running" || previousTurn.state === "interrupted");
+        const latestTurn = preserveTurn
+          ? {
+              ...previousTurn,
+              assistantMessageId:
+                event.payload.assistantMessageId ?? previousTurn.assistantMessageId,
+            }
+          : ({
+              turnId: event.payload.turnId,
+              state: checkpointStatusToLatestTurnState(event.payload.status),
+              requestedAt:
+                previousTurn?.turnId === event.payload.turnId
+                  ? previousTurn.requestedAt
+                  : event.payload.completedAt,
+              startedAt:
+                previousTurn?.turnId === event.payload.turnId
+                  ? (previousTurn.startedAt ?? event.payload.completedAt)
+                  : event.payload.completedAt,
+              completedAt: event.payload.completedAt,
+              assistantMessageId: event.payload.assistantMessageId,
+            } satisfies NonNullable<Thread["latestTurn"]>);
         if (
           turnDiffSummaries === thread.turnDiffSummaries &&
           thread.latestTurn?.turnId === latestTurn.turnId &&

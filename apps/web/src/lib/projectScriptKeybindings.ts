@@ -17,7 +17,7 @@ function normalizeProjectScriptKeybindingInput(
 
 export function decodeProjectScriptKeybindingRule(input: {
   keybinding: string | null | undefined;
-  command: KeybindingCommand;
+  command: KeybindingCommand | null;
 }): KeybindingRule | null {
   const normalizedKey = normalizeProjectScriptKeybindingInput(input.keybinding);
   if (!normalizedKey) return null;
@@ -34,8 +34,9 @@ export function decodeProjectScriptKeybindingRule(input: {
 
 export function keybindingValueForCommand(
   keybindings: ResolvedKeybindingsConfig,
-  command: KeybindingCommand,
+  command: KeybindingCommand | null,
 ): string | null {
+  if (command === null) return null;
   for (let index = keybindings.length - 1; index >= 0; index -= 1) {
     const binding = keybindings[index];
     if (!binding || binding.command !== command) continue;

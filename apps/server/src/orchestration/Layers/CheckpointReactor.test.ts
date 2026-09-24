@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -466,6 +467,75 @@ describe("CheckpointReactor", () => {
     };
   }
 
+  it.each([
+    { shared: false, checkout: "agent-selected" },
+    { shared: true, checkout: "agent-selected" },
+    { shared: false, checkout: "t3code/abcdef01" },
+  ])("follows only an exclusive non-temporary checkout: %j", async ({ shared, checkout }) => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    execFileSync("git", ["init", `--initial-branch=${checkout}`], {
+      cwd: harness.cwd,
+      stdio: "ignore",
+    });
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("placeholder-branch"),
+        threadId,
+        branch: "t3code/1234abcd",
+      }),
+    );
+    const createdAt = new Date().toISOString();
+    if (shared)
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.create",
+          commandId: CommandId.makeUnsafe("shared-thread"),
+          threadId: ThreadId.makeUnsafe("thread-2"),
+          projectId: asProjectId("project-1"),
+          title: "Shared",
+          model: "gpt-5-codex",
+          runtimeMode: "approval-required",
+          interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+          branch: "t3code/1234abcd",
+          worktreePath: harness.cwd,
+          createdAt,
+        }),
+      );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("branch-sync-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "running",
+          providerName: "codex",
+          runtimeMode: "approval-required",
+          activeTurnId: asTurnId("branch-sync"),
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    harness.provider.emit({
+      type: "turn.completed",
+      eventId: EventId.makeUnsafe("branch-sync-done"),
+      provider: "codex",
+      createdAt,
+      threadId,
+      turnId: asTurnId("branch-sync"),
+      payload: { state: "completed" },
+    });
+    const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
+    expect(thread.branch).toBe(
+      !shared && checkout === "agent-selected" ? checkout : "t3code/1234abcd",
+    );
+    expect(thread.worktreePath).toBe(harness.cwd);
+  });
+
   it("does not block readiness on startup quiescence recovery", async () => {
     const harness = await createHarness({ stallStartupQuiescence: true });
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
@@ -580,6 +650,24 @@ describe("CheckpointReactor", () => {
       }),
     );
 
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("domain-only-terminal-session"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "codex",
+          runtimeMode: "full-access",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: "2026-04-23T10:00:02.000Z",
+        },
+        createdAt: "2026-04-23T10:00:02.000Z",
+      }),
+    );
+
     const events = await waitForEvent(
       harness.engine,
       (event) => event.type === "thread.turn-processing-quiesced",
@@ -596,79 +684,92 @@ describe("CheckpointReactor", () => {
     ).toBe("domain-only\n");
   });
 
-  it("refreshes the same turn checkpoint when a missing placeholder is re-emitted mid-turn", async () => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+  it.each(["turn.completed", "turn.aborted"] as const)(
+    "captures only the final edits on %s, not mid-turn placeholders",
+    async (terminalType) => {
+      const harness = await createHarness({ seedFilesystemCheckpoints: false });
 
-    harness.provider.emit({
-      type: "turn.started",
-      eventId: EventId.makeUnsafe("evt-turn-started-refresh"),
-      provider: "codex",
-      createdAt: "2026-04-23T10:00:00.000Z",
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      turnId: asTurnId("turn-refresh"),
-    });
-    await waitForGitRefExists(
-      harness.cwd,
-      checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 0),
-    );
-
-    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.diff.complete",
-        commandId: CommandId.makeUnsafe("cmd-turn-refresh-placeholder-1"),
+      harness.provider.emit({
+        type: "turn.started",
+        eventId: EventId.makeUnsafe("evt-turn-started-refresh"),
+        provider: "codex",
+        createdAt: "2026-04-23T10:00:00.000Z",
         threadId: ThreadId.makeUnsafe("thread-1"),
         turnId: asTurnId("turn-refresh"),
-        completedAt: "2026-04-23T10:00:01.000Z",
-        checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-        status: "missing",
-        files: [],
-        checkpointTurnCount: 1,
-        assistantMessageId: MessageId.makeUnsafe("assistant-refresh"),
-        createdAt: "2026-04-23T10:00:01.000Z",
-      }),
-    );
+      });
+      await waitForGitRefExists(
+        harness.cwd,
+        checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 0),
+      );
 
-    await waitForGitFileAtRefContent(
-      harness.cwd,
-      checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-      "README.md",
-      "v2\n",
-    );
+      fs.writeFileSync(path.join(harness.cwd, "README.md"), "v2\n", "utf8");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe("cmd-turn-refresh-placeholder-1"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId("turn-refresh"),
+          completedAt: "2026-04-23T10:00:01.000Z",
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+          status: "missing",
+          files: [],
+          checkpointTurnCount: 1,
+          assistantMessageId: MessageId.makeUnsafe("assistant-refresh"),
+          createdAt: "2026-04-23T10:00:01.000Z",
+        }),
+      );
 
-    fs.writeFileSync(path.join(harness.cwd, "README.md"), "v3\n", "utf8");
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.turn.diff.complete",
-        commandId: CommandId.makeUnsafe("cmd-turn-refresh-placeholder-2"),
+      await harness.drain();
+      expect(
+        gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1)),
+      ).toBe(false);
+
+      fs.writeFileSync(path.join(harness.cwd, "README.md"), "v3\n", "utf8");
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe("cmd-turn-refresh-placeholder-2"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId("turn-refresh"),
+          completedAt: "2026-04-23T10:00:02.000Z",
+          checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+          status: "missing",
+          files: [],
+          checkpointTurnCount: 1,
+          assistantMessageId: MessageId.makeUnsafe("assistant-refresh"),
+          createdAt: "2026-04-23T10:00:02.000Z",
+        }),
+      );
+
+      fs.writeFileSync(path.join(harness.cwd, "README.md"), "v4\n");
+      harness.provider.emit({
+        type: terminalType,
+        eventId: EventId.makeUnsafe("terminal-final-edits"),
+        provider: "codex",
         threadId: ThreadId.makeUnsafe("thread-1"),
         turnId: asTurnId("turn-refresh"),
-        completedAt: "2026-04-23T10:00:02.000Z",
-        checkpointRef: checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-        status: "missing",
-        files: [],
-        checkpointTurnCount: 1,
-        assistantMessageId: MessageId.makeUnsafe("assistant-refresh"),
-        createdAt: "2026-04-23T10:00:02.000Z",
-      }),
-    );
+        createdAt: "2026-04-23T10:00:03.000Z",
+        ...(terminalType === "turn.completed"
+          ? { payload: { state: "completed" as const } }
+          : { payload: {} }),
+      } as LegacyProviderRuntimeEvent);
+      await waitForGitFileAtRefContent(
+        harness.cwd,
+        checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+        "README.md",
+        "v4\n",
+      );
 
-    await waitForGitFileAtRefContent(
-      harness.cwd,
-      checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
-      "README.md",
-      "v3\n",
-    );
-
-    const thread = await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.latestTurn?.turnId === "turn-refresh" &&
-        entry.checkpoints.length === 1 &&
-        entry.checkpoints[0]?.checkpointTurnCount === 1,
-    );
-    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
-  });
+      const thread = await waitForThread(
+        harness.engine,
+        (entry) =>
+          entry.latestTurn?.turnId === "turn-refresh" &&
+          entry.checkpoints.length === 1 &&
+          entry.checkpoints[0]?.checkpointTurnCount === 1,
+      );
+      expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+    },
+  );
 
   it("ignores auxiliary thread turn completion while primary turn is active", async () => {
     const harness = await createHarness({ seedFilesystemCheckpoints: false });

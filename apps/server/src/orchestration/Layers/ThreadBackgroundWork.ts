@@ -281,6 +281,7 @@ const make = Effect.gen(function* () {
 
       yield* repository.upsertTransition({
         ...transition,
+        ...(event.type === "task.progress" ? { progressOnly: true } : {}),
         ...sessionIdentity,
         ...boundedOutput(transition.latestOutput),
       });

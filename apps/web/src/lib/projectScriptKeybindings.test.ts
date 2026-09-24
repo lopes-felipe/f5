@@ -49,7 +49,7 @@ describe("projectScriptKeybindings", () => {
   });
 
   it("reads latest matching keybinding value for a command", () => {
-    const command = commandForProjectScript("test");
+    const command = commandForProjectScript("test")!;
     const value = keybindingValueForCommand(
       [
         {

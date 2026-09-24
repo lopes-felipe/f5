@@ -2751,7 +2751,7 @@ export default function ChatView({
       previousScripts: ProjectScript[];
       nextScripts: ProjectScript[];
       keybinding?: string | null;
-      keybindingCommand: KeybindingCommand;
+      keybindingCommand: KeybindingCommand | null;
     }) => {
       const api = readNativeApi();
       if (!api) return;

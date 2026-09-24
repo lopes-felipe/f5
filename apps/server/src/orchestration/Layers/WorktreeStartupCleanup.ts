@@ -1,3 +1,4 @@
+import { GitCore } from "../../git/Services/GitCore.ts";
 /**
  * WorktreeStartupCleanup - Clear stale `worktreePath` projections at startup.
  *
@@ -8,7 +9,8 @@
  *
  * This helper walks the read model once after the orchestration runtime is
  * ready, verifies each thread's `worktreePath` exists on disk, and dispatches
- * a `thread.meta.update` with `worktreePath: null` for any that no longer do.
+ * a `thread.meta.update` with `worktreePath: null` only when the branch is also gone.
+ * Recoverable worktrees retain their path for recreation on the next send.
  * Running the cleanup through the orchestration engine (rather than mutating
  * the projection row directly) keeps the event log as the source of truth so
  * the projection remains reproducible via replay.
@@ -21,7 +23,7 @@ import { Cause, Effect, FileSystem } from "effect";
 import type { OrchestrationEngineShape } from "../Services/OrchestrationEngine.ts";
 
 /**
- * Walk all live threads and clear any `worktreePath` whose directory is gone.
+ * Clear a missing worktree path only when its branch is also gone.
  *
  * Safe to run once per process startup after the orchestration runtime is
  * ready. Errors dispatching individual updates are logged and swallowed so a
@@ -31,6 +33,7 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
   orchestrationEngine: OrchestrationEngineShape,
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
+  const git = yield* GitCore;
   const readModel = yield* orchestrationEngine.getReadModel();
 
   const candidates = readModel.threads.filter(
@@ -71,6 +74,13 @@ export const cleanupStaleWorktrees = Effect.fn("server.startup.worktree.cleanup"
     if (probe.exists) {
       continue;
     }
+
+    const project = readModel.projects.find((entry) => entry.id === thread.projectId);
+    if (!project || !thread.branch) continue;
+    const branchExists = yield* git
+      .branchExists(project.workspaceRoot, thread.branch)
+      .pipe(Effect.catch(() => Effect.succeed(true)));
+    if (branchExists) continue;
 
     yield* Effect.logInfo("clearing stale worktree projection", {
       threadId: thread.id,

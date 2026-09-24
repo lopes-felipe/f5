@@ -103,6 +103,8 @@ const makeIsolatedGitCore = (gitService: GitServiceShape) =>
     const core = await Effect.runPromise(Effect.service(GitCore).pipe(Effect.provide(coreLayer)));
 
     return {
+      ensureWorktree: (input) => core.ensureWorktree(input),
+      branchExists: (cwd, branch) => core.branchExists(cwd, branch),
       status: (input) => core.status(input),
       statusDetails: (cwd) => core.statusDetails(cwd),
       prepareCommitContext: (cwd, filePaths?) => core.prepareCommitContext(cwd, filePaths),

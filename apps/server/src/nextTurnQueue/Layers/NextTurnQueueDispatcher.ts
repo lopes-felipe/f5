@@ -1,3 +1,4 @@
+import { GitCore } from "../../git/Services/GitCore.ts";
 import {
   CommandId,
   MAX_QUEUED_TURNS_PER_THREAD,
@@ -87,6 +88,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
   const receiptBus = yield* RuntimeReceiptBus;
   const deliveries = yield* ProviderTurnDeliveryRepository;
   const fileSystem = yield* FileSystem.FileSystem;
+  const git = yield* GitCore;
 
   const changesPubSub = yield* PubSub.unbounded<ThreadId>();
   const summaryChangesPubSub = yield* PubSub.unbounded<void>();
@@ -118,7 +120,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
       ),
     );
 
-  const readGate = (item: NextTurnQueueItem) =>
+  const readGate = (item: NextTurnQueueItem, recreate = false) =>
     Effect.gen(function* () {
       const pendingBeforeRepair = yield* turns
         .getPendingTurnStartByThreadId({ threadId: item.threadId })
@@ -149,7 +151,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
               Effect.catch(() => Effect.succeed(false)),
             );
       const compacting = yield* Ref.get(automaticCompacting);
-      return resolveNextTurnQueueGate({
+      const gate = resolveNextTurnQueueGate({
         item,
         state: queue.state,
         thread,
@@ -159,8 +161,37 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         terminalTurn: Option.getOrNull(terminalOption),
         hasDispatchingItem: queue.items.some((candidate) => candidate.status === "dispatching"),
         automaticCompaction: compacting.has(item.threadId),
-        worktreeExists,
+        worktreeExists: thread?.branch ? null : worktreeExists,
       });
+      if (gate.kind !== "ready" || worktreeExists !== false || !thread?.worktreePath) return gate;
+      const model = yield* engine.getReadModel();
+      const project = model.projects.find((entry) => entry.id === thread.projectId);
+      if (!project || !thread.branch)
+        return { kind: "autoPause" as const, reasonCode: "worktree_missing" as const };
+      return yield* Effect.gen(function* () {
+        if (!(yield* git.branchExists(project.workspaceRoot, thread.branch!))) {
+          return {
+            kind: "autoPause" as const,
+            reasonCode: "worktree_missing" as const,
+            detail: `Worktree branch ${thread.branch} is missing.`,
+          };
+        }
+        if (recreate)
+          yield* git.ensureWorktree({
+            cwd: project.workspaceRoot,
+            path: thread.worktreePath!,
+            branch: thread.branch!,
+          });
+        return gate;
+      }).pipe(
+        Effect.catch((error) =>
+          Effect.succeed({
+            kind: "autoPause" as const,
+            reasonCode: "worktree_missing" as const,
+            detail: error.message,
+          }),
+        ),
+      );
     });
 
   const getSnapshot = (threadId: ThreadId) =>
@@ -281,7 +312,7 @@ export const makeNextTurnQueueDispatcher = Effect.gen(function* () {
         yield* publishSnapshotIfChanged(threadId);
         return;
       }
-      const gate = yield* readGate(item);
+      const gate = yield* readGate(item, true);
       if (gate.kind === "drop") {
         yield* store.deleteForThread(threadId);
         yield* publishSnapshotIfChanged(threadId);

@@ -456,3 +456,45 @@ describe("instance-scoped model selection", () => {
     });
   });
 });
+
+it("ignores stale custom models after removal from instance settings", () => {
+  const snapshot = provider({ instanceId: "codex", models: ["removed"] });
+  const entry = deriveProviderInstanceEntries([
+    { ...snapshot, models: snapshot.models.map((model) => ({ ...model, isCustom: true })) },
+  ])[0]!;
+  expect(
+    getAppModelOptionsForInstance(DEFAULT_UNIFIED_SETTINGS, entry).some(
+      (model) => model.slug === "removed",
+    ),
+  ).toBe(false);
+});
+
+it("keeps configured custom model display metadata", () => {
+  const snapshot = provider({ instanceId: "codex", models: ["custom-model"] });
+  const entry = deriveProviderInstanceEntries([
+    {
+      ...snapshot,
+      models: snapshot.models.map((model) => ({
+        ...model,
+        name: "Custom display name",
+        shortName: "Custom",
+        isCustom: true,
+      })),
+    },
+  ])[0]!;
+  const settings: UnifiedSettings = {
+    ...DEFAULT_UNIFIED_SETTINGS,
+    providerInstances: {
+      [ProviderInstanceId.make("codex")]: {
+        driver: ProviderDriverKind.make("codex"),
+        config: { customModels: ["custom-model"] },
+      },
+    },
+  };
+  expect(getAppModelOptionsForInstance(settings, entry)).toContainEqual({
+    slug: "custom-model",
+    name: "Custom display name",
+    shortName: "Custom",
+    isCustom: true,
+  });
+});

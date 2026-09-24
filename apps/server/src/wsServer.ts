@@ -1,3 +1,4 @@
+import { guardHttpResponseWriteErrors } from "./httpResponseErrorGuard.ts";
 import { protocolMatches, SERVER_BOOTSTRAP, UPGRADE_REQUIRED } from "./wsServer/protocol";
 import {
   F5_PROTOCOL_HEADER,
@@ -1543,6 +1544,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       }
     });
   });
+  guardHttpResponseWriteErrors(httpServer);
 
   // WebSocket server — upgrades from the HTTP server
   const wss = new WebSocketServer({

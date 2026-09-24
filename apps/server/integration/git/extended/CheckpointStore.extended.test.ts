@@ -86,3 +86,72 @@ it("captures 5,000 new files around an empty nested repository within the Git de
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 }, 45_000);
+
+it.each(["assume-unchanged", "skip-worktree"])(
+  "captures edits hidden by %s without modifying the user index",
+  async (flag) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-index-"));
+    try {
+      init(cwd);
+      fs.writeFileSync(path.join(cwd, "tracked.txt"), "before");
+      git(cwd, "add", ".");
+      git(cwd, "commit", "-m", "baseline");
+      git(cwd, "update-index", `--${flag}`, "tracked.txt");
+      const index = fs.readFileSync(path.join(cwd, ".git", "index"));
+      fs.writeFileSync(path.join(cwd, "tracked.txt"), "after!");
+      await capture(cwd);
+      expect(git(cwd, "show", "refs/t3/test-checkpoint:tracked.txt")).toBe("after!");
+      expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(index);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  },
+);
+
+it("preserves sparse exclusions and captures present files outside the cone", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-sparse-"));
+  try {
+    init(cwd);
+    for (const dir of ["included", "excluded"]) {
+      fs.mkdirSync(path.join(cwd, dir));
+      fs.writeFileSync(path.join(cwd, dir, "file.txt"), dir);
+    }
+    git(cwd, "add", ".");
+    git(cwd, "commit", "-m", "baseline");
+    git(cwd, "sparse-checkout", "set", "--cone", "--sparse-index", "included");
+    const index = fs.readFileSync(path.join(cwd, ".git", "index"));
+    fs.mkdirSync(path.join(cwd, "outside"));
+    fs.writeFileSync(path.join(cwd, "outside", "new.txt"), "new");
+    fs.writeFileSync(path.join(cwd, "included", "file.txt"), "edited");
+    await capture(cwd);
+    expect(git(cwd, "show", "refs/t3/test-checkpoint:excluded/file.txt")).toBe("excluded");
+    expect(git(cwd, "show", "refs/t3/test-checkpoint:included/file.txt")).toBe("edited");
+    expect(git(cwd, "show", "refs/t3/test-checkpoint:outside/new.txt")).toBe("new");
+    expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(index);
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+it("captures from a nested project directory in its parent Git repository", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "f5-nested-project-"));
+  try {
+    init(root);
+    const nested = path.join(root, "packages", "project");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, "file.txt"), "nested change");
+    expect(
+      await Effect.runPromise(
+        Effect.flatMap(Effect.service(CheckpointStore), (store) =>
+          store.isGitRepository(nested),
+        ).pipe(Effect.provide(layer)),
+      ),
+    ).toBe(true);
+    await capture(nested);
+    expect(git(root, "show", "refs/t3/test-checkpoint:packages/project/file.txt")).toBe(
+      "nested change",
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

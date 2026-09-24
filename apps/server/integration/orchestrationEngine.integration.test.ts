@@ -594,6 +594,13 @@ it.live("records failed turn runtime state and checkpoint status as error", () =
     Effect.gen(function* () {
       yield* seedProjectAndThread(harness);
 
+      yield* harness.engine.dispatch({
+        type: "thread.meta.update",
+        commandId: CommandId.makeUnsafe("failed-turn-branch"),
+        threadId: THREAD_ID,
+        branch: "t3code/1234abcd",
+      });
+
       yield* harness.adapterHarness!.queueTurnResponseForNextSession({
         events: [
           {

@@ -297,11 +297,13 @@ it.layer(testLayer)("ThreadBackgroundWork", (it) => {
         type: "task.completed",
         payload: { taskId, status: "completed", summary: "Done" },
       });
-      yield* work.recordProviderEvent({
-        ...eventBase(2),
-        type: "task.progress",
-        payload: { taskId, description: "Delayed progress" },
-      });
+      for (const timestamp of [2, 4]) {
+        yield* work.recordProviderEvent({
+          ...eventBase(timestamp),
+          type: "task.progress",
+          payload: { taskId, description: "Delayed progress" },
+        });
+      }
 
       const entry = (yield* work.getSnapshot).entries[0];
       assert.equal(entry?.status, "completed");

@@ -228,6 +228,7 @@ export default function ProjectScriptsControl({
         return null;
       }
 
+      if (pendingScriptCommand === null) return null;
       const conflicts = findConflictsForCandidateKeybinding(keybindings, {
         command: pendingScriptCommand,
         shortcut,

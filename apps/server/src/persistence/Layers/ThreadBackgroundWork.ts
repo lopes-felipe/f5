@@ -49,7 +49,7 @@ const make = Effect.gen(function* () {
         updated_at,
         last_seen_at,
         completed_at
-      ) VALUES (
+      ) SELECT
         ${row.threadId},
         ${row.workItemId},
         ${row.provider},
@@ -68,6 +68,10 @@ const make = Effect.gen(function* () {
         ${row.occurredAt},
         ${row.occurredAt},
         ${row.active ? null : row.occurredAt}
+      WHERE ${row.progressOnly ? 1 : 0} = 0 OR EXISTS (
+        SELECT 1 FROM projection_thread_background_work
+        WHERE thread_id = ${row.threadId} AND provider_work_item_id = ${row.workItemId}
+          AND provider_session_identity IS ${row.providerSessionIdentity} AND active = 1
       )
       ON CONFLICT (thread_id, provider_work_item_id)
       DO UPDATE SET

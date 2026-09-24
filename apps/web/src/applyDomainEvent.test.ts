@@ -1,4 +1,5 @@
 import {
+  CheckpointRef,
   CommandId,
   EventId,
   InvestigationWorkflowId,
@@ -1290,3 +1291,34 @@ describe("applyDomainEvent", () => {
     expect(next.detailEventBufferByThreadId.size).toBe(0);
   });
 });
+
+it.each(["running", "interrupted"] as const)(
+  "keeps %s turn state when its checkpoint arrives",
+  (state) => {
+    const thread = makeThread({
+      latestTurn: {
+        turnId: TurnId.makeUnsafe("turn-1"),
+        state,
+        requestedAt: "2026-04-01T09:00:00.000Z",
+        startedAt: "2026-04-01T09:00:00.000Z",
+        completedAt: state === "running" ? null : "2026-04-01T09:01:00.000Z",
+        assistantMessageId: null,
+      },
+    });
+    const next = applyDomainEvent(
+      makeState({ threads: [thread] }),
+      makeEvent("thread.turn-diff-completed", {
+        threadId: thread.id,
+        turnId: TurnId.makeUnsafe("turn-1"),
+        checkpointTurnCount: 1,
+        checkpointRef: CheckpointRef.makeUnsafe("refs/f5/checkpoint/1"),
+        status: "ready",
+        files: [],
+        assistantMessageId: null,
+        completedAt: "2026-04-01T09:02:00.000Z",
+      }),
+    );
+    expect(next.threads[0]?.latestTurn?.state).toBe(state);
+    expect(next.threads[0]?.latestTurn?.completedAt).toBe(thread.latestTurn?.completedAt);
+  },
+);

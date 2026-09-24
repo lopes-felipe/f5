@@ -1,10 +1,14 @@
 import {
+  withWorktreeLifecycleLock,
+  withRepositoryLifecycleLock,
+} from "../../project/Layers/WorktreeLifecycleCoordinator.ts";
+import {
   parseRemoteFetchUrls,
   NONINTERACTIVE_GIT_ENV as BACKGROUND_GIT_FETCH_ENV,
 } from "../remoteInspection.ts";
 import { isAbsolute as isAbsolutePath, resolve as resolvePath } from "node:path";
 
-import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref } from "effect";
+import { Cache, Data, Duration, Effect, Exit, FileSystem, Layer, Ref, Schema } from "effect";
 
 import { gitCommandDuration, gitCommandsTotal, withMetrics } from "../../observability/Metrics.ts";
 import { GitCommandError } from "../Errors.ts";
@@ -251,7 +255,7 @@ function missingCwdErrorDetail(cwd: string): string {
 
 const makeGitCore = Effect.gen(function* () {
   const git = yield* GitService;
-  const { worktreesDir } = yield* ServerConfig;
+  const { worktreesDir, baseDir } = yield* ServerConfig;
   const fileSystem = yield* FileSystem.FileSystem;
 
   // Fail-fast guard: if the working directory no longer exists on disk, short-circuit
@@ -362,7 +366,13 @@ const makeGitCore = Effect.gen(function* () {
         allowNonZeroExit: true,
         timeoutMs: 5_000,
       },
-    ).pipe(Effect.map((result) => result.code === 0));
+    ).pipe(
+      Effect.flatMap((result) =>
+        result.code === 0 || result.code === 1
+          ? Effect.succeed(result.code === 0)
+          : Effect.fail(createGitCommandError("GitCore.branchExists", cwd, [], result.stderr)),
+      ),
+    );
 
   const resolveAvailableBranchName = (
     cwd: string,
@@ -1055,6 +1065,65 @@ const makeGitCore = Effect.gen(function* () {
       return result;
     });
 
+  const ensureWorktree: GitCoreShape["ensureWorktree"] = (input) =>
+    withWorktreeLifecycleLock(
+      input.path,
+      Effect.gen(function* () {
+        if (yield* fileSystem.exists(input.path)) return;
+        const common = yield* runGitStdout("GitCore.ensureWorktree", input.cwd, [
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+        ]);
+        yield* withRepositoryLifecycleLock(
+          baseDir,
+          common.trim(),
+          Effect.gen(function* () {
+            if (yield* fileSystem.exists(input.path)) return;
+            if (!(yield* branchExists(input.cwd, input.branch))) {
+              return yield* createGitCommandError(
+                "GitCore.ensureWorktree",
+                input.cwd,
+                [],
+                `Worktree branch ${input.branch} is missing.`,
+              );
+            }
+            yield* runGit("GitCore.ensureWorktree", input.cwd, ["worktree", "prune"]);
+            const listing = yield* runGitStdout("GitCore.ensureWorktree", input.cwd, [
+              "worktree",
+              "list",
+              "--porcelain",
+              "-z",
+            ]);
+            let checkedOutAt = "";
+            for (const field of listing.split("\0")) {
+              if (field.startsWith("worktree ")) checkedOutAt = field.slice(9);
+              if (field === `branch refs/heads/${input.branch}`) {
+                return yield* createGitCommandError(
+                  "GitCore.ensureWorktree",
+                  input.cwd,
+                  [],
+                  `Branch ${input.branch} is checked out at ${checkedOutAt}.`,
+                );
+              }
+            }
+            yield* executeGit(
+              "GitCore.ensureWorktree",
+              input.cwd,
+              ["worktree", "add", "--", input.path, input.branch],
+              { timeoutMs: 300_000 },
+            );
+          }),
+        );
+      }),
+    ).pipe(
+      Effect.mapError((error) =>
+        Schema.is(GitCommandError)(error)
+          ? error
+          : createGitCommandError("GitCore.ensureWorktree", input.cwd, [], String(error)),
+      ),
+    );
+
   const status: GitCoreShape["status"] = (input) =>
     statusDetails(input.cwd).pipe(
       Effect.map((details) => ({
@@ -1377,7 +1446,16 @@ const makeGitCore = Effect.gen(function* () {
 
   const listBranches: GitCoreShape["listBranches"] = (input) =>
     Effect.gen(function* () {
-      yield* ensureCwdExists("GitCore.listBranches", input.cwd);
+      if (
+        !(yield* fileSystem
+          .exists(input.cwd)
+          .pipe(
+            Effect.mapError((error) =>
+              createGitCommandError("GitCore.listBranches", input.cwd, [], error.message),
+            ),
+          ))
+      )
+        return { branches: [], isRepo: false, hasOriginRemote: false, worktreeMissing: true };
 
       const branchRecencyPromise = readBranchRecency(input.cwd).pipe(
         Effect.catch(() => Effect.succeed(new Map<string, number>())),
@@ -1920,6 +1998,8 @@ const makeGitCore = Effect.gen(function* () {
 
   return {
     status,
+    ensureWorktree,
+    branchExists,
     statusDetails,
     prepareCommitContext,
     commit,

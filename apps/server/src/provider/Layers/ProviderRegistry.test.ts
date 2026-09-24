@@ -104,3 +104,16 @@ it("bounds model retention across a transient failure window", () => {
   );
   assert.deepStrictEqual(afterWindow.models, []);
 });
+
+it("does not retain removed custom models during a transient probe failure", () => {
+  const previous = makeProvider({
+    checkedAt: "2026-08-14T00:00:00.000Z",
+    outcome: "success",
+    models: [MODEL, { ...MODEL, slug: "removed-custom", isCustom: true }],
+  });
+  const next = makeProvider({
+    checkedAt: "2026-08-14T00:00:01.000Z",
+    outcome: "transient_failure",
+  });
+  assert.deepStrictEqual(mergeProviderSnapshot(previous, next).models, [MODEL]);
+});

@@ -152,6 +152,7 @@ const GitStatusPr = Schema.Struct({
 });
 
 export const GitStatusResult = Schema.Struct({
+  worktreeMissing: Schema.optionalKey(Schema.Boolean),
   branch: TrimmedNonEmptyStringSchema.pipe(Schema.NullOr),
   hasWorkingTreeChanges: Schema.Boolean,
   workingTree: Schema.Struct({
@@ -175,6 +176,7 @@ export const GitStatusResult = Schema.Struct({
 export type GitStatusResult = typeof GitStatusResult.Type;
 
 export const GitListBranchesResult = Schema.Struct({
+  worktreeMissing: Schema.optionalKey(Schema.Boolean),
   branches: Schema.Array(GitBranch),
   isRepo: Schema.Boolean,
   hasOriginRemote: Schema.Boolean,

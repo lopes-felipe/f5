@@ -160,7 +160,9 @@ export function getAppModelOptions(
   provider: ProviderDriverKind,
   _selectedModel?: string | null,
 ): AppModelOption[] {
-  const options: AppModelOption[] = getProviderModels(providers, provider).map(toAppModelOption);
+  const options: AppModelOption[] = getProviderModels(providers, provider)
+    .filter((model) => !model.isCustom)
+    .map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
     getProviderModels(providers, provider)
@@ -180,11 +182,12 @@ export function getAppModelOptions(
     }
 
     seen.add(slug);
-    options.push({
-      slug,
-      name: slug,
-      isCustom: true,
-    });
+    const snapshotModel = getProviderModels(providers, provider).find(
+      (model) => model.slug === slug,
+    );
+    options.push(
+      snapshotModel ? toAppModelOption(snapshotModel) : { slug, name: slug, isCustom: true },
+    );
   }
 
   return applyInstanceModelPreferences(
@@ -208,7 +211,9 @@ export function getAppModelOptionsForInstance(
   settings: UnifiedSettings,
   entry: ProviderInstanceEntry,
 ): AppModelOption[] {
-  const options: AppModelOption[] = entry.models.map(toAppModelOption);
+  const options: AppModelOption[] = entry.models
+    .filter((model) => !model.isCustom)
+    .map(toAppModelOption);
   const seen = new Set(options.map((option) => option.slug));
   const builtInModelSlugs = new Set(
     entry.models.filter((model) => !model.isCustom).map((model) => model.slug),
@@ -222,7 +227,10 @@ export function getAppModelOptionsForInstance(
     }
 
     seen.add(slug);
-    options.push({ slug, name: slug, isCustom: true });
+    const snapshotModel = entry.models.find((model) => model.slug === slug);
+    options.push(
+      snapshotModel ? toAppModelOption(snapshotModel) : { slug, name: slug, isCustom: true },
+    );
   }
 
   return applyInstanceModelPreferences(

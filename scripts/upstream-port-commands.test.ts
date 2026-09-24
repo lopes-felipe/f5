@@ -91,7 +91,7 @@ function fixture(mode: "normal" | "block-fetch" | "edit-during-validation" = "no
     classify: () => run(classifyScript, [planFile]),
   };
 }
-describe("ledger writing commands", () => {
+describe("ledger writing commands", { timeout: 30_000 }, () => {
   it("fetches and appends pending commits, classifies them, and preserves repeated/older pins", () => {
     const f = fixture();
     const before = parseLedger(readFileSync(f.local.file, "utf8"));

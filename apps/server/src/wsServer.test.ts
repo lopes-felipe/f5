@@ -4442,9 +4442,10 @@ describe("WebSocket Server", () => {
     expect((body.error as string).length).toBeGreaterThan(0);
   });
 
-  it("exchanges remote auth tokens for sessions and protects private routes", async () => {
+  it("exchanges remote auth tokens and protects private routes with long thread IDs", async () => {
     const stateDir = makeTempDir("t3code-state-auth-");
-    const attachmentPath = path.join(stateDir, "attachments", "thread-a", "message-a", "0.txt");
+    const longThreadId = `thread-${"a".repeat(160)}`;
+    const attachmentPath = path.join(stateDir, "attachments", longThreadId, "message-a", "0.txt");
     fs.mkdirSync(path.dirname(attachmentPath), { recursive: true });
     fs.writeFileSync(attachmentPath, "private attachment");
 
@@ -4456,7 +4457,7 @@ describe("WebSocket Server", () => {
     const addr = server.address();
     const port = typeof addr === "object" && addr !== null ? addr.port : 0;
     const origin = `http://127.0.0.1:${port}`;
-    const attachmentUrl = `${origin}/attachments/thread-a/message-a/0.txt`;
+    const attachmentUrl = `${origin}/attachments/${longThreadId}/message-a/0.txt`;
 
     const unauthenticatedResponse = await fetch(attachmentUrl);
     expect(unauthenticatedResponse.status).toBe(401);

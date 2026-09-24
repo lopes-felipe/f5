@@ -1,5 +1,7 @@
 # Phase 1b: replay and persistence recovery
 
+Historical report. The completed Phase 1b scope is recorded in [phase-one-b-completion.md](phase-one-b-completion.md).
+
 This is the first Phase 1b PR, based on merged Phase 1a (`5c519afa2c`). It implements six of the 33 records assigned to Phase 1b. The other 27 remain deferred in the ledger: checkpoint capture, settings, session/model lifecycle, workspace handling and worktree recreation still need implementation or equivalence verification. Worktree recreation depends on the Phase 9 lifecycle coordinator. Phases 1c–14 also remain unfinished.
 
 ## Changes

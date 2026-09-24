@@ -11,7 +11,7 @@ describe("projectScripts helpers", () => {
   it("builds and parses script run commands", () => {
     const command = commandForProjectScript("lint");
     expect(command).toBe("script.lint.run");
-    expect(projectScriptIdFromCommand(command)).toBe("lint");
+    expect(projectScriptIdFromCommand(command!)).toBe("lint");
     expect(projectScriptIdFromCommand("terminal.toggle")).toBeNull();
   });
 
@@ -42,3 +42,10 @@ describe("projectScripts helpers", () => {
     expect(primaryProjectScript(scripts)?.id).toBe("test");
   });
 });
+
+it.each(["BAD", "has space", "../escape", "x".repeat(256)])(
+  "keeps legacy script %s usable without a shortcut",
+  (id) => {
+    expect(commandForProjectScript(id)).toBeNull();
+  },
+);

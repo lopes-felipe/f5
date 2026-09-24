@@ -1,5 +1,7 @@
 # Phase 1b: settings safety
 
+Historical report. The completed Phase 1b scope is recorded in [phase-one-b-completion.md](phase-one-b-completion.md).
+
 This batch follows PR #36 at `200f964a39`. It implements upstream `62f568b88`, `ac4f1a2b6`, and `6d68677ff` using f5's existing settings service and profile-scoped secret store. It brings Phase 1b to 14 of 33 records; 19 remain unfinished.
 
 Text-generation fallback respects explicit built-in instance enablement before legacy provider defaults. Persisted model preferences are retained. A redacted environment variable preserves the last matching inline sensitive value, migrating it into the secret store instead of losing it during the save.

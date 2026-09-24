@@ -258,6 +258,20 @@ describe("decider project scripts", () => {
       },
     ] as const;
 
+    await expect(
+      Effect.runPromise(
+        decideOrchestrationCommand({
+          command: {
+            type: "project.meta.update",
+            commandId: CommandId.makeUnsafe("invalid-script"),
+            projectId: asProjectId("project-scripts"),
+            scripts: [{ ...scripts[0], id: "invalid script id" }],
+          },
+          readModel,
+        }),
+      ),
+    ).rejects.toThrow(/script/i);
+
     const result = await Effect.runPromise(
       decideOrchestrationCommand({
         command: {

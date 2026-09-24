@@ -31,6 +31,7 @@ export const ThreadBackgroundWorkTransition = Schema.Struct({
   latestOutput: Schema.optional(Schema.NullOr(Schema.String)),
   outputTruncated: Schema.optional(Schema.Boolean),
   occurredAt: IsoDateTime,
+  progressOnly: Schema.optional(Schema.Boolean),
 });
 export type ThreadBackgroundWorkTransition = typeof ThreadBackgroundWorkTransition.Type;
 

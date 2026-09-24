@@ -4361,16 +4361,22 @@ const make = Effect.gen(function* () {
 
       if (event.type === "turn.diff.updated") {
         const turnId = toTurnId(event.turnId);
-        if (turnId && (yield* isGitRepoForThread(thread.id))) {
+        if (
+          turnId &&
+          thread.latestTurn?.turnId === turnId &&
+          thread.latestTurn.state === "running" &&
+          (yield* isGitRepoForThread(thread.id))
+        ) {
           // Re-emit a placeholder for every provider diff refresh so
           // CheckpointReactor can keep the current turn checkpoint aligned with
           // the latest filesystem state without allocating a new turn count.
           const existingCheckpoint = thread.checkpoints.find(
             (checkpoint) => checkpoint.turnId === turnId,
           );
-          const assistantMessageId =
-            existingCheckpoint?.assistantMessageId ??
-            MessageId.makeUnsafe(`assistant:${event.itemId ?? event.turnId ?? event.eventId}`);
+          if (existingCheckpoint) return;
+          const assistantMessageId = MessageId.makeUnsafe(
+            `assistant:${event.itemId ?? event.turnId ?? event.eventId}`,
+          );
           const maxTurnCount = thread.checkpoints.reduce(
             (max, c) => Math.max(max, c.checkpointTurnCount),
             0,
@@ -4385,7 +4391,7 @@ const make = Effect.gen(function* () {
             status: "missing",
             files: [],
             assistantMessageId,
-            checkpointTurnCount: existingCheckpoint?.checkpointTurnCount ?? maxTurnCount + 1,
+            checkpointTurnCount: maxTurnCount + 1,
             createdAt: now,
           });
         }
@@ -4489,6 +4495,40 @@ const make = Effect.gen(function* () {
       let recoveredCount = 0;
 
       for (const thread of readModel.threads) {
+        // Sessions can be orphaned before a turn id was allocated. They have no
+        // terminal receipt to replay, but must not remain "starting" forever.
+        if (
+          thread.session &&
+          !liveThreadIds.has(thread.id) &&
+          (thread.session.status === "starting" || thread.session.status === "running") &&
+          thread.session.activeTurnId === null
+        ) {
+          const reconciledAt = new Date().toISOString();
+          const binding = bindingsByThreadId.get(thread.id);
+          if (binding)
+            yield* providerSessionDirectory.upsert({
+              ...binding,
+              status: "stopped",
+              runtimePayload: { activeTurnId: null },
+            });
+          yield* orchestrationEngine.dispatch({
+            type: "thread.session.set",
+            commandId: CommandId.makeUnsafe(
+              `server:orphaned-session:${thread.id}:${thread.session.updatedAt}`,
+            ),
+            threadId: thread.id,
+            createdAt: reconciledAt,
+            session: {
+              ...thread.session,
+              status: "error",
+              activeTurnId: null,
+              lastError:
+                "Provider session did not survive a server restart. Send a new message to continue.",
+              updatedAt: reconciledAt,
+            },
+          });
+          continue;
+        }
         const activeTurnId = thread.session?.activeTurnId;
         if (
           thread.session?.status !== "running" ||
