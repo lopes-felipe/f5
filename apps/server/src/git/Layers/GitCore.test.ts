@@ -62,10 +62,7 @@ it("places generated worktrees under the configured server worktree root", async
         path: null,
       });
       expect(result.worktree.path.startsWith(config.worktreesDir)).toBe(true);
-      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.env).toEqual({
-        GIT_TERMINAL_PROMPT: "0",
-        GCM_INTERACTIVE: "never",
-      });
+      expect(scripted.calls.find((call) => call.args[0] === "worktree")?.env).toBeUndefined();
       expect(scripted.calls.find((call) => call.args[0] === "worktree")?.timeoutMs).toBe(300_000);
       expect(scripted.calls.find((call) => call.args[0] === "worktree")?.args).toContain(
         result.worktree.path,
@@ -659,6 +656,8 @@ it("redacts remote output from failed fetches while explaining the cause", async
   expect(result._tag).toBe("Failure");
   if (result._tag === "Failure") {
     expect(result.failure.message).toContain("could not authenticate");
+    expect(result.failure.command).toContain("origin");
+    expect(result.failure.command).toContain("refs/heads/main");
     expect(JSON.stringify(result.failure)).not.toContain("private-token");
   }
 });

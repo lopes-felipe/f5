@@ -256,6 +256,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     "ClaudeTextGeneration.generateCommitMessage",
   )(function* (input) {
     const { prompt, outputSchema } = buildCommitMessagePrompt({
+      repositoryContext: input.repositoryContext,
       branch: input.branch,
       stagedSummary: input.stagedSummary,
       stagedPatch: input.stagedPatch,
@@ -284,6 +285,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     "ClaudeTextGeneration.generatePrContent",
   )(function* (input) {
     const { prompt, outputSchema } = buildPrContentPrompt({
+      repositoryContext: input.repositoryContext,
       baseBranch: input.baseBranch,
       headBranch: input.headBranch,
       commitSummary: input.commitSummary,

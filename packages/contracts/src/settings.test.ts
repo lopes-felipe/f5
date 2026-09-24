@@ -25,6 +25,22 @@ describe("ServerSettings.sourceControlWriting", () => {
     });
   });
 
+  it("keeps repository writing guidance opt-in and accepts explicit enable/disable patches", () => {
+    expect(decodeServerSettings({}).sourceControlWriting.useRepositoryInstructions ?? false).toBe(
+      false,
+    );
+    for (const enabled of [true, false]) {
+      expect(
+        decodeServerSettingsPatch({ sourceControlWriting: { useRepositoryInstructions: enabled } })
+          .sourceControlWriting?.useRepositoryInstructions,
+      ).toBe(enabled);
+      expect(
+        decodeServerSettings({ sourceControlWriting: { useRepositoryInstructions: enabled } })
+          .sourceControlWriting.useRepositoryInstructions,
+      ).toBe(enabled);
+    }
+  });
+
   it("accepts partial writing preference patches", () => {
     expect(
       decodeServerSettingsPatch({

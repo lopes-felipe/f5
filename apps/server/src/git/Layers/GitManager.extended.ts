@@ -804,6 +804,124 @@ it.layer(GitManagerTestLayer)("GitManager", (it) => {
     );
   }
 
+  it.effect("pushes a renamed fork PR worktree and reuses the existing PR", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTempDir("f5-fork-push-");
+      yield* initRepo(cwd);
+      const fork = yield* createBareRemote();
+      yield* runGit(cwd, ["remote", "add", "fork", fork]);
+      yield* runGit(cwd, ["checkout", "-b", "statemachine"]);
+      yield* runGit(cwd, ["push", "-u", "fork", "statemachine"]);
+      yield* runGit(cwd, [
+        "checkout",
+        "-b",
+        "t3code/pr-142/statemachine",
+        "--track",
+        "fork/statemachine",
+      ]);
+      yield* configureCrossRepoRemote(cwd, "fork", fork);
+      fs.writeFileSync(path.join(cwd, "fix.txt"), "PR fix\n");
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            statemachine: JSON.stringify([
+              {
+                number: 142,
+                title: "Existing PR",
+                url: "https://github.com/pingdotgg/codething-mvp/pull/142",
+                baseRefName: "main",
+                headRefName: "statemachine",
+                isCrossRepository: true,
+                headRepository: { nameWithOwner: "octocat/codething-mvp" },
+                headRepositoryOwner: { login: "octocat" },
+              },
+            ]),
+          },
+        },
+      });
+      const result = yield* runStackedAction(manager, { cwd, action: "commit_push_pr" });
+      expect(result.push.status).toBe("pushed");
+      expect(result.pr.status).toBe("opened_existing");
+      expect(result.pr.number).toBe(142);
+      expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
+      expect((yield* runGit(cwd, ["rev-parse", "--abbrev-ref", "@{upstream}"])).stdout.trim()).toBe(
+        "fork/statemachine",
+      );
+      expect((yield* runGit(fork, ["rev-parse", "refs/heads/statemachine"])).stdout.trim()).toBe(
+        (yield* runGit(cwd, ["rev-parse", "HEAD"])).stdout.trim(),
+      );
+      expect(
+        (yield* runGit(fork, ["branch", "--list", "t3code/pr-142/statemachine"])).stdout.trim(),
+      ).toBe("");
+      expect(
+        (yield* runGit(cwd, [
+          "config",
+          "--get",
+          "branch.t3code/pr-142/statemachine.gh-merge-base",
+        ]).pipe(Effect.result))._tag,
+      ).toBe("Failure");
+    }),
+  );
+
+  it.effect("finds a same-repo PR when the only remote is named upstream", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTempDir("f5-named-remote-");
+      yield* initRepo(cwd);
+      const remote = yield* createBareRemote();
+      yield* runGit(cwd, ["remote", "add", "upstream", remote]);
+      yield* runGit(cwd, ["checkout", "-b", "feature"]);
+      yield* runGit(cwd, ["push", "-u", "upstream", "feature"]);
+      yield* configureCrossRepoRemote(cwd, "upstream", remote);
+      const { manager, ghCalls } = yield* makeManager({
+        ghScenario: {
+          prListByHeadSelector: {
+            feature: JSON.stringify([
+              {
+                number: 42,
+                title: "Same repository",
+                url: "https://github.com/octocat/codething-mvp/pull/42",
+                baseRefName: "main",
+                headRefName: "feature",
+                isCrossRepository: false,
+                headRepository: { nameWithOwner: "octocat/codething-mvp" },
+                headRepositoryOwner: { login: "octocat" },
+              },
+            ]),
+          },
+        },
+      });
+      expect((yield* manager.status({ cwd })).pr?.number).toBe(42);
+      expect((yield* runStackedAction(manager, { cwd, action: "commit_push_pr" })).pr.status).toBe(
+        "opened_existing",
+      );
+      expect(ghCalls.some((call) => call.startsWith("pr create "))).toBe(false);
+    }),
+  );
+
+  it.effect("blocks checkout and stacked mutations while the index is locked", () =>
+    Effect.gen(function* () {
+      const cwd = yield* makeTempDir("f5-locked-manager-");
+      yield* initRepo(cwd);
+      const { manager, ghCalls } = yield* makeManager();
+      yield* manager.status({ cwd });
+      fs.writeFileSync(path.join(cwd, ".git", "index.lock"), "");
+      const stacked = yield* runStackedAction(manager, { cwd, action: "commit_push_pr" }).pipe(
+        Effect.result,
+      );
+      expect(stacked._tag).toBe("Failure");
+      const checkout = yield* preparePullRequestThread(manager, {
+        cwd,
+        reference: "91",
+        mode: "local",
+      }).pipe(Effect.result);
+      expect(checkout._tag).toBe("Failure");
+      expect(
+        ghCalls.some((call) => call.startsWith("pr checkout ") || call.startsWith("pr create ")),
+      ).toBe(false);
+      expect((yield* runGit(cwd, ["branch", "--show-current"])).stdout.trim()).toBe("main");
+    }),
+  );
+
   it.effect("status returns merged PR state when latest PR was merged", () =>
     Effect.gen(function* () {
       const repoDir = yield* makeTempDir("t3code-git-manager-");

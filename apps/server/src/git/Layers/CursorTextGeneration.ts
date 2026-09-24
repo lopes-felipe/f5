@@ -201,6 +201,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     "CursorTextGeneration.generateCommitMessage",
   )(function* (input) {
     const { prompt, outputSchema } = buildCommitMessagePrompt({
+      repositoryContext: input.repositoryContext,
       branch: input.branch,
       stagedSummary: input.stagedSummary,
       stagedPatch: input.stagedPatch,
@@ -229,6 +230,7 @@ export const makeCursorTextGeneration = Effect.fn("makeCursorTextGeneration")(fu
     "CursorTextGeneration.generatePrContent",
   )(function* (input) {
     const { prompt, outputSchema } = buildPrContentPrompt({
+      repositoryContext: input.repositoryContext,
       baseBranch: input.baseBranch,
       headBranch: input.headBranch,
       commitSummary: input.commitSummary,

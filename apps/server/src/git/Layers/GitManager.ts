@@ -19,7 +19,7 @@ import {
 } from "@t3tools/contracts";
 
 import { GitManagerError } from "../Errors.ts";
-import { extractBranchNameFromRemoteRef } from "../remoteRefs.ts";
+import { isPullRequestTrackingAlias, extractBranchNameFromRemoteRef } from "../remoteRefs.ts";
 import { GitManager, type GitManagerShape } from "../Services/GitManager.ts";
 import { GitCore } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
@@ -609,16 +609,17 @@ export const makeGitManager = Effect.gen(function* () {
         originRepository.repositoryNameWithOwner !== null
           ? remoteRepository.repositoryNameWithOwner.toLowerCase() !==
             originRepository.repositoryNameWithOwner.toLowerCase()
-          : remoteName !== null &&
-            remoteName !== "origin" &&
-            remoteRepository.repositoryNameWithOwner !== null;
+          : false;
 
       const isTrackingAlias =
         headBranchFromUpstream.length > 0 &&
         details.branch.endsWith(`/${headBranchFromUpstream}`) &&
         details.upstreamRef?.endsWith(`/${details.branch}`);
       const headBranch =
-        headBranchFromUpstream && (isCrossRepository || isTrackingAlias)
+        headBranchFromUpstream &&
+        (isCrossRepository ||
+          isTrackingAlias ||
+          isPullRequestTrackingAlias(details.branch, headBranchFromUpstream))
           ? headBranchFromUpstream
           : details.branch;
       const ownerHeadSelector = remoteRepository.ownerLogin
@@ -632,7 +633,10 @@ export const makeGitManager = Effect.gen(function* () {
         headBranch,
         headSelectors,
         preferredHeadSelector:
-          ownerHeadSelector && isCrossRepository ? ownerHeadSelector : headBranch,
+          ownerHeadSelector &&
+          (isCrossRepository || isPullRequestTrackingAlias(details.branch, headBranch))
+            ? ownerHeadSelector
+            : headBranch,
         remoteName,
         headRepositoryNameWithOwner: remoteRepository.repositoryNameWithOwner,
         headRepositoryOwnerLogin: remoteRepository.ownerLogin,
@@ -755,7 +759,11 @@ export const makeGitManager = Effect.gen(function* () {
 
       if (upstreamRef && !headContext.isCrossRepository) {
         const upstreamBranch = extractBranchNameFromRemoteRef(upstreamRef);
-        if (upstreamBranch.length > 0 && upstreamBranch !== branch) {
+        if (
+          upstreamBranch.length > 0 &&
+          upstreamBranch !== branch &&
+          !isPullRequestTrackingAlias(branch, upstreamBranch)
+        ) {
           return upstreamBranch;
         }
       }
@@ -767,14 +775,9 @@ export const makeGitManager = Effect.gen(function* () {
         return defaultFromGh;
       }
 
+      const remoteDefault = yield* gitCore.readDefaultBranch(cwd);
+      if (remoteDefault) return remoteDefault;
       const { branches } = yield* gitCore.listBranches({ cwd });
-      const defaultBranch = branches.find((candidate) => candidate.isDefault);
-      if (defaultBranch)
-        return defaultBranch.isRemote
-          ? extractBranchNameFromRemoteRef(defaultBranch.name, {
-              remoteName: defaultBranch.remoteName ?? "origin",
-            })
-          : defaultBranch.name;
       return (
         ["main", "master"].find((name) =>
           branches.some((candidate) => !candidate.isRemote && candidate.name === name),
@@ -1074,6 +1077,7 @@ export const makeGitManager = Effect.gen(function* () {
       const changeRequest = toChangeRequest(pullRequestWithRemoteInfo, sourceControlProvider);
 
       if (input.mode === "local") {
+        yield* gitCore.statusDetails(input.cwd);
         yield* provider.checkoutPullRequest({
           cwd: input.cwd,
           reference: normalizedReference,

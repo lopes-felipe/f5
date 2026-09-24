@@ -977,6 +977,19 @@ export function ProvidersSettings() {
             </span>
           </label>
 
+          <label className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+            <span className="text-xs text-foreground">
+              Use repository writing guidance (AGENTS.md / CLAUDE.md)
+            </span>
+            <Switch
+              aria-label="Use repository writing guidance"
+              checked={writingPreferences.useRepositoryInstructions ?? false}
+              onCheckedChange={(checked) =>
+                updateWritingPreferences({ useRepositoryInstructions: checked })
+              }
+            />
+          </label>
+
           <label className="block space-y-1.5 text-xs text-muted-foreground">
             <span className="font-medium text-foreground">Additional writing instructions</span>
             <Textarea

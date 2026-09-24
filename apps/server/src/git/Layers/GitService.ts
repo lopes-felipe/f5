@@ -1,3 +1,5 @@
+import { NONINTERACTIVE_GIT_ENV } from "../remoteInspection.ts";
+import { runProcess } from "../../processRunner.ts";
 import { ProfileGithubAccount } from "../ProfileGithubAccount";
 import { readFile } from "node:fs/promises";
 import { ServerConfig } from "../../config";
@@ -129,11 +131,35 @@ const makeGitService = Effect.gen(function* () {
           })
         : { ...process.env, ...input.env };
 
+      Object.assign(environment, NONINTERACTIVE_GIT_ENV, { SSH_ASKPASS_REQUIRE: "force" });
+      if (["fetch", "push", "pull", "ls-remote", "clone"].includes(input.args[0] ?? "")) {
+        const configured = environment.GIT_SSH_COMMAND
+          ? null
+          : yield* Effect.tryPromise({
+              try: () =>
+                runProcess("git", ["config", "--get", "core.sshCommand"], {
+                  cwd: input.cwd,
+                  env: environment,
+                  allowNonZeroExit: true,
+                  timeoutMs: 10_000,
+                }),
+              catch: toGitCommandError(commandInput, "Could not resolve SSH configuration."),
+            });
+        const shellQuote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+        const ssh =
+          environment.GIT_SSH_COMMAND ||
+          configured?.stdout.trim() ||
+          (environment.GIT_SSH ? shellQuote(environment.GIT_SSH) : "ssh");
+        environment.GIT_SSH_COMMAND = /(?:plink|tortoiseplink)(?:\.exe)?(?:["' ]|$)/i.test(ssh)
+          ? `${ssh} -batch`
+          : `${ssh} -o BatchMode=yes -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3`;
+      }
+
       const child = yield* commandSpawner
         .spawn(
           ChildProcess.make("git", commandInput.args, {
             cwd: commandInput.cwd,
-            env: { ...environment, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" },
+            env: environment,
           }),
         )
         .pipe(Effect.mapError(toGitCommandError(commandInput, "failed to spawn.")));

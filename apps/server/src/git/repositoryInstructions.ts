@@ -1,7 +1,7 @@
 import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 
-import { DEFAULT_SERVER_SETTINGS, type SourceControlWritingSettings } from "@t3tools/contracts";
+import { type SourceControlWritingSettings } from "@t3tools/contracts";
 
 const MAX_INSTRUCTION_BYTES = 20_000;
 
@@ -15,7 +15,12 @@ async function readInstructions(cwd: string, name: string): Promise<string> {
       if (!(await file.stat()).isFile()) return "";
       const buffer = Buffer.alloc(MAX_INSTRUCTION_BYTES + 1);
       const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-      if (bytesRead > MAX_INSTRUCTION_BYTES) return "";
+      if (bytesRead > MAX_INSTRUCTION_BYTES) {
+        console.warn(
+          `Skipping repository writing guidance ${name}: exceeds ${MAX_INSTRUCTION_BYTES} bytes.`,
+        );
+        return "";
+      }
       return buffer.subarray(0, bytesRead).toString("utf8").trim();
     } finally {
       await file.close();
@@ -26,11 +31,12 @@ async function readInstructions(cwd: string, name: string): Promise<string> {
 }
 
 /** Local writing guidance is included explicitly even when generation runs without tools. */
-export async function repositoryWritingPreferences(
+export async function readRepositoryWritingContext(
   cwd: string,
   driverKind: string,
   preferences?: SourceControlWritingSettings,
-): Promise<SourceControlWritingSettings> {
+): Promise<string> {
+  if (!preferences?.useRepositoryInstructions) return "";
   const names = driverKind === "claudeAgent" ? ["AGENTS.md", "CLAUDE.md"] : ["AGENTS.md"];
   const instructions = await Promise.all(
     names.map(async (name) => {
@@ -38,11 +44,5 @@ export async function repositoryWritingPreferences(
       return text ? `Repository ${name}:\n${text}` : "";
     }),
   );
-  const current = preferences ?? DEFAULT_SERVER_SETTINGS.sourceControlWriting;
-  return {
-    ...current,
-    customInstructions: [...instructions.filter(Boolean), current.customInstructions]
-      .filter(Boolean)
-      .join("\n\n"),
-  };
+  return instructions.filter(Boolean).join("\n\n");
 }

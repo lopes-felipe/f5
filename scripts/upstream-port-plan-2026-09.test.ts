@@ -36,8 +36,21 @@ describe("September 2026 port classification artifact", () => {
     expect(validateAudit(ledger)).toEqual([]);
   });
 
-  it("reapplies the real decisions without changing the ledger or older proof", () => {
-    expect(applyPortPlan(ledger, commits, plan)).toEqual(ledger);
+  it("reapplies the original review while preserving completed ports and older proof", () => {
+    const reapplied = applyPortPlan(ledger, commits, plan);
+    const reappliedBySha = new Map(reapplied.entries.map((entry) => [entry.upstreamSha, entry]));
+    // The artifact is the original review. Later implementation reviews can
+    // legitimately revise non-port decisions; completed proof must survive.
+    for (const entry of ledger.entries) {
+      if (
+        entry.reviewStatus === "legacy" ||
+        ["ported", "equivalent", "already-present"].includes(entry.disposition)
+      ) {
+        expect(reappliedBySha.get(entry.upstreamSha)).toEqual(entry);
+      }
+    }
+    expect(reapplied.intervals).toEqual(ledger.intervals);
+    expect(reapplied.legacyCoverage).toEqual(ledger.legacyCoverage);
     const legacyShas = new Set(ledger.legacyCoverage.upstreamShas);
     const legacy = allRecords.filter((entry) => legacyShas.has(entry.upstreamSha));
     expect(legacy).toHaveLength(496);

@@ -27,7 +27,7 @@
  */
 import { Effect, Layer } from "effect";
 
-import { repositoryWritingPreferences } from "../repositoryInstructions.ts";
+import { readRepositoryWritingContext } from "../repositoryInstructions.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
   DEFAULT_GIT_TEXT_GENERATION_MODEL,
@@ -82,17 +82,17 @@ export const makeTextGenerationFromRegistry = (
         resolveInstance(registry, "generateCommitMessage", modelSelection.instanceId).pipe(
           Effect.flatMap((instance) =>
             Effect.promise(() =>
-              repositoryWritingPreferences(
+              readRepositoryWritingContext(
                 input.cwd,
                 instance.driverKind,
                 input.writingPreferences,
               ),
             ).pipe(
-              Effect.flatMap((writingPreferences) =>
+              Effect.flatMap((repositoryContext) =>
                 instance.textGeneration.generateCommitMessage({
                   ...input,
                   modelSelection,
-                  writingPreferences,
+                  repositoryContext,
                 }),
               ),
             ),
@@ -106,17 +106,17 @@ export const makeTextGenerationFromRegistry = (
         resolveInstance(registry, "generatePrContent", modelSelection.instanceId).pipe(
           Effect.flatMap((instance) =>
             Effect.promise(() =>
-              repositoryWritingPreferences(
+              readRepositoryWritingContext(
                 input.cwd,
                 instance.driverKind,
                 input.writingPreferences,
               ),
             ).pipe(
-              Effect.flatMap((writingPreferences) =>
+              Effect.flatMap((repositoryContext) =>
                 instance.textGeneration.generatePrContent({
                   ...input,
                   modelSelection,
-                  writingPreferences,
+                  repositoryContext,
                 }),
               ),
             ),

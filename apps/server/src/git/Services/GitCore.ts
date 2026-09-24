@@ -153,6 +153,8 @@ export interface GitCoreShape {
   /**
    * Read a Git config value from the local repository.
    */
+  readonly readDefaultBranch: (cwd: string) => Effect.Effect<string | null, GitCommandError>;
+
   readonly readConfigValue: (
     cwd: string,
     key: string,

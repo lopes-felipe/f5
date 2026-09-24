@@ -161,6 +161,7 @@ export const PrHubSettings = Schema.Struct({
 export type PrHubSettings = typeof PrHubSettings.Type;
 
 export const SourceControlWritingSettings = Schema.Struct({
+  useRepositoryInstructions: Schema.optionalKey(Schema.Boolean),
   commitMessageStyle: Schema.Literals(["conventional", "plain"]).pipe(
     Schema.withDecodingDefault(() => "plain" as const),
   ),
@@ -300,6 +301,7 @@ const PrHubSettingsPatch = Schema.Struct({
 });
 
 const SourceControlWritingSettingsPatch = Schema.Struct({
+  useRepositoryInstructions: Schema.optionalKey(Schema.Boolean),
   commitMessageStyle: Schema.optionalKey(Schema.Literals(["conventional", "plain"])),
   commitMessageIncludeBody: Schema.optionalKey(Schema.Boolean),
   prBodyTemplate: Schema.optionalKey(Schema.String),

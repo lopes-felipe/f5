@@ -5,17 +5,19 @@ This PR implements Phase 1a of the September upstream port program. Phases 1b–
 ## Behavior
 
 - Checkout commands end with `--`, so stale branch names cannot restore matching files over local edits.
-- A branch with commits ahead of a differently named upstream publishes its own fully qualified branch ref. Push remote precedence is the branch's `pushRemote`, `remote.pushDefault`, then the upstream remote. An existing `gh-merge-base` is preserved; otherwise the previous upstream branch is recorded. Git's tracking aliases for slash-containing remote names retain their original destination.
-- Pushes have no application deadline. All Git subprocesses disable terminal credential prompts and interactive Git Credential Manager prompts. Worktree addition and removal have five-minute deadlines.
+- A branch with commits ahead of a differently named upstream publishes its own fully qualified branch ref. Push remote precedence is the branch's `pushRemote`, `remote.pushDefault`, then the upstream remote. An existing `gh-merge-base` is preserved; otherwise the previous upstream branch is recorded. Git's tracking aliases for slash-containing remote names and f5's checked-out PR worktree aliases retain their original destination. PR aliases never save their head branch as the merge base.
+- Pushes have a 15-minute deadline. Git subprocesses disable terminal/GCM and askpass prompts. SSH keeps command overrides while adding batch mode, a 30-second connection deadline and bounded keepalives (PuTTY uses batch mode). Worktree addition and removal have five-minute deadlines.
 - Status and patch generation disambiguate refs from paths, including files named `HEAD`. Commit, range, review and checkpoint patches explicitly use `a/` and `b/` prefixes regardless of user Git configuration.
-- Status polling returns its last successful result while the repository's resolved index is locked. Push and pull reject the locked state rather than acting on cached status. An initial status without a cache reports the lock.
-- Missing worktrees are pruned successfully. New-thread setup can use a local-only base in a repository with a remote; only a confirmed absent remote ref permits fallback. Network and authentication failures remain errors.
+- A locked index produces an explicit status error without running status/diff. GitManager and GitCore mutations never receive stale cached status. The query layer can retain its prior snapshot while showing the error.
+- Missing worktrees have only their own registered entry removed; unregistered paths are no-ops and unrelated unavailable worktrees are preserved. New-thread setup can use a local-only base in a repository with a remote; only a confirmed absent remote ref permits fallback. Network and authentication failures remain errors.
 - PR discovery probes bare branch names and filters by repository/owner identity, preserving fork PR creation's owner-qualified head argument. Feature branches do not inherit their base branch's PR. Default base fallback uses origin's symbolic HEAD, then local `main`, then local `master`.
-- SSH remote detection accepts non-`git` usernames. Fetch errors provide fixed diagnoses without persisting remote stdout/stderr.
-- Generated commits and PR descriptions receive bounded root `AGENTS.md` instructions; Claude writers also receive `CLAUDE.md`. Files outside the working directory and oversized instruction files are skipped. Explicit writing preferences remain included.
+- SSH remote detection accepts non-`git` usernames. Fetch, push and pull errors provide fixed diagnoses (including missing refs, authentication, branch protection and non-fast-forward rejection), operation context and exit codes without persisting arbitrary remote stdout/stderr.
+- When the new, default-off “Use repository writing guidance” setting is enabled, generated commits and PR descriptions receive bounded root `AGENTS.md` instructions; Claude writers also receive `CLAUDE.md`. Files outside the working directory and oversized instruction files are skipped; oversized files produce a size-only warning. Guidance is separately quoted as untrusted style context and cannot supersede output-format rules or explicit user preferences.
 - Creating a branch in the picker replaces ASCII whitespace with dashes, previews that name, and checks collisions against it. Valid Unicode whitespace and case are preserved.
 
-No protocol union, persisted schema, capability flag or setting default changes. Automatic pull and cleanup remain off. The existing renamed-PR-worktree push test now checks publication to the renamed branch; arbitrary local aliases no longer redirect writes to another branch.
+No protocol union or persisted schema changes. Repository writing guidance is opt-in through an optional, backward-compatible server setting. Remote default branches retain their original picker flags; the PR base resolver reads origin HEAD separately.
+
+The PR review corrected the original push behavior for renamed PR worktrees, stale status during mutations, no-origin PR detection, SSH prompting, unconditional guidance, broad prune and remote-default picker behavior. The original review artifact remains unchanged; its regression test now checks preservation of completed and legacy proof without assuming later non-port decisions equal the original plan.
 
 ## Ledger scope
 
@@ -35,7 +37,7 @@ Implemented records carry the implementation commit SHA and file evidence in `sc
 
 Regression tests use temporary repositories and local bare remotes. The credential failure test uses a loopback HTTP endpoint returning 401. Coverage includes stale checkout preservation, base-branch protection, explicit push remote precedence, existing merge-base preservation, Git tracking aliases, locked-index status, local-only bases, custom diff prefixes, fork identity collisions and default-branch fallback.
 
-Passed on macOS:
+Initial implementation checks passed on macOS (superseded by the review validation below):
 
 - `bun fmt`
 - `bun lint` (zero errors; nine pre-existing warnings)
@@ -46,3 +48,9 @@ Passed on macOS:
 - `F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check`: pinned upstream ancestry and complete ledger coverage passed.
 
 Worker limits reduce contention on the shared development machine; test timeouts and assertions were not relaxed.
+
+## Review validation
+
+Review-fix validation passed on macOS: formatting, lint (zero errors), typecheck, the full workspace suite plus 123 real-Git matrix tests, and 429 browser tests. Additional focused checks passed for post-checkout locking, SSH, guidance, setting patches and safe network diagnostics. The ledger is checked online again after recording the review commit. The revised regressions cover renamed fork PR push plus PR reuse, same-repo PR discovery without origin, locked-index checkout/stacked actions, isolated missing-worktree removal, remote-default picker semantics, noninteractive SSH, opt-in guidance and conflicting/oversized repository instructions.
+
+For network failures, fixed diagnoses are intentional: arbitrary remote output may contain tokens that no general regex can reliably identify. Errors retain safe invoked-command context (masking URL/userinfo arguments), per-call explanations and exit codes. This addresses the observability and push/pull coverage concern without promising complete sanitization of raw remote text.

@@ -414,6 +414,7 @@ export const makeCodexTextGeneration = (
 
     const generateCommitMessage: TextGenerationShape["generateCommitMessage"] = (input) => {
       const { prompt, outputSchema } = buildCommitMessagePrompt({
+        repositoryContext: input.repositoryContext,
         branch: input.branch,
         stagedSummary: input.stagedSummary,
         stagedPatch: input.stagedPatch,
@@ -444,6 +445,7 @@ export const makeCodexTextGeneration = (
 
     const generatePrContent: TextGenerationShape["generatePrContent"] = (input) => {
       const { prompt, outputSchema } = buildPrContentPrompt({
+        repositoryContext: input.repositoryContext,
         baseBranch: input.baseBranch,
         headBranch: input.headBranch,
         commitSummary: input.commitSummary,

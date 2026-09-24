@@ -65,3 +65,9 @@ export function extractBranchNameFromRemoteRef(
   }
   return normalized.slice(firstSlash + 1).trim();
 }
+
+// PR worktree branches intentionally retain the checked-out PR's remote head.
+export function isPullRequestTrackingAlias(localBranch: string, upstreamBranch: string): boolean {
+  const match = /^t3code\/pr-[1-9][0-9]*\/(.+)$/.exec(localBranch);
+  return match?.[1] === upstreamBranch;
+}

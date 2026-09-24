@@ -5,7 +5,7 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeGitManager } from "./GitManager.ts";
-import { GitHubCliError } from "../Errors.ts";
+import { GitCommandError, GitHubCliError } from "../Errors.ts";
 import { GitCore, type GitCoreShape, type GitStatusDetails } from "../Services/GitCore.ts";
 import { GitHubCli } from "../Services/GitHubCli.ts";
 import { TextGeneration } from "../Services/TextGeneration.ts";
@@ -370,4 +370,41 @@ describe("GitManager unit", () => {
     expect(github.calls.some((call) => call.startsWith("checkoutPullRequest:"))).toBe(false);
     expect(git.calls.fetchPullRequestBranch).toHaveLength(0);
   });
+});
+
+it("does not write tracking config if the index locks after PR checkout", async () => {
+  let reads = 0;
+  const { manager, git, github } = await makeManager({
+    gitCore: {
+      statusDetails: () =>
+        ++reads === 1
+          ? Effect.succeed({ ...cleanStatus, branch: "main" })
+          : Effect.fail(
+              new GitCommandError({
+                operation: "status",
+                command: "git status",
+                cwd,
+                detail: "Git index is locked.",
+              }),
+            ),
+    },
+    gitHub: {
+      pullRequest: {
+        number: 42,
+        title: "Fork PR",
+        url: "https://github.com/t3tools/f5/pull/42",
+        baseRefName: "main",
+        headRefName: "feature",
+        isCrossRepository: true,
+        headRepositoryNameWithOwner: "contributor/f5",
+        headRepositoryOwnerLogin: "contributor",
+      },
+    },
+  });
+  const result = await Effect.runPromise(
+    manager.preparePullRequestThread({ cwd, reference: "42", mode: "local" }).pipe(Effect.result),
+  );
+  expect(result._tag).toBe("Failure");
+  expect(github.calls).toContain("checkoutPullRequest:42");
+  expect(git.calls.setBranchUpstream).toEqual([]);
 });
