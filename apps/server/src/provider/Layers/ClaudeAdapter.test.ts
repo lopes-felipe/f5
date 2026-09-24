@@ -1894,10 +1894,10 @@ describe("ClaudeAdapterLive", () => {
       assert.equal(
         promptText,
         [
-          "<f3-runtime-context>",
+          "<f5-runtime-context>",
           'Active model: "claude-sonnet-4-6"',
           "This host-reported value is authoritative for model identity.",
-          "</f3-runtime-context>",
+          "</f5-runtime-context>",
           "",
           "Ultrathink:",
           "Investigate the edge cases",

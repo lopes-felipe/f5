@@ -1226,10 +1226,10 @@ function buildClaudeTurnRuntimeContext(model: string | undefined): string | unde
   }
 
   return [
-    "<f3-runtime-context>",
+    "<f5-runtime-context>",
     `Active model: ${JSON.stringify(normalizeModelSlug(normalizedModel, "claudeAgent") ?? normalizedModel)}`,
     "This host-reported value is authoritative for model identity.",
-    "</f3-runtime-context>",
+    "</f5-runtime-context>",
   ].join("\n");
 }
 

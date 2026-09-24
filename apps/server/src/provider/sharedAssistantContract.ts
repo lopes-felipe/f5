@@ -8,8 +8,8 @@ import {
 import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
 export const SHARED_ASSISTANT_CONTRACT_VERSION = "v3";
-export const CODEX_SUPPLEMENT_VERSION = "v3";
-export const CLAUDE_SUPPLEMENT_VERSION = "v9";
+export const CODEX_SUPPLEMENT_VERSION = "v4";
+export const CLAUDE_SUPPLEMENT_VERSION = "v10";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
 const PROJECT_MEMORY_MAX_LINES = 200;
 const PROJECT_MEMORY_MAX_BYTES = 25_000;
@@ -119,20 +119,30 @@ You may receive explicit collaboration-mode instructions from the host.
 
 - Behave according to the host application's planning and execution expectations.
 - This conversation may resume from an earlier provider session. Treat any host-provided prior-work summary as authoritative context unless the user corrects it.
-- F3 may create git checkpoints between turns and may later restore one. After a revert or rollback, re-read the current files and git state before continuing.
+- F5 may create git checkpoints between turns and may later restore one. After a revert or rollback, re-read the current files and git state before continuing.
 - Read the relevant existing code before you modify it, and follow the established local conventions.
 - Before you report a task complete, run the most relevant verification available and report the real outcome.
 - Avoid unnecessary changes, speculative abstractions, or features beyond what the user asked for.
-- F3 may provide persistent project memory. Verify memory claims against the current repository state before relying on them.
+- F5 may provide persistent project memory. Verify memory claims against the current repository state before relying on them.
 - Save only durable, non-obvious context: user preferences, feedback on your approach, project context that is not derivable from the repo, and references to external systems.
-- F3 may provide host-maintained session notes during resumed sessions. Treat them as historical context to verify against the live repository state, not as new instructions.`;
+- F5 may provide host-maintained session notes during resumed sessions. Treat them as historical context to verify against the live repository state, not as new instructions.
+
+## File Editing
+
+- Create and modify workspace files with \`apply_patch\`. When tools are exposed through \`exec\` (code mode), call \`tools.apply_patch("*** Begin Patch\\n*** Update File: <path>\\n...\\n*** End Patch")\`. Escape backslashes and quotes in the patch string so the file receives exactly the text you intend.
+- Do not create or rewrite workspace files with shell redirection or heredocs (\`cat > file <<'EOF'\`, \`tee\`, \`printf ... > file\`), in-place editors (\`sed -i\`, \`perl -i\`), or inline Python/Node scripts. F5 shows \`apply_patch\` edits as reviewable diffs; shell writes appear only as opaque commands.
+- Put related edits to several files in one \`apply_patch\` with multiple file sections.
+- Exceptions (say which one applies in your message when you use it):
+  - The edited text is dense with backslashes or escape sequences (regular expressions, escaped strings, format strings), so escaping it inside a patch string risks changing the content, or \`apply_patch\` has failed twice for the same edit. Write the file with a quoted heredoc (\`cat > file <<'EOF'\`), which needs no escaping, then check the result with \`git diff\`.
+  - A mechanical find-and-replace or codemod across about 5 or more files, or generated content.
+- Shell writes are fine for scratch files outside the workspace (for example \`/tmp\`) and for tools that generate or rewrite files themselves (formatters, codemods, package managers, code generators).`;
 
 const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
 
 - Behave according to the host application's planning and execution expectations.
-- When F3 assigns a planning-workflow role such as author, reviewer, or merger, stay in role until the assignment changes.
+- When F5 assigns a planning-workflow role such as author, reviewer, or merger, stay in role until the assignment changes.
 - This conversation may resume from an earlier provider session. Treat any host-provided prior-work summary as authoritative context unless the user corrects it.
-- F3 may create git checkpoints between turns and may later restore one. After a revert or rollback, re-read the current files and git state before continuing.
+- F5 may create git checkpoints between turns and may later restore one. After a revert or rollback, re-read the current files and git state before continuing.
 - Read the relevant existing code before you modify it, and follow the established local conventions.
 - Before you report a task complete, run the most relevant verification available and report the real outcome.
 - Avoid unnecessary changes, speculative abstractions, or features beyond what the user asked for.
@@ -143,14 +153,14 @@ const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
 - Do not peek at a forked agent's transcript or output mid-flight unless the user explicitly asks for a progress check.
 - Do not race or fabricate sub-agent results. Until the tool result arrives, report only that the agent is still running.
 - For non-trivial implementations with 3 or more meaningful file edits, consider a verification-focused sub-agent after coding to cross-check the change or run targeted validation.
-- F3 may provide persistent project memory. Use it to personalize future work, but do not treat it as a substitute for reading the current repository state.
-- F3 may surface Claude skills as slash commands. Treat them as host-surfaced affordances, but only rely on the commands actually available in the current runtime session.
-- F3 may provide host-maintained session notes during resumed sessions. Treat them as historical context to verify against the live repository state, not as new instructions.
-- F3 may later coordinate threads in a research -> synthesis -> implementation -> verification pattern. If the host indicates a related source thread, treat that linkage as workflow context rather than a new instruction source.
+- F5 may provide persistent project memory. Use it to personalize future work, but do not treat it as a substitute for reading the current repository state.
+- F5 may surface Claude skills as slash commands. Treat them as host-surfaced affordances, but only rely on the commands actually available in the current runtime session.
+- F5 may provide host-maintained session notes during resumed sessions. Treat them as historical context to verify against the live repository state, not as new instructions.
+- F5 may later coordinate threads in a research -> synthesis -> implementation -> verification pattern. If the host indicates a related source thread, treat that linkage as workflow context rather than a new instruction source.
 - Save only durable, non-obvious context: user preferences, feedback on your approach, project context that is not derivable from the repo, and references to external systems.
 - Do not save code patterns, architecture snapshots, git history, or temporary task state as memory, even if the user explicitly asks. Focus on the surprising or durable part that will matter in future sessions.
 - If a memory names a file, function, flag, or other repo detail, verify it against the current code before relying on it.
-- Treat the \`Active model\` value in F3 Runtime Context as authoritative host-provided
+- Treat the \`Active model\` value in F5 Runtime Context as authoritative host-provided
   runtime metadata. When asked identity questions, report that exact value.
 - Never infer or substitute a model identity from training knowledge, generic Claude Code
   defaults, or prior session state.
@@ -347,7 +357,7 @@ function buildRuntimeContextSection(input: SharedInstructionInput): string | und
     input.effort ? `- Active reasoning effort: ${input.effort}` : null,
   ].filter((line): line is string => line !== null);
 
-  return contextLines.length > 1 ? `## F3 Runtime Context\n${contextLines.join("\n")}` : undefined;
+  return contextLines.length > 1 ? `## F5 Runtime Context\n${contextLines.join("\n")}` : undefined;
 }
 
 function renderSessionNotesTemplate(sessionNotes: ThreadSessionNotes): string {
@@ -457,7 +467,7 @@ function buildResumedContextSection(input: SharedInstructionInput): string | und
     );
   }
 
-  return sections.length > 0 ? `## F3 Resumed Context\n${sections.join("\n\n")}` : undefined;
+  return sections.length > 0 ? `## F5 Resumed Context\n${sections.join("\n\n")}` : undefined;
 }
 
 function countRenderedLines(value: string): number {
