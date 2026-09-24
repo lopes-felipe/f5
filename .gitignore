@@ -27,3 +27,7 @@ apps/web/src/components/__screenshots__
 *.refresh-journal
 *.refresh-next
 *.refresh-journal.recovering/
+
+# Atomic schema-6 upstream ledger publication.
+scripts/upstream-ports.json.lock
+scripts/upstream-ports.json.tmp-*

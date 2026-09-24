@@ -9,7 +9,7 @@ const plan = JSON.parse(
 const ledger = JSON.parse(
   readFileSync(new URL("./upstream-ports.json", import.meta.url), "utf8"),
 ) as Ledger;
-const allRecords = [...ledger.entries, ...(ledger.historicalEntries ?? [])];
+const allRecords = ledger.entries;
 const recordsBySha = new Map(allRecords.map((entry) => [entry.upstreamSha, entry]));
 const commits = plan.entries.map((entry) => ({
   sha: entry.upstreamSha,
@@ -26,7 +26,7 @@ describe("September 2026 port classification artifact", () => {
     expect(sha256(commits.map((commit) => commit.sha).join("\n") + "\n")).toBe(
       "1c3e22afe6a0fb44248d6148f254602a1cb19a3e6bd0bb573caa1afd01def3d8",
     );
-    expect(ledger.audit).toEqual(
+    expect(ledger.intervals[0]).toEqual(
       makeAudit(
         plan.baseSha,
         plan.targetSha,
@@ -38,13 +38,13 @@ describe("September 2026 port classification artifact", () => {
 
   it("reapplies the real decisions without changing the ledger or older proof", () => {
     expect(applyPortPlan(ledger, commits, plan)).toEqual(ledger);
-    const audited = new Set(commits.map((commit) => commit.sha));
-    const legacy = allRecords.filter((entry) => !audited.has(entry.upstreamSha));
-    expect(legacy).toHaveLength(486);
+    const legacyShas = new Set(ledger.legacyCoverage.upstreamShas);
+    const legacy = allRecords.filter((entry) => legacyShas.has(entry.upstreamSha));
+    expect(legacy).toHaveLength(496);
     expect(legacy.every((entry) => entry.reviewStatus === "legacy")).toBe(true);
   });
 
-  it("rejects a deleted classification, including one outside the 500-commit window", () => {
+  it("rejects a deleted classification, including a decision deep inside the interval", () => {
     const removed = plan.entries[1000]!;
     expect(() =>
       applyPortPlan(ledger, commits, {

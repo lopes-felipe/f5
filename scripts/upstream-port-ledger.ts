@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
 
+/** Reject placeholder decisions without banning substantive discussion of manual review. */
+export const REVIEW_PLACEHOLDER_PATTERN =
+  /requires manual.*assessment|manual assessment placeholder/i;
 export const SHA_PATTERN = /^[0-9a-f]{40}$/;
 export const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 export const DISPOSITIONS = [
@@ -12,12 +15,10 @@ export const DISPOSITIONS = [
 ] as const;
 export type Disposition = (typeof DISPOSITIONS)[number];
 export type ReviewStatus = "pending" | "reviewed" | "legacy";
-
 export interface FrozenCommit {
   readonly sha: string;
   readonly subject: string;
 }
-
 export interface LedgerEntry {
   readonly upstreamSha: string;
   readonly subject: string;
@@ -28,7 +29,7 @@ export interface LedgerEntry {
   readonly reviewStatus?: ReviewStatus;
   readonly plannedWorkstream?: string;
 }
-
+/** Historical explanations only: these categories never provide active coverage. */
 export interface OlderBacklogCategory {
   readonly category: string;
   readonly promotedUpstreamShas?: ReadonlyArray<string>;
@@ -39,147 +40,141 @@ export interface OlderBacklogCategory {
   readonly f5Shas?: ReadonlyArray<string>;
   readonly evidence?: ReadonlyArray<string>;
 }
-
-export interface Audit {
+export interface Coverage {
+  readonly count: number;
+  readonly digest: string;
+  readonly upstreamShas: ReadonlyArray<string>;
+}
+export interface Audit extends Coverage {
   readonly baseSha: string;
   readonly targetSha: string;
   readonly selection: "first-parent";
-  readonly count: number;
-  readonly digest: string;
-  // Newest first, excluding baseSha. Frozen here so offline validation still checks
-  // set equality and ordering; an available upstream independently verifies it.
-  readonly upstreamShas: ReadonlyArray<string>;
 }
-
 export interface Ledger {
-  readonly schemaVersion: 4 | 5;
-  readonly manifest: "scripts/upstream-ports.manifest.json";
-  readonly manifestSha256: string;
+  readonly schemaVersion: 6;
   readonly entries: ReadonlyArray<LedgerEntry>;
-  readonly historicalEntries?: ReadonlyArray<LedgerEntry>;
-  readonly olderBacklog: ReadonlyArray<OlderBacklogCategory>;
-  readonly audit?: Audit;
+  readonly intervals: ReadonlyArray<Audit>;
+  readonly legacyCoverage: Coverage;
+  readonly legacyProvenance: ReadonlyArray<OlderBacklogCategory>;
 }
-
 export function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
-
-export function makeAudit(
-  baseSha: string,
-  targetSha: string,
-  upstreamShas: ReadonlyArray<string>,
-): Audit {
+export function makeCoverage(upstreamShas: ReadonlyArray<string>): Coverage {
   return {
-    baseSha,
-    targetSha,
-    selection: "first-parent",
     count: upstreamShas.length,
     digest: sha256(upstreamShas.join("\n") + "\n"),
     upstreamShas,
   };
 }
-
-export function migrateEntries(ledger: Ledger): LedgerEntry[] {
-  return [...ledger.entries, ...(ledger.historicalEntries ?? [])].map((entry) =>
-    ledger.schemaVersion === 4 ? { ...entry, reviewStatus: "legacy" } : entry,
+export function makeAudit(
+  baseSha: string,
+  targetSha: string,
+  upstreamShas: ReadonlyArray<string>,
+): Audit {
+  return { baseSha, targetSha, selection: "first-parent", ...makeCoverage(upstreamShas) };
+}
+export function sortEntries(entries: Iterable<LedgerEntry>): LedgerEntry[] {
+  return [...entries].sort((a, b) =>
+    a.upstreamSha < b.upstreamSha ? -1 : a.upstreamSha > b.upstreamSha ? 1 : 0,
   );
 }
-
-/** Retain the category as provenance, but count promoted SHAs only in their records. */
-export function promoteBacklog(
-  categories: ReadonlyArray<OlderBacklogCategory>,
-  promoted: ReadonlySet<string>,
-): OlderBacklogCategory[] {
-  return categories.map((category) => {
-    const moved = (category.upstreamShas ?? []).filter((sha) => promoted.has(sha));
-    return {
-      ...category,
-      ...(category.upstreamShas
-        ? { upstreamShas: category.upstreamShas.filter((sha) => !promoted.has(sha)) }
-        : {}),
-      ...(moved.length
-        ? {
-            promotedUpstreamShas: [
-              ...new Set([...(category.promotedUpstreamShas ?? []), ...moved]),
-            ],
-          }
-        : {}),
-    };
-  });
+/** Frozen tracked history, newest first. Reviews and implementation progress are independent. */
+export function trackedShas(ledger: Ledger): string[] {
+  return [...ledger.intervals].reverse().flatMap((interval) => [...interval.upstreamShas]);
 }
-
-export function refreshEntries(
+export function coveredInterval(ledger: Ledger, baseSha: string, targetSha: string): string[] {
+  const shas = trackedShas(ledger);
+  const target = shas.indexOf(targetSha);
+  const base = baseSha === ledger.intervals[0]?.baseSha ? shas.length : shas.indexOf(baseSha);
+  if (target < 0 || base <= target)
+    throw new Error("classification boundaries must select a nonempty already-covered interval");
+  return shas.slice(target, base);
+}
+export function validateAudit(ledger: Ledger): string[] {
+  const errors: string[] = [];
+  const covered = new Set<string>();
+  const checkCoverage = (coverage: Coverage, label: string) => {
+    if (coverage.count !== coverage.upstreamShas.length)
+      errors.push(`${label} count differs from frozen selection`);
+    if (coverage.digest !== makeCoverage(coverage.upstreamShas).digest)
+      errors.push(`${label} digest differs from ordered SHA list`);
+    for (const sha of coverage.upstreamShas) {
+      if (!SHA_PATTERN.test(sha)) errors.push(`invalid coverage SHA ${sha}`);
+      if (covered.has(sha)) errors.push(`duplicate coverage SHA ${sha}`);
+      covered.add(sha);
+    }
+  };
+  if (!ledger.intervals.length) errors.push("ledger requires at least one pinned interval");
+  let precedingTarget: string | undefined;
+  for (const interval of ledger.intervals) {
+    if (!SHA_PATTERN.test(interval.baseSha) || !SHA_PATTERN.test(interval.targetSha))
+      errors.push("invalid interval boundary SHA");
+    if (interval.selection !== "first-parent")
+      errors.push("interval selection must be first-parent");
+    if (
+      !interval.upstreamShas.length ||
+      interval.upstreamShas[0] !== interval.targetSha ||
+      interval.upstreamShas.includes(interval.baseSha)
+    )
+      errors.push("interval boundaries differ from frozen selection");
+    if (precedingTarget !== undefined && interval.baseSha !== precedingTarget)
+      errors.push("intervals are not contiguous");
+    checkCoverage(interval, "interval");
+    precedingTarget = interval.targetSha;
+  }
+  checkCoverage(ledger.legacyCoverage, "legacy coverage");
+  if (
+    JSON.stringify(ledger.legacyCoverage.upstreamShas) !==
+    JSON.stringify([...ledger.legacyCoverage.upstreamShas].sort())
+  )
+    errors.push("legacy coverage must be sorted by SHA");
+  const entries = new Set<string>();
+  for (const entry of ledger.entries) {
+    if (entries.has(entry.upstreamSha)) errors.push(`duplicate ledger SHA ${entry.upstreamSha}`);
+    entries.add(entry.upstreamSha);
+    if (!covered.has(entry.upstreamSha)) errors.push(`extra ledger SHA ${entry.upstreamSha}`);
+  }
+  for (const sha of covered) if (!entries.has(sha)) errors.push(`missing ledger SHA ${sha}`);
+  if (
+    JSON.stringify(ledger.entries.map((e) => e.upstreamSha)) !== JSON.stringify([...entries].sort())
+  )
+    errors.push("entries must be sorted by SHA");
+  return errors;
+}
+/** Only append discovery; never rewrite existing review decisions. */
+export function appendInterval(
   ledger: Ledger,
   commits: ReadonlyArray<FrozenCommit>,
   suggest: (commit: FrozenCommit) => LedgerEntry,
-): Pick<Ledger, "entries" | "historicalEntries" | "olderBacklog"> {
-  const records = migrateEntries(ledger);
-  const previous = new Map(records.map((entry) => [entry.upstreamSha, entry]));
-  if (previous.size !== records.length) throw new Error("duplicate SHA in previous ledger records");
-  const window = new Set(commits.map((commit) => commit.sha));
-  // A legacy exact-SHA category may move back into the window on a pinned refresh.
-  // Retain its provenance without allowing a SHA to appear in both locations.
-  for (const category of ledger.olderBacklog) {
-    for (const sha of category.upstreamShas ?? []) {
-      if (previous.has(sha)) throw new Error(`duplicate SHA in previous ledger: ${sha}`);
-      previous.set(sha, {
-        upstreamSha: sha,
-        subject: "",
-        disposition: category.disposition,
-        reason: category.reason,
-        reviewStatus: "legacy",
-        ...(category.f5Shas ? { f5Shas: category.f5Shas } : {}),
-        ...(category.evidence ? { evidence: category.evidence } : {}),
-      });
-    }
+): Ledger {
+  const errors = validateAudit(ledger);
+  if (errors.length) throw new Error(errors.join("\n"));
+  if (!commits.length) return ledger;
+  const previous = new Map(ledger.entries.map((e) => [e.upstreamSha, e]));
+  for (const commit of commits) {
+    if (previous.has(commit.sha))
+      throw new Error(`new interval overlaps tracked SHA ${commit.sha}`);
+    previous.set(commit.sha, {
+      ...suggest(commit),
+      upstreamSha: commit.sha,
+      subject: commit.subject,
+      reviewStatus: "pending",
+    });
   }
-  return {
-    entries: commits.map((commit) => {
-      const existing = previous.get(commit.sha);
-      return existing ? { ...existing, subject: commit.subject } : suggest(commit);
-    }),
-    historicalEntries: records.filter((entry) => !window.has(entry.upstreamSha)),
-    olderBacklog: promoteBacklog(ledger.olderBacklog, window),
+  const next: Ledger = {
+    ...ledger,
+    entries: sortEntries(previous.values()),
+    intervals: [
+      ...ledger.intervals,
+      makeAudit(
+        ledger.intervals.at(-1)!.targetSha,
+        commits[0]!.sha,
+        commits.map((c) => c.sha),
+      ),
+    ],
   };
-}
-
-export function validateAudit(ledger: Ledger): string[] {
-  const errors: string[] = [];
-  const audit = ledger.audit;
-  if (!audit || !Array.isArray(audit.upstreamShas))
-    return ["schema 5 requires frozen audit metadata"];
-  if (!SHA_PATTERN.test(audit.baseSha) || !SHA_PATTERN.test(audit.targetSha))
-    errors.push("invalid audit boundary SHA");
-  if (audit.selection !== "first-parent") errors.push("audit selection must be first-parent");
-  const expected = new Set(audit.upstreamShas);
-  if (expected.size !== audit.upstreamShas.length) errors.push("duplicate SHA in audit selection");
-  if (audit.upstreamShas.some((sha) => !SHA_PATTERN.test(sha)))
-    errors.push("invalid SHA in audit selection");
-  if (audit.count !== audit.upstreamShas.length)
-    errors.push("audit count differs from frozen selection");
-  if (audit.upstreamShas[0] !== audit.targetSha || expected.has(audit.baseSha))
-    errors.push("audit boundaries differ from frozen selection");
-  if (audit.digest !== makeAudit(audit.baseSha, audit.targetSha, audit.upstreamShas).digest)
-    errors.push("audit digest differs from ordered SHA list");
-  const seen = new Set<string>();
-  const extra: string[] = [];
-  for (const entry of [...ledger.entries, ...(ledger.historicalEntries ?? [])]) {
-    if (seen.has(entry.upstreamSha))
-      errors.push(`duplicate audit coverage SHA ${entry.upstreamSha}`);
-    seen.add(entry.upstreamSha);
-    if (!expected.has(entry.upstreamSha) && entry.reviewStatus !== "legacy")
-      extra.push(entry.upstreamSha);
-  }
-  // Legacy categories deliberately retain older provenance outside this audit.
-  for (const category of ledger.olderBacklog) {
-    for (const sha of category.upstreamShas ?? []) {
-      if (seen.has(sha)) errors.push(`duplicate audit coverage SHA ${sha}`);
-      seen.add(sha);
-    }
-  }
-  const missing = audit.upstreamShas.filter((sha) => !seen.has(sha));
-  if (missing.length) errors.push(`missing audit SHAs: ${missing.join(", ")}`);
-  if (extra.length) errors.push(`extra audit SHAs: ${extra.join(", ")}`);
-  return errors;
+  const nextErrors = validateAudit(next);
+  if (nextErrors.length) throw new Error(nextErrors.join("\n"));
+  return next;
 }

@@ -47,110 +47,126 @@ If you want full control instead of hashing, set `F5_PORT_OFFSET` to a numeric o
 
 ## Upstream port ledger
 
-`bun run upstream-ports:check` validates the frozen manifest and the ledger. With an
-`upstream` remote configured, it also verifies first-parent provenance against the
-read-only `https://github.com/pingdotgg/t3code.git` remote. CI requires that remote
-with `F5_REQUIRE_UPSTREAM=1`.
+`scripts/upstream-ports.json` is the only authoritative tracking file. Schema 6
+stores one SHA-sorted `entries` collection, append-only pinned `intervals`, explicit
+`legacyCoverage`, and historical `legacyProvenance` categories. There is no rolling
+window, separate manifest, or current/historical record split.
 
-The ledger now supports schema 5. The checked-in migration preserves the existing
-500-commit window ending at `196c8ea0d`; it does **not** claim the September
-1,836-commit interval has been classified or implemented. Existing schema-4 records
-are labeled `reviewStatus: "legacy"`, retaining their dispositions, reasons,
-implementation SHAs, and evidence without manufacturing a new review. The old
-backlog categories remain as provenance. Schema 4 is still readable for migration.
+Each interval freezes `{baseSha, targetSha, selection, count, digest, upstreamShas}`.
+The base is excluded and the target included; SHA lists are newest-first. Intervals
+are ordered oldest-first and must be contiguous. The digest is SHA-256 over the
+ordered full SHAs joined by LF with a final LF. `legacyCoverage` uses the same
+count/digest/list format, sorted by SHA. Its explicit membership replaces the old
+blanket exemption for records marked `legacy`.
 
-### Refreshing a window
+Every tracked SHA must occur once in `entries` and once in coverage. The old
+backlog categories retain their original explanations and references, but never
+supply active decisions or coverage. The initial migration retains all 2,322
+individual records and materializes 10 exact-SHA category members, for 2,332 records:
+1,836 in the September interval and 496 in legacy coverage.
+
+### Checking and discovering upstream commits
 
 ```sh
+bun run upstream-ports:check
 bun scripts/check-upstream-ports.ts --refresh --head <full-40-character-sha>
-```
-
-The pin must lie on `upstream/main`'s first-parent ancestry after a non-pruning fetch.
-Refresh freezes exactly 500 commits ending at that SHA. Plain `--refresh` selects
-the fetched head, resolved once so a moving remote cannot change the selection.
-Invalid pins fail before the manifest or ledger is changed.
-
-Entries leaving the window move intact to `historicalEntries`. Entries returning
-from history retain their decisions. Legacy category members promoted to records
-are retained as `promotedUpstreamShas` references, not counted a second time.
-Prefix maps offer explicit disposition/reason suggestions only. New suggestions
-have `reviewStatus: "pending"`; the checker rejects them until they have a concrete
-reviewed decision. Generic manual-assessment placeholders also fail validation.
-
-The refresh preserves an existing audit interval independently of the rolling
-window. On schema-4 migration it initializes an audit for the selected window.
-An audit freezes `{baseSha, targetSha, selection, count, digest, upstreamShas}`;
-`upstreamShas` is newest-first and excludes `baseSha`. The digest is SHA-256 of the
-ordered SHAs joined by LF with a final LF. The stored list permits offline set and
-digest checks; Git independently verifies the interval when upstream is available.
-
-### Applying reviewed classifications
-
-```sh
-bun scripts/generate-upstream-gap.ts scripts/upstream-port-plan-2026-09.json
 F5_REQUIRE_UPSTREAM=1 bun run upstream-ports:check
 ```
 
-The classification file is an audit artifact supplied by an actual per-SHA review;
-the generator does not infer decisions from subjects. Its shape is:
+Validation is read-only. Offline it checks schemas, coverage, digests, decisions
+and file:line evidence. If the upstream remote is present, it additionally checks
+provenance; CI requires this with `F5_REQUIRE_UPSTREAM=1`. Interval boundaries and
+ordered selections must match `refs/remotes/upstream/main` first-parent history.
+Legacy commits must be reachable from pinned upstream history, including recorded
+non-first-parent commits. Batched history reads also verify subjects; no Git
+process is launched per record. Unresolvable historical f5 implementation SHAs
+remain allowed because squash merges can remove those objects.
 
-```json
-{
-  "schemaVersion": 1,
-  "baseSha": "<full SHA, excluded>",
-  "targetSha": "<full SHA, included>",
-  "entries": [
-    {
-      "upstreamSha": "<full SHA>",
-      "classification": "planned:7b",
-      "reason": "Generic attachments are approved for Phase 7b; implementation is pending.",
-      "reviewStatus": "reviewed"
-    }
-  ]
-}
+Refresh fetches without pruning from the verified read-only upstream repository,
+before acquiring the ledger writer lock. An interrupted network fetch therefore
+leaves no ledger lock. Once the immutable head is selected, the writer takes the
+lock and reads the current ledger so another writer’s intervening changes are retained.
+Plain `--refresh` selects the fetched head once; `--head` must be a full SHA on its
+first-parent ancestry. New commits extend coverage with another interval. Existing
+records and proof stay unchanged. Repeated or older pins are no-ops, never a request
+to shrink coverage. Invalid or divergent pins fail without publishing changes.
+
+New suggestions have `reviewStatus: "pending"` and cannot pass the checker until
+reviewed. A refresh can succeed while the subsequent check fails for pending work;
+that is intentional. Output separates tracked coverage, pending reviews, planned
+work, and completed dispositions. The latest tracked commit is not the latest
+implemented port.
+
+### Applying classifications
+
+```sh
+bun scripts/generate-upstream-gap.ts scripts/upstream-port-plan-2026-09.json
 ```
 
+Classification files keep schema 1: `{schemaVersion, baseSha, targetSha, entries}`.
+Each entry supplies `upstreamSha`, `classification`, `reason`,
+`reviewStatus: "reviewed"`, and optional `evidence` and `f5Shas`.
 Supported classifications are `planned:<phase>`, `declined`, `deferred`,
-`equivalent:<repository-path:line>`, and `not-applicable:<reason-key>`. Equivalent
-records also require existing `f5Shas`; extra evidence can be supplied in `evidence`.
-Reason keys are `mobile`, `relay-cloud`, `multi-environment`, `devices`, `marketing`,
+`equivalent:<repository-path:line>`, and `not-applicable:<reason-key>`. Reason keys
+are `mobile`, `relay-cloud`, `multi-environment`, `devices`, `marketing`,
 `release-ci`, `maintenance`, and `upstream-only-subsystem:<name>`.
 
-The generator requires exactly one reviewed classification for every SHA in the
-first-parent interval, lists missing and extra SHAs, and rejects duplicates and
-unknown phases/reason keys. Planned work becomes **deferred**, with its
-`plannedWorkstream`; it is never marked ported. Reapplying triage preserves later
-ported, equivalent, and already-present records unchanged, including their implementation proof. The full checker validates the
-candidate, including file/line evidence, before publication. Older legacy records
-outside the audited interval remain preserved and are not counted as new decisions.
+A plan can select any nonempty contiguous subinterval already covered, including
+one spanning interval boundaries or an older review after a later refresh. It must
+supply exactly one reviewed decision per selected SHA. It cannot expand coverage.
+Planned work stays deferred with a workstream; it is never marked implemented.
+Reapplication preserves ported, equivalent and already-present records verbatim.
+Equivalent decisions require file:line evidence and f5 implementation SHAs.
+Unrelated pending records remain pending when applying a smaller plan; the full
+checker still rejects them until reviewed.
 
-### Interrupted updates
+### Migrating schema 5
 
-Manifest and ledger publication uses staged files and a synced undo journal.
-Two separate path replacements cannot be atomic together: readers fail closed
-when a journal is present. Validation is strictly read-only and reports the journal
-path with recovery instructions. Refresh and classification commands recover first:
-if both canonical files match the recorded new-generation digests, they keep the
-finished publication; otherwise they restore the prior pair byte-for-byte. A real
-subprocess-kill test covers the boundary between renames. Concurrent edits cause
-publication to fail rather than overwrite the edits.
+```sh
+bun scripts/check-upstream-ports.ts --migrate
+```
 
-Recovery verifies the originating host, file paths, and OS process creation time
-alongside its PID; it never steals a live writer's journal, including older journals
-without a recorded creation time. A reused PID with a different creation time does
-not block recovery. A truncated journal, a journal
-from another host, or interruption of recovery itself fails closed for manual
-inspection. Node's Windows filesystem API does not support the directory fsync used
-on POSIX, so this is process-interruption recovery, not a cross-platform guarantee
-against power loss. Do not edit the canonical files while a refresh is running.
+Migration requires the verified upstream remote and its history. It validates the
+old ledger/manifest pair, preserves all individual records, materializes exact-SHA
+backlog members, and publishes schema 6 before removing the obsolete manifest.
+Normal commands never migrate implicitly. Migration preserves pending reviews;
+structural and provenance validation remain mandatory, while the normal checker
+continues to reject pending records. If a schema-5 refresh advanced the manifest
+beyond its audit, migration appends that verified first-parent interval. Any gap
+that the old 500-entry window never recorded receives pending suggestions, never
+review approval. Existing decisions and the original audit remain unchanged.
+Repeating migration on schema 6 validates structure and provenance while allowing
+pending reviews; an obsolete manifest left by interrupted cleanup is ignored.
+Schema 4 must first be upgraded with the previous schema-5 tooling.
 
-Publication preserves each canonical file's permission bits; only the journal is
-private (0600). Recovery artifacts are gitignored. Malformed journals and leftover
-recovery locks name the exact paths requiring inspection; remove them only after
-confirming no writer/recovery is active and repairing the canonical pair if needed.
+Old two-file journal recovery is available only during schema-5 migration. It
+refuses active or unverifiable writers. Empty/truncated journals, foreign-host
+journals and leftover recovery locks produce instructions naming the files to
+inspect. No schema-6 reader depends on that recovery machinery.
 
-Provenance uses `refs/remotes/upstream/main` explicitly, so same-named local tags
-or branches cannot redirect it. Both manifest and audit targets must belong to its
-first-parent history. CI fetches this ref without pruning and requires provenance
-validation. Historical object existence checks use one `git cat-file --batch-check`
-process.
+Compatibility consumers are developer branches and worktrees based on the
+schema-5 tooling shipped in PRs #28 and #31, including branches with an unfinished
+refresh or an interrupted two-file publication. Migration support is scheduled
+for removal on **2026-10-24** in a follow-up that removes `--migrate` and the legacy
+validator/recovery modules together. There is no automatic date-based expiration;
+those consumers should migrate before that cleanup. Schema-6 operation and CI do
+not depend on the compatibility path.
+
+### Atomic publication
+
+Refresh, classification and migration share an exclusive writer lock. Each lock
+has a random ownership token; cleanup removes it only if that token still matches.
+A replacement lock is left intact. Cleanup failures produce actionable warnings
+without replacing the operation’s result or original exception. A writer
+compares the canonical bytes against its original read, writes and syncs a
+same-directory temporary file with the original permissions, checks for intervening
+edits again, atomically renames it, and syncs the directory where supported.
+Readers see the complete old or new ledger; validation never changes files or
+performs recovery, even when locks or temporary files remain after a crash.
+
+Locks are never stolen automatically, even if their owner appears dead. On a lock
+error, inspect the named lock and ledger, confirm no writer is active, then remove
+the stale lock and listed temporary files before retrying. These artifacts are
+Git-ignored. Do not manually edit the ledger while a writer is active; the lock is
+advisory for external editors. On Windows, directory fsync is unavailable through
+the Node filesystem API, so this does not promise power-loss durability there.

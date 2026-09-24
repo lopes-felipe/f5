@@ -1,4 +1,4 @@
-import { SHA_PATTERN } from "./upstream-port-ledger.ts";
+import { SHA_PATTERN, type FrozenCommit } from "./upstream-port-ledger.ts";
 
 export const AUTHORITATIVE_REPOSITORY = "https://github.com/pingdotgg/t3code.git";
 export const UPSTREAM_MAIN_REF = "refs/remotes/upstream/main";
@@ -28,4 +28,17 @@ export function selectRefreshHead(git: RunGit, pin?: string): string {
   if (!ancestry.includes(head))
     throw new Error(`pinned SHA ${head} is not on upstream/main first-parent ancestry`);
   return head;
+}
+
+/** Resolve an append-only delta using immutable SHAs, never a moving ref. */
+export function newCommitsSince(git: RunGit, trackedHead: string, head: string): FrozenCommit[] {
+  if (head === trackedHead) return [];
+  const ancestry = git(["rev-list", "--first-parent", head]).split("\n");
+  if (!ancestry.includes(trackedHead)) {
+    if (git(["rev-list", "--first-parent", trackedHead]).split("\n").includes(head)) return [];
+    throw new Error("selected head diverges from tracked upstream history");
+  }
+  return git(["log", "--first-parent", "--format=%H%x09%s", `${trackedHead}..${head}`])
+    .split("\n")
+    .map((line) => ({ sha: line.slice(0, 40), subject: line.slice(41) }));
 }
