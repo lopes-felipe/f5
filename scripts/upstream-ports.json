@@ -1458,7 +1458,10 @@
         "apps/server/src/checkpointing/Layers/CheckpointStore.ts:140",
         "apps/server/integration/git/extended/CheckpointStore.extended.test.ts:1"
       ],
-      "f5Shas": ["2b1012812a1476d96fda2dfc415e88819918a4d6"]
+      "f5Shas": [
+        "2b1012812a1476d96fda2dfc415e88819918a4d6",
+        "317cd51110b89dd61a2dfb875f521039e245d0ce"
+      ]
     },
     {
       "upstreamSha": "14b6bfdf157c0ce020a5a55e1c8d3d68552931ef",
@@ -7219,9 +7222,12 @@
       "plannedWorkstream": "1b",
       "evidence": [
         "apps/server/src/orchestration/Layers/CheckpointReactor.ts:240",
-        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:741"
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:747"
       ],
-      "f5Shas": ["2b1012812a1476d96fda2dfc415e88819918a4d6"]
+      "f5Shas": [
+        "2b1012812a1476d96fda2dfc415e88819918a4d6",
+        "317cd51110b89dd61a2dfb875f521039e245d0ce"
+      ]
     },
     {
       "upstreamSha": "67a7b1a1d3443beeedc6a3bd7fe9dd875f016b11",
@@ -8915,7 +8921,10 @@
         "apps/server/src/checkpointing/Layers/CheckpointStore.ts:28",
         "apps/server/src/checkpointing/Layers/CheckpointStore.test.ts:77"
       ],
-      "f5Shas": ["2b1012812a1476d96fda2dfc415e88819918a4d6"]
+      "f5Shas": [
+        "2b1012812a1476d96fda2dfc415e88819918a4d6",
+        "317cd51110b89dd61a2dfb875f521039e245d0ce"
+      ]
     },
     {
       "upstreamSha": "818add08fcd73942f1f05edacc23f4019c146eeb",
@@ -9293,7 +9302,10 @@
         "apps/server/src/checkpointing/Layers/CheckpointStore.ts:30",
         "apps/server/src/checkpointing/Layers/CheckpointStore.test.ts:34"
       ],
-      "f5Shas": ["2b1012812a1476d96fda2dfc415e88819918a4d6"]
+      "f5Shas": [
+        "2b1012812a1476d96fda2dfc415e88819918a4d6",
+        "317cd51110b89dd61a2dfb875f521039e245d0ce"
+      ]
     },
     {
       "upstreamSha": "86c9a9288b5704e79bbe68fb0834d56036456f3e",
@@ -13705,9 +13717,12 @@
       "plannedWorkstream": "1b",
       "evidence": [
         "apps/server/src/orchestration/Layers/CheckpointReactor.ts:272",
-        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:741"
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:747"
       ],
-      "f5Shas": ["2b1012812a1476d96fda2dfc415e88819918a4d6"]
+      "f5Shas": [
+        "2b1012812a1476d96fda2dfc415e88819918a4d6",
+        "317cd51110b89dd61a2dfb875f521039e245d0ce"
+      ]
     },
     {
       "upstreamSha": "c8872fd22aadb8d155f1bedc10576d8314f93e56",
