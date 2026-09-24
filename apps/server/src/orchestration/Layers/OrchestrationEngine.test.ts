@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 
@@ -270,6 +271,98 @@ describe("OrchestrationEngine", () => {
       await system.dispose();
     }
   });
+
+  it.each(["thread.pins.replace", "thread.pins.import-legacy"] as const)(
+    "%s retries current and legacy receipts without accepting another anchor",
+    async (type) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), "f5-pin-receipts-"));
+      const dbPath = path.join(directory, "state.sqlite");
+      let system = await createPersistentOrchestrationSystem({ dbPath });
+      try {
+        const createdAt = now();
+        const projectId = asProjectId("pin-project");
+        const threadId = ThreadId.makeUnsafe("pin-anchor");
+        await system.run(
+          system.engine.dispatch({
+            type: "project.create",
+            commandId: CommandId.makeUnsafe("pin-project"),
+            projectId,
+            title: "Pins",
+            workspaceRoot: directory,
+            defaultModel: "gpt-5-codex",
+            createdAt,
+          }),
+        );
+        for (const id of [threadId, ThreadId.makeUnsafe("other-anchor")]) {
+          await system.run(
+            system.engine.dispatch({
+              type: "thread.create",
+              commandId: CommandId.makeUnsafe(`create-${id}`),
+              threadId: id,
+              projectId,
+              title: "Pins",
+              model: "gpt-5-codex",
+              runtimeMode: "full-access",
+              interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
+              branch: null,
+              worktreePath: null,
+              createdAt,
+            }),
+          );
+        }
+        const command = {
+          type,
+          commandId: CommandId.makeUnsafe("pin-command"),
+          threadId,
+          pinnedThreadIds: [threadId],
+          legacyThreadIds: [threadId],
+          expectedRevision: 0,
+          createdAt,
+        };
+        const accepted = await system.run(system.engine.dispatch(command));
+        const model = await system.run(system.engine.getReadModel());
+        expect(await system.run(system.engine.dispatch(command))).toEqual(accepted);
+        await expect(
+          system.run(
+            system.engine.dispatch({ ...command, threadId: ThreadId.makeUnsafe("other-anchor") }),
+          ),
+        ).rejects.toThrow("belongs to thread");
+        await system.dispose();
+        const db = new DatabaseSync(dbPath);
+        try {
+          expect(
+            db
+              .prepare(
+                "SELECT aggregate_kind, aggregate_id FROM orchestration_command_receipts WHERE command_id = ?",
+              )
+              .get(command.commandId),
+          ).toMatchObject({ aggregate_kind: "thread", aggregate_id: threadId });
+          db.prepare(
+            "UPDATE orchestration_command_receipts SET aggregate_kind = 'project', aggregate_id = 'f5-global-pins' WHERE command_id = ?",
+          ).run(command.commandId);
+        } finally {
+          db.close();
+        }
+        system = await createPersistentOrchestrationSystem({ dbPath });
+        expect(await system.run(system.engine.dispatch(command))).toEqual(accepted);
+        await expect(
+          system.run(
+            system.engine.dispatch({ ...command, threadId: ThreadId.makeUnsafe("other-anchor") }),
+          ),
+        ).rejects.toThrow("belongs to project");
+        expect(await system.run(system.engine.dispatch(command))).toEqual(accepted);
+        expect((await system.run(system.engine.getReadModel())).pinRevision).toBe(
+          model.pinRevision,
+        );
+        expect((await system.run(system.engine.getReadModel())).snapshotSequence).toBe(
+          accepted.sequence,
+        );
+      } finally {
+        await system.dispose();
+        fs.rmSync(directory, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("hydrates warm startup from the projection snapshot instead of replaying from sequence 0", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "t3-orchestration-snapshot-"));

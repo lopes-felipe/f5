@@ -52,7 +52,10 @@ export function classifyNextTurnDispatchFailure(input: {
       errorDetail: message,
     };
   }
-  if (tag === "OrchestrationCommandPreviouslyRejectedError") {
+  if (
+    tag === "OrchestrationCommandPreviouslyRejectedError" ||
+    tag === "OrchestrationCommandIdConflictError"
+  ) {
     return { kind: "failed", errorCode: tag, errorDetail: message };
   }
   if (tag === "OrchestrationCommandInvariantError") {

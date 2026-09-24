@@ -56,6 +56,7 @@ export class OrchestrationCommandIdConflictError extends Schema.TaggedErrorClass
   "OrchestrationCommandIdConflictError",
   {
     commandId: Schema.String,
+    detail: Schema.optional(Schema.String),
     receiptAggregateKind: Schema.String,
     receiptAggregateId: Schema.String,
     commandAggregateKind: Schema.String,
@@ -63,7 +64,7 @@ export class OrchestrationCommandIdConflictError extends Schema.TaggedErrorClass
   },
 ) {
   override get message(): string {
-    return `Command '${this.commandId}' belongs to ${this.receiptAggregateKind} '${this.receiptAggregateId}', not ${this.commandAggregateKind} '${this.commandAggregateId}'.`;
+    return `Command '${this.commandId}' belongs to ${this.receiptAggregateKind} '${this.receiptAggregateId}', not ${this.commandAggregateKind} '${this.commandAggregateId}'.${this.detail ? ` ${this.detail}` : ""}`;
   }
 }
 

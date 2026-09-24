@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { OrchestrationCommandIdConflictError } from "../orchestration/Errors.ts";
+
 import { MAX_DISPATCH_ATTEMPTS } from "./constants.ts";
 import { classifyNextTurnDispatchFailure, nextTurnDispatchBackoffMs } from "./dispatchOutcome.ts";
 
@@ -37,6 +39,23 @@ describe("next-turn dispatch outcomes", () => {
         postClaimAttempt: MAX_DISPATCH_ATTEMPTS,
       }),
     ).toMatchObject({ kind: "failed" });
+  });
+
+  it("fails command conflicts immediately and preserves the diagnosis", () => {
+    const error = new OrchestrationCommandIdConflictError({
+      commandId: "collision",
+      receiptAggregateKind: "thread",
+      receiptAggregateId: "a",
+      commandAggregateKind: "thread",
+      commandAggregateId: "b",
+    });
+    for (const postClaimAttempt of [1, MAX_DISPATCH_ATTEMPTS]) {
+      expect(classifyNextTurnDispatchFailure({ error, postClaimAttempt })).toEqual({
+        kind: "failed",
+        errorCode: error._tag,
+        errorDetail: error.message,
+      });
+    }
   });
 
   it("uses post-claim exponential backoff with bounded jitter", () => {

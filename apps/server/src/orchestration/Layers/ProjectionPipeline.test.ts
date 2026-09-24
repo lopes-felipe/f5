@@ -157,9 +157,14 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       yield* pipeline.projectEvent(captured);
       const before =
         yield* sql`SELECT * FROM projection_turns WHERE thread_id = ${threadId} AND turn_id = ${turnId}`;
+      const beforeThread =
+        yield* sql`SELECT * FROM projection_threads WHERE thread_id = ${threadId}`;
+      assert.equal(before.length, 1);
+      assert.equal(beforeThread.length, 1);
       const missing = yield* store.append({
         ...common,
         eventId: EventId.makeUnsafe("large-missing"),
+        occurredAt: "2026-09-24T01:00:00.000Z",
         type: "thread.turn-diff-completed",
         aggregateKind: "thread",
         aggregateId: threadId,
@@ -174,9 +179,13 @@ projectionLayer("OrchestrationProjectionPipeline", (it) => {
       const after =
         yield* sql`SELECT * FROM projection_turns WHERE thread_id = ${threadId} AND turn_id = ${turnId}`;
       assert.deepEqual(after, before);
+      const afterThread =
+        yield* sql`SELECT * FROM projection_threads WHERE thread_id = ${threadId}`;
+      assert.deepEqual(afterThread, beforeThread);
       const cursors = yield* sql<{
         lastAppliedSequence: number;
       }>`SELECT last_applied_sequence AS "lastAppliedSequence" FROM projection_state`;
+      assert.equal(cursors.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
       for (const cursor of cursors) assert.equal(cursor.lastAppliedSequence, missing.sequence);
     }).pipe((effect) => runWithProjectionPipelineLayer(process.cwd(), effect)),
   );

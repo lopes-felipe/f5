@@ -28,7 +28,7 @@ import {
 
 const nowIso = () => new Date().toISOString();
 const DEFAULT_ASSISTANT_DELIVERY_MODE = "buffered" as const;
-const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
+export const GLOBAL_PIN_AGGREGATE_ID = ProjectId.makeUnsafe("f5-global-pins");
 
 function unsupportedWorkflowBehaviorMessage(input: {
   readonly templateId: string;

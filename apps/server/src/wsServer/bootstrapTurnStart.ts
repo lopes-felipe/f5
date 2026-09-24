@@ -170,7 +170,10 @@ function withAppendedCleanupDetail(
     });
   }
   if (Schema.is(OrchestrationCommandIdConflictError)(error)) {
-    return error;
+    return new OrchestrationCommandIdConflictError({
+      ...error,
+      detail: `${error.detail ?? ""}${suffix}`,
+    });
   }
   if (Schema.is(ThreadTurnAlreadyActiveError)(error)) {
     return new ThreadTurnAlreadyActiveError({ ...error });

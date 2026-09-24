@@ -31,7 +31,7 @@ import {
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
 } from "../Errors.ts";
-import { decideOrchestrationCommand } from "../decider.ts";
+import { decideOrchestrationCommand, GLOBAL_PIN_AGGREGATE_ID } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import {
@@ -137,10 +137,35 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           commandId: envelope.command.commandId,
         });
         if (Option.isSome(existingReceipt)) {
+          const receipt = existingReceipt.value;
+          let matchesAggregate =
+            receipt.aggregateKind === aggregateRef.aggregateKind &&
+            receipt.aggregateId === aggregateRef.aggregateId;
+          // Old accepted pin receipts used the global event aggregate. Verify the
+          // original event's anchor instead of trusting that shared aggregate.
           if (
-            existingReceipt.value.aggregateKind !== aggregateRef.aggregateKind ||
-            existingReceipt.value.aggregateId !== aggregateRef.aggregateId
+            !matchesAggregate &&
+            receipt.status === "accepted" &&
+            receipt.aggregateKind === "project" &&
+            receipt.aggregateId === GLOBAL_PIN_AGGREGATE_ID &&
+            (envelope.command.type === "thread.pins.replace" ||
+              envelope.command.type === "thread.pins.import-legacy")
           ) {
+            const events = yield* Stream.runCollect(
+              eventStore.readFromSequence(receipt.resultSequence - 1, 1),
+            );
+            const event = events[0];
+            matchesAggregate =
+              event !== undefined &&
+              event.sequence === receipt.resultSequence &&
+              event.commandId === envelope.command.commandId &&
+              ((envelope.command.type === "thread.pins.replace" &&
+                event.type === "thread.pins-replaced") ||
+                (envelope.command.type === "thread.pins.import-legacy" &&
+                  event.type === "thread.legacy-pins-imported")) &&
+              event.payload.threadId === envelope.command.threadId;
+          }
+          if (!matchesAggregate) {
             return yield* new OrchestrationCommandIdConflictError({
               commandId: envelope.command.commandId,
               receiptAggregateKind: existingReceipt.value.aggregateKind,
@@ -225,8 +250,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               yield* commandReceiptRepository.upsert({
                 commandId: envelope.command.commandId,
-                aggregateKind: lastSavedEvent.aggregateKind,
-                aggregateId: lastSavedEvent.aggregateId,
+                aggregateKind: aggregateRef.aggregateKind,
+                aggregateId: aggregateRef.aggregateId,
                 acceptedAt: lastSavedEvent.occurredAt,
                 resultSequence: lastSavedEvent.sequence,
                 status: "accepted",

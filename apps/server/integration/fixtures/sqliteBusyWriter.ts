@@ -20,14 +20,15 @@ try {
     }),
   );
   await input.question("ready\n");
-  process.stdout.write("writing\n");
   await runtime.runPromise(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
+      process.stdout.write("writing\n");
+      const startedAt = performance.now();
       yield* sql`INSERT INTO contention_test VALUES ('child')`;
+      process.stdout.write(`written:${performance.now() - startedAt}\n`);
     }),
   );
-  process.stdout.write("written\n");
 } finally {
   input.close();
   await runtime.dispose();

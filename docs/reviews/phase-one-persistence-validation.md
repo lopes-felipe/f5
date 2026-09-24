@@ -32,3 +32,15 @@ Validated on macOS with Node 26.9.0 and Bun 1.3.11:
 - The online ledger check is run again after recording the implementation commit, along with the scripts suite. Only the six delivered records change disposition.
 
 The first full run overlapped the final bootstrap conflict-classification edit and failed that new test. A fresh full run against the final code passed; no assertion or timeout was relaxed. Worker limits reduce contention on the shared machine. There are no UI or desktop behavior changes in this PR.
+
+## PR review follow-up
+
+Accepted receipts now use the command's target aggregate, matching rejected receipts. Pin events still belong to the global pin stream. For older accepted pin receipts, retry checks the event at the receipt's sequence and verifies its command ID, event type and original anchor thread. This preserves restart-safe retries without accepting a different anchor or requiring a migration.
+
+Command-ID conflicts now fail queue dispatch immediately with their original diagnosis, and bootstrap cleanup failures are appended to the conflict error. The thread SQL projector also ignores late missing-checkpoint placeholders, preserving sidebar timestamps and the latest turn alongside the captured checkpoint.
+
+Regression coverage adds both pin commands with current and legacy receipts, immediate queue failure, conflict cleanup reporting, unchanged thread rows, and an exact projector-cursor count. SQLite polls allow 30 seconds for child startup; the child measures the actual INSERT and must wait at least 200 ms. The integration test has a 45-second envelope for startup and shutdown. The production busy timeout remains five seconds.
+
+The end-to-end replay tests retain real command dispatches, since bulk insertion would bypass the receipt, projection and transaction paths they verify. The lower-level 20,000-event test already uses a bulk insert.
+
+Review validation passed: formatting, lint (zero errors; nine existing warnings), typecheck, all 72 focused tests, and the full suite including 2,416 server unit tests, 15 server integration tests and 123 real-Git tests. The online ledger check and scripts suite are repeated after recording the review commit. The six-port scope and coverage boundaries are unchanged.

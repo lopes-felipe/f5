@@ -1152,6 +1152,18 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (Option.isNone(existingRow)) {
             return;
           }
+          if (event.payload.status === "missing") {
+            const turn = yield* projectionTurnRepository.getByTurnId({
+              threadId: event.payload.threadId,
+              turnId: event.payload.turnId,
+            });
+            if (
+              Option.isSome(turn) &&
+              turn.value.checkpointStatus !== null &&
+              turn.value.checkpointStatus !== "missing"
+            )
+              return;
+          }
           yield* projectionThreadRepository.upsert({
             ...existingRow.value,
             latestTurnId: event.payload.turnId,
