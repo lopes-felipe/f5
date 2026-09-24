@@ -6943,10 +6943,15 @@
     {
       "upstreamSha": "62f568b88b58e1e7cf422c21ee2e08f10977b714",
       "subject": "fix(server): skip disabled provider instances for text generation fallback (#10346)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): skip disabled provider instances for text generation fallback. Reimplement in f5; not yet delivered.",
+      "reason": "Text-generation fallback gives explicit built-in instance enablement precedence over legacy provider defaults while retaining persisted model preferences.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/serverSettings.ts:217",
+        "apps/server/src/serverSettings.test.ts:560"
+      ],
+      "f5Shas": ["ae1d9ef765f0202e769fd8f82fc4f250c1704c96"]
     },
     {
       "upstreamSha": "62fbbe08aa854fcbd8044cd971a45a54edafcb98",
@@ -7591,10 +7596,16 @@
     {
       "upstreamSha": "6d68677ff90915c17de06d78bb498d41a1adfe6a",
       "subject": "fix(server): restore secrets when settings persistence fails (#12487)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): restore secrets when settings persistence fails. Reimplement in f5; not yet delivered.",
+      "reason": "Settings saves validate before secret mutation, restore prior values in reverse order on secret or settings publication failure, and publish cache changes only after success. Tests cover partial writes and failed file replacement.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/serverSettings.ts:650",
+        "apps/server/src/serverSettings.test.ts:620",
+        "apps/server/src/serverSettings.test.ts:679"
+      ],
+      "f5Shas": ["ae1d9ef765f0202e769fd8f82fc4f250c1704c96"]
     },
     {
       "upstreamSha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
@@ -11738,10 +11749,15 @@
     {
       "upstreamSha": "ac4f1a2b6d52b082edcc06d866892f8dcfdc033f",
       "subject": "fix(server): preserve inline provider secrets on redacted saves (#10054)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): preserve inline provider secrets on redacted saves. Reimplement in f5; not yet delivered.",
+      "reason": "Redacted environment patches preserve the last matching inline sensitive value and migrate it to the profile secret store instead of losing it.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/serverSettings.ts:435",
+        "apps/server/src/serverSettings.test.ts:581"
+      ],
+      "f5Shas": ["ae1d9ef765f0202e769fd8f82fc4f250c1704c96"]
     },
     {
       "upstreamSha": "ac90950f1ac315bcef5f92b53c5e0d6579daeefd",
