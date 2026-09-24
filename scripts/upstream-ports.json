@@ -147,8 +147,16 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
-      "evidence": ["apps/server/integration/git/extended/WorktreeRecovery.extended.test.ts:23"],
-      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
+      "evidence": [
+        "apps/server/integration/git/extended/WorktreeRecovery.extended.test.ts:23",
+        "apps/server/integration/git/extended/WorktreeRecovery.extended.test.ts:15",
+        "apps/server/src/project/Layers/WorktreeLifecycleCoordinator.test.ts:37",
+        "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.test.ts:651"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "020179c19a0073d130c30083c7623cf1196688e7",
@@ -972,8 +980,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
-      "evidence": ["apps/server/integration/git/extended/CheckpointStore.extended.test.ts:136"],
-      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
+      "evidence": [
+        "apps/server/integration/git/extended/CheckpointStore.extended.test.ts:136",
+        "apps/server/integration/git/extended/CheckpointStore.extended.test.ts:137"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "0de9540739369301d5056870deeee3f258a03b14",
@@ -2215,8 +2229,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
-      "evidence": ["apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:474"],
-      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
+      "evidence": [
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:474",
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:482"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "1e87029261f9b81061a2a7420849b9eeaf1a2ebe",
@@ -7619,7 +7639,10 @@
         "apps/server/src/serverSettings.test.ts:620",
         "apps/server/src/serverSettings.test.ts:679"
       ],
-      "f5Shas": ["ae1d9ef765f0202e769fd8f82fc4f250c1704c96"]
+      "f5Shas": [
+        "ae1d9ef765f0202e769fd8f82fc4f250c1704c96",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "6d70e6d77824eed51b1531a2f42b2ed5cdae8501",
@@ -8507,8 +8530,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
-      "evidence": ["apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:687"],
-      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
+      "evidence": [
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:687",
+        "apps/server/src/orchestration/Layers/CheckpointReactor.test.ts:708"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "7a2cce826852c3a3255d7c7aa1e9c148287eba2c",
@@ -9050,8 +9079,14 @@
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
-      "evidence": ["apps/server/src/persistence/Layers/ThreadBackgroundWork.ts:71"],
-      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
+      "evidence": [
+        "apps/server/src/persistence/Layers/ThreadBackgroundWork.ts:71",
+        "apps/server/src/orchestration/Layers/ThreadBackgroundWork.test.ts:252"
+      ],
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "82c2b7ffb4d450572f5baf9a70693f1e25cfdfed",
@@ -10187,7 +10222,10 @@
       "disposition": "ported",
       "plannedWorkstream": "1b",
       "evidence": ["apps/server/src/httpResponseErrorGuard.test.ts:6"],
-      "f5Shas": ["353cc8606c4943df37bae6f4b4e93911cfe0b8a7"]
+      "f5Shas": [
+        "353cc8606c4943df37bae6f4b4e93911cfe0b8a7",
+        "2dffbe624f16802061a54932a2c840aea12a1ae6"
+      ]
     },
     {
       "upstreamSha": "93349247008517663aa16a3ed145d5b0f3f044ff",
