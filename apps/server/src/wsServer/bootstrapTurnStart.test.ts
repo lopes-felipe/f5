@@ -20,10 +20,16 @@ import { AttachmentIngressError } from "../attachmentIngress.ts";
 import { makeLocalFileTracer } from "../observability/LocalFileTracer.ts";
 import { PersistenceSqlError } from "../persistence/Errors.ts";
 import type { GitCoreShape } from "../git/Services/GitCore.ts";
-import { OrchestrationCommandInvariantError } from "../orchestration/Errors.ts";
+import {
+  OrchestrationCommandInvariantError,
+  OrchestrationCommandIdConflictError,
+} from "../orchestration/Errors.ts";
 import type { OrchestrationEngineShape } from "../orchestration/Services/OrchestrationEngine.ts";
 import type { ProjectSetupScriptRunnerShape } from "../project/Services/ProjectSetupScriptRunner.ts";
-import { dispatchBootstrapTurnStart } from "./bootstrapTurnStart.ts";
+import {
+  dispatchBootstrapTurnStart,
+  isDefinitelyUncommittedDispatchError,
+} from "./bootstrapTurnStart.ts";
 
 const PROJECT_ID = ProjectId.makeUnsafe("project-1");
 const THREAD_ID = ThreadId.makeUnsafe("thread-1");
@@ -1250,66 +1256,82 @@ describe("dispatchBootstrapTurnStart", () => {
     expect(createWorktree.mock.calls[0]?.[0]).not.toHaveProperty("baseRefName");
   });
 
-  it("appends cleanup failure detail onto the original bootstrap error", async () => {
-    const dependencies = makeDependencies({
-      dispatch: (command) =>
-        Effect.gen(function* () {
-          if (command.type === "thread.turn.start") {
-            return yield* new OrchestrationCommandInvariantError({
-              commandType: command.type,
-              detail: "turn start failed",
-            });
-          }
-          return { sequence: 1 };
-        }),
-      removeWorktree: () =>
-        Effect.fail(
-          new GitCommandError({
-            operation: "removeWorktree",
-            command: "git worktree remove --force",
-            cwd: "/repo/project",
-            detail: "worktree cleanup failed",
+  it.each(["invariant", "conflict"])(
+    "appends cleanup failure detail onto the original %s error",
+    async (kind) => {
+      const dependencies = makeDependencies({
+        dispatch: (command) =>
+          Effect.gen(function* () {
+            if (command.type === "thread.turn.start") {
+              if (kind === "conflict")
+                return yield* new OrchestrationCommandIdConflictError({
+                  commandId: "collision",
+                  receiptAggregateKind: "thread",
+                  receiptAggregateId: "other",
+                  commandAggregateKind: "thread",
+                  commandAggregateId: "current",
+                  detail: "turn start failed",
+                });
+              return yield* new OrchestrationCommandInvariantError({
+                commandType: command.type,
+                detail: "turn start failed",
+              });
+            }
+            return { sequence: 1 };
           }),
-        ),
-    });
+        removeWorktree: () =>
+          Effect.fail(
+            new GitCommandError({
+              operation: "removeWorktree",
+              command: "git worktree remove --force",
+              cwd: "/repo/project",
+              detail: "worktree cleanup failed",
+            }),
+          ),
+      });
 
-    let caught: unknown;
-    try {
-      await Effect.runPromise(
-        dispatchBootstrapTurnStart({
-          ...dependencies,
-          command: makeTurnStartCommand({
-            bootstrap: {
-              createThread: {
-                projectId: PROJECT_ID,
-                title: "New thread",
-                model: "gpt-5-codex",
-                runtimeMode: "full-access",
-                interactionMode: "default",
-                branch: "main",
-                worktreePath: null,
-                createdAt: "2026-01-01T00:00:00.000Z",
+      let caught: unknown;
+      try {
+        await Effect.runPromise(
+          dispatchBootstrapTurnStart({
+            ...dependencies,
+            command: makeTurnStartCommand({
+              bootstrap: {
+                createThread: {
+                  projectId: PROJECT_ID,
+                  title: "New thread",
+                  model: "gpt-5-codex",
+                  runtimeMode: "full-access",
+                  interactionMode: "default",
+                  branch: "main",
+                  worktreePath: null,
+                  createdAt: "2026-01-01T00:00:00.000Z",
+                },
+                prepareWorktree: {
+                  projectCwd: "/repo/project",
+                  baseBranch: "main",
+                  branch: "t3code/bootstrap-branch",
+                },
               },
-              prepareWorktree: {
-                projectCwd: "/repo/project",
-                baseBranch: "main",
-                branch: "t3code/bootstrap-branch",
-              },
-            },
+            }),
           }),
-        }),
+        );
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(
+        kind === "conflict"
+          ? OrchestrationCommandIdConflictError
+          : OrchestrationCommandInvariantError,
       );
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(OrchestrationCommandInvariantError);
-    expect((caught as Error).message).toContain("turn start failed");
-    expect((caught as Error).message).toContain("Cleanup failed during worktree removal");
-    expect((caught as OrchestrationCommandInvariantError).detail).toContain(
-      "worktree cleanup failed",
-    );
-  });
+      expect((caught as Error).message).toContain("turn start failed");
+      expect((caught as Error).message).toContain("Cleanup failed during worktree removal");
+      expect((caught as OrchestrationCommandInvariantError).detail).toContain(
+        "worktree cleanup failed",
+      );
+    },
+  );
 
   it("does not attempt cleanup when reading previous thread metadata fails", async () => {
     const dispatch = vi.fn(() => Effect.succeed({ sequence: 1 }));
@@ -1409,4 +1431,18 @@ describe("dispatchBootstrapTurnStart", () => {
         }),
     ).toBe(1);
   });
+});
+
+it("treats a command ID owned by another thread as definitely uncommitted", () => {
+  expect(
+    isDefinitelyUncommittedDispatchError(
+      new OrchestrationCommandIdConflictError({
+        commandId: "reused",
+        receiptAggregateKind: "thread",
+        receiptAggregateId: "other",
+        commandAggregateKind: "thread",
+        commandAggregateId: "current",
+      }),
+    ),
+  ).toBe(true);
 });

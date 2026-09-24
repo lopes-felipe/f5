@@ -1827,7 +1827,8 @@ export const ThreadMessageSentPayload = Schema.Struct({
   reasoningText: Schema.optional(Schema.String),
   skillCall: Schema.optional(UserMessageSkillCall),
   attachments: Schema.optional(Schema.Array(ChatAttachment)),
-  turnId: Schema.NullOr(TurnId),
+  // Older persisted messages predate turn IDs.
+  turnId: Schema.NullOr(TurnId).pipe(Schema.withDecodingDefault(() => null)),
   streaming: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,

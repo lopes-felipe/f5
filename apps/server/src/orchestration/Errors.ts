@@ -52,6 +52,22 @@ export class OrchestrationCommandPreviouslyRejectedError extends Schema.TaggedEr
   }
 }
 
+export class OrchestrationCommandIdConflictError extends Schema.TaggedErrorClass<OrchestrationCommandIdConflictError>()(
+  "OrchestrationCommandIdConflictError",
+  {
+    commandId: Schema.String,
+    detail: Schema.optional(Schema.String),
+    receiptAggregateKind: Schema.String,
+    receiptAggregateId: Schema.String,
+    commandAggregateKind: Schema.String,
+    commandAggregateId: Schema.String,
+  },
+) {
+  override get message(): string {
+    return `Command '${this.commandId}' belongs to ${this.receiptAggregateKind} '${this.receiptAggregateId}', not ${this.commandAggregateKind} '${this.commandAggregateId}'.${this.detail ? ` ${this.detail}` : ""}`;
+  }
+}
+
 export class ThreadTurnAlreadyActiveError extends Schema.TaggedErrorClass<ThreadTurnAlreadyActiveError>()(
   "ThreadTurnAlreadyActiveError",
   {
@@ -93,6 +109,7 @@ export class OrchestrationListenerCallbackError extends Schema.TaggedErrorClass<
 
 export type OrchestrationDispatchError =
   | ProjectionRepositoryError
+  | OrchestrationCommandIdConflictError
   | OrchestrationCommandInvariantError
   | OrchestrationCommandPreviouslyRejectedError
   | ThreadTurnAlreadyActiveError

@@ -92,6 +92,8 @@ const makeWithDatabase = (
         Effect.sync(() => db.close()),
       );
 
+      db.exec("PRAGMA busy_timeout = 5000");
+
       const statementReaderCache = new WeakMap<StatementSync, boolean>();
       const hasRows = (statement: StatementSync): boolean => {
         const cached = statementReaderCache.get(statement);

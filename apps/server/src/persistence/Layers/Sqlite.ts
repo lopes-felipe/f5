@@ -6,6 +6,7 @@ import { ServerConfig } from "../../config.ts";
 
 type RuntimeSqliteLayerConfig = {
   readonly filename: string;
+  readonly disableWAL?: boolean;
 };
 
 type Loader = {
@@ -23,12 +24,14 @@ const makeRuntimeSqliteLayer = (
     const runtime = process.versions.bun !== undefined ? "bun" : "node";
     const loader = defaultSqliteClientLoaders[runtime];
     const clientModule = yield* Effect.promise<Loader>(loader);
-    return clientModule.layer(config);
+    // Bun otherwise enables WAL while opening the connection, before our busy timeout.
+    return clientModule.layer({ ...config, disableWAL: true });
   }).pipe(Layer.unwrap);
 
 const setup = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA busy_timeout = 5000;`;
     yield* sql`PRAGMA journal_mode = WAL;`;
     yield* sql`PRAGMA foreign_keys = ON;`;
     yield* runMigrations;

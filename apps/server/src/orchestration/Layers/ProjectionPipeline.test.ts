@@ -59,6 +59,137 @@ const runWithProjectionPipelineLayer = <A, E>(
 const projectionLayer = it.layer(makeProjectionPipelineTestLayer(process.cwd()));
 
 projectionLayer("OrchestrationProjectionPipeline", (it) => {
+  it.effect("bootstraps more than 1,000 pending events and preserves a captured checkpoint", () =>
+    Effect.gen(function* () {
+      const pipeline = yield* OrchestrationProjectionPipeline;
+      const store = yield* OrchestrationEventStore;
+      const sql = yield* SqlClient.SqlClient;
+      const now = "2026-09-24T00:00:00.000Z";
+      const projectId = ProjectId.makeUnsafe("large-bootstrap-project");
+      const threadId = ThreadId.makeUnsafe("large-bootstrap-thread");
+      const common = {
+        occurredAt: now,
+        commandId: null,
+        causationEventId: null,
+        correlationId: null,
+        metadata: {},
+      };
+      yield* store.append({
+        ...common,
+        eventId: EventId.makeUnsafe("large-project"),
+        type: "project.created",
+        aggregateKind: "project",
+        aggregateId: projectId,
+        payload: {
+          projectId,
+          title: "Large replay",
+          workspaceRoot: "/tmp/large-replay",
+          defaultModel: null,
+          scripts: [],
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      yield* store.append({
+        ...common,
+        eventId: EventId.makeUnsafe("large-thread"),
+        type: "thread.created",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        payload: {
+          threadId,
+          projectId,
+          title: "Large replay",
+          model: "gpt-5-codex",
+          runtimeMode: "full-access",
+          branch: null,
+          worktreePath: null,
+          createdAt: now,
+          updatedAt: now,
+        },
+      });
+      for (let index = 0; index < 1001; index++) {
+        yield* store.append({
+          ...common,
+          eventId: EventId.makeUnsafe(`large-message-${index}`),
+          type: "thread.message-sent",
+          aggregateKind: "thread",
+          aggregateId: threadId,
+          payload: {
+            threadId,
+            messageId: MessageId.makeUnsafe(`large-message-${index}`),
+            role: "user",
+            text: `Message ${index}`,
+            turnId: null,
+            streaming: false,
+            createdAt: now,
+            updatedAt: now,
+          },
+        });
+      }
+      // Exercise persisted pre-turn-ID messages, not only the contract decoder.
+      yield* sql`UPDATE orchestration_events SET payload_json = json_remove(payload_json, '$.turnId')
+        WHERE stream_id = ${threadId} AND event_type = 'thread.message-sent'`;
+      yield* pipeline.bootstrap;
+      const messages = yield* sql<{
+        count: number;
+      }>`SELECT COUNT(*) AS count FROM projection_thread_messages WHERE thread_id = ${threadId}`;
+      assert.equal(messages[0]?.count, 1001);
+      const turnId = TurnId.makeUnsafe("large-checkpoint-turn");
+      const ref = CheckpointRef.makeUnsafe("refs/f5/checkpoints/large");
+      const captured = yield* store.append({
+        ...common,
+        eventId: EventId.makeUnsafe("large-ready"),
+        type: "thread.turn-diff-completed",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        payload: {
+          threadId,
+          turnId,
+          checkpointTurnCount: 1,
+          checkpointRef: ref,
+          status: "ready",
+          files: [],
+          assistantMessageId: null,
+          completedAt: now,
+        },
+      });
+      yield* pipeline.projectEvent(captured);
+      const before =
+        yield* sql`SELECT * FROM projection_turns WHERE thread_id = ${threadId} AND turn_id = ${turnId}`;
+      const beforeThread =
+        yield* sql`SELECT * FROM projection_threads WHERE thread_id = ${threadId}`;
+      assert.equal(before.length, 1);
+      assert.equal(beforeThread.length, 1);
+      const missing = yield* store.append({
+        ...common,
+        eventId: EventId.makeUnsafe("large-missing"),
+        occurredAt: "2026-09-24T01:00:00.000Z",
+        type: "thread.turn-diff-completed",
+        aggregateKind: "thread",
+        aggregateId: threadId,
+        payload: {
+          ...captured.payload,
+          status: "missing",
+          checkpointRef: CheckpointRef.makeUnsafe("refs/f5/checkpoints/missing"),
+        },
+      });
+      yield* pipeline.projectEvent(missing);
+      yield* pipeline.bootstrap;
+      const after =
+        yield* sql`SELECT * FROM projection_turns WHERE thread_id = ${threadId} AND turn_id = ${turnId}`;
+      assert.deepEqual(after, before);
+      const afterThread =
+        yield* sql`SELECT * FROM projection_threads WHERE thread_id = ${threadId}`;
+      assert.deepEqual(afterThread, beforeThread);
+      const cursors = yield* sql<{
+        lastAppliedSequence: number;
+      }>`SELECT last_applied_sequence AS "lastAppliedSequence" FROM projection_state`;
+      assert.equal(cursors.length, Object.keys(ORCHESTRATION_PROJECTOR_NAMES).length);
+      for (const cursor of cursors) assert.equal(cursor.lastAppliedSequence, missing.sequence);
+    }).pipe((effect) => runWithProjectionPipelineLayer(process.cwd(), effect)),
+  );
+
   it.effect("bootstraps all projection states and writes projection rows", () =>
     Effect.gen(function* () {
       const projectionPipeline = yield* OrchestrationProjectionPipeline;

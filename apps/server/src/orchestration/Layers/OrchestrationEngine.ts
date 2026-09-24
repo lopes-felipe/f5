@@ -26,11 +26,12 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { OrchestrationEventStore } from "../../persistence/Services/OrchestrationEventStore.ts";
 import { OrchestrationCommandReceiptRepository } from "../../persistence/Services/OrchestrationCommandReceipts.ts";
 import {
+  OrchestrationCommandIdConflictError,
   OrchestrationCommandInvariantError,
   OrchestrationCommandPreviouslyRejectedError,
   type OrchestrationDispatchError,
 } from "../Errors.ts";
-import { decideOrchestrationCommand } from "../decider.ts";
+import { decideOrchestrationCommand, GLOBAL_PIN_AGGREGATE_ID } from "../decider.ts";
 import { createEmptyReadModel, projectEvent } from "../projector.ts";
 import { OrchestrationProjectionPipeline } from "../Services/ProjectionPipeline.ts";
 import {
@@ -106,7 +107,7 @@ const makeOrchestrationEngine = Effect.gen(function* () {
     } as const;
     const reconcileReadModelAfterDispatchFailure = Effect.gen(function* () {
       const persistedEvents = yield* Stream.runCollect(
-        eventStore.readFromSequence(dispatchStartSequence),
+        eventStore.readFromSequence(dispatchStartSequence, Number.MAX_SAFE_INTEGER),
       ).pipe(Effect.map((chunk): OrchestrationEvent[] => Array.from(chunk)));
       if (persistedEvents.length === 0) {
         return;
@@ -136,6 +137,43 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           commandId: envelope.command.commandId,
         });
         if (Option.isSome(existingReceipt)) {
+          const receipt = existingReceipt.value;
+          let matchesAggregate =
+            receipt.aggregateKind === aggregateRef.aggregateKind &&
+            receipt.aggregateId === aggregateRef.aggregateId;
+          // Old accepted pin receipts used the global event aggregate. Verify the
+          // original event's anchor instead of trusting that shared aggregate.
+          if (
+            !matchesAggregate &&
+            receipt.status === "accepted" &&
+            receipt.aggregateKind === "project" &&
+            receipt.aggregateId === GLOBAL_PIN_AGGREGATE_ID &&
+            (envelope.command.type === "thread.pins.replace" ||
+              envelope.command.type === "thread.pins.import-legacy")
+          ) {
+            const events = yield* Stream.runCollect(
+              eventStore.readFromSequence(receipt.resultSequence - 1, 1),
+            );
+            const event = events[0];
+            matchesAggregate =
+              event !== undefined &&
+              event.sequence === receipt.resultSequence &&
+              event.commandId === envelope.command.commandId &&
+              ((envelope.command.type === "thread.pins.replace" &&
+                event.type === "thread.pins-replaced") ||
+                (envelope.command.type === "thread.pins.import-legacy" &&
+                  event.type === "thread.legacy-pins-imported")) &&
+              event.payload.threadId === envelope.command.threadId;
+          }
+          if (!matchesAggregate) {
+            return yield* new OrchestrationCommandIdConflictError({
+              commandId: envelope.command.commandId,
+              receiptAggregateKind: existingReceipt.value.aggregateKind,
+              receiptAggregateId: existingReceipt.value.aggregateId,
+              commandAggregateKind: aggregateRef.aggregateKind,
+              commandAggregateId: aggregateRef.aggregateId,
+            });
+          }
           if (existingReceipt.value.status === "accepted") {
             return {
               sequence: existingReceipt.value.resultSequence,
@@ -212,8 +250,8 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
               yield* commandReceiptRepository.upsert({
                 commandId: envelope.command.commandId,
-                aggregateKind: lastSavedEvent.aggregateKind,
-                aggregateId: lastSavedEvent.aggregateId,
+                aggregateKind: aggregateRef.aggregateKind,
+                aggregateId: aggregateRef.aggregateId,
                 acceptedAt: lastSavedEvent.occurredAt,
                 resultSequence: lastSavedEvent.sequence,
                 status: "accepted",
@@ -285,7 +323,10 @@ const makeOrchestrationEngine = Effect.gen(function* () {
           }
 
           const error = Cause.squash(exit.cause) as OrchestrationDispatchError;
-          if (!Schema.is(OrchestrationCommandPreviouslyRejectedError)(error)) {
+          if (
+            !Schema.is(OrchestrationCommandPreviouslyRejectedError)(error) &&
+            !Schema.is(OrchestrationCommandIdConflictError)(error)
+          ) {
             yield* reconcileReadModelAfterDispatchFailure.pipe(
               Effect.catch(() =>
                 Effect.logWarning(
@@ -351,10 +392,12 @@ const makeOrchestrationEngine = Effect.gen(function* () {
 
   // Bootstrap the in-memory read model from projections when available, then
   // catch up from any newer persisted events.
-  yield* Stream.runForEach(eventStore.readFromSequence(replayFromSequence), (event) =>
-    Effect.gen(function* () {
-      readModel = yield* projectEvent(readModel, event);
-    }),
+  yield* Stream.runForEach(
+    eventStore.readFromSequence(replayFromSequence, Number.MAX_SAFE_INTEGER),
+    (event) =>
+      Effect.gen(function* () {
+        readModel = yield* projectEvent(readModel, event);
+      }),
   );
 
   const worker = Effect.forever(

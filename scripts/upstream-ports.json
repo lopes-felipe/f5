@@ -595,10 +595,15 @@
     {
       "upstreamSha": "08463e2c401ce87858aaaebcb70ed86fb002fb5f",
       "subject": "fix(server): release consumed event replay pages (#10777)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): release consumed event replay pages. Reimplement in f5; not yet delivered.",
+      "reason": "Iterative event-store pagination releases consumed pages; 20,000-event regression preserves ordering and bounded public reads.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/persistence/Layers/OrchestrationEventStore.ts:246",
+        "apps/server/src/persistence/Layers/OrchestrationEventStore.test.ts:17"
+      ],
+      "f5Shas": ["ea0afa99e26887c9da2914b46a6d091b679cd47b"]
     },
     {
       "upstreamSha": "0860cea0c25f34582d03f17ccde23c5dfec64c12",
@@ -5587,10 +5592,22 @@
     {
       "upstreamSha": "4fc80fcbdc1ed33c46296dbad08517f2968856e6",
       "subject": "fix(server): stop replaying a command receipt for a different aggregate (#5246)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): stop replaying a command receipt for a different aggregate. Reimplement in f5; not yet delivered.",
+      "reason": "Command receipts use the command target aggregate for accepted and rejected commands. Cross-aggregate reuse fails without replacing proof; legacy global pin receipts are verified against their original event and anchor. Conflicts fail queue dispatch immediately and retain bootstrap cleanup diagnostics.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:137",
+        "apps/server/src/wsServer/bootstrapTurnStart.ts:89",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts:218",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:144",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:253",
+        "apps/server/src/nextTurnQueue/dispatchOutcome.ts:57"
+      ],
+      "f5Shas": [
+        "ea0afa99e26887c9da2914b46a6d091b679cd47b",
+        "256ef091b49523d70e32e760957e97c33d829fb9"
+      ]
     },
     {
       "upstreamSha": "4fed6cfb3517ef9af9b2a361142152c079504530",
@@ -8839,10 +8856,15 @@
     {
       "upstreamSha": "80d9c181da41ee3890791c9b65018ce093e7bc9e",
       "subject": "fix(contracts): old message-sent events without turnId no longer stop the server from starting (#12763)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(contracts): old message-sent events without turnId no longer stop the server from starting. Reimplement in f5; not yet delivered.",
+      "reason": "Legacy persisted message-sent payloads without turnId decode to null; contract and real projection replay regressions cover the old shape.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "packages/contracts/src/orchestration.ts:1830",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts:62"
+      ],
+      "f5Shas": ["ea0afa99e26887c9da2914b46a6d091b679cd47b"]
     },
     {
       "upstreamSha": "80ead5f3a7743010cdab6ad84fa4dcbd4c021038",
@@ -11353,10 +11375,16 @@
     {
       "upstreamSha": "a6797b3b97dca6b6941574ff062d069c45c89b9a",
       "subject": "fix(server): replay all un-applied events during projection bootstrap (#7538)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): replay all un-applied events during projection bootstrap. Reimplement in f5; not yet delivered.",
+      "reason": "Projection bootstrap, engine startup/fallback and dispatch-failure reconciliation explicitly replay all remaining events; regressions exceed 1,000 events.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:2259",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:110",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:371"
+      ],
+      "f5Shas": ["ea0afa99e26887c9da2914b46a6d091b679cd47b"]
     },
     {
       "upstreamSha": "a6ac27e7fd965f26ee0c61946e056f0fd889818c",
@@ -13148,10 +13176,21 @@
     {
       "upstreamSha": "c0f9d917c1ab08d30f2b3715dd25d2175a6d2ecf",
       "subject": "fix(server): wait for concurrent SQLite writers instead of failing with SQLITE_BUSY (#5134)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): wait for concurrent SQLite writers instead of failing with SQLITE_BUSY. Reimplement in f5; not yet delivered.",
+      "reason": "SQLite connections wait up to five seconds for concurrent writers. Node initializes the timeout on connection creation; Bun initializes it before WAL/migrations with automatic driver WAL disabled. Separate-process contention tests cover both runtimes; profile instance locks remain fail-fast.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/persistence/NodeSqliteClient.ts:95",
+        "apps/server/src/persistence/Layers/Sqlite.ts:34",
+        "apps/server/integration/sqliteBusyTimeout.integration.test.ts:11",
+        "apps/server/integration/fixtures/sqliteBusyWriter.ts:27",
+        "apps/server/integration/sqliteBusyTimeout.integration.test.ts:52"
+      ],
+      "f5Shas": [
+        "ea0afa99e26887c9da2914b46a6d091b679cd47b",
+        "256ef091b49523d70e32e760957e97c33d829fb9"
+      ]
     },
     {
       "upstreamSha": "c12ba7581ac00ba2a623ad23283da5d03d34c2d8",
@@ -14354,10 +14393,20 @@
     {
       "upstreamSha": "d42a3bd2ae3e698141b26f6426aa28d8886e1754",
       "subject": "fix(server): keep ready checkpoints when a later placeholder arrives (#8432)",
-      "reason": "Phase 1b (orchestration, persistence and checkpoint correctness): fix(server): keep ready checkpoints when a later placeholder arrives. Reimplement in f5; not yet delivered.",
+      "reason": "SQL turn and thread projections ignore late missing checkpoint placeholders when a captured checkpoint exists, preserving refs, latest turn and sidebar timestamps. Regression verifies both tables and every projector cursor.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1b"
+      "disposition": "ported",
+      "plannedWorkstream": "1b",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1962",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts:62",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1148",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts:157"
+      ],
+      "f5Shas": [
+        "ea0afa99e26887c9da2914b46a6d091b679cd47b",
+        "256ef091b49523d70e32e760957e97c33d829fb9"
+      ]
     },
     {
       "upstreamSha": "d43210050b97d57d7a4e76df30624b89108102d9",

@@ -33,7 +33,9 @@ export interface OrchestrationEngineShape {
   readonly getReadModel: () => Effect.Effect<OrchestrationReadModel, never, never>;
 
   /**
-   * Replay persisted orchestration events from an exclusive sequence cursor.
+   * Read a bounded page of persisted events after an exclusive sequence cursor.
+   * Returns at most 1,000 events; continue from the last returned sequence.
+   * Internal startup and recovery replay use the event store without this cap.
    *
    * @param fromSequenceExclusive - Sequence cursor (exclusive).
    * @returns Stream containing ordered events.
