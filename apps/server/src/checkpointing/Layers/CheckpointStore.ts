@@ -25,10 +25,10 @@ const makeCheckpointStore = Effect.gen(function* () {
   const path = yield* Path.Path;
   const git = yield* GitService;
 
-  const durableWrite = ["-c", "core.fsync=objects,reference", "-c", "core.fsyncMethod=fsync"];
+  const durableWrite = ["-c", "core.fsync=objects,reference", "-c", "core.fsyncMethod=batch"];
   // Retry only capture commands with recognizable lock/file disappearance races.
   const executeCapture = (input: ExecuteGitInput) =>
-    git.execute(input).pipe(
+    git.execute({ ...input, env: { ...input.env, LC_ALL: "C", LANGUAGE: "C" } }).pipe(
       Effect.retry({
         times: 3,
         schedule: Schedule.exponential("75 millis"),
@@ -170,19 +170,42 @@ const makeCheckpointStore = Effect.gen(function* () {
                       operation,
                       cwd: nestedCwd,
                       args: ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
-                      env: nestedEnv,
+                      env: { ...nestedEnv, GIT_CEILING_DIRECTORIES: path.dirname(nestedCwd) },
                       allowNonZeroExit: true,
                     });
                     if (head.code === 1) exclusions.push(`:(exclude,literal)${entry}`);
                     else if (head.code !== 0) return yield* error;
                   }
                   if (exclusions.length === 0) return yield* error;
-                  yield* stageFiles(exclusions);
+                  return exclusions;
                 }).pipe(
                   Effect.timeoutOrElse({
                     duration: "5 seconds",
-                    onTimeout: () => Effect.fail(error),
+                    onTimeout: () =>
+                      Effect.fail(
+                        new GitCommandError({
+                          ...error,
+                          detail: "Empty-repository discovery timed out after 5 seconds.",
+                        }),
+                      ),
                   }),
+                  Effect.catch((cause) => {
+                    if (cause === error) return Effect.fail(error);
+                    return Effect.fail(
+                      new GitCommandError({
+                        ...error,
+                        detail: `${error.detail} Recovery discovery failed: ${cause.message}`,
+                        cause,
+                      }),
+                    );
+                  }),
+                  Effect.tapError((failure) =>
+                    Effect.logWarning("checkpoint empty-repository discovery failed", {
+                      detail: failure.message,
+                    }),
+                  ),
+                  // Re-staging has the normal Git deadline, not the discovery budget.
+                  Effect.flatMap(stageFiles),
                 );
               }),
             );

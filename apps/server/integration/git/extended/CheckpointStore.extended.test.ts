@@ -67,3 +67,22 @@ it.each([false, true])(
     }
   },
 );
+
+it("captures 5,000 new files around an empty nested repository within the Git deadline", async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-large-"));
+  try {
+    init(cwd);
+    for (let index = 0; index < 5_000; index++) {
+      fs.writeFileSync(path.join(cwd, `file-${index}.txt`), `unique checkpoint content ${index}\n`);
+    }
+    init(path.join(cwd, "empty-child"));
+    const start = performance.now();
+    await capture(cwd);
+    expect(performance.now() - start).toBeLessThan(30_000);
+    expect(git(cwd, "ls-tree", "--name-only", "refs/t3/test-checkpoint").split("\n")).toHaveLength(
+      5_000,
+    );
+  } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}, 45_000);

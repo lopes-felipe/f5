@@ -819,7 +819,12 @@ describe("CheckpointReactor", () => {
       expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
       expect(
         thread.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
-      ).toBe(false);
+      ).toBe(true);
+      const warning = thread.activities.find(
+        (activity) => activity.kind === "checkpoint.capture.failed",
+      );
+      expect(warning?.tone).toBe("info");
+      expect(warning?.summary).toContain("diff summary unavailable");
       expect(diffCheckpoints).not.toHaveBeenCalled();
       expect(thread.checkpoints[0]?.files).toEqual([]);
       expect(
