@@ -1,5 +1,8 @@
 # September 2026 upstream port classification
 
+> Historical schema-5 report. Storage and refresh mechanics are superseded by
+> [the schema-6 ledger](../scripts.md#upstream-port-ledger); classification decisions remain preserved.
+
 This completes the classification and pinned refresh portion of Phase 0b. It does
 not implement the selected runtime or UX ports. Phase 0d's performance baseline
 and Phases 1–14 remain unfinished; the protocol gate landed separately.

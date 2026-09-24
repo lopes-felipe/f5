@@ -1,6 +1,7 @@
 import {
-  makeAudit,
-  promoteBacklog,
+  coveredInterval,
+  sortEntries,
+  validateAudit,
   SHA_PATTERN,
   type FrozenCommit,
   type Ledger,
@@ -137,8 +138,8 @@ export function applyPortPlan(
   commits: ReadonlyArray<FrozenCommit>,
   plan: PortPlan,
 ): Ledger {
-  if (ledger.schemaVersion !== 5)
-    throw new Error("refresh the ledger to schema 5 before applying classifications");
+  if (ledger.schemaVersion !== 6)
+    throw new Error("migrate the ledger to schema 6 before applying classifications");
   if (
     plan.schemaVersion !== 1 ||
     !SHA_PATTERN.test(plan.baseSha) ||
@@ -146,8 +147,11 @@ export function applyPortPlan(
     !Array.isArray(plan.entries)
   )
     throw new Error("invalid classification plan metadata");
-  if (ledger.entries[0]?.upstreamSha !== plan.targetSha || commits[0]?.sha !== plan.targetSha)
-    throw new Error("classification target must equal the frozen manifest head");
+  const errors = validateAudit(ledger);
+  if (errors.length) throw new Error(errors.join("\n"));
+  const covered = coveredInterval(ledger, plan.baseSha, plan.targetSha);
+  if (JSON.stringify(covered) !== JSON.stringify(commits.map((commit) => commit.sha)))
+    throw new Error("classification selection differs from already-covered interval");
   const expected = new Set(commits.map((commit) => commit.sha));
   if (expected.size !== commits.length) throw new Error("duplicate SHA in classification interval");
   const decisions = new Map<string, PlannedCommit>();
@@ -164,14 +168,7 @@ export function applyPortPlan(
     throw new Error(
       `classification coverage mismatch; missing SHAs: ${missing.join(", ")}; extra SHAs: ${extra.join(", ")}`,
     );
-  const existing = new Map(
-    [...ledger.entries, ...(ledger.historicalEntries ?? [])].map((entry) => [
-      entry.upstreamSha,
-      entry,
-    ]),
-  );
-  if (existing.size !== ledger.entries.length + (ledger.historicalEntries?.length ?? 0))
-    throw new Error("duplicate SHA in existing ledger records");
+  const existing = new Map(ledger.entries.map((entry) => [entry.upstreamSha, entry]));
   for (const commit of commits) {
     const entry = classify(commit, decisions.get(commit.sha)!);
     const previous = existing.get(commit.sha);
@@ -183,16 +180,5 @@ export function applyPortPlan(
         : entry,
     );
   }
-  const window = new Set(ledger.entries.map((entry) => entry.upstreamSha));
-  return {
-    ...ledger,
-    audit: makeAudit(
-      plan.baseSha,
-      plan.targetSha,
-      commits.map((commit) => commit.sha),
-    ),
-    entries: ledger.entries.map((entry) => existing.get(entry.upstreamSha)!),
-    historicalEntries: [...existing.values()].filter((entry) => !window.has(entry.upstreamSha)),
-    olderBacklog: promoteBacklog(ledger.olderBacklog, expected),
-  };
+  return { ...ledger, entries: sortEntries(existing.values()) };
 }

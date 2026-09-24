@@ -1,5 +1,8 @@
 # Upstream ledger schema 5 prerequisite
 
+> Historical schema-5 report. Storage and refresh mechanics are superseded by
+> [the schema-6 ledger](../scripts.md#upstream-port-ledger); classification decisions remain preserved.
+
 This change implements Phase 0b's ledger machinery and migrates the existing
 500-commit window without changing its head (`196c8ea0d`). It does not complete
 Phase 0b: the reviewed 1,836-SHA classification and target-window publication are
