@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import type { ProviderRuntimeEvent, ProviderSession } from "@t3tools/contracts";
+import type {
+  ProviderRuntimeEvent,
+  ProviderSession,
+  OrchestrationThread,
+} from "@t3tools/contracts";
 import {
   CommandId,
   DEFAULT_PROVIDER_INTERACTION_MODE,
@@ -116,19 +120,11 @@ function createProviderServiceHarness(
 
 async function waitForThread(
   engine: OrchestrationEngineShape,
-  predicate: (thread: {
-    latestTurn: { turnId: string } | null;
-    checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
-    activities: ReadonlyArray<{ kind: string }>;
-  }) => boolean,
+  predicate: (thread: OrchestrationThread) => boolean,
   timeoutMs = 5000,
 ) {
   const deadline = Date.now() + timeoutMs;
-  const poll = async (): Promise<{
-    latestTurn: { turnId: string } | null;
-    checkpoints: ReadonlyArray<{ checkpointTurnCount: number }>;
-    activities: ReadonlyArray<{ kind: string }>;
-  }> => {
+  const poll = async (): Promise<OrchestrationThread> => {
     const readModel = await Effect.runPromise(engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === ThreadId.makeUnsafe("thread-1"));
     if (thread && predicate(thread)) {
@@ -270,9 +266,9 @@ const fakeCheckpointStore: CheckpointStoreShape = {
     }),
 };
 
-function createGitRepository() {
+function createGitRepository(initiallyGit = true) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "t3-checkpoint-handler-"));
-  fs.mkdirSync(path.join(cwd, ".git"));
+  if (initiallyGit) fs.mkdirSync(path.join(cwd, ".git"));
   fs.writeFileSync(path.join(cwd, "README.md"), "v1\n", "utf8");
   return cwd;
 }
@@ -360,6 +356,8 @@ describe("CheckpointReactor", () => {
   });
 
   async function createHarness(options?: {
+    readonly initiallyGit?: boolean;
+    readonly checkpointStore?: CheckpointStoreShape;
     readonly hasSession?: boolean;
     readonly seedFilesystemCheckpoints?: boolean;
     readonly projectWorkspaceRoot?: string;
@@ -367,7 +365,7 @@ describe("CheckpointReactor", () => {
     readonly providerSessionCwd?: string;
     readonly stallStartupQuiescence?: boolean;
   }) {
-    const cwd = createGitRepository();
+    const cwd = createGitRepository(options?.initiallyGit ?? true);
     tempDirs.push(cwd);
     const provider = createProviderServiceHarness(
       cwd,
@@ -387,7 +385,9 @@ describe("CheckpointReactor", () => {
       Layer.provideMerge(orchestrationLayer),
       Layer.provideMerge(RuntimeReceiptBusLive),
       Layer.provideMerge(Layer.succeed(ProviderService, provider.service)),
-      Layer.provideMerge(Layer.succeed(CheckpointStore, fakeCheckpointStore)),
+      Layer.provideMerge(
+        Layer.succeed(CheckpointStore, options?.checkpointStore ?? fakeCheckpointStore),
+      ),
       Layer.provideMerge(
         Layer.succeed(ProjectionTurnRepository, {
           listTerminalUnquiesced: options?.stallStartupQuiescence
@@ -744,52 +744,98 @@ describe("CheckpointReactor", () => {
     expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
   });
 
-  it("appends capture failure activity when turn diff summary cannot be derived", async () => {
-    const harness = await createHarness({ seedFilesystemCheckpoints: false });
-    const createdAt = new Date().toISOString();
-
-    await Effect.runPromise(
-      harness.engine.dispatch({
-        type: "thread.session.set",
-        commandId: CommandId.makeUnsafe("cmd-session-set-missing-baseline-diff"),
-        threadId: ThreadId.makeUnsafe("thread-1"),
-        session: {
-          threadId: ThreadId.makeUnsafe("thread-1"),
-          status: "ready",
-          providerName: "codex",
-          runtimeMode: "approval-required",
-          activeTurnId: null,
-          lastError: null,
-          updatedAt: createdAt,
+  it.each(["absent", "lookup-failed", "git-init"])(
+    "captures completion without a baseline: %s",
+    async (scenario) => {
+      const diffCheckpoints = vi.fn(fakeCheckpointStore.diffCheckpoints);
+      const harness = await createHarness({
+        seedFilesystemCheckpoints: false,
+        initiallyGit: scenario !== "git-init",
+        checkpointStore: {
+          ...fakeCheckpointStore,
+          diffCheckpoints,
+          hasCheckpointRef:
+            scenario === "lookup-failed"
+              ? () =>
+                  Effect.fail(
+                    new CheckpointInvariantError({
+                      operation: "lookup",
+                      detail: "baseline unavailable",
+                    }),
+                  )
+              : fakeCheckpointStore.hasCheckpointRef,
         },
-        createdAt,
-      }),
-    );
+      });
+      const createdAt = new Date().toISOString();
 
-    harness.provider.emit({
-      type: "turn.completed",
-      eventId: EventId.makeUnsafe("evt-turn-completed-missing-baseline"),
-      provider: "codex",
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.session.set",
+          commandId: CommandId.makeUnsafe("cmd-session-set-missing-baseline-diff"),
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          session: {
+            threadId: ThreadId.makeUnsafe("thread-1"),
+            status: "ready",
+            providerName: "codex",
+            runtimeMode: "approval-required",
+            activeTurnId: null,
+            lastError: null,
+            updatedAt: createdAt,
+          },
+          createdAt,
+        }),
+      );
 
-      createdAt: new Date().toISOString(),
-      threadId: ThreadId.makeUnsafe("thread-1"),
-      turnId: asTurnId("turn-missing-baseline"),
-      payload: { state: "completed" },
-    });
+      if (scenario === "git-init") {
+        harness.provider.emit({
+          type: "turn.started",
+          eventId: EventId.makeUnsafe("before-git-init"),
+          provider: "codex",
+          createdAt,
+          threadId: ThreadId.makeUnsafe("thread-1"),
+          turnId: asTurnId("turn-missing-baseline"),
+        });
+        await harness.drain();
+        expect(
+          gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 0)),
+        ).toBe(false);
+        fs.mkdirSync(path.join(harness.cwd, ".git"));
+      }
+      fs.writeFileSync(path.join(harness.cwd, "README.md"), "saved without baseline\n");
+      harness.provider.emit({
+        type: "turn.completed",
+        eventId: EventId.makeUnsafe("evt-turn-completed-missing-baseline"),
+        provider: "codex",
 
-    await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
-    const thread = await waitForThread(
-      harness.engine,
-      (entry) =>
-        entry.checkpoints.length === 1 &&
-        entry.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
-    );
+        createdAt: new Date().toISOString(),
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        turnId: asTurnId("turn-missing-baseline"),
+        payload: { state: "completed" },
+      });
 
-    expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
-    expect(
-      thread.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
-    ).toBe(true);
-  });
+      await waitForEvent(harness.engine, (event) => event.type === "thread.turn-diff-completed");
+      const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 1);
+
+      expect(thread.checkpoints[0]?.checkpointTurnCount).toBe(1);
+      expect(
+        thread.activities.some((activity) => activity.kind === "checkpoint.capture.failed"),
+      ).toBe(true);
+      const warning = thread.activities.find(
+        (activity) => activity.kind === "checkpoint.capture.failed",
+      );
+      expect(warning?.tone).toBe("info");
+      expect(warning?.summary).toContain("diff summary unavailable");
+      expect(diffCheckpoints).not.toHaveBeenCalled();
+      expect(thread.checkpoints[0]?.files).toEqual([]);
+      expect(
+        gitShowFileAtRef(
+          harness.cwd,
+          checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 1),
+          "README.md",
+        ),
+      ).toBe("saved without baseline\n");
+    },
+  );
 
   it("captures pre-turn baseline from project workspace root when thread worktree is unset", async () => {
     const harness = await createHarness({
