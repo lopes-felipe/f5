@@ -5592,16 +5592,22 @@
     {
       "upstreamSha": "4fc80fcbdc1ed33c46296dbad08517f2968856e6",
       "subject": "fix(server): stop replaying a command receipt for a different aggregate (#5246)",
-      "reason": "Command receipts are checked against aggregate kind and ID before deduplication; conflicts preserve the original receipt and are treated as definitely uncommitted delivery.",
+      "reason": "Command receipts use the command target aggregate for accepted and rejected commands. Cross-aggregate reuse fails without replacing proof; legacy global pin receipts are verified against their original event and anchor. Conflicts fail queue dispatch immediately and retain bootstrap cleanup diagnostics.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
       "evidence": [
         "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:137",
         "apps/server/src/wsServer/bootstrapTurnStart.ts:89",
-        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts:218"
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.test.ts:218",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:144",
+        "apps/server/src/orchestration/Layers/OrchestrationEngine.ts:253",
+        "apps/server/src/nextTurnQueue/dispatchOutcome.ts:57"
       ],
-      "f5Shas": ["ea0afa99e26887c9da2914b46a6d091b679cd47b"]
+      "f5Shas": [
+        "ea0afa99e26887c9da2914b46a6d091b679cd47b",
+        "256ef091b49523d70e32e760957e97c33d829fb9"
+      ]
     },
     {
       "upstreamSha": "4fed6cfb3517ef9af9b2a361142152c079504530",
@@ -13177,9 +13183,14 @@
       "evidence": [
         "apps/server/src/persistence/NodeSqliteClient.ts:95",
         "apps/server/src/persistence/Layers/Sqlite.ts:34",
-        "apps/server/integration/sqliteBusyTimeout.integration.test.ts:11"
+        "apps/server/integration/sqliteBusyTimeout.integration.test.ts:11",
+        "apps/server/integration/fixtures/sqliteBusyWriter.ts:27",
+        "apps/server/integration/sqliteBusyTimeout.integration.test.ts:52"
       ],
-      "f5Shas": ["ea0afa99e26887c9da2914b46a6d091b679cd47b"]
+      "f5Shas": [
+        "ea0afa99e26887c9da2914b46a6d091b679cd47b",
+        "256ef091b49523d70e32e760957e97c33d829fb9"
+      ]
     },
     {
       "upstreamSha": "c12ba7581ac00ba2a623ad23283da5d03d34c2d8",
@@ -14382,15 +14393,20 @@
     {
       "upstreamSha": "d42a3bd2ae3e698141b26f6426aa28d8886e1754",
       "subject": "fix(server): keep ready checkpoints when a later placeholder arrives (#8432)",
-      "reason": "SQL turn projection ignores a late missing checkpoint when a non-missing checkpoint already exists, preserving captured refs and matching the in-memory projection.",
+      "reason": "SQL turn and thread projections ignore late missing checkpoint placeholders when a captured checkpoint exists, preserving refs, latest turn and sidebar timestamps. Regression verifies both tables and every projector cursor.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
       "evidence": [
         "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1962",
-        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts:62"
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts:62",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.ts:1148",
+        "apps/server/src/orchestration/Layers/ProjectionPipeline.test.ts:157"
       ],
-      "f5Shas": ["ea0afa99e26887c9da2914b46a6d091b679cd47b"]
+      "f5Shas": [
+        "ea0afa99e26887c9da2914b46a6d091b679cd47b",
+        "256ef091b49523d70e32e760957e97c33d829fb9"
+      ]
     },
     {
       "upstreamSha": "d43210050b97d57d7a4e76df30624b89108102d9",
