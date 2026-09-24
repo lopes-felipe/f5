@@ -1308,10 +1308,6 @@ function buildUserMessageEffect(
     const text = buildPromptText(input, dependencies.activeModel);
     const sdkContent: Array<Record<string, unknown>> = [];
 
-    if (text.length > 0) {
-      sdkContent.push({ type: "text", text });
-    }
-
     for (const attachment of input.attachments ?? []) {
       switch (attachment.type) {
         case "image": {
@@ -1362,6 +1358,9 @@ function buildUserMessageEffect(
       }
     }
 
+    if (text.length > 0) {
+      sdkContent.push({ type: "text", text });
+    }
     return buildUserMessage({ sdkContent });
   });
 }
@@ -3508,11 +3507,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "vcs_state_changed":
           case "code_change_published":
           case "commands_changed":
-          case "model_refusal_fallback":
           case "local_command_output":
           case "plugin_install":
           case "memory_recall":
           case "elicitation_complete":
+            return;
+          case "model_refusal_fallback":
+            yield* offerRuntimeEvent({
+              ...base,
+              type: "runtime.warning",
+              payload: {
+                category: "provider",
+                message:
+                  normalizeOptionalString(rawMessage.content) ??
+                  "Claude switched models after a refusal.",
+              },
+            });
             return;
           case "api_retry": {
             const attempt = normalizeOptionalNumber(rawMessage.attempt);
@@ -4713,8 +4723,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,
-                  ...(decision === "acceptForSession" && pendingApproval.suggestions
-                    ? { updatedPermissions: [...pendingApproval.suggestions] }
+                  ...(decision === "acceptForSession"
+                    ? {
+                        updatedPermissions: pendingApproval.suggestions?.length
+                          ? pendingApproval.suggestions.map((suggestion) => ({
+                              ...suggestion,
+                              destination: "session" as const,
+                            }))
+                          : [
+                              {
+                                type: "addRules",
+                                rules: [{ toolName }],
+                                behavior: "allow",
+                                destination: "session",
+                              },
+                            ],
+                      }
                     : {}),
                 } satisfies PermissionResult;
               }

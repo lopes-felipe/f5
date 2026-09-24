@@ -3,7 +3,7 @@
  *
  * @module textGenerationUtils
  */
-import { Schema } from "effect";
+import { Option, Schema } from "effect";
 
 import { TextGenerationError } from "./Errors.ts";
 
@@ -97,8 +97,13 @@ export function sanitizePrTitle(raw: string): string {
 }
 
 /** Normalise a raw thread title to a compact single-line sidebar-safe label. */
+const decodeWrappedThreadTitle = Schema.decodeOption(
+  Schema.fromJsonString(Schema.Struct({ title: Schema.String })),
+);
+
 export function sanitizeThreadTitle(raw: string): string {
-  const normalized = raw
+  const wrapped = decodeWrappedThreadTitle(raw);
+  const normalized = (Option.isSome(wrapped) ? wrapped.value.title : raw)
     .trim()
     .split(/\r?\n/g)[0]
     ?.trim()

@@ -7,7 +7,7 @@
  *
  * @module ClaudeTextGeneration
  */
-import { Effect, Option, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveClaudeCliInvocation } from "../../provider/claudeSdkExecutable.ts";
 
@@ -69,10 +69,17 @@ const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
 });
 
+const ClaudeOutputMessage = Schema.Struct({
+  type: Schema.String,
+  structured_output: Schema.optionalKey(Schema.Unknown),
+});
+
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
   claudeSettings: ClaudeSettings,
   environment: NodeJS.ProcessEnv = process.env,
 ) {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const commandSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const claudeEnvironment = yield* makeClaudeEnvironment(claudeSettings, environment);
 
@@ -131,12 +138,17 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
     const settings = {
+      disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
     };
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* () {
-      const binaryPath = claudeSettings.binaryPath || "claude";
+      const configuredBinary = claudeSettings.binaryPath.trim() || "claude";
+      const binaryPath =
+        configuredBinary.includes("/") || configuredBinary.includes("\\")
+          ? path.resolve(cwd, configuredBinary)
+          : configuredBinary;
       const args = [
         "-p",
         "--output-format",
@@ -146,17 +158,31 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         "--model",
         resolveClaudeApiModelId(modelSelection),
         ...(cliEffort ? ["--effort", cliEffort] : []),
-        ...(Object.keys(settings).length > 0 ? ["--settings", JSON.stringify(settings)] : []),
-        "--dangerously-skip-permissions",
+        "--settings",
+        JSON.stringify(settings),
+        "--tools",
+        "",
+        "--disable-slash-commands",
+        "--strict-mcp-config",
       ];
       const invocation = yield* Effect.try({
         try: () => resolveClaudeCliInvocation(binaryPath, args, claudeEnvironment, { cwd }),
         catch: (cause) =>
           normalizeCliError("claude", operation, cause, "Failed to resolve Claude CLI process"),
       });
+      // Resolve custom executables against the caller's cwd, but never load repository
+      // instructions or integrations while generating metadata.
+      const isolatedCwd = yield* fileSystem
+        .makeTempDirectoryScoped({ prefix: "f5-claude-metadata-" })
+        .pipe(
+          Effect.mapError((cause) =>
+            normalizeCliError("claude", operation, cause, "Failed to create metadata workspace"),
+          ),
+        );
       const command = ChildProcess.make(invocation.file, [...invocation.args], {
         env: claudeEnvironment,
-        cwd,
+        extendEnv: false,
+        cwd: isolatedCwd,
         stdin: {
           stream: Stream.encodeText(
             Stream.make(
@@ -221,9 +247,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ),
     );
 
-    const envelope = yield* Schema.decodeEffect(Schema.fromJsonString(ClaudeOutputEnvelope))(
-      rawStdout,
-    ).pipe(
+    const output = yield* Schema.decodeEffect(
+      Schema.fromJsonString(
+        Schema.Union([ClaudeOutputEnvelope, Schema.Array(ClaudeOutputMessage)]),
+      ),
+    )(rawStdout).pipe(
       Effect.catchTag("SchemaError", (cause) =>
         Effect.fail(
           new TextGenerationError({
@@ -235,7 +263,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ),
     );
 
-    return yield* Schema.decodeEffect(outputSchemaJson)(envelope.structured_output).pipe(
+    const envelope = Schema.is(ClaudeOutputEnvelope)(output)
+      ? output
+      : output.findLast((message) => message.type === "result");
+    return yield* Schema.decodeEffect(outputSchemaJson)(envelope?.structured_output).pipe(
       Effect.catchTag("SchemaError", (cause) =>
         Effect.fail(
           new TextGenerationError({

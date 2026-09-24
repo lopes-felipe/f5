@@ -416,7 +416,16 @@ export function withClaudeProbeQuery<A>(
               abortController: abort,
               settingSources: ["user", "project", "local"],
               allowedTools: [],
-              env: claudeEnvironment,
+              settings: { disableAllHooks: true },
+              mcpServers: {},
+              strictMcpConfig: true,
+              env: {
+                ...claudeEnvironment,
+                ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+                FORCE_CODE_TERMINAL: undefined,
+                CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+                CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL: "1",
+              },
               stderr: () => {},
             },
           });

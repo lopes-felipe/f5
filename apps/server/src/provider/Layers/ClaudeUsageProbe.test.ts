@@ -26,6 +26,13 @@ describe("Claude account probe", () => {
       expect(input.options?.cwd).toBe(process.cwd());
       expect(input.options?.persistSession).toBe(false);
       expect(input.options?.allowedTools).toEqual([]);
+      expect(input.options?.settings).toEqual({ disableAllHooks: true });
+      expect(input.options?.mcpServers).toEqual({});
+      expect(input.options?.strictMcpConfig).toBe(true);
+      expect(input.options?.env?.ENABLE_CLAUDEAI_MCP_SERVERS).toBe("false");
+      expect(input.options?.env?.FORCE_CODE_TERMINAL).toBeUndefined();
+      expect(input.options?.env?.CLAUDE_CODE_AUTO_CONNECT_IDE).toBe("0");
+      expect(input.options?.env?.CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL).toBe("1");
       expect(input.options?.env?.F5_USAGE_TEST).toBe("instance");
       input.options?.abortController?.signal.addEventListener("abort", abort);
       return query({
@@ -64,7 +71,12 @@ describe("Claude account probe", () => {
     const value = await run(
       probeClaudeAccountUsage(
         settings,
-        { ...process.env, F5_USAGE_TEST: "instance" },
+        {
+          ...process.env,
+          F5_USAGE_TEST: "instance",
+          FORCE_CODE_TERMINAL: "vscode",
+          CLAUDE_CODE_AUTO_CONNECT_IDE: "1",
+        },
         { createQuery, cwd: process.cwd(), onCapabilities },
       ),
     );
