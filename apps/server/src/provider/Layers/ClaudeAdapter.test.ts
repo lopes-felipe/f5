@@ -1897,6 +1897,7 @@ describe("ClaudeAdapterLive", () => {
           "<f5-runtime-context>",
           'Active model: "claude-sonnet-4-6"',
           "This host-reported value is authoritative for model identity.",
+          "File edits: change workspace files with Edit, MultiEdit, or Write, not shell writes (sed -i, heredocs, scripts), so F5 can show reviewable diffs.",
           "</f5-runtime-context>",
           "",
           "Ultrathink:",

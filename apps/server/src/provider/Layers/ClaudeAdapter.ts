@@ -1229,6 +1229,7 @@ function buildClaudeTurnRuntimeContext(model: string | undefined): string | unde
     "<f5-runtime-context>",
     `Active model: ${JSON.stringify(normalizeModelSlug(normalizedModel, "claudeAgent") ?? normalizedModel)}`,
     "This host-reported value is authoritative for model identity.",
+    "File edits: change workspace files with Edit, MultiEdit, or Write, not shell writes (sed -i, heredocs, scripts), so F5 can show reviewable diffs.",
     "</f5-runtime-context>",
   ].join("\n");
 }

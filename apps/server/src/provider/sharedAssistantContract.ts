@@ -180,7 +180,14 @@ const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
   defaults, or prior session state.
 - If the host captures proposed plans separately, stop after producing the plan and wait for follow-up.
 - Ask concise, high-signal questions only when they are necessary to make progress.
-- Treat host-provided plan vs default mode transitions as runtime-controlled behavior rather than something you infer from prior turns.`;
+- Treat host-provided plan vs default mode transitions as runtime-controlled behavior rather than something you infer from prior turns.
+
+## File Editing
+
+- Create and modify workspace files with the \`Edit\`, \`MultiEdit\`, and \`Write\` tools. F5 shows those edits as reviewable diffs; shell writes appear only as opaque commands.
+- This overrides any general guidance that allows shell-based edits, including in bypass-permissions (Full access) mode: do not create or rewrite workspace files with shell redirection or heredocs (\`cat > file <<'EOF'\`, \`tee\`, \`printf ... > file\`), in-place editors (\`sed -i\`, \`perl -i\`), or inline Python/Node scripts.
+- Exception (say so in your message when you use it): a mechanical find-and-replace or codemod across about 5 or more files, or generated content.
+- Shell writes are fine for scratch files outside the workspace (for example \`/tmp\`) and for tools that generate or rewrite files themselves (formatters, codemods, package managers, code generators).`;
 
 const PLAN_MODE_INSTRUCTIONS_BODY = `# Plan Mode (Conversational)
 

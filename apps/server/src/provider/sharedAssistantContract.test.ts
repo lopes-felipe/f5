@@ -34,7 +34,7 @@ describe("sharedAssistantContract", () => {
     expect(text).toContain("<proposed_plan>");
   });
 
-  it("renders the apply_patch file-editing rule with its escape hatch for Codex only", () => {
+  it("renders the apply_patch file-editing rule and code-mode escaping for Codex only", () => {
     const codexText = buildCodexAssistantInstructions({
       interactionMode: "default",
       model: "gpt-6-astra",
@@ -42,15 +42,28 @@ describe("sharedAssistantContract", () => {
 
     expect(codexText).toContain("## File Editing");
     expect(codexText).toContain("tools.apply_patch(String.raw`");
-    expect(codexText).toContain("<<'EOF'");
+    expect(codexText).toContain("### Code Mode Escaping");
+    expect(codexText).not.toContain("`MultiEdit`");
 
     const claudeText = buildClaudeAssistantInstructions({
       interactionMode: "default",
       model: "claude-opus-5-5",
     });
-    expect(claudeText).not.toContain("## File Editing");
     expect(claudeText).not.toContain("tools.apply_patch(");
-    expect(claudeText).not.toContain("<<'EOF'");
+    expect(claudeText).not.toContain("### Code Mode Escaping");
+  });
+
+  it("renders a Claude file-editing rule that prefers native edit tools over shell writes", () => {
+    const claudeText = buildClaudeAssistantInstructions({
+      interactionMode: "default",
+      model: "claude-opus-5-5",
+    });
+
+    expect(claudeText.match(/## File Editing/g)).toHaveLength(1);
+    expect(claudeText).toContain("`Edit`, `MultiEdit`, and `Write`");
+    // Must explicitly override Claude Code's bypass-mode allowance for shell edits.
+    expect(claudeText).toContain("bypass-permissions");
+    expect(claudeText).toContain("<<'EOF'");
   });
 
   it("ships a code-mode apply_patch example that round-trips backslashes exactly", async () => {
