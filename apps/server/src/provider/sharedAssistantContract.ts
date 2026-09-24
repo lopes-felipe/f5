@@ -129,13 +129,27 @@ You may receive explicit collaboration-mode instructions from the host.
 
 ## File Editing
 
-- Create and modify workspace files with \`apply_patch\`. When tools are exposed through \`exec\` (code mode), call \`tools.apply_patch("*** Begin Patch\\n*** Update File: <path>\\n...\\n*** End Patch")\`. Escape backslashes and quotes in the patch string so the file receives exactly the text you intend.
-- Do not create or rewrite workspace files with shell redirection or heredocs (\`cat > file <<'EOF'\`, \`tee\`, \`printf ... > file\`), in-place editors (\`sed -i\`, \`perl -i\`), or inline Python/Node scripts. F5 shows \`apply_patch\` edits as reviewable diffs; shell writes appear only as opaque commands.
-- Put related edits to several files in one \`apply_patch\` with multiple file sections.
+- When \`apply_patch\` is available, create and modify workspace files with it. Put related edits to several files in one \`apply_patch\` with multiple file sections. F5 shows \`apply_patch\` edits as reviewable diffs; shell writes appear only as opaque commands.
+- Do not create or rewrite workspace files with shell redirection or heredocs (\`cat > file <<'EOF'\`, \`tee\`, \`printf ... > file\`), in-place editors (\`sed -i\`, \`perl -i\`), or inline Python/Node scripts.
 - Exceptions (say which one applies in your message when you use it):
-  - The edited text is dense with backslashes or escape sequences (regular expressions, escaped strings, format strings), so escaping it inside a patch string risks changing the content, or \`apply_patch\` has failed twice for the same edit. Write the file with a quoted heredoc (\`cat > file <<'EOF'\`), which needs no escaping, then check the result with \`git diff\`.
+  - \`apply_patch\` has failed twice for the same edit. Write the file with a quoted heredoc (\`cat > file <<'EOF'\`), then check the exact result: \`git diff -- <file>\` for a tracked file, or \`cat <file>\` for a new file (\`git diff\` shows nothing for untracked files).
   - A mechanical find-and-replace or codemod across about 5 or more files, or generated content.
-- Shell writes are fine for scratch files outside the workspace (for example \`/tmp\`) and for tools that generate or rewrite files themselves (formatters, codemods, package managers, code generators).`;
+- Shell writes are fine for scratch files outside the workspace (for example \`/tmp\`) and for tools that generate or rewrite files themselves (formatters, codemods, package managers, code generators).
+
+### Code Mode Escaping
+
+When tools are called from JavaScript inside \`exec\` (code mode), every tool argument is a JavaScript string before \`apply_patch\` or the shell reads it. In a normal quoted string JavaScript consumes backslashes: \`"\\d"\` becomes \`d\` and \`"\\n"\` becomes a newline. Pass patches as a \`String.raw\` template literal with real line breaks, which keeps every backslash exactly:
+
+\`\`\`js
+text(await tools.apply_patch(String.raw\`*** Begin Patch
+*** Update File: src/version.ts
+@@
+-export const VERSION_PATTERN = /\\d+/;
++export const VERSION_PATTERN = /\\d+\\.\\d+/;
+*** End Patch\`));
+\`\`\`
+
+Inside \`String.raw\`, write a literal backtick as \${"\`"} and a literal \${ as \${"\${"}. Use the same form for shell commands passed to \`tools.exec_command\`, including heredocs: a quoted heredoc does not protect backslashes from JavaScript.`;
 
 const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
 

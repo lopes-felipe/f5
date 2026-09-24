@@ -1,3 +1,5 @@
+import vm from "node:vm";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -39,14 +41,8 @@ describe("sharedAssistantContract", () => {
     });
 
     expect(codexText).toContain("## File Editing");
-    expect(codexText).toContain("tools.apply_patch(");
-    // The code-mode example must reach the model as a literal escaped string,
-    // not with real newlines inside the quoted patch argument.
-    expect(codexText).toContain(
-      'tools.apply_patch("*** Begin Patch\\n*** Update File: <path>\\n...\\n*** End Patch")',
-    );
+    expect(codexText).toContain("tools.apply_patch(String.raw`");
     expect(codexText).toContain("<<'EOF'");
-    expect(codexText).toContain("F5 shows `apply_patch` edits as reviewable diffs");
 
     const claudeText = buildClaudeAssistantInstructions({
       interactionMode: "default",
@@ -55,6 +51,54 @@ describe("sharedAssistantContract", () => {
     expect(claudeText).not.toContain("## File Editing");
     expect(claudeText).not.toContain("tools.apply_patch(");
     expect(claudeText).not.toContain("<<'EOF'");
+  });
+
+  it("ships a code-mode apply_patch example that round-trips backslashes exactly", async () => {
+    const codexText = buildCodexAssistantInstructions({
+      interactionMode: "default",
+      model: "gpt-6-astra",
+    });
+    const example = /```js\n([\s\S]*?)\n```/.exec(codexText)?.[1];
+    expect(example).toBeDefined();
+
+    // Run the example exactly as the model sees it, like code mode would.
+    const patches: string[] = [];
+    await vm.runInNewContext(`(async () => {\n${example}\n})()`, {
+      tools: {
+        apply_patch: async (patch: string) => {
+          patches.push(patch);
+          return "Success.";
+        },
+      },
+      text: () => undefined,
+    });
+
+    expect(patches).toEqual([
+      [
+        "*** Begin Patch",
+        "*** Update File: src/version.ts",
+        "@@",
+        "-export const VERSION_PATTERN = /\\d+/;",
+        "+export const VERSION_PATTERN = /\\d+\\.\\d+/;",
+        "*** End Patch",
+      ].join("\n"),
+    ]);
+  });
+
+  it("documents String.raw escapes for backticks and ${ that produce the literal text", () => {
+    const codexText = buildCodexAssistantInstructions({
+      interactionMode: "default",
+      model: "gpt-6-astra",
+    });
+    const backtickEscape = '${"`"}';
+    const interpolationEscape = '${"${"}';
+    expect(codexText).toContain(`write a literal backtick as ${backtickEscape}`);
+    expect(codexText).toContain(`a literal \${ as ${interpolationEscape}`);
+
+    const evaluated = vm.runInNewContext(
+      `String.raw\`a${backtickEscape}b ${interpolationEscape}x} \\d\``,
+    );
+    expect(evaluated).toBe("a`b ${x} \\d");
   });
 
   it("names the host F5 in model-facing text", () => {
