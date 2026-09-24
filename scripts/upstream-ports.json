@@ -1450,7 +1450,7 @@
     {
       "upstreamSha": "1455cb5c35e50211145073be6ca155d56684f0f4",
       "subject": "fix(server): checkpoint workspaces with empty nested repositories (#12181)",
-      "reason": "Specific empty-repository staging failures trigger bounded NUL-delimited discovery and literal exclusions for confirmed unborn child repositories. Recovery has a 64-candidate cap, 8 MiB output cap and five-second deadline; real Git tests preserve the user's index and nested files with committed and unborn parents.",
+      "reason": "Specific empty-repository staging failures trigger bounded NUL-delimited discovery and literal exclusions for confirmed unborn child repositories. Discovery has a 64-candidate cap, 8 MiB output cap and five-second deadline; re-staging retains the normal Git command deadline; real Git tests preserve the user's index and nested files with committed and unborn parents.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
@@ -8913,7 +8913,7 @@
     {
       "upstreamSha": "8130a9f13a1ef506f4393423ded21d71f3c9b5e4",
       "subject": "fix(server): flush checkpoint objects and refs before publishing them (#10944)",
-      "reason": "Checkpoint staging, tree/commit creation and ref publication explicitly fsync objects and refs, including fsyncMethod=fsync. Tests verify every publishing command's configuration.",
+      "reason": "Checkpoint staging, tree/commit creation and ref publication explicitly fsync objects and refs, using fsyncMethod=batch. Tests verify every publishing command's configuration.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1b",
