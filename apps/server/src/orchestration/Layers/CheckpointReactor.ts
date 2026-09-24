@@ -238,10 +238,20 @@ const make = Effect.gen(function* () {
     const fromCheckpointRef = checkpointRefForThreadTurn(input.threadId, fromTurnCount);
     const targetCheckpointRef = checkpointRefForThreadTurn(input.threadId, input.turnCount);
 
-    const fromCheckpointExists = yield* checkpointStore.hasCheckpointRef({
-      cwd: input.cwd,
-      checkpointRef: fromCheckpointRef,
-    });
+    const fromCheckpointExists = yield* checkpointStore
+      .hasCheckpointRef({
+        cwd: input.cwd,
+        checkpointRef: fromCheckpointRef,
+      })
+      .pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("checkpoint baseline lookup failed", {
+            threadId: input.threadId,
+            checkpointRef: fromCheckpointRef,
+            category: error._tag,
+          }).pipe(Effect.as(false)),
+        ),
+      );
     if (!fromCheckpointExists) {
       yield* Effect.logWarning("checkpoint capture missing pre-turn baseline", {
         threadId: input.threadId,
@@ -259,39 +269,41 @@ const make = Effect.gen(function* () {
     // reflects files created or deleted during this turn.
     clearWorkspaceIndexCache(input.cwd);
 
-    const files = yield* checkpointStore
-      .diffCheckpoints({
-        cwd: input.cwd,
-        fromCheckpointRef,
-        toCheckpointRef: targetCheckpointRef,
-        fallbackFromToHead: false,
-      })
-      .pipe(
-        Effect.map((diff) =>
-          parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
-            path: file.path,
-            kind: "modified" as const,
-            additions: file.additions,
-            deletions: file.deletions,
-          })),
-        ),
-        Effect.tapError((error) =>
-          appendCaptureFailureActivity({
-            threadId: input.threadId,
-            turnId: input.turnId,
-            detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
-            createdAt: input.createdAt,
-          }),
-        ),
-        Effect.catch((error) =>
-          Effect.logWarning("failed to derive checkpoint file summary", {
-            threadId: input.threadId,
-            turnId: input.turnId,
-            turnCount: input.turnCount,
-            detail: error.message,
-          }).pipe(Effect.as([])),
-        ),
-      );
+    const files = yield* (
+      fromCheckpointExists
+        ? checkpointStore.diffCheckpoints({
+            cwd: input.cwd,
+            fromCheckpointRef,
+            toCheckpointRef: targetCheckpointRef,
+            fallbackFromToHead: false,
+          })
+        : Effect.succeed("")
+    ).pipe(
+      Effect.map((diff) =>
+        parseTurnDiffFilesFromUnifiedDiff(diff).map((file) => ({
+          path: file.path,
+          kind: "modified" as const,
+          additions: file.additions,
+          deletions: file.deletions,
+        })),
+      ),
+      Effect.tapError((error) =>
+        appendCaptureFailureActivity({
+          threadId: input.threadId,
+          turnId: input.turnId,
+          detail: `Checkpoint captured, but turn diff summary is unavailable: ${error.message}`,
+          createdAt: input.createdAt,
+        }),
+      ),
+      Effect.catch((error) =>
+        Effect.logWarning("failed to derive checkpoint file summary", {
+          threadId: input.threadId,
+          turnId: input.turnId,
+          turnCount: input.turnCount,
+          detail: error.message,
+        }).pipe(Effect.as([])),
+      ),
+    );
 
     const assistantMessageId =
       input.assistantMessageId ??

@@ -11,12 +11,12 @@
  */
 import { randomUUID } from "node:crypto";
 
-import { Effect, Layer, FileSystem, Path } from "effect";
+import { Effect, Layer, FileSystem, Path, Schedule } from "effect";
 
 import { CheckpointInvariantError } from "../Errors.ts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { GitServiceLive } from "../../git/Layers/GitService.ts";
-import { GitService } from "../../git/Services/GitService.ts";
+import { GitService, type ExecuteGitInput } from "../../git/Services/GitService.ts";
 import { CheckpointStore, type CheckpointStoreShape } from "../Services/CheckpointStore.ts";
 import { CheckpointRef } from "@t3tools/contracts";
 
@@ -24,6 +24,21 @@ const makeCheckpointStore = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const git = yield* GitService;
+
+  const durableWrite = ["-c", "core.fsync=objects,reference", "-c", "core.fsyncMethod=fsync"];
+  // Retry only capture commands with recognizable lock/file disappearance races.
+  const executeCapture = (input: ExecuteGitInput) =>
+    git.execute(input).pipe(
+      Effect.retry({
+        times: 3,
+        schedule: Schedule.exponential("75 millis"),
+        while: (error) =>
+          /unable to create [^\n]*\.lock['"]?: file exists/i.test(error.detail) ||
+          /(?:unable to stat|lstat\(|error: open\()[^\n]+: no such file or directory/i.test(
+            error.detail,
+          ),
+      }),
+    );
 
   const resolveHeadCommit = (cwd: string): Effect.Effect<string | null, GitCommandError> =>
     git
@@ -107,7 +122,7 @@ const makeCheckpointStore = Effect.gen(function* () {
 
             const headExists = yield* hasHeadCommit(input.cwd);
             if (headExists) {
-              yield* git.execute({
+              yield* executeCapture({
                 operation,
                 cwd: input.cwd,
                 args: ["read-tree", "HEAD"],
@@ -115,17 +130,67 @@ const makeCheckpointStore = Effect.gen(function* () {
               });
             }
 
-            yield* git.execute({
-              operation,
-              cwd: input.cwd,
-              args: ["add", "-A", "--", "."],
-              env: commitEnv,
-            });
+            const stageFiles = (exclusions: ReadonlyArray<string>) =>
+              executeCapture({
+                operation,
+                cwd: input.cwd,
+                args: [...durableWrite, "add", "-A", "--", ".", ...exclusions],
+                env: commitEnv,
+              });
+            yield* stageFiles([]).pipe(
+              Effect.catch((error) => {
+                if (!/does not have a commit checked out/i.test(error.detail))
+                  return Effect.fail(error);
+                return Effect.gen(function* () {
+                  const untracked = yield* executeCapture({
+                    operation,
+                    cwd: input.cwd,
+                    args: ["ls-files", "--others", "--exclude-standard", "-z", "--", "."],
+                    env: commitEnv,
+                    maxOutputBytes: 8 * 1024 * 1024,
+                  });
+                  const candidates = untracked.stdout
+                    .split("\0")
+                    .filter((entry) => entry.endsWith("/"));
+                  if (candidates.length > 64) return yield* error;
+                  const exclusions: string[] = [];
+                  const nestedEnv = {
+                    ...process.env,
+                    GIT_DIR: undefined,
+                    GIT_WORK_TREE: undefined,
+                    GIT_COMMON_DIR: undefined,
+                    GIT_INDEX_FILE: undefined,
+                    GIT_OBJECT_DIRECTORY: undefined,
+                    GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+                  };
+                  for (const entry of candidates) {
+                    const nestedCwd = path.resolve(input.cwd, entry);
+                    if (!(yield* fs.exists(path.join(nestedCwd, ".git")))) continue;
+                    const head = yield* executeCapture({
+                      operation,
+                      cwd: nestedCwd,
+                      args: ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+                      env: nestedEnv,
+                      allowNonZeroExit: true,
+                    });
+                    if (head.code === 1) exclusions.push(`:(exclude,literal)${entry}`);
+                    else if (head.code !== 0) return yield* error;
+                  }
+                  if (exclusions.length === 0) return yield* error;
+                  yield* stageFiles(exclusions);
+                }).pipe(
+                  Effect.timeoutOrElse({
+                    duration: "5 seconds",
+                    onTimeout: () => Effect.fail(error),
+                  }),
+                );
+              }),
+            );
 
-            const writeTreeResult = yield* git.execute({
+            const writeTreeResult = yield* executeCapture({
               operation,
               cwd: input.cwd,
-              args: ["write-tree"],
+              args: [...durableWrite, "write-tree"],
               env: commitEnv,
             });
             const treeOid = writeTreeResult.stdout.trim();
@@ -139,10 +204,10 @@ const makeCheckpointStore = Effect.gen(function* () {
             }
 
             const message = `t3 checkpoint ref=${input.checkpointRef}`;
-            const commitTreeResult = yield* git.execute({
+            const commitTreeResult = yield* executeCapture({
               operation,
               cwd: input.cwd,
-              args: ["commit-tree", treeOid, "-m", message],
+              args: [...durableWrite, "commit-tree", treeOid, "-m", message],
               env: commitEnv,
             });
             const commitOid = commitTreeResult.stdout.trim();
@@ -155,10 +220,10 @@ const makeCheckpointStore = Effect.gen(function* () {
               });
             }
 
-            yield* git.execute({
+            yield* executeCapture({
               operation,
               cwd: input.cwd,
-              args: ["update-ref", input.checkpointRef, commitOid],
+              args: [...durableWrite, "update-ref", input.checkpointRef, commitOid],
             });
           }),
         (tempDir) => fs.remove(tempDir, { recursive: true }),

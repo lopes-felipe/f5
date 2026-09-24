@@ -1,0 +1,69 @@
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { CheckpointRef } from "@t3tools/contracts";
+import { Effect, Layer } from "effect";
+import { expect, it } from "vitest";
+import { CheckpointStoreLive } from "../../../src/checkpointing/Layers/CheckpointStore.ts";
+import { CheckpointStore } from "../../../src/checkpointing/Services/CheckpointStore.ts";
+
+const layer = CheckpointStoreLive.pipe(Layer.provide(NodeServices.layer));
+const git = (cwd: string, ...args: string[]) =>
+  execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+function init(cwd: string) {
+  fs.mkdirSync(cwd, { recursive: true });
+  git(cwd, "init", "--initial-branch=main");
+  git(cwd, "config", "user.name", "Checkpoint Test");
+  git(cwd, "config", "user.email", "checkpoint@example.test");
+}
+const capture = (cwd: string) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const store = yield* CheckpointStore;
+      yield* store.captureCheckpoint({
+        cwd,
+        checkpointRef: CheckpointRef.makeUnsafe("refs/t3/test-checkpoint"),
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+
+it.each([false, true])(
+  "captures around empty nested repositories (parent has HEAD: %s)",
+  async (hasHead) => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "f5-checkpoint-nested-"));
+    try {
+      init(cwd);
+      fs.writeFileSync(path.join(cwd, "tracked.txt"), "initial\n");
+      git(cwd, "add", "tracked.txt");
+      if (hasHead) git(cwd, "commit", "-m", "initial");
+      const index = fs.readFileSync(path.join(cwd, ".git", "index"));
+      fs.writeFileSync(path.join(cwd, "tracked.txt"), "completed turn\n");
+      fs.writeFileSync(path.join(cwd, "new.txt"), "new\n");
+      for (const name of ["empty", "nested [literal]"]) {
+        const child = path.join(cwd, name);
+        init(child);
+        fs.writeFileSync(path.join(child, "private.txt"), "not part of parent checkpoint\n");
+      }
+      const committed = path.join(cwd, "committed-child");
+      init(committed);
+      fs.writeFileSync(path.join(committed, "child.txt"), "child\n");
+      git(committed, "add", "child.txt");
+      git(committed, "commit", "-m", "child");
+      await capture(cwd);
+      expect(git(cwd, "show", "refs/t3/test-checkpoint:tracked.txt")).toBe("completed turn");
+      expect(git(cwd, "show", "refs/t3/test-checkpoint:new.txt")).toBe("new");
+      const tree = git(cwd, "ls-tree", "refs/t3/test-checkpoint");
+      expect(tree).not.toContain("empty");
+      expect(tree).not.toContain("nested [literal]");
+      expect(tree).toContain(
+        `160000 commit ${git(committed, "rev-parse", "HEAD")}\tcommitted-child`,
+      );
+      expect(fs.readFileSync(path.join(cwd, ".git", "index"))).toEqual(index);
+      expect(fs.readFileSync(path.join(cwd, "empty", "private.txt"), "utf8")).toContain("not part");
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  },
+);
