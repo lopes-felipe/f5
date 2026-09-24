@@ -31,3 +31,6 @@ apps/web/src/components/__screenshots__
 # Atomic schema-6 upstream ledger publication.
 scripts/upstream-ports.json.lock
 scripts/upstream-ports.json.tmp-*
+
+# Local performance samples and machine metadata.
+.performance/

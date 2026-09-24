@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "seed": 290261,
+  "epoch": "2026-09-01T00:00:00.000Z",
+  "chat": { "messages": 10000, "attachmentEvery": 200, "toolEvery": 1000, "toolBytes": 1048576 },
+  "streaming": { "threads": 10, "updatesPerSecondPerThread": 20 },
+  "terminal": { "count": 20, "chunksPerBatch": 40, "chunkBytes": 4096, "longLineBytes": 4325376 },
+  "replay": { "events": 20000, "slowPauseEvery": 200, "disconnectAfter": 1000 },
+  "repository": { "files": 10000, "directories": 100, "nestedRepositories": 3, "submodules": 2 },
+  "method": {
+    "warmups": 5,
+    "repetitions": 30,
+    "retainedMemoryMinutes": 30,
+    "finalMemoryWindowMinutes": 10
+  }
+}

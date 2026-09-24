@@ -61,7 +61,9 @@
     "dist:desktop:win": "node scripts/build-desktop-artifact.ts --platform win --target nsis --arch x64",
     "release:smoke": "node scripts/release-smoke.ts",
     "clean": "node scripts/clean.ts",
-    "sync:vscode-icons": "node scripts/sync-vscode-icons.mjs"
+    "sync:vscode-icons": "node scripts/sync-vscode-icons.mjs",
+    "perf:server": "bun scripts/performance.ts",
+    "perf:compare": "bun scripts/performance.ts compare"
   },
   "devDependencies": {
     "@types/node": "catalog:",
