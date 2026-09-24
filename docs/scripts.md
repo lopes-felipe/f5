@@ -14,6 +14,8 @@
 - `bun run test:server:git` — Runs both smoke and exhaustive real-Git contracts.
 - `bun run test:server:git:extended` — Runs the exhaustive real-Git edge-case matrix.
 - `bun run test:full` — Runs the fast workspace suite followed by the exhaustive real-Git matrix; required before declaring work complete, releases, and after major Git subsystem changes.
+- `bun run perf:server` — Records the deterministic server component performance suite; `--smoke` checks the harness with fewer repetitions. See [performance scope and gates](performance.md).
+- `bun run perf:compare <before.json> <after.json> [CPU targets...]` — Checks matching server reports against the approved regression and resource limits.
 - `bun run dist:desktop:artifact -- --platform <mac|linux|win> --target <target> --arch <arch>` — Builds a desktop artifact for a specific platform/target/arch.
 - `bun run dist:desktop:dmg` — Builds a shareable macOS `.dmg` into `./release`.
 - `bun run dist:desktop:dmg:x64` — Builds an Intel macOS `.dmg`.
