@@ -95,6 +95,18 @@ describe("BoundedTerminalHistory", () => {
       }
     }
     expect(history.value()).toBe("9998\n9999\n");
-    expect(history.value()).toBe(history.value());
+  });
+  it("can evict and append after materializing a large snapshot", () => {
+    const history = new BoundedTerminalHistory(5000, 16000);
+    let text = "🙂".repeat(4000);
+    history.append(text);
+    expect(history.value()).toBe(text);
+    for (let i = 0; i < 100; i++) {
+      const next = `${i}世界\n`;
+      text = reference(text + next, 5000, 16000);
+      history.append(next);
+      expect(history.value()).toBe(text);
+      expect(history.byteLength).toBe(Buffer.byteLength(text));
+    }
   });
 });

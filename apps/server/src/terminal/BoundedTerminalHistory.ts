@@ -166,9 +166,17 @@ export class BoundedTerminalHistory {
   }
 
   value(): string {
-    return (this.cached ??= this.fragments
+    if (this.cached !== null) return this.cached;
+    this.cached = this.fragments
       .slice(this.head)
       .map((fragment) => fragment!.text.slice(fragment!.offset))
-      .join(""));
+      .join("");
+    // Share the materialized string instead of retaining a second full copy in
+    // fragments. Future appends stay separate; eviction advances the head offset.
+    this.fragments = this.cached
+      ? [{ text: this.cached, offset: 0, bytes: this.bytes, newlines: this.newlines }]
+      : [];
+    this.head = 0;
+    return this.cached;
   }
 }
