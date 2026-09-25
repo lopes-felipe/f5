@@ -160,7 +160,7 @@ it("records server component performance with deterministic workloads", async ()
         return Effect.succeed(pty);
       },
     },
-    subprocessChecker: async () => false,
+    processTableReader: async () => new Set<number>(),
   });
   const database = path.join(directory, "events.sqlite");
   const persistence = ManagedRuntime.make(

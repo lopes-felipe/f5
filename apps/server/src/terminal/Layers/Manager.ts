@@ -62,8 +62,6 @@ const decodeTerminalResizeInput = Schema.decodeUnknownSync(TerminalResizeInput);
 const decodeTerminalClearInput = Schema.decodeUnknownSync(TerminalClearInput);
 const decodeTerminalCloseInput = Schema.decodeUnknownSync(TerminalCloseInput);
 
-type TerminalSubprocessChecker = (terminalPid: number) => Promise<boolean>;
-
 let cachedDefaultWindowsShell: string | undefined;
 
 export function resolveDefaultWindowsShell(environment: NodeJS.ProcessEnv = process.env): string {
@@ -244,7 +242,6 @@ interface TerminalManagerOptions {
   historyLineLimit?: number;
   ptyAdapter: PtyAdapterShape;
   shellResolver?: () => string;
-  subprocessChecker?: TerminalSubprocessChecker;
   processTableReader?: () => Promise<TerminalProcessTable>;
   subprocessPollIntervalMs?: number;
   processKillGraceMs?: number;
@@ -263,7 +260,7 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
   private readonly pendingPersistHistory = new Map<string, BoundedTerminalHistory>();
   private readonly threadLocks = new Map<string, Promise<void>>();
   private readonly persistDebounceMs: number;
-  private readonly subprocessChecker: TerminalSubprocessChecker | undefined;
+  private processTableReadFailed = false;
   private readonly processTableReader: () => Promise<TerminalProcessTable>;
   private readonly subprocessPollIntervalMs: number;
   private readonly processKillGraceMs: number;
@@ -281,7 +278,6 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
     this.ptyAdapter = options.ptyAdapter;
     this.shellResolver = options.shellResolver ?? defaultShellResolver;
     this.persistDebounceMs = DEFAULT_PERSIST_DEBOUNCE_MS;
-    this.subprocessChecker = options.subprocessChecker;
     this.processTableReader = options.processTableReader ?? readTerminalProcessTable;
     this.subprocessPollIntervalMs =
       options.subprocessPollIntervalMs ?? DEFAULT_SUBPROCESS_POLL_INTERVAL_MS;
@@ -1006,51 +1002,41 @@ export class TerminalManagerRuntime extends EventEmitter<TerminalManagerEvents> 
 
     this.subprocessPollInFlight = true;
     try {
-      const table = this.subprocessChecker ? null : await this.processTableReader();
-      await Promise.all(
-        runningSessions.map(async ({ session, terminalPid }) => {
-          let hasRunningSubprocess = false;
-          try {
-            hasRunningSubprocess = table
-              ? table.has(terminalPid)
-              : await this.subprocessChecker!(terminalPid);
-          } catch (error) {
-            this.logger.warn("failed to check terminal subprocess activity", {
-              threadId: session.threadId,
-              terminalId: session.terminalId,
-              terminalPid,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return;
-          }
+      const table = await this.processTableReader();
+      if (this.processTableReadFailed) {
+        this.logger.info("terminal process table reads recovered");
+        this.processTableReadFailed = false;
+      }
+      for (const { session, terminalPid } of runningSessions) {
+        const hasRunningSubprocess = table.has(terminalPid);
+        const liveSession = this.sessions.get(toSessionKey(session.threadId, session.terminalId));
+        if (
+          liveSession !== session ||
+          liveSession.status !== "running" ||
+          liveSession.pid !== terminalPid
+        ) {
+          continue;
+        }
+        if (liveSession.hasRunningSubprocess === hasRunningSubprocess) {
+          continue;
+        }
 
-          const liveSession = this.sessions.get(toSessionKey(session.threadId, session.terminalId));
-          if (
-            liveSession !== session ||
-            liveSession.status !== "running" ||
-            liveSession.pid !== terminalPid
-          ) {
-            return;
-          }
-          if (liveSession.hasRunningSubprocess === hasRunningSubprocess) {
-            return;
-          }
-
-          liveSession.hasRunningSubprocess = hasRunningSubprocess;
-          liveSession.updatedAt = new Date().toISOString();
-          this.emitEvent({
-            type: "activity",
-            threadId: liveSession.threadId,
-            terminalId: liveSession.terminalId,
-            createdAt: new Date().toISOString(),
-            hasRunningSubprocess,
-          });
-        }),
-      );
+        liveSession.hasRunningSubprocess = hasRunningSubprocess;
+        liveSession.updatedAt = new Date().toISOString();
+        this.emitEvent({
+          type: "activity",
+          threadId: liveSession.threadId,
+          terminalId: liveSession.terminalId,
+          createdAt: new Date().toISOString(),
+          hasRunningSubprocess,
+        });
+      }
     } catch (error) {
-      this.logger.warn("failed to read terminal process table; retaining previous activity", {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (!this.processTableReadFailed)
+        this.logger.warn("failed to read terminal process table; retaining previous activity", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      this.processTableReadFailed = true;
     } finally {
       this.subprocessPollInFlight = false;
     }

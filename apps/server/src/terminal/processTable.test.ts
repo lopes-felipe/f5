@@ -24,26 +24,30 @@ it.each(["linux", "darwin", "win32"] as const)(
   },
 );
 
-it("rejects a failed or truncated snapshot instead of reporting idle", async () => {
-  vi.mocked(runProcess).mockResolvedValue({
-    code: 1,
-    stdout: "",
-    stderr: "denied",
-    signal: null,
-    timedOut: false,
-  });
-  await expect(readTerminalProcessTable()).rejects.toThrow();
-  vi.mocked(runProcess).mockResolvedValue({
+it.each(["nonzero exit", "output overflow", "timeout"])(
+  "preserves runner failure: %s",
+  async (message) => {
+    vi.mocked(runProcess).mockRejectedValue(new Error(message));
+    await expect(readTerminalProcessTable("win32")).rejects.toThrow(message);
+  },
+);
+
+it("falls back to a header-bearing POSIX table", async () => {
+  vi.mocked(runProcess).mockRejectedValueOnce(new Error("unsupported option"));
+  vi.mocked(runProcess).mockResolvedValueOnce({
     code: 0,
-    stdout: "20 10",
+    stdout: "  PID  PPID\n20 10\n",
     stderr: "",
     signal: null,
     timedOut: false,
-    stdoutTruncated: true,
   });
-  await expect(readTerminalProcessTable()).rejects.toThrow();
-  vi.mocked(runProcess).mockRejectedValue(new Error("timeout"));
-  await expect(readTerminalProcessTable()).rejects.toThrow("timeout");
+  expect(await readTerminalProcessTable("linux")).toEqual(new Set([10]));
+  expect(runProcess).toHaveBeenLastCalledWith("ps", ["-A", "-o", "pid,ppid"], expect.any(Object));
+});
+
+it("rejects a failed POSIX fallback", async () => {
+  vi.mocked(runProcess).mockRejectedValue(new Error("missing ps"));
+  await expect(readTerminalProcessTable("linux")).rejects.toThrow("missing ps");
 });
 
 it("rejects malformed tables but accepts a complete table with no children", () => {

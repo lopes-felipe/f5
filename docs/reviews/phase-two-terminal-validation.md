@@ -85,3 +85,33 @@ test passed in isolation. No timeout, assertion or production WebSocket behavior
 was changed; the complete suite then passed, including all 131 exhaustive Git tests.
 
 The targeted Unicode/history check also passes under Bun; the full suite uses Node.
+
+## PR review follow-up
+
+Process-table failures now log once per failure episode and once on recovery.
+Activity retains its last known value until a successful probe: a failed read is
+not evidence that a child exited. Polling continues so recovery needs no restart.
+POSIX probing falls back to a header-bearing `ps -A -o pid,ppid` table if the preferred
+syntax fails. Missing tools, oversized tables, or failures of both forms still
+retain state. The fallback is fixture-tested; no native BusyBox run is claimed.
+
+Tests now cover repeated failures/recovery and close/reopen with the same PID,
+in addition to restart with a different PID. Tests and the server benchmark use
+the production shared-reader path; the obsolete per-terminal test hook is removed.
+The materializing snapshot method documents its storage compaction.
+
+The persist/reconnect CPU p95 increase (29.47 to 48.83 ms) is accepted for this
+slice under the existing gate, with only 0.64 ms of CPU margin. Its wall increase
+is 3.85 ms. The measurement does not isolate the cause, so neither decoding nor
+snapshot joining is claimed as proven responsible. Cached reads do not rejoin
+unchanged history. Bounded file reads and Unicode decoding remain necessary to
+avoid loading arbitrarily large logs. This is a narrow pass, not evidence of a
+persist/reconnect performance improvement. Historical benchmark results above
+precede this review follow-up; the harness injection change alters its digest.
+
+Review follow-up checks: formatting, lint (nine existing warnings), typecheck,
+55 focused terminal tests, the complete workspace suite plus 131 exhaustive Git
+tests, and online ledger validation pass. A direct server-unit invocation inherited
+the profile-isolation environment and failed 11 provider mock assertions about CLI
+arguments; the normal repository test runner passed those tests. No provider code
+or assertions were changed.

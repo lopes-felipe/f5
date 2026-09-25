@@ -165,6 +165,7 @@ export class BoundedTerminalHistory {
     this.cached = "";
   }
 
+  /** Materialize and cache the snapshot, compacting fragments to share its storage. */
   value(): string {
     if (this.cached !== null) return this.cached;
     this.cached = this.fragments

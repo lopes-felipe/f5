@@ -26,6 +26,12 @@ export async function readTerminalProcessTable(
   platform: NodeJS.Platform = process.platform,
 ): Promise<TerminalProcessTable> {
   const windows = platform === "win32";
+  const options = {
+    env: process.env,
+    timeoutMs: windows ? 1500 : 1000,
+    maxBufferBytes: 1024 * 1024,
+    outputMode: "error" as const,
+  };
   const result = await runProcess(
     windows ? "powershell.exe" : "ps",
     windows
@@ -36,15 +42,18 @@ export async function readTerminalProcessTable(
           '$ErrorActionPreference = "Stop"; Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object { Write-Output "$($_.ProcessId)|$($_.ParentProcessId)" }',
         ]
       : ["-eo", "pid=,ppid="],
-    {
-      env: process.env,
-      timeoutMs: windows ? 1500 : 1000,
-      maxBufferBytes: 1024 * 1024,
-      outputMode: "error",
-    },
-  );
-  // Reject failed/partial tables: the caller keeps the last known activity state.
-  if (result.code !== 0 || result.timedOut || result.stdoutTruncated)
-    throw new Error("Terminal process table read failed");
+    options,
+  ).catch(async (error: unknown) => {
+    if (windows) throw error;
+    // BusyBox builds may not support -e or header suppression. This still reads
+    // one complete table; never turn a partial/failed probe into idle activity.
+    const fallback = await runProcess("ps", ["-A", "-o", "pid,ppid"], options);
+    const lines = fallback.stdout.trim().split(/\r?\n/);
+    if (!/^\s*PID\s+PPID\s*$/.test(lines[0] ?? "")) throw error;
+    return { ...fallback, stdout: lines.slice(1).join("\n") };
+  });
+  // The runner rejects nonzero exits, timeouts and output overflow. A process
+  // killed by a signal can instead resolve with a null exit code.
+  if (result.signal) throw new Error("Terminal process table probe was interrupted");
   return parseTerminalProcessTable(result.stdout, platform);
 }

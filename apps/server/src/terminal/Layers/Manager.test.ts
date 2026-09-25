@@ -78,7 +78,7 @@ class FakePtyAdapter implements PtyAdapterShape {
   readonly spawnInputs: PtySpawnInput[] = [];
   readonly processes: FakePtyProcess[] = [];
   readonly spawnFailures: Error[] = [];
-  private nextPid = 9000;
+  nextPid = 9000;
 
   constructor(private readonly mode: "sync" | "async" = "sync") {}
 
@@ -233,7 +233,6 @@ describe("TerminalManager", () => {
     historyLineLimit = 5,
     options: {
       shellResolver?: () => string;
-      subprocessChecker?: (terminalPid: number) => Promise<boolean>;
       subprocessPollIntervalMs?: number;
       processTableReader?: () => Promise<ReadonlySet<number>>;
       processKillGraceMs?: number;
@@ -250,7 +249,6 @@ describe("TerminalManager", () => {
       ...(options.processTableReader ? { processTableReader: options.processTableReader } : {}),
       historyLineLimit,
       shellResolver: options.shellResolver ?? (() => "/bin/bash"),
-      ...(options.subprocessChecker ? { subprocessChecker: options.subprocessChecker } : {}),
       ...(options.subprocessPollIntervalMs
         ? { subprocessPollIntervalMs: options.subprocessPollIntervalMs }
         : {}),
@@ -534,7 +532,7 @@ describe("TerminalManager", () => {
   it("emits subprocess activity events when child-process state changes", async () => {
     let hasRunningSubprocess = false;
     const { manager } = makeManager(5, {
-      subprocessChecker: async () => hasRunningSubprocess,
+      processTableReader: async () => new Set(hasRunningSubprocess ? [9000] : []),
       subprocessPollIntervalMs: 20,
     });
     const events: TerminalEvent[] = [];
@@ -581,14 +579,23 @@ describe("TerminalManager", () => {
         events.filter((event) => event.type === "activity" && event.hasRunningSubprocess),
       ).toHaveLength(20);
       events.length = 0;
-      reader.mockRejectedValueOnce(new Error("snapshot unavailable"));
-      await vi.advanceTimersByTimeAsync(2000);
+      const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+      const info = vi.spyOn(console, "log").mockImplementation(() => {});
+      reader.mockRejectedValue(new Error("snapshot unavailable"));
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(warning).toHaveBeenCalledTimes(1);
       expect(events.filter((event) => event.type === "activity")).toHaveLength(0);
-      reader.mockResolvedValueOnce(new Set());
+      reader.mockResolvedValue(new Set());
       await vi.advanceTimersByTimeAsync(2000);
       expect(
         events.filter((event) => event.type === "activity" && !event.hasRunningSubprocess),
       ).toHaveLength(20);
+      expect(info).toHaveBeenCalledWith(expect.stringContaining("reads recovered"));
+      reader.mockRejectedValue(new Error("failed again"));
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(warning).toHaveBeenCalledTimes(2);
+      warning.mockRestore();
+      info.mockRestore();
     } finally {
       manager.dispose();
       vi.useRealTimers();
@@ -626,7 +633,7 @@ describe("TerminalManager", () => {
 
   it("coalesces output while a persistence write is blocked", async () => {
     const { manager, ptyAdapter, logsDir } = makeManager(5000, {
-      subprocessChecker: async () => false,
+      processTableReader: async () => new Set(),
     });
     const release = Promise.withResolvers<void>();
     const write = fs.promises.writeFile.bind(fs.promises);
@@ -658,25 +665,34 @@ describe("TerminalManager", () => {
     }
   });
 
-  it("ignores a process-table result after its session was replaced", async () => {
-    const pending = Promise.withResolvers<ReadonlySet<number>>();
-    const reader = vi.fn(() => pending.promise);
-    const { manager } = makeManager(5, { processTableReader: reader });
-    const events: TerminalEvent[] = [];
-    manager.on("event", (event) => events.push(event));
-    try {
-      await manager.open(openInput());
-      expect(reader).toHaveBeenCalledOnce();
-      await manager.restart({ ...openInput(), cols: 120, rows: 30 });
-      events.length = 0;
-      pending.resolve(new Set([9000, 9001]));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(events.filter((event) => event.type === "activity")).toHaveLength(0);
-    } finally {
-      pending.resolve(new Set());
-      manager.dispose();
-    }
-  });
+  it.each(["restart", "replace with reused PID"] as const)(
+    "ignores a process-table result after %s",
+    async (operation) => {
+      const pending = Promise.withResolvers<ReadonlySet<number>>();
+      const reader = vi.fn(() => pending.promise);
+      const { manager, ptyAdapter } = makeManager(5, { processTableReader: reader });
+      const events: TerminalEvent[] = [];
+      manager.on("event", (event) => events.push(event));
+      try {
+        await manager.open(openInput());
+        expect(reader).toHaveBeenCalledOnce();
+        if (operation === "restart") {
+          await manager.restart({ ...openInput(), cols: 120, rows: 30 });
+        } else {
+          await manager.close({ threadId: "thread-1" });
+          ptyAdapter.nextPid = 9000;
+          expect((await manager.open(openInput())).pid).toBe(9000);
+        }
+        events.length = 0;
+        pending.resolve(new Set([9000, 9001]));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(events.filter((event) => event.type === "activity")).toHaveLength(0);
+      } finally {
+        pending.resolve(new Set());
+        manager.dispose();
+      }
+    },
+  );
 
   it("caps persisted history to configured line limit", async () => {
     const { manager, ptyAdapter } = makeManager(3);
