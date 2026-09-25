@@ -81,6 +81,8 @@ import {
   extractPlanMarkdown,
   extractTodosAsPlan,
 } from "../acp/CursorAcpExtension.ts";
+import { discoverCursorSkills, cursorSkillCommands } from "../acp/CursorSkills.ts";
+import { CursorTransportFailure } from "../acp/CursorTransportFailure.ts";
 import { type CursorAdapterShape } from "../Services/CursorAdapter.ts";
 import { resolveCursorAcpBaseModelId } from "./CursorProvider.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
@@ -135,6 +137,8 @@ interface CursorSessionContext {
   readonly turns: Array<{ id: TurnId; items: Array<unknown> }>;
   lastPlanFingerprint: string | undefined;
   activeTurnId: TurnId | undefined;
+  assistantReply: CursorTransportFailure;
+  readonly skillCommands: ReturnType<typeof cursorSkillCommands>;
   stopped: boolean;
 }
 
@@ -316,6 +320,7 @@ function stringSelectionValue(
 
 function buildCursorConfiguredConfig(input: {
   readonly sessionId: string;
+  readonly skillCommands: ReturnType<typeof cursorSkillCommands>;
   readonly model: string | null | undefined;
   readonly options: ReadonlyArray<ProviderOptionSelection> | null | undefined;
 }): Record<string, unknown> {
@@ -326,6 +331,7 @@ function buildCursorConfiguredConfig(input: {
   const reasoning = stringSelectionValue(input.options, "reasoning");
   const contextWindow = stringSelectionValue(input.options, "contextWindow");
   return {
+    slashCommands: input.skillCommands,
     ...(sessionId ? { session_id: sessionId } : {}),
     ...(model ? { model: resolveCursorAcpBaseModelId(model) } : {}),
     ...(fastModeState ? { fast_mode_state: fastModeState } : {}),
@@ -587,6 +593,7 @@ export function makeCursorAdapter(
 
           const acp = yield* makeCursorAcpRuntime({
             cursorSettings: effectiveCursorSettings,
+            runtimeMode: input.workflowExecutionProfile ? "approval-required" : input.runtimeMode,
             ...(options?.environment ? { environment: options.environment } : {}),
             childProcessSpawner,
             cwd,
@@ -872,6 +879,12 @@ export function makeCursorAdapter(
             turns: [],
             lastPlanFingerprint: undefined,
             activeTurnId: undefined,
+            assistantReply: new CursorTransportFailure(),
+            skillCommands: cursorSkillCommands(
+              yield* discoverCursorSkills(cwd, options?.environment ?? process.env).pipe(
+                Effect.provideService(FileSystem.FileSystem, fileSystem),
+              ),
+            ),
             stopped: false,
           };
 
@@ -882,6 +895,7 @@ export function makeCursorAdapter(
                   case "ModeChanged":
                     return;
                   case "AssistantItemStarted":
+                    ctx.assistantReply = new CursorTransportFailure();
                     yield* offerRuntimeEvent(
                       makeAcpAssistantItemEvent({
                         stamp: yield* makeEventStamp(),
@@ -939,6 +953,7 @@ export function makeCursorAdapter(
                     );
                     return;
                   case "ContentDelta":
+                    ctx.assistantReply.push(event.text);
                     yield* logNative(
                       ctx.threadId,
                       "session/update",
@@ -960,7 +975,7 @@ export function makeCursorAdapter(
                 }
               }),
             ),
-          ).pipe(Effect.forkChild);
+          ).pipe(Effect.forkIn(sessionScope));
 
           ctx.notificationFiber = nf;
           sessions.set(input.threadId, ctx);
@@ -981,6 +996,7 @@ export function makeCursorAdapter(
             payload: {
               config: buildCursorConfiguredConfig({
                 sessionId: started.sessionId,
+                skillCommands: ctx.skillCommands,
                 model: cursorModelSelection?.model,
                 options: cursorModelSelection?.options,
               }),
@@ -1047,6 +1063,7 @@ export function makeCursorAdapter(
             mapAcpToAdapterError(PROVIDER, input.threadId, method, cause),
         });
         ctx.activeTurnId = turnId;
+        ctx.assistantReply = new CursorTransportFailure();
         ctx.lastPlanFingerprint = undefined;
         ctx.session = {
           ...ctx.session,
@@ -1064,6 +1081,7 @@ export function makeCursorAdapter(
           payload: {
             config: buildCursorConfiguredConfig({
               sessionId: parseCursorResume(ctx.session.resumeCursor)?.sessionId ?? "",
+              skillCommands: ctx.skillCommands,
               model,
               options: turnModelSelection?.options,
             }),
@@ -1149,6 +1167,25 @@ export function makeCursorAdapter(
           );
 
         yield* ctx.acp.awaitEventBarrier;
+        const failure = ctx.assistantReply.failure;
+        if (result.stopReason !== "cancelled" && failure) {
+          ctx.activeTurnId = undefined;
+          ctx.session = {
+            ...ctx.session,
+            activeTurnId: undefined,
+            status: "ready",
+            lastError: failure,
+          };
+          yield* offerRuntimeEvent({
+            type: "turn.completed",
+            ...(yield* makeEventStamp()),
+            provider: PROVIDER,
+            threadId: input.threadId,
+            turnId,
+            payload: { state: "failed", errorMessage: failure },
+          });
+          return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
+        }
 
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });
         ctx.session = {

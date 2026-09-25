@@ -1158,10 +1158,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         });
         let metricProvider = "unknown";
         return yield* Effect.gen(function* () {
+          const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
           const routed = yield* resolveRoutableSession({
             threadId: input.threadId,
             operation: "ProviderService.interruptTurn",
-            allowRecovery: true,
+            allowRecovery:
+              binding?.status === "running" &&
+              (readPersistedActiveTurnId(binding.runtimePayload) !== undefined ||
+                input.turnId !== undefined),
             ...(input.turnId !== undefined ? { fallbackActiveTurnId: input.turnId } : {}),
           });
           metricProvider = routed.adapter.provider;
@@ -1171,7 +1175,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             "provider.thread_id": input.threadId,
             "provider.turn_id": input.turnId,
           });
-          if (routed.orphanedTurnId === undefined) {
+          if (routed.isActive && routed.orphanedTurnId === undefined) {
             yield* routed.adapter.interruptTurn(routed.threadId, input.turnId);
           }
           yield* analytics.record("provider.turn.interrupted", {
@@ -1195,6 +1199,14 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           schema: ProviderRespondToRequestInput,
           payload: rawInput,
         });
+        if (input.decision === "acceptAlways") {
+          const binding = Option.getOrUndefined(yield* directory.getBinding(input.threadId));
+          if (binding?.provider !== "codex")
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "This provider does not support persistent app approvals.",
+            );
+        }
         let metricProvider = "unknown";
         return yield* Effect.gen(function* () {
           const routed = yield* resolveRoutableSession({
@@ -1203,6 +1215,11 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             allowRecovery: true,
           });
           metricProvider = routed.adapter.provider;
+          if (input.decision === "acceptAlways" && routed.adapter.provider !== "codex")
+            return yield* toValidationError(
+              "ProviderService.respondToRequest",
+              "This provider does not support persistent app approvals.",
+            );
           yield* Effect.annotateCurrentSpan({
             "provider.operation": "respond-to-request",
             "provider.kind": routed.adapter.provider,

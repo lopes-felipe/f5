@@ -91,7 +91,11 @@ export function applyGrokAcpModelSelection<E>(input: {
   readonly requestedModelId: string | undefined;
   readonly mapError: (cause: EffectAcpErrors.AcpError) => E;
 }): Effect.Effect<string | undefined, E> {
-  if (!input.requestedModelId || input.requestedModelId === input.currentModelId) {
+  if (
+    !input.requestedModelId ||
+    input.requestedModelId === "grok-build" ||
+    input.requestedModelId === input.currentModelId
+  ) {
     return Effect.succeed(input.currentModelId);
   }
   return input.runtime

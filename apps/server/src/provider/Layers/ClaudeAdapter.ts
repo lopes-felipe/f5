@@ -222,6 +222,7 @@ type ClaudeTaskTerminalStatus = "completed" | "failed" | "stopped";
 type ClaudeBackgroundStatus = "running" | ClaudeTaskTerminalStatus;
 
 interface ClaudeTaskState {
+  readonly model?: string;
   readonly taskId: string;
   readonly toolUseId?: string;
   readonly turnId?: TurnId;
@@ -270,6 +271,7 @@ interface ClaudeSessionContext {
   }>;
   readonly inFlightTools: Map<number, ToolInFlight>;
   readonly taskStates: Map<string, ClaudeTaskState>;
+  readonly taskModelsByTool: Map<string, string>;
   turnState: ClaudeTurnState | undefined;
   lastAssistantUuid: string | undefined;
   lastThreadStartedId: string | undefined;
@@ -1308,10 +1310,6 @@ function buildUserMessageEffect(
     const text = buildPromptText(input, dependencies.activeModel);
     const sdkContent: Array<Record<string, unknown>> = [];
 
-    if (text.length > 0) {
-      sdkContent.push({ type: "text", text });
-    }
-
     for (const attachment of input.attachments ?? []) {
       switch (attachment.type) {
         case "image": {
@@ -1362,6 +1360,9 @@ function buildUserMessageEffect(
       }
     }
 
+    if (text.length > 0) {
+      sdkContent.push({ type: "text", text });
+    }
     return buildUserMessage({ sdkContent });
   });
 }
@@ -2419,8 +2420,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       const launchResult = input.launchResult ?? existing?.launchResult;
       const backgrounded = input.backgrounded ?? existing?.backgrounded;
 
+      const model =
+        (toolUseId ? context.taskModelsByTool.get(toolUseId) : undefined) ??
+        existing?.model ??
+        normalizeOptionalString(tool?.input.model);
       const state: ClaudeTaskState = {
         taskId: input.taskId,
+        ...(model ? { model } : {}),
         ...(toolUseId ? { toolUseId } : {}),
         ...(turnId ? { turnId } : {}),
         ...(description ? { description } : {}),
@@ -2867,7 +2873,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       message: SDKMessage,
     ): Effect.Effect<void> =>
       Effect.gen(function* () {
-        if (message.type !== "stream_event") {
+        if (message.type !== "stream_event" || message.parent_tool_use_id) {
           return;
         }
 
@@ -3352,6 +3358,34 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           return;
         }
 
+        const parentToolUseId = normalizeOptionalString(message.parent_tool_use_id);
+        if (parentToolUseId) {
+          const model = normalizeOptionalString(message.message.model);
+          if (model) {
+            context.taskModelsByTool.set(parentToolUseId, model);
+            if (context.taskModelsByTool.size > 64)
+              context.taskModelsByTool.delete(context.taskModelsByTool.keys().next().value!);
+            for (const [taskId, task] of context.taskStates) {
+              if (task.toolUseId !== parentToolUseId || task.model === model) continue;
+              context.taskStates.set(taskId, { ...task, model });
+              yield* offerRuntimeEvent({
+                type: "task.progress",
+                ...(yield* makeEventStamp()),
+                provider: PROVIDER,
+                threadId: context.session.threadId,
+                ...(task.turnId ? { turnId: task.turnId } : {}),
+                payload: {
+                  taskId: RuntimeTaskId.make(taskId),
+                  description: task.description ?? "Subagent",
+                  model,
+                },
+              });
+            }
+          }
+          // Child snapshots refine task metadata; their text and UUID are not parent messages.
+          return;
+        }
+
         // Auto-start a synthetic turn for assistant messages that arrive without
         // an active turn (e.g., background agent/subagent responses between user prompts).
         if (!context.turnState) {
@@ -3508,11 +3542,22 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           case "vcs_state_changed":
           case "code_change_published":
           case "commands_changed":
-          case "model_refusal_fallback":
           case "local_command_output":
           case "plugin_install":
           case "memory_recall":
           case "elicitation_complete":
+            return;
+          case "model_refusal_fallback":
+            yield* offerRuntimeEvent({
+              ...base,
+              type: "runtime.warning",
+              payload: {
+                category: "provider",
+                message:
+                  normalizeOptionalString(rawMessage.content) ??
+                  "Claude switched models after a refusal.",
+              },
+            });
             return;
           case "api_retry": {
             const attempt = normalizeOptionalNumber(rawMessage.attempt);
@@ -3656,6 +3701,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               type: "task.started",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                ...(context.taskStates.get(message.task_id)?.model
+                  ? { model: context.taskStates.get(message.task_id)!.model! }
+                  : {}),
                 description: message.description,
                 ...(message.task_type ? { taskType: message.task_type } : {}),
               },
@@ -3667,6 +3715,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
               type: "task.progress",
               payload: {
                 taskId: RuntimeTaskId.makeUnsafe(message.task_id),
+                ...(context.taskStates.get(message.task_id)?.model
+                  ? { model: context.taskStates.get(message.task_id)!.model! }
+                  : {}),
                 description: message.description,
                 ...(message.summary ? { summary: message.summary } : {}),
                 ...(message.usage ? { usage: message.usage } : {}),
@@ -3817,6 +3868,9 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         if (!shouldContinue) {
           return;
         }
+
+        // Native command bookkeeping has no user-facing turn lifecycle.
+        if (sdkMessageType(message) === "command_lifecycle") return;
 
         // If the current turn was interrupted, drop any buffered SDK output
         // except "result", which legitimately ends the turn via completeTurn.
@@ -3973,11 +4027,31 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         context.stopped = true;
 
+        // @effect-diagnostics-next-line tryCatchInEffectGen:off
+        try {
+          context.query.close();
+        } catch (cause) {
+          yield* emitRuntimeError(context, "Failed to close Claude runtime query.", cause);
+        }
+
         yield* resolvePendingInteractions(context);
 
         yield* Queue.offer(context.promptQueue, {
           type: "terminate",
         }).pipe(Effect.ignore);
+
+        for (const task of context.taskStates.values()) {
+          yield* offerRuntimeEvent({
+            ...(yield* makeEventStamp()),
+            type: "task.completed",
+            provider: PROVIDER,
+            threadId: context.session.threadId,
+            ...(task.turnId ? { turnId: task.turnId } : {}),
+            payload: { taskId: RuntimeTaskId.make(task.taskId), status: "stopped" },
+          });
+        }
+        context.taskStates.clear();
+        context.taskModelsByTool.clear();
 
         if (context.turnState) {
           yield* completeTurn(context, "interrupted", "Session stopped.");
@@ -3985,13 +4059,6 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
 
         const streamFiber = context.streamFiber;
         context.streamFiber = undefined;
-
-        // @effect-diagnostics-next-line tryCatchInEffectGen:off
-        try {
-          context.query.close();
-        } catch (cause) {
-          yield* emitRuntimeError(context, "Failed to close Claude runtime query.", cause);
-        }
 
         if (
           options?.interruptStreamFiber !== false &&
@@ -4713,8 +4780,13 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,
-                  ...(decision === "acceptForSession" && pendingApproval.suggestions
-                    ? { updatedPermissions: [...pendingApproval.suggestions] }
+                  ...(decision === "acceptForSession" && pendingApproval.suggestions?.length
+                    ? {
+                        updatedPermissions: pendingApproval.suggestions.map((suggestion) => ({
+                          ...suggestion,
+                          destination: "session" as const,
+                        })),
+                      }
                     : {}),
                 } satisfies PermissionResult;
               }
@@ -4950,6 +5022,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           turns: [],
           inFlightTools,
           taskStates,
+          taskModelsByTool: new Map(),
           turnState: undefined,
           lastAssistantUuid: resumeState?.resumeSessionAt,
           lastThreadStartedId: undefined,
@@ -5059,11 +5132,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sendTurnUnlocked: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
+        const ensureLive = Effect.suspend(() =>
+          context.stopped || sessions.get(input.threadId) !== context
+            ? Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "turn/start",
+                  detail: "Claude session stopped while preparing the turn.",
+                }),
+              )
+            : Effect.void,
+        );
+        yield* ensureLive;
 
         if (context.turnState) {
           // Auto-close a stale synthetic turn (from background agent responses
           // between user prompts) to prevent blocking the user's next turn.
           yield* completeTurn(context, "completed");
+          yield* ensureLive;
         }
 
         if (input.model || input.modelSelection || input.modelOptions) {
@@ -5090,6 +5176,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 try: () => context.query.setModel(runtimeModelSelection.apiModel),
                 catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
               });
+              yield* ensureLive;
             }
             yield* Effect.tryPromise({
               try: () =>
@@ -5100,6 +5187,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 }),
               catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
             });
+            yield* ensureLive;
             context.session = {
               ...context.session,
               model: runtimeModelSelection.baseModel,
@@ -5133,6 +5221,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             try: () => context.query.setPermissionMode("plan"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
+          yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: "plan",
@@ -5142,6 +5231,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
+          yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: context.basePermissionMode ?? "default",
@@ -5166,6 +5256,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.interruptedTurnIds.clear();
 
         const updatedAt = yield* nowIso;
+        yield* ensureLive;
         context.turnState = turnState;
         context.session = {
           ...context.session,
@@ -5175,6 +5266,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         const turnStartedStamp = yield* makeEventStamp();
+        yield* ensureLive;
         yield* offerRuntimeEvent({
           type: "turn.started",
           eventId: turnStartedStamp.eventId,
@@ -5193,6 +5285,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(activeModel ? { activeModel } : {}),
         });
 
+        yield* ensureLive;
         yield* Queue.offer(context.promptQueue, {
           type: "message",
           message,
@@ -5210,53 +5303,25 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sendTurn: ClaudeAdapterShape["sendTurn"] = (input) =>
       withThreadLock(input.threadId, sendTurnUnlocked(input));
 
-    const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (threadId, _turnId) =>
-      Effect.gen(function* () {
-        const context = yield* requireSession(threadId);
-        const turnState = context.turnState;
-        // Idempotent: nothing to do if no live turn or already interrupting.
-        if (!turnState || turnState.interruptRequested) return;
-        turnState.interruptRequested = true;
-
-        // Unblock any pending approval / AskUserQuestion callbacks so their
-        // canUseTool handler can return "deny" immediately.
-        yield* resolvePendingInteractions(context);
-
-        // Ask the SDK nicely first; don't fail the whole command if this throws.
-        const interruptOutcome = yield* Effect.promise(async () => {
-          try {
-            await context.query.interrupt();
-            return { ok: true as const };
-          } catch (cause) {
-            return {
-              ok: false as const,
-              message: toMessage(cause, "Claude query.interrupt() failed."),
-            };
-          }
-        });
-        if (!interruptOutcome.ok) {
-          yield* emitRuntimeWarning(context, interruptOutcome.message);
-        }
-
-        // Watchdog: if the SDK doesn't drive completeTurn within 3s, do it
-        // ourselves. The deferred is resolved by completeTurn on fast paths so
-        // this fiber exits promptly instead of accumulating across rapid
-        // stop/resend cycles.
-        const watchdogCancel = yield* Deferred.make<void>();
-        turnState.watchdogCancel = watchdogCancel;
-        yield* Effect.forkDetach(
-          Effect.gen(function* () {
-            const cancelled = yield* Effect.raceFirst(
-              Effect.sleep("3 seconds").pipe(Effect.as(false)),
-              Deferred.await(watchdogCancel).pipe(Effect.as(true)),
-            );
-            if (cancelled) return;
-            if (context.stopped) return;
-            if (context.turnState?.turnId !== turnState.turnId) return;
-            yield* completeTurn(context, "interrupted", "Turn interrupted by user.");
-          }),
-        );
-      });
+    const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (threadId, turnId) =>
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = sessions.get(threadId);
+          if (!context || context.stopped) return;
+          if (turnId && context.turnState && context.turnState.turnId !== turnId)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/interrupt",
+              detail: "The active Claude turn changed before interruption.",
+            });
+          if (context.turnState) context.turnState.interruptRequested = true;
+          // SDK interrupt only stops the foreground prompt. Closing the query also
+          // stops resumed/background work; the durable resume cursor survives in
+          // session.exited and the next send opens a fresh process for that session.
+          yield* stopSessionInternal(context);
+        }),
+      );
 
     const readThread: ClaudeAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {

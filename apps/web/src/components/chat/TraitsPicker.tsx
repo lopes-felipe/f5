@@ -335,8 +335,8 @@ export const TraitsPicker = memo(function TraitsPicker({
         }
       >
         {isCodexStyle ? (
-          <span className="flex min-w-0 w-full items-center gap-2 overflow-hidden">
-            {triggerLabel}
+          <span className="flex min-w-0 w-full items-center gap-2">
+            <span className="truncate">{triggerLabel}</span>
             {fastModeEnabled ? (
               <ZapIcon aria-label="Fast mode enabled" className="size-3 shrink-0" />
             ) : null}

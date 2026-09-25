@@ -1016,7 +1016,14 @@ function orchestrationSessionStatusFromRuntimeState(
 
 function requestKindFromCanonicalRequestType(
   requestType: string | undefined,
-): "command" | "file-read" | "file-change" | "permission" | "unknown" | undefined {
+):
+  | "command"
+  | "file-read"
+  | "file-change"
+  | "permission"
+  | "mcp-elicitation"
+  | "unknown"
+  | undefined {
   switch (requestType) {
     case "command_execution_approval":
     case "exec_command_approval":
@@ -1026,6 +1033,8 @@ function requestKindFromCanonicalRequestType(
     case "file_change_approval":
     case "apply_patch_approval":
       return "file-change";
+    case "mcp_elicitation_approval":
+      return "mcp-elicitation";
     case "permissions_approval":
       return "permission";
     default:
@@ -1264,11 +1273,17 @@ function runtimeEventToActivities(
                   ? "File-change approval requested"
                   : requestKind === "permission"
                     ? "Permission approval requested"
-                    : `Unknown approval requested (${event.payload.requestType})`,
+                    : requestKind === "mcp-elicitation"
+                      ? `App access requested: ${event.payload.appName ?? "MCP app"}`
+                      : `Unknown approval requested (${event.payload.requestType})`,
           payload: {
             requestId: toApprovalRequestId(event.requestId),
             ...(requestKind ? { requestKind } : {}),
             requestType: event.payload.requestType,
+            ...(event.payload.appName ? { appName: event.payload.appName } : {}),
+            ...(event.payload.approvalOptions
+              ? { approvalOptions: event.payload.approvalOptions }
+              : {}),
             ...(event.payload.detail
               ? { detail: truncateApprovalDetail(event.payload.detail) }
               : {}),
@@ -1527,6 +1542,7 @@ function runtimeEventToActivities(
             subagentType: event.payload.kind,
             subagentThreadId: event.payload.agentThreadId,
             subagentPath: event.payload.agentPath,
+            ...(event.payload.model ? { subagentModel: event.payload.model } : {}),
           },
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1849,6 +1865,7 @@ function runtimeEventToActivities(
                 : "Task started",
           payload: {
             taskId: event.payload.taskId,
+            ...(event.payload.model ? { model: event.payload.model } : {}),
             ...(event.payload.taskType ? { taskType: event.payload.taskType } : {}),
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
@@ -1871,6 +1888,7 @@ function runtimeEventToActivities(
           summary: "Reasoning update",
           payload: {
             taskId: event.payload.taskId,
+            ...(event.payload.model ? { model: event.payload.model } : {}),
             detail: truncateDetail(event.payload.description),
             ...(displayHints?.readPaths && displayHints.readPaths.length > 0
               ? { readPaths: [...displayHints.readPaths] }

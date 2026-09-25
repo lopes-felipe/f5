@@ -1,3 +1,4 @@
+import { RuntimeRequestId } from "@t3tools/contracts";
 import { GitCommandError } from "../../git/Errors.ts";
 import { cleanupStaleWorktrees } from "./WorktreeStartupCleanup.ts";
 import { GitCore } from "../../git/Services/GitCore.ts";
@@ -3744,6 +3745,40 @@ describe("ProviderRuntimeIngestion", () => {
     ).toMatchObject({
       protocolMethod: "serverRequest/resolved",
       protocolValue: "request-42",
+    });
+  });
+
+  it("preserves MCP app identity and the advertised approval choices in the projection", async () => {
+    const harness = await createHarness();
+    harness.emit({
+      type: "request.opened",
+      eventId: asEventId("mcp-app-opened"),
+      provider: "codex",
+      createdAt: new Date().toISOString(),
+      threadId: asThreadId("thread-1"),
+      requestId: RuntimeRequestId.make("mcp-app-request"),
+      payload: {
+        requestType: "mcp_elicitation_approval",
+        appName: "Calendar",
+        detail: "Use Calendar?",
+        approvalOptions: [
+          { decision: "decline", label: "Decline" },
+          { decision: "acceptAlways", label: "Always allow" },
+        ],
+      },
+    });
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.id === "mcp-app-opened"),
+    );
+    expect(
+      thread.activities.find((activity) => activity.id === "mcp-app-opened")?.payload,
+    ).toMatchObject({
+      requestKind: "mcp-elicitation",
+      appName: "Calendar",
+      approvalOptions: [
+        { decision: "decline", label: "Decline" },
+        { decision: "acceptAlways", label: "Always allow" },
+      ],
     });
   });
 

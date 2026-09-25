@@ -4,6 +4,7 @@ import type {
   ChatAttachment,
   ProviderApprovalDecision,
   RuntimeMode,
+  ServerProviderSkill,
   WorkflowTurnExecutionProfile,
 } from "@t3tools/contracts";
 import {
@@ -92,7 +93,7 @@ export function openCodeRuntimeErrorDetail(cause: unknown): string {
 
 export const runOpenCodeSdk = <A>(
   operation: string,
-  fn: () => Promise<A>,
+  fn: (signal: AbortSignal) => Promise<A>,
 ): Effect.Effect<A, OpenCodeRuntimeError> =>
   Effect.tryPromise({
     try: fn,
@@ -109,6 +110,7 @@ export interface OpenCodeCommandResult {
 export interface OpenCodeInventory {
   readonly providerList: ProviderListResponse;
   readonly agents: ReadonlyArray<Agent>;
+  readonly skills?: ReadonlyArray<ServerProviderSkill>;
 }
 
 export interface ParsedOpenCodeModelSlug {
@@ -146,6 +148,7 @@ export interface OpenCodeRuntimeShape {
   readonly runOpenCodeCommand: (input: {
     readonly binaryPath: string;
     readonly args: ReadonlyArray<string>;
+    readonly timeoutMs?: number;
     readonly environment?: NodeJS.ProcessEnv;
   }) => Effect.Effect<OpenCodeCommandResult, OpenCodeRuntimeError>;
   readonly createOpenCodeSdkClient: (input: {
@@ -246,6 +249,8 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
         { permission: "external_directory", pattern: "*", action: "ask" },
         { permission: "doom_loop", pattern: "*", action: "ask" },
         { permission: "question", pattern: "*", action: "allow" },
+        { permission: "todowrite", pattern: "*", action: "allow" },
+        { permission: "todoread", pattern: "*", action: "allow" },
       ];
     case "auto-accept-edits":
       return [
@@ -258,6 +263,8 @@ export function buildOpenCodePermissionRules(runtimeMode: RuntimeMode): Permissi
         { permission: "external_directory", pattern: "*", action: "ask" },
         { permission: "doom_loop", pattern: "*", action: "ask" },
         { permission: "question", pattern: "*", action: "allow" },
+        { permission: "todowrite", pattern: "*", action: "allow" },
+        { permission: "todoread", pattern: "*", action: "allow" },
       ];
     case "auto":
       throw new Error("OpenCode does not support AI-reviewed approvals.");
@@ -326,6 +333,39 @@ function ensureRuntimeError(
     : new OpenCodeRuntimeError({ operation, detail, cause });
 }
 
+/** Workspace skills are read over HTTP; the CLI can truncate inventories at a pipe buffer. */
+export const loadOpenCodeSkills = (
+  client: OpencodeClient,
+): Effect.Effect<ReadonlyArray<ServerProviderSkill>, OpenCodeRuntimeError> =>
+  runOpenCodeSdk("app.skills", (signal) => client.app.skills(undefined, { signal })).pipe(
+    Effect.timeoutOrElse({
+      duration: "10 seconds",
+      onTimeout: () =>
+        Effect.fail(
+          new OpenCodeRuntimeError({
+            operation: "app.skills",
+            detail: "OpenCode skill discovery timed out.",
+          }),
+        ),
+    }),
+    Effect.map((response) =>
+      (response.data ?? []).flatMap((skill) => {
+        const name = skill.name.trim();
+        const path = skill.location.trim();
+        return name && path
+          ? [
+              {
+                name,
+                path,
+                enabled: true,
+                ...(skill.description.trim() ? { description: skill.description.trim() } : {}),
+              },
+            ]
+          : [];
+      }),
+    ),
+  );
+
 const makeOpenCodeRuntime = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const netService = yield* NetService;
@@ -357,6 +397,16 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       } satisfies OpenCodeCommandResult;
     }).pipe(
       Effect.scoped,
+      Effect.timeoutOrElse({
+        duration: input.timeoutMs ?? 10_000,
+        onTimeout: () =>
+          Effect.fail(
+            new OpenCodeRuntimeError({
+              operation: "runOpenCodeCommand",
+              detail: "OpenCode command timed out.",
+            }),
+          ),
+      }),
       Effect.mapError((cause) =>
         ensureRuntimeError(
           "runOpenCodeCommand",
@@ -390,7 +440,7 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
       const args = ["serve", `--hostname=${hostname}`, `--port=${port}`];
       const environment = {
         ...(input.environment ?? process.env),
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({}),
+        OPENCODE_CONFIG_CONTENT: (input.environment ?? process.env).OPENCODE_CONFIG_CONTENT ?? "{}",
       };
       const invocation = yield* resolveInvocationEffect(input.binaryPath, args, environment).pipe(
         Effect.mapError((cause) =>
@@ -593,9 +643,14 @@ const makeOpenCodeRuntime = Effect.gen(function* () {
     );
 
   const loadOpenCodeInventory: OpenCodeRuntimeShape["loadOpenCodeInventory"] = (client) =>
-    Effect.all([loadProviders(client), loadAgents(client)], { concurrency: "unbounded" }).pipe(
-      Effect.map(([providerList, agents]) => ({ providerList, agents })),
-    );
+    Effect.all(
+      [
+        loadProviders(client),
+        loadAgents(client),
+        loadOpenCodeSkills(client).pipe(Effect.orElseSucceed(() => [])),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.map(([providerList, agents, skills]) => ({ providerList, agents, skills })));
 
   return {
     startOpenCodeServerProcess,

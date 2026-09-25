@@ -126,6 +126,7 @@ function taskTransition(
       threadId: event.threadId,
       workItemId: event.payload.taskId,
       provider: event.provider,
+      ...(event.payload.model ? { model: event.payload.model } : {}),
       turnId: event.turnId ?? null,
       classification,
       ownership: ownershipForTask(taskType),
@@ -147,6 +148,7 @@ function taskTransition(
       threadId: event.threadId,
       workItemId: event.payload.taskId,
       provider: event.provider,
+      ...(event.payload.model ? { model: event.payload.model } : {}),
       turnId: event.turnId ?? null,
       status: "running",
       active: true,
@@ -175,6 +177,7 @@ function subagentTransition(
   return {
     threadId: event.threadId,
     workItemId: `subagent:${event.payload.agentThreadId}`,
+    ...(event.payload.model ? { model: event.payload.model } : {}),
     provider: event.provider,
     turnId: event.turnId ?? null,
     ...(event.payload.kind === "started" ? { classification: "working" as const } : {}),

@@ -25,8 +25,14 @@ function makeFakeClaudeBinary(dir: string) {
       `
 const fs = require("node:fs");
 const env = process.env;
-const args = process.argv.slice(2).join(" ");
+const argv = process.argv.slice(2);
+const args = argv.join(" ");
+const value = (flag) => argv[argv.indexOf(flag) + 1];
+if (!argv.includes("--tools") || value("--tools") !== "" || !argv.includes("--disable-slash-commands") || !argv.includes("--strict-mcp-config") || argv.includes("--dangerously-skip-permissions")) throw new Error("unsafe metadata capabilities");
+if (JSON.parse(value("--settings")).disableAllHooks !== true) throw new Error("hooks enabled");
+if (!require("node:path").basename(process.cwd()).startsWith("f5-claude-metadata-")) throw new Error("metadata cwd not isolated");
 const input = fs.readFileSync(0, "utf8");
+fs.writeFileSync(require("node:path").join(__dirname, "last-cwd"), process.cwd());
 function fail(message, code) { console.error(message); process.exit(code); }
 if (input.startsWith("Ultrathink:\\nUltrathink:")) fail("duplicated effort prefix", 6);
 if (env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN && !args.includes(env.T3_FAKE_CLAUDE_ARGS_MUST_CONTAIN)) fail("args missing expected content", 2);
@@ -52,8 +58,9 @@ function withFakeClaudeEnv<A, E, R>(
     stdinMustContain?: string;
     homeMustBe?: string;
     claudeConfig?: Partial<ClaudeSettings>;
+    relativeBinary?: boolean;
   },
-  effectFn: (textGeneration: TextGenerationShape) => Effect.Effect<A, E, R>,
+  effectFn: (textGeneration: TextGenerationShape, cwdRecord: string) => Effect.Effect<A, E, R>,
 ) {
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -161,12 +168,16 @@ function withFakeClaudeEnv<A, E, R>(
         }),
     );
 
+    const path = yield* Path.Path;
     const config = Schema.decodeSync(ClaudeSettings)({
-      binaryPath: claudePath,
+      binaryPath: input.relativeBinary ? path.relative(process.cwd(), claudePath) : claudePath,
       ...input.claudeConfig,
     });
-    const textGeneration = yield* makeClaudeTextGeneration(config);
-    return yield* effectFn(textGeneration);
+    const textGeneration = yield* makeClaudeTextGeneration(config, {
+      ...process.env,
+      F5_PROFILE_ISOLATED: "0",
+    });
+    return yield* effectFn(textGeneration, path.join(binDir, "last-cwd"));
   }).pipe(Effect.scoped);
 }
 
@@ -178,7 +189,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
           {
             output: JSON.stringify({ structured_output: { ok: true } }),
             argsMustContain: `--model claude-fable-5-1${effort === "ultrathink" ? "" : ` --effort ${effort}`}`,
-            argsMustNotContain: effort === "ultrathink" ? ["--effort", "--settings"] : "--settings",
+            argsMustNotContain: effort === "ultrathink" ? "--effort" : [],
             stdinMustContain: `${effort === "ultrathink" || prefixed ? "Ultrathink:\n" : ""}Return JSON`,
           },
           (generation) =>
@@ -236,7 +247,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             body: "",
           },
         }),
-        argsMustContain: '--settings {"alwaysThinkingEnabled":false}',
+        argsMustContain: '--settings {"disableAllHooks":true,"alwaysThinkingEnabled":false}',
         argsMustNotContain: "--effort",
       },
       (textGeneration) =>
@@ -268,7 +279,7 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
             body: "Body",
           },
         }),
-        argsMustContain: '--effort max --settings {"fastMode":true}',
+        argsMustContain: '--effort max --settings {"disableAllHooks":true,"fastMode":true}',
       },
       (textGeneration) =>
         Effect.gen(function* () {
@@ -358,6 +369,69 @@ it.layer(ClaudeTextGenerationTestLayer)("ClaudeTextGenerationLive", (it) => {
         }),
     ),
   );
+
+  for (const fails of [false, true]) {
+    it.effect(
+      `cleans isolated workspace after ${fails ? "failure" : "success"} with a relative executable`,
+      () =>
+        withFakeClaudeEnv(
+          {
+            output: JSON.stringify({ structured_output: { title: "Title" } }),
+            relativeBinary: true,
+            exitCode: fails ? 1 : 0,
+          },
+          (generation, cwdRecord) =>
+            Effect.gen(function* () {
+              const fs = yield* FileSystem.FileSystem;
+              const result = yield* generation
+                .generateThreadTitle({ cwd: process.cwd(), message: "Title" })
+                .pipe(Effect.result);
+              expect(result._tag).toBe(fails ? "Failure" : "Success");
+              const isolatedCwd = yield* fs.readFileString(cwdRecord);
+              expect(yield* fs.exists(isolatedCwd)).toBe(false);
+            }),
+        ),
+    );
+  }
+  for (const output of [
+    [],
+    [{ type: "system", structured_output: { title: "Not a result" } }],
+    [{ type: "result", structured_output: { title: 42 } }],
+  ]) {
+    it.effect(`rejects missing or malformed result: ${JSON.stringify(output)}`, () =>
+      withFakeClaudeEnv({ output: JSON.stringify(output) }, (generation) =>
+        Effect.gen(function* () {
+          const result = yield* generation
+            .generateThreadTitle({ cwd: process.cwd(), message: "Title" })
+            .pipe(Effect.result);
+          expect(result._tag).toBe("Failure");
+        }),
+      ),
+    );
+  }
+
+  for (const output of [
+    { structured_output: { title: '{"title":"Fix resume"}' } },
+    [
+      { type: "system" },
+      { type: "result", structured_output: { title: "Old title" } },
+      { type: "result", structured_output: { title: "Fix resume" } },
+    ],
+  ]) {
+    it.effect(
+      `decodes ${Array.isArray(output) ? "verbose result arrays" : "JSON-wrapped titles"}`,
+      () =>
+        withFakeClaudeEnv({ output: JSON.stringify(output) }, (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation.generateThreadTitle({
+              cwd: process.cwd(),
+              message: "Fix resume",
+            });
+            expect(result.title).toBe("Fix resume");
+          }),
+        ),
+    );
+  }
 
   it.effect("generates thread titles through the Claude provider", () =>
     withFakeClaudeEnv(

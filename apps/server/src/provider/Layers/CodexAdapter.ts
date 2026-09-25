@@ -1,3 +1,4 @@
+import { describeMcpElicitation } from "../../codex/mcpElicitation.ts";
 /**
  * CodexAdapterLive - Scoped live implementation for the Codex provider adapter.
  *
@@ -451,6 +452,8 @@ function toRequestTypeFromMethod(method: string): CanonicalRequestType {
       return "apply_patch_approval";
     case "execCommandApproval":
       return "exec_command_approval";
+    case "mcpServer/elicitation/request":
+      return "mcp_elicitation_approval";
     case "item/permissions/requestApproval":
       return "permissions_approval";
     case "item/tool/requestUserInput":
@@ -472,6 +475,8 @@ function toRequestTypeFromKind(kind: unknown): CanonicalRequestType {
       return "file_read_approval";
     case "file-change":
       return "file_change_approval";
+    case "mcp-elicitation":
+      return "mcp_elicitation_approval";
     case "permission":
       return "permissions_approval";
     default:
@@ -820,6 +825,7 @@ function mapSubagentActivity(
       kind,
       agentThreadId,
       agentPath,
+      ...(asString(source.model)?.trim() ? { model: asString(source.model)!.trim() } : {}),
     },
   };
 }
@@ -1016,6 +1022,23 @@ function hookRunMetadata(run: Record<string, unknown>) {
   };
 }
 
+function describePatchApproval(payload: Record<string, unknown> | undefined): string | undefined {
+  const reason = asString(payload?.reason)?.trim();
+  if (reason) return reason;
+  const changes = asObject(payload?.fileChanges);
+  const entries = Object.entries(changes ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  if (entries.length) {
+    const lines = entries.slice(0, 20).map(([path, value]) => {
+      const change = asObject(value);
+      const move = asString(change?.move_path);
+      return `${asString(change?.type) ?? "change"} ${path}${move ? ` -> ${move}` : ""}`;
+    });
+    if (entries.length > 20) lines.push(`+${entries.length - 20} more`);
+    return lines.join("\n");
+  }
+  return asString(payload?.grantRoot)?.trim() || undefined;
+}
+
 function mapToRuntimeEvents(
   event: ProviderEvent,
   canonicalThreadId: ThreadId,
@@ -1041,7 +1064,12 @@ function mapToRuntimeEvents(
     }
 
     const detail =
-      asString(payload?.command) ?? asString(payload?.reason) ?? asString(payload?.prompt);
+      event.method === "applyPatchApproval" || event.method === "item/fileChange/requestApproval"
+        ? describePatchApproval(payload)
+        : (asString(payload?.command) ??
+          asString(payload?.reason) ??
+          asString(payload?.message) ??
+          asString(payload?.prompt));
     const requestedPermissionsValue = payload?.permissions;
     const requestedPermissions =
       event.method === "item/permissions/requestApproval" &&
@@ -1056,6 +1084,9 @@ function mapToRuntimeEvents(
         type: "request.opened",
         payload: {
           requestType: toRequestTypeFromMethod(event.method),
+          ...(event.method === "mcpServer/elicitation/request"
+            ? describeMcpElicitation(payload)
+            : {}),
           ...(detail ? { detail } : {}),
           ...(requestedPermissions ? { requestedPermissions } : {}),
           ...(event.payload !== undefined ? { args: event.payload } : {}),

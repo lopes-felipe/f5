@@ -494,6 +494,18 @@ describe("normalizeCodexModelSlug", () => {
 });
 
 describe("isRecoverableThreadResumeError", () => {
+  it("recovers a missing rollout but never retries authorization or rate limit failures", () => {
+    expect(
+      isRecoverableThreadResumeError(
+        new Error("thread/resume failed: no rollout found for thread id abc"),
+      ),
+    ).toBe(true);
+    for (const reason of ["rate limit exceeded", "unauthorized", "permission denied"]) {
+      expect(isRecoverableThreadResumeError(new Error(`thread/resume failed: ${reason}`))).toBe(
+        false,
+      );
+    }
+  });
   it("matches not-found resume errors", () => {
     expect(
       isRecoverableThreadResumeError(new Error("thread/resume failed: thread not found")),
@@ -1590,6 +1602,41 @@ describe("skills refresh", () => {
 });
 
 describe("Codex collaboration notification routing", () => {
+  it.each([
+    { threadSource: "memory_consolidation" },
+    { source: { subAgent: "memory_consolidation" } },
+  ])("ignores memory consolidation before a primary provider thread is known: %j", (source) => {
+    const manager = new CodexAppServerManager();
+    const context = { session: { threadId: asThreadId("thread-parent") } };
+    const emit = vi
+      .spyOn(manager as unknown as { emitEvent: (...args: unknown[]) => void }, "emitEvent")
+      .mockImplementation(() => {});
+    const handle = (
+      manager as unknown as {
+        handleServerNotification: (
+          context: unknown,
+          notification: { method: string; params: unknown },
+        ) => void;
+      }
+    ).handleServerNotification.bind(manager);
+    handle(context, { method: "thread/started", params: { thread: { id: "memory", ...source } } });
+    handle(context, {
+      method: "item/agentMessage/delta",
+      params: { threadId: "memory", delta: "internal memory" },
+    });
+    handle(context, {
+      method: "turn/completed",
+      params: { threadId: "memory", turn: { id: "background" } },
+    });
+    handle(context, { method: "thread/closed", params: { threadId: "memory" } });
+    expect(emit).not.toHaveBeenCalled();
+    handle(context, {
+      method: "item/agentMessage/delta",
+      params: { threadId: "conversation", delta: "hello" },
+    });
+    expect(emit).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ textDelta: "hello" }));
+  });
+
   it("ignores notifications emitted for auxiliary provider threads", () => {
     const manager = new CodexAppServerManager();
     const context = {
@@ -2386,22 +2433,21 @@ describe("Codex server requests", () => {
     expect(context.pendingUserInputs.size).toBe(0);
   });
 
-  it("cancels unsupported MCP elicitations and emits an actionable warning", async () => {
+  it("keeps MCP app approval pending until the user chooses an advertised response", async () => {
     const manager = new CodexAppServerManager();
     const context = requestContext();
-    const events: Array<{ method: string; message?: string }> = [];
-    manager.on("event", (event) =>
-      events.push({
-        method: event.method,
-        ...(event.message === undefined ? {} : { message: event.message }),
-      }),
-    );
     const writeMessage = vi
       .spyOn(
         manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
         "writeMessage",
       )
       .mockResolvedValue();
+    vi.spyOn(
+      manager as unknown as { requireSession: (...args: unknown[]) => unknown },
+      "requireSession",
+    ).mockReturnValue(context);
+    const events: Array<{ requestId?: ApprovalRequestId | undefined }> = [];
+    manager.on("event", (event) => events.push(event));
     (
       manager as unknown as {
         handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
@@ -2409,21 +2455,60 @@ describe("Codex server requests", () => {
     ).handleServerRequest(context, {
       id: 84,
       method: "mcpServer/elicitation/request",
-      params: { mode: "form", serverName: "example", message: "Pick a value" },
+      params: {
+        mode: "form",
+        serverName: "example",
+        message: "Allow ChatGPT to use Calendar?",
+        requestedSchema: {
+          type: "object",
+          properties: { scope: { type: "string", enum: ["once", "session", "always"] } },
+          required: ["scope"],
+        },
+      },
     });
+    expect(writeMessage).not.toHaveBeenCalled();
+    const requestId = events[0]?.requestId;
+    expect(requestId).toBeDefined();
+    await manager.respondToRequest(asThreadId("thread_1"), requestId!, "acceptAlways");
+    expect(writeMessage).toHaveBeenCalledWith(context, {
+      id: 84,
+      result: { action: "accept", content: { scope: "always" }, _meta: { persist: "always" } },
+    });
+    await expect(
+      manager.respondToRequest(asThreadId("thread_1"), requestId!, "acceptAlways"),
+    ).rejects.toThrow("Unknown pending approval");
+  });
 
-    await vi.waitFor(() => {
-      expect(writeMessage).toHaveBeenCalledWith(context, {
-        id: 84,
-        result: { action: "cancel", content: null, _meta: null },
-      });
+  it("cancels unsupported MCP data forms without publishing an approval", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    const events: Array<{ kind?: string; method?: string }> = [];
+    manager.on("event", (event) => events.push(event));
+    (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest(context, {
+      id: 85,
+      method: "mcpServer/elicitation/request",
+      params: {
+        mode: "form",
+        message: "Optional profile data",
+        requestedSchema: {
+          type: "object",
+          properties: { remember: { type: "boolean", default: true } },
+        },
+      },
     });
-    expect(events).toEqual([
-      expect.objectContaining({
-        method: "protocol/unsupportedServerRequest",
-        message: expect.stringContaining("does not support yet"),
-      }),
-    ]);
+    expect(writeMessage).toHaveBeenCalledWith(context, { id: 85, result: { action: "cancel" } });
+    expect(events.some((event) => event.kind === "request")).toBe(false);
+    expect(events.some((event) => event.method === "protocol/unsupportedServerRequest")).toBe(true);
   });
 
   it.each([
