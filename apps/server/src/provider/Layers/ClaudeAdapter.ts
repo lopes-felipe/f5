@@ -1221,17 +1221,27 @@ export function buildClaudeQueryEnv(
   });
 }
 
-function buildClaudeTurnRuntimeContext(model: string | undefined): string | undefined {
+// Per-turn restatement of the system prompt's File Editing section. Without it
+// Claude Code's bypass-mode guidance wins and edits land as opaque shell
+// commands instead of reviewable diffs.
+const CLAUDE_FILE_EDITING_REMINDER =
+  "File edits: when you change workspace files, use Edit or Write rather than shell writes (sed -i, heredocs, inline scripts) so F5 can show reviewable diffs. Exceptions: codemods across many files, generated output, formatters or code generators, and /tmp scratch files.";
+
+function buildClaudeTurnRuntimeContext(
+  model: string | undefined,
+  options: { readonly includeFileEditingReminder: boolean },
+): string | undefined {
   const normalizedModel = normalizeOptionalString(model);
   if (!normalizedModel) {
     return undefined;
   }
 
   return [
-    "<f3-runtime-context>",
+    "<f5-runtime-context>",
     `Active model: ${JSON.stringify(normalizeModelSlug(normalizedModel, "claudeAgent") ?? normalizedModel)}`,
     "This host-reported value is authoritative for model identity.",
-    "</f3-runtime-context>",
+    ...(options.includeFileEditingReminder ? [CLAUDE_FILE_EDITING_REMINDER] : []),
+    "</f5-runtime-context>",
   ].join("\n");
 }
 
@@ -1251,7 +1261,10 @@ function applyClaudeModelPromptEffort(
   return applyClaudePromptEffortPrefix(prompt, promptEffort);
 }
 
-function buildPromptText(input: ProviderAdapterSendTurnInput, activeModel?: string): string {
+function buildPromptText(
+  input: ProviderAdapterSendTurnInput,
+  options: { readonly activeModel?: string; readonly allowsWorkspaceEdits: boolean },
+): string {
   const userPrompt = applyClaudeModelPromptEffort(
     input.input?.trim() ?? "",
     input.model,
@@ -1261,7 +1274,9 @@ function buildPromptText(input: ProviderAdapterSendTurnInput, activeModel?: stri
   // can recognize them before normal model dispatch.
   const runtimeContext = userPrompt.startsWith("/")
     ? undefined
-    : buildClaudeTurnRuntimeContext(activeModel);
+    : buildClaudeTurnRuntimeContext(options.activeModel, {
+        includeFileEditingReminder: options.allowsWorkspaceEdits,
+      });
   return (
     appendProviderAttachmentRuntimeContext(
       runtimeContext ? `${runtimeContext}\n\n${userPrompt}` : userPrompt,
@@ -1304,10 +1319,14 @@ function buildUserMessageEffect(
     readonly fileSystem: FileSystem.FileSystem;
     readonly attachmentsDir: string;
     readonly activeModel?: string;
+    readonly allowsWorkspaceEdits: boolean;
   },
 ): Effect.Effect<SDKUserMessage, ProviderAdapterRequestError> {
   return Effect.gen(function* () {
-    const text = buildPromptText(input, dependencies.activeModel);
+    const text = buildPromptText(input, {
+      ...(dependencies.activeModel ? { activeModel: dependencies.activeModel } : {}),
+      allowsWorkspaceEdits: dependencies.allowsWorkspaceEdits,
+    });
     const sdkContent: Array<Record<string, unknown>> = [];
 
     for (const attachment of input.attachments ?? []) {
@@ -5279,10 +5298,18 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         });
 
         const activeModel = getClaudeSessionModel(context);
+        // Plan mode and read-only workflow stages deny writes, so an edit-tool
+        // reminder there only invites denied tool calls. configuredBase holds
+        // the effective mode after the interactionMode switch above, including
+        // plan mode carried over from an earlier turn.
+        const allowsWorkspaceEdits =
+          input.workflowExecutionProfile === undefined &&
+          context.configuredBase.permissionMode !== "plan";
         const message = yield* buildUserMessageEffect(input, {
           fileSystem,
           attachmentsDir: serverConfig.attachmentsDir,
           ...(activeModel ? { activeModel } : {}),
+          allowsWorkspaceEdits,
         });
 
         yield* ensureLive;
