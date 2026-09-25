@@ -16,6 +16,8 @@ export default mergeConfig(
     },
     test: {
       include: [
+        "src/components/FileViewPanel.browser.tsx",
+        "src/hooks/inputSafety.browser.tsx",
         "src/components/ProfileSwitcher.browser.tsx",
         "src/components/ChatView.browser.tsx",
         "src/components/AgentsPanel.browser.tsx",

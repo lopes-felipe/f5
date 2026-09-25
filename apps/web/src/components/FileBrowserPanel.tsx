@@ -1,4 +1,5 @@
 import type { ProjectEntry, ProjectId, ThreadId } from "@t3tools/contracts";
+import { providerQueryKeys } from "../lib/providerReactQuery";
 import { useDebouncedValue } from "@tanstack/react-pacer";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -210,14 +211,13 @@ export default function FileBrowserPanel({
     [entries],
   );
 
+  const initializedTreeCwdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
-    if (entries.length === 0) {
+    if (entries.length === 0 || initializedTreeCwdRef.current === cwd) {
       return;
     }
-    setExpandedPaths((current) => {
-      if (current.size > 0) {
-        return current;
-      }
+    initializedTreeCwdRef.current = cwd;
+    setExpandedPaths(() => {
       const next = new Set<string>();
       for (const entry of entries) {
         if (entry.kind === "directory" && !entry.path.includes("/")) {
@@ -226,7 +226,7 @@ export default function FileBrowserPanel({
       }
       return next;
     });
-  }, [entries]);
+  }, [cwd, entries]);
 
   useEffect(() => {
     if (!searchMode) {
@@ -356,6 +356,7 @@ export default function FileBrowserPanel({
   );
 
   const refreshEntries = useCallback(() => {
+    void queryClient.invalidateQueries({ queryKey: [...providerQueryKeys.fileContentAll, cwd] });
     void queryClient.invalidateQueries({ queryKey: projectQueryKeys.listEntries(cwd, entryLimit) });
     if (activeSearchQuery.length > 0) {
       void queryClient.invalidateQueries({

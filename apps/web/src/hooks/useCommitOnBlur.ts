@@ -1,5 +1,7 @@
 import { type ChangeEvent, type KeyboardEvent, useEffect, useRef, useState } from "react";
 
+import { isKeyboardEventComposing } from "../lib/keyboardComposition";
+
 /**
  * Buffer text input locally so keystrokes don't cause a settings-wide
  * re-render (and optionally a server RPC round-trip) on every character.
@@ -40,7 +42,7 @@ export function useCommitOnBlur(value: string, onCommit: (next: string) => void)
       }
     },
     onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
-      if (event.key === "Enter") {
+      if (event.key === "Enter" && !isKeyboardEventComposing(event.nativeEvent)) {
         event.preventDefault();
         (event.target as HTMLInputElement).blur();
       }

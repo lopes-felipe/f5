@@ -390,6 +390,7 @@ export interface DesktopImageDownloadResult {
 }
 
 export interface DesktopBridge {
+  getSystemLocale?: () => string | null;
   getProfileId?: () => string | null;
   switchProfile?: (profileId: string) => Promise<boolean>;
   stopProfile?: (profileId: string) => Promise<boolean>;
@@ -441,7 +442,7 @@ export interface DesktopPreviewBridge {
   };
   automation?: {
     status: (tabId: string) => Promise<PreviewAutomationStatus>;
-    snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
+    snapshot: (tabId: string, save?: boolean) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
     press: (tabId: string, input: PreviewAutomationPressInput) => Promise<void>;

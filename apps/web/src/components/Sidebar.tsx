@@ -1208,7 +1208,7 @@ export default function Sidebar() {
 
   const {
     archiveThread,
-    deleteThread,
+    deleteThreads,
     executeAction: executeThreadAction,
     menuItemsForThread: threadActionMenuItems,
     renameThread,
@@ -1340,10 +1340,8 @@ export default function Sidebar() {
       if (!confirmed) return;
 
       try {
-        const deletedThreadIds = new Set(projectThreads.map((thread) => thread.id));
-        for (const thread of projectThreads) {
-          await deleteThread(thread.id, { deletedThreadIds });
-        }
+        const result = await deleteThreads(projectThreads.map((thread) => thread.id));
+        if (result.failures.length > 0) throw result.failures[0]!.error;
 
         clearProjectDraftThreadId(project.id);
         await api.orchestration.dispatchCommand({
@@ -1361,7 +1359,7 @@ export default function Sidebar() {
         });
       }
     },
-    [clearProjectDraftThreadId, deleteThread],
+    [clearProjectDraftThreadId, deleteThreads],
   );
 
   const handleThreadContextMenu = useCallback(
@@ -1415,16 +1413,22 @@ export default function Sidebar() {
         if (!confirmed) return;
       }
 
-      const deletedIds = new Set<ThreadId>(ids);
-      for (const id of ids) {
-        await deleteThread(id, { deletedThreadIds: deletedIds });
+      const { succeeded, failures } = await deleteThreads(ids);
+      removeFromSelection(succeeded);
+      if (succeeded.length !== ids.length) {
+        toastManager.add({
+          type: "error",
+          title: `Deleted ${succeeded.length} of ${ids.length} threads`,
+          description: failures
+            .map(({ error }) => (error instanceof Error ? error.message : "Unknown deletion error"))
+            .join("; "),
+        });
       }
-      removeFromSelection(ids);
     },
     [
       appSettings.confirmThreadDelete,
       clearSelection,
-      deleteThread,
+      deleteThreads,
       markThreadUnread,
       removeFromSelection,
     ],

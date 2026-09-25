@@ -226,6 +226,7 @@ export const PreviewAutomationActionEvent = Schema.Struct({
 export type PreviewAutomationActionEvent = typeof PreviewAutomationActionEvent.Type;
 
 export const PreviewAutomationSnapshot = Schema.Struct({
+  savedScreenshot: Schema.optional(PreviewArtifact),
   url: Schema.String,
   title: Schema.String,
   loading: Schema.Boolean,

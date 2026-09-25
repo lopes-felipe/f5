@@ -20,20 +20,37 @@ export function getTimestampFormatOptions(
   };
 }
 
+export function resolveTimestampLocale(
+  systemLocale: string | null | undefined,
+): string | undefined {
+  const locale = systemLocale?.trim();
+  if (!locale) return undefined;
+  try {
+    Intl.DateTimeFormat.supportedLocalesOf([locale]);
+    return locale;
+  } catch {
+    return undefined;
+  }
+}
+
+const locale = resolveTimestampLocale(
+  typeof window === "undefined" ? null : window.desktopBridge?.getSystemLocale?.(),
+);
+
 const timestampFormatterCache = new Map<string, Intl.DateTimeFormat>();
 
 function getTimestampFormatter(
   timestampFormat: TimestampFormat,
   includeSeconds: boolean,
 ): Intl.DateTimeFormat {
-  const cacheKey = `${timestampFormat}:${includeSeconds ? "seconds" : "minutes"}`;
+  const cacheKey = `${locale ?? "default"}:${timestampFormat}:${includeSeconds ? "seconds" : "minutes"}`;
   const cachedFormatter = timestampFormatterCache.get(cacheKey);
   if (cachedFormatter) {
     return cachedFormatter;
   }
 
   const formatter = new Intl.DateTimeFormat(
-    undefined,
+    locale,
     getTimestampFormatOptions(timestampFormat, includeSeconds),
   );
   timestampFormatterCache.set(cacheKey, formatter);

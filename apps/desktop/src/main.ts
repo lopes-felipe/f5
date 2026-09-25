@@ -1024,7 +1024,10 @@ function buildPreviewAutomationSnapshotScript(): string {
 `;
 }
 
-async function previewAutomationSnapshot(tabId: string): Promise<PreviewAutomationSnapshot> {
+async function previewAutomationSnapshot(
+  tabId: string,
+  save = false,
+): Promise<PreviewAutomationSnapshot> {
   const guest = requirePreviewWebContents(tabId);
   const page = await executePreviewJavaScript<Omit<PreviewAutomationSnapshot, "screenshot">>(
     guest,
@@ -1044,11 +1047,17 @@ async function previewAutomationSnapshot(tabId: string): Promise<PreviewAutomati
     : null;
   const image = await guest.capturePage(rect ?? undefined);
   const size = image.getSize();
+  const png = image.toPNG();
   return {
     ...page,
+    ...(save
+      ? {
+          savedScreenshot: await previewRuntime.saveScreenshot(png, size.width, size.height),
+        }
+      : {}),
     screenshot: {
       mimeType: "image/png",
-      data: image.toPNG().toString("base64"),
+      data: png.toString("base64"),
       width: size.width,
       height: size.height,
     },
@@ -1849,7 +1858,7 @@ function configureAppIdentity(): void {
     app.setAppUserModelId(APP_USER_MODEL_ID);
   }
 
-  if (process.platform === "darwin" && app.dock) {
+  if (process.platform === "darwin" && !app.isPackaged && app.dock) {
     const iconPath = resolveIconPath("png");
     if (iconPath) {
       app.dock.setIcon(iconPath);
@@ -2598,7 +2607,7 @@ function registerIpcHandlers(): void {
           .catch(() => null);
       },
       automationStatus: (tabId) => previewAutomationStatus(scopeTabId(tabId)),
-      automationSnapshot: (tabId) => previewAutomationSnapshot(scopeTabId(tabId)),
+      automationSnapshot: (tabId, save) => previewAutomationSnapshot(scopeTabId(tabId), save),
       automationClick: (tabId, input) => previewAutomationClick(scopeTabId(tabId), input),
       automationType: (tabId, input) => previewAutomationType(scopeTabId(tabId), input),
       automationPress: (tabId, input) => previewAutomationPress(scopeTabId(tabId), input),
@@ -2677,7 +2686,10 @@ function createWindow(
     trafficLightPosition: { x: 16, y: 18 },
     webPreferences: {
       ...(partition ? { partition } : {}),
-      additionalArguments: profileWindowArguments(runtime.profile.id),
+      additionalArguments: [
+        ...profileWindowArguments(runtime.profile.id),
+        `--f5-system-locale=${app.getSystemLocale()}`,
+      ],
       preload: Path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,

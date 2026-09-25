@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildPendingUserInputAnswers,
+  carryDisplacedCustomAnswerIntoPrompt,
   countAnsweredPendingUserInputQuestions,
   derivePendingUserInputProgress,
   findFirstUnansweredPendingUserInputQuestionIndex,
@@ -269,5 +270,15 @@ describe("pending user input question progress", () => {
       isComplete: false,
       canAdvance: true,
     });
+  });
+});
+
+describe("carryDisplacedCustomAnswerIntoPrompt", () => {
+  it("keeps typed answers without replacing existing drafts", () => {
+    expect(carryDisplacedCustomAnswerIntoPrompt("draft", "   ")).toBe("draft");
+    expect(carryDisplacedCustomAnswerIntoPrompt("", "extra detail ")).toBe("extra detail");
+    expect(carryDisplacedCustomAnswerIntoPrompt("draft\n", "extra detail")).toBe(
+      "draft\n\nextra detail",
+    );
   });
 });

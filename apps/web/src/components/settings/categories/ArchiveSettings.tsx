@@ -20,7 +20,7 @@ import {
 import { useCallback, useMemo, useState } from "react";
 
 import {
-  deleteThreadWithCleanup,
+  deleteThreadsWithCleanup,
   deleteWorkflow,
   setThreadArchived,
   setWorkflowArchived,
@@ -235,14 +235,14 @@ export function ArchiveSettings() {
     });
   }, []);
 
-  const deleteThread = useCallback(
-    async (thread: Thread, deletedThreadIds?: ReadonlySet<ThreadId>) => {
-      await deleteThreadWithCleanup({
-        threadId: thread.id,
+  const deleteThreads = useCallback(
+    async (threadIds: ReadonlyArray<ThreadId>) => {
+      return deleteThreadsWithCleanup({
+        threadIds,
         threads,
         projects,
         activeThreadId: routeThreadId,
-        deletedThreadIds,
+        getThreads: () => useStore.getState().threads,
         clearComposerDraftForThread,
         clearProjectDraftThreadById,
         clearTerminalState,
@@ -324,15 +324,12 @@ export function ArchiveSettings() {
         }
       }
 
-      const deletedThreadIds = new Set(
-        items.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : [])),
-      );
+      const threadIds = items.flatMap((item) => (item.kind === "thread" ? [item.thread.id] : []));
       setItemBusy(keys, true);
       try {
+        const result = await deleteThreads(threadIds);
         for (const item of items) {
-          if (item.kind === "thread") {
-            await deleteThread(item.thread, deletedThreadIds);
-          } else {
+          if (item.kind !== "thread") {
             await deleteWorkflow({
               workflowId: item.workflowId,
               workflowType: item.workflowType,
@@ -341,12 +338,25 @@ export function ArchiveSettings() {
             });
           }
         }
-        removeSelectedKeys(keys);
+        const failed = new Set(result.failures.map((failure) => failure.threadId));
+        removeSelectedKeys(
+          items
+            .filter((item) => item.kind !== "thread" || !failed.has(item.thread.id))
+            .map((item) => item.key),
+        );
+        if (result.failures.length)
+          toastManager.add({
+            type: "error",
+            title: `${result.failures.length} thread deletions failed`,
+            description: result.failures
+              .map(({ error }) => (error instanceof Error ? error.message : String(error)))
+              .join("; "),
+          });
       } finally {
         setItemBusy(keys, false);
       }
     },
-    [deleteThread, removeSelectedKeys, setItemBusy],
+    [deleteThreads, removeSelectedKeys, setItemBusy],
   );
 
   const openItem = useCallback(

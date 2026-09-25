@@ -138,6 +138,10 @@ export class PreviewRuntime {
     }
   }
 
+  saveScreenshot(png: Buffer, width: number, height: number): Promise<PreviewArtifact> {
+    return this.#artifactStore.captureScreenshot({ png, width, height });
+  }
+
   async captureScreenshot(tabId: string): Promise<PreviewArtifact> {
     const guest = this.#requireGuest(tabId);
     const image = await guest.capturePage();

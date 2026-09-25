@@ -18,9 +18,39 @@ describe("syncShellEnvironment", () => {
       readEnvironment,
     });
 
-    expect(readEnvironment).toHaveBeenCalledWith("/bin/zsh", ["PATH", "SSH_AUTH_SOCK"]);
+    expect(readEnvironment).toHaveBeenCalledWith("/bin/zsh", [
+      "PATH",
+      "SSH_AUTH_SOCK",
+      "LANG",
+      "LC_ALL",
+      "LC_CTYPE",
+    ]);
     expect(env.PATH).toBe("/opt/homebrew/bin:/usr/bin");
     expect(env.SSH_AUTH_SOCK).toBe("/tmp/secretive.sock");
+  });
+
+  it.each([
+    [{}, { LANG: "de_DE.UTF-8" }, { LANG: "de_DE.UTF-8" }],
+    [{ LANG: "en_US.UTF-8" }, { LC_ALL: "de_DE.UTF-8" }, { LANG: "en_US.UTF-8" }],
+    [{}, {}, { LC_CTYPE: "en_US.UTF-8" }],
+  ])(
+    "hydrates locale without overriding inherited categories",
+    async (initial, shell, expected) => {
+      const env: NodeJS.ProcessEnv = { ...initial };
+      await syncShellEnvironment(env, { platform: "darwin", readEnvironment: () => shell });
+      expect(env).toEqual(expected);
+    },
+  );
+
+  it("keeps UTF-8 text working when the login shell fails", async () => {
+    const env: NodeJS.ProcessEnv = {};
+    await syncShellEnvironment(env, {
+      platform: "darwin",
+      readEnvironment: () => {
+        throw new Error("shell failed");
+      },
+    });
+    expect(env.LC_CTYPE).toBe("en_US.UTF-8");
   });
 
   it("preserves an inherited SSH_AUTH_SOCK value", async () => {

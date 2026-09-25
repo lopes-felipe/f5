@@ -261,10 +261,18 @@
     {
       "upstreamSha": "03c6cd8badb7af4dfd05d370f3180d16f6927591",
       "subject": "fix(web): copy text over plain HTTP (#8023)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): copy text over plain HTTP. Reimplement in f5; not yet delivered.",
+      "reason": "Clipboard writes fall back to selection-based copy on plain HTTP or denied Clipboard API access, restoring focus and selection even on failure.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/web/src/hooks/useCopyToClipboard.ts:3",
+        "apps/web/src/hooks/inputSafety.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "03e135577cbf861c2948981601c070dab038ea11",
@@ -404,10 +412,18 @@
     {
       "upstreamSha": "061543e9e5b54ec0048725c37d52fef2962df173",
       "subject": "fix(mcp): keep preview snapshots usable by the agent and let it save them (#10501)",
-      "reason": "Phase 1d (web and desktop correctness): fix(mcp): keep preview snapshots usable by the agent and let it save them. Reimplement in f5; not yet delivered.",
+      "reason": "Preview MCP structuredContent is always object-shaped. snapshot save=true persists the captured PNG through the existing quota-limited artifact store and returns opaque savedScreenshot metadata; f5 intentionally does not expose raw filesystem paths.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/server/src/mcp/PreviewMcpHttpServer.ts:516",
+        "apps/server/src/mcp/PreviewMcpHttpServer.test.ts:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "062987b2fb0ef48cc7776d654931bd9f3bcf1f9f",
@@ -532,10 +548,12 @@
     {
       "upstreamSha": "07891e9569c88457516b44c08c820471762969e8",
       "subject": "fix(web): bound disconnected send toasts (#9592)",
-      "reason": "Phase 1d: fix(web): bound disconnected send toasts. Reimplement the applicable behavior in f5; not yet delivered. Retain applicable web behavior; omit mobile-specific changes.",
+      "reason": "Disconnected clients cannot invoke send: the connection surface blocks interaction and the send handler exits before dispatch. f5 has no growing disconnected-environment toast trail.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/components/ChatView.tsx:3623"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "07c4ab5077fa9c32bf34ab07dd2caa3907878dd9",
@@ -2395,10 +2413,12 @@
     {
       "upstreamSha": "20e5a3396858f93157a4ad6b1f3a2f565c032fee",
       "subject": "fix(desktop): restrict editor deep links (#7697)",
-      "reason": "Phase 1d: fix(desktop): restrict editor deep links. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Desktop external URL handling accepts only parsed HTTP(S) URLs. Remote editor deep links are not enabled, so extension-command URLs remain blocked.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/desktop/src/main.ts:303"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "20ef25037f455a570426ac2a93fcf499d1f91167",
@@ -4305,10 +4325,12 @@
     {
       "upstreamSha": "3b5d476eb6af9d14efe037e9d163848d6fd048d7",
       "subject": "fix(desktop): stop overwriting a custom dock icon on launch (#7125)",
-      "reason": "Phase 1d (web and desktop correctness): fix(desktop): stop overwriting a custom dock icon on launch. Reimplement in f5; not yet delivered.",
+      "reason": "Only unpackaged macOS runs set the Dock icon, preserving custom icons attached to packaged apps.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/desktop/src/main.ts:1864"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "3b6be3ef4daa848e10c095d8a088064ac836be7f",
@@ -4491,10 +4513,12 @@
     {
       "upstreamSha": "3cfebf4aa3ce7410806c0ba4cc4d991cc1ce8dbb",
       "subject": "fix(web): keep portaled menus clickable over Electron drag regions (#12527)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): keep portaled menus clickable over Electron drag regions. Reimplement in f5; not yet delivered.",
+      "reason": "Portaled menu popups opt out of Electron drag regions so overlapping items remain clickable.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/components/ui/menu.tsx:52"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "3d00cfd5a710a58bf108de7a66fbe00a1420cc78",
@@ -4699,10 +4723,12 @@
     {
       "upstreamSha": "408ff8ae9bd7eb2e7e90cbfd8b3fcfe63641bf23",
       "subject": "fix: detect installed editors outside PATH (#12439)",
-      "reason": "Phase 1d (web and desktop correctness): fix: detect installed editors outside PATH. Reimplement in f5; not yet delivered.",
+      "reason": "Editor detection and launch share app-bundled CLI discovery in user and system macOS Applications directories while preferring PATH commands.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/server/src/open.ts:104"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "409bc4fa6f3bb9869052bdba4244b30606457f20",
@@ -4849,10 +4875,12 @@
     {
       "upstreamSha": "4347f14b89ed66777ae16def278fd44575ab499b",
       "subject": "fix(web): refresh open file with the file tree (#7490)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): refresh open file with the file tree. Reimplement in f5; not yet delivered.",
+      "reason": "Refreshing workspace files invalidates cached open-file contents for that workspace too.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/components/FileBrowserPanel.tsx:358"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "43700b83e73fca3af7b63769876c409b5c6f5a3f",
@@ -4872,10 +4900,18 @@
     {
       "upstreamSha": "438bf466fd7e97bb80f0d1f936b2c857830249b7",
       "subject": "fix(web): close menus when clicking into the browser tab (#11148)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): close menus when clicking into the browser tab. Reimplement in f5; not yet delivered.",
+      "reason": "Preview guest focus closes host menus through their explicit close API, without synthetic pointer events that could dismiss unrelated surfaces; listeners are removed on teardown.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/web/src/components/PreviewPanel.tsx:421",
+        "apps/web/src/components/ui/menu.tsx:13"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "43bafd4674841fb8782f5174033b684aa0d83f67",
@@ -5298,10 +5334,12 @@
     {
       "upstreamSha": "4a39cade982926f607b4606d0f8d92a807f4b0bf",
       "subject": "fix(web): offer recovery from missing pages (#11314)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): offer recovery from missing pages. Reimplement in f5; not yet delivered.",
+      "reason": "Unknown routes show a recovery view with a Go home action.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/routes/__root.tsx:156"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "4a42fc62e15018973b0088667d037b2a35c4c261",
@@ -7012,10 +7050,12 @@
     {
       "upstreamSha": "62bb97428a1bd007f4a83cdb1fcb8bbde2cdeef3",
       "subject": "fix(web): contain long approval commands (#6503)",
-      "reason": "Phase 1d: fix(web): contain long approval commands. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Approval commands wrap long tokens within bounded containers; approval action rows can wrap.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/components/chat/ComposerPendingApprovalPanel.tsx:85"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "62c68dc41f9d9d7ecaf5193a6a8d997ebf671a61",
@@ -7491,10 +7531,12 @@
     {
       "upstreamSha": "69e5ad88462f9f58dacaee9ca926dea8a658378b",
       "subject": "fix(web): treat configured urls with uppercase schemes as secure (#8005)",
-      "reason": "Phase 1d: fix(web): treat configured urls with uppercase schemes as secure. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "HTTP origin derivation handles uppercase WS/WSS schemes without losing TLS. The orchestration origin path already uses normalized URL protocols.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/lib/serverHttpOrigin.ts:10"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "6a2608292dd7ba01516112c276e475e6b64e4e2c",
@@ -8609,10 +8651,12 @@
     {
       "upstreamSha": "7980dfddb193864e07a5bcc013b0ccb93fb4300c",
       "subject": "fix(web,mobile): snooze menu no longer offers the same wake time twice (#8741)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web,mobile): snooze menu no longer offers the same wake time twice. Reimplement in f5; not yet delivered.",
+      "reason": "f5 next-week snooze is seven calendar days ahead, not next Monday. It therefore never duplicates tomorrow morning on Sunday.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/lib/snoozePresets.ts:22"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "79fe11bc1c586029dfe052df25f4b2d6227b3b33",
@@ -8748,10 +8792,12 @@
     {
       "upstreamSha": "7c55e86320aac9c68ae53a7bc15682b7e14f98bf",
       "subject": "fix(web): reject oversized prompts before provider turn start (#6602)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): reject oversized prompts before provider turn start. Reimplement in f5; not yet delivered.",
+      "reason": "Phase 0c client validation already rejects oversized composed prompts against authenticated server limits before delivery, including expanded context.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/components/ChatView.tsx:4283"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "7c6163c67aa122fa7c13466536c012888db102c6",
@@ -9699,10 +9745,12 @@
     {
       "upstreamSha": "89ee69e4430b21ee14565abf5c34dae43f38c1d8",
       "subject": "fix(server): advertise truecolor in the integrated terminal (#7680)",
-      "reason": "Phase 1d (web and desktop correctness): fix(server): advertise truecolor in the integrated terminal. Reimplement in f5; not yet delivered.",
+      "reason": "Integrated terminals default empty or missing COLORTERM to truecolor after merging runtime overrides; nonempty explicit values remain unchanged.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/server/src/terminal/Layers/Manager.ts:306"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "8a16cadbafb2ec98f79e7cb1300a3ad09ca394e5",
@@ -10957,10 +11005,12 @@
     {
       "upstreamSha": "9c96ac25804de9f38cd19c57976fe73573efa005",
       "subject": "fix(web): keep settings inputs focused during IME composition (#10262)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): keep settings inputs focused during IME composition. Reimplement in f5; not yet delivered.",
+      "reason": "Settings Enter-to-commit ignores active IME composition and legacy keyCode 229.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/hooks/useCommitOnBlur.ts:45"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "9c9916aefe18586b305e1d973d609e60bd6de4c0",
@@ -12291,10 +12341,12 @@
     {
       "upstreamSha": "b20d29dc438bcabb2c25e85976dc108169bb4c6d",
       "subject": "fix(desktop): prevent startup from running twice (#11857)",
-      "reason": "Phase 1d: fix(desktop): prevent startup from running twice. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "The main process is already its own tsdown entry, separate from preload. f5 has none of the upstream worker entries that imported shared main startup code.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/desktop/tsdown.config.mts:13"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "b21c5456548f17190e7f3688f9883b98cbf5221d",
@@ -12578,10 +12630,11 @@
     {
       "upstreamSha": "b5b6abb11e61ad2c9946b8d1346653c6c43d2261",
       "subject": "fix(web): block type-to-focus behind open dialogs (#8139)",
-      "reason": "Phase 1d: fix(web): block type-to-focus behind open dialogs. Reimplement the applicable behavior in f5; not yet delivered. Retain applicable web behavior; omit mobile-specific changes.",
+      "reason": "Fixes upstream-only type-to-focus behavior. f5 has no document-level printable-key redirection to the composer; its global handler requires a registered shortcut.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/components/ChatView.tsx:3673"]
     },
     {
       "upstreamSha": "b5d89038ae72142038dfa8cf69d49b7a607fe98e",
@@ -12659,10 +12712,12 @@
     {
       "upstreamSha": "b6f72681da394369274121c4d1216f5d64a7a4bb",
       "subject": "fix: stop favicon requests for private link hosts on web and mobile (#5838)",
-      "reason": "Phase 1d: fix: stop favicon requests for private link hosts on web and mobile. Reimplement the applicable behavior in f5; not yet delivered. Retain applicable web behavior; omit mobile-specific changes.",
+      "reason": "f5 uses same-origin preview favicon reads and local project favicon assets, not third-party favicon services that disclose private hosts. Redirects are constrained to the page origin.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/desktop/src/preview/previewFavicon.ts:116"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "b70015b6db8ffafd902174f78cb260cc8082fc6e",
@@ -12682,10 +12737,15 @@
     {
       "upstreamSha": "b72d5d79889ad9b4c022060be9eccdfa64733d18",
       "subject": "fix(desktop): timestamps follow the OS locale instead of en-US (#6190)",
-      "reason": "Phase 1d (web and desktop correctness): fix(desktop): timestamps follow the OS locale instead of en-US. Reimplement in f5; not yet delivered.",
+      "reason": "Desktop passes the OS locale into the isolated preload for timestamp formatting; malformed or absent locale tags fall back to the browser default.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/timestampFormat.ts:23", "apps/web/src/timestampFormat.ts:1"],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "b73232bdd31e83914a8a943960c7dc4b6390b39b",
@@ -13149,10 +13209,18 @@
     {
       "upstreamSha": "bd7f7ea0931127c26cfd283c9c2e98e0a425a06b",
       "subject": "fix(web): keep bulk thread deletion going after failures (#4615)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): keep bulk thread deletion going after failures. Reimplement in f5; not yet delivered.",
+      "reason": "Bulk deletion attempts every selected thread and reports failures. Cleanup and navigation use only confirmed deletions, recheck surviving references after confirmation, and remove worktrees without force. Sidebar and archive settings share this flow.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/web/src/components/Sidebar.tsx:1419",
+        "apps/web/src/archiveActions.test.ts:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "bd9ed2b4bbda3dd6e468df1cb06233e29c4a9f5c",
@@ -14973,10 +15041,18 @@
     {
       "upstreamSha": "d7fe47fd0957a34fc2e8bb05f12db19bac3403b6",
       "subject": "fix(server): dismiss native questions when their turn ends (#9851)",
-      "reason": "Phase 1d (web and desktop correctness): fix(server): dismiss native questions when their turn ends. Reimplement in f5; not yet delivered.",
+      "reason": "Turn completion and abort append idempotent dismissal activities for pending blocking questions on that turn. Typed answers are preserved in the persisted composer draft; async message-mode support remains Phase 8 work.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:4093",
+        "apps/web/src/components/ChatView.browser.tsx:1950"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "d81278aa6b272bb3d3314266c6d17f22504d19d6",
@@ -15591,10 +15667,18 @@
     {
       "upstreamSha": "e09b88b6a51bb7e4309498f01c2f36bf5ada43f4",
       "subject": "fix(web): keep right panel synced with agent edits (#8803)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): keep right panel synced with agent edits. Reimplement in f5; not yet delivered.",
+      "reason": "File queries refresh after diffs and reverts. Dirty drafts retain their original content hash and refetches raise a save conflict rather than authorizing an overwrite.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/web/src/routes/__root.tsx:510",
+        "apps/web/src/components/FileViewPanel.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "e0adcc8a24db604c522282edea2823e3ef7a2bc6",
@@ -15703,10 +15787,12 @@
     {
       "upstreamSha": "e204f5a5d34c753399531e772fbb11420caeea09",
       "subject": "fix(desktop): agent shells inherit a UTF-8 locale on macOS (#6236)",
-      "reason": "Phase 1d (web and desktop correctness): fix(desktop): agent shells inherit a UTF-8 locale on macOS. Reimplement in f5; not yet delivered.",
+      "reason": "macOS desktop hydrates LANG/LC_ALL/LC_CTYPE as a group only when none is inherited; absent or failed shell lookup falls back to UTF-8 LC_CTYPE without overriding explicit locale preferences.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/desktop/src/syncShellEnvironment.ts:41"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "e22040dfc190d04573238c5db2e69df72e5f1017",
@@ -15807,10 +15893,18 @@
     {
       "upstreamSha": "e36725682bd2935f1bcfdf81660cb569b5f3df29",
       "subject": "fix(web): keep typed text when a question option is clicked (#12577)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): keep typed text when a question option is clicked. Reimplement in f5; not yet delivered.",
+      "reason": "Selecting a question option moves displaced custom text into the persisted thread draft, preserving an existing prompt and restoring its caret after questions close. Applies to single and multi-select.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/web/src/pendingUserInput.ts:180",
+        "apps/web/src/components/ChatView.browser.tsx:1950"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "e3723e06b5b154a3e0ede55c02e2cabc5301d3bf",
@@ -15964,10 +16058,12 @@
     {
       "upstreamSha": "e6286839369a29d829aee3c64dd64ce39c626d2f",
       "subject": "fix(web): retry startup after the server recovers (#11291)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): retry startup after the server recovers. Reimplement in f5; not yet delivered.",
+      "reason": "Root error Retry invalidates router loaders before resetting the error boundary.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/web/src/routes/__root.tsx:195"],
+      "f5Shas": ["56e880d36d6d31977f2b16a695eb8dac61137e7d"]
     },
     {
       "upstreamSha": "e63ddb48e2fd23854a0b4a480b32cbf33e601981",
@@ -16315,10 +16411,11 @@
     {
       "upstreamSha": "eb77683e5544e071db74831bae052bbd8a7d5f88",
       "subject": "fix(server): prevent duplicate desktop clients after restart",
-      "reason": "Phase 1d: fix(server): prevent duplicate desktop clients after restart. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Fixes upstream-only EnvironmentAuth paired desktop-client sessions. f5 uses profile-scoped backend tokens and does not persist the duplicate environment client registry.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1d",
+      "evidence": ["apps/desktop/src/main.ts:187"]
     },
     {
       "upstreamSha": "eb8ed80300bd719b49fc80ad8708f9839bb48c92",
@@ -16892,10 +16989,18 @@
     {
       "upstreamSha": "f2a914b8588bf3038472c14b129fbc5ddb3a2992",
       "subject": "fix(web): preserve panel state across workspace refreshes (#8968)",
-      "reason": "Phase 1d (web and desktop correctness): fix(web): preserve panel state across workspace refreshes. Reimplement in f5; not yet delivered.",
+      "reason": "Workspace refresh no longer reopens folders the user collapsed. Existing f5 logical diff keys and draft reconciliation preserve diff collapse and unsaved editor state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1d"
+      "disposition": "ported",
+      "plannedWorkstream": "1d",
+      "evidence": [
+        "apps/web/src/components/FileBrowserPanel.tsx:214",
+        "apps/web/src/components/FileViewPanel.browser.tsx:1"
+      ],
+      "f5Shas": [
+        "56e880d36d6d31977f2b16a695eb8dac61137e7d",
+        "c8dd14ae2ff5ee2c296c2ee2d827864d7ed58180"
+      ]
     },
     {
       "upstreamSha": "f2d2fb2f2444bcabc31bf906b5b334aee0d9d79c",

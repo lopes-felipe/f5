@@ -1947,6 +1947,65 @@ describe("ChatView timeline (full app)", () => {
     document.body.innerHTML = "";
   });
 
+  it.each(["option", "dismissal"])("preserves typed question text after %s", async (resolution) => {
+    const snapshot = createSnapshotForTargetUser({
+      targetMessageId: "question-user" as MessageId,
+      targetText: "Ask me",
+    });
+    const question = createThreadActivity({
+      id: "question",
+      createdAt: isoAt(201),
+      kind: "user-input.requested",
+      summary: "Question",
+      payload: {
+        requestId: "question-request",
+        questions: [
+          {
+            id: "choice",
+            header: "Choice",
+            question: "Which approach?",
+            options: [{ label: "Use option", description: "Use the suggested approach" }],
+          },
+        ],
+      },
+    });
+    const withQuestion = {
+      ...snapshot,
+      threads: snapshot.threads.map((thread) => ({ ...thread, activities: [question] })),
+    };
+    const mounted = await mountChatView({ viewport: DEFAULT_VIEWPORT, snapshot: withQuestion });
+    try {
+      await expect.element(page.getByText("Which approach?", { exact: true })).toBeVisible();
+      const editor = await waitForComposerEditor();
+      await page.elementLocator(editor).fill("Keep my typed answer");
+      if (resolution === "option") {
+        await page.getByRole("button", { name: /Use option/ }).click();
+      } else {
+        const dismissed = createThreadActivity({
+          id: "dismissed",
+          createdAt: isoAt(202),
+          kind: "user-input.resolved",
+          summary: "Dismissed",
+          payload: { requestId: "question-request", resolution: "dismissed" },
+        });
+        useStore.getState().syncServerReadModel({
+          ...withQuestion,
+          threads: withQuestion.threads.map((thread) => ({
+            ...thread,
+            activities: [question, dismissed],
+          })),
+        });
+      }
+      await vi.waitFor(() =>
+        expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toContain(
+          "Keep my typed answer",
+        ),
+      );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("shows missing worktree recovery status instead of offering Git initialization", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,

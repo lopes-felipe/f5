@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { getTimestampFormatOptions } from "./timestampFormat";
+import { getTimestampFormatOptions, resolveTimestampLocale } from "./timestampFormat";
 
 describe("getTimestampFormatOptions", () => {
   it("omits hour12 when locale formatting is requested", () => {
@@ -26,5 +26,14 @@ describe("getTimestampFormatOptions", () => {
       minute: "2-digit",
       hour12: false,
     });
+  });
+});
+
+describe("resolveTimestampLocale", () => {
+  it("accepts the OS locale and safely falls back for missing or malformed values", () => {
+    expect(resolveTimestampLocale(" de-DE ")).toBe("de-DE");
+    expect(resolveTimestampLocale("de_DE")).toBeUndefined();
+    expect(resolveTimestampLocale(null)).toBeUndefined();
+    expect(resolveTimestampLocale("")).toBeUndefined();
   });
 });
