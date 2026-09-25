@@ -3928,7 +3928,7 @@ describe("ChatView timeline (full app)", () => {
     }
   });
 
-  it("shows a pointer cursor for the running stop button", async () => {
+  it("stops the active turn from the running stop button", async () => {
     const mounted = await mountChatView({
       viewport: DEFAULT_VIEWPORT,
       snapshot: createSnapshotForTargetUser({
@@ -3945,6 +3945,10 @@ describe("ChatView timeline (full app)", () => {
       );
 
       expect(getComputedStyle(stopButton).cursor).toBe("pointer");
+      stopButton.click();
+      await vi.waitFor(() => {
+        expect(getDispatchCommandRequests("thread.turn.interrupt")).toHaveLength(1);
+      });
     } finally {
       await mounted.cleanup();
     }
@@ -4318,6 +4322,37 @@ describe("ChatView timeline (full app)", () => {
     } finally {
       portaledMenuPopup.remove();
       dialogPopup.remove();
+      await mounted.cleanup();
+    }
+  });
+
+  it("does not submit while the composer is confirming IME input", async () => {
+    useComposerDraftStore.getState().setPrompt(THREAD_ID, "Draft still composing");
+    const mounted = await mountChatView({
+      viewport: DEFAULT_VIEWPORT,
+      snapshot: createSnapshotForTargetUser({
+        targetMessageId: "msg-ime" as MessageId,
+        targetText: "IME target",
+      }),
+    });
+    try {
+      const editor = await waitForComposerEditor();
+      editor.focus();
+      editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+      editor.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+      await waitForLayout();
+      expect(getDispatchCommandRequests("thread.turn.start")).toHaveLength(0);
+      expect(useComposerDraftStore.getState().draftsByThreadId[THREAD_ID]?.prompt).toBe(
+        "Draft still composing",
+      );
+      editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    } finally {
       await mounted.cleanup();
     }
   });
