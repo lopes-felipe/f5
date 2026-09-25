@@ -2999,9 +2999,19 @@ describe("ClaudeAdapterLive", () => {
       // The tool result's item.updated and item.completed are emitted back to
       // back; under the frozen test clock they must still get strictly
       // increasing timestamps so their activities never tie on createdAt.
-      const toolResultTimestamps = ["item.updated", "item.completed", "turn.diff.updated"].map(
-        (type) => runtimeEvents.find((event) => event.type === type)?.createdAt ?? "",
+      const toolResultEvents = [
+        ...runtimeEvents.filter(
+          (event) =>
+            (event.type === "item.updated" || event.type === "item.completed") &&
+            event.itemId === "tool-write-1",
+        ),
+        ...runtimeEvents.filter((event) => event.type === "turn.diff.updated"),
+      ];
+      assert.deepEqual(
+        toolResultEvents.map((event) => event.type),
+        ["item.updated", "item.completed", "turn.diff.updated"],
       );
+      const toolResultTimestamps = toolResultEvents.map((event) => event.createdAt);
       assert.deepEqual(
         [...toolResultTimestamps].toSorted(),
         toolResultTimestamps,

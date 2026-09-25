@@ -723,7 +723,7 @@ function workEntryVisibleSignature(entry: WorkLogEntry): string {
 function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>): WorkLogEntry[] {
   const deduped: Array<WorkLogEntry | null> = [];
   const latestByProviderItemId = new Map<ProviderItemId, { index: number; signature: string }>();
-  const terminalProviderItemIds = new Set<ProviderItemId>();
+  const terminalTieKeys = new Set<string>();
 
   for (const entry of entries) {
     if (!entry.providerItemId) {
@@ -731,18 +731,18 @@ function dedupeProviderItemWorkLogEntries(entries: ReadonlyArray<WorkLogEntry>):
       continue;
     }
 
-    const isTerminal = workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE;
-    // A non-terminal snapshot sorting after its item's terminal entry is an
-    // ordering artifact: providers can emit the final update and the
-    // completion in the same millisecond (Claude does for every tool result),
-    // and without an activity sequence the tie falls back to random ids.
-    // Keeping it would regress a finished item to in-progress and hide its
-    // inline diff.
-    if (!isTerminal && terminalProviderItemIds.has(entry.providerItemId)) {
+    // A non-terminal snapshot sorting after its item's terminal entry with
+    // the same createdAt is an ordering artifact: providers can emit the
+    // final update and the completion in the same millisecond, and without an
+    // activity sequence the tie falls back to random ids. Keeping it would
+    // regress a finished item to in-progress and hide its inline diff. A
+    // later-stamped in-progress update (a task backgrounded after its tool
+    // result, or a reused item id in another turn) is real and stays.
+    const tieKey = `${entry.providerItemId}\u0000${entry.createdAt}`;
+    if (workEntryLifecyclePrecedence(entry) === TERMINAL_LIFECYCLE_PRECEDENCE) {
+      terminalTieKeys.add(tieKey);
+    } else if (terminalTieKeys.has(tieKey)) {
       continue;
-    }
-    if (isTerminal) {
-      terminalProviderItemIds.add(entry.providerItemId);
     }
 
     const signature = workEntryVisibleSignature(entry);

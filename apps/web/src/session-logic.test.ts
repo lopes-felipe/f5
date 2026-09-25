@@ -2154,6 +2154,8 @@ describe("deriveWorkLogEntries", () => {
       readonly updated: string;
       readonly completed: string;
       readonly updatedDetail?: string;
+      readonly terminalStatus?: "completed" | "failed" | "declined";
+      readonly updatedCreatedAt?: string;
     }) => {
       const turnId = TurnId.makeUnsafe("turn-claude-edit");
       const payload = (status: string, detail: string) => ({
@@ -2178,7 +2180,7 @@ describe("deriveWorkLogEntries", () => {
         makeActivity({
           id: ids.updated,
           turnId,
-          createdAt: "2026-02-23T00:00:02.000Z",
+          createdAt: ids.updatedCreatedAt ?? "2026-02-23T00:00:02.000Z",
           kind: "tool.updated",
           summary: "File change",
           payload: payload("inProgress", ids.updatedDetail ?? "/repo/src/greet.ts"),
@@ -2189,11 +2191,82 @@ describe("deriveWorkLogEntries", () => {
           createdAt: "2026-02-23T00:00:02.000Z",
           kind: "tool.completed",
           summary: "File change",
-          payload: payload("completed", "/repo/src/greet.ts"),
+          payload: payload(ids.terminalStatus ?? "completed", "/repo/src/greet.ts"),
         }),
       ];
       return deriveWorkLogEntries(activities, turnId);
     };
+
+    it.each(["failed", "declined"] as const)(
+      "keeps the %s entry when the stale update sorts after it",
+      (terminalStatus) => {
+        const entries = claudeFileChangeLifecycle({
+          completed: "a-completed",
+          updated: "b-updated",
+          updatedDetail: "Write: {}",
+          terminalStatus,
+        });
+
+        expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+          ["a-completed", terminalStatus],
+        ]);
+      },
+    );
+
+    it("keeps an in-progress update stamped after the terminal entry", () => {
+      // e.g. a Claude task backgrounded after its tool result was reported.
+      const entries = claudeFileChangeLifecycle({
+        completed: "a-completed",
+        updated: "b-updated",
+        updatedDetail: "Write: {}",
+        updatedCreatedAt: "2026-02-23T00:00:03.000Z",
+      });
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+        ["a-completed", "completed"],
+        ["b-updated", "inProgress"],
+      ]);
+    });
+
+    it("keeps the current turn's in-progress entry when an earlier turn completed the same item id", () => {
+      const previousTurnId = TurnId.makeUnsafe("turn-previous");
+      const currentTurnId = TurnId.makeUnsafe("turn-current");
+      const payload = (status: string) => ({
+        itemType: "file_change",
+        providerItemId: "reused-item-id",
+        status,
+        title: "File change",
+        detail: "/repo/src/greet.ts",
+        requestKind: "file-change",
+        changedFiles: ["/repo/src/greet.ts"],
+      });
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "previous-completed",
+            turnId: previousTurnId,
+            createdAt: "2026-02-23T00:00:01.000Z",
+            kind: "tool.completed",
+            summary: "File change",
+            payload: payload("completed"),
+          }),
+          makeActivity({
+            id: "current-updated",
+            turnId: currentTurnId,
+            createdAt: "2026-02-23T00:01:00.000Z",
+            kind: "tool.updated",
+            summary: "File change",
+            payload: payload("inProgress"),
+          }),
+        ],
+        currentTurnId,
+      );
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toContainEqual([
+        "current-updated",
+        "inProgress",
+      ]);
+    });
 
     it("keeps the completed entry when the stale update sorts after it", () => {
       const entries = claudeFileChangeLifecycle({ completed: "a-completed", updated: "b-updated" });
