@@ -12,7 +12,7 @@ export const IMAGE_BYTES = Buffer.from(
 );
 
 /** Wire fixtures shared unchanged by the pinned baseline and candidate builds. */
-export function createBrowserFixture() {
+export function createBrowserFixture(protocolVersion = 1) {
   const time = fixture.epoch;
   const messages = (count: number, prefix = "perf-message") =>
     Array.from({ length: count }, (_, i) => {
@@ -184,7 +184,7 @@ export function createBrowserFixture() {
       bootstrapProjectId: "perf-project",
       bootstrapThreadId: SMALL_THREAD,
       bootstrap: {
-        protocolVersion: 1,
+        protocolVersion,
         capabilities: ["image-attachments"],
         uploadLimits: { attachments: { enabled: false, maxFileBytes: 0 } },
         sendLimits: {
