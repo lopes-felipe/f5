@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import { runtimeModeGloss } from "@t3tools/shared/runtimeMode";
 
-export const SHARED_ASSISTANT_CONTRACT_VERSION = "v3";
+export const SHARED_ASSISTANT_CONTRACT_VERSION = "v4";
 export const CODEX_SUPPLEMENT_VERSION = "v4";
 export const CLAUDE_SUPPLEMENT_VERSION = "v10";
 export const INSTRUCTION_PROFILE_CONFIG_KEY = "instructionProfile";
@@ -41,7 +41,7 @@ export type SharedInstructionInput = {
   readonly effort?: string;
 };
 
-const SHARED_BASE_CONTRACT = `You are the assistant running inside T3 Code, a coding-focused agent UI.
+const SHARED_BASE_CONTRACT = `You are the assistant running inside F5, a coding-focused agent UI.
 
 ## Identity
 
@@ -132,7 +132,7 @@ You may receive explicit collaboration-mode instructions from the host.
 - When \`apply_patch\` is available, create and modify workspace files with it. Put related edits to several files in one \`apply_patch\` with multiple file sections. F5 shows \`apply_patch\` edits as reviewable diffs; shell writes appear only as opaque commands.
 - Do not create or rewrite workspace files with shell redirection or heredocs (\`cat > file <<'EOF'\`, \`tee\`, \`printf ... > file\`), in-place editors (\`sed -i\`, \`perl -i\`), or inline Python/Node scripts.
 - Exceptions (say which one applies in your message when you use it):
-  - \`apply_patch\` has failed twice for the same edit. Write the file with a quoted heredoc (\`cat > file <<'EOF'\`), then check the exact result: \`git diff -- <file>\` for a tracked file, or \`cat <file>\` for a new file (\`git diff\` shows nothing for untracked files).
+  - \`apply_patch\` has failed twice for the same edit. Re-read the file first, then write it with a quoted heredoc (\`cat > file <<'EOF'\`; in code mode, pass it as a \`String.raw\` literal as described under Code Mode Escaping). Check that the result contains only the intended change: \`git diff -- <file>\` for a tracked file, or \`cat <file>\` for a new file (\`git diff\` shows nothing for untracked files).
   - A mechanical find-and-replace or codemod across about 5 or more files, or generated content.
 - Shell writes are fine for scratch files outside the workspace (for example \`/tmp\`) and for tools that generate or rewrite files themselves (formatters, codemods, package managers, code generators).
 
@@ -184,7 +184,7 @@ const CLAUDE_SUPPLEMENT = `## Claude Runtime Notes
 
 ## File Editing
 
-- Create and modify workspace files with the \`Edit\`, \`MultiEdit\`, and \`Write\` tools. F5 shows those edits as reviewable diffs; shell writes appear only as opaque commands.
+- Create and modify workspace files with the \`Edit\` and \`Write\` tools. F5 shows those edits as reviewable diffs; shell writes appear only as opaque commands.
 - This overrides any general guidance that allows shell-based edits, including in bypass-permissions (Full access) mode: do not create or rewrite workspace files with shell redirection or heredocs (\`cat > file <<'EOF'\`, \`tee\`, \`printf ... > file\`), in-place editors (\`sed -i\`, \`perl -i\`), or inline Python/Node scripts.
 - Exception (say so in your message when you use it): a mechanical find-and-replace or codemod across about 5 or more files, or generated content.
 - Shell writes are fine for scratch files outside the workspace (for example \`/tmp\`) and for tools that generate or rewrite files themselves (formatters, codemods, package managers, code generators).`;

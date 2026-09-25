@@ -28,7 +28,7 @@ describe("sharedAssistantContract", () => {
       model: "gpt-5.3-codex",
     });
 
-    expect(text).toContain("You are the assistant running inside T3 Code");
+    expect(text).toContain("You are the assistant running inside F5");
     expect(text).toContain("## Codex Collaboration Modes");
     expect(text).toContain("## Codex Runtime Notes");
     expect(text).toContain("<proposed_plan>");
@@ -43,6 +43,9 @@ describe("sharedAssistantContract", () => {
     expect(codexText).toContain("## File Editing");
     expect(codexText).toContain("tools.apply_patch(String.raw`");
     expect(codexText).toContain("### Code Mode Escaping");
+    // The heredoc fallback must re-read the file and point at the String.raw rule.
+    expect(codexText).toContain("Re-read the file first");
+    expect(codexText).toContain("only the intended change");
     expect(codexText).not.toContain("`MultiEdit`");
 
     const claudeText = buildClaudeAssistantInstructions({
@@ -60,7 +63,9 @@ describe("sharedAssistantContract", () => {
     });
 
     expect(claudeText.match(/## File Editing/g)).toHaveLength(1);
-    expect(claudeText).toContain("`Edit`, `MultiEdit`, and `Write`");
+    expect(claudeText).toContain("`Edit` and `Write` tools");
+    // MultiEdit is not a tool in the pinned Claude Agent SDK.
+    expect(claudeText).not.toContain("MultiEdit");
     // Must explicitly override Claude Code's bypass-mode allowance for shell edits.
     expect(claudeText).toContain("bypass-permissions");
     expect(claudeText).toContain("<<'EOF'");
@@ -127,6 +132,7 @@ describe("sharedAssistantContract", () => {
     for (const text of [codexText, claudeText]) {
       expect(text).toContain("F5 may create git checkpoints");
       expect(text).not.toMatch(/\bF3\b/);
+      expect(text).not.toContain("T3 Code");
     }
   });
 
@@ -233,7 +239,7 @@ describe("sharedAssistantContract", () => {
       effort: "max",
     });
 
-    expect(text).toContain("You are the assistant running inside T3 Code");
+    expect(text).toContain("You are the assistant running inside F5");
     expect(text).toContain("## Claude Runtime Notes");
     expect(text).toContain("planning-workflow role");
     expect(text).toContain("prior-work summary");
@@ -409,16 +415,16 @@ describe("sharedAssistantContract", () => {
   });
 
   it("exposes stable version metadata", () => {
-    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v3");
+    expect(SHARED_ASSISTANT_CONTRACT_VERSION).toBe("v4");
     expect(CODEX_SUPPLEMENT_VERSION).toBe("v4");
     expect(CLAUDE_SUPPLEMENT_VERSION).toBe("v10");
     expect(buildInstructionProfile({ provider: "codex" })).toEqual({
-      contractVersion: "v3",
+      contractVersion: "v4",
       providerSupplementVersion: "v4",
       strategy: "codex.developer_instructions",
     });
     expect(buildInstructionProfile({ provider: "claudeAgent" })).toEqual({
-      contractVersion: "v3",
+      contractVersion: "v4",
       providerSupplementVersion: "v10",
       strategy: "claude.append_system_prompt",
     });

@@ -1897,13 +1897,110 @@ describe("ClaudeAdapterLive", () => {
           "<f5-runtime-context>",
           'Active model: "claude-sonnet-4-6"',
           "This host-reported value is authoritative for model identity.",
-          "File edits: change workspace files with Edit, MultiEdit, or Write, not shell writes (sed -i, heredocs, scripts), so F5 can show reviewable diffs.",
+          "File edits: when you change workspace files, use Edit or Write rather than shell writes (sed -i, heredocs, inline scripts) so F5 can show reviewable diffs. Exceptions: codemods across many files, generated output, formatters or code generators, and /tmp scratch files.",
           "</f5-runtime-context>",
           "",
           "Ultrathink:",
           "Investigate the edge cases",
         ].join("\n"),
       );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("omits the file-editing reminder while plan mode is active", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "plan the rename",
+        interactionMode: "plan",
+        attachments: [],
+        model: "claude-opus-5",
+      });
+
+      const turnCompletedFiber = yield* Stream.filter(
+        adapter.streamEvents,
+        (event) => event.type === "turn.completed",
+      ).pipe(Stream.runHead, Effect.forkChild);
+      harness.query.emit({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        errors: [],
+        session_id: "sdk-session-plan-reminder",
+        uuid: "result-plan-reminder",
+      } as unknown as SDKMessage);
+      yield* Fiber.join(turnCompletedFiber);
+
+      // No interactionMode: the SDK stays in plan mode from the previous turn.
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "refine the plan",
+        attachments: [],
+        model: "claude-opus-5",
+      });
+
+      const iterator = harness.getLastCreateQueryInput()?.prompt[Symbol.asyncIterator]();
+      assert.ok(iterator);
+      const promptTexts: Array<string | undefined> = [];
+      for (let index = 0; index < 2; index += 1) {
+        const next = yield* Effect.promise(() => iterator.next());
+        const content = next.done ? undefined : next.value.message.content[0];
+        promptTexts.push(
+          content && typeof content !== "string" && content.type === "text"
+            ? content.text
+            : undefined,
+        );
+      }
+
+      assert.equal(promptTexts.length, 2);
+      for (const promptText of promptTexts) {
+        assert.ok(promptText?.includes("<f5-runtime-context>"));
+        assert.equal(promptText?.includes("File edits:"), false);
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("omits the file-editing reminder for read-only workflow stages", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        model: "claude-opus-5",
+        interactionMode: "plan",
+        workflowExecutionProfile: "unattended-readonly",
+        runtimeMode: "full-access",
+      });
+
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "review the plan",
+        attachments: [],
+        model: "claude-opus-5",
+        workflowExecutionProfile: "unattended-readonly",
+      });
+
+      const promptText = yield* Effect.promise(() =>
+        readFirstPromptText(harness.getLastCreateQueryInput()),
+      );
+      assert.ok(promptText?.includes("<f5-runtime-context>"));
+      assert.equal(promptText?.includes("File edits:"), false);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),
