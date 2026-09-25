@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { accountLoginOutput } from "./cliLoginOutput";
+import { accountLoginOutput } from "./accountLoginOutput";
 it("waits for a complete URL across chunks and preserves OAuth query bytes", () => {
   const partial = "Open https://auth.openai.com/oauth/authorize?state=abc";
   expect(accountLoginOutput(partial).urls).toEqual([]);

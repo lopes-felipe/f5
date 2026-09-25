@@ -47,12 +47,13 @@ describe("renderProfileGitAuthorConfig", () => {
 
 describe("agent and terminal Git configuration", () => {
   const stateDir = Path.resolve("git-config-env-test");
-  const launcher = Path.join(
-    githubLauncherDir(stateDir),
-    process.platform === "win32" ? "gh.cmd" : "gh",
-  );
+  const shellPath = (value: string) =>
+    process.platform === "win32" ? value.replaceAll("\\", "/") : value;
+  const helper = `!ELECTRON_RUN_AS_NODE=1 '${shellPath(process.execPath)}' '${shellPath(
+    Path.join(githubLauncherDir(stateDir), "gh.cjs"),
+  )}' auth git-credential`;
 
-  it("Default keeps inherited entries and workstation helpers, adding only the author include", () => {
+  it("Default keeps repository identity, inherited entries, and workstation helpers", () => {
     const env = buildAccountExecutionEnvironment({
       purpose: "terminal",
       stateDir,
@@ -63,13 +64,10 @@ describe("agent and terminal Git configuration", () => {
         GIT_CONFIG_VALUE_0: "1",
       },
     });
-    expect(pairsOf(env)).toEqual([
-      ["user.useConfigOnly", "1"],
-      ["include.path", profileGitAuthorConfigPath(stateDir)],
-    ]);
+    expect(pairsOf(env)).toEqual([["user.useConfigOnly", "1"]]);
   });
 
-  it("isolated profiles reset inherited helpers and use the profile launcher", () => {
+  it("isolated profiles scope the profile helper to GitHub hosts only", () => {
     const env = buildAccountExecutionEnvironment({
       purpose: "provider",
       stateDir,
@@ -80,11 +78,12 @@ describe("agent and terminal Git configuration", () => {
         GIT_CONFIG_VALUE_0: "x",
       },
     });
-    const helperPath = process.platform === "win32" ? launcher.replaceAll("\\", "/") : launcher;
+    // No projection on disk: github.com is always known. No unscoped helper reset, so
+    // non-GitHub hosts keep their inherited (system) helpers.
     expect(pairsOf(env)).toEqual([
       ["include.path", profileGitAuthorConfigPath(stateDir)],
-      ["credential.helper", ""],
-      ["credential.helper", `!'${helperPath}' auth git-credential`],
+      ["credential.https://github.com.helper", ""],
+      ["credential.https://github.com.helper", helper],
     ]);
   });
 
@@ -98,13 +97,37 @@ describe("agent and terminal Git configuration", () => {
     expect(env.GIT_CONFIG_COUNT).toBeUndefined();
   });
 
-  it("quotes helper paths with single quotes", () => {
-    const [, , helper] = profileSessionGitConfigPairs({
+  it("quotes helper paths and runs node directly (no gh.cmd through sh on Windows)", () => {
+    const pairs = profileSessionGitConfigPairs({
       stateDir: "/s",
       launcherDir: "/it's/bin",
       isolated: true,
+      githubHosts: ["github.com", "ghe.example.com"],
+      execPath: "/opt/node",
       platform: "linux",
     });
-    expect(helper).toEqual(["credential.helper", `!'/it'"'"'s/bin/gh' auth git-credential`]);
+    expect(pairs.at(-1)).toEqual([
+      "credential.https://ghe.example.com.helper",
+      `!ELECTRON_RUN_AS_NODE=1 '/opt/node' '/it'"'"'s/bin/gh.cjs' auth git-credential`,
+    ]);
+    const windows = profileSessionGitConfigPairs({
+      stateDir: "C:\\s",
+      launcherDir: "C:\\Users\\me\\bin",
+      isolated: true,
+      githubHosts: ["github.com"],
+      execPath: "C:\\Program Files\\F5\\F5.exe",
+      platform: "win32",
+    });
+    expect(windows.at(-1)?.[1]).toBe(
+      `!ELECTRON_RUN_AS_NODE=1 'C:/Program Files/F5/F5.exe' 'C:/Users/me/bin/gh.cjs' auth git-credential`,
+    );
+    expect(
+      profileSessionGitConfigPairs({
+        stateDir: "/s",
+        launcherDir: "/b",
+        isolated: false,
+        githubHosts: ["github.com"],
+      }),
+    ).toEqual([]);
   });
 });

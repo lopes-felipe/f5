@@ -2,8 +2,8 @@ import { ServerBootstrap } from "./protocol";
 import {
   GithubAccountInput,
   GithubLoginHandleInput,
-  GithubLoginStartInput,
   GithubAccountHostInput,
+  GithubCliImportInput,
   ProfileSummary,
   ProfileRegistryDiagnostic,
   ProfileCreateInput,
@@ -233,6 +233,8 @@ export const WS_METHODS = {
   githubAccountSet: "githubAccount.set",
   githubAccountRemove: "githubAccount.remove",
   githubAccountStatus: "githubAccount.status",
+  githubAccountCliCandidates: "githubAccount.cliCandidates",
+  githubAccountCliImport: "githubAccount.cliImport",
   profilesList: "profiles.list",
   profilesCreate: "profiles.create",
   profilesUpdate: "profiles.update",
@@ -416,12 +418,14 @@ const tagMcpAccountRequestBody = <
   );
 
 const WebSocketRequestBody = Schema.Union([
-  tagRequestBody(WS_METHODS.githubLoginStart, GithubLoginStartInput),
+  tagRequestBody(WS_METHODS.githubLoginStart, GithubLoginHandleInput),
   tagRequestBody(WS_METHODS.githubLoginStatus, GithubLoginHandleInput),
   tagRequestBody(WS_METHODS.githubLoginCancel, GithubLoginHandleInput),
   tagRequestBody(WS_METHODS.githubAccountSet, GithubAccountInput),
   tagRequestBody(WS_METHODS.githubAccountRemove, GithubAccountHostInput),
   tagRequestBody(WS_METHODS.githubAccountStatus, GithubAccountHostInput),
+  tagRequestBody(WS_METHODS.githubAccountCliCandidates, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.githubAccountCliImport, GithubCliImportInput),
   tagRequestBody(WS_METHODS.profilesList, Schema.Struct({})),
   tagRequestBody(WS_METHODS.profilesCreate, ProfileCreateInput),
   tagRequestBody(WS_METHODS.profilesUpdate, ProfileUpdateInput),

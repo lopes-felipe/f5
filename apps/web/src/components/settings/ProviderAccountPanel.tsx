@@ -1,4 +1,4 @@
-import { accountLoginOutput } from "@t3tools/shared/cliLoginOutput";
+import { accountLoginOutput } from "./accountLoginOutput";
 import { ChevronDownIcon, CopyIcon, ExternalLinkIcon, RotateCwIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import type { ProfileSummary, ProviderInstanceId } from "@t3tools/contracts";

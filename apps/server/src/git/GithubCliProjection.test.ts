@@ -59,7 +59,14 @@ describe("profile CLI credentials", () => {
     expect((await work.config())["github.com"].oauth_token).toBe("f5-profile-not-connected");
     expect((await work.config())["git.example.com"].oauth_token).toBe("enterprise");
     expect(await work.account.token("github.com")).toBeNull();
+    // Git credential answers list connected hosts only (never the placeholder).
+    const credentialsPath = Path.join(work.stateDir, "github", "git-credentials.json");
+    expect(JSON.parse(await FS.readFile(credentialsPath, "utf8"))).toEqual({
+      version: 1,
+      hosts: { "git.example.com": "enterprise" },
+    });
     if (process.platform !== "win32") {
+      expect((await FS.stat(credentialsPath)).mode & 0o777).toBe(0o600);
       expect((await FS.stat(Path.join(work.stateDir, "github"))).mode & 0o777).toBe(0o700);
       expect((await FS.stat(Path.join(work.stateDir, "github", "hosts.yml"))).mode & 0o777).toBe(
         0o600,
@@ -194,58 +201,95 @@ it("starts native gh with only the disconnected placeholder, then an Enterprise-
   ).toBe("1");
 });
 
-it.for([true, false])(
-  "agent/terminal git uses the live profile credential and author (isolated=%s)",
-  async (isolated, { skip }) => {
-    const version = await runProcess("gh", ["--version"], {
-      env: process.env,
-      allowNonZeroExit: true,
-    }).catch(() => null);
-    if (process.platform === "win32" || !version || version.code !== 0) {
-      skip();
-      return;
-    }
-    const p = await profile();
-    await p.account.reconcile();
-    const home = Path.join(p.stateDir, "home");
-    await FS.mkdir(home);
-    // A workstation `gh auth setup-git` helper; Default keeps it and it resolves to the launcher.
-    await FS.writeFile(
-      Path.join(home, ".gitconfig"),
-      "[credential]\n\thelper = !gh auth git-credential\n",
-    );
-    const profileSummary = fallbackDefaultProfile(p.stateDir);
-    const env = buildAccountExecutionEnvironment({
-      purpose: "terminal",
-      stateDir: p.stateDir,
-      profile: isolated ? { ...profileSummary, isDefault: false } : profileSummary,
-      baseEnv: {
-        ...process.env,
-        HOME: home,
-        // The unit-test config pins GIT_CONFIG_GLOBAL to /dev/null; use the fake workstation home.
-        GIT_CONFIG_GLOBAL: Path.join(home, ".gitconfig"),
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_TERMINAL_PROMPT: "0",
-        GIT_ASKPASS: "",
-        SSH_ASKPASS: "",
-      },
-    });
-    const fill = () =>
-      runProcess("git", ["credential", "fill"], {
+/**
+ * Git sessions for agents/terminals. A fake "real" gh after the launcher on PATH answers every
+ * lookup with a workstation token, standing in for gh's OS-keychain fallback for hosts that are
+ * not listed in the profile's hosts.yml. It must never be used for profile credentials.
+ */
+async function gitSession(isolated: boolean) {
+  const p = await profile();
+  await p.account.reconcile();
+  const home = Path.join(p.stateDir, "home");
+  const workstationBin = Path.join(p.stateDir, "workstation-bin");
+  await FS.mkdir(home);
+  await FS.mkdir(workstationBin);
+  await FS.writeFile(
+    Path.join(workstationBin, "gh"),
+    '#!/bin/sh\ncat >/dev/null\nif [ "$2" = token ]; then echo workstation-token; else printf "username=me\\npassword=workstation-token\\n"; fi\n',
+    { mode: 0o700 },
+  );
+  // Workstation helpers: `gh auth setup-git` (bare `gh`), then a keychain-like helper.
+  const keychainHelper = Path.join(workstationBin, "keychain-helper");
+  await FS.writeFile(
+    keychainHelper,
+    '#!/bin/sh\ncat >/dev/null\nprintf "username=me\\npassword=workstation-secret\\n"\n',
+    { mode: 0o700 },
+  );
+  const workstationHelpers = `[credential]\n\thelper = !gh auth git-credential\n\thelper = !${keychainHelper}\n`;
+  await FS.writeFile(Path.join(home, ".gitconfig"), workstationHelpers);
+  // Isolated sessions use the provider home as HOME; inherited helpers there must still be
+  // bypassed for GitHub hosts but kept for other hosts.
+  const providerHome = Path.join(p.stateDir, "provider-homes", "claude");
+  await FS.mkdir(providerHome, { recursive: true });
+  await FS.writeFile(Path.join(providerHome, ".gitconfig"), workstationHelpers);
+  const profileSummary = fallbackDefaultProfile(p.stateDir);
+  const env = buildAccountExecutionEnvironment({
+    purpose: "terminal",
+    stateDir: p.stateDir,
+    profile: isolated ? { ...profileSummary, isDefault: false } : profileSummary,
+    baseEnv: {
+      ...process.env,
+      PATH: `${workstationBin}${Path.delimiter}${process.env.PATH ?? ""}`,
+      HOME: home,
+      // The unit-test config pins GIT_CONFIG_GLOBAL to /dev/null; use the fake workstation home.
+      GIT_CONFIG_GLOBAL: Path.join(home, ".gitconfig"),
+      GIT_CONFIG_NOSYSTEM: "1",
+    },
+  });
+  const fill = async (host: string) =>
+    (
+      await runProcess("git", ["credential", "fill"], {
         env: { ...env, GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "", SSH_ASKPASS: "" },
-        stdin: "protocol=https\nhost=github.com\n\n",
+        stdin: `protocol=https\nhost=${host}\n\n`,
         allowNonZeroExit: true,
         timeoutMs: 10000,
-      });
-    // Disconnected: the placeholder is never offered to Git.
-    const disconnected = await fill();
-    expect(disconnected.stdout).not.toContain("f5-profile-not-connected");
-    expect(disconnected.code).not.toBe(0);
-    // Connecting after the environment was built applies without restarting the session.
-    await p.account.set("github.com", "live-token");
-    const connected = await fill();
-    expect(connected.stdout).toContain("password=live-token");
+      })
+    ).stdout;
+  return { p, env, fill };
+}
 
+describe.skipIf(process.platform === "win32")("agent and terminal Git sessions", () => {
+  it("isolated: GitHub hosts use only live profile credentials; other hosts keep helpers", async () => {
+    const { p, fill } = await gitSession(true);
+    // Disconnected github.com: nothing from the profile, and neither the placeholder nor
+    // workstation credentials (gh keychain fallback or inherited helpers) leak in.
+    const disconnected = await fill("github.com");
+    expect(disconnected).not.toContain("f5-profile-not-connected");
+    expect(disconnected).not.toContain("workstation");
+    // Non-GitHub hosts keep inherited helpers (the helper reset is host-scoped).
+    expect(await fill("gitlab.com")).toContain("password=workstation-secret");
+    // Connecting after the session started applies without a restart.
+    await p.account.set("github.com", "live-token");
+    expect(await fill("github.com")).toContain("password=live-token");
+  });
+
+  it("isolated: an Enterprise host the profile never connected gets no gh/keychain token", async () => {
+    const { p, env } = await gitSession(true);
+    await p.account.set("ghe.connected.example", "enterprise-token");
+    const ask = (host: string) =>
+      runProcess(Path.join(p.stateDir, "github-bin", "gh"), ["auth", "git-credential", "get"], {
+        env,
+        stdin: `protocol=https\nhost=${host}\n\n`,
+      }).then((result) => result.stdout);
+    expect(await ask("ghe.connected.example")).toBe(
+      "username=x-access-token\npassword=enterprise-token\n",
+    );
+    expect(await ask("ghe.never-connected.example")).toBe("");
+    expect(await ask("github.com")).toBe("");
+  });
+
+  it("isolated: the profile author applies and follows Settings changes", async () => {
+    const { p, env } = await gitSession(true);
     const { writeProfileGitAuthorConfig } = await import("./gitConfigEnvironment");
     const repo = Path.join(p.stateDir, "repo");
     await runProcess("git", ["init", "-q", repo], { env });
@@ -258,8 +302,30 @@ it.for([true, false])(
     expect(await ident()).toMatch(/^Profile "Quoted" Person <p@example.com>/);
     await writeProfileGitAuthorConfig(p.stateDir, "", "");
     expect(await ident()).toMatch(/^Repo Local <local@example.com>/);
-  },
-);
+  });
+
+  it("Default: keeps repository identity and workstation helpers; bare gh helper is profile-safe", async () => {
+    const { p, env, fill } = await gitSession(false);
+    // `!gh auth git-credential` resolves to the profile launcher, which answers nothing for a
+    // disconnected host, so Git falls through to the next workstation helper.
+    const disconnected = await fill("github.com");
+    expect(disconnected).not.toContain("f5-profile-not-connected");
+    expect(disconnected).not.toContain("workstation-token");
+    expect(disconnected).toContain("password=workstation-secret");
+    await p.account.set("github.com", "live-token");
+    expect(await fill("github.com")).toContain("password=live-token");
+
+    const { writeProfileGitAuthorConfig } = await import("./gitConfigEnvironment");
+    await writeProfileGitAuthorConfig(p.stateDir, "Profile Person", "p@example.com");
+    const repo = Path.join(p.stateDir, "repo");
+    await runProcess("git", ["init", "-q", repo], { env });
+    await runProcess("git", ["config", "user.name", "Repo Local"], { cwd: repo, env });
+    await runProcess("git", ["config", "user.email", "local@example.com"], { cwd: repo, env });
+    expect(
+      (await runProcess("git", ["var", "GIT_AUTHOR_IDENT"], { cwd: repo, env })).stdout,
+    ).toMatch(/^Repo Local <local@example.com>/);
+  });
+});
 
 it.for(["bash", "zsh"])(
   "keeps shell startup customizations but rejects rc credentials through %s",

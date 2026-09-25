@@ -455,7 +455,7 @@ export interface DesktopPreviewBridge {
 
 export interface NativeApi {
   profiles?: {
-    githubLoginStart: (input?: { host?: string }) => Promise<import("./profile").GithubLoginStatus>;
+    githubLoginStart: () => Promise<import("./profile").GithubLoginStatus>;
     githubLoginStatus: (input: {
       handle?: string;
     }) => Promise<import("./profile").GithubLoginStatus>;
@@ -463,6 +463,11 @@ export interface NativeApi {
     githubSet: (input: { host: string; token: string }) => Promise<{ login: string }>;
     githubRemove: (input: { host: string }) => Promise<void>;
     githubStatus: (input: { host: string }) => Promise<{ login: string | null }>;
+    githubCliCandidates: () => Promise<import("./profile").GithubCliCandidates>;
+    githubCliImport: (input: {
+      host: string;
+      login: string;
+    }) => Promise<import("./profile").GithubCliImportResult>;
     list: () => Promise<typeof ProfileListResult.Type>;
     create: (input: ProfileCreateInput) => Promise<ProfileSummary>;
     update: (input: ProfileUpdateInput) => Promise<ProfileSummary>;

@@ -2449,6 +2449,23 @@ describe("WebSocket Server", () => {
     expect(response.id).not.toBe("unknown");
   });
 
+  it("rejects GitHub CLI imports for invalid hosts or logins immediately", async () => {
+    server = await createTestServer({ cwd: "/test" });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+    for (const params of [
+      { host: "https://github.com", login: "octocat" },
+      { host: "github.com", login: "-not-a-login" },
+    ]) {
+      const response = await sendRequest(ws, WS_METHODS.githubAccountCliImport, params);
+      expect(response.result).toBeUndefined();
+      expect(response.error?.message).toContain("Invalid request format");
+      expect(response.id).not.toBe("unknown");
+    }
+  });
+
   it("recovers request ids from undecodable requests", () => {
     expect(readWebSocketRequestId(JSON.stringify({ id: "abc", body: { _tag: "x" } }))).toBe("abc");
     expect(readWebSocketRequestId(JSON.stringify({ id: 7 }))).toBeNull();

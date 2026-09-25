@@ -1,4 +1,9 @@
-import type { GithubLoginStatus } from "@t3tools/contracts";
+import type {
+  GithubCliAccount,
+  GithubCliCandidates,
+  GithubCliImportResult,
+  GithubLoginStatus,
+} from "@t3tools/contracts";
 import { normalizeGithubHost } from "@t3tools/shared/github";
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -7,6 +12,9 @@ import { readNativeApi } from "../../nativeApi";
 
 export const GITHUB_IDENTITY_DEBOUNCE_MS = 350;
 export const GITHUB_LOGIN_POLL_MS = 1500;
+export const GITHUB_BROWSER_SIGN_IN_HOST = "github.com";
+/** Same scopes as the browser (device-flow) sign-in requests. */
+export const GITHUB_TOKEN_SCOPES = ["repo", "read:org", "notifications"] as const;
 
 export type GithubConnection =
   | { kind: "invalid-host" }
@@ -15,7 +23,14 @@ export type GithubConnection =
   | { kind: "disconnected"; host: string }
   | { kind: "error"; host: string; message: string };
 
-export type GithubAccountAction = "sign-in" | "cancel" | "token" | "check" | "disconnect";
+export type GithubAccountAction =
+  | "sign-in"
+  | "cancel"
+  | "token"
+  | "check"
+  | "disconnect"
+  | "cli-find"
+  | "cli-import";
 
 export const errorMessage = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
@@ -36,7 +51,6 @@ export function useGithubAccount() {
   const [login, setLogin] = useState<GithubLoginStatus | null>(null);
   /** Only device-flow attempts started (or found pending) by this view surface their errors. */
   const [activeHandle, setActiveHandle] = useState<string | null>(null);
-  const loginHost = useRef("github.com");
   const [action, setAction] = useState<GithubAccountAction | null>(null);
   const [actionError, setActionError] = useState("");
   const identityRevision = useRef(0);
@@ -119,9 +133,12 @@ export function useGithubAccount() {
         setLogin(result);
         pending = result.state === "pending";
         if (result.state === "connected") {
-          const target = loginHost.current;
-          settleIdentity({ kind: "connected", host: target, login: result.login ?? "" });
-          setHostInput(target);
+          settleIdentity({
+            kind: "connected",
+            host: GITHUB_BROWSER_SIGN_IN_HOST,
+            login: result.login ?? "",
+          });
+          setHostInput(GITHUB_BROWSER_SIGN_IN_HOST);
         }
       } catch {
         /* Retry transient transport failures only while sign-in is pending. */
@@ -160,9 +177,8 @@ export function useGithubAccount() {
   const signIn = useCallback(
     () =>
       run("sign-in", async () => {
-        if (!api || !host) return;
-        loginHost.current = host;
-        const result = await api.githubLoginStart(host === "github.com" ? {} : { host });
+        if (!api || host !== GITHUB_BROWSER_SIGN_IN_HOST) return;
+        const result = await api.githubLoginStart();
         setLogin(result);
         setActiveHandle(result.handle ?? null);
         if (result.state === "pending" && result.verificationUri)
@@ -211,6 +227,45 @@ export function useGithubAccount() {
     [checkIdentity, host, run],
   );
 
+  // Existing GitHub CLI login import. Discovery runs `gh auth status` (network checks on the
+  // backend), so it is only loaded when the user asks for it.
+  const [cliCandidates, setCliCandidates] = useState<GithubCliCandidates | null>(null);
+  const [cliPanelOpen, setCliPanelOpen] = useState(false);
+  const [cliImported, setCliImported] = useState<(GithubCliImportResult & { host: string }) | null>(
+    null,
+  );
+
+  const findCliLogins = useCallback(
+    () =>
+      run("cli-find", async () => {
+        if (!api) return;
+        setCliPanelOpen(true);
+        setCliCandidates(null);
+        setCliCandidates(await api.githubCliCandidates());
+      }),
+    [api, run],
+  );
+
+  const closeCliLogins = useCallback(() => {
+    setCliPanelOpen(false);
+    setCliCandidates(null);
+  }, []);
+
+  const importCliLogin = useCallback(
+    (account: Pick<GithubCliAccount, "host" | "login">) =>
+      run("cli-import", async () => {
+        if (!api) return;
+        const result = await api.githubCliImport({ host: account.host, login: account.login });
+        settleIdentity({ kind: "connected", host: account.host, login: result.login });
+        setHostInput(account.host);
+        setActiveHandle(null);
+        setCliImported({ ...result, host: account.host });
+        setCliPanelOpen(false);
+        setCliCandidates(null);
+      }),
+    [api, run, settleIdentity],
+  );
+
   const attempt = login && login.handle && login.handle === activeHandle ? login : null;
   return {
     api,
@@ -218,9 +273,10 @@ export function useGithubAccount() {
     setHostInput,
     host,
     connection,
-    /** `null` until the server reports whether browser sign-in (gh) is available. */
+    /** `null` until the server reports whether browser sign-in is enabled for this install. */
     browserSignInAvailable: login ? login.available : null,
-    browserSignInUnavailableReason: login && !login.available ? (login.error ?? "") : "",
+    /** Browser (device-flow) sign-in only targets github.com; Enterprise uses a token. */
+    browserSignInSupportedForHost: host === GITHUB_BROWSER_SIGN_IN_HOST,
     attempt,
     signingIn: login?.state === "pending",
     action,
@@ -232,6 +288,13 @@ export function useGithubAccount() {
     disconnect,
     recheck,
     openExternal,
+    cliPanelOpen,
+    cliCandidates,
+    /** Last import for the selected host, used to warn about missing scopes. */
+    cliImported: cliImported && cliImported.host === host ? cliImported : null,
+    findCliLogins,
+    closeCliLogins,
+    importCliLogin,
   };
 }
 

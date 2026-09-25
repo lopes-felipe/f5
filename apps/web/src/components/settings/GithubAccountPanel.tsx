@@ -1,4 +1,12 @@
-import { CheckIcon, ChevronDownIcon, CopyIcon, KeyRoundIcon, RotateCwIcon } from "lucide-react";
+import type { GithubCliAccount, GithubCliCandidates } from "@t3tools/contracts";
+import {
+  CheckIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  KeyRoundIcon,
+  RotateCwIcon,
+  TerminalIcon,
+} from "lucide-react";
 import { useState, type ReactNode } from "react";
 
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
@@ -11,9 +19,12 @@ import { Input } from "../ui/input";
 import { Spinner } from "../ui/spinner";
 import { toastManager } from "../ui/toast";
 import { SettingsCard } from "./SettingsCard";
-import { type GithubConnection, useGitAuthorDraft, useGithubAccount } from "./useGithubAccount";
-
-const GH_INSTALL_URL = "https://cli.github.com";
+import {
+  GITHUB_TOKEN_SCOPES,
+  type GithubConnection,
+  useGitAuthorDraft,
+  useGithubAccount,
+} from "./useGithubAccount";
 
 function connectionBadge(connection: GithubConnection, signingIn: boolean) {
   if (signingIn) return <Badge variant="info">Signing in</Badge>;
@@ -76,6 +87,100 @@ function Disclosure({
   );
 }
 
+/** Accounts the workstation GitHub CLI is logged in to, each importable into this profile. */
+function GithubCliLogins({
+  candidates,
+  loading,
+  importing,
+  busy,
+  currentHost,
+  onImport,
+}: {
+  candidates: GithubCliCandidates | null;
+  loading: boolean;
+  importing: boolean;
+  busy: boolean;
+  currentHost: string | null;
+  onImport: (account: GithubCliAccount) => void;
+}) {
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+  const accounts = [...(candidates?.accounts ?? [])].sort(
+    (a, b) =>
+      Number(b.host === currentHost) - Number(a.host === currentHost) ||
+      Number(b.active) - Number(a.active),
+  );
+  return (
+    <div
+      className="space-y-2 rounded-lg border border-border bg-background px-3 py-2"
+      aria-label="GitHub CLI logins"
+      role="group"
+    >
+      {loading ? (
+        <p className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Spinner className="size-3" />
+          Checking GitHub CLI on this computer…
+        </p>
+      ) : !candidates ? null : !candidates.ghAvailable ? (
+        <p className="text-xs text-muted-foreground">
+          GitHub CLI isn&apos;t installed on this computer.
+        </p>
+      ) : accounts.length === 0 ? (
+        <p className="text-xs text-muted-foreground">
+          No GitHub CLI login found. Run <code>gh auth login</code> in a terminal, or sign in with
+          GitHub.
+        </p>
+      ) : (
+        <>
+          <ul className="divide-y divide-border">
+            {accounts.map((account) => (
+              <li
+                key={`${account.host}/${account.login}`}
+                className="flex flex-wrap items-center justify-between gap-2 py-1.5"
+              >
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="truncate text-sm font-medium text-foreground">
+                    @{account.login}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{account.host}</span>
+                  {account.active ? (
+                    <Badge variant="outline" size="sm">
+                      Active
+                    </Badge>
+                  ) : null}
+                  {account.missingScopes.length > 0 ? (
+                    <Badge variant="warning" size="sm">
+                      No {account.missingScopes.join(", ")} scope
+                    </Badge>
+                  ) : null}
+                </div>
+                <Button
+                  size="xs"
+                  disabled={busy}
+                  aria-label={`Import @${account.login} on ${account.host}`}
+                  onClick={() => {
+                    setPendingKey(`${account.host}/${account.login}`);
+                    onImport(account);
+                  }}
+                >
+                  {importing && pendingKey === `${account.host}/${account.login}` ? (
+                    <Spinner className="size-3" />
+                  ) : null}
+                  Import
+                </Button>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[11px] text-muted-foreground">
+            Copies the current token into this profile. Later changes to your terminal gh login,
+            such as a logout or account switch, don&apos;t affect F5. Use this button again to
+            update.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="grid gap-1.5">
@@ -97,11 +202,13 @@ export function GithubAccountPanel() {
 
   const { connection, host, attempt, busy } = github;
   const connected = connection.kind === "connected";
-  const ghMissing = github.browserSignInAvailable === false;
-  // Without gh the token form is the primary way to connect, so it starts open.
-  const tokenOpen = tokenOpenOverride ?? ghMissing;
+  const browserSignInDisabled = github.browserSignInAvailable === false;
+  const canUseBrowserSignIn = github.browserSignInSupportedForHost && !browserSignInDisabled;
+  // When browser sign-in can't be used (Enterprise host, or disabled for this install), the
+  // token form is the primary way to connect, so it starts open.
+  const tokenOpen = tokenOpenOverride ?? (Boolean(host) && !canUseBrowserSignIn);
   const tokenUrl = host
-    ? `https://${host}/settings/tokens/new?scopes=repo,read:org,notifications&description=F5`
+    ? `https://${host}/settings/tokens/new?scopes=${GITHUB_TOKEN_SCOPES.join(",")}&description=F5`
     : undefined;
 
   return (
@@ -143,15 +250,33 @@ export function GithubAccountPanel() {
             </span>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-1.5">
-            {github.signingIn ? null : (
+            {github.signingIn || !canUseBrowserSignIn ? null : (
               <Button
                 size="xs"
                 variant={connected ? "outline" : "default"}
-                disabled={!host || busy || ghMissing}
+                disabled={busy}
                 onClick={() => void github.signIn()}
               >
                 {github.action === "sign-in" ? <Spinner className="size-3" /> : null}
                 {connected ? "Reconnect" : "Sign in with GitHub"}
+              </Button>
+            )}
+            {github.signingIn ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                disabled={!host || busy}
+                aria-expanded={github.cliPanelOpen}
+                onClick={() =>
+                  void (github.cliPanelOpen ? github.closeCliLogins() : github.findCliLogins())
+                }
+              >
+                {github.action === "cli-find" ? (
+                  <Spinner className="size-3" />
+                ) : (
+                  <TerminalIcon className="size-3" />
+                )}
+                Use GitHub CLI login
               </Button>
             )}
             <Button
@@ -181,17 +306,48 @@ export function GithubAccountPanel() {
           </div>
         </div>
 
-        {ghMissing ? (
+        {github.cliPanelOpen ? (
+          <GithubCliLogins
+            candidates={github.cliCandidates}
+            loading={github.action === "cli-find"}
+            importing={github.action === "cli-import"}
+            busy={busy}
+            currentHost={host}
+            onImport={(account) =>
+              void github.importCliLogin(account).then((done) => {
+                if (done)
+                  toastManager.add({
+                    type: "success",
+                    title: `Imported @${account.login} from GitHub CLI`,
+                  });
+              })
+            }
+          />
+        ) : null}
+
+        {connected &&
+        github.cliImported &&
+        github.cliImported.login === connection.login &&
+        github.cliImported.missingScopes.length > 0 ? (
+          <Alert variant="warning" className="text-xs">
+            <AlertDescription>
+              This token is missing the {github.cliImported.missingScopes.join(", ")} scope
+              {github.cliImported.missingScopes.length === 1 ? "" : "s"}, so some GitHub features
+              may not work. Run{" "}
+              <code className="select-all">
+                gh auth refresh -h {github.cliImported.host} -s{" "}
+                {github.cliImported.missingScopes.join(",")}
+              </code>{" "}
+              in a terminal, then import again.
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {host && !canUseBrowserSignIn ? (
           <p className="text-xs text-muted-foreground">
-            {github.browserSignInUnavailableReason ||
-              "Install GitHub CLI (gh) to sign in with your browser."}{" "}
-            <button
-              type="button"
-              className="text-foreground underline underline-offset-2"
-              onClick={() => void github.openExternal(GH_INSTALL_URL)}
-            >
-              Get GitHub CLI
-            </button>
+            {browserSignInDisabled
+              ? "Browser sign-in is disabled for this installation. Use your GitHub CLI login or a personal access token."
+              : "Browser sign-in is available for github.com. Use your GitHub CLI login or a personal access token for this host."}
           </p>
         ) : null}
 
@@ -365,9 +521,14 @@ export function GithubAccountPanel() {
         <Disclosure label="How this works" open={aboutOpen} onOpenChange={setAboutOpen}>
           <div className="mt-2 space-y-2 text-xs text-muted-foreground">
             <p>
-              Browser sign-in runs your installed GitHub CLI in a private, temporary folder. GitHub
-              lists the grant as “GitHub CLI” under Authorized OAuth Apps; revoking it there also
-              signs out gh on this computer.
+              Browser sign-in uses GitHub&apos;s device flow with the GitHub CLI app and requests
+              the repo, read:org, and notifications scopes. GitHub lists the grant as “GitHub CLI”
+              under Authorized OAuth Apps; revoking it there also signs out gh on this computer. It
+              does not touch your gh login or keychain.
+            </p>
+            <p>
+              “Use GitHub CLI login” only reads your terminal&apos;s gh login (it never changes it)
+              and copies the token you pick into this profile. F5 never imports it automatically.
             </p>
             <p>
               Credentials are stored in private files in this profile and sent only to the selected

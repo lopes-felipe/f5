@@ -107,9 +107,6 @@ export const GithubAccountHostInput = Schema.Struct({ host: GithubHost });
 export const GithubLoginHandleInput = Schema.Struct({
   handle: Schema.optional(TrimmedNonEmptyString),
 });
-export const GithubLoginStartInput = Schema.Struct({
-  host: Schema.optional(GithubHost),
-});
 export const GithubLoginStatus = Schema.Struct({
   available: Schema.Boolean,
   state: Schema.Literals(["idle", "pending", "connected", "cancelled", "expired", "error"]),
@@ -121,3 +118,29 @@ export const GithubLoginStatus = Schema.Struct({
   error: Schema.optional(Schema.String),
 });
 export type GithubLoginStatus = typeof GithubLoginStatus.Type;
+
+/** GitHub login (including Enterprise Managed User `_shortcode` suffixes). */
+export const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,98}[A-Za-z0-9])?$/;
+export const GithubLogin = Schema.String.check(Schema.isPattern(GITHUB_LOGIN_PATTERN));
+
+/** An account the workstation GitHub CLI is logged in to. Never carries the token. */
+export const GithubCliAccount = Schema.Struct({
+  host: GithubHost,
+  login: GithubLogin,
+  active: Schema.Boolean,
+  tokenSource: Schema.String,
+  scopes: Schema.Array(Schema.String),
+  missingScopes: Schema.Array(Schema.String),
+});
+export type GithubCliAccount = typeof GithubCliAccount.Type;
+export const GithubCliCandidates = Schema.Struct({
+  ghAvailable: Schema.Boolean,
+  accounts: Schema.Array(GithubCliAccount),
+});
+export type GithubCliCandidates = typeof GithubCliCandidates.Type;
+export const GithubCliImportInput = Schema.Struct({ host: GithubHost, login: GithubLogin });
+export const GithubCliImportResult = Schema.Struct({
+  login: Schema.String,
+  missingScopes: Schema.Array(Schema.String),
+});
+export type GithubCliImportResult = typeof GithubCliImportResult.Type;

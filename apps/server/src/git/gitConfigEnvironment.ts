@@ -57,27 +57,42 @@ export async function writeProfileGitAuthorConfig(
   }
 }
 
+const shellQuote = (value: string) => `'${value.replaceAll("'", "'\"'\"'")}'`;
+
 /**
- * Git configuration for agent and terminal processes:
- * - includes the profile author file (missing file is ignored by Git);
- * - isolated profiles reset inherited credential helpers and use the profile `gh` launcher.
- *   It reads the live profile projection, so connecting or disconnecting applies to
- *   already-running sessions, and it answers nothing for disconnected hosts.
- * Default keeps its workstation helpers untouched: appending a helper there would let Git
- * `store` the profile token into workstation helpers such as the OS keychain. A workstation
- * `!gh auth git-credential` helper already resolves to the launcher through PATH.
+ * Git configuration for agent and terminal processes of **isolated** profiles:
+ * - includes the profile author file (missing file is ignored by Git), so the profile identity
+ *   applies and follows Settings changes in running sessions;
+ * - for each GitHub host known to the profile, resets inherited credential helpers and uses the
+ *   profile launcher, which answers only from the profile's connected hosts. Other hosts
+ *   (GitLab, Bitbucket, …) keep their inherited helpers.
+ *
+ * Default gets nothing: it keeps each repository's identity and its workstation helpers
+ * (appending a helper there would let Git `store` the profile token into e.g. the keychain).
+ *
+ * Git runs helpers through `sh` on every platform (Git for Windows ships one), so the helper
+ * invokes node directly instead of the `gh.cmd` wrapper.
  */
 export function profileSessionGitConfigPairs(input: {
   stateDir: string;
   launcherDir: string;
   isolated: boolean;
+  githubHosts: readonly string[];
+  execPath?: string;
   platform?: NodeJS.Platform;
 }): GitConfigPair[] {
+  if (!input.isolated) return [];
   const platform = input.platform ?? process.platform;
-  const launcher = Path.join(input.launcherDir, platform === "win32" ? "gh.cmd" : "gh");
-  const helperPath = platform === "win32" ? launcher.replaceAll("\\", "/") : launcher;
-  const helper = `!'${helperPath.replaceAll("'", "'\"'\"'")}' auth git-credential`;
-  const author: GitConfigPair = ["include.path", profileGitAuthorConfigPath(input.stateDir)];
-  if (!input.isolated) return [author];
-  return [author, ["credential.helper", ""], ["credential.helper", helper]];
+  const toShellPath = (value: string) =>
+    platform === "win32" ? value.replaceAll("\\", "/") : value;
+  const script = toShellPath(Path.join(input.launcherDir, "gh.cjs"));
+  const node = toShellPath(input.execPath ?? process.execPath);
+  const helper = `!ELECTRON_RUN_AS_NODE=1 ${shellQuote(node)} ${shellQuote(script)} auth git-credential`;
+  return [
+    ["include.path", profileGitAuthorConfigPath(input.stateDir)],
+    ...input.githubHosts.flatMap((host): GitConfigPair[] => [
+      [`credential.https://${host}.helper`, ""],
+      [`credential.https://${host}.helper`, helper],
+    ]),
+  ];
 }

@@ -5,7 +5,10 @@ import {
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
 } from "@t3tools/contracts";
-import { GithubCliLogin } from "./git/GithubCliLogin";
+import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
+import { GithubCliImport } from "./git/GithubCliImport";
+import { githubLauncherDir } from "./git/GithubCliLauncher";
+import * as NodePath from "node:path";
 import { writeProfileGitAuthorConfig } from "./git/gitConfigEnvironment";
 import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
@@ -894,12 +897,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "profiles.secrets", cause })),
   );
   const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
-  const githubLogin = new GithubCliLogin({
+  const githubLogin = new GithubDeviceLogin(githubAccount, resolveGithubOAuthClientId(process.env));
+  yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
+  const githubCliImport = new GithubCliImport({
     account: githubAccount,
-    stateDir: serverConfig.stateDir,
+    // Profile state dirs live under the F5 home (parent of Default's state dir).
+    f5StateRoots: [
+      serverConfig.stateDir,
+      defaultProfileStateDir,
+      NodePath.dirname(defaultProfileStateDir),
+    ],
+    launcherDir: githubLauncherDir(serverConfig.stateDir),
   });
-  yield* Effect.promise(() => githubLogin.cleanupStale().catch(() => {}));
-  yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.dispose()));
   const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
   const profileCall = <A>(operation: () => Promise<A>) =>
     Effect.tryPromise({
@@ -2148,27 +2157,33 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
 
   const routeRequest = Effect.fnUntraced(function* (ws: WebSocket, request: WebSocketRequest) {
     switch (request.body._tag) {
-      case WS_METHODS.githubLoginStart: {
-        const { host } = request.body;
-        return yield* profileCall(() => githubLogin.start(host ? { host } : {}));
-      }
+      case WS_METHODS.githubLoginStart:
+        return yield* profileCall(() => githubLogin.start());
       case WS_METHODS.githubLoginStatus:
         return githubLogin.status(request.body.handle);
       case WS_METHODS.githubLoginCancel:
         return githubLogin.cancel(request.body.handle);
       case WS_METHODS.githubAccountSet: {
         const { host, token } = request.body;
-        githubLogin.cancelForHost(host);
+        // Browser sign-in is github.com-only; a token save for that host supersedes it.
+        if (host === "github.com") githubLogin.cancel();
         return yield* profileCall(() => githubAccount.set(host, token));
       }
       case WS_METHODS.githubAccountRemove: {
         const { host } = request.body;
-        githubLogin.cancelForHost(host);
+        if (host === "github.com") githubLogin.cancel();
         return yield* profileCall(() => githubAccount.remove(host));
       }
       case WS_METHODS.githubAccountStatus: {
         const { host } = request.body;
         return yield* profileCall(() => githubAccount.status(host));
+      }
+      case WS_METHODS.githubAccountCliCandidates:
+        return yield* profileCall(() => githubCliImport.candidates());
+      case WS_METHODS.githubAccountCliImport: {
+        const { host, login } = request.body;
+        if (host === "github.com") githubLogin.cancel();
+        return yield* profileCall(() => githubCliImport.import({ host, login }));
       }
       case WS_METHODS.profilesList:
         return yield* profileCall(readProfiles);
