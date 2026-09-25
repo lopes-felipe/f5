@@ -4,6 +4,7 @@ import {
   ApprovalRequestId,
   type AssistantDeliveryMode,
   CommandId,
+  EventId,
   MessageId,
   OrchestrationCommandExecutionId,
   type OrchestrationCommandExecutionStatus,
@@ -4066,6 +4067,44 @@ const make = Effect.gen(function* () {
           fallbackMarkdown: proposedPlanCompletion.planMarkdown,
           updatedAt: now,
         });
+      }
+
+      if (event.type === "turn.completed" || event.type === "turn.aborted") {
+        const turnId = toTurnId(event.turnId);
+        if (turnId) {
+          const pending = new Set<string>();
+          for (const activity of thread.activities) {
+            const payload = activity.payload as Record<string, unknown> | null;
+            const requestId = payload?.requestId;
+            if (typeof requestId !== "string") continue;
+            if (
+              activity.kind === "user-input.requested" &&
+              activity.turnId === turnId &&
+              payload?.responseMode !== "message"
+            ) {
+              pending.add(requestId);
+            } else if (activity.kind === "user-input.resolved") {
+              pending.delete(requestId);
+            }
+          }
+          for (const requestId of pending) {
+            yield* orchestrationEngine.dispatch({
+              type: "thread.activity.append",
+              commandId: providerCommandId(event, `terminal-user-input-resolved:${requestId}`),
+              threadId: thread.id,
+              activity: {
+                id: EventId.make(`${event.eventId}:user-input-resolved:${requestId}`),
+                createdAt: now,
+                tone: "info",
+                kind: "user-input.resolved",
+                summary: "User input dismissed because its turn ended",
+                payload: { requestId },
+                turnId,
+              },
+              createdAt: now,
+            });
+          }
+        }
       }
 
       if (event.type === "turn.completed") {

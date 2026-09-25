@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { NonNegativeInt } from "./baseSchemas";
 
 /** Bump when a client must decode a new union variant or persisted state shape. */
-export const F5_PROTOCOL_VERSION = 3;
+export const F5_PROTOCOL_VERSION = 4;
 export const F5_PROTOCOL_HEADER = "X-F5-Protocol";
 export const F5_PROTOCOL_QUERY = "protocol";
 export const F5_UPGRADE_REQUIRED_CLOSE_CODE = 4426;

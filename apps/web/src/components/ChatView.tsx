@@ -102,6 +102,7 @@ import { type LegendListRef } from "@legendapp/list/react";
 import { Debouncer } from "@tanstack/react-pacer";
 import {
   buildPendingUserInputAnswers,
+  carryDisplacedCustomAnswerIntoPrompt,
   derivePendingUserInputProgress,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOption,
@@ -1862,6 +1863,14 @@ export default function ChatView({
   useEffect(() => {
     const nextCustomAnswer = activePendingProgress?.customAnswer;
     if (typeof nextCustomAnswer !== "string") {
+      if (lastSyncedPendingInputRef.current !== null) {
+        promptRef.current = prompt;
+        const cursor = collapseExpandedComposerCursor(prompt, prompt.length);
+        setComposerCursor(cursor);
+        setComposerTrigger(
+          detectComposerTrigger(prompt, expandCollapsedComposerCursor(prompt, cursor)),
+        );
+      }
       lastSyncedPendingInputRef.current = null;
       return;
     }
@@ -1892,6 +1901,7 @@ export default function ChatView({
     );
     setComposerHighlightedItemId(null);
   }, [
+    prompt,
     activePendingProgress?.customAnswer,
     activePendingUserInput?.requestId,
     activePendingProgress?.activeQuestion?.id,
@@ -4526,6 +4536,13 @@ export default function ChatView({
       if (!activePendingUserInput) {
         return;
       }
+      const displaced =
+        pendingUserInputAnswersByRequestId[activePendingUserInput.requestId]?.[questionId]
+          ?.customAnswer;
+      const currentPrompt =
+        useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt ?? "";
+      const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displaced);
+      if (nextPrompt !== currentPrompt) setComposerDraftPrompt(threadId, nextPrompt);
       setPendingUserInputAnswersByRequestId((existing) => ({
         ...existing,
         [activePendingUserInput.requestId]: {
@@ -4540,7 +4557,7 @@ export default function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [activePendingUserInput],
+    [activePendingUserInput, pendingUserInputAnswersByRequestId, threadId, setComposerDraftPrompt],
   );
 
   const onToggleActivePendingUserInputOption = useCallback(
@@ -4548,6 +4565,13 @@ export default function ChatView({
       if (!activePendingUserInput) {
         return;
       }
+      const displaced =
+        pendingUserInputAnswersByRequestId[activePendingUserInput.requestId]?.[questionId]
+          ?.customAnswer;
+      const currentPrompt =
+        useComposerDraftStore.getState().draftsByThreadId[threadId]?.prompt ?? "";
+      const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displaced);
+      if (nextPrompt !== currentPrompt) setComposerDraftPrompt(threadId, nextPrompt);
       setPendingUserInputAnswersByRequestId((existing) => ({
         ...existing,
         [activePendingUserInput.requestId]: {
@@ -4562,7 +4586,7 @@ export default function ChatView({
       setComposerCursor(0);
       setComposerTrigger(null);
     },
-    [activePendingUserInput],
+    [activePendingUserInput, pendingUserInputAnswersByRequestId, threadId, setComposerDraftPrompt],
   );
 
   const onChangeActivePendingUserInputCustomAnswer = useCallback(
@@ -6043,7 +6067,7 @@ export default function ChatView({
 
                     {/* Bottom toolbar */}
                     {activePendingApproval ? (
-                      <div className="flex items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
+                      <div className="flex flex-wrap items-center justify-end gap-2 px-2.5 pb-2.5 sm:px-3 sm:pb-3">
                         <ComposerPendingApprovalActions
                           requestId={activePendingApproval.requestId}
                           requestKind={activePendingApproval.requestKind}

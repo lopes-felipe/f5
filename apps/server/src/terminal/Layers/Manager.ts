@@ -302,6 +302,8 @@ function createTerminalSpawnEnv(
       spawnEnv[key] = value;
     }
   }
+  // Both terminal clients support 24-bit color; preserve explicit overrides.
+  if (!spawnEnv.COLORTERM) spawnEnv.COLORTERM = "truecolor";
   return spawnEnv;
 }
 

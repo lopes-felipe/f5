@@ -418,6 +418,12 @@ function PreviewBrowserWebview(props: {
       });
     };
 
+    const dismissHostPopups = () => {
+      webview.dispatchEvent(
+        new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }),
+      );
+    };
+    webview.addEventListener("focus", dismissHostPopups);
     webview.addEventListener("dom-ready", register);
     webview.addEventListener("did-start-loading", onStart);
     webview.addEventListener("did-finish-load", onSuccess);
@@ -427,6 +433,7 @@ function PreviewBrowserWebview(props: {
     webview.addEventListener("did-fail-load", onFail);
     register();
     return () => {
+      webview.removeEventListener("focus", dismissHostPopups);
       webview.removeEventListener("dom-ready", register);
       webview.removeEventListener("did-start-loading", onStart);
       webview.removeEventListener("did-finish-load", onSuccess);
@@ -1247,7 +1254,10 @@ export default function PreviewPanel({ threadId, onClose, visible = true }: Prev
         }
 
         case "snapshot":
-          return previewAutomation.snapshot(requireTabId());
+          return previewAutomation.snapshot(
+            requireTabId(),
+            (request.input as { save?: boolean })?.save === true,
+          );
         case "click":
           await previewAutomation.click(
             requireTabId(),

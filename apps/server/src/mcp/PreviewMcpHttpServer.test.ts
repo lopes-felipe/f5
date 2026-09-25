@@ -255,3 +255,78 @@ it.effect("rejects unauthorized and invalid preview MCP HTTP requests", () =>
     }),
   ),
 );
+
+it.effect("keeps evaluated values object-shaped and forwards snapshot saving", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = makePreviewAutomationBroker();
+      const server = yield* makePreviewMcpHttpServer.pipe(
+        Effect.provideService(PreviewAutomationBroker, broker),
+      );
+      const threadId = ThreadId.makeUnsafe("thread-preview-results");
+      const session = server.createSessionConfig({ threadId });
+      const token = Object.values(session.env)[0]!;
+      let value: unknown = null;
+      yield* broker.reportOwner(
+        {
+          clientId: "client-results",
+          threadId,
+          tabId: "tab-results",
+          visible: true,
+          supportsAutomation: true,
+          focusedAt: new Date().toISOString(),
+        },
+        {
+          clientId: "client-results",
+          send: (request) =>
+            Effect.sync(() => {
+              if (request.operation === "snapshot") assert.deepEqual(request.input, { save: true });
+              void Effect.runPromise(
+                broker.respond(
+                  {
+                    requestId: request.requestId,
+                    clientId: request.clientId,
+                    connectionId: request.connectionId,
+                    ok: true,
+                    result: value,
+                  },
+                  new Set(["client-results"]),
+                ),
+              );
+              return true;
+            }),
+        },
+      );
+      for (const result of [null, 42, "text", [1, 2], { answer: 42 }]) {
+        value = result;
+        const response = (yield* postMcp(server.getUrl(), token, {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "preview_evaluate", arguments: { expression: "1" } },
+        })) as { result: { structuredContent: unknown } };
+        assert.deepEqual(
+          response.result.structuredContent,
+          result !== null && typeof result === "object" && !Array.isArray(result)
+            ? result
+            : { value: result },
+        );
+      }
+      value = {
+        title: "Page",
+        screenshot: { mimeType: "image/png", width: 1, height: 1, data: "cG5n" },
+        savedScreenshot: { artifactId: "saved-image" },
+      };
+      const response = (yield* postMcp(server.getUrl(), token, {
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: { name: "preview_snapshot", arguments: { save: true } },
+      })) as { result: { structuredContent: { savedScreenshot: unknown }; content: unknown[] } };
+      assert.deepEqual(response.result.structuredContent.savedScreenshot, {
+        artifactId: "saved-image",
+      });
+      assert.equal(response.result.content.length, 2);
+    }),
+  ),
+);

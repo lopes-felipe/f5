@@ -202,8 +202,12 @@ const PREVIEW_MCP_TOOLS: ReadonlyArray<McpToolDefinition> = [
     name: "preview_snapshot",
     title: "Inspect browser page",
     description:
-      "Inspect the current page before interacting. Returns URL/title/loading state, visible text, interactive elements, diagnostics, and a PNG screenshot.",
-    inputSchema: emptyInputSchema,
+      "Inspect the current page before interacting. Returns URL/title/loading state, visible text, interactive elements, diagnostics, and a PNG screenshot. Set save=true to retain the screenshot as an opaque artifact returned in savedScreenshot.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { save: { type: "boolean" } },
+    },
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -512,11 +516,13 @@ function safeJsonText(value: unknown): string {
 function toolResult(result: unknown): Record<string, unknown> {
   if (result === undefined || result === null) {
     return {
+      structuredContent: { value: null },
       content: [{ type: "text", text: "null" }],
     };
   }
   return {
-    structuredContent: result,
+    structuredContent:
+      typeof result === "object" && !Array.isArray(result) ? result : { value: result },
     content: [{ type: "text", text: safeJsonText(result) }],
   };
 }
@@ -719,17 +725,22 @@ function makeToolCallHandler(
             ),
           );
         }
-        case "preview_snapshot":
+        case "preview_snapshot": {
+          const input = decodeToolInput(
+            Schema.Struct({ save: Schema.optional(Schema.Boolean) }),
+            rawArguments,
+          );
           return snapshotToolResult(
             await runBrokerEffect(
               broker.invoke<PreviewAutomationSnapshot>({
                 threadId: scope.threadId,
                 automationSessionId: token,
                 operation: "snapshot",
-                input: {},
+                input,
               }),
             ),
           );
+        }
         case "preview_click": {
           const input = decodeToolInput(PreviewAutomationClickInput, rawArguments);
           await runBrokerEffect(

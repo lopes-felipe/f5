@@ -54,7 +54,7 @@ export interface PreviewIpcOperations {
   readonly pickElement: (tabId: string) => unknown;
   readonly cancelPickElement: (tabId: string) => unknown;
   readonly automationStatus: (tabId: string) => unknown;
-  readonly automationSnapshot: (tabId: string) => unknown;
+  readonly automationSnapshot: (tabId: string, save?: boolean) => unknown;
   readonly automationClick: (tabId: string, input: PreviewAutomationClickInput) => unknown;
   readonly automationType: (tabId: string, input: PreviewAutomationTypeInput) => unknown;
   readonly automationPress: (tabId: string, input: PreviewAutomationPressInput) => unknown;
@@ -133,7 +133,6 @@ export function registerPreviewIpc(
     [channels.pickElement, "pickElement"],
     [channels.cancelPickElement, "cancelPickElement"],
     [channels.automationStatus, "automationStatus"],
-    [channels.automationSnapshot, "automationSnapshot"],
     [channels.captureScreenshot, "captureScreenshot"],
     [channels.recordingStart, "recordingStart"],
   ] as const) {
@@ -141,6 +140,16 @@ export function registerPreviewIpc(
       operations[operationName](nonEmptyString(tabId, "Preview tab id")),
     );
   }
+  replaceHandler(
+    ipcMain,
+    channels.automationSnapshot,
+    operationsForSender,
+    (operations, tabId, save) => {
+      if (save !== undefined && typeof save !== "boolean")
+        throw new Error("Invalid snapshot save flag");
+      return operations.automationSnapshot(nonEmptyString(tabId, "Preview tab id"), save === true);
+    },
+  );
   replaceHandler(
     ipcMain,
     channels.automationClick,

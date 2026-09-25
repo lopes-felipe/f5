@@ -276,6 +276,19 @@ describe("TerminalManager", () => {
     manager.dispose();
   });
 
+  it.each([undefined, "", "24bit"])(
+    "advertises truecolor while preserving overrides (%s)",
+    async (color) => {
+      const { manager, ptyAdapter } = makeManager();
+      try {
+        await manager.open({ ...openInput(), env: { COLORTERM: color ?? "" } });
+        expect(ptyAdapter.spawnInputs[0]?.env.COLORTERM).toBe(color || "truecolor");
+      } finally {
+        manager.dispose();
+      }
+    },
+  );
+
   it("supports asynchronous PTY spawn effects", async () => {
     const { manager, ptyAdapter } = makeManager(5, { ptyAdapter: new FakePtyAdapter("async") });
 

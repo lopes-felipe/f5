@@ -101,14 +101,38 @@ function resolveEditorArgs(editorId: EditorId, target: string): ReadonlyArray<st
   return [...baseArgs, target];
 }
 
+const macEditorAppNames: Partial<Record<EditorId, readonly string[]>> = {
+  vscode: ["Visual Studio Code"],
+  "vscode-insiders": ["Visual Studio Code - Insiders"],
+  idea: ["IntelliJ IDEA", "IntelliJ IDEA CE", "IntelliJ IDEA Ultimate"],
+};
+
 function resolveEditorCommandCandidates(
   editor: (typeof EDITORS)[number],
   platform: NodeJS.Platform,
+  env: NodeJS.ProcessEnv,
 ): ReadonlyArray<string> {
   if (!editor.command) {
     return [];
   }
 
+  if (platform === "darwin") {
+    const roots = [...(env.HOME ? [NodePath.join(env.HOME, "Applications")] : []), "/Applications"];
+    return [
+      editor.command,
+      ...roots.flatMap((root) =>
+        (macEditorAppNames[editor.id] ?? [editor.label]).flatMap((name) => {
+          const contents = NodePath.join(root, `${name}.app`, "Contents");
+          return editor.id === "idea" || editor.id === "zed"
+            ? [NodePath.join(contents, "MacOS", editor.id === "zed" ? "cli" : editor.command)]
+            : [
+                NodePath.join(contents, "Resources/app/bin", editor.command),
+                NodePath.join(contents, "Resources/app/bin/code"),
+              ];
+        }),
+      ),
+    ];
+  }
   if (editor.id !== "idea") {
     return [editor.command];
   }
@@ -129,7 +153,7 @@ function resolveEditorCommand(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv,
 ): string {
-  const candidates = resolveEditorCommandCandidates(editor, platform);
+  const candidates = resolveEditorCommandCandidates(editor, platform, env);
   return (
     candidates.find((command) => isCommandAvailable(command, { platform, env })) ?? editor.command!
   );
@@ -154,7 +178,7 @@ export function resolveAvailableEditors(
 
   for (const editor of EDITORS) {
     const commandAvailable = editor.command
-      ? resolveEditorCommandCandidates(editor, platform).some((command) =>
+      ? resolveEditorCommandCandidates(editor, platform, env).some((command) =>
           isCommandAvailable(command, { platform, env }),
         )
       : isCommandAvailable(fileManagerCommandForPlatform(platform), { platform, env });

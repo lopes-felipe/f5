@@ -1416,10 +1416,23 @@ export default function Sidebar() {
       }
 
       const deletedIds = new Set<ThreadId>(ids);
+      const succeeded: ThreadId[] = [];
       for (const id of ids) {
-        await deleteThread(id, { deletedThreadIds: deletedIds });
+        try {
+          await deleteThread(id, { deletedThreadIds: deletedIds });
+          succeeded.push(id);
+        } catch {
+          // One failed deletion must not prevent the remaining selections.
+        }
       }
-      removeFromSelection(ids);
+      removeFromSelection(succeeded);
+      if (succeeded.length !== ids.length) {
+        toastManager.add({
+          type: "error",
+          title: `Deleted ${succeeded.length} of ${ids.length} threads`,
+          description: "The remaining threads could not be deleted. Try again.",
+        });
+      }
     },
     [
       appSettings.confirmThreadDelete,

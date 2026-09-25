@@ -50,6 +50,7 @@ const wsUrl: string | null = ipcRenderer.sendSync("desktop:get-ws-url") ?? null;
 const profileId = argument("f5-profile-id");
 
 contextBridge.exposeInMainWorld("desktopBridge", {
+  getSystemLocale: () => argument("f5-system-locale"),
   getWsUrl: () => wsUrl,
   getProfileId: () => profileId,
   switchProfile: (id) => ipcRenderer.invoke("desktop:switch-profile", id),
@@ -135,7 +136,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     },
     automation: {
       status: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_STATUS_CHANNEL, tabId),
-      snapshot: (tabId) => ipcRenderer.invoke(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, tabId),
+      snapshot: (tabId, save) =>
+        ipcRenderer.invoke(PREVIEW_AUTOMATION_SNAPSHOT_CHANNEL, tabId, save),
       click: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_CLICK_CHANNEL, tabId, input),
       type: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_TYPE_CHANNEL, tabId, input),
       press: (tabId, input) => ipcRenderer.invoke(PREVIEW_AUTOMATION_PRESS_CHANNEL, tabId, input),

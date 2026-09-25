@@ -142,6 +142,7 @@ describe("CommandTranscriptCard", () => {
   );
 
   it("shows an error toast when clipboard writes fail", async () => {
+    vi.spyOn(document, "execCommand").mockReturnValue(false);
     const clipboardError = new Error("Permission denied");
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -177,7 +178,7 @@ describe("CommandTranscriptCard", () => {
           expect.objectContaining({
             type: "error",
             title: "Could not copy command",
-            description: "Permission denied",
+            description: "Clipboard copy failed.",
           }),
         );
       });

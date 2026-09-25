@@ -81,6 +81,7 @@ async function renderPanel(options: { cwd?: string | null; entryLimit?: number }
     </QueryClientProvider>,
   );
   return {
+    queryClient,
     onOpenFile,
     cleanup: async () => {
       await screen.unmount();
@@ -150,6 +151,26 @@ describe("FileBrowserPanel", () => {
 
       expect(listEntries).toHaveBeenCalledWith({ cwd: "/repo/project", limit: 5_000 });
       expect(searchEntries).not.toHaveBeenCalled();
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("keeps collapsed folders and invalidates open file content on refresh", async () => {
+    const mounted = await renderPanel();
+    const key = ["fileContent", "/repo/project", "src/App.tsx"];
+    mounted.queryClient.setQueryData(key, { contents: "before" });
+    try {
+      await expect.element(page.getByText("App.tsx")).toBeInTheDocument();
+      await page.getByText("src", { exact: true }).click();
+      await expect.element(page.getByText("App.tsx")).not.toBeInTheDocument();
+      listEntries.mockResolvedValue(
+        listResult([...TREE_ENTRIES, { path: "new.ts", kind: "file" }]),
+      );
+      await page.getByRole("button", { name: "Refresh workspace files" }).click();
+      await expect.element(page.getByText("new.ts")).toBeInTheDocument();
+      await expect.element(page.getByText("App.tsx")).not.toBeInTheDocument();
+      expect(mounted.queryClient.getQueryState(key)?.isInvalidated).toBe(true);
     } finally {
       await mounted.cleanup();
     }

@@ -31,6 +31,7 @@ export const providerQueryKeys = {
       input.cacheScope ?? null,
       input.ignoreWhitespace ?? false,
     ] as const,
+  fileContentAll: ["fileContent"] as const,
   fileContent: (input: { cwd: string | undefined; relativePath: string | undefined }) =>
     ["fileContent", input.cwd, input.relativePath] as const,
 };
@@ -151,7 +152,7 @@ export function fileContentQueryOptions(input: {
       return await api.projects.readFile({ cwd: input.cwd, relativePath: input.relativePath });
     },
     enabled: !!input.cwd && !!input.relativePath,
-    staleTime: Infinity,
+    staleTime: 15_000,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
