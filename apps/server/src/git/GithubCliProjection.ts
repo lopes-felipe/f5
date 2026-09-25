@@ -133,7 +133,12 @@ export class GithubCliProjection {
     );
     const content = [
       ["hosts.yml", stringify({ "github.com": disconnected, ...accounts })],
-      ["config.yml", stringify({ ...(config as Record<string, unknown> | null), version: "1" })],
+      [
+        "config.yml",
+        // gh writes unset keys as empty values; a literal `null` is read back as the string
+        // "null" (e.g. `http_unix_socket: null` makes every request dial unix socket "null").
+        stringify({ ...(config as Record<string, unknown> | null), version: "1" }, { nullStr: "" }),
+      ],
       ["git-credentials.json", `${JSON.stringify({ version: 1, hosts: credentials })}\n`],
     ] as const;
     const files: { target: string; temporary: string; content: string }[] = [];

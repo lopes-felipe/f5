@@ -74,6 +74,27 @@ describe("profile CLI credentials", () => {
     }
   });
 
+  it("keeps unset gh config keys empty instead of writing literal nulls", async () => {
+    const p = await profile();
+    const directory = Path.join(p.stateDir, "github");
+    await FS.mkdir(directory, { recursive: true, mode: 0o700 });
+    // As written by gh itself, plus a `null` left behind by an earlier projection.
+    await FS.writeFile(
+      Path.join(directory, "config.yml"),
+      "editor:\nhttp_unix_socket: null\naliases:\n  co: pr checkout\n",
+      { mode: 0o600 },
+    );
+    await p.account.set("github.com", "personal");
+    const written = await FS.readFile(Path.join(directory, "config.yml"), "utf8");
+    expect(written).not.toMatch(/\bnull\b/);
+    expect(parse(written)).toEqual({
+      editor: null,
+      http_unix_socket: null,
+      aliases: { co: "pr checkout" },
+      version: "1",
+    });
+  });
+
   it("migrates saved tokens offline and reconciles restored or removed credentials", async () => {
     const p = await profile();
     await Effect.runPromise(
