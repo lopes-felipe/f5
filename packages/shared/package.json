@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./github": {
+      "types": "./src/github.ts",
+      "import": "./src/github.ts"
+    },
     "./codexCliVersion": {
       "types": "./src/codexCliVersion.ts",
       "import": "./src/codexCliVersion.ts"

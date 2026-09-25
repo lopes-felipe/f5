@@ -1,4 +1,5 @@
 import { ProfileGithubAccount, assertGithubCredentialsAvailable } from "../ProfileGithubAccount";
+import { isGithubPlaceholderToken } from "../GithubCliProjection";
 import { buildAccountExecutionEnvironment } from "../../providerProcessEnv";
 import * as NodePath from "node:path";
 import { ServerConfig } from "../../config";
@@ -305,11 +306,20 @@ const makeGitHubCli = Effect.gen(function* () {
         .map((name) => Object.entries(process.env).find(([key]) => key.toUpperCase() === name)?.[1])
         .find((value) => value?.trim());
       if (ambient) return ambient.trim();
-      return (yield* execute({
+      // The profile projection answers disconnected hosts with a placeholder, and gh exits
+      // non-zero ("no oauth token") for hosts it does not know. Both mean "not connected";
+      // anything else (timeout, missing gh, unavailable credentials) keeps its real cause.
+      const projected = yield* execute({
         cwd,
         args: ["auth", "token", "--hostname", host],
         maxStdoutBytes: 65536,
-      })).stdout.trim();
+      }).pipe(
+        Effect.map((result) => result.stdout.trim()),
+        Effect.catch((error) =>
+          error.kind === "unauthenticated" ? Effect.succeed("") : Effect.fail(error),
+        ),
+      );
+      return isGithubPlaceholderToken(projected) ? "" : projected;
     }),
   );
   const service = {

@@ -42,25 +42,54 @@ Opening a profile starts its backend and opens a window in its own persistent pa
 
 ## GitHub authentication
 
-Connect in **Settings → Integrations → GitHub**. **Sign in with GitHub** displays a device code and opens GitHub in your browser. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection. Disconnect does not revoke the OAuth app grant on GitHub.
+Connect in **Settings → Integrations → GitHub**. **Sign in with GitHub** (github.com) displays a device code and opens GitHub in your browser. Select the account intended for this profile. The verified username is shown after authorization. Use **Reconnect** to change accounts and **Disconnect** to remove the local connection.
 
-A personal access token remains available for github.com and GitHub Enterprise hosts. The profile connection is used by F5’s GitHub features and by ordinary `gh` commands in its agents and terminals. Default must connect explicitly once; F5 never imports workstation credentials. Existing saved profile tokens migrate automatically, without requiring network access at startup.
+A personal access token remains available for github.com and GitHub Enterprise hosts. **Use GitHub CLI login** imports an account your terminal's `gh` is already logged in to (see below). The profile connection is used by F5’s GitHub features and by ordinary `gh` commands in its agents and terminals. Default must connect explicitly once; F5 never imports workstation credentials automatically. Existing saved profile tokens migrate automatically, without requiring network access at startup.
 
 Credentials are stored in the existing profile secret store and projected into `<profile-state>/github/hosts.yml`. The directory and files are private to the OS user (0700/0600 on POSIX, a user-only DACL on Windows). This is file-based credential storage, not encryption at rest. If reconciliation fails, the backend remains available and logs the cause, while GitHub consumers fail closed until the connection is repaired. Windows permission updates are batched into one PowerShell invocation per projection write. Generated CLI files are excluded from backups; restore regenerates them from secrets supplied through the encrypted-backup flow. Do not edit the generated file or run `gh auth login/logout/switch` to manage an F5 connection: use Settings so all consumers stay consistent and workstation keychain entries remain untouched.
 
-F5 installs a profile CLI launcher and restores its PATH entry after Default shell startup files run. It clears inherited GitHub token overrides while preserving other shell customizations and explicit `GH_HOST`/`GH_REPO` routing. Already-running sessions pick up connection changes on their next `gh` invocation. An in-flight command may finish with the credential it already captured. Disconnected known hosts use an invalid placeholder token to prevent implicit OS-keychain fallback. Profile isolation controls F5-managed execution; it is not a security boundary against arbitrary programs running as the same OS user.
+F5 installs a profile CLI launcher and restores its PATH entry after Default shell startup files run. It clears inherited GitHub token overrides while preserving other shell customizations and explicit `GH_HOST`/`GH_REPO` routing. Already-running sessions pick up connection changes on their next `gh` invocation. An in-flight command may finish with the credential it already captured. Disconnected known hosts (those listed in the projection) use an invalid placeholder token to prevent implicit OS-keychain fallback; gh can still consult the keychain for hosts the profile has never connected, so Git credentials never come from gh (see below). Profile isolation controls F5-managed execution; it is not a security boundary against arbitrary programs running as the same OS user.
 
 Non-default profiles require explicit HTTPS remotes without embedded credentials or URL rewrites for managed Git network operations and use the profile’s token. Default preserves workstation Git transports, SSH agents, URL rewrites, and credential helpers for unconnected hosts. For a single HTTPS remote with a saved profile token, F5 selects that token through a host-specific credential helper. Configure Git author name/email separately; signing into GitHub does not change commit authorship. Default retains its local Git settings and author fallback.
+
+The profile launcher answers Git credential requests (`gh auth git-credential get`) itself, from `<profile-state>/github/git-credentials.json`. That file lists connected hosts only and has the same protection as `hosts.yml`. The launcher never delegates to gh, so workstation keychain credentials are never returned. It answers nothing for any other host, so Git falls through to the next helper. `store`/`erase` requests are ignored.
+
+**Non-default profiles.** Agents and terminals get these `GIT_CONFIG_*` environment entries:
+
+- **Credential helper:** for each GitHub host known to the profile (github.com plus hosts listed in the projection when the session starts), inherited helpers are reset through `credential.https://<host>.helper` and the profile launcher is used. Connecting, reconnecting, or disconnecting a known host applies to running sessions. An Enterprise host connected for the first time needs a new session. Other hosts, such as GitLab, Bitbucket, or Azure DevOps, keep their inherited helpers.
+- **Git author:** `<profile-state>/git-author.gitconfig` is included. F5 rewrites it whenever the Git author setting changes. Once both name and email are set, they override repository `user.name`/`user.email` for agent and terminal commits. Clearing both restores normal Git resolution.
+
+**Default.** F5 adds no Git configuration to agents and terminals. Each repository keeps its own identity, and workstation helpers stay untouched: an F5-added helper would let Git `store` the profile token into helpers such as the OS keychain. A bare `!gh auth git-credential` helper resolves to the profile launcher through PATH and behaves as described above.
+
+Known limitation: `gh auth setup-git` normally writes the full path (for example `!/opt/homebrew/bin/gh auth git-credential`). That helper bypasses the launcher and runs the real gh with the profile's `GH_CONFIG_DIR`. For a disconnected github.com it returns the placeholder token, and the push fails with bad credentials instead of falling through. Connect github.com in Settings, or change the helper to the bare `!gh auth git-credential` form.
+
+### Use GitHub CLI login
+
+**Use GitHub CLI login** lists the accounts your terminal's GitHub CLI is logged in to, on any host, and imports the one you choose. Nothing is imported until you click **Import**.
+
+- **Read-only.** F5 runs only `gh auth status --json hosts` to list accounts; its output contains no tokens. It then runs `gh auth token --hostname <host> --user <login>` for the account you pick. Neither command changes your gh login or keychain, unlike `gh auth login`.
+- **Your normal gh setup.** F5 runs the real `gh` found on PATH, skipping F5 launcher directories. It removes inherited token and routing overrides (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`) and any F5 profile `GH_CONFIG_DIR`, so gh reads your normal configuration and keychain. A custom `GH_CONFIG_DIR` of your own is kept.
+- **Checked before saving.** The token is verified against the host, and the account must match the one you picked. Otherwise nothing is saved and an existing connection is kept. The token goes only into the profile secret store; it never reaches the UI or logs.
+- **A snapshot.** Later logouts, account switches, or refreshes in your terminal don't affect F5. Use the button again to update.
+- **Scopes.** F5 needs `repo`, `read:org`, and `notifications`. gh logins usually lack `notifications`, so F5 flags missing scopes and suggests `gh auth refresh -h <host> -s notifications` followed by importing again. F5 does not run that command itself, because it would change your terminal login.
+- **Isolated profiles.** The button is available in isolated profiles too. Importing a workstation account there is a deliberate choice, since the account then becomes that profile's GitHub identity.
 
 ### Shared repositories
 
 Profiles can open the same repository. Linked worktrees share Git metadata; separate clones are the strongest way to avoid accidental source changes affecting another profile. Profiles isolate F5-owned state, not access to the host filesystem. Deliberately sourcing external shell configuration or manually entering a preview URL is outside the account-isolation guarantee. Automatic preview discovery only considers URLs emitted by owned terminals and provider command output, rather than scanning unrelated listening processes. This applies to Default too: externally started servers and URLs emitted before an F5 restart must be entered manually.
 
-### Browser sign-in deployment
+### Browser sign-in
 
-Register an **F5-owned GitHub OAuth app**, enable **Device Flow**, leave expiring tokens disabled, and set `F5_GITHUB_OAUTH_CLIENT_ID` in the backend launch environment to its public client ID. No client secret belongs in the application or frontend. The application requests `repo`, `read:org`, and `notifications`. Every agent and terminal in the connected profile can exercise those privileges, including repository writes allowed by the account. This also applies to Default; prompt injection into an agent can misuse those credentials. Profile separation selects accounts predictably and does not sandbox agent permissions. Organization approval/SSO restrictions can still require additional authorization on GitHub.
+F5 runs GitHub's OAuth device flow itself and saves the token through the profile secret store. It does not need gh installed.
 
-Without a configured client ID, Settings explains that browser sign-in is unavailable and offers token login. Enterprise uses token login in this version. Pending device grants are held only in memory; after a backend restart, start sign-in again. Do not configure expiring OAuth tokens until refresh-token support is implemented; F5 rejects that unsupported response instead of silently persisting a short-lived connection.
+- **OAuth app.** By default it uses GitHub CLI's public OAuth client ID, so no app registration is needed. Device-flow client IDs are public, and no client secret exists. Set `F5_GITHUB_OAUTH_CLIENT_ID` to use a different app, such as an F5-owned one with Device Flow enabled and expiring tokens disabled. Set it to an empty value to turn browser sign-in off.
+- **Why not `gh auth login`.** F5 deliberately does not run it: gh's login always rewrites the OS keychain entry of the workstation gh (it deletes `gh:<host>` before activating the new account), even with `--insecure-storage`, so it would sign your terminal gh out.
+- **Scopes.** The sign-in requests `repo`, `read:org`, and `notifications`, the same scopes as the token-creation link in Settings.
+- **Revoking.** With the default app, GitHub lists the grant under **Authorized OAuth Apps** as “GitHub CLI”. Revoking it there also revokes gh sessions on this computer that were authorized by the same app. Disconnect in F5 does not revoke anything on GitHub.
+
+Every agent and terminal in the connected profile can exercise those privileges, including repository writes allowed by the account. This also applies to Default; prompt injection into an agent can misuse those credentials. Profile separation selects accounts predictably and does not sandbox agent permissions. Organization approval/SSO restrictions can still require additional authorization on GitHub.
+
+Browser sign-in targets github.com; GitHub Enterprise hosts connect with a token. Pending device grants are held only in memory; after a backend restart, start sign-in again. F5 rejects expiring OAuth tokens (refresh-token support is not implemented) instead of silently persisting a short-lived connection.
 
 ## Removal and restore
 

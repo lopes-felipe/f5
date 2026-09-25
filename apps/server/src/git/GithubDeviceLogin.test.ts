@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Effect } from "effect";
-import { GithubDeviceLogin } from "./GithubDeviceLogin";
+import {
+  GITHUB_CLI_OAUTH_CLIENT_ID,
+  GITHUB_LOGIN_SCOPES,
+  GithubDeviceLogin,
+  resolveGithubOAuthClientId,
+} from "./GithubDeviceLogin";
 import { ProfileGithubAccount, type GithubAccountRequest } from "./ProfileGithubAccount";
 
 function setup() {
@@ -95,11 +100,31 @@ describe("GitHub device authorization", () => {
     expect(new GithubDeviceLogin(account, "client").status(attempt.handle).state).toBe("expired");
   });
 
-  it("disables browser login without an app registration", async () => {
+  it("disables browser login when explicitly configured off", async () => {
     const { account } = setup();
     const login = new GithubDeviceLogin(account, undefined);
     expect(login.status().available).toBe(false);
-    await expect(login.start()).rejects.toThrow("not configured");
+    await expect(login.start()).rejects.toThrow("disabled");
+  });
+
+  it("requests exactly the documented scopes from the configured app", async () => {
+    const { request, login } = setup();
+    await login.start();
+    const [url, init] = request.mock.calls[0]!;
+    expect(url).toBe("https://github.com/login/device/code");
+    const body = new URLSearchParams(String(init?.body));
+    expect(body.get("client_id")).toBe("f5-client");
+    expect(body.get("scope")).toBe(GITHUB_LOGIN_SCOPES);
+    expect(GITHUB_LOGIN_SCOPES).toBe("repo read:org notifications");
+    login.cancel();
+  });
+});
+
+describe("resolveGithubOAuthClientId", () => {
+  it("defaults to GitHub CLI's public app, allows override, and allows disabling", () => {
+    expect(resolveGithubOAuthClientId({})).toBe(GITHUB_CLI_OAUTH_CLIENT_ID);
+    expect(resolveGithubOAuthClientId({ F5_GITHUB_OAUTH_CLIENT_ID: " f5-app " })).toBe("f5-app");
+    expect(resolveGithubOAuthClientId({ F5_GITHUB_OAUTH_CLIENT_ID: "" })).toBeUndefined();
   });
 });
 

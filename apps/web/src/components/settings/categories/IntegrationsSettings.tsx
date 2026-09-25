@@ -6,6 +6,7 @@ import { formatKeybindingCommandLabel } from "../../../lib/keybindingConflicts";
 import { useSettingsRouteContext } from "../SettingsRouteContext";
 import { McpServersSettings } from "../McpServersSettings";
 import { KeybindingEditor } from "../KeybindingEditor";
+import { SettingsCard } from "../SettingsCard";
 import { Button } from "../../ui/button";
 
 export { INTEGRATIONS_SETTINGS_DESCRIPTORS } from "./IntegrationsSettings.descriptors";
@@ -26,18 +27,16 @@ export function IntegrationsSettings() {
 
   return (
     <>
-      <section
-        className="rounded-2xl border border-border bg-card p-5"
-        data-settings-search-target="integrations.keybindings"
-      >
-        <div className="mb-4">
-          <h2 className="text-sm font-medium text-foreground">Keybindings</h2>
-          <p className="mt-1 text-xs text-muted-foreground">
+      <SettingsCard
+        title="Keybindings"
+        searchTarget="integrations.keybindings"
+        description={
+          <>
             Open the persisted <code>keybindings.json</code> file to edit advanced bindings
             directly.
-          </p>
-        </div>
-
+          </>
+        }
+      >
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2">
             <div className="min-w-0 flex-1">
@@ -93,7 +92,7 @@ export function IntegrationsSettings() {
             </div>
           ) : null}
         </div>
-      </section>
+      </SettingsCard>
 
       <GithubAccountPanel />
       <McpServersSettings

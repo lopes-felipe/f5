@@ -1,4 +1,5 @@
 import { profileGithubEnvironment } from "./profileGithubEnvironment";
+import { appendGitConfigPairs } from "./gitConfigEnvironment";
 import { assertExecutionDirectory } from "../profiles/executionDirectory";
 import * as Path from "node:path";
 import type { ServerConfigShape } from "../config";
@@ -113,21 +114,13 @@ export async function profileGitEnvironment(input: {
         if (!url.username && !url.password) {
           const token = await input.tokenForHost(url.hostname.toLowerCase());
           if (token) {
-            const pairs = [
+            appendGitConfigPairs(environment, [
               [`credential.https://${url.host}.helper`, ""],
               [
                 `credential.https://${url.host}.helper`,
                 `!${shellQuote(process.execPath)} -e ${shellQuote(helperSource)} --`,
               ],
-            ];
-            const offset = Number(environment.GIT_CONFIG_COUNT ?? 0);
-            if (!Number.isSafeInteger(offset) || offset < 0)
-              throw new Error("Invalid GIT_CONFIG_COUNT.");
-            pairs.forEach(([key, value], index) => {
-              environment[`GIT_CONFIG_KEY_${offset + index}`] = key;
-              environment[`GIT_CONFIG_VALUE_${offset + index}`] = value;
-            });
-            environment.GIT_CONFIG_COUNT = String(offset + pairs.length);
+            ]);
             environment.F5_GIT_CREDENTIAL_HOST = url.host;
             environment.F5_GIT_CREDENTIAL_TOKEN = token;
           }

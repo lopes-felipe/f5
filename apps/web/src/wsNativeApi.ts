@@ -394,6 +394,8 @@ export function createWsNativeApi(): NativeApi {
       githubSet: (input) => transport.request(WS_METHODS.githubAccountSet, input),
       githubRemove: (input) => transport.request(WS_METHODS.githubAccountRemove, input),
       githubStatus: (input) => transport.request(WS_METHODS.githubAccountStatus, input),
+      githubCliCandidates: () => transport.request(WS_METHODS.githubAccountCliCandidates, {}),
+      githubCliImport: (input) => transport.request(WS_METHODS.githubAccountCliImport, input),
       list: () => transport.request(WS_METHODS.profilesList),
       create: (input) => transport.request(WS_METHODS.profilesCreate, input),
       update: (input) => transport.request(WS_METHODS.profilesUpdate, input),

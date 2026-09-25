@@ -1,6 +1,8 @@
 import { githubShellEnvironment } from "./git/githubShellStartup";
 import { githubLauncherDir } from "./git/GithubCliLauncher";
 import { profileGithubEnvironment } from "./git/profileGithubEnvironment";
+import { appendGitConfigPairs, profileSessionGitConfigPairs } from "./git/gitConfigEnvironment";
+import { knownGithubHostsSync } from "./git/GithubCliProjection";
 import * as Path from "node:path";
 import type { ActiveProfile, ProviderInstanceEnvironment } from "@t3tools/contracts";
 const BLOCKED_PROVIDER_ENV_PREFIXES = ["OTEL_"] as const;
@@ -111,6 +113,16 @@ export function buildAccountExecutionEnvironment(input: {
     const pathKey = Object.keys(environment).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
     environment[pathKey] =
       githubLauncherDir(input.stateDir) + Path.delimiter + (environment[pathKey] ?? "");
+    if (isolated)
+      appendGitConfigPairs(
+        environment,
+        profileSessionGitConfigPairs({
+          stateDir: input.stateDir,
+          launcherDir: githubLauncherDir(input.stateDir),
+          isolated,
+          githubHosts: knownGithubHostsSync(input.stateDir),
+        }),
+      );
   }
   if (!isolated)
     return input.purpose === "provider" || input.purpose === "terminal"

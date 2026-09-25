@@ -94,11 +94,15 @@ export const ProviderAccountEvent = Schema.Struct({
   data: Schema.String,
 });
 
+/** Lowercase GitHub or GitHub Enterprise hostname, without scheme, port, or path. */
+export const GITHUB_HOST_PATTERN = /^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/;
+export const GithubHost = Schema.String.check(Schema.isPattern(GITHUB_HOST_PATTERN));
+
 export const GithubAccountInput = Schema.Struct({
-  host: Schema.String.check(Schema.isPattern(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/)),
+  host: GithubHost,
   token: TrimmedNonEmptyString,
 });
-export const GithubAccountHostInput = Schema.Struct({ host: GithubAccountInput.fields.host });
+export const GithubAccountHostInput = Schema.Struct({ host: GithubHost });
 
 export const GithubLoginHandleInput = Schema.Struct({
   handle: Schema.optional(TrimmedNonEmptyString),
@@ -114,3 +118,29 @@ export const GithubLoginStatus = Schema.Struct({
   error: Schema.optional(Schema.String),
 });
 export type GithubLoginStatus = typeof GithubLoginStatus.Type;
+
+/** GitHub login (including Enterprise Managed User `_shortcode` suffixes). */
+export const GITHUB_LOGIN_PATTERN = /^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,98}[A-Za-z0-9])?$/;
+export const GithubLogin = Schema.String.check(Schema.isPattern(GITHUB_LOGIN_PATTERN));
+
+/** An account the workstation GitHub CLI is logged in to. Never carries the token. */
+export const GithubCliAccount = Schema.Struct({
+  host: GithubHost,
+  login: GithubLogin,
+  active: Schema.Boolean,
+  tokenSource: Schema.String,
+  scopes: Schema.Array(Schema.String),
+  missingScopes: Schema.Array(Schema.String),
+});
+export type GithubCliAccount = typeof GithubCliAccount.Type;
+export const GithubCliCandidates = Schema.Struct({
+  ghAvailable: Schema.Boolean,
+  accounts: Schema.Array(GithubCliAccount),
+});
+export type GithubCliCandidates = typeof GithubCliCandidates.Type;
+export const GithubCliImportInput = Schema.Struct({ host: GithubHost, login: GithubLogin });
+export const GithubCliImportResult = Schema.Struct({
+  login: Schema.String,
+  missingScopes: Schema.Array(Schema.String),
+});
+export type GithubCliImportResult = typeof GithubCliImportResult.Type;

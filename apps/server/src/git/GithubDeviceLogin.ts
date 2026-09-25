@@ -2,6 +2,25 @@ import { randomUUID } from "node:crypto";
 import type { GithubLoginStatus } from "@t3tools/contracts";
 import { ProfileGithubAccount, type GithubAccountRequest } from "./ProfileGithubAccount";
 
+/**
+ * Public OAuth client ID of GitHub CLI's app. Device-flow client IDs are public (no secret);
+ * F5 runs the device flow itself instead of `gh auth login`, because gh's login always rewrites
+ * the OS keychain entry of the workstation gh (`activateUser` deletes `gh:<host>`).
+ * The grant appears on GitHub as "GitHub CLI".
+ */
+export const GITHUB_CLI_OAUTH_CLIENT_ID = "178c6fc778ccc68e1d6a";
+export const GITHUB_LOGIN_SCOPES = "repo read:org notifications";
+
+/**
+ * `F5_GITHUB_OAUTH_CLIENT_ID` overrides the default app (e.g. an F5-owned OAuth app);
+ * an explicit empty value disables browser sign-in.
+ */
+export function resolveGithubOAuthClientId(env: NodeJS.ProcessEnv): string | undefined {
+  const configured = env.F5_GITHUB_OAUTH_CLIENT_ID;
+  if (configured === undefined) return GITHUB_CLI_OAUTH_CLIENT_ID;
+  return configured.trim() || undefined;
+}
+
 interface Attempt {
   status: GithubLoginStatus;
   controller: AbortController;
@@ -68,7 +87,7 @@ export class GithubDeviceLogin {
 
   async start(): Promise<GithubLoginStatus> {
     if (!this.clientId)
-      throw new Error("Browser sign-in is not configured. Use a GitHub token instead.");
+      throw new Error("Browser sign-in is disabled for this installation. Use a GitHub token.");
     this.cancel();
     const attempt: Attempt = {
       status: { available: true, state: "pending", handle: randomUUID() },
@@ -79,7 +98,7 @@ export class GithubDeviceLogin {
     try {
       const response = await this.post(
         "device/code",
-        { client_id: this.clientId, scope: "repo read:org notifications" },
+        { client_id: this.clientId, scope: GITHUB_LOGIN_SCOPES },
         attempt,
       );
       if (!this.current(attempt)) return this.status(attempt.status.handle);

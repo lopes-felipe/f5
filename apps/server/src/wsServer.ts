@@ -5,7 +5,11 @@ import {
   F5_PROTOCOL_QUERY,
   F5_UPGRADE_REQUIRED_CLOSE_CODE,
 } from "@t3tools/contracts";
-import { GithubDeviceLogin } from "./git/GithubDeviceLogin";
+import { GithubDeviceLogin, resolveGithubOAuthClientId } from "./git/GithubDeviceLogin";
+import { GithubCliImport } from "./git/GithubCliImport";
+import { githubLauncherDir } from "./git/GithubCliLauncher";
+import * as NodePath from "node:path";
+import { writeProfileGitAuthorConfig } from "./git/gitConfigEnvironment";
 import { deriveProviderInstanceConfigMap } from "./provider/Layers/ProviderInstanceRegistryHydration";
 import { ProfileGithubAccount } from "./git/ProfileGithubAccount";
 import { profileProviderAccounts } from "@t3tools/shared/profileProviderAccounts";
@@ -606,6 +610,18 @@ function resolveGitStatusInvalidation(event: OrchestrationEvent):
 const encodeWsResponse = Schema.encodeEffect(Schema.fromJsonString(WsResponse));
 const decodeWebSocketRequest = decodeJsonResult(WebSocketRequest);
 
+/** Best-effort id recovery for requests whose body fails schema decoding. */
+export function readWebSocketRequestId(messageText: string): string | null {
+  try {
+    const value: unknown = JSON.parse(messageText);
+    if (typeof value !== "object" || value === null || !("id" in value)) return null;
+    const id = value.id;
+    return typeof id === "string" && id.length > 0 && id.length <= 128 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
 export type ServerCoreRuntimeServices =
   | ProjectionSnapshotQuery
   | ProjectionWorkspaceQuery
@@ -881,11 +897,18 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
     Effect.mapError((cause) => new ServerLifecycleError({ operation: "profiles.secrets", cause })),
   );
   const githubAccount = new ProfileGithubAccount(profileSecrets, fetch, serverConfig);
-  const githubLogin = new GithubDeviceLogin(
-    githubAccount,
-    process.env.F5_GITHUB_OAUTH_CLIENT_ID?.trim(),
-  );
+  const githubLogin = new GithubDeviceLogin(githubAccount, resolveGithubOAuthClientId(process.env));
   yield* Effect.addFinalizer(() => Effect.sync(() => githubLogin.cancel()));
+  const githubCliImport = new GithubCliImport({
+    account: githubAccount,
+    // Profile state dirs live under the F5 home (parent of Default's state dir).
+    f5StateRoots: [
+      serverConfig.stateDir,
+      defaultProfileStateDir,
+      NodePath.dirname(defaultProfileStateDir),
+    ],
+    launcherDir: githubLauncherDir(serverConfig.stateDir),
+  });
   const activeProfile = serverConfig.profile ?? fallbackDefaultProfile(defaultProfileStateDir);
   const profileCall = <A>(operation: () => Promise<A>) =>
     Effect.tryPromise({
@@ -1641,6 +1664,25 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       ),
     ),
   ).pipe(Effect.forkIn(subscriptionsScope));
+  // Agents and terminals include this file, so author changes apply to running sessions.
+  const syncProfileGitAuthor = (settings: {
+    gitAuthorName?: string | undefined;
+    gitAuthorEmail?: string | undefined;
+  }) =>
+    Effect.promise(() =>
+      writeProfileGitAuthorConfig(
+        serverConfig.stateDir,
+        settings.gitAuthorName ?? "",
+        settings.gitAuthorEmail ?? "",
+      ).catch(() => {}),
+    );
+  yield* serverSettings.getSettings.pipe(
+    Effect.flatMap(syncProfileGitAuthor),
+    Effect.orElseSucceed(() => undefined),
+  );
+  yield* Stream.runForEach(serverSettings.streamChanges, syncProfileGitAuthor).pipe(
+    Effect.forkIn(subscriptionsScope),
+  );
   yield* Stream.runForEach(serverSettings.streamChanges, (settings) =>
     Effect.all({
       keybindingsConfig: keybindingsManager.loadConfigState,
@@ -2123,6 +2165,7 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         return githubLogin.cancel(request.body.handle);
       case WS_METHODS.githubAccountSet: {
         const { host, token } = request.body;
+        // Browser sign-in is github.com-only; a token save for that host supersedes it.
         if (host === "github.com") githubLogin.cancel();
         return yield* profileCall(() => githubAccount.set(host, token));
       }
@@ -2134,6 +2177,13 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.githubAccountStatus: {
         const { host } = request.body;
         return yield* profileCall(() => githubAccount.status(host));
+      }
+      case WS_METHODS.githubAccountCliCandidates:
+        return yield* profileCall(() => githubCliImport.candidates());
+      case WS_METHODS.githubAccountCliImport: {
+        const { host, login } = request.body;
+        if (host === "github.com") githubLogin.cancel();
+        return yield* profileCall(() => githubCliImport.import({ host, login }));
       }
       case WS_METHODS.profilesList:
         return yield* profileCall(readProfiles);
@@ -4250,7 +4300,8 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
           ? `${formattedFailure.slice(0, 187).trimEnd()}...`
           : formattedFailure;
       return yield* sendWsResponse({
-        id: "unknown",
+        // Echo the caller's id when recoverable so it fails immediately instead of timing out.
+        id: readWebSocketRequestId(messageText) ?? "unknown",
         error: { message: `Invalid request format: ${boundedFailure}` },
       });
     }

@@ -466,7 +466,7 @@ export function makeGitHubApi(
           new GitHubCliError({
             operation: "credentials",
             kind: "unauthenticated",
-            detail: "No GitHub credential is available for this host.",
+            detail: `GitHub is not connected for ${host}. Connect it in Settings > Integrations.`,
           }),
         );
       const fingerprint = createHash("sha256").update(token).digest("hex");

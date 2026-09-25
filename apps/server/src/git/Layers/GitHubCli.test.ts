@@ -25,6 +25,26 @@ afterEach(() => {
 });
 
 layer("GitHubCliLive", (it) => {
+  it.effect("treats the disconnected profile placeholder as not connected", () =>
+    Effect.gen(function* () {
+      vi.stubEnv("GH_TOKEN", "");
+      vi.stubEnv("GITHUB_TOKEN", "");
+      mockedRunProcess.mockResolvedValue({
+        stdout: "f5-profile-not-connected\n",
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+      const gh = yield* GitHubCli;
+      const error = yield* gh
+        .getCredentialContext({ cwd: process.cwd(), host: "github.com" })
+        .pipe(Effect.flip);
+      expect(error.kind).toBe("unauthenticated");
+      expect(error.detail).toContain("Settings > Integrations");
+    }),
+  );
+
   it.effect("sends long multiline non-ASCII review bodies only through stdin", () =>
     Effect.gen(function* () {
       mockedRunProcess.mockResolvedValue({
@@ -454,6 +474,7 @@ it.effect("Default never falls back to the host gh login or token", () =>
       .getCredentialContext({ cwd: process.cwd(), host: "github.com" })
       .pipe(Effect.flip);
     expect(error.kind).toBe("unauthenticated");
+    expect(error.detail).toContain("Connect it in Settings > Integrations");
     expect(mockedRunProcess).not.toHaveBeenCalled();
   }).pipe(
     Effect.provide(
