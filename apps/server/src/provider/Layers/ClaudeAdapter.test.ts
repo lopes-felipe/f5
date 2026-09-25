@@ -3172,6 +3172,29 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(diffUpdated.turnId, turnStarted.turnId);
         assert.equal(diffUpdated.payload.unifiedDiff, "");
       }
+
+      // The tool result's item.updated and item.completed are emitted back to
+      // back; under the frozen test clock they must still get strictly
+      // increasing timestamps so their activities never tie on createdAt.
+      const toolResultEvents = [
+        ...runtimeEvents.filter(
+          (event) =>
+            (event.type === "item.updated" || event.type === "item.completed") &&
+            event.itemId === "tool-write-1",
+        ),
+        ...runtimeEvents.filter((event) => event.type === "turn.diff.updated"),
+      ];
+      assert.deepEqual(
+        toolResultEvents.map((event) => event.type),
+        ["item.updated", "item.completed", "turn.diff.updated"],
+      );
+      const toolResultTimestamps = toolResultEvents.map((event) => event.createdAt);
+      assert.deepEqual(
+        [...toolResultTimestamps].toSorted(),
+        toolResultTimestamps,
+        "tool-result events must be stamped in emission order",
+      );
+      assert.equal(new Set(toolResultTimestamps).size, toolResultTimestamps.length);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

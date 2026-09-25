@@ -2146,6 +2146,157 @@ describe("deriveWorkLogEntries", () => {
     expect(entries.map((entry) => entry.id)).toEqual(["file-change-one", "file-change-two"]);
   });
 
+  describe("same-millisecond Claude tool-result lifecycle", () => {
+    // Claude emits its final `item.updated` (inProgress) and `item.completed`
+    // in the same millisecond; activities carry no sequence, so the sort tie
+    // falls back to the random activity id.
+    const claudeFileChangeLifecycle = (ids: {
+      readonly updated: string;
+      readonly completed: string;
+      readonly updatedDetail?: string;
+      readonly terminalStatus?: "completed" | "failed" | "declined";
+      readonly updatedCreatedAt?: string;
+    }) => {
+      const turnId = TurnId.makeUnsafe("turn-claude-edit");
+      const payload = (status: string, detail: string) => ({
+        itemType: "file_change",
+        providerItemId: "toolu_claude_write",
+        status,
+        title: "File change",
+        detail,
+        requestKind: "file-change",
+        changedFiles: ["/repo/src/greet.ts"],
+        fileChangeId: "filechange:thread-1:toolu_claude_write",
+      });
+      const activities = [
+        makeActivity({
+          id: "claude-edit-started",
+          turnId,
+          createdAt: "2026-02-23T00:00:01.000Z",
+          kind: "tool.started",
+          summary: "File change started",
+          payload: payload("inProgress", "Write: {}"),
+        }),
+        makeActivity({
+          id: ids.updated,
+          turnId,
+          createdAt: ids.updatedCreatedAt ?? "2026-02-23T00:00:02.000Z",
+          kind: "tool.updated",
+          summary: "File change",
+          payload: payload("inProgress", ids.updatedDetail ?? "/repo/src/greet.ts"),
+        }),
+        makeActivity({
+          id: ids.completed,
+          turnId,
+          createdAt: "2026-02-23T00:00:02.000Z",
+          kind: "tool.completed",
+          summary: "File change",
+          payload: payload(ids.terminalStatus ?? "completed", "/repo/src/greet.ts"),
+        }),
+      ];
+      return deriveWorkLogEntries(activities, turnId);
+    };
+
+    it.each(["failed", "declined"] as const)(
+      "keeps the %s entry when the stale update sorts after it",
+      (terminalStatus) => {
+        const entries = claudeFileChangeLifecycle({
+          completed: "a-completed",
+          updated: "b-updated",
+          updatedDetail: "Write: {}",
+          terminalStatus,
+        });
+
+        expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+          ["a-completed", terminalStatus],
+        ]);
+      },
+    );
+
+    it("keeps an in-progress update stamped after the terminal entry", () => {
+      // e.g. a Claude task backgrounded after its tool result was reported.
+      const entries = claudeFileChangeLifecycle({
+        completed: "a-completed",
+        updated: "b-updated",
+        updatedDetail: "Write: {}",
+        updatedCreatedAt: "2026-02-23T00:00:03.000Z",
+      });
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+        ["a-completed", "completed"],
+        ["b-updated", "inProgress"],
+      ]);
+    });
+
+    it("keeps the current turn's in-progress entry when an earlier turn completed the same item id", () => {
+      const previousTurnId = TurnId.makeUnsafe("turn-previous");
+      const currentTurnId = TurnId.makeUnsafe("turn-current");
+      const payload = (status: string) => ({
+        itemType: "file_change",
+        providerItemId: "reused-item-id",
+        status,
+        title: "File change",
+        detail: "/repo/src/greet.ts",
+        requestKind: "file-change",
+        changedFiles: ["/repo/src/greet.ts"],
+      });
+      const entries = deriveWorkLogEntries(
+        [
+          makeActivity({
+            id: "previous-completed",
+            turnId: previousTurnId,
+            createdAt: "2026-02-23T00:00:01.000Z",
+            kind: "tool.completed",
+            summary: "File change",
+            payload: payload("completed"),
+          }),
+          makeActivity({
+            id: "current-updated",
+            turnId: currentTurnId,
+            createdAt: "2026-02-23T00:01:00.000Z",
+            kind: "tool.updated",
+            summary: "File change",
+            payload: payload("inProgress"),
+          }),
+        ],
+        currentTurnId,
+      );
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toContainEqual([
+        "current-updated",
+        "inProgress",
+      ]);
+    });
+
+    it("keeps the completed entry when the stale update sorts after it", () => {
+      const entries = claudeFileChangeLifecycle({ completed: "a-completed", updated: "b-updated" });
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+        ["a-completed", "completed"],
+      ]);
+    });
+
+    it("keeps the completed entry when the update sorts first", () => {
+      const entries = claudeFileChangeLifecycle({ updated: "a-updated", completed: "b-completed" });
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+        ["b-completed", "completed"],
+      ]);
+    });
+
+    it("drops a stale update after completion even when its visible snapshot differs", () => {
+      const entries = claudeFileChangeLifecycle({
+        completed: "a-completed",
+        updated: "b-updated",
+        updatedDetail: "Write: {}",
+      });
+
+      expect(entries.map((entry) => [entry.id, entry.status])).toEqual([
+        ["a-completed", "completed"],
+      ]);
+    });
+  });
+
   it("does not collapse identical rows from different provider items", () => {
     const entries = deriveWorkLogEntries(
       [
