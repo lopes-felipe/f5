@@ -60,5 +60,16 @@ describe("GrokAcpSupport", () => {
       }),
     );
     expect(setSessionModel).not.toHaveBeenCalled();
+    expect(
+      await Effect.runPromise(
+        applyGrokAcpModelSelection({
+          runtime: { setSessionModel },
+          currentModelId: "grok-heavy",
+          requestedModelId: "grok-build",
+          mapError: (error) => error,
+        }),
+      ),
+    ).toBe("grok-heavy");
+    expect(setSessionModel).not.toHaveBeenCalled();
   });
 });

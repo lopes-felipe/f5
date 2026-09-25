@@ -6,6 +6,7 @@ import { ServiceMap, Effect, Exit, Fiber, Layer, Option, Schema, Scope, Stream }
 import { beforeEach } from "vitest";
 
 import {
+  ApprovalRequestId,
   OpenCodeSettings,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -38,6 +39,7 @@ type MessageEntry = {
   info: {
     id: string;
     role: "user" | "assistant";
+    parentID?: string;
   };
   parts: Array<unknown>;
 };
@@ -48,26 +50,44 @@ const runtimeMock = {
     sessionCreateUrls: [] as string[],
     authHeaders: [] as Array<string | null>,
     abortCalls: [] as string[],
+    permissionReplies: [] as Array<{ requestID: string; reply: string }>,
+    permissionReplyError: null as Error | null,
+    children: {} as Record<string, string[]>,
+    parents: {} as Record<string, string>,
     closeCalls: [] as string[],
     revertCalls: [] as Array<{ sessionID: string; messageID?: string }>,
     promptCalls: [] as Array<unknown>,
     promptAsyncError: null as Error | null,
     closeError: null as Error | null,
     messages: [] as MessageEntry[],
+    revertMessageID: undefined as string | undefined,
     subscribedEvents: [] as unknown[],
+    emitEvent: undefined as ((event: unknown) => void) | undefined,
+    afterEvent: undefined as (() => void) | undefined,
+    onAbort: undefined as (() => Promise<void>) | undefined,
+    childrenError: false,
   },
   reset() {
     this.state.startCalls.length = 0;
     this.state.sessionCreateUrls.length = 0;
     this.state.authHeaders.length = 0;
     this.state.abortCalls.length = 0;
+    this.state.permissionReplies.length = 0;
+    this.state.permissionReplyError = null;
+    this.state.children = {};
+    this.state.parents = {};
     this.state.closeCalls.length = 0;
     this.state.revertCalls.length = 0;
     this.state.promptCalls.length = 0;
     this.state.promptAsyncError = null;
     this.state.closeError = null;
     this.state.messages = [];
+    this.state.revertMessageID = undefined;
     this.state.subscribedEvents = [];
+    this.state.emitEvent = undefined;
+    this.state.afterEvent = undefined;
+    this.state.onAbort = undefined;
+    this.state.childrenError = false;
   },
 };
 
@@ -113,6 +133,7 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
   runOpenCodeCommand: () => Effect.succeed({ stdout: "", stderr: "", code: 0 }),
   createOpenCodeSdkClient: ({ baseUrl, serverPassword }) =>
     ({
+      app: { skills: async () => ({ data: [] }) },
       session: {
         create: async () => {
           runtimeMock.state.sessionCreateUrls.push(baseUrl);
@@ -121,8 +142,13 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
           );
           return { data: { id: `${baseUrl}/session` } };
         },
+        children: async ({ sessionID }: { sessionID: string }) => {
+          if (runtimeMock.state.childrenError) throw new Error("discovery unavailable");
+          return { data: (runtimeMock.state.children[sessionID] ?? []).map((id) => ({ id })) };
+        },
         abort: async ({ sessionID }: { sessionID: string }) => {
           runtimeMock.state.abortCalls.push(sessionID);
+          await runtimeMock.state.onAbort?.();
         },
         promptAsync: async (input: unknown) => {
           runtimeMock.state.promptCalls.push(input);
@@ -130,31 +156,49 @@ const OpenCodeRuntimeTestDouble: OpenCodeRuntimeShape = {
             throw runtimeMock.state.promptAsyncError;
           }
         },
+        get: async ({ sessionID }: { sessionID: string }) => ({
+          data: {
+            parentID: runtimeMock.state.parents[sessionID],
+            revert: runtimeMock.state.revertMessageID
+              ? { messageID: runtimeMock.state.revertMessageID }
+              : undefined,
+          },
+        }),
         messages: async () => ({ data: runtimeMock.state.messages }),
         revert: async ({ sessionID, messageID }: { sessionID: string; messageID?: string }) => {
           runtimeMock.state.revertCalls.push({
             sessionID,
             ...(messageID ? { messageID } : {}),
           });
-          if (!messageID) {
-            runtimeMock.state.messages = [];
-            return;
-          }
-
-          const targetIndex = runtimeMock.state.messages.findIndex(
-            (entry) => entry.info.id === messageID,
-          );
-          runtimeMock.state.messages =
-            targetIndex >= 0
-              ? runtimeMock.state.messages.slice(0, targetIndex + 1)
-              : runtimeMock.state.messages;
+          runtimeMock.state.revertMessageID = messageID;
         },
       },
+      permission: {
+        list: async () => ({ data: [] }),
+        reply: async (input: { requestID: string; reply: string }) => {
+          runtimeMock.state.permissionReplies.push(input);
+          if (runtimeMock.state.permissionReplyError) throw runtimeMock.state.permissionReplyError;
+        },
+      },
+      question: { list: async () => ({ data: [] }) },
       event: {
-        subscribe: async () => ({
+        subscribe: async (_: unknown, options: { signal: AbortSignal }) => ({
           stream: (async function* () {
-            for (const event of runtimeMock.state.subscribedEvents) {
-              yield event;
+            const pending = [...runtimeMock.state.subscribedEvents];
+            let wake: (() => void) | undefined;
+            runtimeMock.state.emitEvent = (event) => {
+              pending.push(event);
+              wake?.();
+            };
+            options.signal.addEventListener("abort", () => wake?.(), { once: true });
+            while (!options.signal.aborted) {
+              if (pending.length) {
+                yield pending.shift();
+                runtimeMock.state.afterEvent?.();
+              } else
+                await new Promise<void>((resolve) => {
+                  wake = resolve;
+                });
             }
           })(),
         }),
@@ -221,6 +265,252 @@ const sleep = (ms: number) =>
   Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, ms)));
 
 it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
+  for (const terminal of ["idle", "error"] as const) {
+    it.effect(`records interruption when ${terminal} arrives before abort finishes`, () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId(`interrupt-${terminal}`);
+        yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "work",
+          attachments: [],
+          model: "anthropic/claude-sonnet-4",
+        });
+        const events = yield* adapter.streamEvents.pipe(
+          Stream.takeUntil(
+            (event) => event.type === "turn.aborted" || event.type === "turn.completed",
+          ),
+          Stream.runCollect,
+          Effect.forkChild,
+        );
+        while (!runtimeMock.state.emitEvent) yield* sleep(1);
+        runtimeMock.state.onAbort = () =>
+          new Promise<void>((resolve) => {
+            runtimeMock.state.afterEvent = resolve;
+            runtimeMock.state.emitEvent?.(
+              terminal === "idle"
+                ? {
+                    type: "session.status",
+                    properties: {
+                      sessionID: "http://127.0.0.1:9999/session",
+                      status: { type: "idle" },
+                    },
+                  }
+                : {
+                    type: "session.error",
+                    properties: {
+                      sessionID: "http://127.0.0.1:9999/session",
+                      error: { name: "UnknownError", data: { message: "aborted" } },
+                    },
+                  },
+            );
+          });
+        yield* adapter.interruptTurn(threadId);
+        const captured = Array.from(yield* Fiber.join(events));
+        assert.equal(captured.filter((event) => event.type === "turn.aborted").length, 1);
+        assert.equal(
+          captured.some((event) => event.type === "turn.completed"),
+          false,
+        );
+        runtimeMock.state.onAbort = undefined;
+        yield* adapter.stopSession(threadId);
+      }),
+    );
+  }
+  for (const discovery of ["cap", "error"] as const) {
+    it.effect(`parent interruption succeeds despite child discovery ${discovery}`, () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId(`discovery-${discovery}`);
+        yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+        yield* adapter.sendTurn({
+          threadId,
+          input: "work",
+          attachments: [],
+          model: "anthropic/claude-sonnet-4",
+        });
+        runtimeMock.state.childrenError = discovery === "error";
+        runtimeMock.state.children["http://127.0.0.1:9999/session"] = Array.from(
+          { length: 140 },
+          (_, i) => `child-${i}`,
+        );
+        yield* adapter.interruptTurn(threadId);
+        const session = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        );
+        assert.equal(session?.status, "ready");
+        assert.equal(session?.activeTurnId, undefined);
+        runtimeMock.state.childrenError = false;
+        yield* adapter.stopSession(threadId);
+      }),
+    );
+  }
+  it.effect("does not approve a permission arriving during teardown", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("stop-permission");
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      while (!runtimeMock.state.emitEvent) yield* sleep(1);
+      runtimeMock.state.onAbort = () =>
+        new Promise<void>((resolve) => {
+          runtimeMock.state.afterEvent = resolve;
+          runtimeMock.state.emitEvent?.({
+            type: "permission.asked",
+            properties: {
+              id: "late",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["*"],
+              metadata: {},
+              always: [],
+            },
+          });
+        });
+      yield* adapter.stopSession(threadId);
+      runtimeMock.state.onAbort = undefined;
+      assert.deepEqual(runtimeMock.state.permissionReplies, []);
+    }),
+  );
+  it.effect("rolls back complete user turns including multiple assistant steps", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("mixed-rollback");
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      runtimeMock.state.messages = [
+        { info: { id: "u1", role: "user" }, parts: [] },
+        { info: { id: "a1", role: "assistant", parentID: "u1" }, parts: [] },
+        { info: { id: "u2", role: "user" }, parts: [] },
+        { info: { id: "a2", role: "assistant", parentID: "u2" }, parts: [] },
+        { info: { id: "a3", role: "assistant", parentID: "u2" }, parts: [] },
+      ];
+      assert.equal((yield* adapter.readThread(threadId)).turns.length, 2);
+      const snapshot = yield* adapter.rollbackThread(threadId, 1);
+      assert.deepEqual(
+        snapshot.turns.map((turn) => turn.id),
+        ["u1"],
+      );
+      assert.equal(runtimeMock.state.revertCalls.at(-1)?.messageID, "u2");
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect("stops descendants and clears the active turn without waiting for an idle event", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("stop-tree");
+      const root = "http://127.0.0.1:9999/session";
+      runtimeMock.state.children[root] = ["child"];
+      runtimeMock.state.children.child = ["grandchild"];
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      yield* adapter.sendTurn({
+        threadId,
+        input: "work",
+        attachments: [],
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("opencode"),
+          "anthropic/claude-sonnet-4",
+        ),
+      });
+      yield* adapter.interruptTurn(threadId);
+      assert.deepEqual(
+        new Set(runtimeMock.state.abortCalls),
+        new Set([root, "child", "grandchild"]),
+      );
+      const sessions = yield* adapter.listSessions();
+      const session = sessions.find((session) => session.threadId === threadId);
+      assert.equal(session?.status, "ready");
+      assert.equal(session?.activeTurnId, undefined);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
+  it.effect(
+    "keeps a failed approval reply retryable and resolves a successful reply without SSE",
+    () =>
+      Effect.gen(function* () {
+        const adapter = yield* OpenCodeAdapter;
+        const threadId = asThreadId("approval-retry");
+        runtimeMock.state.subscribedEvents = [
+          {
+            type: "permission.asked",
+            properties: {
+              id: "approval",
+              sessionID: "http://127.0.0.1:9999/session",
+              permission: "bash",
+              patterns: ["git status"],
+              metadata: {},
+              always: [],
+            },
+          },
+        ];
+        const opened = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "request.opened"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.startSession({
+          threadId,
+          provider: "opencode",
+          runtimeMode: "approval-required",
+        });
+        yield* Fiber.join(opened);
+        runtimeMock.state.permissionReplyError = new Error("connection lost");
+        const failure = yield* adapter
+          .respondToRequest(threadId, ApprovalRequestId.makeUnsafe("approval"), "accept")
+          .pipe(Effect.flip);
+        assert.equal(failure._tag, "ProviderAdapterRequestError");
+        runtimeMock.state.permissionReplyError = null;
+        const resolved = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "request.resolved"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        yield* adapter.respondToRequest(
+          threadId,
+          ApprovalRequestId.makeUnsafe("approval"),
+          "accept",
+        );
+        const resolution = yield* Fiber.join(resolved);
+        assert.equal(resolution._tag, "Some");
+        assert.equal(runtimeMock.state.permissionReplies.length, 2);
+        const duplicate = yield* adapter
+          .respondToRequest(threadId, ApprovalRequestId.makeUnsafe("approval"), "accept")
+          .pipe(Effect.flip);
+        assert.equal(duplicate._tag, "ProviderAdapterRequestError");
+        assert.equal(runtimeMock.state.permissionReplies.length, 2);
+        yield* adapter.stopSession(threadId);
+      }),
+  );
+
+  it.effect("auto-replies once to a child permission and ignores unrelated sessions", () =>
+    Effect.gen(function* () {
+      const adapter = yield* OpenCodeAdapter;
+      const threadId = asThreadId("child-approval");
+      runtimeMock.state.parents.child = "http://127.0.0.1:9999/session";
+      runtimeMock.state.subscribedEvents = ["unrelated", "child", "child"].map((sessionID) => ({
+        type: "permission.asked",
+        properties: {
+          id: sessionID,
+          sessionID,
+          permission: "bash",
+          patterns: ["git status"],
+          metadata: {},
+          always: [],
+        },
+      }));
+      yield* adapter.startSession({ threadId, provider: "opencode", runtimeMode: "full-access" });
+      // Stop at a known observable acknowledgement instead of relying on arbitrary sleeps.
+      yield* Effect.gen(function* () {
+        while (!runtimeMock.state.permissionReplies.length) yield* sleep(1);
+      }).pipe(Effect.timeout("1 second"));
+      yield* adapter.stopSession(threadId);
+      assert.deepEqual(runtimeMock.state.permissionReplies, [
+        { requestID: "child", reply: "once" },
+      ]);
+    }),
+  );
+
   it.effect("reuses a configured OpenCode server URL instead of spawning a local server", () =>
     Effect.gen(function* () {
       const adapter = yield* OpenCodeAdapter;
@@ -266,7 +556,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const threadId = asThreadId("thread-opencode-stop-event");
       const eventsFiber = yield* adapter.streamEvents.pipe(
         Stream.filter((event) => event.threadId === threadId),
-        Stream.take(3),
+        Stream.take(4),
         Stream.runCollect,
         Effect.forkChild,
       );
@@ -281,7 +571,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const events = Array.from(yield* Fiber.join(eventsFiber).pipe(Effect.timeout("1 second")));
       assert.deepEqual(
         events.map((event) => event.type),
-        ["session.started", "thread.started", "session.exited"],
+        ["session.started", "thread.started", "session.configured", "session.exited"],
       );
     }),
   );
@@ -580,7 +870,7 @@ it.layer(OpenCodeAdapterTestLayer)("OpenCodeAdapterLive", (it) => {
       const snapshot = yield* adapter.rollbackThread(threadId, 2);
 
       assert.deepEqual(runtimeMock.state.revertCalls, [
-        { sessionID: "http://127.0.0.1:9999/session" },
+        { sessionID: "http://127.0.0.1:9999/session", messageID: "assistant-1" },
       ]);
       assert.deepEqual(snapshot.turns, []);
     }),

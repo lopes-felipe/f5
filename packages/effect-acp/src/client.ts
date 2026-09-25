@@ -1,4 +1,5 @@
 import * as Context from "effect/ServiceMap";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Stdio from "effect/Stdio";
 import * as Layer from "effect/Layer";
@@ -139,7 +140,7 @@ export interface AcpClientShape {
     ) => Effect.Effect<AcpSchema.RequestPermissionResponse, AcpError.AcpError>,
   ) => Effect.Effect<void>;
   /**
-   * Registers a handler for `session/elicitation`.
+   * Registers a handler for `session/elicitation` and `elicitation/create`.
    * @see https://agentclientprotocol.com/protocol/schema#session/elicitation
    */
   readonly handleElicitation: (
@@ -220,7 +221,7 @@ export interface AcpClientShape {
     ) => Effect.Effect<void, AcpError.AcpError>,
   ) => Effect.Effect<void>;
   /**
-   * Registers a handler for `session/elicitation/complete`.
+   * Registers a handler for `session/elicitation/complete` and `elicitation/complete`.
    * @see https://agentclientprotocol.com/protocol/schema#session/elicitation/complete
    */
   readonly handleElicitationComplete: (
@@ -418,6 +419,22 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
         ),
       [CLIENT_METHODS.session_elicitation]: (payload) =>
         runHandler(coreHandlers.elicitation, payload, CLIENT_METHODS.session_elicitation),
+      "elicitation/create": (payload) =>
+        Schema.decodeUnknownEffect(AcpSchema.ElicitationRequest)(payload).pipe(
+          Effect.mapError((cause) =>
+            AcpError.AcpRequestError.invalidParams(
+              "Invalid elicitation/create payload",
+              String(cause),
+            ).toProtocolError(),
+          ),
+          Effect.flatMap((request) =>
+            runHandler(coreHandlers.elicitation, request, "elicitation/create"),
+          ),
+          Effect.map(({ action, _meta }) => ({
+            ...action,
+            ...(_meta !== undefined ? { _meta } : {}),
+          })),
+        ),
       [CLIENT_METHODS.fs_read_text_file]: (payload) =>
         runHandler(coreHandlers.readTextFile, payload, CLIENT_METHODS.fs_read_text_file),
       [CLIENT_METHODS.fs_write_text_file]: (payload) =>
@@ -563,7 +580,31 @@ export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   options: AcpClientOptions = {},
 ): Layer.Layer<AcpClient> => {
-  const stdio = makeChildStdio(handle);
-  const terminationError = makeTerminationError(handle);
-  return Layer.effect(AcpClient, make(stdio, options, terminationError));
+  return Layer.effect(
+    AcpClient,
+    Effect.gen(function* () {
+      let stderr = "";
+      const stderrFiber = yield* handle.stderr.pipe(
+        Stream.decodeText(),
+        Stream.runForEach((chunk) =>
+          Effect.sync(() => {
+            stderr = (stderr + chunk).slice(-4096);
+          }),
+        ),
+        Effect.ignore,
+        Effect.forkScoped,
+      );
+      const terminationError = makeTerminationError(handle).pipe(
+        Effect.tap(() =>
+          Fiber.await(stderrFiber).pipe(Effect.timeoutOption("100 millis"), Effect.ignore),
+        ),
+        Effect.map((error) =>
+          Schema.is(AcpError.AcpProcessExitedError)(error)
+            ? new AcpError.AcpProcessExitedError({ ...error, stderr })
+            : error,
+        ),
+      );
+      return yield* make(makeChildStdio(handle), options, terminationError);
+    }),
+  );
 };

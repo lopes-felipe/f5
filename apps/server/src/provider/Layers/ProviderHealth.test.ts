@@ -207,7 +207,8 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.status, "error");
         assert.strictEqual(status.available, false);
         assert.strictEqual(status.authStatus, "unknown");
-        assert.strictEqual(status.message, "Codex CLI (`codex`) is not installed or not on PATH.");
+        assert.match(status.message ?? "", /Binary path on the server/);
+        assert.match(status.message ?? "", /may not add codex to PATH/);
       }).pipe(Effect.provide(failingSpawnerLayer("spawn codex ENOENT"))),
     );
 

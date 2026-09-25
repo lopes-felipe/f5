@@ -43,7 +43,7 @@ function installPath(environment: NodeJS.ProcessEnv, path: string): void {
 }
 
 function normalizeEntry(entry: string): string {
-  const trimmed = entry.trim().replace(/^"|"$/g, "");
+  const trimmed = entry.trim().replaceAll('"', "");
   const root = NodePath.win32.parse(trimmed).root;
   return trimmed.length > root.length ? trimmed.replace(/[\\/]+$/u, "") : trimmed;
 }

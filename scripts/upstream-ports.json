@@ -135,10 +135,15 @@
     {
       "upstreamSha": "01f3e50eca5102ccd881de6f942a98fe6a518ad4",
       "subject": "fix(server): unblock OpenCode approvals and stop (#9653)",
-      "reason": "Phase 1c (provider correctness): fix(server): unblock OpenCode approvals and stop. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode resolves successful interaction replies locally, keeps failed replies retryable, and stops without requiring idle. An interrupt marker makes racing idle/error events abort the turn; teardown refuses late auto-approvals.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:269"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "01fc7d228dd6794ffb35b57752d0218559de5e89",
@@ -287,10 +292,12 @@
     {
       "upstreamSha": "04df98db4c90790fb5171426894baa3bca57a935",
       "subject": "fix(server): honor auto-accept edits for the OpenCode provider (#7100)",
-      "reason": "Phase 1c (provider correctness): fix(server): honor auto-accept edits for the OpenCode provider. Reimplement in f5; not yet delivered.",
+      "reason": "Existing OpenCode permission rules allow edit operations in auto-accept-edits mode; workflow restrictions remain authoritative.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:237"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "04efa7907e9ec207e2d6af459ce3b2ffd55f6107",
@@ -633,10 +640,15 @@
     {
       "upstreamSha": "087cfb8ae262f344f7e409f5a8c0eda6f0ef12f9",
       "subject": "fix(cursor): discover symlinked skills as package boundaries (#9420)",
-      "reason": "Phase 1c (provider correctness): fix(cursor): discover symlinked skills as package boundaries. Reimplement in f5; not yet delivered.",
+      "reason": "Cursor follows linked skill packages with bounded traversal and cycle detection, preserves project precedence, and stops descending once a package contains SKILL.md so examples cannot become commands.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/CursorSkills.test.ts:23"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "0882431e0fc0fabe950743dd44b674a07a584bc9",
@@ -968,10 +980,12 @@
     {
       "upstreamSha": "0d8a91a25a35618c7cae1e02791e491afa1f0a00",
       "subject": "fix(cursor): cache successful model discovery between refreshes (#9918)",
-      "reason": "Phase 1c (provider correctness): fix(cursor): cache successful model discovery between refreshes. Reimplement in f5; not yet delivered.",
+      "reason": "f5 automatic Cursor health checks do not start ACP model discovery. Snapshots are cached per instance; ACP enrichment remains reserved for explicit user refresh, avoiding the repeated startup cost addressed upstream.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CursorProvider.ts:1216"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "0dd5c64bcfac7974d81bac76740ecd83540077e8",
@@ -1380,10 +1394,12 @@
     {
       "upstreamSha": "12fe2d6d03062c5d7fc3beff168f8c4af1235b50",
       "subject": "fix(windows): strip quotes from repaired PATH (#8746)",
-      "reason": "Phase 1c: fix(windows): strip quotes from repaired PATH. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Normalize embedded quotes in inherited Windows PATH segments before command resolution. Existing inherited-before-fallback ordering is retained.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["packages/shared/src/windowsPath.ts:46"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "133db22fae34cfb2e62a806e99d22674b0376f35",
@@ -1427,10 +1443,12 @@
     {
       "upstreamSha": "135dc156e3f600a79a415b06e4c234677aa318d0",
       "subject": "fix(codex): keep background memory out of chats (#5468)",
-      "reason": "Phase 1c (provider correctness): fix(codex): keep background memory out of chats. Reimplement in f5; not yet delivered.",
+      "reason": "Ignore Codex memory-consolidation thread notifications even before the primary thread is known, without changing the parent session or transcript.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:1829"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "13c134c10be163fa5345dd7c39371b6089e352bb",
@@ -1684,10 +1702,12 @@
     {
       "upstreamSha": "17822fab708a90e82ac961e3b4895932667ce419",
       "subject": "fix(server): recover from provider interrupt failures (#7412)",
-      "reason": "Phase 1c (provider correctness): fix(server): recover from provider interrupt failures. Reimplement in f5; not yet delivered.",
+      "reason": "If provider interruption fails, stop the same still-active session and report failure; recheck turn identity before cleanup so an older callback cannot stop a newer turn.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:1518"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "1782a2af44a7630f184a05dbcf788e6121da2554",
@@ -1781,10 +1801,15 @@
     {
       "upstreamSha": "18573d60aab1344bf124a044b01445086e910c4c",
       "subject": "fix(claude): expand slash commands when a message has attachments (#9122)",
-      "reason": "Phase 1c (provider correctness): fix(claude): expand slash commands when a message has attachments. Reimplement in f5; not yet delivered.",
+      "reason": "Claude user messages place image blocks before the final text block, including slash-command prompts.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:1308",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:1941"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "1862686f9e42bf1d77e7f2ad03e24d7b0c7908f1",
@@ -2241,10 +2266,12 @@
     {
       "upstreamSha": "1e87029261f9b81061a2a7420849b9eeaf1a2ebe",
       "subject": "fix(web): preserve Claude insight line breaks (#4344)",
-      "reason": "Phase 1c (provider correctness): fix(web): preserve Claude insight line breaks. Reimplement in f5; not yet delivered.",
+      "reason": "Preserve soft line breaks in Claude Insight paragraphs through the existing Markdown renderer.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/web/src/components/chat/MessagesTimeline.tsx:1044"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "1eb36b45ef7aa5c028380afb7266bcabf258a55e",
@@ -2413,10 +2440,12 @@
     {
       "upstreamSha": "2152d44de2db30a6bae965b0afd30be080e5c872",
       "subject": "fix(server): load OpenCode workspace skills via SDK to avoid 64KB CLI pipe truncation (#9585)",
-      "reason": "Phase 1c (provider correctness): fix(server): load OpenCode workspace skills via SDK to avoid 64KB CLI pipe truncation. Reimplement in f5; not yet delivered.",
+      "reason": "Read OpenCode workspace skills through the SDK with a bounded request, rather than CLI output subject to pipe truncation. Session command discovery and provider snapshots consume the inventory.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:337"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "219c1d265d917f0e7083b9033f4014c0c2940463",
@@ -2472,10 +2501,12 @@
     {
       "upstreamSha": "21d744039bf76c072c875886ee497e391a0dd430",
       "subject": "fix(web): fit provider update text inside sidebar notices (#11034)",
-      "reason": "Phase 1c (provider correctness): fix(web): fit provider update text inside sidebar notices. Reimplement in f5; not yet delivered.",
+      "reason": "Existing provider header uses a short Update pill and a details popover instead of expanding the card with command text.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/web/src/components/settings/ProviderInstanceCard.tsx:625"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "21e80a06364898b8ecffad8aeddcb5634170260b",
@@ -2570,10 +2601,12 @@
     {
       "upstreamSha": "230c5d4a5cc31656de3d46719e7f4d2a13369991",
       "subject": "fix(server): recover stale Codex approval callbacks (#5195)",
-      "reason": "Phase 1c (provider correctness): fix(server): recover stale Codex approval callbacks. Reimplement in f5; not yet delivered.",
+      "reason": "Recognize Codex stale approval wording case-insensitively. f5 keeps failed approval delivery visible and does not falsely mark an unresolved request accepted.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/orchestration/Layers/ProviderCommandReactor.ts:241"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "232de5e8aac61e6f3de4bc61d10746167db9e905",
@@ -2921,10 +2954,11 @@
     {
       "upstreamSha": "2921050c698fb195e2f5590b7cfab8fdfe0ec729",
       "subject": "fix(contracts): accept CLI event origins (#8905)",
-      "reason": "Phase 1c: fix(contracts): accept CLI event origins. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "The upstream CLI event ClientSurface/origin subsystem is absent from f5. f5 already tags runtime events with its provider and thread identities.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CodexAdapter.ts:685"]
     },
     {
       "upstreamSha": "292c6dd8c242d2b5e2b727295dd17951e55c2d3d",
@@ -3008,10 +3042,12 @@
     {
       "upstreamSha": "2a264adc6f6c65f98d4273acaa1af567eca83f2a",
       "subject": "fix(server): explain how to configure a missing Codex executable (#11345)",
-      "reason": "Phase 1c (provider correctness): fix(server): explain how to configure a missing Codex executable. Reimplement in f5; not yet delivered.",
+      "reason": "Missing Codex executable errors name the configured binary and the Providers settings path instead of assuming one installation mechanism.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ProviderHealth.ts:415"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "2a303535305d7d224a750fdee78c66e2a52ab3ab",
@@ -3278,10 +3314,11 @@
     {
       "upstreamSha": "2d5464afbc19058be8c125d5ee70481d721d14f4",
       "subject": "fix(server): preserve native provider executable paths during updates (#9850)",
-      "reason": "Phase 1c (provider correctness): fix(server): preserve native provider executable paths during updates. Reimplement in f5; not yet delivered.",
+      "reason": "Provider installer/update hardening belongs to Phase 14 distribution. f5 does not have the upstream automatic provider installer; preserve this record for that implementation instead of introducing an updater in the provider-correctness batch.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "14",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "2d645df474f0af5e261edb56a79f7a2a9a2d442e",
@@ -3422,10 +3459,11 @@
     {
       "upstreamSha": "2efb8178d83f4f7c4ccc3ae1165f2a2ded0b2742",
       "subject": "fix(clients): keep backslashes in copied Codex citations (#12243)",
-      "reason": "Phase 1c (provider correctness): fix(clients): keep backslashes in copied Codex citations. Reimplement in f5; not yet delivered.",
+      "reason": "Backslash citation paths depend on the Codex directive/citation renderer absent from f5. Retain this compatibility case for Phase 3e citation rendering.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "3e",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "2f41c073a2f846e9a96082e76cd1b2c3a7e44c18",
@@ -3480,10 +3518,11 @@
     {
       "upstreamSha": "2fb99a7a664faf045f1884f38c620016b34874cb",
       "subject": "fix(server): only run provider updates through the installer that owns the binary (#9325)",
-      "reason": "Phase 1c (provider correctness): fix(server): only run provider updates through the installer that owns the binary. Reimplement in f5; not yet delivered.",
+      "reason": "Provider installer/update hardening belongs to Phase 14 distribution. f5 does not have the upstream automatic provider installer; preserve this record for that implementation instead of introducing an updater in the provider-correctness batch.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "14",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "2fbe313096b54a3422e101ed1bcc3589f6cf371c",
@@ -3589,10 +3628,12 @@
     {
       "upstreamSha": "3138f5716098a331f9a7d4cfc1bcd07118967a83",
       "subject": "fix(grok): emit task lifecycle for monitors and background shells (#9139)",
-      "reason": "Phase 1c (provider correctness): fix(grok): emit task lifecycle for monitors and background shells. Reimplement in f5; not yet delivered.",
+      "reason": "Map Grok monitor, shell background-start, task-output, multi-output and kill results into f5 task lifecycles; preserve originating turns and emit stopped tasks on teardown.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/XAiBackgroundTasks.ts:60"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "315b27385d7eb36a56b410fa8b624fc2ed246278",
@@ -4254,10 +4295,12 @@
     {
       "upstreamSha": "3b54a2a574b061a1ce80d7130e0776f4f5c95e20",
       "subject": "fix(server): settle pending user-input requests when a Claude session stops (#5127)",
-      "reason": "Phase 1c (provider correctness): fix(server): settle pending user-input requests when a Claude session stops. Reimplement in f5; not yet delivered.",
+      "reason": "Close Claude query transport and cancel pending permissions and questions before completing session teardown, including background tasks.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.ts:4032"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "3b5d476eb6af9d14efe037e9d163848d6fd048d7",
@@ -4439,10 +4482,11 @@
     {
       "upstreamSha": "3cde99b259249a02e50079f326a00b5ba38e7235",
       "subject": "fix(web): hide provider Update toast action while an update is running (#6544)",
-      "reason": "Phase 1c (provider correctness): fix(web): hide provider Update toast action while an update is running. Reimplement in f5; not yet delivered.",
+      "reason": "Provider installer/update hardening belongs to Phase 14 distribution. f5 does not have the upstream automatic provider installer; preserve this record for that implementation instead of introducing an updater in the provider-correctness batch.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "14",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "3cfebf4aa3ce7410806c0ba4cc4d991cc1ce8dbb",
@@ -4693,10 +4737,12 @@
     {
       "upstreamSha": "4116db9807cb37b49d3db35c7a45301f5e851b01",
       "subject": "fix(server): bound OpenCode version probes (#8750)",
-      "reason": "Phase 1c (provider correctness): fix(server): bound OpenCode version probes. Reimplement in f5; not yet delivered.",
+      "reason": "Bound OpenCode CLI probes and release their process scopes on timeout.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:133"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "411da2a7356dd795b720228e9c834ea9bad0415f",
@@ -4842,10 +4888,12 @@
     {
       "upstreamSha": "43f723f807e8cc05d7fcd36ee7c3e57c9b3c4980",
       "subject": "fix(server): stop probing Cursor until enabled (#8175)",
-      "reason": "Phase 1c (provider correctness): fix(server): stop probing Cursor until enabled. Reimplement in f5; not yet delivered.",
+      "reason": "Disabled Cursor instances already return before probes; explicit capability enrichment also skips disabled, unauthenticated and fully discovered snapshots.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CursorProvider.ts:1235"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "443b4ebfe83fcfe64c34b09ecb5a5fffdebb85c7",
@@ -5016,10 +5064,12 @@
     {
       "upstreamSha": "474cc5fb017a13dbdb403dd3bf714ddbf867205a",
       "subject": "fix(server): ignore Claude command lifecycle messages (#6606)",
-      "reason": "Phase 1c (provider correctness): fix(server): ignore Claude command lifecycle messages. Reimplement in f5; not yet delivered.",
+      "reason": "Ignore informational Claude command_lifecycle messages instead of reporting unknown SDK events.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.ts:3873"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "476d69cd1d5d89b4aad77df8fc01c71e34af930c",
@@ -5223,10 +5273,12 @@
     {
       "upstreamSha": "49f6241ddeee2a5d20ec181b5b94ec0a9ac72f7b",
       "subject": "fix(codex): show sub-agent models (#8502)",
-      "reason": "Phase 1c (provider correctness): fix(codex): show sub-agent models. Reimplement in f5; not yet delivered.",
+      "reason": "Carry provider-reported Codex subagent model identifiers through f5 native subagent activities, persistence and the Agents panel. f5 uses native events rather than upstream CollabRuntime child-thread synthesis.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CodexAdapter.ts:828"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "4a07c1ca9d9033ef35161a1ffbea44d0418ca2bf",
@@ -5400,10 +5452,15 @@
     {
       "upstreamSha": "4ca71463a289e7b96b5776b6f6bbdecefe4757e4",
       "subject": "fix(opencode): revert from the first removed assistant message (#9924)",
-      "reason": "Phase 1c (provider correctness): fix(opencode): revert from the first removed assistant message. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode groups assistant steps by their parent user prompt and rolls back at the first removed user message, so no orphaned prompt remains. Readback honours the provider boundary.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:375"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "4cb676cc1612e6220246cd5f8abdd2bc284e1a97",
@@ -5450,10 +5507,15 @@
     {
       "upstreamSha": "4d12e52223f3fcd4813b9bc52cd9cb3f2bd19539",
       "subject": "fix(server): stop kills lingering Claude work (#5891)",
-      "reason": "Phase 1c (provider correctness): fix(server): stop kills lingering Claude work. Reimplement in f5; not yet delivered. Reproduce in f5 before deciding whether an adapter change is needed.",
+      "reason": "Claude hard Stop serializes with sends, closes foreground/background work and rejects stale turn IDs. Send detects a stopped context after asynchronous setup. Conversation resume identity survives; process-local session grants intentionally expire on Stop.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:7559"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "4d16e6bc6f0be52c5d44b8864000c70c7825e4f7",
@@ -5501,10 +5563,11 @@
     {
       "upstreamSha": "4e00471d1ab340b46742565bb6ce6462160b4d0c",
       "subject": "fix(server): stop completed Codex threads from staying stuck on working (#7937)",
-      "reason": "Phase 1c (provider correctness): fix(server): stop completed Codex threads from staying stuck on working. Reimplement in f5; not yet delivered.",
+      "reason": "This fixes synthetic collabAgent/activity notifications generated by upstream CollabRuntime when reading idle children. f5 has no such bridge; its native subagent interacted event intentionally resumes activity and has regression coverage.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CodexAdapter.test.ts:866"]
     },
     {
       "upstreamSha": "4e09cddb40eb1bb1e111a0374b46e73b38ffbb29",
@@ -5516,10 +5579,11 @@
     {
       "upstreamSha": "4e169df1dd12e0ed960dcb310e9460897759a55e",
       "subject": "fix(web): remove duplicate provider update progress (#7761)",
-      "reason": "Phase 1c (provider correctness): fix(web): remove duplicate provider update progress. Reimplement in f5; not yet delivered.",
+      "reason": "Provider installer/update hardening belongs to Phase 14 distribution. f5 does not have the upstream automatic provider installer; preserve this record for that implementation instead of introducing an updater in the provider-correctness batch.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "14",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "4e547318b60031eb546d8cf2b84ad9fa0785a87a",
@@ -5783,10 +5847,12 @@
     {
       "upstreamSha": "51c6daa3bd1d65e809b5196bf63333013427338a",
       "subject": "fix(server): treat a missing Codex rollout as a recoverable resume error (#6671)",
-      "reason": "Phase 1c (provider correctness): fix(server): treat a missing Codex rollout as a recoverable resume error. Reimplement in f5; not yet delivered.",
+      "reason": "Recover missing Codex rollout files through the existing resume fallback while leaving authorization and rate-limit errors non-recoverable.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:259"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "5208bdeb0db95063091a29f97af3548436c5f291",
@@ -5814,10 +5880,16 @@
     {
       "upstreamSha": "52b2bf77a941740b4d979f3f4cae1c2851c14a69",
       "subject": "fix(server): handle JSON-wrapped titles and verbose Claude output (#10446)",
-      "reason": "Phase 1c (provider correctness): fix(server): handle JSON-wrapped titles and verbose Claude output. Reimplement in f5; not yet delivered.",
+      "reason": "Claude metadata decodes object and verbose-array result envelopes, selecting the final result, and unwraps JSON thread titles before normalization.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/git/Layers/ClaudeTextGeneration.ts:248",
+        "apps/server/src/git/Utils.ts:100",
+        "apps/server/src/git/Layers/ClaudeTextGeneration.test.ts:422"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "52d08a14b9e475371658fabbb12c056c3d3dad67",
@@ -5934,10 +6006,12 @@
     {
       "upstreamSha": "54441e63d824d4df11d031fc4811d1af9077e67f",
       "subject": "fix(web): copy provider update commands from compact rows (#9888)",
-      "reason": "Phase 1c (provider correctness): fix(web): copy provider update commands from compact rows. Reimplement in f5; not yet delivered.",
+      "reason": "Provider cards already expose a Copy action for the formatted update command inside the header advisory popover.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/web/src/components/settings/ProviderInstanceCard.tsx:665"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "549201fcfd3baa6cf92f09e5d868c536c80d2d55",
@@ -6016,10 +6090,12 @@
     {
       "upstreamSha": "560afffdea82000d757c98ea79678aee75f8648c",
       "subject": "fix(server): update Claude Agent SDK to 0.3.260 (#9135)",
-      "reason": "Phase 1c (provider correctness): fix(server): update Claude Agent SDK to 0.3.260. Reimplement in f5; not yet delivered.",
+      "reason": "f5 pins Claude Agent SDK 0.3.280, newer than upstream 0.3.260, with its own model catalog preserved.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/package.json:36"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "560d4a4560ddb5f42c8f8e0e35fa7827c0e46f80",
@@ -6106,10 +6182,11 @@
     {
       "upstreamSha": "5735693d4acb949c2b0daf1219b4f62845115435",
       "subject": "fix(server): let Claude launch args override the derived permission mode (#11026)",
-      "reason": "Phase 1c (provider correctness): fix(server): let Claude launch args override the derived permission mode. Reimplement in f5; not yet delivered.",
+      "reason": "Do not let arbitrary Claude launch arguments override runtime permissions: the approved port scope preserves f5 permissions and account isolation. Reserved SDK arguments remain rejected.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.ts:4949"]
     },
     {
       "upstreamSha": "573a8f2f30d59c528997daf1e02bdb58e0d9dc54",
@@ -6194,10 +6271,12 @@
     {
       "upstreamSha": "57a6b70e24221f00c9a161f1e5b6b2ddd753bc8f",
       "subject": "fix(codex): show what a file-change approval will change (#8669)",
-      "reason": "Phase 1c (provider correctness): fix(codex): show what a file-change approval will change. Reimplement in f5; not yet delivered.",
+      "reason": "Codex patch approval details list up to 20 sorted paths, including renames, followed by the remaining count; an explicit provider reason keeps priority.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CodexAdapter.ts:1031"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "57aee3e19f1910f3323f06384bb2a1d02b79e369",
@@ -6852,10 +6931,15 @@
     {
       "upstreamSha": "6134b90ffb19c18e0b2f468aa172095a393470b0",
       "subject": "fix(server): mark Cursor transport error answers as failed (#10337)",
-      "reason": "Phase 1c (provider correctness): fix(server): mark Cursor transport error answers as failed. Reimplement in f5; not yet delivered.",
+      "reason": "Cursor drains notification events even when ACP hardening is off before interpreting standalone transport errors. It emits a failed turn and returns the accepted submission identity, avoiding false ambiguous-delivery reports.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CursorAdapter.test.ts:130"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "61514c1294ff79e2a9924551b2042fcc0d1c3a34",
@@ -6896,10 +6980,12 @@
     {
       "upstreamSha": "61b2e744df378b7a8d534494114cf59b26cbe6ca",
       "subject": "fix(server): respect inherited OPENCODE_CONFIG_CONTENT (#4242)",
-      "reason": "Phase 1c (provider correctness): fix(server): respect inherited OPENCODE_CONFIG_CONTENT. Reimplement in f5; not yet delivered.",
+      "reason": "Merge OpenCode configuration from the effective instance environment while keeping explicit clean environments isolated from ambient configuration.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:443"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "61b51ae0e343afc42ba0424d4d74b4f9a216d620",
@@ -6948,10 +7034,15 @@
     {
       "upstreamSha": "62d39bf00d5ddd83a9b36a81321fe9aa4d2502bb",
       "subject": "fix(server): stop OpenCode child sessions (#9005)",
-      "reason": "Phase 1c (provider correctness): fix(server): stop OpenCode child sessions. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode stops parents and discovered descendants with bounded requests. Parent abort failures propagate, while child discovery limits/failures warn without invalidating a successful parent interruption; historical children are skipped when timestamp evidence exists.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:322"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "62e4ae400555e62a42d5cb401d744ba6dd0b401b",
@@ -7068,10 +7159,12 @@
     {
       "upstreamSha": "63ff33756c47f127391962458d8388a647e8ed44",
       "subject": "fix(server): empty Claude homePath shares continuation with ~/.claude (#12624)",
-      "reason": "Phase 1c (provider correctness): fix(server): empty Claude homePath shares continuation with ~/.claude. Reimplement in f5; not yet delivered. Reproduce in f5 before deciding whether an adapter change is needed.",
+      "reason": "Empty Claude home settings already resolve to the actual home directory before computing continuation identity; explicit and default homes share canonical identity.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Drivers/ClaudeHome.ts:55"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "643b21edaa08eb1d19d633dbb0b275164bfa60be",
@@ -7406,10 +7499,12 @@
     {
       "upstreamSha": "6a2608292dd7ba01516112c276e475e6b64e4e2c",
       "subject": "fix(server): keep the authoritative subagent model when snapshots race task_started (#7583)",
-      "reason": "Phase 1c: fix(server): keep the authoritative subagent model when snapshots race task_started. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Buffer early Claude child model snapshots by parent tool ID, merge model metadata into later task starts/progress, and keep child text out of the parent transcript.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.ts:274"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "6a2d2466673c010a15cb530fa2a8f77b363e046d",
@@ -8262,10 +8357,12 @@
     {
       "upstreamSha": "75ab5ab3fb6ad35117da754644c404a31b2fed84",
       "subject": "fix(codex): accept rate limit errors on thread resume (#8897)",
-      "reason": "Phase 1c (provider correctness): fix(codex): accept rate limit errors on thread resume. Reimplement in f5; not yet delivered.",
+      "reason": "f5 consumes Codex JSON-RPC results directly rather than the upstream generated thread-resume schema; rate-limit error variants are not rejected by an outdated union.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:2168"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "75d8b132cd0718d8cd703c97d02b143891d80022",
@@ -8437,10 +8534,12 @@
     {
       "upstreamSha": "7880a6e583f8a04db2eaeef2366ce9c81c3f7bec",
       "subject": "fix(grok): allow model changes in existing threads (#8392)",
-      "reason": "Phase 1c (provider correctness): fix(grok): allow model changes in existing threads. Reimplement in f5; not yet delivered.",
+      "reason": "Grok model changes are already applied through native session model selection on send without requiring a replacement thread.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/GrokAcpSupport.ts:88"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "78a0ea55c1d9edce8bcd2b3caff9510b4093e6d3",
@@ -8657,10 +8756,15 @@
     {
       "upstreamSha": "7c6163c67aa122fa7c13466536c012888db102c6",
       "subject": "fix(codex): show app access approval prompts (#8058)",
-      "reason": "Phase 1c (provider correctness): fix(codex): show app access approval prompts. Reimplement in f5; not yet delivered.",
+      "reason": "Codex MCP approvals accept only recognised consent controls, exact once/session/always choices and explicitly advertised persistence. Hidden optional fields/defaults are never submitted; unsupported forms are cancelled with a warning. Protocol v3 gates the approval variants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codex/mcpElicitation.test.ts:93"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "7c8848ebb054c1f4c1279f634633cddc37cb1fac",
@@ -8913,10 +9017,11 @@
     {
       "upstreamSha": "80c37f1a721d36bde86b31c475fcc8d3db75f706",
       "subject": "fix(web): hide opencode's plan agent when legacy plan mode is off (#6420)",
-      "reason": "Phase 1c (provider correctness): fix(web): hide opencode's plan agent when legacy plan mode is off. Reimplement in f5; not yet delivered.",
+      "reason": "The upstream legacy OpenCode Plan-mode emulation is absent. f5 retains its explicit Plan and workflow permission semantics.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:276"]
     },
     {
       "upstreamSha": "80c708a1fa8986bce0b2d1ba4d35e79d9e4094ba",
@@ -9105,10 +9210,12 @@
     {
       "upstreamSha": "82f64cd8d046ab4ee8588f7bcbc1e66a4a0c80fe",
       "subject": "fix(skills): support names beginning with digits (#9244)",
-      "reason": "Phase 1c (provider correctness): fix(skills): support names beginning with digits. Reimplement in f5; not yet delivered.",
+      "reason": "Cursor skill discovery retains digit-leading folder names and feeds the existing slash-command validator that supports them.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/CursorSkills.test.ts:20"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "831eb66fee91e397f5f8d6ae179408291e8f28b0",
@@ -10194,10 +10301,12 @@
     {
       "upstreamSha": "929f7e6479d00754dee4e4554b24b25478b8064d",
       "subject": "fix(shared): preserve Windows shell PATH priority (#8748)",
-      "reason": "Phase 1c: fix(shared): preserve Windows shell PATH priority. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Windows executable discovery already preserves inherited PATH priority before adding fallback directories.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["packages/shared/src/windowsPath.test.ts:1"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "92d4a2e996b19239d95e32a3feb05208e0a52306",
@@ -10329,10 +10438,12 @@
     {
       "upstreamSha": "94401d01b956828eaa989ff4a80046c20d7b6088",
       "subject": "fix(codex): accept Codex 0.150 account plans (#8447)",
-      "reason": "Phase 1c (provider correctness): fix(codex): accept Codex 0.150 account plans. Reimplement in f5; not yet delivered.",
+      "reason": "Codex account parsing retains planType strings without the upstream generated account-plan union, so newer paid plan names do not fail decoding.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:455"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "94696b0f54f467062a14aa800ee257a4801c2022",
@@ -10389,10 +10500,12 @@
     {
       "upstreamSha": "95139254ba98fb8ad12a001ebcbc9d4b833ead19",
       "subject": "fix(codex): accept misalignment policy errors on thread resume (#10373)",
-      "reason": "Phase 1c (provider correctness): fix(codex): accept misalignment policy errors on thread resume. Reimplement in f5; not yet delivered.",
+      "reason": "Codex thread responses use the existing permissive JSON-RPC boundary; new misalignment-policy error variants do not invalidate a generated thread schema.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:2186"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "9513e62e240bdf1da285e4f3304bc52787125671",
@@ -10432,18 +10545,26 @@
     {
       "upstreamSha": "955b787e6b9fb8666e84abfa6868671859d72f7e",
       "subject": "fix(server): parse CLI versions with a \"v\" prefix (#11738)",
-      "reason": "Phase 1c (provider correctness): fix(server): parse CLI versions with a \"v\" prefix. Reimplement in f5; not yet delivered.",
+      "reason": "Parse a leading v in provider CLI version output.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/providerSnapshot.test.ts:5"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "95834d68aa475a8afe4b2b14eaedffb35b590dab",
       "subject": "fix(server): disable executable capabilities in Claude metadata generation (#4169)",
-      "reason": "Phase 1c (provider correctness): fix(server): disable executable capabilities in Claude metadata generation. Reimplement in f5; not yet delivered.",
+      "reason": "Claude metadata uses an isolated temporary cwd, disables hooks, ordinary tools, slash commands and implicit MCP configuration, and no longer skips permissions. The pinned real CLI's structured-output path passes against a local API fixture; live authenticated inference remains unverified.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/git/Layers/ClaudeTextGeneration.ts:141",
+        "apps/server/integration/claudeMetadata.integration.test.ts:13",
+        "apps/server/src/git/Layers/ClaudeTextGeneration.test.ts:375"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "95d99373b74edfb3bfd092c61a15999a95727423",
@@ -10670,10 +10791,12 @@
     {
       "upstreamSha": "994bd7373cf3a335c204a617604e690ed4c00cba",
       "subject": "fix(cursor): honor auto and full access modes (#9283)",
-      "reason": "Phase 1c (provider correctness): fix(cursor): honor auto and full access modes. Reimplement in f5; not yet delivered.",
+      "reason": "Cursor auto-accept-edits launches with --auto-review, full access with --force, and read-only workflows retain approval-required behavior.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/CursorAcpSupport.ts:51"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "99960383d094b850f0001d3067fa604aa3adf7d6",
@@ -10751,10 +10874,12 @@
     {
       "upstreamSha": "9ab0635db6abb1abf15e664141a0f8b6f0c33eae",
       "subject": "fix(server): run OpenCode CLI commands sequentially (#10427)",
-      "reason": "Phase 1c (provider correctness): fix(server): run OpenCode CLI commands sequentially. Reimplement in f5; not yet delivered.",
+      "reason": "f5 inventory reads use the OpenCode SDK and one managed server instead of concurrently spawning CLI inventory queries against shared SQLite.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/opencodeRuntime.ts:159"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "9accc567670da5096e9a694c1adb0d35adb51d9d",
@@ -10815,10 +10940,12 @@
     {
       "upstreamSha": "9bf349cf6b3988dd01e2d9871b99e1be883aaa41",
       "subject": "fix(cursor): preserve internal agent errors without transport labels (#11365)",
-      "reason": "Phase 1c (provider correctness): fix(cursor): preserve internal agent errors without transport labels. Reimplement in f5; not yet delivered.",
+      "reason": "Exclude Cursor InternalError and quoted diagnostic prose from the standalone transport-failure detector.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/CursorTransportFailure.test.ts:22"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "9c7622dac3d1a385351e6c74354a9e6b9c2037d5",
@@ -11375,10 +11502,15 @@
     {
       "upstreamSha": "a434677eca737771dd64703545c13eb11ba92ce2",
       "subject": "fix(grok): health check, model selection, and stop all work against the real CLI (#9154)",
-      "reason": "Phase 1c (provider correctness): fix(grok): health check, model selection, and stop all work against the real CLI. Reimplement in f5; not yet delivered.",
+      "reason": "Grok uses bounded non-ACP health probes and native model aliases. Hard Stop cancels active/background work, idle Stop is a no-op, and late callbacks compare context identity so a resumed native session ID cannot corrupt its successor.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/GrokAdapter.test.ts:53"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "a43f9b45ae85caf37e0be8270ad3d27365ece2bd",
@@ -11443,10 +11575,15 @@
     {
       "upstreamSha": "a5bbad910f78cc14eef8baa94fe6f46676f78d5a",
       "subject": "fix(server): surface Claude safety model fallback notices instead of dropping them (#8853)",
-      "reason": "Phase 1c (provider correctness): fix(server): surface Claude safety model fallback notices instead of dropping them. Reimplement in f5; not yet delivered.",
+      "reason": "Claude model-refusal fallback notices now emit a provider runtime warning instead of being silently ignored.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeAdapter.ts:3515",
+        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:3421"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "a5d35321bd620400dc03ddf7a42ee2672b225ac3",
@@ -11608,10 +11745,12 @@
     {
       "upstreamSha": "a92161a05040c3fcaaa479f1b60d2d45cd368dd4",
       "subject": "fix(codex): preserve qualified model ids in selection and generation (#9921)",
-      "reason": "Phase 1c (provider correctness): fix(codex): preserve qualified model ids in selection and generation. Reimplement in f5; not yet delivered.",
+      "reason": "Model normalization aliases only exact known catalog names and otherwise preserves qualified IDs verbatim; Codex metadata generation consumes the selected model without stripping its provider prefix.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["packages/shared/src/model.ts:544"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "a924fbe08e681ef56d8cfb8b99e1e803d52aa463",
@@ -12001,18 +12140,25 @@
     {
       "upstreamSha": "afc8342801d487d96732fdad25454f0c1fe96a3b",
       "subject": "fix(grok): bound cumulative tool output updates (#7279)",
-      "reason": "Phase 1c (provider correctness): fix(grok): bound cumulative tool output updates. Reimplement in f5; not yet delivered.",
+      "reason": "ACP bounds text-bearing tool output, including Grok Result and MultiResult structures, and coalesces progress while preserving terminal and background-start events.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/acp/AcpRuntimeModel.test.ts:580"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "afca73d3683c99057ea8af1ad7d77511a0faf680",
       "subject": "fix(server): keep provider notification consumers alive past startSession (#6538)",
-      "reason": "Phase 1c: fix(server): keep provider notification consumers alive past startSession. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Fork Cursor and Grok notification consumers into the session scope so completion of the startup request does not interrupt them. Codex already owns its event listeners for the session lifetime.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/CursorAdapter.ts:978"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "aff9318bf46beaf05cc7155b428d3f0b8711efd2",
@@ -12218,10 +12364,12 @@
     {
       "upstreamSha": "b2e2ccfdb462c45a8de394ff9ff0f58a4a689900",
       "subject": "fix(server): preserve tool lifecycle identity (#7151)",
-      "reason": "Phase 1c: fix(server): preserve tool lifecycle identity. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing compact tool lifecycle payloads retain provider item identity, status and tool metadata on every lifecycle event.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/orchestration/Layers/ProviderRuntimeIngestion.ts:1151"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "b2ee17d7c1b1bdff543ffff43929d01b92a902f4",
@@ -12585,10 +12733,11 @@
     {
       "upstreamSha": "b7d6e65021b021207424c56cb32d6d711fd875fb",
       "subject": "fix(contracts): include tool.denied in runtime event types (#9770)",
-      "reason": "Phase 1c: fix(contracts): include tool.denied in runtime event types. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Upstream tool.denied literal-union repair does not apply: f5 represents denied tools through resolved approval decisions, not that event variant.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "not-applicable",
+      "plannedWorkstream": "1c",
+      "evidence": ["packages/contracts/src/providerRuntime.ts:171"]
     },
     {
       "upstreamSha": "b7dbbbaf6c394621cba57cf58dfcc1845f445ef6",
@@ -13165,10 +13314,12 @@
     {
       "upstreamSha": "bfef973d9ec64e580fff4197ac53085207471ffd",
       "subject": "fix(server): remove retired Codex models after refresh (#9773)",
-      "reason": "Phase 1c (provider correctness): fix(server): remove retired Codex models after refresh. Reimplement in f5; not yet delivered.",
+      "reason": "Successful inventory refreshes already drop missing provider models; retention is limited to loading or a bounded transient-failure window.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ProviderRegistry.ts:75"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "c0047c252f35875476e2478bb4df6af9dd6fcb6a",
@@ -13464,10 +13615,12 @@
     {
       "upstreamSha": "c29976458a7dbbb61c83b3d06ea894869b718607",
       "subject": "fix(server): open Cursor links in classic IDE mode (#11498)",
-      "reason": "Phase 1c (provider correctness): fix(server): open Cursor links in classic IDE mode. Reimplement in f5; not yet delivered.",
+      "reason": "Open files in the Cursor editor using --classic to avoid the agent CLI path.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/open.ts:95"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "c2aff911c37f94558ab273ca3d44bb4854d01714",
@@ -13994,10 +14147,12 @@
     {
       "upstreamSha": "cb49e5d7201ef6bcb288bf447785bbd374e8644d",
       "subject": "fix(opencode): handle child approvals, stops, and model catalogs (#8480)",
-      "reason": "Phase 1c (provider correctness): fix(opencode): handle child approvals, stops, and model catalogs. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode verifies child ancestry for approvals, resolves successful replies locally, stops descendants, and keeps SDK model/agent inventory and f5 workflow restrictions. The full-access once decision remains explicit rather than permanently granting tools.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.ts:69"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "cb58dfd6453171a88183fc7bf1587bae6929c0e4",
@@ -14407,10 +14562,12 @@
     {
       "upstreamSha": "d28077e585d5123b9a562f4ebef257969c81aa31",
       "subject": "fix(server): quote copied native provider update commands (#9856)",
-      "reason": "Phase 1c: fix(server): quote copied native provider update commands. Reimplement the applicable behavior in f5; not yet delivered.",
+      "reason": "Existing update command formatting quotes native executable paths and arguments for copying, with dedicated formatter tests.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/web/src/components/settings/providerStatus.ts:101"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "d29c56a5c404cb0f58d3b2ac41762fa0d0ac28d4",
@@ -14431,10 +14588,15 @@
     {
       "upstreamSha": "d2b6f3b9296f682c6158b894ab33d98d0c4bfb2b",
       "subject": "fix(server): full-access OpenCode threads no longer ask for approvals (#9282)",
-      "reason": "Phase 1c (provider correctness): fix(server): full-access OpenCode threads no longer ask for approvals. Reimplement in f5; not yet delivered.",
+      "reason": "OpenCode full-access permissions reply once only for live contexts and verified descendants, with workflow restrictions preserved. Teardown never auto-approves a late request.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:349"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "d2c3e2e5d7360b5d87f7516bdbce46b5c5444ef4",
@@ -14634,10 +14796,12 @@
     {
       "upstreamSha": "d5825e1d2fb1703ced2bbe2661f6a4937dd530bf",
       "subject": "fix(web): stop clipping the traits chevron on long Codex effort labels (#9433)",
-      "reason": "Phase 1c (provider correctness): fix(web): stop clipping the traits chevron on long Codex effort labels. Reimplement in f5; not yet delivered.",
+      "reason": "Truncate the Codex trait label separately so the dropdown chevron remains visible.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/web/src/components/chat/TraitsPicker.tsx:339"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "d5b94100863057fb4629f9ad4a35753d16917924",
@@ -14700,18 +14864,21 @@
     {
       "upstreamSha": "d6f291303ddc0c9a14f570266a4d9eff6d431593",
       "subject": "fix(server): surface ACP stderr when cursor-agent exits at session start (#12625)",
-      "reason": "Phase 1c (provider correctness): fix(server): surface ACP stderr when cursor-agent exits at session start. Reimplement in f5; not yet delivered.",
+      "reason": "Drain ACP stderr into a bounded 4 KiB tail and attach it to process-exit diagnostics; wait briefly for trailing stderr after exit.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["packages/effect-acp/src/client.ts:586"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "d715c2e56bb718d2225cc0f07cc65e6c637dc229",
       "subject": "fix(server): let slow provider CLIs raise their discovery probe budget (#6223)",
-      "reason": "Phase 1c (provider correctness): fix(server): let slow provider CLIs raise their discovery probe budget. Reimplement in f5; not yet delivered.",
+      "reason": "This commit actually bounds Azure DevOps discovery requests, not provider CLI probes. Retain it for the Phase 12b Azure DevOps adapter.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "12b",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "d76b24dd15a219666941ab1b4967d8f738adcda0",
@@ -14988,10 +15155,15 @@
     {
       "upstreamSha": "db02c6b9c9d5714ae3d519328cdd68c746f4cbad",
       "subject": "Skip user hooks during Claude capability probes (#4466)",
-      "reason": "Phase 1c (provider correctness): Skip user hooks during Claude capability probes. Reimplement in f5; not yet delivered.",
+      "reason": "Claude capability and usage probes disable user hooks and implicit MCP servers while retaining settings sources for command discovery.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeProvider.ts:419",
+        "apps/server/src/provider/Layers/ClaudeUsageProbe.test.ts:27"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "db0659fead9b7f29f4668c9ba3eb16702c2cff7f",
@@ -15062,10 +15234,12 @@
     {
       "upstreamSha": "dbc7bfa3f36cc61a3f1a2015e47d71ae9dee5421",
       "subject": "fix(opencode): show Reasoning selector for OpenCode models (#9287)",
-      "reason": "Phase 1c (provider correctness): fix(opencode): show Reasoning selector for OpenCode models. Reimplement in f5; not yet delivered.",
+      "reason": "Label OpenCode SDK model variants as Reasoning. f5 retains the SDK-advertised variant catalog instead of fabricating unsupported variants.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeProvider.ts:197"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "dbfd5173131deb1a7ad2a9438b8941ade43f9a89",
@@ -15084,10 +15258,11 @@
     {
       "upstreamSha": "dc0ff8f13eaa9753fdf0de60203c9e819f1cee27",
       "subject": "fix(server): allow install scripts in npm-global provider updates (#5646)",
-      "reason": "Phase 1c (provider correctness): fix(server): allow install scripts in npm-global provider updates. Reimplement in f5; not yet delivered.",
+      "reason": "Provider installer/update hardening belongs to Phase 14 distribution. f5 does not have the upstream automatic provider installer; preserve this record for that implementation instead of introducing an updater in the provider-correctness batch.",
       "reviewStatus": "reviewed",
       "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "plannedWorkstream": "14",
+      "evidence": ["docs/reviews/phase-one-claude-safety-validation.md:1"]
     },
     {
       "upstreamSha": "dc39615aec702ea6d402168f80b4d1613f4f2e0f",
@@ -15266,10 +15441,12 @@
     {
       "upstreamSha": "de6a230db0bb71d3fa91d8de0ae7067b68253f82",
       "subject": "fix(acp): accept SDK elicitation requests (#11294)",
-      "reason": "Phase 1c (provider correctness): fix(acp): accept SDK elicitation requests. Reimplement in f5; not yet delivered.",
+      "reason": "Accept the ACP elicitation/create SDK alias and elicitation/complete notifications alongside existing session elicitation.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["packages/effect-acp/src/rpc.ts:105"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "deb901d6381e0c86ef326946c8fb45ee323db708",
@@ -15288,10 +15465,12 @@
     {
       "upstreamSha": "dedcd99a9d16240327ce763b885b326aff607bdb",
       "subject": "fix(web): keep Codex service tier labels readable (#4503)",
-      "reason": "Phase 1c (provider correctness): fix(web): keep Codex service tier labels readable. Reimplement in f5; not yet delivered.",
+      "reason": "Trait labels already render the current label for every select descriptor, including service tier, while the separate fast-mode indicator retains its existing behavior.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/web/src/components/chat/TraitsPicker.tsx:308"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "df19f6cfe3046dbbeb4073a3aac4c12f991b8fc7",
@@ -15897,10 +16076,12 @@
     {
       "upstreamSha": "e7f6a30caba5c390d5bbc9c300de89b68601c057",
       "subject": "fix(server): stop probing Grok, Cursor, and OpenCode unless turned on (#7459)",
-      "reason": "Phase 1c (provider correctness): fix(server): stop probing Grok, Cursor, and OpenCode unless turned on. Reimplement in f5; not yet delivered.",
+      "reason": "Disabled provider instances return before CLI or SDK probes; Cursor enrichment also checks enabled/auth state.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeProvider.ts:263"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "e816064945144957b6eb9b268912a98b0555644b",
@@ -15980,10 +16161,15 @@
     {
       "upstreamSha": "e9e46972fbabdee0eb39cbd86470a5b5f5f26910",
       "subject": "fix(claude): make \"Always allow for session\" stick, and only for the session (#5041)",
-      "reason": "Phase 1c (provider correctness): fix(claude): make \"Always allow for session\" stick, and only for the session. Reimplement in f5; not yet delivered.",
+      "reason": "Claude session consent uses only SDK-suggested rules, with destination forced to session. Missing suggestions fall back to accept-once and never create a tool-wide allow rule.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:5182"],
+      "f5Shas": [
+        "5d48a79b409bf4790864f0112061877c5572d931",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "e9f50c3efcb02a199042364ead292e164274e716",
@@ -16384,10 +16570,12 @@
     {
       "upstreamSha": "efb96939fbb135b9f4de3bff19447200b178b23a",
       "subject": "fix(codex): surface app permission requests as approvable (#7861)",
-      "reason": "Phase 1c (provider correctness): fix(codex): surface app permission requests as approvable. Reimplement in f5; not yet delivered.",
+      "reason": "Codex permissions approvals already return requested permissions only on acceptance and session scope only for accept-for-session; declines return an empty permission set.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:309"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "efccda9ac9230db22b36990cffabdad218fa41b0",
@@ -17038,10 +17226,15 @@
     {
       "upstreamSha": "f86c5e8c8700b76250ed1073700a5b9db47e2d57",
       "subject": "fix(server): skip IDE detection in Claude probes (#8634)",
-      "reason": "Phase 1c (provider correctness): fix(server): skip IDE detection in Claude probes. Reimplement in f5; not yet delivered.",
+      "reason": "Claude probes disable IDE discovery, auto-connect and auto-install, overriding inherited IDE detection flags.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "ported",
+      "plannedWorkstream": "1c",
+      "evidence": [
+        "apps/server/src/provider/Layers/ClaudeProvider.ts:423",
+        "apps/server/src/provider/Layers/ClaudeUsageProbe.test.ts:27"
+      ],
+      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
     },
     {
       "upstreamSha": "f87ecf0cc307f974745da8eea856fab5711023f3",
@@ -17106,10 +17299,12 @@
     {
       "upstreamSha": "f925d639421844f02b3166d29281905dbba6d529",
       "subject": "fix(codex): accept Codex 0.150 multi-agent events (#8346)",
-      "reason": "Phase 1c (provider correctness): fix(codex): accept Codex 0.150 multi-agent events. Reimplement in f5; not yet delivered.",
+      "reason": "f5 reads Codex notification payloads without upstream generated multi-agent unions; unknown native event kinds remain diagnostic rather than invalidating thread responses.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "1c"
+      "disposition": "equivalent",
+      "plannedWorkstream": "1c",
+      "evidence": ["apps/server/src/codexAppServerManager.ts:1708"],
+      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
     },
     {
       "upstreamSha": "f93aafcc2c166128070b32259e827f15bc2a1d82",

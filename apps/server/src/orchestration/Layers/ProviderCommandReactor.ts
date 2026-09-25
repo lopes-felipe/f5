@@ -244,13 +244,15 @@ function isUnknownPendingApprovalRequestError(cause: Cause.Cause<ProviderService
     const detail = error.detail.toLowerCase();
     return (
       detail.includes("unknown pending approval request") ||
-      detail.includes("unknown pending permission request")
+      detail.includes("unknown pending permission request") ||
+      detail.includes("unknown pending codex approval request")
     );
   }
-  const message = Cause.pretty(cause);
+  const message = Cause.pretty(cause).toLowerCase();
   return (
     message.includes("unknown pending approval request") ||
-    message.includes("unknown pending permission request")
+    message.includes("unknown pending permission request") ||
+    message.includes("unknown pending codex approval request")
   );
 }
 
@@ -1512,10 +1514,71 @@ const make = Effect.gen(function* () {
     // session has no in-memory active turn, so a session-only interrupt would be
     // a silent no-op.
     const activeTurnId = event.payload.turnId ?? thread.session?.activeTurnId ?? undefined;
-    yield* providerService.interruptTurn({
-      threadId: event.payload.threadId,
-      ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
-    });
+    yield* providerService
+      .interruptTurn({
+        threadId: event.payload.threadId,
+        ...(activeTurnId !== undefined ? { turnId: activeTurnId } : {}),
+      })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            if (Cause.hasInterruptsOnly(cause)) return yield* Effect.failCause(cause);
+            const latest = yield* resolveThread(event.payload.threadId);
+            const session = latest?.session;
+            if (
+              !session ||
+              session.status === "stopped" ||
+              session.status === "ready" ||
+              (activeTurnId !== undefined &&
+                session.activeTurnId !== null &&
+                session.activeTurnId !== activeTurnId)
+            )
+              return;
+            const detail = Cause.pretty(cause);
+            yield* appendProviderFailureActivity({
+              threadId: event.payload.threadId,
+              kind: "provider.turn.interrupt.failed",
+              summary: "Provider turn interrupt failed",
+              detail,
+              turnId: activeTurnId ?? null,
+              createdAt: event.payload.createdAt,
+            });
+            // Closing the session is the fallback for a failed native interrupt. Do
+            // not claim it stopped if cleanup fails or a newer turn has taken over.
+            const stopped = yield* providerService
+              .stopSession({ threadId: event.payload.threadId })
+              .pipe(Effect.result);
+            if (stopped._tag === "Failure") {
+              yield* Effect.logWarning("provider session cleanup failed after interrupt", {
+                threadId: event.payload.threadId,
+                cause: stopped.failure,
+              });
+              return;
+            }
+            const after = (yield* resolveThread(event.payload.threadId))?.session;
+            if (
+              !after ||
+              after.status === "stopped" ||
+              after.status === "ready" ||
+              (activeTurnId !== undefined &&
+                after.activeTurnId !== null &&
+                after.activeTurnId !== activeTurnId)
+            )
+              return;
+            yield* setThreadSession({
+              threadId: event.payload.threadId,
+              session: {
+                ...after,
+                status: "stopped",
+                activeTurnId: null,
+                lastError: detail,
+                updatedAt: event.payload.createdAt,
+              },
+              createdAt: event.payload.createdAt,
+            });
+          }),
+        ),
+      );
   });
 
   const processApprovalResponseRequested = Effect.fnUntraced(function* (

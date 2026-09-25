@@ -261,7 +261,7 @@ export function buildAgentActivityIndex(
             description: tool?.subagentDescription ?? null,
             prompt: tool?.subagentPrompt ?? null,
             result: tool?.subagentResult ?? null,
-            model: tool?.subagentModel ?? null,
+            model: tool?.subagentModel ?? asTrimmedString(payload?.model),
           });
         }
         continue;
@@ -292,7 +292,7 @@ export function buildAgentActivityIndex(
         result:
           tool?.subagentResult ??
           (activity.kind === "task.completed" ? asTrimmedString(payload?.detail) : null),
-        model: tool?.subagentModel ?? null,
+        model: tool?.subagentModel ?? asTrimmedString(payload?.model),
       });
     }
   }

@@ -1,11 +1,10 @@
 import type { GrokSettings, ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
 import { createModelCapabilities } from "@t3tools/shared/model";
-import { Cause, Effect, Exit, Option, Result } from "effect";
-import type * as EffectAcpSchema from "effect-acp/schema";
+import { Effect, Option, Result } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 import { resolveInvocationEffect } from "../../spawn/resolveCommand.ts";
 
-import { makeGrokAcpRuntime, resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
+import { resolveGrokAcpBaseModelId } from "../acp/GrokAcpSupport.ts";
 import {
   buildServerProvider,
   detailFromResult,
@@ -17,7 +16,7 @@ import {
 } from "../providerSnapshot.ts";
 
 const VERSION_PROBE_TIMEOUT_MS = 4_000;
-const GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
+const GROK_MODELS_TIMEOUT_MS = 8_000;
 
 const GROK_PRESENTATION = {
   displayName: "Grok",
@@ -80,54 +79,32 @@ function grokModelsFromSettings(
   return providerModelsFromSettings(builtInModels, "grok", customModels ?? [], EMPTY_CAPABILITIES);
 }
 
-function buildGrokDiscoveredModelsFromSessionModelState(
-  modelState: EffectAcpSchema.SessionModelState | null | undefined,
-): ReadonlyArray<ServerProviderModel> {
-  if (!modelState || modelState.availableModels.length === 0) {
-    return [];
+/** Health checks must not authenticate ACP or start workspace MCP servers. */
+export function parseGrokModelsCliOutput(output: string) {
+  const authenticated = /not authenticated|not logged in/i.test(output)
+    ? false
+    : /you are logged in/i.test(output)
+      ? true
+      : null;
+  const models = new Map<string, ServerProviderModel>();
+  for (const line of output.split(/\r?\n/)) {
+    const match = /^\s*[*-]\s+(grok-[a-z0-9._-]+)(?:\s|$)/i.exec(line);
+    if (!match?.[1]) continue;
+    const slug = resolveGrokAcpBaseModelId(match[1]);
+    if (!models.has(slug))
+      models.set(slug, { slug, name: slug, isCustom: false, capabilities: EMPTY_CAPABILITIES });
   }
-  const seen = new Set<string>();
-  return modelState.availableModels.flatMap((model) => {
-    const slug = resolveGrokAcpBaseModelId(model.modelId);
-    if (!slug || seen.has(slug)) {
-      return [];
-    }
-    seen.add(slug);
-    return [
-      {
-        slug,
-        name: model.name.trim() || slug,
-        isCustom: false,
-        capabilities: EMPTY_CAPABILITIES,
-      } satisfies ServerProviderModel,
-    ];
-  });
+  return { authenticated, models: [...models.values()] };
 }
 
-const discoverGrokModelsViaAcp = (
+const runGrokCliCommand = (
   grokSettings: GrokSettings,
-  environment: NodeJS.ProcessEnv = process.env,
-) =>
-  Effect.gen(function* () {
-    const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const acp = yield* makeGrokAcpRuntime({
-      grokSettings,
-      environment,
-      childProcessSpawner,
-      cwd: process.cwd(),
-      clientInfo: { name: "t3-code-provider-probe", version: "0.0.0" },
-    });
-    const started = yield* acp.start();
-    return buildGrokDiscoveredModelsFromSessionModelState(started.sessionSetupResult.models);
-  }).pipe(Effect.scoped);
-
-const runGrokVersionCommand = (
-  grokSettings: GrokSettings,
-  environment: NodeJS.ProcessEnv = process.env,
+  args: ReadonlyArray<string>,
+  environment: NodeJS.ProcessEnv,
 ) =>
   Effect.gen(function* () {
     const command = grokSettings.binaryPath || "grok";
-    const invocation = yield* resolveInvocationEffect(command, ["--version"], environment);
+    const invocation = yield* resolveInvocationEffect(command, args, environment);
     return yield* spawnAndCollect(
       command,
       ChildProcess.make(invocation.file, [...invocation.args], {
@@ -159,7 +136,7 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const versionResult = yield* runGrokVersionCommand(grokSettings, environment).pipe(
+  const versionResult = yield* runGrokCliCommand(grokSettings, ["--version"], environment).pipe(
     Effect.timeoutOption(VERSION_PROBE_TIMEOUT_MS),
     Effect.result,
   );
@@ -223,62 +200,44 @@ export const checkGrokProviderStatus = Effect.fn("checkGrokProviderStatus")(func
     });
   }
 
-  const discoveryExit = yield* discoverGrokModelsViaAcp(grokSettings, environment).pipe(
-    Effect.timeoutOption(GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS),
-    Effect.exit,
+  const modelsResult = yield* runGrokCliCommand(grokSettings, ["models"], environment).pipe(
+    Effect.timeoutOption(GROK_MODELS_TIMEOUT_MS),
+    Effect.result,
   );
-  if (Exit.isFailure(discoveryExit)) {
-    const detail = Cause.pretty(discoveryExit.cause);
-    yield* Effect.logWarning("Grok ACP model discovery failed", { cause: detail });
-    return buildServerProvider({
-      presentation: GROK_PRESENTATION,
-      enabled: grokSettings.enabled,
-      checkedAt,
-      models: fallbackModels,
-      probe: {
-        installed: true,
-        version,
-        status: "error",
-        auth: { status: "unknown" },
-        message: `Grok CLI is installed but ACP startup failed. ${detail}`,
-      },
-    });
-  }
-  if (Option.isNone(discoveryExit.value)) {
-    yield* Effect.logWarning(
-      `Grok ACP model discovery timed out after ${GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
-    );
-    return buildServerProvider({
-      presentation: GROK_PRESENTATION,
-      enabled: grokSettings.enabled,
-      checkedAt,
-      models: fallbackModels,
-      probe: {
-        installed: true,
-        version,
-        status: "error",
-        auth: { status: "unknown" },
-        message: `Grok CLI is installed but ACP startup timed out after ${GROK_ACP_MODEL_DISCOVERY_TIMEOUT_MS}ms.`,
-      },
-    });
-  }
-
-  const discoveredModels = discoveryExit.value.value;
-  const models =
-    discoveredModels.length > 0
-      ? grokModelsFromSettings(grokSettings.customModels, discoveredModels)
-      : fallbackModels;
-
+  const result =
+    Result.isSuccess(modelsResult) && Option.isSome(modelsResult.success)
+      ? modelsResult.success.value
+      : undefined;
+  const parsed =
+    result?.code === 0 ? parseGrokModelsCliOutput(`${result.stdout}\n${result.stderr}`) : undefined;
+  const authenticated = environment.XAI_API_KEY?.trim() ? true : parsed?.authenticated;
   return buildServerProvider({
     presentation: GROK_PRESENTATION,
-    enabled: grokSettings.enabled,
+    enabled: true,
     checkedAt,
-    models,
+    models: parsed?.models.length
+      ? grokModelsFromSettings(grokSettings.customModels, parsed.models)
+      : fallbackModels,
     probe: {
       installed: true,
       version,
-      status: "ready",
-      auth: { status: "unknown" },
+      status: authenticated === true && parsed ? "ready" : "warning",
+      auth: {
+        status:
+          authenticated === true
+            ? "authenticated"
+            : authenticated === false
+              ? "unauthenticated"
+              : "unknown",
+      },
+      ...(authenticated === false
+        ? { message: "Grok is not logged in. Run `grok login` in a terminal." }
+        : !parsed
+          ? {
+              message:
+                "Grok is installed, but the model and login check did not complete. Refresh to retry.",
+            }
+          : {}),
     },
   });
 });

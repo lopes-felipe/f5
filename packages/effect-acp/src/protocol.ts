@@ -31,7 +31,7 @@ export type AcpIncomingNotification =
     }
   | {
       readonly _tag: "ElicitationComplete";
-      readonly method: typeof CLIENT_METHODS.session_elicitation_complete;
+      readonly method: typeof CLIENT_METHODS.session_elicitation_complete | "elicitation/complete";
       readonly params: typeof AcpSchema.ElicitationCompleteNotification.Type;
     }
   | {
@@ -312,20 +312,24 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
           Effect.flatMap(dispatchNotification),
         );
       }
-      if (message.tag === CLIENT_METHODS.session_elicitation_complete) {
+      if (
+        message.tag === CLIENT_METHODS.session_elicitation_complete ||
+        message.tag === "elicitation/complete"
+      ) {
+        const method = message.tag;
         return decodeElicitationComplete(message.payload).pipe(
           Effect.map(
             (params) =>
               ({
                 _tag: "ElicitationComplete",
-                method: CLIENT_METHODS.session_elicitation_complete,
+                method,
                 params,
               }) satisfies AcpIncomingNotification,
           ),
           Effect.mapError(
             (cause) =>
               new AcpError.AcpProtocolParseError({
-                detail: `Invalid ${CLIENT_METHODS.session_elicitation_complete} notification payload`,
+                detail: `Invalid ${method} notification payload`,
                 cause,
               }),
           ),

@@ -718,6 +718,25 @@ it.effect(
 );
 
 routing.layer("ProviderServiceLive routing", (it) => {
+  it.effect("does not recover an idle or stopped binding just to interrupt", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("stop-without-recovery");
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      yield* routing.codex.stopAll();
+      routing.codex.startSession.mockClear();
+      yield* provider.interruptTurn({ threadId });
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+      yield* provider.stopSession({ threadId });
+      yield* provider.interruptTurn({ threadId });
+      assert.equal(routing.codex.startSession.mock.calls.length, 0);
+    }),
+  );
+
   it.effect("adds authorized local attachment paths only at the adapter boundary", () => {
     const codex = makeFakeCodexAdapter("codex");
     const layer = makeProviderServiceLayerForAdapters(new Map([["codex", codex.adapter]]));

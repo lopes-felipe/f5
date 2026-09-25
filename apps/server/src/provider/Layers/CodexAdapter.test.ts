@@ -866,6 +866,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
             kind: "interacted",
             agentThreadId: "agent-thread-1",
             agentPath: "/root/reviewer",
+            model: "openai.gpt-6-sol",
           },
         },
       } satisfies ProviderEvent);
@@ -887,6 +888,7 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
           kind: "interacted",
           agentThreadId: "agent-thread-1",
           agentPath: "/root/reviewer",
+          model: "openai.gpt-6-sol",
         });
       }
     }),
@@ -1935,6 +1937,39 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
         return;
       }
       assert.equal(firstEvent.value.payload.requestType, "file_read_approval");
+    }),
+  );
+
+  it.effect("lists at most twenty patch approval paths with an overflow count", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const next = yield* Stream.runHead(adapter.streamEvents).pipe(Effect.forkChild);
+      lifecycleManager.emit("event", {
+        id: asEventId("patch-paths"),
+        kind: "request",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "applyPatchApproval",
+        requestId: ApprovalRequestId.makeUnsafe("patch-paths"),
+        payload: {
+          reason: " ",
+          fileChanges: Object.fromEntries(
+            Array.from({ length: 22 }, (_, i) => [
+              `file-${String(i).padStart(2, "0")}.ts`,
+              { type: "update", ...(i === 0 ? { move_path: "renamed.ts" } : {}) },
+            ]),
+          ),
+        },
+      });
+      const event = yield* Fiber.join(next);
+      assert.equal(event._tag, "Some");
+      if (event._tag !== "Some" || event.value.type !== "request.opened") return;
+      const lines = event.value.payload.detail?.split("\n");
+      assert.equal(lines?.length, 21);
+      assert.equal(lines?.[0], "update file-00.ts -> renamed.ts");
+      assert.equal(lines?.[20], "+2 more");
+      assert.ok(!event.value.payload.detail?.includes("file-20.ts"));
     }),
   );
 

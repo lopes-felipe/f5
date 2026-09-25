@@ -11,7 +11,7 @@ import {
   TrimmedNonEmptyString,
   TurnId,
 } from "./baseSchemas";
-import { ProviderKind, ProviderRequestKind } from "./orchestration";
+import { ProviderKind, ProviderRequestKind, ProviderApprovalOption } from "./orchestration";
 import { ProviderInstanceId } from "./providerInstance";
 import { TOOL_LIFECYCLE_ITEM_TYPES } from "./toolLifecycle";
 
@@ -132,6 +132,7 @@ export const CanonicalRequestType = Schema.Literals([
   "apply_patch_approval",
   "exec_command_approval",
   "permissions_approval",
+  "mcp_elicitation_approval",
   "tool_user_input",
   "dynamic_tool_call",
   "auth_tokens_refresh",
@@ -417,6 +418,8 @@ const ContentDeltaPayload = Schema.Struct({
 export type ContentDeltaPayload = typeof ContentDeltaPayload.Type;
 
 const RequestOpenedPayload = Schema.Struct({
+  appName: Schema.optional(Schema.String),
+  approvalOptions: Schema.optional(Schema.Array(ProviderApprovalOption)),
   requestType: CanonicalRequestType,
   detail: Schema.optional(TrimmedNonEmptyStringSchema),
   args: Schema.optional(Schema.Unknown),
@@ -457,6 +460,7 @@ const UserInputResolvedPayload = Schema.Struct({
 export type UserInputResolvedPayload = typeof UserInputResolvedPayload.Type;
 
 const TaskStartedPayload = Schema.Struct({
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
   taskId: RuntimeTaskId,
   description: Schema.optional(TrimmedNonEmptyStringSchema),
   taskType: Schema.optional(TrimmedNonEmptyStringSchema),
@@ -464,6 +468,7 @@ const TaskStartedPayload = Schema.Struct({
 export type TaskStartedPayload = typeof TaskStartedPayload.Type;
 
 const TaskProgressPayload = Schema.Struct({
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
   taskId: RuntimeTaskId,
   description: TrimmedNonEmptyStringSchema,
   usage: Schema.optional(Schema.Unknown),
@@ -562,6 +567,7 @@ export const SubagentActivityKind = Schema.Literals([
 export type SubagentActivityKind = typeof SubagentActivityKind.Type;
 
 const SubagentActivityPayload = Schema.Struct({
+  model: Schema.optional(TrimmedNonEmptyStringSchema),
   kind: SubagentActivityKind,
   agentThreadId: TrimmedNonEmptyStringSchema,
   agentPath: TrimmedNonEmptyStringSchema,

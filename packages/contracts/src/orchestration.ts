@@ -152,6 +152,7 @@ export const ProviderRequestKind = Schema.Literals([
   "file-read",
   "file-change",
   "permission",
+  "mcp-elicitation",
   "unknown",
 ]);
 export type ProviderRequestKind = typeof ProviderRequestKind.Type;
@@ -160,10 +161,16 @@ export type AssistantDeliveryMode = typeof AssistantDeliveryMode.Type;
 export const ProviderApprovalDecision = Schema.Literals([
   "accept",
   "acceptForSession",
+  "acceptAlways",
   "decline",
   "cancel",
 ]);
 export type ProviderApprovalDecision = typeof ProviderApprovalDecision.Type;
+export const ProviderApprovalOption = Schema.Struct({
+  decision: ProviderApprovalDecision,
+  label: Schema.String,
+});
+export type ProviderApprovalOption = typeof ProviderApprovalOption.Type;
 export const ProviderUserInputAnswers = Schema.Record(Schema.String, Schema.Unknown);
 export type ProviderUserInputAnswers = typeof ProviderUserInputAnswers.Type;
 

@@ -6047,6 +6047,7 @@ export default function ChatView({
                         <ComposerPendingApprovalActions
                           requestId={activePendingApproval.requestId}
                           requestKind={activePendingApproval.requestKind}
+                          approvalOptions={activePendingApproval.approvalOptions}
                           canApprove={
                             activePendingApproval.requestKind !== "permission" ||
                             activePendingApproval.requestedPermissions !== undefined

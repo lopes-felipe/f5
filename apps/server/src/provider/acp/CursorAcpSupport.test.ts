@@ -51,6 +51,15 @@ const parameterizedGpt54ConfigOptions: ReadonlyArray<EffectAcpSchema.SessionConf
 ];
 
 describe("buildCursorAcpSpawnInput", () => {
+  it.each([
+    ["auto", ["--auto-review", "acp"]],
+    ["full-access", ["--force", "acp"]],
+    ["approval-required", ["acp"]],
+    ["auto-accept-edits", ["acp"]],
+  ] as const)("passes the native policy for %s", (mode, args) => {
+    expect(buildCursorAcpSpawnInput(undefined, "/tmp/project", undefined, mode).args).toEqual(args);
+  });
+
   it("builds the default Cursor ACP command", () => {
     expect(buildCursorAcpSpawnInput(undefined, "/tmp/project")).toEqual({
       command: "agent",

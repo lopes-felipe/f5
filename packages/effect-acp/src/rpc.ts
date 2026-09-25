@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import * as Rpc from "effect/unstable/rpc/Rpc";
 import * as RpcGroup from "effect/unstable/rpc/RpcGroup";
 
@@ -100,6 +101,19 @@ export const ElicitationRpc = Rpc.make(CLIENT_METHODS.session_elicitation, {
   error: AcpSchema.Error,
 });
 
+// SDK alias has a flat response; retain the older nested session API too.
+export const CreateElicitationRpc = Rpc.make("elicitation/create", {
+  payload: Schema.Json,
+  success: Schema.Struct({
+    action: Schema.Literals(["accept", "decline", "cancel"]),
+    content: Schema.optionalKey(
+      Schema.NullOr(Schema.Record(Schema.String, AcpSchema.ElicitationContentValue)),
+    ),
+    _meta: AcpSchema.ElicitationResponse.fields._meta,
+  }),
+  error: AcpSchema.Error,
+});
+
 export const CreateTerminalRpc = Rpc.make(CLIENT_METHODS.terminal_create, {
   payload: AcpSchema.CreateTerminalRequest,
   success: AcpSchema.CreateTerminalResponse,
@@ -150,6 +164,7 @@ export const ClientRpcs = RpcGroup.make(
   WriteTextFileRpc,
   RequestPermissionRpc,
   ElicitationRpc,
+  CreateElicitationRpc,
   CreateTerminalRpc,
   TerminalOutputRpc,
   ReleaseTerminalRpc,

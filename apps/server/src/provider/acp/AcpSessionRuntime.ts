@@ -28,6 +28,7 @@ import {
 
 import {
   collectSessionConfigOptionValues,
+  decideToolCallUpdateEmission,
   extractModelConfigId,
   findSessionConfigOption,
   mergeToolCallState,
@@ -235,6 +236,7 @@ const makeAcpSessionRuntime = (
     const eventQueue = yield* Queue.unbounded<AcpRuntimeQueueEntry>();
     const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
     const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallState>());
+    const toolEmissions = new Map<string, { length: number | undefined; skipped: number }>();
     const assistantSegmentRef = yield* Ref.make<AcpAssistantSegmentState>({ nextSegmentIndex: 0 });
     const configOptionsRef = yield* Ref.make(sessionConfigOptionsFromSetup(undefined));
     const startStateRef = yield* Ref.make<AcpStartState>({ _tag: "NotStarted" });
@@ -335,6 +337,7 @@ const makeAcpSessionRuntime = (
           queue: eventQueue,
           modeStateRef,
           toolCallsRef,
+          toolEmissions,
           assistantSegmentRef,
           params: notification,
           ...(hardeningEnabled
@@ -776,49 +779,45 @@ const makeAcpSessionRuntime = (
       return yield* effect;
     });
 
-    const getEvents = hardeningEnabled
-      ? () =>
-          Stream.fromQueue(eventQueue).pipe(
-            Stream.mapEffect((entry) => {
-              if (entry._tag !== "EventBarrier") {
-                return Effect.succeed<AcpParsedSessionEvent | undefined>(entry);
-              }
-              return Deferred.succeed(entry.acknowledgement, undefined).pipe(
-                Effect.as<AcpParsedSessionEvent | undefined>(undefined),
-              );
-            }),
-            Stream.filter((entry): entry is AcpParsedSessionEvent => entry !== undefined),
-          )
-      : () => Stream.fromQueue(eventQueue as unknown as Queue.Queue<AcpParsedSessionEvent>);
-
-    const awaitEventBarrier = hardeningEnabled
-      ? Effect.gen(function* () {
-          const acknowledgement = yield* Deferred.make<void>();
-          yield* Queue.offer(eventQueue, {
-            _tag: "EventBarrier",
-            acknowledgement,
-          });
-          const timeoutMs = Math.max(
-            1,
-            options.hardening?.eventBarrierTimeoutMs ?? DEFAULT_EVENT_BARRIER_TIMEOUT_MS,
-          );
-          const acknowledged = yield* Effect.raceFirst(
-            Deferred.await(acknowledgement).pipe(Effect.as(true)),
-            Effect.sleep(`${timeoutMs} millis`).pipe(Effect.as(false)),
-          );
-          if (!acknowledged) {
-            yield* Effect.logWarning("ACP event barrier timed out; notification drain is stalled", {
-              provider: hardeningProvider,
-              timeoutMs,
-            });
+    const getEvents = () =>
+      Stream.fromQueue(eventQueue).pipe(
+        Stream.mapEffect((entry) => {
+          if (entry._tag !== "EventBarrier") {
+            return Effect.succeed<AcpParsedSessionEvent | undefined>(entry);
           }
-        }).pipe(
-          withMetrics({
-            counter: acpEventBarrierTotal,
-            attributes: providerMetricAttributes(hardeningProvider),
-          }),
-        )
-      : Effect.void;
+          return Deferred.succeed(entry.acknowledgement, undefined).pipe(
+            Effect.as<AcpParsedSessionEvent | undefined>(undefined),
+          );
+        }),
+        Stream.filter((entry): entry is AcpParsedSessionEvent => entry !== undefined),
+      );
+
+    const awaitEventBarrier = Effect.gen(function* () {
+      const acknowledgement = yield* Deferred.make<void>();
+      yield* Queue.offer(eventQueue, {
+        _tag: "EventBarrier",
+        acknowledgement,
+      });
+      const timeoutMs = Math.max(
+        1,
+        options.hardening?.eventBarrierTimeoutMs ?? DEFAULT_EVENT_BARRIER_TIMEOUT_MS,
+      );
+      const acknowledged = yield* Effect.raceFirst(
+        Deferred.await(acknowledgement).pipe(Effect.as(true)),
+        Effect.sleep(`${timeoutMs} millis`).pipe(Effect.as(false)),
+      );
+      if (!acknowledged) {
+        yield* Effect.logWarning("ACP event barrier timed out; notification drain is stalled", {
+          provider: hardeningProvider,
+          timeoutMs,
+        });
+      }
+    }).pipe(
+      withMetrics({
+        counter: acpEventBarrierTotal,
+        attributes: providerMetricAttributes(hardeningProvider),
+      }),
+    );
 
     return {
       handleRequestPermission: acp.handleRequestPermission,
@@ -937,6 +936,7 @@ const handleSessionUpdate = ({
   queue,
   modeStateRef,
   toolCallsRef,
+  toolEmissions,
   assistantSegmentRef,
   params,
   onActivity,
@@ -944,6 +944,7 @@ const handleSessionUpdate = ({
   readonly queue: Queue.Queue<AcpRuntimeQueueEntry>;
   readonly modeStateRef: Ref.Ref<AcpSessionModeState | undefined>;
   readonly toolCallsRef: Ref.Ref<Map<string, AcpToolCallState>>;
+  readonly toolEmissions: Map<string, { length: number | undefined; skipped: number }>;
   readonly assistantSegmentRef: Ref.Ref<AcpAssistantSegmentState>;
   readonly params: EffectAcpSchema.SessionNotification;
   readonly onActivity?: Effect.Effect<void>;
@@ -973,9 +974,21 @@ const handleSessionUpdate = ({
           }
           return [{ previous, merged: nextToolCall }, next] as const;
         });
-        if (!shouldEmitToolCallUpdate(previous, merged)) {
-          continue;
-        }
+        const last = toolEmissions.get(merged.toolCallId);
+        const decision = decideToolCallUpdateEmission({
+          previous,
+          next: merged,
+          lastEmittedDetailLength: last?.length,
+          skippedSinceEmit: last?.skipped ?? 0,
+        });
+        if (merged.status === "completed" || merged.status === "failed")
+          toolEmissions.delete(merged.toolCallId);
+        else
+          toolEmissions.set(merged.toolCallId, {
+            length: decision.emit ? merged.detail?.length : last?.length,
+            skipped: decision.skippedSinceEmit,
+          });
+        if (!decision.emit) continue;
         yield* Queue.offer(queue, {
           _tag: "ToolCallUpdated",
           toolCall: merged,
@@ -1016,19 +1029,6 @@ function updateModeState(modeState: AcpSessionModeState, nextModeId: string): Ac
         currentModeId: normalized,
       }
     : modeState;
-}
-
-function shouldEmitToolCallUpdate(
-  previous: AcpToolCallState | undefined,
-  next: AcpToolCallState,
-): boolean {
-  if (next.status === "completed" || next.status === "failed") {
-    return true;
-  }
-  if (!next.detail) {
-    return false;
-  }
-  return previous === undefined || previous.title !== next.title || previous.detail !== next.detail;
 }
 
 const assistantItemId = (sessionId: string, segmentIndex: number) =>
