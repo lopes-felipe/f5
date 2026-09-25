@@ -135,12 +135,15 @@
     {
       "upstreamSha": "01f3e50eca5102ccd881de6f942a98fe6a518ad4",
       "subject": "fix(server): unblock OpenCode approvals and stop (#9653)",
-      "reason": "OpenCode reconciles pending interactions, allows todo bookkeeping, resolves successful replies locally, and clears interrupted turns without depending on an idle event. SSE termination fails the session instead of leaving it running.",
+      "reason": "OpenCode resolves successful interaction replies locally, keeps failed replies retryable, and stops without requiring idle. An interrupt marker makes racing idle/error events abort the turn; teardown refuses late auto-approvals.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.ts:611"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:269"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "01fc7d228dd6794ffb35b57752d0218559de5e89",
@@ -637,12 +640,15 @@
     {
       "upstreamSha": "087cfb8ae262f344f7e409f5a8c0eda6f0ef12f9",
       "subject": "fix(cursor): discover symlinked skills as package boundaries (#9420)",
-      "reason": "Cursor discovers symlinked skill packages with cycle detection and bounded traversal; project skills win name collisions.",
+      "reason": "Cursor follows linked skill packages with bounded traversal and cycle detection, preserves project precedence, and stops descending once a package contains SKILL.md so examples cannot become commands.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/acp/CursorSkills.ts:8"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/acp/CursorSkills.test.ts:23"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "0882431e0fc0fabe950743dd44b674a07a584bc9",
@@ -5446,12 +5452,15 @@
     {
       "upstreamSha": "4ca71463a289e7b96b5776b6f6bbdecefe4757e4",
       "subject": "fix(opencode): revert from the first removed assistant message (#9924)",
-      "reason": "OpenCode reverts from the first removed assistant message and applies the provider revert boundary when reading history.",
+      "reason": "OpenCode groups assistant steps by their parent user prompt and rolls back at the first removed user message, so no orphaned prompt remains. Readback honours the provider boundary.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.ts:1635"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:375"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "4cb676cc1612e6220246cd5f8abdd2bc284e1a97",
@@ -5498,12 +5507,15 @@
     {
       "upstreamSha": "4d12e52223f3fcd4813b9bc52cd9cb3f2bd19539",
       "subject": "fix(server): stop kills lingering Claude work (#5891)",
-      "reason": "Claude interrupt closes the session transport, stops background tasks and pending interactions, and ignores stale turn IDs. Follow-up sessions retain their resume cursor.",
+      "reason": "Claude hard Stop serializes with sends, closes foreground/background work and rejects stale turn IDs. Send detects a stopped context after asynchronous setup. Conversation resume identity survives; process-local session grants intentionally expire on Stop.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.ts:5295"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:7559"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "4d16e6bc6f0be52c5d44b8864000c70c7825e4f7",
@@ -6919,12 +6931,15 @@
     {
       "upstreamSha": "6134b90ffb19c18e0b2f468aa172095a393470b0",
       "subject": "fix(server): mark Cursor transport error answers as failed (#10337)",
-      "reason": "Recognize standalone Cursor transport failure diagnostics and fail the active turn instead of displaying a successful assistant answer.",
+      "reason": "Cursor drains notification events even when ACP hardening is off before interpreting standalone transport errors. It emits a failed turn and returns the accepted submission identity, avoiding false ambiguous-delivery reports.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/acp/CursorTransportFailure.ts:6"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/CursorAdapter.test.ts:130"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "61514c1294ff79e2a9924551b2042fcc0d1c3a34",
@@ -7019,12 +7034,15 @@
     {
       "upstreamSha": "62d39bf00d5ddd83a9b36a81321fe9aa4d2502bb",
       "subject": "fix(server): stop OpenCode child sessions (#9005)",
-      "reason": "Stop OpenCode parent and descendant sessions, bound child discovery and abort calls, and retain failures for the caller while still cleaning known children.",
+      "reason": "OpenCode stops parents and discovered descendants with bounded requests. Parent abort failures propagate, while child discovery limits/failures warn without invalidating a successful parent interruption; historical children are skipped when timestamp evidence exists.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.ts:439"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:322"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "62e4ae400555e62a42d5cb401d744ba6dd0b401b",
@@ -8738,12 +8756,15 @@
     {
       "upstreamSha": "7c6163c67aa122fa7c13466536c012888db102c6",
       "subject": "fix(codex): show app access approval prompts (#8058)",
-      "reason": "Expose Codex MCP app approvals with only schema-supported once/session/persistent choices. Unsupported forms cannot be accepted; persistence requires an explicit advertised decision. Protocol version 3 gates the added wire variants.",
+      "reason": "Codex MCP approvals accept only recognised consent controls, exact once/session/always choices and explicitly advertised persistence. Hidden optional fields/defaults are never submitted; unsupported forms are cancelled with a warning. Protocol v3 gates the approval variants.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/codex/mcpElicitation.ts:50"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/codex/mcpElicitation.test.ts:93"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "7c8848ebb054c1f4c1279f634633cddc37cb1fac",
@@ -11481,12 +11502,15 @@
     {
       "upstreamSha": "a434677eca737771dd64703545c13eb11ba92ce2",
       "subject": "fix(grok): health check, model selection, and stop all work against the real CLI (#9154)",
-      "reason": "Grok health uses bounded version/models commands without ACP login startup. Product model aliases keep the native default. Stop closes the ACP session and stale prompt callbacks cannot mutate its replacement; f5 durable queue and native overlapping prompt behavior remain authoritative.",
+      "reason": "Grok uses bounded non-ACP health probes and native model aliases. Hard Stop cancels active/background work, idle Stop is a no-op, and late callbacks compare context identity so a resumed native session ID cannot corrupt its successor.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/Layers/GrokProvider.ts:83"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/GrokAdapter.test.ts:53"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "a43f9b45ae85caf37e0be8270ad3d27365ece2bd",
@@ -12116,12 +12140,15 @@
     {
       "upstreamSha": "afc8342801d487d96732fdad25454f0c1fe96a3b",
       "subject": "fix(grok): bound cumulative tool output updates (#7279)",
-      "reason": "Bound ACP tool text and raw text output to 8,000 characters and coalesce small repeated progress updates; terminal and background-task-start events remain immediate.",
+      "reason": "ACP bounds text-bearing tool output, including Grok Result and MultiResult structures, and coalesces progress while preserving terminal and background-start events.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/acp/AcpRuntimeModel.ts:475"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/acp/AcpRuntimeModel.test.ts:580"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "afca73d3683c99057ea8af1ad7d77511a0faf680",
@@ -14561,12 +14588,15 @@
     {
       "upstreamSha": "d2b6f3b9296f682c6158b894ab33d98d0c4bfb2b",
       "subject": "fix(server): full-access OpenCode threads no longer ask for approvals (#9282)",
-      "reason": "Full-access OpenCode permissions auto-reply once, including verified child sessions; workflow restrictions bypass this auto-approval path.",
+      "reason": "OpenCode full-access permissions reply once only for live contexts and verified descendants, with workflow restrictions preserved. Teardown never auto-approves a late request.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.ts:221"],
-      "f5Shas": ["abdf16fd7cdcbb8c1ffaec2b512c19c70609572f"]
+      "evidence": ["apps/server/src/provider/Layers/OpenCodeAdapter.test.ts:349"],
+      "f5Shas": [
+        "abdf16fd7cdcbb8c1ffaec2b512c19c70609572f",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "d2c3e2e5d7360b5d87f7516bdbce46b5c5444ef4",
@@ -16131,15 +16161,15 @@
     {
       "upstreamSha": "e9e46972fbabdee0eb39cbd86470a5b5f5f26910",
       "subject": "fix(claude): make \"Always allow for session\" stick, and only for the session (#5041)",
-      "reason": "Accept-for-session permissions are always scoped to the session; missing suggestions produce a session-only tool rule while accept-once does not update permissions.",
+      "reason": "Claude session consent uses only SDK-suggested rules, with destination forced to session. Missing suggestions fall back to accept-once and never create a tool-wide allow rule.",
       "reviewStatus": "reviewed",
       "disposition": "ported",
       "plannedWorkstream": "1c",
-      "evidence": [
-        "apps/server/src/provider/Layers/ClaudeAdapter.ts:4723",
-        "apps/server/src/provider/Layers/ClaudeAdapter.test.ts:5048"
-      ],
-      "f5Shas": ["5d48a79b409bf4790864f0112061877c5572d931"]
+      "evidence": ["apps/server/src/provider/Layers/ClaudeAdapter.test.ts:5182"],
+      "f5Shas": [
+        "5d48a79b409bf4790864f0112061877c5572d931",
+        "ea2cf9a1fb07a26788c237012bb7099cea23ba4c"
+      ]
     },
     {
       "upstreamSha": "e9f50c3efcb02a199042364ead292e164274e716",
