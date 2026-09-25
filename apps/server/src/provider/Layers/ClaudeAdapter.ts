@@ -4780,21 +4780,12 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 return {
                   behavior: "allow",
                   updatedInput: toolInput,
-                  ...(decision === "acceptForSession"
+                  ...(decision === "acceptForSession" && pendingApproval.suggestions?.length
                     ? {
-                        updatedPermissions: pendingApproval.suggestions?.length
-                          ? pendingApproval.suggestions.map((suggestion) => ({
-                              ...suggestion,
-                              destination: "session" as const,
-                            }))
-                          : [
-                              {
-                                type: "addRules",
-                                rules: [{ toolName }],
-                                behavior: "allow",
-                                destination: "session",
-                              },
-                            ],
+                        updatedPermissions: pendingApproval.suggestions.map((suggestion) => ({
+                          ...suggestion,
+                          destination: "session" as const,
+                        })),
                       }
                     : {}),
                 } satisfies PermissionResult;
@@ -5141,11 +5132,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sendTurnUnlocked: ClaudeAdapterShape["sendTurn"] = (input) =>
       Effect.gen(function* () {
         const context = yield* requireSession(input.threadId);
+        const ensureLive = Effect.suspend(() =>
+          context.stopped || sessions.get(input.threadId) !== context
+            ? Effect.fail(
+                new ProviderAdapterRequestError({
+                  provider: PROVIDER,
+                  method: "turn/start",
+                  detail: "Claude session stopped while preparing the turn.",
+                }),
+              )
+            : Effect.void,
+        );
+        yield* ensureLive;
 
         if (context.turnState) {
           // Auto-close a stale synthetic turn (from background agent responses
           // between user prompts) to prevent blocking the user's next turn.
           yield* completeTurn(context, "completed");
+          yield* ensureLive;
         }
 
         if (input.model || input.modelSelection || input.modelOptions) {
@@ -5172,6 +5176,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 try: () => context.query.setModel(runtimeModelSelection.apiModel),
                 catch: (cause) => toRequestError(input.threadId, "turn/setModel", cause),
               });
+              yield* ensureLive;
             }
             yield* Effect.tryPromise({
               try: () =>
@@ -5182,6 +5187,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
                 }),
               catch: (cause) => toRequestError(input.threadId, "turn/applyFlagSettings", cause),
             });
+            yield* ensureLive;
             context.session = {
               ...context.session,
               model: runtimeModelSelection.baseModel,
@@ -5215,6 +5221,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             try: () => context.query.setPermissionMode("plan"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
+          yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: "plan",
@@ -5224,6 +5231,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
             try: () => context.query.setPermissionMode(context.basePermissionMode ?? "default"),
             catch: (cause) => toRequestError(input.threadId, "turn/setPermissionMode", cause),
           });
+          yield* ensureLive;
           context.configuredBase = {
             ...context.configuredBase,
             permissionMode: context.basePermissionMode ?? "default",
@@ -5248,6 +5256,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         context.interruptedTurnIds.clear();
 
         const updatedAt = yield* nowIso;
+        yield* ensureLive;
         context.turnState = turnState;
         context.session = {
           ...context.session,
@@ -5257,6 +5266,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
         };
 
         const turnStartedStamp = yield* makeEventStamp();
+        yield* ensureLive;
         yield* offerRuntimeEvent({
           type: "turn.started",
           eventId: turnStartedStamp.eventId,
@@ -5275,6 +5285,7 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(activeModel ? { activeModel } : {}),
         });
 
+        yield* ensureLive;
         yield* Queue.offer(context.promptQueue, {
           type: "message",
           message,
@@ -5293,16 +5304,24 @@ export function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
       withThreadLock(input.threadId, sendTurnUnlocked(input));
 
     const interruptTurn: ClaudeAdapterShape["interruptTurn"] = (threadId, turnId) =>
-      Effect.gen(function* () {
-        const context = sessions.get(threadId);
-        if (!context || context.stopped) return;
-        if (turnId && context.turnState && context.turnState.turnId !== turnId) return;
-        if (context.turnState) context.turnState.interruptRequested = true;
-        // SDK interrupt only stops the foreground prompt. Closing the query also
-        // stops resumed/background work; the durable resume cursor survives in
-        // session.exited and the next send opens a fresh process for that session.
-        yield* stopSessionInternal(context);
-      });
+      withThreadLock(
+        threadId,
+        Effect.gen(function* () {
+          const context = sessions.get(threadId);
+          if (!context || context.stopped) return;
+          if (turnId && context.turnState && context.turnState.turnId !== turnId)
+            return yield* new ProviderAdapterRequestError({
+              provider: PROVIDER,
+              method: "turn/interrupt",
+              detail: "The active Claude turn changed before interruption.",
+            });
+          if (context.turnState) context.turnState.interruptRequested = true;
+          // SDK interrupt only stops the foreground prompt. Closing the query also
+          // stops resumed/background work; the durable resume cursor survives in
+          // session.exited and the next send opens a fresh process for that session.
+          yield* stopSessionInternal(context);
+        }),
+      );
 
     const readThread: ClaudeAdapterShape["readThread"] = (threadId) =>
       Effect.gen(function* () {

@@ -15,6 +15,8 @@ import {
 } from "@t3tools/contracts";
 import { Effect, Fiber, Layer, Schema, ServiceMap, Stream } from "effect";
 
+import { vi } from "vitest";
+import * as GrokAcpSupport from "../acp/GrokAcpSupport.ts";
 import { ServerConfig } from "../../config.ts";
 import type { GrokAdapterShape } from "../Services/GrokAdapter.ts";
 import { makeGrokAdapter } from "./GrokAdapter.ts";
@@ -48,6 +50,99 @@ const GrokAdapterHardeningTestLayer = Layer.effect(
 );
 
 it.layer(GrokAdapterHardeningTestLayer)("GrokAdapterLive ACP hardening", (it) => {
+  it.effect("ignores a late prompt from an older context with the same resumed session ID", () =>
+    Effect.gen(function* () {
+      const original = GrokAcpSupport.makeGrokAcpRuntime;
+      let release!: () => void;
+      let oldSettled = false;
+      let calls = 0;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const spy = vi.spyOn(GrokAcpSupport, "makeGrokAcpRuntime").mockImplementation((input) =>
+        original(input).pipe(
+          Effect.map((runtime) => ({
+            ...runtime,
+            prompt: (promptInput) => {
+              const first = calls++ === 0;
+              return runtime.prompt(promptInput).pipe(
+                Effect.ensuring(
+                  first
+                    ? Effect.promise(async () => {
+                        oldSettled = true;
+                        await gate;
+                      })
+                    : Effect.void,
+                ),
+              );
+            },
+          })),
+        ),
+      );
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          release();
+          spy.mockRestore();
+        }),
+      );
+      {
+        const adapter = yield* GrokAdapter;
+        const threadId = ThreadId.make("same-native-session");
+        const session = yield* adapter.startSession({
+          threadId,
+          provider: "grok",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+        });
+        const old = yield* adapter
+          .sendTurn({ threadId, input: "old", attachments: [] })
+          .pipe(Effect.forkChild);
+        while (!oldSettled)
+          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 1)));
+        yield* adapter.interruptTurn(threadId);
+        const resumed = yield* adapter.startSession({
+          threadId,
+          provider: "grok",
+          cwd: process.cwd(),
+          runtimeMode: "full-access",
+          resumeCursor: session.resumeCursor,
+        });
+        assert.deepEqual(resumed.resumeCursor, session.resumeCursor);
+        const completed = yield* adapter.streamEvents.pipe(
+          Stream.filter((event) => event.type === "turn.completed"),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+        const fresh = yield* adapter
+          .sendTurn({ threadId, input: "new", attachments: [] })
+          .pipe(Effect.forkChild);
+        while (calls < 2) yield* Effect.yieldNow;
+        release();
+        yield* Fiber.join(old);
+        yield* Fiber.join(fresh);
+        const terminal = yield* Fiber.join(completed).pipe(Effect.timeout("2 seconds"));
+        assert.equal(terminal._tag, "Some");
+        yield* adapter.stopSession(threadId);
+      }
+    }).pipe(Effect.scoped),
+  );
+  it.effect("leaves an idle session alive on repeated Stop", () =>
+    Effect.gen(function* () {
+      const adapter = yield* GrokAdapter;
+      const threadId = ThreadId.make("idle-stop");
+      yield* adapter.startSession({
+        threadId,
+        provider: "grok",
+        cwd: process.cwd(),
+        runtimeMode: "full-access",
+      });
+      yield* adapter.interruptTurn(threadId);
+      yield* adapter.interruptTurn(threadId);
+      assert.equal(yield* adapter.hasSession(threadId), true);
+      yield* adapter.stopSession(threadId);
+    }),
+  );
+
   it.effect("stops the process and active turn even without a prompt cancellation response", () =>
     Effect.gen(function* () {
       const adapter = yield* GrokAdapter;

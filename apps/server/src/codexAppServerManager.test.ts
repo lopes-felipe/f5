@@ -2479,6 +2479,38 @@ describe("Codex server requests", () => {
     ).rejects.toThrow("Unknown pending approval");
   });
 
+  it("cancels unsupported MCP data forms without publishing an approval", () => {
+    const manager = new CodexAppServerManager();
+    const context = requestContext();
+    const writeMessage = vi
+      .spyOn(
+        manager as unknown as { writeMessage: (...args: unknown[]) => Promise<void> },
+        "writeMessage",
+      )
+      .mockResolvedValue();
+    const events: Array<{ kind?: string; method?: string }> = [];
+    manager.on("event", (event) => events.push(event));
+    (
+      manager as unknown as {
+        handleServerRequest: (context: unknown, request: Record<string, unknown>) => void;
+      }
+    ).handleServerRequest(context, {
+      id: 85,
+      method: "mcpServer/elicitation/request",
+      params: {
+        mode: "form",
+        message: "Optional profile data",
+        requestedSchema: {
+          type: "object",
+          properties: { remember: { type: "boolean", default: true } },
+        },
+      },
+    });
+    expect(writeMessage).toHaveBeenCalledWith(context, { id: 85, result: { action: "cancel" } });
+    expect(events.some((event) => event.kind === "request")).toBe(false);
+    expect(events.some((event) => event.method === "protocol/unsupportedServerRequest")).toBe(true);
+  });
+
   it.each([
     ["item/tool/call", "dynamic tool"],
     ["account/chatgptAuthTokens/refresh", "auth-token refresh"],

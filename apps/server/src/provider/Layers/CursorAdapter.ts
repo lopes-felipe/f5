@@ -1184,11 +1184,7 @@ export function makeCursorAdapter(
             turnId,
             payload: { state: "failed", errorMessage: failure },
           });
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session/prompt",
-            detail: failure,
-          });
+          return { threadId: input.threadId, turnId, resumeCursor: ctx.session.resumeCursor };
         }
 
         ctx.turns.push({ id: turnId, items: [{ prompt: promptParts, result }] });

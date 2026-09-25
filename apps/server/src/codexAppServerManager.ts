@@ -1965,6 +1965,20 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   private handleServerRequest(context: CodexSessionContext, request: JsonRpcRequest): void {
     const route = this.readRouteFields(request.params);
+    if (
+      request.method === "mcpServer/elicitation/request" &&
+      !describeMcpElicitation(request.params).approvalOptions.some((option) =>
+        option.decision.startsWith("accept"),
+      )
+    ) {
+      this.writeServerRequestResponse(context, { id: request.id, result: { action: "cancel" } });
+      this.emitUnsupportedServerRequestWarning(
+        context,
+        request,
+        "MCP data collection requires a form UI; this unsupported request was cancelled without submitting data.",
+      );
+      return;
+    }
     const approvalRequest = this.approvalRequestForMethod(request.method);
     const requestKind = approvalRequest?.requestKind;
     let requestId: ApprovalRequestId | undefined;

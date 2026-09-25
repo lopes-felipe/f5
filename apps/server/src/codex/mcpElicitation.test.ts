@@ -67,7 +67,7 @@ describe("MCP app approval", () => {
       ...request,
       requestedSchema: {
         type: "object",
-        properties: { persist: { type: "boolean", default: true } },
+        properties: { persist: { type: "boolean", title: "always", default: true } },
         required: ["persist"],
       },
     };
@@ -84,4 +84,58 @@ describe("MCP app approval", () => {
   it.each(["cancel", "decline"] as const)("preserves %s without grants", (decision) => {
     expect(mcpElicitationResponse(request, decision)).toEqual({ action: decision });
   });
+});
+
+it.each([
+  { optional_text: { type: "string" } },
+  { remember: { type: "boolean", default: true } },
+  { consent: { type: "string", enum: ["disallow", "allow_all_tools"] } },
+])("rejects hidden or unrecognised form fields: %j", (properties) => {
+  const payload = { ...request, requestedSchema: { type: "object", properties } };
+  for (const decision of ["accept", "acceptForSession", "acceptAlways"] as const)
+    expect(mcpElicitationResponse(payload, decision)).toEqual({ action: "decline" });
+});
+it("never selects allow_all_tools for approve once", () => {
+  const payload = {
+    ...request,
+    requestedSchema: {
+      type: "object",
+      properties: {
+        consent: { type: "string", enum: ["allow_all_tools", "allow_once"] },
+      },
+    },
+  };
+  expect(mcpElicitationResponse(payload, "accept")).toEqual({
+    action: "accept",
+    content: { consent: "allow_once" },
+  });
+});
+it("offers session consent only for a session-scoped boolean", () => {
+  const payload = {
+    ...request,
+    requestedSchema: {
+      type: "object",
+      properties: {
+        persist: { type: "boolean", title: "this session", default: true },
+      },
+    },
+  };
+  expect(mcpElicitationResponse(payload, "accept")).toEqual({
+    action: "accept",
+    content: { persist: false },
+  });
+  expect(mcpElicitationResponse(payload, "acceptForSession")).toEqual({
+    action: "accept",
+    content: { persist: true },
+    _meta: { persist: "session" },
+  });
+  expect(mcpElicitationResponse(payload, "acceptAlways")).toEqual({ action: "decline" });
+});
+it("does not turn an arbitrary empty data form into app approval", () => {
+  expect(
+    mcpElicitationResponse(
+      { ...request, message: "Collect optional data", requestedSchema: { type: "object" } },
+      "accept",
+    ),
+  ).toEqual({ action: "decline" });
 });

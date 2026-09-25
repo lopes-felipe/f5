@@ -779,49 +779,45 @@ const makeAcpSessionRuntime = (
       return yield* effect;
     });
 
-    const getEvents = hardeningEnabled
-      ? () =>
-          Stream.fromQueue(eventQueue).pipe(
-            Stream.mapEffect((entry) => {
-              if (entry._tag !== "EventBarrier") {
-                return Effect.succeed<AcpParsedSessionEvent | undefined>(entry);
-              }
-              return Deferred.succeed(entry.acknowledgement, undefined).pipe(
-                Effect.as<AcpParsedSessionEvent | undefined>(undefined),
-              );
-            }),
-            Stream.filter((entry): entry is AcpParsedSessionEvent => entry !== undefined),
-          )
-      : () => Stream.fromQueue(eventQueue as unknown as Queue.Queue<AcpParsedSessionEvent>);
-
-    const awaitEventBarrier = hardeningEnabled
-      ? Effect.gen(function* () {
-          const acknowledgement = yield* Deferred.make<void>();
-          yield* Queue.offer(eventQueue, {
-            _tag: "EventBarrier",
-            acknowledgement,
-          });
-          const timeoutMs = Math.max(
-            1,
-            options.hardening?.eventBarrierTimeoutMs ?? DEFAULT_EVENT_BARRIER_TIMEOUT_MS,
-          );
-          const acknowledged = yield* Effect.raceFirst(
-            Deferred.await(acknowledgement).pipe(Effect.as(true)),
-            Effect.sleep(`${timeoutMs} millis`).pipe(Effect.as(false)),
-          );
-          if (!acknowledged) {
-            yield* Effect.logWarning("ACP event barrier timed out; notification drain is stalled", {
-              provider: hardeningProvider,
-              timeoutMs,
-            });
+    const getEvents = () =>
+      Stream.fromQueue(eventQueue).pipe(
+        Stream.mapEffect((entry) => {
+          if (entry._tag !== "EventBarrier") {
+            return Effect.succeed<AcpParsedSessionEvent | undefined>(entry);
           }
-        }).pipe(
-          withMetrics({
-            counter: acpEventBarrierTotal,
-            attributes: providerMetricAttributes(hardeningProvider),
-          }),
-        )
-      : Effect.void;
+          return Deferred.succeed(entry.acknowledgement, undefined).pipe(
+            Effect.as<AcpParsedSessionEvent | undefined>(undefined),
+          );
+        }),
+        Stream.filter((entry): entry is AcpParsedSessionEvent => entry !== undefined),
+      );
+
+    const awaitEventBarrier = Effect.gen(function* () {
+      const acknowledgement = yield* Deferred.make<void>();
+      yield* Queue.offer(eventQueue, {
+        _tag: "EventBarrier",
+        acknowledgement,
+      });
+      const timeoutMs = Math.max(
+        1,
+        options.hardening?.eventBarrierTimeoutMs ?? DEFAULT_EVENT_BARRIER_TIMEOUT_MS,
+      );
+      const acknowledged = yield* Effect.raceFirst(
+        Deferred.await(acknowledgement).pipe(Effect.as(true)),
+        Effect.sleep(`${timeoutMs} millis`).pipe(Effect.as(false)),
+      );
+      if (!acknowledged) {
+        yield* Effect.logWarning("ACP event barrier timed out; notification drain is stalled", {
+          provider: hardeningProvider,
+          timeoutMs,
+        });
+      }
+    }).pipe(
+      withMetrics({
+        counter: acpEventBarrierTotal,
+        attributes: providerMetricAttributes(hardeningProvider),
+      }),
+    );
 
     return {
       handleRequestPermission: acp.handleRequestPermission,

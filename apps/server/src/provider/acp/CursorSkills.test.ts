@@ -19,6 +19,8 @@ it("follows linked skill packages once, preserves the link name and prefers proj
     };
     await writeSkill(path.join(home, ".cursor", "skills", "3d-review"), "user description");
     await writeSkill(library, "project description");
+    await writeSkill(path.join(skillsRoot, "parent"), "parent skill");
+    await writeSkill(path.join(skillsRoot, "parent", "examples", "deploy"), "not a skill");
     await writeSkill(path.join(library, "hidden-child"), "do not recurse here");
     await mkdir(skillsRoot, { recursive: true });
     await symlink(library, path.join(skillsRoot, "3d-review"), "junction");
@@ -26,7 +28,8 @@ it("follows linked skill packages once, preserves the link name and prefers proj
     const skills = await Effect.runPromise(
       discoverCursorSkills(project, { HOME: home }).pipe(Effect.provide(NodeServices.layer)),
     );
-    expect(skills).toEqual([
+    expect(skills.map((skill) => skill.name)).toEqual(["3d-review", "parent"]);
+    expect(skills.filter((skill) => skill.name !== "parent")).toEqual([
       {
         name: "3d-review",
         description: "project description",
@@ -35,7 +38,7 @@ it("follows linked skill packages once, preserves the link name and prefers proj
         enabled: true,
       },
     ]);
-    expect(cursorSkillCommands(skills)).toEqual([
+    expect(cursorSkillCommands(skills.filter((skill) => skill.name !== "parent"))).toEqual([
       { name: "3d-review", description: "project description" },
     ]);
   } finally {

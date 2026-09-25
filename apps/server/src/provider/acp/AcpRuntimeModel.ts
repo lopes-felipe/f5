@@ -242,7 +242,7 @@ const RAW_OUTPUT_TEXT_FIELDS = ["content", "stdout", "stderr", "output"] as cons
 // cumulative text-growth problem as `content` (see the comment above). Bound its known
 // text-bearing fields the same way so a chatty provider cannot smuggle unbounded output
 // through this field instead.
-function boundToolCallRawOutput(rawOutput: unknown): unknown {
+function boundToolCallRawOutput(rawOutput: unknown, depth = 0): unknown {
   if (!isRecord(rawOutput)) {
     return rawOutput;
   }
@@ -252,6 +252,18 @@ function boundToolCallRawOutput(rawOutput: unknown): unknown {
     const value = rawOutput[field];
     if (typeof value === "string" && value.length > TOOL_CALL_CONTENT_MAX_CHARS) {
       bounded[field] = boundToolCallOutputText(value);
+      changed = true;
+    }
+  }
+  if (depth < 4) {
+    if (isRecord(rawOutput.Result)) {
+      bounded.Result = boundToolCallRawOutput(rawOutput.Result, depth + 1);
+      changed = true;
+    }
+    if (Array.isArray(rawOutput.results)) {
+      bounded.results = rawOutput.results.map((result) =>
+        boundToolCallRawOutput(result, depth + 1),
+      );
       changed = true;
     }
   }

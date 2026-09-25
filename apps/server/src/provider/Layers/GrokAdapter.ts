@@ -855,6 +855,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
               }
 
               return {
+                context: ctx,
                 acp: ctx.acp,
                 acpSessionId: ctx.acpSessionId,
                 displayModel,
@@ -886,7 +887,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
             input.threadId,
             Effect.gen(function* () {
               const ctx = yield* requireSession(input.threadId);
-              if (ctx.acpSessionId !== prepared.acpSessionId) {
+              if (ctx !== prepared.context) {
                 return yield* new ProviderAdapterRequestError({
                   provider: PROVIDER,
                   method: "session/prompt",
@@ -939,14 +940,14 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           );
         }).pipe(
           Effect.catchCause((cause) =>
-            sessions.get(input.threadId)?.acpSessionId !== prepared.acpSessionId
+            sessions.get(input.threadId) !== prepared.context
               ? Effect.succeed({ threadId: input.threadId, turnId: prepared.turnId })
               : Effect.failCause(cause),
           ),
           Effect.ensuring(
             Effect.sync(() => {
               const liveCtx = sessions.get(input.threadId);
-              if (liveCtx?.acpSessionId === prepared.acpSessionId) {
+              if (liveCtx === prepared.context) {
                 liveCtx.promptsInFlight = Math.max(0, liveCtx.promptsInFlight - 1);
               }
             }),
@@ -961,6 +962,7 @@ export function makeGrokAdapter(grokSettings: GrokSettings, options?: GrokAdapte
           const ctx = sessions.get(threadId);
           if (!ctx || ctx.stopped || (turnId && ctx.activeTurnId && turnId !== ctx.activeTurnId))
             return;
+          if (ctx.promptsInFlight === 0 && ctx.backgroundTasks.size === 0) return;
           // A notification alone cannot guarantee the CLI stopped its prompt or background tools.
           // Closing this process preserves the resume cursor and makes Stop definitive.
           yield* stopSessionInternal(ctx);

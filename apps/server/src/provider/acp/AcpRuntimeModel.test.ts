@@ -576,3 +576,25 @@ describe("AcpRuntimeModel", () => {
     });
   });
 });
+
+it("bounds nested Grok Result and MultiResult output in events and raw payloads", () => {
+  const text = "x".repeat(100_000);
+  const parsed = parseSessionUpdateEvent({
+    sessionId: "session",
+    update: {
+      sessionUpdate: "tool_call_update",
+      toolCallId: "tool",
+      status: "completed",
+      rawOutput: {
+        type: "MultiResult",
+        Result: { output: text },
+        results: [{ output: text }, { Result: { output: text } }],
+      },
+    },
+  });
+  const event = parsed.events[0];
+  expect(event?._tag).toBe("ToolCallUpdated");
+  if (event?._tag !== "ToolCallUpdated") return;
+  expect(JSON.stringify(event)).not.toContain("x".repeat(8100));
+  expect(JSON.stringify(event)).toContain("MultiResult");
+});

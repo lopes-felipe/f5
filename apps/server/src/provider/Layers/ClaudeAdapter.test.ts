@@ -139,8 +139,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
     this.interruptCalls.push(undefined);
   };
 
+  public setModelWait: Promise<void> | undefined;
   readonly setModel = async (model?: string): Promise<void> => {
     this.setModelCalls.push(model);
+    await this.setModelWait;
   };
 
   readonly setPermissionMode = async (mode: PermissionMode): Promise<void> => {
@@ -5297,21 +5299,9 @@ describe("ClaudeAdapterLive", () => {
         assert.deepEqual(permissionResult, {
           behavior: "allow",
           updatedInput: { command: "pwd" },
-          ...(approvalCase === "accept"
-            ? {}
-            : {
-                updatedPermissions:
-                  approvalCase === "session-suggestions"
-                    ? [{ type: "setMode", mode: "default", destination: "session" }]
-                    : [
-                        {
-                          type: "addRules",
-                          rules: [{ toolName: "Bash" }],
-                          behavior: "allow",
-                          destination: "session",
-                        },
-                      ],
-              }),
+          ...(approvalCase === "session-suggestions"
+            ? { updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }] }
+            : {}),
         });
       }).pipe(
         Effect.provideService(Random.Random, makeDeterministicRandomService()),
@@ -7566,6 +7556,52 @@ describe("ClaudeAdapterLive", () => {
   });
 
   describe("interruptTurn", () => {
+    it.effect("serializes Stop behind a send waiting for model setup", () => {
+      const harness = makeHarness();
+      return Effect.gen(function* () {
+        const adapter = yield* ClaudeAdapter;
+        const events: ProviderRuntimeEvent[] = [];
+        const observer = yield* adapter.streamEvents.pipe(
+          Stream.runForEach((event) =>
+            Effect.sync(() => {
+              events.push(event);
+            }),
+          ),
+          Effect.forkChild,
+        );
+        const session = yield* adapter.startSession({
+          threadId: THREAD_ID,
+          provider: "claudeAgent",
+          runtimeMode: "approval-required",
+        });
+        let release!: () => void;
+        harness.query.setModelWait = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const sending = yield* adapter
+          .sendTurn({
+            threadId: session.threadId,
+            input: "work",
+            attachments: [],
+            model: "claude-opus-5",
+          })
+          .pipe(Effect.forkChild);
+        while (!harness.query.setModelCalls.length) yield* Effect.yieldNow;
+        const stopping = yield* adapter.interruptTurn(session.threadId).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assert.equal(harness.query.closeCalls, 0);
+        release();
+        yield* Fiber.join(sending);
+        yield* Fiber.join(stopping);
+        yield* Effect.yieldNow;
+        assert.equal(harness.query.closeCalls, 1);
+        const started = events.findIndex((event) => event.type === "turn.started");
+        const exited = events.findIndex((event) => event.type === "session.exited");
+        assert.ok(started >= 0 && exited > started);
+        yield* Fiber.interrupt(observer);
+      }).pipe(Effect.provide(harness.layer));
+    });
+
     it.effect("completes the turn as interrupted when the SDK emits a result", () => {
       const harness = makeHarness();
       return Effect.gen(function* () {

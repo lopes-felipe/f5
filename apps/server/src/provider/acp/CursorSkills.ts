@@ -57,6 +57,7 @@ export const discoverCursorSkills = Effect.fn("discoverCursorSkills")(function* 
             });
         }
       }
+      if (stat?.type === "File") continue;
       if (
         current.depth >= 10 ||
         (canonical !== canonicalRoot && !canonical.startsWith(`${canonicalRoot}${path.sep}`))

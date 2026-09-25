@@ -153,10 +153,8 @@ cursorAdapterTestLayer("CursorAdapterLive", (it) => {
         Stream.runCollect,
         Effect.forkChild,
       );
-      const error = yield* adapter
-        .sendTurn({ threadId, input: "hello", attachments: [] })
-        .pipe(Effect.flip);
-      assert.equal(error._tag, "ProviderAdapterRequestError");
+      const sent = yield* adapter.sendTurn({ threadId, input: "hello", attachments: [] });
+      assert.equal(sent.threadId, threadId);
       const events = Array.from(yield* Fiber.join(eventsFiber));
       const completed = events.find((event) => event.type === "turn.completed");
       assert.isDefined(completed);

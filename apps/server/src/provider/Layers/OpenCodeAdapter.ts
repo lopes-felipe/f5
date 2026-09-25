@@ -78,6 +78,8 @@ interface OpenCodeSessionContext {
   readonly completedAssistantPartIds: Set<string>;
   readonly turns: Array<OpenCodeTurnSnapshot>;
   activeTurnId: TurnId | undefined;
+  interruptingTurnId?: TurnId;
+  currentTurnStartedAt?: number;
   activeAgent: string | undefined;
   activeVariant: string | undefined;
   /**
@@ -441,6 +443,7 @@ const abortOpenCodeTree = Effect.fn("abortOpenCodeTree")(function* (
 ) {
   const ids = new Set([context.openCodeSessionId, ...context.relatedSessionIds]);
   let failure: OpenCodeRuntimeError | undefined;
+  let parentFailure: OpenCodeRuntimeError | undefined;
   const abort = (sessionID: string) =>
     runOpenCodeSdk("session.abort", (signal) =>
       context.client.session.abort({ sessionID }, { signal }),
@@ -459,6 +462,8 @@ const abortOpenCodeTree = Effect.fn("abortOpenCodeTree")(function* (
   // Stop the parent before enumerating children so it cannot keep spawning work.
   // A discovery failure must not prevent aborting sessions we already know about.
   yield* abort(context.openCodeSessionId);
+  parentFailure = failure;
+  failure = undefined;
   yield* Effect.gen(function* () {
     for (const sessionID of ids) {
       const children = yield* runOpenCodeSdk("session.children", (signal) =>
@@ -477,6 +482,12 @@ const abortOpenCodeTree = Effect.fn("abortOpenCodeTree")(function* (
         ),
       );
       for (const child of children.data ?? []) {
+        if (
+          context.currentTurnStartedAt &&
+          child.time?.updated < context.currentTurnStartedAt &&
+          !ids.has(child.id)
+        )
+          continue;
         if (ids.size >= 128 && !ids.has(child.id)) {
           failure ??= new OpenCodeRuntimeError({
             operation: "session.children",
@@ -504,7 +515,12 @@ const abortOpenCodeTree = Effect.fn("abortOpenCodeTree")(function* (
     abort,
     { concurrency: 4, discard: true },
   );
-  if (failure) return yield* failure;
+  const cleanupFailure = yield* Effect.sync(() => failure);
+  if (cleanupFailure)
+    yield* Effect.logWarning("OpenCode child cleanup incomplete", {
+      detail: cleanupFailure.detail,
+    });
+  if (parentFailure) return yield* parentFailure;
 });
 
 const stopOpenCodeContext = Effect.fn("stopOpenCodeContext")(function* (
@@ -811,6 +827,7 @@ export function makeOpenCodeAdapter(
       context: OpenCodeSessionContext,
       event: OpenCodeSubscribedEvent,
     ) {
+      if (yield* Ref.get(context.stopped)) return;
       const properties = event.properties as {
         sessionID?: unknown;
         info?: { sessionID?: string };
@@ -958,6 +975,7 @@ export function makeOpenCodeAdapter(
         }
 
         case "permission.asked": {
+          if (yield* Ref.get(context.stopped)) break;
           if (
             context.resolvedRequestIds.has(event.properties.id) ||
             context.pendingPermissions.has(event.properties.id) ||
@@ -967,10 +985,18 @@ export function makeOpenCodeAdapter(
           if (context.session.runtimeMode === "full-access" && !context.workflowExecutionProfile) {
             context.autoRepliedRequestIds.add(event.properties.id);
             // Do not block the event pump while the HTTP response waits for event consumption.
-            yield* runOpenCodeSdk("permission.reply", (signal) =>
-              context.client.permission.reply(
-                { requestID: event.properties.id, reply: "once" },
-                { signal },
+            yield* Effect.suspend(() =>
+              Ref.get(context.stopped).pipe(
+                Effect.flatMap((stopped) =>
+                  stopped
+                    ? Effect.void
+                    : runOpenCodeSdk("permission.reply", (signal) =>
+                        context.client.permission.reply(
+                          { requestID: event.properties.id, reply: "once" },
+                          { signal },
+                        ),
+                      ),
+                ),
               ),
             ).pipe(
               Effect.timeout("10 seconds"),
@@ -1075,10 +1101,9 @@ export function makeOpenCodeAdapter(
                 turnId,
                 raw: event,
               })),
-              type: "turn.completed",
-              payload: {
-                state: "completed",
-              },
+              ...(context.interruptingTurnId === turnId
+                ? { type: "turn.aborted" as const, payload: { reason: "Interrupted by user." } }
+                : { type: "turn.completed" as const, payload: { state: "completed" as const } }),
             });
           }
           break;
@@ -1103,18 +1128,17 @@ export function makeOpenCodeAdapter(
                 turnId: activeTurnId,
                 raw: event,
               })),
-              type: "turn.completed",
-              payload: {
-                state: "failed",
-                errorMessage: message,
-              },
+              ...(context.interruptingTurnId === activeTurnId
+                ? { type: "turn.aborted" as const, payload: { reason: "Interrupted by user." } }
+                : {
+                    type: "turn.completed" as const,
+                    payload: { state: "failed" as const, errorMessage: message },
+                  }),
             });
           }
+          if (context.interruptingTurnId === activeTurnId && activeTurnId) break;
           yield* emit({
-            ...(yield* buildEventBase({
-              threadId: context.session.threadId,
-              raw: event,
-            })),
+            ...(yield* buildEventBase({ threadId: context.session.threadId, raw: event })),
             type: "runtime.error",
             payload: {
               message,
@@ -1426,6 +1450,9 @@ export function makeOpenCodeAdapter(
 
       context.workflowExecutionProfile = input.workflowExecutionProfile;
       context.activeTurnId = turnId;
+      delete context.interruptingTurnId;
+      context.relatedSessionIds.clear();
+      context.currentTurnStartedAt = Date.now();
       context.activeAgent = input.workflowExecutionProfile
         ? "plan"
         : (agent ?? (input.interactionMode === "plan" ? "plan" : undefined));
@@ -1506,6 +1533,8 @@ export function makeOpenCodeAdapter(
         const context = ensureSessionContext(sessions, threadId);
         if (turnId && context.activeTurnId !== turnId) return;
         const interruptedTurnId = context.activeTurnId;
+        if (!interruptedTurnId) return;
+        context.interruptingTurnId = interruptedTurnId;
         yield* abortOpenCodeTree(context).pipe(
           Effect.mapError(
             (cause) =>
@@ -1631,10 +1660,20 @@ export function makeOpenCodeAdapter(
           context.client.session.messages({ sessionID: context.openCodeSessionId }),
         ).pipe(Effect.mapError(toRequestError));
         const turns: Array<OpenCodeTurnSnapshot> = [];
+        const byUser = new Map<string, OpenCodeTurnSnapshot>();
+        let latestUser: OpenCodeTurnSnapshot | undefined;
         for (const entry of messages.data ?? []) {
           if (entry.info.id === session.data?.revert?.messageID) break;
-          if (entry.info.role === "assistant")
-            turns.push({ id: TurnId.make(entry.info.id), items: [entry.info, ...entry.parts] });
+          if (entry.info.role === "user") {
+            latestUser = { id: TurnId.make(entry.info.id), items: [entry.info, ...entry.parts] };
+            turns.push(latestUser);
+            byUser.set(entry.info.id, latestUser);
+          } else {
+            const turn = byUser.get(entry.info.parentID) ?? latestUser;
+            if (turn) turn.items.push(entry.info, ...entry.parts);
+            else
+              turns.push({ id: TurnId.make(entry.info.id), items: [entry.info, ...entry.parts] });
+          }
         }
         return { threadId, turns };
       },

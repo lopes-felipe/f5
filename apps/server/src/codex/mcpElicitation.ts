@@ -8,8 +8,9 @@ function record(value: unknown): Record<string, unknown> | undefined {
 
 function persistence(value: unknown): "acceptForSession" | "acceptAlways" | undefined {
   if (typeof value !== "string") return undefined;
-  if (/session/i.test(value)) return "acceptForSession";
-  if (/always|permanent|forever|persistent/i.test(value)) return "acceptAlways";
+  if (/^(?:session|allow_session|accept_for_session|this session)$/i.test(value))
+    return "acceptForSession";
+  if (/^(?:always|allow_always|permanent|forever|persistent)$/i.test(value)) return "acceptAlways";
   return undefined;
 }
 
@@ -37,70 +38,70 @@ function options(field: Record<string, unknown>): { value: string; label?: strin
     : [];
 }
 
-function persistenceField(key: string, field: Record<string, unknown>) {
-  return (
-    key === "persist" ||
-    persistence(key) !== undefined ||
-    persistence(field.title) !== undefined ||
-    persistence(field.description) !== undefined
-  );
-}
-
-/** Build only representable approval forms. Arbitrary inputs and URL elicitations fail closed. */
+/** Only consent controls are representable by the approval UI; no hidden data/defaults. */
 export function mcpElicitationResponse(
   payload: unknown,
   decision: ProviderApprovalDecision,
 ): Record<string, unknown> {
   if (decision === "cancel" || decision === "decline") return { action: decision };
+  const reject = { action: "decline" };
   const request = record(payload);
   const form = record(request?.requestedSchema);
-  if (request?.mode === "url" || !form || form.type !== "object") return { action: "decline" };
+  if (request?.mode === "url" || !form || form.type !== "object") return reject;
   const fields = record(form.properties) ?? {};
   const metadata = record(request?._meta);
-  const advertisedPersistence = Array.isArray(metadata?.persist)
-    ? metadata.persist
-    : [metadata?.persist];
-  let represented =
-    decision === "accept" ||
-    advertisedPersistence.some((value) => persistence(value) === decision) ||
+  const advertised = Array.isArray(metadata?.persist) ? metadata.persist : [metadata?.persist];
+  const metadataAllows =
+    advertised.some((value) => persistence(value) === decision) ||
     (decision === "acceptAlways" && metadata?.allowPersistentApproval === true);
   const content: Record<string, unknown> = Object.create(null);
+  let represented = false;
   for (const [key, value] of Object.entries(fields)) {
     const field = record(value);
-    if (!field) return { action: "decline" };
+    if (!field) return reject;
     const choices = options(field);
-    const choice = choices.find((item) =>
-      decision === "accept"
-        ? /once|accept|approve|allow/i.test(item.value) && persistence(item.value) === undefined
-        : persistence(item.value) === decision,
-    );
-    if (choice) {
+    if (
+      field.type === "string" &&
+      /^(?:scope|consent|approval|permission|persist)$/i.test(key) &&
+      choices.length
+    ) {
+      const choice = choices.find(({ value }) =>
+        decision === "accept"
+          ? /^(?:once|allow_once|accept_once|approve_once|accept|approve|allow)$/i.test(value)
+          : persistence(value) === decision,
+      );
+      if (!choice) return reject;
       content[key] = choice.value;
       represented = true;
-    } else if (field.type === "boolean" && persistenceField(key, field)) {
-      content[key] = decision === "acceptAlways";
-      if (decision === "acceptAlways") represented = true;
     } else if (
-      field.default !== undefined &&
-      field.default !== null &&
-      !persistence(field.default)
+      field.type === "boolean" &&
+      /^(?:persist|session|always|allow_session|allow_always)$/i.test(key)
     ) {
-      const defaultValue = field.default;
-      const valid = choices.length
-        ? choices.some((item) => item.value === defaultValue)
-        : field.type === "integer"
-          ? Number.isInteger(defaultValue)
-          : ["boolean", "string", "number"].includes(String(field.type)) &&
-            typeof defaultValue === field.type;
-      if (valid) content[key] = defaultValue;
+      const level =
+        persistence(key) ??
+        persistence(field.title) ??
+        (key === "persist" && metadata?.allowPersistentApproval === true
+          ? "acceptAlways"
+          : undefined);
+      if (!level || (decision !== "accept" && decision !== level)) return reject;
+      content[key] = decision === level;
+      represented = true;
+    } else {
+      // Even optional fields must be visible and understood before sending their values.
+      return reject;
     }
+  }
+  if (Object.keys(fields).length === 0) {
+    represented =
+      typeof request?.message === "string" && /^Allow ChatGPT to use .+\?$/i.test(request.message);
+    if (decision !== "accept" && !metadataAllows) return reject;
   }
   if (
     !represented ||
     (Array.isArray(form.required) &&
       form.required.some((key) => typeof key !== "string" || !Object.hasOwn(content, key)))
   )
-    return { action: "decline" };
+    return reject;
   return {
     action: "accept",
     content,
