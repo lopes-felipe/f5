@@ -4393,10 +4393,19 @@
     {
       "upstreamSha": "3bbbc1d9fd8b3d649c60ba0137c7dae93a6aab3f",
       "subject": "perf(server): stop rebuilding terminal history per chunk (#9703)",
-      "reason": "Phase 2 (measured performance and observability): perf(server): stop rebuilding terminal history per chunk. Reimplement in f5; not yet delivered.",
+      "reason": "Terminal history uses incremental fragments with cached snapshots sharing their backing text, coalesced persistence and one pending history per blocked writer. The 20-terminal fixture exceeds the 20% CPU improvement gate; ordinary snapshots and live output keep their wire shape.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "2"
+      "disposition": "ported",
+      "plannedWorkstream": "2",
+      "evidence": [
+        "apps/server/src/terminal/BoundedTerminalHistory.ts:15",
+        "apps/server/src/terminal/Layers/Manager.test.ts:627",
+        "docs/reviews/phase-two-terminal-validation.md:1"
+      ],
+      "f5Shas": [
+        "053e14fbc2dce73093c4a2be7f6d55beac4c6cd5",
+        "b2a95bac474d728ab60b077f3532633d00185d2b"
+      ]
     },
     {
       "upstreamSha": "3bc4fdf05b6b748a7b506c81dc125f3504f35278",
@@ -9033,10 +9042,19 @@
     {
       "upstreamSha": "80991402dcdc488838fb4d8b21171bd38d9ab0aa",
       "subject": "fix(server): terminal subprocess polling no longer floods the PID space (#6377)",
-      "reason": "Phase 2 (measured performance and observability): fix(server): terminal subprocess polling no longer floods the PID space. Reimplement in f5; not yet delivered.",
+      "reason": "The terminal runtime reads one bounded process table every two seconds for all running sessions. Failed or partial snapshots retain prior activity, and results captured before a session restart are ignored. POSIX and Windows parsing plus shared-poll behavior are tested.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "2"
+      "disposition": "ported",
+      "plannedWorkstream": "2",
+      "evidence": [
+        "apps/server/src/terminal/processTable.ts:1",
+        "apps/server/src/terminal/Layers/Manager.ts:993",
+        "apps/server/src/terminal/Layers/Manager.test.ts:566"
+      ],
+      "f5Shas": [
+        "053e14fbc2dce73093c4a2be7f6d55beac4c6cd5",
+        "b2a95bac474d728ab60b077f3532633d00185d2b"
+      ]
     },
     {
       "upstreamSha": "80a14b6588f0e856983e6d10002cde9e00e9d3e2",
@@ -14471,10 +14489,19 @@
     {
       "upstreamSha": "cf9729d5ee9660c08556e823080d3bb19648ed28",
       "subject": "perf(server): bound terminal history by bytes (#9748)",
-      "reason": "Phase 2 (measured performance and observability): perf(server): bound terminal history by bytes. Reimplement in f5; not yet delivered.",
+      "reason": "Retained terminal output is capped at 5000 lines and f5's 4 MiB UTF-8 ceiling, with whole-line eviction, code-point-safe long-line truncation and streamed Unicode handling. Current and legacy logs restore from a bounded tail; live output remains complete. Random partitions, short reads and reconnect are tested.",
       "reviewStatus": "reviewed",
-      "disposition": "deferred",
-      "plannedWorkstream": "2"
+      "disposition": "ported",
+      "plannedWorkstream": "2",
+      "evidence": [
+        "apps/server/src/terminal/BoundedTerminalHistory.test.ts:1",
+        "apps/server/src/terminal/historyPersistence.ts:5",
+        "apps/server/src/terminal/Layers/Manager.test.ts:598"
+      ],
+      "f5Shas": [
+        "053e14fbc2dce73093c4a2be7f6d55beac4c6cd5",
+        "b2a95bac474d728ab60b077f3532633d00185d2b"
+      ]
     },
     {
       "upstreamSha": "cfc9bf34156ddcc4a98b7f5c67193adb5aedce06",
